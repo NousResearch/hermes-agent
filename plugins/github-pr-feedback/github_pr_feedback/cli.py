@@ -626,6 +626,10 @@ def setup_cli(_ctx: Any, parser: argparse.ArgumentParser) -> None:
     inspect.add_argument("--repository", required=True)
     inspect.add_argument("--pr-number", required=True, type=int)
     inspect.add_argument("--feedback-id")
+    inspect_ci = subcommands.add_parser("inspect-ci", help="Read a stored exact CI receipt without rerunning or handing off")
+    inspect_ci.add_argument("--repository", required=True)
+    inspect_ci.add_argument("--pr-number", required=True, type=int)
+    inspect_ci.add_argument("--receipt-id", required=True)
     submit_review = subcommands.add_parser(
         "submit-review", help="Submit an exact-head review with an independent identity"
     )
@@ -679,9 +683,10 @@ def setup_cli(_ctx: Any, parser: argparse.ArgumentParser) -> None:
     subcommands.add_parser(
         "merge-scan", help="Evaluate and merge strictly eligible PR heads"
     )
-    subcommands.add_parser(
+    merge_status = subcommands.add_parser(
         "merge-status", help="Show bounded merge and deployment counts"
     )
+    merge_status.add_argument("--details", action="store_true", help="Include the ten most recent verified merge receipts")
     merge_enable = subcommands.add_parser(
         "merge-enable", help="Enroll one configured PR for automatic merging"
     )
@@ -771,6 +776,9 @@ def handle_cli_with_context(ctx: Any, args: argparse.Namespace) -> int:
         return _doctor(ctx)
     if action == "inspect-pr":
         return _inspect_pr(ctx, args)
+    if action == "inspect-ci":
+        from .cli_ci_receipt import inspect_ci
+        return inspect_ci(ctx, args)
     if action == "submit-review":
         return _submit_review(ctx, args)
     if action == "post-comment":
@@ -787,7 +795,7 @@ def handle_cli_with_context(ctx: Any, args: argparse.Namespace) -> int:
     if action == "merge-scan":
         return _merge_scan(ctx)
     if action == "merge-status":
-        return _merge_status()
+        return _merge_status(details=bool(getattr(args, "details", False)))
     if action == "merge-enable":
         return _merge_enable(ctx, args)
     if action == "merge-disable":
@@ -1559,6 +1567,8 @@ def _ci_receipt_payload(receipt: CIAuditReceipt) -> dict[str, object]:
 
 
 def _audit_pr(ctx: Any, args: argparse.Namespace) -> int:
+    from .github_client import MergeStateStillComputingError
+
     handoff_blocked = False
     handoff_blockers: list[str] = []
     merge_handoff: dict[str, object] | None = None
@@ -1584,6 +1594,10 @@ def _audit_pr(ctx: Any, args: argparse.Namespace) -> int:
             and not policy.local_ci_audit.required_for_open_prs
             else None
         )
+    except MergeStateStillComputingError:
+        print(json.dumps({"status": "audit_deferred", "reason": "mergeable_state_still_computing",
+                          "retryable": True, "retry_after_seconds": 60}), flush=True)
+        return 1
     except (ValueError, CIValidationError, GitHubClientError):
         print(json.dumps({"status": "invalid_or_raced_audit_identity"}, sort_keys=True))
         return 1
@@ -1625,7 +1639,7 @@ def _audit_pr(ctx: Any, args: argparse.Namespace) -> int:
         print(json.dumps(_ci_receipt_payload(receipt), sort_keys=True), flush=True)
         owns_task = owns_current_audit_task(ledger, receipt.identity)
         try:
-            final_state = github.get_merge_state(args.repository, args.pr_number)
+            final_state = github.get_pull_request(args.repository, args.pr_number)
             if final_state.head_sha != receipt.identity.head_sha:
                 raise CIValidationError("canonical PR head changed after audit")
             if policy.local_ci_audit.audit_only:
@@ -1686,7 +1700,7 @@ def _audit_pr(ctx: Any, args: argparse.Namespace) -> int:
             if not handoff_blocked and owns_task:
                 try:
                     _block_current_ci_task(
-                        receipt, ["transient_handoff_failure"], kind="transient"
+                        receipt, [f"transient_handoff_failure: {repair_status or str(error)}"], kind="transient"
                     )
                 except RuntimeError:
                     pass
@@ -2234,10 +2248,13 @@ def _merge_maintainer_task(
     )
 
 
-def _merge_status() -> int:
+def _merge_status(*, details: bool = False) -> int:
     ledger = FeedbackLedger.for_current_profile()
     try:
         payload = {"merge": ledger.merge_status_counts()}
+        if details:
+            from .merge_receipt_history import recent_merge_receipts
+            payload["recent_receipts"] = recent_merge_receipts(ledger)
     finally:
         ledger.close()
     print(json.dumps(payload, sort_keys=True))

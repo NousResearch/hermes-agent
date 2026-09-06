@@ -2314,6 +2314,9 @@ def test_failed_audit_handoff_dispatches_the_typed_receipt_before_completion(
     )
 
     class GitHub:
+        def get_pull_request(self, repository, pr_number):
+            return self.get_merge_state(repository, pr_number)
+
         def get_merge_state(self, repository: str, pr_number: int):
             return PullRequestMergeState(
                 repository=repository,
@@ -2444,6 +2447,9 @@ def test_audit_handoff_exception_renders_retryable_reason(
     )
 
     class GitHub:
+        def get_pull_request(self, repository, pr_number):
+            return self.get_merge_state(repository, pr_number)
+
         def get_merge_state(self, repository: str, pr_number: int):
             return PullRequestMergeState(
                 repository=repository,
@@ -2548,6 +2554,9 @@ def test_blocked_merge_handoff_blocks_task_with_exact_blockers(
     )
 
     class GitHub:
+        def get_pull_request(self, repository, pr_number):
+            return self.get_merge_state(repository, pr_number)
+
         def get_merge_state(self, _repository: str, _pr_number: int):
             return PullRequestMergeState(
                 repository="acme/widgets",
@@ -2998,7 +3007,7 @@ def test_codex_auth_failure_must_be_current_and_from_connector():
         assert github.posted == []
 
 
-@pytest.mark.parametrize("reason", ["mutation_pending", "merge_conflict"])
+@pytest.mark.parametrize("reason", ["mutation_pending", "merge_conflict", "mergeable_state_still_computing"])
 def test_queued_audit_defers_before_execution_without_transitioning_task(monkeypatch, tmp_path, capsys, reason):
     from github_pr_feedback import cli
     from github_pr_feedback.controller import _local_ci_feedback_id
@@ -3026,7 +3035,12 @@ def test_queued_audit_defers_before_execution_without_transitioning_task(monkeyp
             repair = FeedbackReceipt("acme/widgets", 17, "pr_repair", "repair:merge_conflict", "c" * 40)
             lease = ledger.claim(repair, owner="scanner", claimed_at=now, stale_before=now-timedelta(minutes=5))
             ledger.finalize(repair, "repair-task", lease)
-        monkeypatch.setattr(cli, "_github_client", lambda policy: SimpleNamespace(get_merge_state=lambda *args: state))
+        def read_state(*args):
+            if reason == "mergeable_state_still_computing":
+                from github_pr_feedback.github_client import MergeStateStillComputingError
+                raise MergeStateStillComputingError("GitHub is computing mergeability")
+            return state
+        monkeypatch.setattr(cli, "_github_client", lambda policy: SimpleNamespace(get_merge_state=read_state))
         monkeypatch.setattr(cli, "_run_grouped_exact_head_audit", lambda *args, **kwargs: pytest.fail("deferred audit must not run CI"))
         monkeypatch.setattr(cli, "_complete_current_ci_task", lambda *args, **kwargs: pytest.fail("deferred audit must not complete"))
         monkeypatch.setattr(cli, "_block_current_ci_task", lambda *args, **kwargs: pytest.fail("deferred audit must not change task state"))
@@ -3040,3 +3054,28 @@ def test_queued_audit_defers_before_execution_without_transitioning_task(monkeyp
         assert ledger.latest_ci_receipt_for_head("acme/widgets", 17, head) is None
     finally:
         ledger.close()
+
+
+def test_inspect_ci_reads_only_the_requested_repository_receipt(tmp_path, monkeypatch, capsys):
+    from github_pr_feedback import cli
+    from github_pr_feedback.cli_ci_receipt import inspect_ci
+    from github_pr_feedback.ci_runner import CIAuditReceipt
+    from github_pr_feedback.github_client import CheckState
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(cli, "_load_policy_from_context", lambda ctx: SimpleNamespace(enabled=True, targets={"acme/widgets": object()}))
+    now = datetime.now(UTC)
+    receipt = CIAuditReceipt(receipt_id="a" * 64, identity=CIAuditIdentity("acme/widgets", 17, "b" * 40, "c" * 40),
+        manifest_digest="d" * 64, status="failed", failure_reason="fixture environment unavailable", started_at=now, completed_at=now,
+        actions_state=CheckState(False, True, 0), commands=())
+    ledger = FeedbackLedger.for_current_profile()
+    ledger.record_ci_receipt(receipt)
+    ledger.close()
+    args = argparse.Namespace(repository="acme/widgets", pr_number=17, receipt_id=receipt.receipt_id)
+    assert inspect_ci(None, args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["head_sha"] == receipt.identity.head_sha
+    assert payload["handoff_status"] == "not_evaluated"
+    args.pr_number = 18
+    assert inspect_ci(None, args) == 1
+    assert json.loads(capsys.readouterr().out)["status"] == "ci_receipt_unavailable"

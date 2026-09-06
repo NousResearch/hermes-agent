@@ -518,3 +518,19 @@ explicitly enabled and not in report-only mode.
 
 `hermes github-pr-feedback dispatch-repair --repository OWNER/REPO --pr-number N --head-sha FULL_SHA`
 revalidates one open PR and dispatches only its confirmed merge conflict through the existing repair controller. The expected head must still match. Repository/branch admission, immutable current-base acquisition, worktree preparation, receipt deduplication and scan locking are preserved. It does not audit CI, approve or merge, and does not resolve existing blocked cards. Archive an obsolete receipt card only with verified supersession evidence; a passing focused repair is not a full CI receipt.
+
+### Diagnosing handoff failures
+
+Use `inspect-ci --repository OWNER/REPO --pr-number NUMBER --receipt-id ID` to read a
+stored typed CI receipt without rerunning checks or performing a merge handoff. The
+response includes failed commands and output digests; it describes historical evidence,
+not current merge eligibility. `merge-status --details` reports the ten most recent
+validated merge receipts, including exact tested heads, merge commits, and executor.
+
+GitHub still computing mergeability is a retryable audit deferral, not an identity
+mismatch. Post-audit head verification reads PR identity independently of mergeability.
+Handoff failures retain their precise reason on the blocked card. Repair workers finish
+focused verification, push, reply, and acknowledge before requesting full CI; otherwise
+CI correctly waits for their own pending repair. Run acknowledgement commands as managed
+background processes and poll them to completion so shared GitHub waits are not cut off
+by a short foreground timeout.

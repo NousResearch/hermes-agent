@@ -26,6 +26,7 @@ import {
 } from '@/store/composer-status'
 import { refreshSessionGoal } from '@/store/goals'
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
+import { dismissSubagent } from '@/store/subagents'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { openSessionInNewWindow } from '@/store/windows'
 
@@ -197,7 +198,9 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
             <StatusItemRow
               item={item}
               key={item.id}
-              onDismiss={sessionId ? id => dismissBackgroundProcess(sessionId, id) : undefined}
+              onDismiss={sessionId
+                ? id => (item.type === 'subagent' ? dismissSubagent(sessionId, id) : dismissBackgroundProcess(sessionId, id))
+                : undefined}
               onOpen={() => openSubagent(item)}
               onStop={sessionId ? id => void stopBackgroundProcess(sessionId, id) : undefined}
             />

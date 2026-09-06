@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -909,6 +910,10 @@ class TestGroupMessageGuard:
             "group-shaped" in rec.message
             for rec in caplog.records
         )
+        record = next(rec for rec in caplog.records if "group-shaped" in rec.message)
+        assert raw["chat"] not in record.message
+        assert "chat_present=True" in record.message
+        assert "wamid_present=True" in record.message
         # Defensive: handler not invoked
         adapter.handle_message.assert_not_called()
 
@@ -1127,6 +1132,47 @@ class TestDispatchInteractiveReplyApproval:
         assert confirm_payload["type"] == "text"
         assert "Approved" in confirm_payload["text"]["body"]
 
+    @pytest.mark.asyncio
+    async def test_stale_approval_resolver_log_masks_session_key(
+        self, monkeypatch, caplog
+    ):
+        """A timed-out approval tap must not log its phone-derived route."""
+        wa_id = "15551234567"
+        session_key = f"agent:main:whatsapp_cloud:dm:{wa_id}"
+        adapter = _make_adapter()
+        adapter._exec_approval_state["app-stale"] = session_key
+        adapter.send = AsyncMock()
+        calls = []
+        monkeypatch.setattr(
+            "tools.approval.resolve_gateway_approval",
+            lambda key, choice: calls.append((key, choice)) or 0,
+        )
+        raw = {
+            "from": wa_id,
+            "type": "interactive",
+            "interactive": {
+                "type": "button_reply",
+                "button_reply": {
+                    "id": "appr:app-stale:approve",
+                    "title": "Approve",
+                },
+            },
+        }
+
+        with caplog.at_level(logging.INFO, logger="gateway.platforms.whatsapp_cloud"):
+            handled = await adapter._dispatch_interactive_reply(raw, {})
+
+        assert handled is True
+        assert calls == [(session_key, "approve")]
+        record = next(
+            record.message
+            for record in caplog.records
+            if "approval resolver reported no waiter" in record.message
+        )
+        assert wa_id not in record
+        assert session_key not in record
+        assert "agent:main:whatsapp_cloud:dm:15****67" in record
+
 
 @pytest.mark.usefixtures("authorized_interactive_env")
 class TestDispatchInteractiveReplySlashConfirm:
@@ -1205,6 +1251,38 @@ class TestDispatchInteractiveReplyAuthorization:
 
         assert handled is True
         assert calls == [("sess-app-1", "approve")]
+
+    @pytest.mark.asyncio
+    async def test_rejected_tap_log_omits_sender_identity(self, caplog):
+        wa_id = "15551234567"
+        adapter = _make_adapter(
+            _dm_policy="allowlist",
+            _allow_from={"19998887777"},
+        )
+        raw = {
+            "from": wa_id,
+            "type": "interactive",
+            "interactive": {
+                "type": "button_reply",
+                "button_reply": {"id": "appr:app1:approve", "title": "Approve"},
+            },
+        }
+
+        with caplog.at_level(
+            logging.WARNING,
+            logger="gateway.platforms.whatsapp_cloud",
+        ):
+            handled = await adapter._dispatch_interactive_reply(raw, {})
+
+        assert handled is True
+        records = [
+            record.message
+            for record in caplog.records
+            if "Rejected unauthorized interactive tap" in record.message
+        ]
+        assert len(records) == 1
+        assert wa_id not in records[0]
+        assert "sender_present=True" in records[0]
 
 
 @pytest.mark.usefixtures("authorized_interactive_env")
@@ -1402,12 +1480,9 @@ class TestReplyContextResolution:
 
     @pytest.mark.asyncio
     async def test_reply_to_bot_sent_image_attaches_the_file(self, tmp_path):
-        """The bot sends an uncaptioned image (a cron job delivering a chart); the user quotes it
-        and asks "what is this?". Meta's ``context`` carries only the wamid, so the bytes must come
-        from the outbound index written at send time — otherwise the agent never sees the image."""
         adapter = _make_adapter()
         image = tmp_path / "chart.png"
-        image.write_bytes(b"\x89PNG fake")
+        image.write_bytes(b"\\x89PNG fake")
         adapter._upload_media = AsyncMock(return_value=("MEDIA-ID", None))
         adapter._post_messages = AsyncMock(return_value=([{"id": "wamid.BOT_IMG"}], None))
         adapter._http_client = MagicMock()
@@ -1425,4 +1500,3 @@ class TestReplyContextResolution:
         assert event.reply_to_is_own_message is True
         assert event.media_urls == [str(image)]
         assert event.media_types == ["image/png"]
-

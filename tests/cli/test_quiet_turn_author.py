@@ -15,6 +15,8 @@ import pytest
 import cli
 from agent.turn_author import TURN_AUTHOR_ENV
 
+AUTHOR = {"id": "bot:coder", "name": "coder", "is_bot": True}
+
 
 @pytest.fixture(autouse=True)
 def _plain_one_shot_env(monkeypatch):
@@ -22,57 +24,56 @@ def _plain_one_shot_env(monkeypatch):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
 
 
-def _fake_cli(recorded):
-    def run_conversation(**kwargs):
-        recorded.append(kwargs)
-        return {"final_response": "ok"}
-
-    agent = SimpleNamespace(run_conversation=run_conversation, session_id="s-1")
-    return SimpleNamespace(agent=agent, conversation_history=[], session_id="s-1")
-
-
-def _run(monkeypatch, env_value):
+def _run(monkeypatch, env_value, run_conversation=None):
+    """One quiet turn with HERMES_TURN_AUTHOR set to ``env_value`` (unset for None); returns the recorded call kwargs."""
     if env_value is None:
         monkeypatch.delenv(TURN_AUTHOR_ENV, raising=False)
     else:
         monkeypatch.setenv(TURN_AUTHOR_ENV, env_value)
     recorded = []
+
+    def record(**kwargs):
+        recorded.append(kwargs)
+        return {"final_response": "ok"}
+
+    agent = SimpleNamespace(run_conversation=run_conversation or record, session_id="s-1")
     with pytest.raises(SystemExit) as exc:
-        cli._run_quiet_single_query(_fake_cli(recorded), "hello")
+        cli._run_quiet_single_query(SimpleNamespace(agent=agent, conversation_history=[], session_id="s-1"), "hello")
     assert exc.value.code == 0
-    assert len(recorded) == 1
-    assert recorded[0]["user_message"] == "hello"
-    return recorded[0]
+    return recorded
 
 
 def test_quiet_one_shot_passes_turn_author_from_env(monkeypatch, capsys):
-    author = {"id": "bot:coder", "name": "coder", "is_bot": True}
-    kwargs = _run(monkeypatch, json.dumps(author))
-    assert kwargs["turn_author"] == author
+    recorded = _run(monkeypatch, json.dumps(AUTHOR))
+    assert recorded == [{"user_message": "hello", "conversation_history": [], "turn_author": AUTHOR}]
     assert capsys.readouterr().out.strip() == "ok"
 
 
 def test_quiet_one_shot_consumes_the_variable_before_the_turn(monkeypatch):
     """Tool subprocesses spawned during the turn must not see the dispatcher's author."""
-    author = {"id": "bot:coder", "name": "coder", "is_bot": True}
     seen = {}
 
     def run_conversation(**kwargs):
         seen["env"] = os.environ.get(TURN_AUTHOR_ENV)
         return {"final_response": "ok"}
 
-    monkeypatch.setenv(TURN_AUTHOR_ENV, json.dumps(author))
-    fake = _fake_cli([])
-    fake.agent.run_conversation = run_conversation
-    with pytest.raises(SystemExit):
-        cli._run_quiet_single_query(fake, "hello")
+    _run(monkeypatch, json.dumps(AUTHOR), run_conversation)
     assert seen["env"] is None
     assert TURN_AUTHOR_ENV not in os.environ
 
 
-def test_quiet_one_shot_without_env_passes_none(monkeypatch):
-    assert _run(monkeypatch, None)["turn_author"] is None
+@pytest.mark.parametrize("env_value", [None, "not json"], ids=["unset", "junk"])
+def test_quiet_one_shot_without_a_usable_author_keeps_the_old_call_shape(monkeypatch, env_value):
+    assert _run(monkeypatch, env_value) == [{"user_message": "hello", "conversation_history": []}]
 
 
-def test_quiet_one_shot_junk_env_passes_none(monkeypatch):
-    assert _run(monkeypatch, "not json")["turn_author"] is None
+def test_quiet_one_shot_skips_the_keyword_for_an_agent_that_cannot_take_it(monkeypatch):
+    """A wrapper with an older run_conversation signature must not crash the turn."""
+    recorded = []
+
+    def run_conversation(user_message, conversation_history=None):
+        recorded.append(user_message)
+        return {"final_response": "ok"}
+
+    _run(monkeypatch, json.dumps(AUTHOR), run_conversation)
+    assert recorded == ["hello"]

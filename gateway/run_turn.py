@@ -3428,6 +3428,14 @@ class GatewayTurnMixin:
 
         # Interrupted: discard the response ("Operation interrupted." is noise).
         if not result.get("interrupted"):
+            # cleanup_progress regression: _run_agent_inner returns from this branch BEFORE its
+            # trailing _run_agent_schedule_bubble_cleanup call, so on the queued-follow-up path the
+            # tracked progress bubbles were never registered for deletion and stayed in the chat
+            # forever (same user-visible bug family as #4882 / #99026). Registering here is
+            # equivalent to the normal path: _run_agent_deliver_first_response pops the same
+            # (session_key, run_generation) post-delivery slot right after the response lands and
+            # fires the chain, so bubbles are deleted exactly when delivery is confirmed.
+            self._run_agent_schedule_bubble_cleanup(response, adapter, turn_ctx)
             await self._run_agent_deliver_first_response(turn_ctx, adapter, response, result, stream_task)
 
         updated_history = result.get("messages", history)

@@ -3073,8 +3073,20 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
 
     def _demote_stale_tail_tools(self, messages: List[Dict[str, Any]], tail_start: int) -> List[Dict[str, Any]]:
         """Lean mode: demote tail tool results older than the newest ``_LEAN_TAIL_KEEP_TOOL_ROUNDS`` rounds to
-        recovery stubs; skill-marker rows untouched. New list (untouched rows shared, demoted copied)."""
+        recovery stubs; the newest current-task Kanban projection is also protected. Skill-marker rows are
+        untouched. New list (untouched rows shared, demoted copied)."""
         session_id = getattr(self, "_session_id", "") or ""
+        call_id_to_tool = _tool_calls_by_id(messages)
+        from agent.context_compressor_kanban import newest_assignment_summary
+
+        current_assignment_idx = next(
+            (
+                i
+                for i in range(len(messages) - 1, tail_start - 1, -1)
+                if newest_assignment_summary(messages, i, call_id_to_tool) is not None
+            ),
+            None,
+        )
         rounds_seen = 0
         protected: set[int] = set()
         prev_idx = None
@@ -3089,7 +3101,12 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         for i in range(tail_start, len(messages)):
             msg = messages[i]
             content = msg.get("content")
-            if msg.get("role") != "tool" or i in protected or not isinstance(content, str):
+            if (
+                msg.get("role") != "tool"
+                or i in protected
+                or i == current_assignment_idx
+                or not isinstance(content, str)
+            ):
                 continue
             if len(content) < _LEAN_TAIL_DEMOTE_MIN_CHARS or SKILL_PRUNED_MARKER_PREFIX in content or _is_summary_stub(content):
                 continue

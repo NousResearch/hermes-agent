@@ -68,3 +68,30 @@ def test_pressure_demotes_noncurrent_kanban_projection():
     assert ContextCompressor._demote_tool_result_at(messages, 0, calls, 0, pressure=True)
     assert messages[0]["content"].startswith("[kanban_show]")
     assert body not in messages[0]["content"]
+
+
+def test_lean_tail_keeps_newest_current_assignment_projection(monkeypatch):
+    task_id = "t_12345678"
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    assignment_body = "current assignment " + ("x" * 2000)
+    assignment = json.dumps({"task": {"id": task_id, "title": "Current card", "body": assignment_body}})
+    messages = [
+        {"role": "assistant", "tool_calls": [{"id": "assignment", "function": {
+            "name": "kanban_show", "arguments": json.dumps({"task_id": task_id}),
+        }}]},
+        {"role": "tool", "tool_call_id": "assignment", "content": assignment},
+    ]
+    for index in range(7):
+        call_id = f"newer-{index}"
+        messages.extend([
+            {"role": "assistant", "tool_calls": [{"id": call_id, "function": {
+                "name": "other_tool", "arguments": "{}",
+            }}]},
+            {"role": "tool", "tool_call_id": call_id, "content": f"newer result {index} " + ("y" * 2000)},
+        ])
+
+    compressor = ContextCompressor("test-model", quiet_mode=True)
+    result = compressor._demote_stale_tail_tools(messages, 0)
+
+    assert json.loads(result[1]["content"])["task"]["body"] == assignment_body
+    assert result[3]["content"] != messages[3]["content"]

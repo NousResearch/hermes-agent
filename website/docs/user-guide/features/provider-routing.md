@@ -102,6 +102,31 @@ provider_routing:
   data_collection: "deny"
 ```
 
+### Per-model overrides (`models`)
+
+Pin a different provider set per model. Keys under `models` are model ids; each entry takes the same
+`sort` / `only` / `ignore` / `order` / `require_parameters` / `data_collection` keys and overrides the
+flat value for that model only. Anything you don't set per model falls through to the flat defaults.
+
+```yaml
+provider_routing:
+  sort: "price"                      # applies to every model
+  models:
+    "openai/gpt-6-astra":
+      only: ["openai"]               # never let a reseller serve this one
+    "anthropic/claude-fable-5.1":
+      only: ["anthropic"]
+    "moonshotai/kimi-k2.6":
+      order: ["moonshotai", "together"]
+      sort: "throughput"
+```
+
+Matching is spelling-tolerant like `agent.reasoning_overrides` (`claude-fable-5.1` / `claude-fable-5-1`,
+with or without the `openrouter/` prefix). The override follows the model the agent is *currently* on, so
+`/model` switches, fallback activation, cron jobs, and delegated subagents on another model each get their
+own pins. Edit `config.yaml` directly for these keys: model ids contain dots, which `hermes config set`
+reads as path separators.
+
 ## Practical Examples
 
 ### Optimize for Cost

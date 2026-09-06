@@ -68,12 +68,28 @@ export interface UnspokenTurnSpeech {
  * selecting only one bubble silently drops everything after it. The blank-line
  * join is a sentence boundary for the server's cutter, so a sealed bubble's
  * tail is flushed as soon as the next bubble starts.
+ *
+ * If `lastSpokenId` is missing or stale (session id assigned mid-turn,
+ * live-tail rewrite missed), do **not** fall back to index -1 — that replays
+ * every earlier assistant turn as one speech string. Bound to the current
+ * turn (assistant bubbles after the last user message) instead. Hidden user
+ * rows count: a widget intent (`display_kind: hidden`) is a real turn for the
+ * agent even though no bubble renders. A slice with no user row (mid-turn
+ * interims only) still collects those assistants.
  */
 export function collectUnspokenTurnSpeech(
   messages: ChatMessage[],
   lastSpokenId: string | null
 ): UnspokenTurnSpeech | null {
-  const spokenIndex = lastSpokenId ? messages.findLastIndex(m => m.id === lastSpokenId) : -1
+  let spokenIndex = lastSpokenId ? messages.findLastIndex(m => m.id === lastSpokenId) : -1
+
+  if (spokenIndex < 0) {
+    const lastUser = messages.findLastIndex(m => m.role === 'user')
+
+    if (lastUser >= 0) {
+      spokenIndex = lastUser
+    }
+  }
 
   let id: string | null = null
   let pending = false

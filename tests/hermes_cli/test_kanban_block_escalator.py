@@ -1,133 +1,148 @@
-"""Escalation-target contract for the kanban-block-escalator plugin.
+"""Overwatch contract for the kanban-block-escalator plugin (rewritten 2026-09-06, O1).
 
-A blocked card must escalate to an assessor that can actually act. The first
-hop goes to Jobsy (PM / board owner, scope/AC triage per his SOUL) for
-scope/AC/product decisions and to Agent Smith (profile id ``default``) for
-runtime/environment/profile faults. The ``switch`` profile must NEVER be an
-escalation target: its only ownership is no_agent scheduled output, and a
-classify-and-stop switchboard must not assess or close build cards.
-
-These tests pin the canonical source in ``plugins/kanban-block-escalator/`` so
-a regression that retargets escalation to ``switch`` (or any non-assessor
-profile) fails the suite.
+Every fault-signal block spawns ONE fresh Smith (``default``) session with a
+situation brief; holds, dependency waits and first transients spawn nothing;
+a second overwatch on one card, or a cost breach after the one extension, is a
+hard stop that leaves the ceiling marker for escalation-watch and spawns the
+RUNDOWN session instead. ``switch`` is never a target.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import sqlite3
 from pathlib import Path
 
 import pytest
 
-_PLUGIN_DIR = (
-    Path(__file__).resolve().parents[2] / "plugins" / "kanban-block-escalator"
-)
+_PLUGIN_DIR = Path(__file__).resolve().parents[2] / "plugins" / "kanban-block-escalator"
 
 
 def _load_plugin_module():
-    """Import the canonical plugin __init__.py fresh from the repo."""
     import_path = _PLUGIN_DIR / "__init__.py"
     assert import_path.exists(), f"plugin source missing: {import_path}"
-    module_name = "kanban_block_escalator_under_test"
-    spec = importlib.util.spec_from_file_location(module_name, import_path)
+    spec = importlib.util.spec_from_file_location("kanban_block_escalator_under_test", import_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-def test_escalation_target_is_jobsy_never_switch():
-    """Default assessor is Jobsy; switch is never a target."""
-    mod = _load_plugin_module()
-    assert mod.DEFAULT_ASSESSOR == "jobsy"
-    assert mod.RUNTIME_ASSESSOR == "default"
-    assert mod.DEFAULT_ASSESSOR != "switch"
-    assert mod.RUNTIME_ASSESSOR != "switch"
-
-
-def test_reason_marker_routes_to_runtime_lane():
-    """Runtime/env markers route to Smith (default); others default to Jobsy."""
-    mod = _load_plugin_module()
-    assert mod._assessor_for("t1", "bob", "No module named pytest") == "default"
-    assert mod._assessor_for("t2", "bob", "model provider credits http 402") == "default"
-    assert mod._assessor_for("t3", "bob", "Acceptance criteria is ambiguous") == "jobsy"
-
-
-def test_card_defect_marker_routes_to_orchestrator_smith():
-    """A card-authoring/body-reconcile block routes to Smith, not Jobsy.
-
-    Rooted in the 2026-09-04 t_eaaa3434 loop: the reviewer blocked with
-    "reconcile the card body" (dead ACs, unproducible deliverable) and the
-    classifier dead-ended it to Jobsy, who cannot rewrite a card body — so
-    nobody woke the orchestrator. Repairing a stale/self-contradictory card
-    body is Smith's lane. Narrow: plain scope/AC wording stays with Jobsy.
-    """
-    mod = _load_plugin_module()
-    assert mod._assessor_for("t6", "rodge", "Card defect — needs Steve-o/orchestrator to reconcile the card body before this can clear") == "default"
-    assert mod._assessor_for("t7", "bob", "the card body is stale and lists dropped ACs") == "default"
-    assert mod._assessor_for("t8", "bob", "dead AC6 still listed, unproducible deliverable") == "default"
-    # A plain scope/AC question must NOT be captured as a card defect.
-    assert mod._assessor_for("t9", "bob", "Acceptance criteria is ambiguous") == "jobsy"
-    assert mod._assessor_for("t10", "bob", "What should the scope of this feature be?") == "jobsy"
-
-
-def test_loop_guard_never_returns_the_blocker():
-    """A card blocked by the assessor itself climbs to the other tier."""
-    mod = _load_plugin_module()
-    # Jobsy blocked it but it's a scope issue -> climb to Smith.
-    assert mod._assessor_for("t4", "jobsy", "scope decision required") == "default"
-    # Smith blocked it on a runtime fault -> climb to Jobsy.
-    assert mod._assessor_for("t5", "default", "venv broken") == "jobsy"
-
-
-def test_plugin_yaml_documents_jobsy_as_first_hop():
-    """The sidecar manifest must not advertise a switch escalation target."""
-    yaml_text = (_PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
-    low = yaml_text.lower()
-    assert "jobsy" in low
-    # 'switch' is only ever named as a NON-target, so when present it must be
-    # accompanied by the "never an escalation target" contract (robust to
-    # folded-line wrapping in YAML description blocks).
-    if "switch" in low:
-        assert "never" in low
-        assert "escalation target" in low
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-v"]))
-
-def test_non_cost_ceiling_leaves_third_block_for_richie(monkeypatch, tmp_path):
-    """Charter §6 (2026-09-03): two Jobsy triages, then Richie.
-
-    A non-cost block with block_recurrences > 2 must NOT spawn an assessor; it
-    must leave the escalation-ceiling marker comment instead. A cost-cap block is
-    exempt (Steve-o's ladder applies).
-    """
-    import sqlite3
-
-    mod = _load_plugin_module()
-    assert mod.NON_COST_TRIAGE_LIMIT == 2
-
+def _board(tmp_path, rows, comments=()):
     db = tmp_path / "kanban.db"
     con = sqlite3.connect(db)
-    con.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, status TEXT, block_recurrences INTEGER)")
-    con.execute("INSERT INTO tasks VALUES ('t_third', 'blocked', 3)")
-    con.execute("INSERT INTO tasks VALUES ('t_second', 'triage', 2)")  # platform routes repeat blocks to triage
-    con.execute("INSERT INTO tasks VALUES ('t_cost', 'blocked', 5)")
+    con.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT, body TEXT, status TEXT, block_kind TEXT, "
+                "block_recurrences INTEGER, assignee TEXT, created_by TEXT, tenant TEXT, max_cost REAL, "
+                "workspace_kind TEXT, workspace_path TEXT)")
+    con.execute("CREATE TABLE task_links (parent_id TEXT, child_id TEXT)")
+    con.execute("CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id TEXT, profile TEXT, status TEXT, outcome TEXT, started_at INTEGER, ended_at INTEGER, error TEXT)")
+    con.execute("CREATE TABLE task_comments (id INTEGER PRIMARY KEY, task_id TEXT, author TEXT, body TEXT, created_at INTEGER)")
+    con.execute("CREATE TABLE task_events (id INTEGER PRIMARY KEY, task_id TEXT, kind TEXT, payload TEXT, created_at INTEGER)")
+    for r in rows:
+        con.execute("INSERT INTO tasks (id,title,status,block_kind,block_recurrences,assignee,max_cost) VALUES (?,?,?,?,?,?,?)", r)
+    for c in comments:
+        con.execute("INSERT INTO task_comments (task_id,author,body,created_at) VALUES (?,?,?,0)", c)
     con.commit()
     con.close()
+    return db
+
+
+@pytest.fixture
+def mod(monkeypatch, tmp_path):
+    m = _load_plugin_module()
+    m.BRIEF_DIR = tmp_path / "briefs"
+    monkeypatch.setattr(m, "_hard_ceiling", lambda: 1.50)
+    return m
+
+
+def test_overwatch_is_smith_never_switch_or_a_worker(mod):
+    assert mod.OVERWATCH == "default"
+    assert mod.OVERWATCH not in ("switch", "bob", "rodge", "karl", "steve-o", "jobsy")
+    assert mod.COST_ASSESSOR == mod.OVERWATCH  # Steve-o no longer adjudicates spend
+
+
+def test_trigger_table():
+    m = _load_plugin_module()
+    t = lambda kind, rec=0: m.should_trigger({"block_kind": kind, "block_recurrences": rec})[0]
+    assert t("cost_cap") and t("capability") and t("needs_input")
+    assert not t("operator_hold") and not t("dependency") and not t("scheduled")
+    assert not t("transient", 0) and t("transient", 1)
+
+
+def test_fault_block_spawns_one_smith_session_with_brief(mod, monkeypatch, tmp_path):
+    db = _board(tmp_path, [("t_cap", "Build X", "blocked", "capability", 0, "bob", 1.0)])
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
-
     spawned = []
-    marked = []
-    monkeypatch.setattr(mod.subprocess, "Popen", lambda argv, **kw: spawned.append(argv[2]))
-    monkeypatch.setattr(mod, "_mark_ceiling", lambda tid, reason, rec: marked.append((tid, rec)))
+    monkeypatch.setattr(mod.subprocess, "Popen", lambda argv, **kw: spawned.append(argv))
+    mod.on_block(task_id="t_cap", assignee="bob", reason="workspace is empty")
+    assert len(spawned) == 1 and spawned[0][2] == "default"
+    prompt = spawned[0][-1]
+    assert prompt.startswith("OVERWATCH:") and "overwatch:" in prompt and "set-cap" in prompt
+    assert "Build X" in prompt  # the brief is inline
+    assert list((tmp_path / "briefs").glob("t_cap-*.md"))
 
-    mod.on_block(task_id="t_third", assignee="bob", reason="tests still failing")
-    assert spawned == [] and marked == [("t_third", 3)]
 
-    mod.on_block(task_id="t_second", assignee="bob", reason="tests still failing")
-    assert spawned == ["jobsy"] and len(marked) == 1
+def test_hold_dependency_and_first_transient_spawn_nothing(mod, monkeypatch, tmp_path):
+    db = _board(tmp_path, [("t_hold", "x", "blocked", "operator_hold", 0, "bob", 1.0),
+                           ("t_dep", "x", "todo", "dependency", 0, "bob", 1.0),
+                           ("t_tr", "x", "blocked", "transient", 0, "bob", 1.0)])
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
+    spawned = []
+    monkeypatch.setattr(mod.subprocess, "Popen", lambda argv, **kw: spawned.append(argv))
+    for tid in ("t_hold", "t_dep", "t_tr"):
+        mod.on_block(task_id=tid, assignee="bob", reason="whatever")
+    assert spawned == []
 
-    mod.on_block(task_id="t_cost", assignee="bob", reason="cumulative spend $0.31 exceeded max_cost $0.30")
-    assert spawned == ["jobsy", "steve-o"] and len(marked) == 1
+
+def test_second_transient_triggers(mod, monkeypatch, tmp_path):
+    db = _board(tmp_path, [("t_tr2", "x", "blocked", "transient", 1, "bob", 1.0)])
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
+    spawned = []
+    monkeypatch.setattr(mod.subprocess, "Popen", lambda argv, **kw: spawned.append(argv))
+    mod.on_block(task_id="t_tr2", assignee="bob", reason="flaky again")
+    assert len(spawned) == 1
+
+
+def test_second_overwatch_on_one_card_is_a_hard_stop(mod, monkeypatch, tmp_path):
+    db = _board(tmp_path, [("t_two", "x", "blocked", "needs_input", 0, "bob", 1.0)],
+                comments=[("t_two", "default", "overwatch: reassigned"), ("t_two", "default", "overwatch: split")])
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
+    spawned, marked = [], []
+    monkeypatch.setattr(mod.subprocess, "Popen", lambda argv, **kw: spawned.append(argv))
+    monkeypatch.setattr(mod, "_mark_ceiling", lambda tid, reason, why: marked.append((tid, why)))
+    mod.on_block(task_id="t_two", assignee="bob", reason="still stuck")
+    assert marked and marked[0][0] == "t_two"
+    assert len(spawned) == 1 and spawned[0][-1].startswith("HARD STOP")
+    assert "rundown:" in spawned[0][-1]
+
+
+def test_cost_breach_after_extension_is_a_hard_stop(mod, monkeypatch, tmp_path):
+    db = _board(tmp_path, [("t_ext", "x", "blocked", "cost_cap", 0, "bob", 1.5)],
+                comments=[("t_ext", "default", "cost-extension: $1.00 -> $1.50 by default")])
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
+    spawned, marked = [], []
+    monkeypatch.setattr(mod.subprocess, "Popen", lambda argv, **kw: spawned.append(argv))
+    monkeypatch.setattr(mod, "_mark_ceiling", lambda tid, reason, why: marked.append(why))
+    mod.on_block(task_id="t_ext", assignee="bob", reason="cumulative spend $1.52 exceeded max_cost $1.50")
+    assert marked and ("extension" in marked[0] or "ceiling" in marked[0])
+    assert spawned[0][-1].startswith("HARD STOP")
+
+
+def test_first_cost_breach_is_ordinary_overwatch(mod, monkeypatch, tmp_path):
+    """Negative control for the hard stop: same card, no extension yet -> overwatch prompt."""
+    db = _board(tmp_path, [("t_c1", "x", "blocked", "cost_cap", 0, "bob", 1.0)])
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
+    spawned, marked = [], []
+    monkeypatch.setattr(mod.subprocess, "Popen", lambda argv, **kw: spawned.append(argv))
+    monkeypatch.setattr(mod, "_mark_ceiling", lambda *a: marked.append(a))
+    mod.on_block(task_id="t_c1", assignee="bob", reason="cumulative spend $1.02 exceeded max_cost $1.00")
+    assert marked == [] and spawned[0][-1].startswith("OVERWATCH:")
+
+
+def test_not_blocked_spawns_nothing(mod, monkeypatch, tmp_path):
+    db = _board(tmp_path, [("t_run", "x", "running", None, 0, "bob", 1.0)])
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
+    spawned = []
+    monkeypatch.setattr(mod.subprocess, "Popen", lambda argv, **kw: spawned.append(argv))
+    mod.on_block(task_id="t_run", assignee="bob", reason="x")
+    assert spawned == []

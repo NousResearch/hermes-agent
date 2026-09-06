@@ -933,9 +933,9 @@ def _baseline_archive_selection(
     base_tests: list[str] = []
     root = Path(base_dir).resolve()
     for rel in tests:
-        p = Path(rel)
-        if (root / p).is_file():
-            base_tests.append(str(p))
+        p = Path(_test_file_part(rel))
+        if (root / p).is_file() or (root / p).is_dir():
+            base_tests.append(rel)
     return base_python, base_tests, None
 
 
@@ -1081,11 +1081,20 @@ _PYTEST_CACHE: dict[str, bool] = {}
 
 
 _FOCUSED_TEST_CMD_RE = re.compile(
-    r"pytest\s+"
+    # 2026-09-06 (G1): the first version accepted ONLY ``pytest <path> -q|-x``.
+    # Every card on the afternoon of 6 Sep wrote
+    # ``.venv/bin/python -m pytest tests/test_ui_v2.py::test_name -v``, which
+    # did not match, so the rung fell back to the diff and swept the repo's
+    # red baseline (7 more bounces after the "fix"). Now: any ``pytest`` token
+    # (bare or ``-m pytest``), optional flags, then every following token that
+    # looks like a root-relative test path (contains ``/``, may carry
+    # ``::node``), stopping at the first option or shell token. Flags are
+    # ignored — the gate builds its own command.
+    r"(?:^|[\s`\"'=])pytest\s+(?:-[\w=-]+\s+)*"
     r"(?P<paths>"
-    r"[^\s`\"';()][^\s`\"';()]*/[^\s`\"';()]*"
-    r"(?:\s+[^\s`\"';()][^\s`\"';()]*/[^\s`\"';()]*)*"
-    r")\s+-(?P<flags>[qx])"
+    r"[^\s`\"';()|&<>-][^\s`\"';()|&<>]*/[^\s`\"';()|&<>]*"
+    r"(?:\s+[^\s`\"';()|&<>-][^\s`\"';()|&<>]*/[^\s`\"';()|&<>]*)*"
+    r")"
 )
 
 
@@ -1133,12 +1142,24 @@ def _scoped_test_paths_from_body(body: Optional[str], ws_root: Path) -> list[str
     result: list[str] = []
     for p in found:
         p = p.strip()
+        # A ``<worktree>/`` or ``./`` prefix in prose is stripped; a
+        # ``::node`` selector is kept on the token (pytest accepts it) but
+        # existence is checked on the file part (a directory is fine too).
+        for pre in ("<worktree>/", "./"):
+            if p.startswith(pre):
+                p = p[len(pre):]
         if p in seen:
             continue
         seen.add(p)
-        if (root / p).is_file():
+        fp = root / _test_file_part(p)
+        if fp.is_file() or fp.is_dir():
             result.append(p)
     return result
+
+
+def _test_file_part(token: str) -> str:
+    """``tests/x.py::test_a`` -> ``tests/x.py`` (G1)."""
+    return token.split("::", 1)[0]
 
 
 def _is_test_py(rel: str) -> bool:
@@ -1389,7 +1410,15 @@ def _run_pre_review_gate(task: Any) -> Optional[_GateBounce]:
     task_body = getattr(task, "body", None) or ""
     tests = _scoped_test_paths_from_body(task_body, Path(str(ws)))
     if not tests:
-        tests = _focused_test_paths(str(ws), changed_py)
+        # 2026-09-06 (G1): NEVER derive the run set from the diff. In a shared
+        # dir the diff is every sibling's files; in a worktree it is whatever
+        # the base ref guessed; both swept the repo's red baseline onto cards
+        # forbidden to fix it (28 bounces across two jobs). The card body is
+        # the only source of truth; a body naming no test command runs
+        # nothing (E1 makes the command mandatory at mint).
+        logger.info(
+            "review gate: focused-tests rung skipped — card body names no test command"
+        )
     # A worktree ships gitignored node_modules/dist absent, so a browser/UI
     # test in the focused set would ERROR (no built bundle) rather than
     # exercise anything — an env gap, not a card defect.  Skip (log, never

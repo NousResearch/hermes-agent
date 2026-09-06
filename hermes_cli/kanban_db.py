@@ -3440,6 +3440,65 @@ def effective_max_cost(max_cost: Optional[float]) -> Optional[float]:
     return min(val, ceiling) if val > 0 else None
 
 
+def _fleet_home() -> Path:
+    """The FLEET root (~/.hermes), never a profile dir.
+
+    ``HERMES_HOME`` is set per worker to ``profiles/<x>`` by the dispatcher, so
+    anything that must agree across every profile is anchored here instead.
+    """
+    h = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes")).expanduser()
+    if h.parent.name == "profiles":
+        h = h.parent.parent
+    return h
+
+
+def _tenant_project(tenant: Optional[str]):
+    """Resolve a tenant to a Project from the fleet-level tenant map.
+
+    2026-09-06 (plan card W1). Projects live in the CREATOR's per-profile
+    ``projects.db``, so the same brief produced worktree cards from Jobsy (who
+    has the ``backupbrain`` project) and empty ``scratch`` cards from Karl (who
+    does not): 12 scratch children in one job, four "workspace is empty" blocks
+    within nine minutes, eight review/verify cards closed as "SUPERSEDED (no
+    work done)". The map at ``<fleet home>/kanban-tenants.json`` is read the
+    same way from every profile and every mint path::
+
+        {"backupbrain": {"id": "p_5fe7127d", "slug": "backupbrain",
+                         "name": "BackupBrain",
+                         "primary_path": "/Users/.../Meeting notes transcription tool"}}
+
+    ``HERMES_KANBAN_TENANTS`` overrides the path (tests). Fail-open: any
+    problem returns ``None`` and the caller behaves exactly as before.
+    """
+    if not tenant:
+        return None
+    try:
+        path = os.environ.get("HERMES_KANBAN_TENANTS")
+        p = Path(path) if path else _fleet_home() / "kanban-tenants.json"
+        if not p.is_file():
+            return None
+        data = json.loads(p.read_text() or "{}")
+        ent = data.get(str(tenant).strip())
+        if not isinstance(ent, dict) or not ent.get("primary_path"):
+            return None
+        from hermes_cli import projects_db as _pdb
+
+        slug = ent.get("slug") or str(tenant)
+        try:
+            slug = _pdb.normalize_slug(slug) or slug
+        except Exception:
+            pass
+        return _pdb.Project(
+            id=str(ent.get("id") or f"tenant:{tenant}"),
+            slug=slug,
+            name=str(ent.get("name") or slug),
+            created_at=0,
+            primary_path=str(ent["primary_path"]),
+        )
+    except Exception:
+        return None
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -3650,6 +3709,22 @@ def create_task(
                 # Defer the concrete path to the insert loop: it's a fresh
                 # ``<repo>/.worktrees/<task-id>`` dir keyed on the new task id.
                 project_repo = str(project_obj.primary_path)
+
+    # 2026-09-06 (W1): a tenant's code lands in that tenant's repo whoever
+    # mints the card. When no Project resolved (creator's projects.db is
+    # per-profile and usually empty) and the card would otherwise be an empty
+    # ``scratch`` folder, anchor it to the fleet tenant map instead. An
+    # explicit ``dir`` or ``worktree`` request is left alone.
+    if project_obj is None and tenant and workspace_kind == "scratch":
+        _tp = _tenant_project(tenant)
+        if _tp is not None:
+            from hermes_cli import projects_db as _pdb
+
+            project_obj = _tp
+            project_id = _tp.id
+            workspace_kind = "worktree"
+            if workspace_path is None and _tp.primary_path:
+                project_repo = str(_tp.primary_path)
 
     parents = tuple(p for p in parents if p)
 
@@ -8084,6 +8159,16 @@ def decompose_triage_task(
                 child_ws_path = root_ws_path
             else:
                 child_ws_path = None
+            # 2026-09-06 (W1): never mint a tenant's code child into an empty
+            # scratch folder; anchor it under the tenant's repo as its own
+            # worktree (one worktree per card, no sibling sharing).
+            if child_ws_kind == "scratch" and tenant:
+                _tp = _tenant_project(tenant)
+                if _tp is not None and _tp.primary_path:
+                    child_ws_kind = "worktree"
+                    child_ws_path = os.path.join(
+                        str(_tp.primary_path), ".worktrees", new_id
+                    )
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
@@ -9758,7 +9843,7 @@ def _state_db_path_for_assignee(assignee: Optional[str]) -> Optional[Path]:
     return Path(home) / "state.db"
 
 
-def _cumulative_session_cost(state_db_path, workspace, task_id=None) -> float:
+def _cumulative_session_cost(state_db_path, workspace, task_id=None, all_ledgers=True) -> float:
     """Sum ``estimated_cost_usd`` across a card's kanban worker sessions.
 
     **2026-09-02 — this function was structurally blind and the cap never
@@ -9793,9 +9878,16 @@ def _cumulative_session_cost(state_db_path, workspace, task_id=None) -> float:
         seen = set()
         try:
             roots = []
-            hermes_home = Path(os.path.expanduser("~/.hermes"))
-            roots.append(hermes_home / "state.db")
-            roots.extend(sorted((hermes_home / "profiles").glob("*/state.db")))
+            # 2026-09-06 (C1): the CAP counts the assignee's own spend only.
+            # Reviewer spend is measured on the review card and overwatch spend
+            # on the job; summing every ledger let a $0.60 build + $0.50 review
+            # breach after the work was done (Rodge's own p90 is $1.00), and
+            # 59% of t_eaaa3434's "spend" was adjudication and block-loop churn.
+            # ``all_ledgers=True`` keeps the lifetime figure for reporting.
+            if all_ledgers:
+                hermes_home = Path(os.path.expanduser("~/.hermes"))
+                roots.append(hermes_home / "state.db")
+                roots.extend(sorted((hermes_home / "profiles").glob("*/state.db")))
             if state_db_path:
                 roots.append(Path(str(state_db_path)))
             for db in roots:
@@ -9857,6 +9949,62 @@ def _session_cost_in_db(state_db_path, prefix_for=None, task_id=None) -> float:
         sconn.close()
 
 
+def set_task_max_cost(
+    conn: sqlite3.Connection,
+    task_id: str,
+    new_cap: float,
+    *,
+    by: str,
+    reason: str = "",
+) -> float:
+    """Raise a card's cap ONCE, to at most ``kanban.max_cost_hard_ceiling``.
+
+    2026-09-06 (C1/O1): the overwatch extension. Smith may extend a breached
+    card once by up to +$0.50 (config: ceiling 1.00 -> hard ceiling 1.50). A
+    second extension is refused — a second breach on one card is the
+    deeper-error signal that goes to Richie. Records a ``cost-extension:``
+    comment on the card so the ledger review can see it. Returns the cap set.
+    """
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    hard = resolve_max_cost_hard_ceiling()
+    try:
+        new_cap = float(new_cap)
+    except (TypeError, ValueError):
+        raise ValueError(f"cap must be a number, got {new_cap!r}")
+    if new_cap <= 0:
+        raise ValueError("cap must be > 0")
+    if new_cap > hard:
+        raise ValueError(
+            f"cap ${new_cap:.2f} exceeds the hard ceiling ${hard:.2f}; "
+            "only Richie can move a card past it (split it instead)"
+        )
+    old = task.max_cost
+    prior = conn.execute(
+        "SELECT COUNT(*) FROM task_comments WHERE task_id = ? AND body LIKE 'cost-extension:%'",
+        (task_id,),
+    ).fetchone()[0]
+    if prior:
+        raise ValueError(
+            "this card has already been extended once; a second breach stays "
+            "blocked for Richie (overwatch rule)"
+        )
+    if old is not None and new_cap <= float(old):
+        raise ValueError(f"cap ${new_cap:.2f} is not above the current ${float(old):.2f}")
+    with write_txn(conn):
+        conn.execute("UPDATE tasks SET max_cost = ? WHERE id = ?", (new_cap, task_id))
+        add_comment(
+            conn, task_id, author=by,
+            body=(f"cost-extension: ${float(old):.2f} -> ${new_cap:.2f} by {by}"
+                  if old is not None else f"cost-extension: (none) -> ${new_cap:.2f} by {by}")
+                 + (f"\nreason: {reason}" if reason else ""),
+        )
+        _append_event(conn, task_id, "cap_extended",
+                      {"by": by, "old": old, "new": new_cap, "reason": reason})
+    return new_cap
+
+
 def enforce_max_cost(
     conn: sqlite3.Connection,
     *,
@@ -9912,6 +10060,8 @@ def enforce_max_cost(
             # 2026-09-02: pass the card id. sessions.cwd is NULL on this fleet,
             # so workspace matching alone saw $0 and the cap never fired.
             task_id=row["id"],
+            # 2026-09-06 (C1): assignee's ledger only — see _cumulative_session_cost.
+            all_ledgers=False,
         )
         if spend <= cap:
             continue

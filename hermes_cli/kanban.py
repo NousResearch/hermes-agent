@@ -706,6 +706,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_unblock.add_argument("task_ids", nargs="+")
 
+    p_setcap = sub.add_parser(
+        "set-cap",
+        help="Overwatch extension: raise a card's cost cap ONCE, to at most kanban.max_cost_hard_ceiling (2026-09-06)",
+    )
+    p_setcap.add_argument("task_id")
+    p_setcap.add_argument("cap", type=float, help="new cap in USD (<= hard ceiling, default 1.50)")
+    p_setcap.add_argument("--reason", default="", help="why the extension is justified — recorded on the card")
+
     p_request_review = sub.add_parser(
         "request-review",
         help="Move a task to 'review' (implementation done, awaiting review) — NOT a block",
@@ -1188,6 +1196,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "block":    _cmd_block,
             "schedule": _cmd_schedule,
             "unblock":  _cmd_unblock,
+            "set-cap":  _cmd_set_cap,
             "request-review": _cmd_request_review,
             "request-changes": _cmd_request_changes,
             "reopen-review":  _cmd_reopen_review,
@@ -1256,6 +1265,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "block",
     "schedule",
     "unblock",
+    "set-cap",
     "promote",
     "archive",
     "dispatch",
@@ -2585,6 +2595,20 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
             else:
                 print(f"Unblocked {tid}" + (f": {reason}" if reason else ""))
     return 0 if not failed else 1
+
+
+def _cmd_set_cap(args: argparse.Namespace) -> int:
+    """Overwatch extension (C1/O1, 2026-09-06): once per card, hard ceiling."""
+    author = _profile_author()
+    try:
+        with kb.connect_closing() as conn:
+            cap = kb.set_task_max_cost(conn, args.task_id, args.cap, by=author,
+                                       reason=(args.reason or "").strip())
+    except ValueError as exc:
+        print(f"set-cap refused: {exc}", file=sys.stderr)
+        return 1
+    print(f"Cap on {args.task_id} set to ${cap:.2f} by {author}")
+    return 0
 
 
 def _cmd_request_review(args: argparse.Namespace) -> int:

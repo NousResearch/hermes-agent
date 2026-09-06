@@ -1,20 +1,41 @@
-"""Kanban block -> assessor escalation plugin.
+"""Kanban block -> OVERWATCH escalation plugin (rewritten 2026-09-06, plan O1).
 
-Subscribes to ``kanban_task_blocked`` and spawns the assessor agent
-immediately, converting a block from a dead letter into the first hop of the
-fleet escalation chain (worker -> assessor -> ... -> human for critical only).
+Subscribes to ``kanban_task_blocked`` and, for every block that is a real
+fault signal, spawns ONE fresh Agent Smith session ("overwatch", profile id
+``default``) with a machine-built situation brief. Smith assesses the card in
+the context of the whole board, acts within a written authority, and hands the
+hard stops to Richie.
 
-Escalation target is canonical and pinned here so it is versioned and
-testable: the first hop goes to Jobsy (the PM / board owner, who owns the
-scope/AC triage mandate per his SOUL); runtime/environment/profile faults AND
-card-authoring defects — a body that is stale, self-contradictory, or demands
-a deliverable it cannot produce — go to Agent Smith (profile id ``default``),
-because repairing a card body is the orchestrator's lane, not a PM scope/AC
-triage (2026-09-04 t_eaaa3434 loop). ``switch`` is deliberately NEVER an
-escalation target — its only ownership is no_agent scheduled output, and it
-must not assess or close build cards.
+Richie's decision, 2026-09-06: "a fresh chat with Smith is triggered, he
+assesses and acts to get things moving or tidy up the mess ... as quickly,
+hygienically and cheaply as possible, while still delivering the feature to
+the agreed quality, including all the agreed review and testing gates. Smith
+may approve up to another $0.50 per card. At $1.50 the card is blocked and
+Smith texts me a full rundown."
 
-See plugin.yaml for the full rationale and guardrails.
+This replaced three mechanisms that disagreed with each other: a per-kind
+routing table (Jobsy vs Smith vs Steve-o by substring), Steve-o cost
+adjudication with two extensions, and ``dependency-gate-watch`` minting
+``[triage]`` cards for give-ups. Measured on 5-6 Sep: 85 blocks, of which 15
+were ``operator_hold`` by design and 28 dependency waits that needed nobody;
+14 cost breaches each spawned ~4 more cards.
+
+Triggers (read from the board, never from substrings of the reason text):
+  cost_cap, capability, needs_input          -> always
+  transient                                  -> on the SECOND occurrence
+Never: operator_hold (Richie's decision), dependency (self-resumes),
+scheduled (a date, not a fault).
+
+Hard stops (no overwatch; ceiling marker for escalation-watch -> Richie):
+  * the card already carries TWO overwatch decisions;
+  * a cost_cap block on a card that was already extended once, or whose cap
+    is already at kanban.max_cost_hard_ceiling.
+On a hard stop ONE more Smith session is spawned with the RUNDOWN prompt:
+write the rundown as a comment; escalation-watch (15 min, iMessage + Slack)
+carries it to Richie.
+
+Guardrails: never break the block transaction (every probe is best-effort);
+fire-and-forget spawn in its own session; ``switch`` is never a target.
 """
 
 from __future__ import annotations
@@ -23,80 +44,33 @@ import logging
 import os
 import sqlite3
 import subprocess
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["register"]
 
-# Assessor routing for the FIRST hop. Defaults to Jobsy (the PM, who owns
-# scope/AC assessment); runtime/environment/profile faults go to Agent Smith
-# (profile id `default`). The assessor then escalates further if needed.
-# These constants are the escalation-target contract — a regression test
-# asserts Jobsy is the default and `switch` is never a target.
-DEFAULT_ASSESSOR = "jobsy"
-RUNTIME_ASSESSOR = "default"  # Agent Smith's profile id
-# WeRoll cost policy 2026-09-02: spend is Steve-o's lane, not Jobsy's and not
-# Smith's. Steve-o owns every cost estimate and every cap on this board, so a
-# cap break escalates to him — he decides extend / split / rewrite. Checked
-# BEFORE the runtime markers because a cap-break reason can contain words that
-# look like runtime faults.
-COST_ASSESSOR = "steve-o"
-_COST_MARKERS = ("max_cost", "cost cap", "cost_cap", "cumulative spend")
+# The overwatch profile. Pinned here so it is versioned and testable; tests
+# assert it is never ``switch`` and never a worker.
+OVERWATCH = "default"          # Agent Smith's profile id
+DEFAULT_ASSESSOR = OVERWATCH   # kept for older tools that import the name
+RUNTIME_ASSESSOR = OVERWATCH
+COST_ASSESSOR = OVERWATCH      # Steve-o no longer adjudicates spend (2026-09-06)
 
-# Signals that a block is a CARD-AUTHORING/body defect that needs the
-# ORCHESTRATOR (Smith) to reconcile the card, not Jobsy to assess product
-# scope. Rooted in the 2026-09-04 t_eaaa3434 loop: the reviewer blocked with
-# "reconcile the card body" (dead ACs still listed, an unproducible deliverable
-# demanded on a base that predates the harness) — the classifier defaulted that
-# to Jobsy, who cannot rewrite a dead card, so the block dead-ended and nobody
-# woke Smith until Richie did by hand. A body that is stale/self-contradictory
-# is repaired by rewriting the body, which is the orchestrator's lane. These
-# markers are deliberate and narrow (they must NOT catch "Acceptance criteria
-# is ambiguous", which stays Jobsy's scope/AC triage).
-_CARD_DEFECT_MARKERS = (
-    "card body",
-    "card defect",
-    "reconcile the card",
-    "reconcile the body",
-    "body is stale",
-    "stale card",
-    "dead ac",
-    "unproducible deliverable",
-    "acceptance criteria contradict",
-)
+ALWAYS_TRIGGER_KINDS = frozenset({"cost_cap", "capability", "needs_input"})
+NEVER_TRIGGER_KINDS = frozenset({"operator_hold", "dependency", "scheduled"})
+TRANSIENT_TRIGGER_AFTER = 1     # first transient retries; second triggers
 
-# Signals that a block is a runtime/environment/profile fault (Smith's lane)
-# rather than a scope/AC/product decision (Jobsy's lane). Matched case-
-# insensitively against the block reason text.
-_RUNTIME_MARKERS = (
-    "unknown skill",
-    "no module named",
-    "interpreter",
-    "python3",
-    ".venv",
-    "venv",
-    "pytest",
-    "symlink",
-    "model",
-    "provider",
-    "credits",
-    "http 402",
-    "rate limit",
-    "spawn",
-    "crash",
-    "exit code",
-    "profile",
-    "gateway",
-    "db",
-    "sqlite",
-    "malformed",
-    "dependencies",
-    "pip",
-    "tool_use",
-    "missing",
-    "not found",
-)
+OVERWATCH_LIMIT = 2             # overwatch touches per card before Richie
+OVERWATCH_MARKER = "overwatch:"  # Smith's decision comment must start with this
+EXTENSION_MARKER = "cost-extension:"
+CEILING_MARKER = "escalation-ceiling"
+RUNDOWN_MARKER = "rundown:"
+NON_COST_TRIAGE_LIMIT = OVERWATCH_LIMIT  # name kept for escalation-watch
+
+HARD_CEILING_FALLBACK = 1.50
+BRIEF_DIR = Path(os.path.expanduser("~/.hermes/logs/overwatch"))
 
 
 def _hermes_bin() -> str:
@@ -104,189 +78,241 @@ def _hermes_bin() -> str:
 
 
 def _board_db_path() -> str:
-    # The kanban_* tools and the dispatcher all resolve the shared board to
-    # ~/.hermes/kanban.db. If HERMES_KANBAN_DB is pinned (worker env), honour
-    # it so the status check reads the same board the block was written to.
-    return os.environ.get("HERMES_KANBAN_DB") or os.path.expanduser(
-        "~/.hermes/kanban.db"
-    )
+    return os.environ.get("HERMES_KANBAN_DB") or os.path.expanduser("~/.hermes/kanban.db")
 
 
-def _is_truly_blocked(task_id: str) -> bool:
-    """Return True iff the task really landed in `blocked` (not dependency→todo).
+def _ro():
+    con = sqlite3.connect(f"file:{_board_db_path()}?mode=ro", uri=True, timeout=10)
+    con.row_factory = sqlite3.Row
+    return con
 
-    The kanban_task_blocked hook also fires for `dependency` blocks, which are
-    routed to `todo` and self-resume via parent-gating. Those must NOT trigger
-    an assessor. Cheap read-only probe of the board.
-    """
+
+def _card(task_id: str) -> dict | None:
     try:
-        con = sqlite3.connect(f"file:{_board_db_path()}?mode=ro", uri=True, timeout=10)
+        con = _ro()
         try:
-            row = con.execute(
-                "SELECT status FROM tasks WHERE id = ?", (task_id,)
-            ).fetchone()
+            row = con.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
         finally:
             con.close()
-        # `triage` is where block_task routes a REPEAT block of the same kind
-        # (BLOCK_RECURRENCE_LIMIT) — still a human-needed stop, so it escalates
-        # too; before 2026-09-03 those were silently dropped here.
-        return bool(row) and row[0] in ("blocked", "triage")
-    except Exception as exc:  # noqa: BLE001 - never break the block txn
-        logger.debug("kanban-block-escalator: status probe failed: %s", exc)
-        return False
-
-
-def _assessor_for(task_id: str, assignee: str | None, reason: str | None) -> str | None:
-    """Choose the assessor for the first hop, or None to skip (loop guard)."""
-    text = (reason or "").lower()
-    if any(m in text for m in _COST_MARKERS):
-        # Cap breaks go to Steve-o even if he is the blocked assignee: he is the
-        # only profile allowed to adjudicate spend, so there is no other tier to
-        # climb to. The loop guard below is deliberately skipped for this case.
-        return COST_ASSESSOR
-    if any(m in text for m in _CARD_DEFECT_MARKERS):
-        # A card whose body is stale/self-contradictory/reconcile-needed is the
-        # orchestrator's repair lane (rewrite the body), NOT a Jobsy scope/AC
-        # assessment. Rooted in the 2026-09-04 t_eaaa3434 loop where this
-        # defaulted to Jobsy and dead-ended — Smith must be woken to reconcile.
-        assessor = RUNTIME_ASSESSOR
-    else:
-        assessor = RUNTIME_ASSESSOR if any(m in text for m in _RUNTIME_MARKERS) else DEFAULT_ASSESSOR
-
-    # Loop guard: never escalate a card back to the profile that blocked it.
-    # If the block came from the assessor itself, climb to the other tier.
-    if assignee and assignee in (assessor,):
-        return RUNTIME_ASSESSOR if assessor != RUNTIME_ASSESSOR else DEFAULT_ASSESSOR
-    return assessor
-
-
-# Charter §6 (2026-09-03), non-cost escalation ceiling: the assignee retries
-# within its failure budget, Jobsy triages, Jobsy triages once more, then
-# Richie. `block_recurrences` counts repeat blocks of the same kind on the card,
-# so the FIRST block is recurrence 1 -> Jobsy, the second (which the platform
-# routes to `triage`, BLOCK_RECURRENCE_LIMIT=2) -> Jobsy again, and the third
-# stays put for Richie. Cost-cap breaks have their own ladder (Steve-o's two
-# extensions) and are not subject to this ceiling.
-NON_COST_TRIAGE_LIMIT = 2
-CEILING_MARKER = "escalation-ceiling"
-
-
-def _recurrences(task_id: str) -> int:
-    try:
-        con = sqlite3.connect(f"file:{_board_db_path()}?mode=ro", uri=True, timeout=10)
-        try:
-            row = con.execute(
-                "SELECT block_recurrences FROM tasks WHERE id = ?", (task_id,)
-            ).fetchone()
-        finally:
-            con.close()
-        return int(row[0] or 0) if row else 0
+        return dict(row) if row else None
     except Exception as exc:  # noqa: BLE001
-        logger.debug("kanban-block-escalator: recurrence probe failed: %s", exc)
+        logger.debug("kanban-block-escalator: card probe failed: %s", exc)
+        return None
+
+
+def _is_truly_blocked(card: dict | None) -> bool:
+    return bool(card) and card.get("status") in ("blocked", "triage")
+
+
+def _count_comments(task_id: str, prefix: str, author: str | None = None) -> int:
+    try:
+        con = _ro()
+        try:
+            q = "SELECT COUNT(*) FROM task_comments WHERE task_id = ? AND body LIKE ?"
+            p = [task_id, prefix + "%"]
+            if author:
+                q += " AND author = ?"
+                p.append(author)
+            return int(con.execute(q, p).fetchone()[0])
+        finally:
+            con.close()
+    except Exception:  # noqa: BLE001
         return 0
 
 
-def _mark_ceiling(task_id: str, reason: str | None, recurrences: int) -> None:
-    """Leave a machine-readable comment so escalation-watch can tell Richie.
+def _hard_ceiling() -> float:
+    try:
+        from hermes_cli import kanban_db  # type: ignore
 
-    Written through kanban_db so the event log and notify subscriptions see it.
-    Best effort — a failure here must never break the block transaction.
-    """
+        return float(kanban_db.resolve_max_cost_hard_ceiling())
+    except Exception:  # noqa: BLE001
+        return HARD_CEILING_FALLBACK
+
+
+def _recurrences(task_id: str) -> int:
+    card = _card(task_id)
+    try:
+        return int((card or {}).get("block_recurrences") or 0)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def should_trigger(card: dict) -> tuple[bool, str]:
+    """(trigger?, why). Pure function of the card row — unit-tested."""
+    kind = (card.get("block_kind") or "").strip()
+    rec = int(card.get("block_recurrences") or 0)
+    if kind in NEVER_TRIGGER_KINDS:
+        return False, f"{kind or 'unkinded'}: not a fault signal"
+    if kind in ALWAYS_TRIGGER_KINDS:
+        return True, kind
+    if kind == "transient":
+        return (rec >= TRANSIENT_TRIGGER_AFTER), f"transient recurrence {rec}"
+    # Unkinded / unknown kinds: a block is a block — but only once it repeats.
+    return (rec >= 1), f"{kind or 'unkinded'} recurrence {rec}"
+
+
+def is_hard_stop(task_id: str, card: dict) -> tuple[bool, str]:
+    """Second overwatch on one card, or a cost breach past the extension."""
+    n = _count_comments(task_id, OVERWATCH_MARKER, author=OVERWATCH)
+    if n >= OVERWATCH_LIMIT:
+        return True, f"{n} overwatch decisions already on this card"
+    if (card.get("block_kind") or "") == "cost_cap":
+        if _count_comments(task_id, EXTENSION_MARKER) >= 1:
+            return True, "cost cap breached again after the one allowed extension"
+        try:
+            cap = float(card.get("max_cost") or 0)
+        except Exception:  # noqa: BLE001
+            cap = 0.0
+        if cap and cap >= _hard_ceiling() - 1e-9:
+            return True, f"cap ${cap:.2f} is already at the hard ceiling"
+    return False, ""
+
+
+def _brief(task_id: str, card: dict) -> tuple[str, str]:
+    """Assemble the situation brief ($0). Returns (path, short summary)."""
+    lines = [f"# Overwatch brief — {task_id}", ""]
+    try:
+        con = _ro()
+        try:
+            lines += [f"title: {card.get('title')}",
+                      f"status: {card.get('status')}  block_kind: {card.get('block_kind')}  recurrences: {card.get('block_recurrences')}",
+                      f"assignee: {card.get('assignee')}  created_by: {card.get('created_by')}  tenant: {card.get('tenant')}",
+                      f"cap: {card.get('max_cost')}  workspace: {card.get('workspace_kind')} {card.get('workspace_path')}", ""]
+            body = (card.get("body") or "").strip()
+            lines += ["## body (head)", body[:1500], ""]
+            parents = [r[0] for r in con.execute("SELECT parent_id FROM task_links WHERE child_id=?", (task_id,))]
+            children = [r[0] for r in con.execute("SELECT child_id FROM task_links WHERE parent_id=?", (task_id,))]
+            lines += [f"parents: {parents}", f"children: {children}"]
+            sib = []
+            for p in parents:
+                for r in con.execute("SELECT t.id,t.status,t.block_kind,t.assignee,t.title FROM task_links l JOIN tasks t ON t.id=l.child_id WHERE l.parent_id=? AND t.id!=?", (p, task_id)):
+                    sib.append(f"  {r[0]} {r[1]} {r[2] or ''} {r[3]} | {(r[4] or '')[:60]}")
+            if sib:
+                lines += ["siblings under the same parent:"] + sib
+            lines += ["", "## runs"]
+            for r in con.execute("SELECT profile,status,outcome,started_at,ended_at,substr(error,1,200) FROM task_runs WHERE task_id=? ORDER BY id", (task_id,)):
+                lines.append(f"  {r[0]} {r[1]} {r[2]} {r[3]}->{r[4]} {r[5] or ''}")
+            lines += ["", "## last comments"]
+            for r in con.execute("SELECT author,created_at,substr(body,1,500) FROM task_comments WHERE task_id=? ORDER BY created_at DESC LIMIT 8", (task_id,)):
+                lines.append(f"  [{r[0]} @{r[1]}] {r[2]}")
+            lines += ["", "## last events"]
+            for r in con.execute("SELECT kind,substr(payload,1,160),created_at FROM task_events WHERE task_id=? ORDER BY id DESC LIMIT 10", (task_id,)):
+                lines.append(f"  {r[2]} {r[0]} {r[1]}")
+            dup = [r[0] for r in con.execute("SELECT id FROM tasks WHERE id!=? AND status NOT IN ('done','archived') AND title=?", (task_id, card.get("title")))]
+            if dup:
+                lines += ["", f"LIVE CARDS WITH THE SAME TITLE (possible duplicates): {dup}"]
+        finally:
+            con.close()
+    except Exception as exc:  # noqa: BLE001
+        lines += [f"(brief partly unavailable: {exc})"]
+    try:
+        from hermes_cli import kanban_db  # type: ignore
+
+        own = kanban_db._cumulative_session_cost(
+            kanban_db._state_db_path_for_assignee(card.get("assignee")), card.get("workspace_path"),
+            task_id=task_id, all_ledgers=False)
+        life = kanban_db._cumulative_session_cost(None, card.get("workspace_path"), task_id=task_id, all_ledgers=True)
+        lines += ["", f"spend: assignee ${own:.2f} / lifetime all ledgers ${life:.2f} / cap {card.get('max_cost')}"]
+    except Exception:  # noqa: BLE001
+        pass
+    text = "\n".join(lines)
+    path = ""
+    try:
+        BRIEF_DIR.mkdir(parents=True, exist_ok=True)
+        p = BRIEF_DIR / f"{task_id}-{int(time.time())}.md"
+        p.write_text(text)
+        path = str(p)
+    except Exception:  # noqa: BLE001
+        pass
+    return path, text[:6000]
+
+
+def _mark_ceiling(task_id: str, reason: str | None, why: str) -> None:
+    """Machine-readable comment so escalation-watch tells Richie. Best effort."""
     try:
         from hermes_cli import kanban_db  # type: ignore
 
         with kanban_db.connect_closing(_board_db_path()) as con:  # type: ignore[attr-defined]
             kanban_db.add_comment(
                 con, task_id, "kanban-block-escalator",
-                f"{CEILING_MARKER}: block #{recurrences} (limit {NON_COST_TRIAGE_LIMIT} "
-                f"Jobsy triages). Staying blocked for Richie. Reason: {reason or '(none)'}",
+                f"{CEILING_MARKER}: hard stop — {why}. Staying blocked for Richie. "
+                f"Reason: {reason or '(none)'}",
             )
     except Exception as exc:  # noqa: BLE001
         logger.warning("kanban-block-escalator: could not mark ceiling on %s: %s", task_id, exc)
 
 
-def on_block(task_id: str = "", assignee: str | None = None, reason: str | None = None, **kwargs) -> None:
-    """kanban_task_blocked callback. Fire-and-forget assessor trigger."""
-    if not task_id:
-        return
-    if not _is_truly_blocked(task_id):
-        return
+AUTHORITY = (
+    "YOUR AUTHORITY (Richie, 2026-09-06). You MAY: comment, unblock, reassign, split the card "
+    "via Jobsy, archive duplicates, rescope, put on hold, open a HELD platform card, and — for a "
+    "cost_cap block — extend the cap ONCE by at most $0.50 with `hermes kanban set-cap <id> <cap> "
+    "--reason ...` (hard ceiling $1.50). You may NOT, while cards are running: commit platform "
+    "code, restart a gateway, edit a SOUL, waive a review or test gate, raise a cap past $1.50, "
+    "or create a card assigned to yourself. A defective gate is a held platform card, not an "
+    "exemption. Finish quickly, hygienically and cheaply, keeping every agreed review and test "
+    "gate. Your FIRST comment on the card must start with `overwatch:` and state the decision "
+    "and its evidence — that comment is how the board counts your interventions."
+)
 
-    assessor = _assessor_for(task_id, assignee, reason)
-    if not assessor:
-        return
 
-    if assessor != COST_ASSESSOR:
-        rec = _recurrences(task_id)
-        if rec > NON_COST_TRIAGE_LIMIT:
-            _mark_ceiling(task_id, reason, rec)
-            logger.info(
-                "kanban-block-escalator: task %s blocked %d times (limit %d) — "
-                "escalation ceiling reached, leaving it for Richie",
-                task_id, rec, NON_COST_TRIAGE_LIMIT,
-            )
-            return
+def _overwatch_prompt(task_id: str, card: dict, reason: str | None, why: str, brief_path: str, brief: str) -> str:
+    return (
+        f"OVERWATCH: kanban card {task_id} blocked ({why}). Block reason: {reason or '(none)'!r}.\n"
+        f"Read the situation brief first ({brief_path or 'inline below'}); it already contains the card, "
+        "its lineage, runs, comments, spend and any live duplicate. Ask FIRST whether this is a deeper "
+        "error — duplicate card, wrong scope, dead or empty workspace, stale gate, false design premise, "
+        "missing capability — and fix the cause rather than the symptom.\n\n"
+        f"{AUTHORITY}\n\n=== BRIEF ===\n{brief}"
+    )
 
-    if assessor == COST_ASSESSOR:
-        prompt = (
-            f"COST CAP BREAK on kanban card {task_id}. "
-            f"Block reason: {reason or '(none)'.strip()!r}. "
-            "You own this decision — see the cost-policy block in your SOUL. "
-            "Read the card's events and comments, establish what it actually "
-            "achieved for the spend, and decide: EXTEND (only if you are "
-            "confident the work completes within the extension), SPLIT into "
-            "smaller cards each with its own estimate and cap, or DELETE AND "
-            "REWRITE. You may grant at most two extensions to one card, in "
-            "increments of your choosing, to a lifetime total of $1.50. On a "
-            "third break do not extend: leave the card blocked and escalate to "
-            "Richie with your recommendation and the supporting evidence."
-        )
-    else:
-        rec = _recurrences(task_id)
-        last = (" This is the card's SECOND block of this kind — your last triage before it "
-                "goes to Richie. Narrow it or split it; do not simply retry.") if rec >= NON_COST_TRIAGE_LIMIT else ""
-        if assessor == RUNTIME_ASSESSOR and any(m in (reason or "").lower() for m in _CARD_DEFECT_MARKERS):
-            # Card-authoring defect: reconcile the body, don't just assess.
-            prompt = (
-                f"RECONCILE the kanban card {task_id} — it is blocked as a card-authoring "
-                f"defect, not a source defect. Block reason: {reason or '(none)'.strip()!r}. "
-                "Read the card's events and comment thread: the body is stale or self-"
-                "contradictory (dropped ACs still listed, an unproducible deliverable demanded, "
-                "or an orchestrator resolution never reconciled into the body). Rewrite the card "
-                "body so the live acceptance gate matches the actual scope, comment the "
-                "reconciliation, and unblock the card so its assigned worker/reviewer can "
-                "resume. Do NOT do the worker's job — repairing the body is the point."
-            )
-        else:
-            prompt = (
-                f"Assess the blocked kanban card {task_id} and unblock it if resolvable.{last} "
-                f"Block reason: {reason or '(none)'.strip()!r}. "
-                "Classify it (scope/AC vs runtime/env) and either resolve-and-unblock, "
-                "or escalate to the next agent up the chain. Only a genuinely critical "
-                "block (missing creds, owner decision, money) stops at Richie."
-            )
 
+def _rundown_prompt(task_id: str, reason: str | None, why: str, brief_path: str, brief: str) -> str:
+    return (
+        f"HARD STOP on kanban card {task_id}: {why}. Block reason: {reason or '(none)'!r}. "
+        "Do NOT unblock, extend, split or archive it — this decision is Richie's. Write ONE comment "
+        f"on the card starting with `{RUNDOWN_MARKER}` covering: (1) the situation, (2) what has been "
+        "done about it so far and by whom, (3) whether there is a deeper issue and what it is, "
+        "(4) the plan and estimated cost to remedy, with your recommendation. escalation-watch "
+        "delivers it to Richie by iMessage and Slack. Keep it under 250 words.\n\n"
+        f"Brief: {brief_path or 'inline below'}\n=== BRIEF ===\n{brief}"
+    )
+
+
+def _spawn(assessor: str, prompt: str, task_id: str) -> None:
     try:
-        # Fire-and-forget in a new session so the (short-lived) firing worker
-        # process can exit without orphaning the assessor. start_new_session so
-        # it survives parent exit; stdout/stderr to DEVNULL.
+        env = dict(os.environ)
+        env["HERMES_OVERWATCH_TASK"] = task_id
         subprocess.Popen(
             [_hermes_bin(), "-p", assessor, "--cli", "chat", "-q", prompt],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            close_fds=True,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True, close_fds=True, env=env,
         )
-        logger.info(
-            "kanban-block-escalator: escalated task %s to assessor %s",
-            task_id, assessor,
-        )
-    except Exception as exc:  # noqa: BLE001 - never break the block txn
-        logger.warning(
-            "kanban-block-escalator: failed to spawn assessor for %s: %s",
-            task_id, exc,
-        )
+        logger.info("kanban-block-escalator: overwatch spawned for %s (%s)", task_id, assessor)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("kanban-block-escalator: failed to spawn overwatch for %s: %s", task_id, exc)
+
+
+def on_block(task_id: str = "", assignee: str | None = None, reason: str | None = None, **kwargs) -> None:
+    """kanban_task_blocked callback. Fire-and-forget overwatch trigger."""
+    if not task_id:
+        return
+    card = _card(task_id)
+    if not _is_truly_blocked(card):
+        return
+    # The hook may or may not carry the kind; the board always does.
+    if kwargs.get("kind") and not card.get("block_kind"):
+        card["block_kind"] = kwargs["kind"]
+    trigger, why = should_trigger(card)
+    if not trigger:
+        logger.info("kanban-block-escalator: %s not escalated (%s)", task_id, why)
+        return
+    hard, hard_why = is_hard_stop(task_id, card)
+    brief_path, brief = _brief(task_id, card)
+    if hard:
+        _mark_ceiling(task_id, reason, hard_why)
+        _spawn(OVERWATCH, _rundown_prompt(task_id, reason, hard_why, brief_path, brief), task_id)
+        return
+    _spawn(OVERWATCH, _overwatch_prompt(task_id, card, reason, why, brief_path, brief), task_id)
 
 
 def register(ctx) -> None:

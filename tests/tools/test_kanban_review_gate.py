@@ -73,8 +73,13 @@ def _make_task(
     ws: Path,
     *,
     kind: str = "worktree",
+    body: str | None = None,
 ) -> str:
-    """Create + claim a card rooted at ``ws`` and set the worker env to it."""
+    """Create + claim a card rooted at ``ws`` and set the worker env to it.
+
+    2026-09-06 (G1): the focused rung runs ONLY the test command the card body
+    names; pass ``body`` when a test needs the rung to run something.
+    """
     monkeypatch.setenv("HERMES_HOME", str(kanban_home))
     monkeypatch.setattr(Path, "home", lambda: kanban_home)
     kb._INITIALIZED_PATHS.clear()
@@ -83,6 +88,7 @@ def _make_task(
         tid = kb.create_task(
             conn,
             title="worktree build gate",
+            body=body,
             assignee="builder",
             workspace_kind=kind,
             workspace_path=str(ws),
@@ -186,7 +192,8 @@ def test_gate_runs_non_ui_test_even_without_dist(
     _change_python_file(ws, "mymod.py", "GOOD = 1\n")
     _change_python_file(ws, "tests/test_mymod.py", "def test_bad():\n    assert 1 == 2\n")
 
-    tid = _make_task(tmp_path / ".hermes", monkeypatch, ws)
+    tid = _make_task(tmp_path / ".hermes", monkeypatch, ws,
+                     body="AC: `pytest tests/test_mymod.py -q` exits 0")
     from tools import kanban_tools as tools
 
     resp = json.loads(tools._handle_request_review({"summary": "plain fail"}))
@@ -204,7 +211,8 @@ def test_gate_comment_carries_output_tail(
     _change_python_file(ws, "mymod.py", "OK = 1\n")
     _change_python_file(ws, "tests/test_mymod.py", "def test_bad():\n    assert 1 == 2\n")
 
-    tid = _make_task(tmp_path / ".hermes", monkeypatch, ws)
+    tid = _make_task(tmp_path / ".hermes", monkeypatch, ws,
+                     body="AC: `pytest tests/test_mymod.py -q` exits 0")
     from tools import kanban_tools as tools
 
     resp = json.loads(tools._handle_request_review({"summary": "flaky"}))
@@ -771,7 +779,8 @@ def test_gate_preexisting_failure_passes_baseline_aware(
     # A card-legit change to the module that routes to the failing test.
     _change_python_file(ws, "prefail.py", "X = 2\n")
 
-    tid = _make_task(tmp_path / ".hermes", monkeypatch, ws)
+    tid = _make_task(tmp_path / ".hermes", monkeypatch, ws,
+                     body="AC: `pytest tests/test_prefail.py -q` exits 0")
     from tools import kanban_tools as tools
 
     tools._BASE_ARCHIVE_CACHE.clear()
@@ -799,7 +808,8 @@ def test_gate_new_failure_still_bounces_baseline_aware(
         "def test_old():\n    assert True\n\ndef test_new():\n    assert False\n",
     )
 
-    tid = _make_task(tmp_path / ".hermes", monkeypatch, ws)
+    tid = _make_task(tmp_path / ".hermes", monkeypatch, ws,
+                     body="AC: `python -m pytest tests/test_newfail.py -v` exits 0")
     from tools import kanban_tools as tools
 
     tools._BASE_ARCHIVE_CACHE.clear()
@@ -892,7 +902,7 @@ def test_scoped_paths_from_body_pytest_command(tmp_path: Path) -> None:
 
 
 def test_scoped_paths_no_command_falls_back_empty(tmp_path: Path) -> None:
-    """A body with no scoped command yields [] -> diff fallback."""
+    """A body with no scoped command yields [] -> the rung runs NOTHING (G1)."""
     from tools import kanban_tools as ktools
 
     ws = tmp_path / "ws"
@@ -902,7 +912,7 @@ def test_scoped_paths_no_command_falls_back_empty(tmp_path: Path) -> None:
 
 
 def test_scoped_paths_missing_file_degrades_empty(tmp_path: Path) -> None:
-    """A stale pointer (file absent) degrades to [] -> diff fallback."""
+    """A stale pointer (file absent) degrades to [] -> nothing runs (G1)."""
     from tools import kanban_tools as ktools
 
     ws = tmp_path / "ws"
@@ -991,3 +1001,52 @@ def test_scoped_paths_multiple_paths_all_absent_degrades_empty(tmp_path: Path) -
     )
     parsed = ktools._scoped_test_paths_from_body(body, ws)
     assert parsed == [], parsed
+
+
+# ---------------------------------------------------------------------------
+# G1 (2026-09-06): every real command shape, and no diff-derived fallback
+# ---------------------------------------------------------------------------
+
+
+def test_scoped_paths_node_id_and_verbose_flag(tmp_path: Path) -> None:
+    """The shape every 6 Sep card used: venv prefix, ``::node``, ``-v``."""
+    from tools import kanban_tools as ktools
+
+    ws = tmp_path / "ws"
+    (ws / "tests").mkdir(parents=True)
+    (ws / "tests" / "test_ui_v2.py").write_text("")
+    body = ("1. `cd <worktree> && .venv/bin/python -m pytest "
+            "tests/test_ui_v2.py::test_drag_reorders -v` exits 0.")
+    assert ktools._scoped_test_paths_from_body(body, ws) == ["tests/test_ui_v2.py::test_drag_reorders"]
+
+
+def test_scoped_paths_flag_before_path_and_directory(tmp_path: Path) -> None:
+    from tools import kanban_tools as ktools
+
+    ws = tmp_path / "ws"
+    (ws / "tests" / "regression").mkdir(parents=True)
+    assert ktools._scoped_test_paths_from_body("`pytest -q tests/regression`", ws) == ["tests/regression"]
+
+
+def test_gate_runs_nothing_when_body_names_no_command(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Negative control for the diff fallback: a worktree that changes a module
+    whose mirror test FAILS enters review when the body names no command —
+    proof the diff-derived selection is gone. (E1 makes the command mandatory
+    at mint, so this is the safe direction: silence, not a false bounce.)"""
+    (repo / "tests").mkdir(exist_ok=True)
+    (repo / "tests" / "test_mod.py").write_text("def test_x():\n    assert False\n")
+    (repo / "mod.py").write_text("X = 1\n")
+    subprocess.run(["git", "-C", str(repo), "add", "mod.py", "tests/test_mod.py"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "mod"], check=True, capture_output=True)
+    ws = _add_worktree(repo, "nocmd")
+    _change_python_file(ws, "mod.py", "X = 2\n")
+    tid = _make_task(tmp_path / ".hermes", monkeypatch, ws)
+    from tools import kanban_tools as tools
+
+    tools._BASE_ARCHIVE_CACHE.clear()
+    resp = json.loads(tools._handle_request_review({"summary": "no command in body"}))
+    assert resp.get("ok") is True, resp
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "review"

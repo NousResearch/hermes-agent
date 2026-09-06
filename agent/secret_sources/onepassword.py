@@ -191,7 +191,7 @@ def _notify_secret_access(reference: str, *, profile: str = "", reason: str = ""
                 f"A 1Password prompt will appear — you are authorizing this access.")
 
         subprocess.run(
-            ["notify-send", "--urgency=normal", "--expire-time=10000",
+            ["notify-send", "--urgency=critical", "--expire-time=0",
              "--icon=1password", title, body],
             capture_output=True, timeout=5,
             env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0")},

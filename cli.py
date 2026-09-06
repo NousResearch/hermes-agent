@@ -3269,32 +3269,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         if qtype != "exec":
             self._console_print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')[/]")
             return True
-        import subprocess
+        from hermes_cli.quick_command_runner import run_quick_command
+
         exec_cmd = qcmd.get("command", "")
         if not exec_cmd:
             self._console_print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
             return True
-        try:
-            # shell=True is intentional (user-authored config snippets, never LLM controlled);
-            # the env is sanitized because this process holds every API key.
-            from tools.environments.local import build_subprocess_env
-            from hermes_cli._subprocess_compat import windows_hide_flags
-            result = subprocess.run(
-                exec_cmd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=30, env=build_subprocess_env(),
-                creationflags=windows_hide_flags(),  # no console flash on Windows (#56747)
-            )
-            # See #56747.
-            output = result.stdout.strip() or result.stderr.strip()
-            if output:
-                from agent.redact import redact_sensitive_text
-                self._console_print(_rich_text_from_ansi(redact_sensitive_text(output)))
-            else:
-                self._console_print("[dim]Command returned no output[/]")
-        except subprocess.TimeoutExpired:
-            self._console_print("[bold red]Quick command timed out (30s)[/]")
-        except Exception as e:
-            self._console_print(f"[bold red]Quick command error: {e}[/]")
+        result = run_quick_command(exec_cmd)
+        if not result["ok"]:
+            self._console_print(f"[bold red]Quick command error: {_escape(str(result['message']))}[/]")
+        elif result["output"]:
+            self._console_print(_rich_text_from_ansi(result["output"]))
+        else:
+            self._console_print("[dim]Command returned no output[/]")
         return True
 
     def _run_plugin_slash_command(self, base_cmd: str, user_args: str) -> None:

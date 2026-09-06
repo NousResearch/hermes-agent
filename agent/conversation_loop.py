@@ -556,10 +556,11 @@ def _billing_terminal_label(summary: str, unverified: bool) -> str:
 
 def _billing_failure_result(
     *, classified, summary: str, messages, api_call_count: int, provider: str, base_url, model: str,
-    guidance: Optional[str] = None,
+    guidance: Optional[str] = None, **discriminators: Any,
 ) -> dict:
     """Structured terminal result for a billing-classified failure — the single construction
-    point for the non-retryable abort and max-retries paths (#82154)."""
+    point for the non-retryable abort and max-retries paths (#82154). ``discriminators``
+    carries the optional machine codes (``failure_status_code`` / ``failure_errno``)."""
     unverified = bool(getattr(classified, "billing_unverified", False))
     if guidance is None:
         guidance = _billing_or_entitlement_message(
@@ -575,6 +576,9 @@ def _billing_failure_result(
         "failure_retryable": bool(classified.retryable),
         "billing_unverified": unverified,
         "billing_block": _billing_block_dict(provider, base_url, model, guidance, unverified=unverified),
+        # Narrow machine discriminators (status code, OS errno) for the one-shot
+        # usage report — codes only, never provider message text.
+        **discriminators,
     }
 
 

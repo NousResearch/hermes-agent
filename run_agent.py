@@ -201,11 +201,15 @@ class _StreamErrorEvent(Exception):
     """
 
     def __init__(self, message: str, *, code: Optional[str] = None, param: Optional[str] = None,
-                 status_code: Optional[int] = None) -> None:
+                 status_code: Optional[int] = None, error_type: Optional[str] = None) -> None:
         super().__init__(message)
         self.message, self.code, self.param, self.status_code = message, code, param, status_code
         # OpenAI SDK-shaped body so _extract_api_error_context / _summarize_api_error / classify_api_error pick it up.
-        self.body: Dict[str, Any] = {"error": {"message": message, "code": code, "param": param, "type": "error"}}
+        # ``error_type`` preserves the provider's narrow error-type token (e.g. ``usage_limit_reached``)
+        # from the frame when one exists; ``error`` is the spec's generic envelope marker, not a
+        # provider fact, so it is only used as the placeholder when no real type was present.
+        self.body: Dict[str, Any] = {"error": {"message": message, "code": code, "param": param,
+                                               "type": error_type or "error"}}
 
 
 class AIAgent(

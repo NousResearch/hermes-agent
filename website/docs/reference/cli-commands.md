@@ -178,6 +178,8 @@ Same agent, same tools, same skills — just strips every interactive / cosmetic
 
 `hermes -z "…" --usage-file /path/report.json` writes a machine-readable usage report after the run: `estimated_cost_usd`, `input_tokens` / `output_tokens` / `cache_read_tokens` / `cache_write_tokens` / `reasoning_tokens` / `total_tokens`, `api_calls`, `model`, `provider`, `session_id`, `service_tier`, and `completed` / `failed` flags. The report is written **even when the run fails**, so batch pipelines can always account for spend. It has no effect outside `-z`/`--oneshot`, and a broken usage write never masks the run's own outcome.
 
+Failed runs also carry structured terminal-failure facts, so pipelines can distinguish terminal provider-availability and transport classes without parsing message text: `failure_reason` (the runtime error classifier's reason, e.g. `timeout`, `overloaded`, `billing`) and `failure_retryable`, plus three narrow machine discriminators written only when they exist: `failure_status_code` (HTTP status), `failure_errno` (OS errno, e.g. 32 for a broken pipe), and `failure_provider_code` (the provider's sanitized structured error-code token, e.g. `usage_limit_reached` vs `insufficient_quota`, since distinct quota walls share the same reason and status). The provider-code token is resolved with the classifier's own body-extraction semantics, including Codex/Responses-style bodies that place `type` at the top level (no `error` envelope) and Responses SSE `type=error` frames whose narrow type is nested under `error.type`. These fields are codes, never provider message text or body content.
+
 ```bash
 hermes -z "summarize this repo" --usage-file /tmp/usage.json
 jq .estimated_cost_usd /tmp/usage.json

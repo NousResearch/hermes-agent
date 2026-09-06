@@ -29,6 +29,77 @@ from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_
 from agent.turn_retry_state import TurnRetryState
 from utils import base_url_host_matches
 
+
+def _errno_of(error: Exception) -> Optional[int]:
+    """First OS errno on the error or its cause chain (``None`` when absent).
+
+    Transport-level kills (broken pipe, connection reset) surface through SDK
+    wrappers that keep ``.errno`` on an underlying ``OSError``; walking the cause
+    chain finds it without matching on message text.
+    """
+    current: Optional[BaseException] = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        errno_value = getattr(current, "errno", None)
+        if isinstance(errno_value, int) and errno_value > 0:
+            return errno_value
+        cause = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        if cause is current:
+            break
+        current = cause if isinstance(cause, BaseException) else None
+    return None
+
+
+def _failure_discriminators(api_error: Optional[Exception], classified: Any) -> Dict[str, Any]:
+    """Narrow, provider-neutral terminal-failure discriminators for machine reports.
+
+    Written only where a non-``None`` value exists, so clean runs and message-only
+    failures carry no discriminator keys at all. These are codes, never text: the
+    provider's message or body must not travel through them.
+    """
+    discriminators: Dict[str, Any] = {}
+    status_code = getattr(classified, "status_code", None)
+    if isinstance(status_code, int):
+        discriminators["failure_status_code"] = status_code
+    if api_error is not None:
+        errno_value = _errno_of(api_error)
+        if errno_value is not None:
+            discriminators["failure_errno"] = errno_value
+        # The provider's structured error code/type token (e.g.
+        # ``usage_limit_reached``, ``insufficient_quota``) — the same token the
+        # classifier consumed via ``_Ctx.code`` and then dropped. The body is
+        # resolved with the classifier's own cause-chain semantics
+        # (``_extract_error_body``) so a wrapped provider exception yields the
+        # same token the classifier saw, not an empty miss on the wrapper.
+        # Several distinct quota walls collapse onto the same ``billing`` +
+        # status tuple, so the report needs this sanitized single token to
+        # preserve the distinction without carrying message or body text.
+        from agent.error_classifier import _error_obj, _extract_error_body, _extract_error_code
+
+        try:
+            body = _extract_error_body(api_error)
+        except Exception:
+            body = {}
+        try:
+            code = _extract_error_code(body or {})
+        except Exception:
+            code = ""
+        if not code and isinstance(body, dict):
+            # Codex/Responses-style SDK bodies put the narrow error-type token at the TOP level
+            # ({"type": "usage_limit_reached", ...}) with no ``error`` envelope; the classifier's
+            # code extractor reads only code-keys and the envelope, so the token would be lost.
+            # Read it here at the report seam, structured field only — never message parsing.
+            # ``error`` is the SSE frame's generic envelope marker, not a provider fact.
+            for payload in (body, _error_obj(body)):
+                top_type = payload.get("type") if isinstance(payload, dict) else None
+                if isinstance(top_type, str) and top_type.strip() and top_type.strip() != "error":
+                    code = top_type.strip()
+                    break
+        if code:
+            discriminators["failure_provider_code"] = code
+    return discriminators
+
 logger = logging.getLogger("agent.conversation_loop")
 
 
@@ -716,17 +787,34 @@ def nonretryable_client_error_result(
             f"Provider message: {_nonretryable_summary}\n\n"
             f"{_CONTENT_POLICY_RECOVERY_HINT}"
         )
-        return _content_policy_blocked_result(
-            messages, api_call_count, final_response=_policy_response, error_detail=_nonretryable_summary,
-        )
+        return {
+            **_content_policy_blocked_result(
+                messages, api_call_count, final_response=_policy_response, error_detail=_nonretryable_summary,
+            ),
+            # Same classifier-fact contract as every other terminal arm: a
+            # result may not carry discriminators without the reason/retryable
+            # facts they are read alongside.
+            "failure_reason": classified.reason.value,
+            "failure_retryable": bool(classified.retryable),
+            **_failure_discriminators(api_error, classified),
+        }
     # Billing walls get the same structured recovery descriptor as the max-retries path
     # so every surface renders one consistent signal.
     if classified.reason == FailoverReason.billing:
         return _billing_failure_result(
             classified=classified, summary=_nonretryable_summary, messages=messages,
             api_call_count=api_call_count, provider=provider, base_url=base_url, model=model,
+            **_failure_discriminators(api_error, classified),
         )
-    return _failed_turn_result(_nonretryable_summary, messages, api_call_count, _nonretryable_summary)
+    return {
+        **_failed_turn_result(_nonretryable_summary, messages, api_call_count, _nonretryable_summary),
+        # Same classifier-fact contract as every other terminal arm: a result
+        # may not carry discriminators without the reason/retryable facts they
+        # are read alongside (the base failed-turn dict predates those facts).
+        "failure_reason": classified.reason.value,
+        "failure_retryable": bool(classified.retryable),
+        **_failure_discriminators(api_error, classified),
+    }
 
 
 _STREAM_DROP_MARKERS = (
@@ -853,6 +941,9 @@ def max_retries_exhausted_result(
         "billing_unverified": _billing_unverified,
         # Present only for billing walls: (provider, billing_url, is_nous, message).
         "billing_block": _billing_block,
+        # Narrow machine discriminators (status code, OS errno) for the one-shot
+        # usage report — codes only, never provider message text.
+        **_failure_discriminators(api_error, classified),
     })
     return result
 

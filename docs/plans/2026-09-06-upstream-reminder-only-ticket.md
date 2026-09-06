@@ -1,6 +1,6 @@
 ---
 title: "UPSTREAM-REMINDER-ONLY: manual update workflow"
-status: OPEN
+status: IMPLEMENTED
 date: 2026-09-06
 type: ticket
 target_repo: hermes-agent
@@ -33,4 +33,3 @@ deliberate manual code operation.
 - Automatic upstream application.
 - Telegram command execution for updates.
 - Changes to the live Hermes release.
-

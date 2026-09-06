@@ -1,0 +1,1 @@
+cd C:/Users/Admin/AppData/Local/hermes/hermes-agent && grep -n "def tick_once\|def auto_decompose_tick\|spawn_fn\|_spawn" gateway/kanban_watchers_dispatcher.py | head; echo ---; sed -n "$(grep -n 'def tick_once' gateway/kanban_watchers_dispatcher.py | head -1 | cut -d: -f1),+40p" gateway/kanban_watchers_dispatcher.py

@@ -1,0 +1,1 @@
+grep -n "OUT =\|OUT=\|hud_data\|def main\|__main__\|html =\|HTML\|\.write\|panels\|f\"\"\"" /c/Users/Admin/hermes-viz/build_hud.py | head -40; echo ---; sed -n 1,16p /c/Users/Admin/hermes-viz/build_hud.py

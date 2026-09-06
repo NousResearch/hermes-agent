@@ -1,0 +1,1 @@
+cd "C:/Users/Admin/AppData/Local/hermes/cache/delegation/live/deleg_e7e477a8" && grep -ah -oE "(no_agent|monitor|continuity|context_from|deliver|attach_to_session|catch_up|repeat|workdir|skills)[^\"]{0,150}" task-9.log 2>/dev/null | sort -u | head -35

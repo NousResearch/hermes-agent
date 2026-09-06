@@ -1,0 +1,1 @@
+echo "=== cron list ==="; hermes cron list 2>&1 | head -40; echo "=== swarm ==="; for f in C:/Users/Admin/hermes-swarm/logs/*.log; do echo "$(basename $f .log): $(grep -c AGENT_EXIT $f 2>/dev/null)"; done

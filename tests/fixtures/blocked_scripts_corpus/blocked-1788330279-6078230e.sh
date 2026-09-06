@@ -1,0 +1,1 @@
+cd "$LOCALAPPDATA/hermes/research/pe-meta" && echo "=== rag lane monoT5 refs ===" && grep -o "2101\.05667\|2103\.09828\|monoT5[^\"']\{0,80\}" wave2/extra_rag_query_prompting.json | head -8 && echo "=== report monoT5/2103 refs ===" && grep -c "2103\.09828" report/pe_meta_golden_grail.md synthesis/*.md 2>/dev/null; echo "=== verdicts tail ===" && tail -25 synthesis/verdicts.md

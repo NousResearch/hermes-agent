@@ -1,0 +1,1 @@
+cd "$LOCALAPPDATA/Temp/pin_audit" && for id in $(cat ids.txt); do hermes sessions archive "$id" --yes 2>&1 | tail -1; hermes sessions unpin "$id" 2>&1 | tail -1; done > archive_unpin.log 2>&1; echo "OPS_DONE count=$(grep -c -i 'archived\|unpinned' archive_unpin.log)"; grep -ci error archive_unpin.log || true

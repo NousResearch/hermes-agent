@@ -1,0 +1,1 @@
+grep -n "def invoke_hook\|def has_hook\|pre_llm_call" "C:/Users/Admin/AppData/Local/hermes/hermes-agent/hermes_cli/lifecycle.py" | head; echo ===; sed -n "$(grep -n 'def invoke_hook' 'C:/Users/Admin/AppData/Local/hermes/hermes-agent/hermes_cli/lifecycle.py' | cut -d: -f1),+40p" "C:/Users/Admin/AppData/Local/hermes/hermes-agent/hermes_cli/lifecycle.py"

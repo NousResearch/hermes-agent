@@ -1,0 +1,1 @@
+grep -n "def gate\|def load_cells\|return" "$LOCALAPPDATA/hermes/research/flywheel/evidence.py" | head -8; sed -n "$(grep -n 'def load_cells' "$LOCALAPPDATA/hermes/research/flywheel/evidence.py" | cut -d: -f1),+12p" "$LOCALAPPDATA/hermes/research/flywheel/evidence.py"

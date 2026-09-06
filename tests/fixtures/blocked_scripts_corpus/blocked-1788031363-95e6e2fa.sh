@@ -1,0 +1,1 @@
+cd /c/Users/Admin/AppData/Local/hermes/hermes-agent/apps/desktop/src && grep -rhoE "hermesApi<[^>]*>\([^)]*\)|request\(['\"][a-z]+\.[a-z.]+['\"]" . 2>/dev/null | grep -oE "['\"][a-z]+\.[a-z.]+['\"]" | sort | uniq -c | sort -rn | head -60

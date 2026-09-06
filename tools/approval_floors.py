@@ -15,7 +15,8 @@ import time
 import uuid
 from tools import approval_context as _ctx
 from tools.approval_detection import (
-    _MALFORMED_EXEC_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION, _command_detection_variants)
+    _MALFORMED_EXEC_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION, _UNPARSABLE_COMMAND_DESCRIPTION,
+    _command_detection_variants)
 
 logger = logging.getLogger("tools.approval")
 
@@ -51,14 +52,15 @@ def _user_deny_block_result(pattern: str) -> dict:
         "approvals.mode=off. Do NOT retry or rephrase this command; the user has explicitly forbidden it.")}
 
 
-def _save_blocked_payload(command: str) -> str | None:
+def _save_blocked_payload(command: str, reason: str = _PARSER_LIMIT_DESCRIPTION) -> str | None:
     """Persist a parser-limit-blocked command as a runnable script. That block
     fires on payload SIZE/shape, not the operation — usually a legitimate script
     the model inlined. Saving it makes recovery one turn (`bash <file>`) instead
     of two, and is strictly safer than the hint-only path: the file goes through
     the normal execution pipeline (including the referenced-script content guard)
-    and nothing runs here. Returns the path, or None on any failure (hint falls
-    back to write_file)."""
+    and nothing runs here. *reason* states which block fired (parser limit vs
+    unparsable quoting) so the header says what actually happened. Returns the
+    path, or None on any failure (hint falls back to write_file)."""
     try:
         from hermes_constants import get_hermes_home
         script_dir = get_hermes_home() / "cache" / "blocked-scripts"
@@ -72,13 +74,11 @@ def _save_blocked_payload(command: str) -> str | None:
         path = script_dir / f"blocked-{int(time.time())}-{uuid.uuid4().hex[:8]}.sh"
         path.write_text(
             "#!/bin/bash\n"
-            "# Auto-saved by Hermes: this command exceeded the inline command\n"
-            "# parser limit and was blocked from direct execution. Review it,\n"
-            f"# then run it via: bash {path}\n" + command + ("" if command.endswith("\n") else "\n"),
-            # Force UTF-8 + lossy decode so non-UTF-8 child output can't crash the gateway thread on
-            # locale-mismatched Windows (#53137).
-            # Force UTF-8 + lossy decode so non-UTF-8 child output can't crash the gateway thread on
-            # locale-mismatched Windows (#53137).
+            "# Auto-saved by Hermes: this command "
+            + ("exceeded the inline command parser limit" if reason == _PARSER_LIMIT_DESCRIPTION
+               else "could not be parsed for safety review") + " and was blocked from\n"
+            "# direct execution. Review it, then run it via: bash " + str(path) + "\n"
+            + command + ("" if command.endswith("\n") else "\n"),
             # Force UTF-8 + lossy decode so non-UTF-8 child output can't crash the gateway thread on
             # locale-mismatched Windows (#53137).
             encoding="utf-8", errors="replace",
@@ -90,7 +90,7 @@ def _save_blocked_payload(command: str) -> str | None:
 
 
 _RECOVERY_PREFIX = (
-    " RECOVERY: this block fires on oversized/unparseable inline "
+    " RECOVERY: this block fires on unparseable inline "
     "command payloads (heredocs, giant one-liners), not on the operation itself. "
 )
 
@@ -105,9 +105,11 @@ def _hardline_block_result(description: str, command: str = "") -> dict:
         "need to run it, run it yourself in a terminal outside the agent."
     )
     # The parser-limit block is almost always a giant inline payload, not a forbidden operation, and is typically
-    # followed by blind rephrase retries — point at the saved script (or the write_file recipe).
-    if description in (_PARSER_LIMIT_DESCRIPTION, _MALFORMED_EXEC_DESCRIPTION):
-        saved = _save_blocked_payload(command) if command else None
+    # followed by blind rephrase retries — point at the saved script (or the write_file recipe). The same
+    # recovery applies to the unparsable-quoting guard (P-0060): the payload itself is usually fine, it just
+    # needs to go through the file pipeline.
+    if description in (_PARSER_LIMIT_DESCRIPTION, _MALFORMED_EXEC_DESCRIPTION, _UNPARSABLE_COMMAND_DESCRIPTION):
+        saved = _save_blocked_payload(command, reason=description) if command else None
         if saved:
             message += _RECOVERY_PREFIX + (
                 f"Your command was saved to {saved} — review it, then run: terminal(command=\"bash {saved}\"). "

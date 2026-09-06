@@ -1,0 +1,1 @@
+cd /c/Users/Admin/AppData/Local/hermes/hermes-agent && echo '=== desktop api client RPC methods ==='; grep -rnE "request\(['\"][a-z.]+['\"]" apps/desktop/src/api/*.ts apps/desktop/src/**/*.ts 2>/dev/null | grep -oE "request\(['\"][a-zA-Z.]+['\"]" | sort -u | head -80

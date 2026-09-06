@@ -79,8 +79,8 @@ def message_agent_tool_schema() -> dict:
                 "the right recipient; targets: a teammate name (e.g. 'researcher'), "
                 "'<peer>/<agent>' for an agent on a registered peer gateway "
                 "(e.g. 'spark/researcher', or just '<peer>' for the peer's main agent), "
-                "or an agent on another connected machine from your roster (use "
-                "'<handle>@<connection>' if the same handle exists on several)."
+                "or an agent on another connected machine from your roster (always use "
+                "the exact '<handle>@<connection>' target shown there)."
             ),
             "parameters": {
                 "type": "object",
@@ -90,7 +90,9 @@ def message_agent_tool_schema() -> dict:
                         "description": (
                             "Who to message: a teammate profile name from your roster "
                             "('researcher', 'hermes' for the default agent), or "
-                            "'<peer>' / '<peer>/<agent>' for a registered peer gateway."
+                            "'<peer>' / '<peer>/<agent>' for a registered peer gateway, "
+                            "or the exact '<handle>@<connection>' shown for an agent on "
+                            "another connected machine."
                         ),
                     },
                     "message": {

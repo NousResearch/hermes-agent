@@ -77,6 +77,7 @@ MEDIA_IMAGE, MEDIA_VIDEO, MEDIA_FILE, MEDIA_VOICE = 1, 2, 3, 4  # getuploadurl m
 # 292KB passed. A degraded CDN, not a byte limit. Oversized images walk down the ladder; everything
 # is retried. See _upload_media.
 MEDIA_DOWNSCALE_THRESHOLD, MEDIA_UPLOAD_ATTEMPTS, MEDIA_UPLOAD_RETRY_DELAY = 300 * 1024, 3, 2.0
+MEDIA_ORIGINAL_ATTEMPTS = 1  # oversized original, only when a smaller fallback exists — see _upload_media
 MEDIA_DOWNSCALE_LADDER = ((1400, 90), (1280, 88), (1024, 85))  # (max width px, JPEG quality)
 ITEM_TEXT, ITEM_IMAGE, ITEM_VOICE, ITEM_FILE, ITEM_VIDEO = 1, 2, 3, 4, 5  # item_list entry types
 MSG_TYPE_BOT, MSG_STATE_FINISH = 2, 2
@@ -1285,15 +1286,20 @@ class WeixinAdapter(BasePlatformAdapter):
                 if smaller and len(smaller) < len(plaintext):
                     candidates.append((f"{Path(filename).stem}.jpg", smaller))
         last_exc: Optional[BaseException] = None
-        for name, data in candidates:
-            for attempt in range(1, MEDIA_UPLOAD_ATTEMPTS + 1):
+        for index, (name, data) in enumerate(candidates):
+            # An oversized original gets ONE shot once a smaller fallback exists: measured 33% success
+            # at ~65s per try against 100% at ~10s downscaled, so retrying it costs minutes of latency
+            # for a payload the recipient's client re-compresses anyway. With no fallback (non-image,
+            # already small, Pillow missing, undecodable) it keeps the full retry budget.
+            attempts = MEDIA_ORIGINAL_ATTEMPTS if index == 0 and len(candidates) > 1 else MEDIA_UPLOAD_ATTEMPTS
+            for attempt in range(1, attempts + 1):
                 try:
                     return (name, *await self._upload_once(chat_id, data, media_type))
                 except Exception as exc:
                     last_exc = exc
                     logger.warning("[%s] media upload failed (%s, %d bytes, attempt %d/%d): %s",
-                                   self.name, name, len(data), attempt, MEDIA_UPLOAD_ATTEMPTS, exc)
-                    if attempt < MEDIA_UPLOAD_ATTEMPTS:
+                                   self.name, name, len(data), attempt, attempts, exc)
+                    if attempt < attempts:
                         await asyncio.sleep(MEDIA_UPLOAD_RETRY_DELAY * attempt)
         raise last_exc or RuntimeError("media upload failed with no candidates")
 

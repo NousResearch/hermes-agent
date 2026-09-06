@@ -118,6 +118,19 @@ def _event_state(delegation_id: str):
         ).fetchone()
 
 
+def _take_over_event_claim(delegation_id: str, claim_id: str) -> None:
+    """Atomically simulate another consumer winning an expired delivery lease."""
+    now = time.time()
+    with ad._DB_LOCK, ad._transaction() as conn:
+        changed = conn.execute(
+            "UPDATE async_delegations SET delivery_claim=?, "
+            "delivery_claimed_at=?, delivery_attempts=delivery_attempts+1, "
+            "updated_at=? WHERE delegation_id=? AND delivery_state='pending'",
+            (claim_id, now, now, delegation_id),
+        ).rowcount
+    assert changed == 1
+
+
 def _loop_response(*, content, finish_reason="stop", tool_calls=None):
     message = SimpleNamespace(content=content, tool_calls=tool_calls)
     choice = SimpleNamespace(message=message, finish_reason=finish_reason)
@@ -594,6 +607,147 @@ def test_pending_claim_heartbeat_renews_until_ack(monkeypatch):
     heartbeat = agent._delegation_inject_claim_heartbeat
     heartbeat["thread"].join(timeout=1)
     assert not heartbeat["thread"].is_alive()
+
+
+def test_owner_loss_retires_local_latch_and_next_turn_can_inject(monkeypatch):
+    """A foreign takeover cannot strand this cached parent after its old turn."""
+    monkeypatch.setattr(
+        inject, "_CLAIM_HEARTBEAT_INTERVAL_SECONDS", 0.01, raising=False
+    )
+    first_id = _record(turn_id="turn-old")
+    assert _complete_unit(first_id, _child(0, "old carrier"))
+    agent = _tool_boundary_agent()
+    agent._active_turn_id = "turn-old"
+    old_messages = [
+        {"role": "tool", "tool_call_id": "old", "content": "old original"}
+    ]
+    agent._session_messages = old_messages
+
+    assert attach_ready_injects_to_tool_results(
+        agent, old_messages, num_tool_msgs=1, turn_id="turn-old"
+    ) == 1
+    old_entry = agent._pending_delegation_inject_claims[0]
+    foreign_claim = "other-consumer:999:takeover"
+    _take_over_event_claim(first_id, foreign_claim)
+
+    deadline = time.monotonic() + 1
+    while (
+        not old_entry.get(inject._CLAIM_ABANDONED_KEY)
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.005)
+    assert old_entry.get(inject._CLAIM_ABANDONED_KEY) is True
+    heartbeat = agent._delegation_inject_claim_heartbeat
+    heartbeat["thread"].join(timeout=1)
+    assert not heartbeat["thread"].is_alive()
+
+    # Old-turn finalization restores the uncommitted result but neither releases
+    # nor requeues the row now owned by the foreign consumer.
+    assert release_pending_injects(agent, old_messages, turn_id="turn-old") == 1
+    assert old_messages == [
+        {"role": "tool", "tool_call_id": "old", "content": "old original"}
+    ]
+    assert not agent._pending_delegation_inject_claims
+    assert process_registry.completion_queue.empty()
+    assert _event_state(first_id) == ("pending", 2)
+    assert ad.complete_completion_delivery(first_id, foreign_claim)
+
+    # The same cached parent starts another turn. Its next result must not be
+    # rejected by the dead latch from turn-old.
+    agent._active_turn_id = "turn-next"
+    second_id = _record(turn_id="turn-next")
+    assert _complete_unit(second_id, _child(0, "new turn evidence"))
+    new_messages = [
+        {"role": "tool", "tool_call_id": "new", "content": "new original"}
+    ]
+    agent._session_messages = new_messages
+    assert attach_ready_injects_to_tool_results(
+        agent, new_messages, num_tool_msgs=1, turn_id="turn-next"
+    ) == 1
+    assert "new turn evidence" in new_messages[0]["content"]
+    new_messages[0]["_db_persisted"] = True
+    assert acknowledge_pending_injects(agent, turn_id="turn-next") == 1
+    agent._delegation_inject_claim_heartbeat["thread"].join(timeout=1)
+
+
+def test_failed_ack_after_owner_loss_prunes_stale_local_entry():
+    """A persisted carrier does not retain a token now owned by another consumer."""
+    delegation_id = _record(turn_id="turn-current")
+    assert _complete_unit(delegation_id, _child(0, "persisted stale carrier"))
+    agent = _tool_boundary_agent()
+    messages = [
+        {"role": "tool", "tool_call_id": "tc", "content": "original"}
+    ]
+    agent._session_messages = messages
+    assert attach_ready_injects_to_tool_results(
+        agent, messages, num_tool_msgs=1, turn_id="turn-current"
+    ) == 1
+    heartbeat = agent._delegation_inject_claim_heartbeat
+    heartbeat["stop"].set()
+    heartbeat["thread"].join(timeout=1)
+
+    foreign_claim = "other-consumer:999:ack-takeover"
+    _take_over_event_claim(delegation_id, foreign_claim)
+    messages[0]["_db_persisted"] = True
+
+    assert acknowledge_pending_injects(agent, turn_id="turn-current") == 0
+    assert not agent._pending_delegation_inject_claims
+    assert "persisted stale carrier" in messages[0]["content"]
+    assert "_delegation_delivery_original_content" not in messages[0]
+    assert "_delegation_event_ids" not in messages[0]
+    assert _event_state(delegation_id) == ("pending", 2)
+    assert ad.complete_completion_delivery(delegation_id, foreign_claim)
+
+
+def test_uncertain_previous_turn_claim_does_not_block_current_turn(monkeypatch):
+    """Even a conservatively retained old entry is not a process-lifetime latch."""
+    first_id = _record(turn_id="turn-old")
+    assert _complete_unit(first_id, _child(0, "old uncertain carrier"))
+    agent = _tool_boundary_agent()
+    agent._active_turn_id = "turn-old"
+    old_messages = [
+        {"role": "tool", "tool_call_id": "old", "content": "old original"}
+    ]
+    agent._session_messages = old_messages
+    assert attach_ready_injects_to_tool_results(
+        agent, old_messages, num_tool_msgs=1, turn_id="turn-old"
+    ) == 1
+    old_entry = agent._pending_delegation_inject_claims[0]
+    heartbeat = agent._delegation_inject_claim_heartbeat
+    heartbeat["stop"].set()
+    heartbeat["thread"].join(timeout=1)
+
+    # A transient release failure is uncertain: retain the exact token for retry.
+    with monkeypatch.context() as scoped:
+        scoped.setattr(ad, "release_event_delivery", lambda *_args: False)
+        assert release_pending_injects(
+            agent, old_messages, turn_id="turn-old"
+        ) == 0
+    assert agent._pending_delegation_inject_claims == [old_entry]
+
+    agent._active_turn_id = "turn-next"
+    second_id = _record(turn_id="turn-next")
+    assert _complete_unit(second_id, _child(0, "current turn evidence"))
+    new_messages = [
+        {"role": "tool", "tool_call_id": "new", "content": "new original"}
+    ]
+    agent._session_messages = new_messages
+    assert attach_ready_injects_to_tool_results(
+        agent, new_messages, num_tool_msgs=1, turn_id="turn-next"
+    ) == 1
+    assert old_entry.get(inject._CLAIM_ABANDONED_KEY) is True
+    assert "current turn evidence" in new_messages[0]["content"]
+    assert len(agent._pending_delegation_inject_claims) == 2
+
+    new_messages[0]["_db_persisted"] = True
+    assert acknowledge_pending_injects(agent, turn_id="turn-next") == 1
+    assert agent._pending_delegation_inject_claims == [old_entry]
+    agent._delegation_inject_claim_heartbeat["thread"].join(timeout=1)
+
+    # Settle the retained row and let ordinary cleanup remove its RAM entry.
+    assert ad.complete_event_delivery(old_entry["event"], old_entry["claim_id"])
+    assert release_pending_injects(agent, old_messages, turn_id="turn-old") == 1
+    assert not agent._pending_delegation_inject_claims
 
 
 def test_run_conversation_inject_transport_normalize_and_ack(monkeypatch, tmp_path):

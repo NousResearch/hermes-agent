@@ -78,6 +78,27 @@ CHARS_PER_TOKEN = 4.0
 
 
 @dataclass(frozen=True)
+class PlatformOverride:
+    """Per-platform adjustments to the default tool classification.
+
+    ``defer``   — names removed from the core set, making them deferrable.
+    ``exclude`` — names dropped from the tool array entirely.
+    ``pin``     — names forced to stay visible even when a rule would defer
+                  them (notably the ``mcp-`` prefix rule): an agent must never
+                  have to search for its primary delegation path.
+
+    Bridge tools are never affected by any of the three.
+    """
+
+    defer: frozenset = frozenset()
+    exclude: frozenset = frozenset()
+    pin: frozenset = frozenset()
+
+
+_EMPTY_OVERRIDE = PlatformOverride()
+
+
+@dataclass(frozen=True)
 class ToolSearchConfig:
     """Resolved, validated tool-search configuration for a single assembly."""
 
@@ -101,6 +122,24 @@ class ToolSearchConfig:
     # Absolute cap on the embedded listing, regardless of context size.
     # Effective budget = min(listing_max_tokens, threshold_pct% of context).
     listing_max_tokens: int = 4000
+    # Per-platform classification overrides, keyed by the interface platform
+    # ("cli", "telegram", "discord", "whatsapp", ...).  Platform is the right
+    # key because it is what the caller actually knows: a toolset PRESET name
+    # is resolved to individual toolset names long before tool assembly, so it
+    # is not available here, whereas ``platform`` is already threaded into
+    # agent setup.  Stored as a tuple of pairs so the dataclass stays frozen
+    # AND hashable.  Empty by default: with no ``platforms`` key the
+    # classification is byte-identical to the built-in behaviour.
+    platforms: Tuple[Tuple[str, PlatformOverride], ...] = ()
+
+    def override_for(self, platform: Optional[str]) -> PlatformOverride:
+        """Return the override for *platform*, or an empty one."""
+        if not platform:
+            return _EMPTY_OVERRIDE
+        for name, override in self.platforms:
+            if name == platform:
+                return override
+        return _EMPTY_OVERRIDE
 
     @classmethod
     def from_raw(cls, raw: Any) -> "ToolSearchConfig":
@@ -150,6 +189,8 @@ class ToolSearchConfig:
             listing = "auto"
         listing_max_tokens = max(200, min(60000, _safe_int(raw.get("listing_max_tokens"), 4000)))
 
+        platforms = _parse_platforms(raw.get("platforms"))
+
         return cls(
             enabled=enabled,
             threshold_pct=threshold_pct,
@@ -157,7 +198,35 @@ class ToolSearchConfig:
             max_search_limit=max_search_limit,
             listing=listing,
             listing_max_tokens=listing_max_tokens,
+            platforms=platforms,
         )
+
+
+def _parse_platforms(raw: Any) -> Tuple[Tuple[str, PlatformOverride], ...]:
+    """Parse the ``platforms`` config block into hashable overrides.
+
+    Malformed entries are skipped rather than raised, matching the rest of
+    ``from_raw``: a typo in user config must not break tool loading.
+    """
+    if not isinstance(raw, dict):
+        return ()
+    out = []
+    for platform, spec in raw.items():
+        if not isinstance(spec, dict):
+            continue
+
+        def _names(key: str) -> frozenset:
+            v = spec.get(key)
+            if isinstance(v, str):
+                v = [v]
+            if not isinstance(v, (list, tuple, set)):
+                return frozenset()
+            return frozenset(str(x).strip() for x in v if str(x).strip())
+
+        out.append((str(platform), PlatformOverride(defer=_names("defer"),
+                                                    exclude=_names("exclude"),
+                                                    pin=_names("pin"))))
+    return tuple(out)
 
 
 def _safe_int(value: Any, fallback: int) -> int:
@@ -206,12 +275,30 @@ def _core_tool_names() -> frozenset[str]:
         return frozenset()
 
 
+def _effective_core_names(override: Optional[PlatformOverride] = None) -> frozenset:
+    """Core names after applying a preset override.
+
+    ``defer`` removes names from the core set (making them deferrable);
+    ``pin`` adds names to it (forcing them to stay visible).  ``pin`` is
+    applied last so it wins on any overlap.
+    """
+    core = _core_tool_names()
+    if override is None:
+        return core
+    if override.defer:
+        core = core - override.defer
+    if override.pin:
+        core = core | override.pin
+    return core
+
+
 # Session-gated GUI toolsets. Off ``_HERMES_CORE_TOOLS`` so non-GUI clients
 # never pay their schema; once a session enables them they stay direct.
 _DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project"})
 
 
-def is_deferrable_tool_name(name: str) -> bool:
+def is_deferrable_tool_name(name: str,
+                            override: Optional[PlatformOverride] = None) -> bool:
     """Return True if a tool with this name is *eligible* for deferral.
 
     A tool is deferrable iff it is registered with an MCP toolset prefix
@@ -222,7 +309,12 @@ def is_deferrable_tool_name(name: str) -> bool:
     """
     if name in BRIDGE_TOOL_NAMES:
         return False
-    if name in _core_tool_names():
+    # A pinned name is never deferred, whatever any later rule says — this
+    # must precede the MCP-prefix branch below, which would otherwise defer
+    # an MCP tool the operator explicitly pinned.
+    if override is not None and name in override.pin:
+        return False
+    if name in _effective_core_names(override):
         return False
     # Check registry toolset for MCP prefix.
     try:
@@ -240,7 +332,8 @@ def is_deferrable_tool_name(name: str) -> bool:
         return False
 
 
-def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def classify_tools(tool_defs: List[Dict[str, Any]],
+                   override: Optional[PlatformOverride] = None) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Split a tool-defs list into (visible, deferrable).
 
     ``visible`` retains every tool that must stay in the model-facing array:
@@ -256,7 +349,7 @@ def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
             # Should never happen — bridge tools are added after classification —
             # but be defensive.
             continue
-        if is_deferrable_tool_name(name):
+        if is_deferrable_tool_name(name, override):
             deferrable.append(td)
         else:
             visible.append(td)
@@ -787,6 +880,7 @@ def assemble_tool_defs(
     *,
     context_length: Optional[int] = None,
     config: Optional[ToolSearchConfig] = None,
+    platform: Optional[str] = None,
 ) -> AssemblyResult:
     """Return the tool-defs list the model should actually see.
 
@@ -804,10 +898,23 @@ def assemble_tool_defs(
 
     # Defensive: strip any bridge tools that may already be in the list
     # (e.g. someone called assemble twice).
+    override = config.override_for(platform)
+
     incoming = [td for td in tool_defs
                 if (td.get("function") or {}).get("name") not in BRIDGE_TOOL_NAMES]
 
-    visible, deferrable = classify_tools(incoming)
+    # ``exclude`` drops a tool from the array entirely — for capabilities that
+    # are present but non-functional, where even a catalog entry is wasted
+    # context. Bridge tools are already filtered out above and so are immune.
+    if override.exclude:
+        before = len(incoming)
+        incoming = [td for td in incoming
+                    if (td.get("function") or {}).get("name") not in override.exclude]
+        if before != len(incoming):
+            logger.info("tool_search: platform %r excluded %d tool(s): %s",
+                        platform, before - len(incoming), sorted(override.exclude))
+
+    visible, deferrable = classify_tools(incoming, override)
     if not deferrable:
         return AssemblyResult(tool_defs=incoming, activated=False)
 

@@ -1000,9 +1000,12 @@ gateway:
       extra:
         rich_messages: true
         rich_drafts: false
+        allow_cjk_rich_messages: true   # optional: native rich for Chinese/Japanese/Korean content
 ```
 
 This setting is for client-rendering/copy compatibility; Hermes already falls back automatically when Telegram rejects the rich API call. `rich_drafts` controls whether the DM streaming preview *renders* rich (`sendRichMessageDraft`) and stays off by default because Telegram Desktop/macOS can visually overlay rich draft frames until the chat redraws; with it off, the preview streams plain and the final still arrives as a native Rich Message. If you only want the legacy "always code-block" table behavior while keeping rich messages enabled, disable table normalization by setting `telegram.pretty_tables: false` in `config.yaml` (default: `true`).
+
+**CJK content.** By default, messages containing Chinese/Japanese/Korean characters are kept on the legacy MarkdownV2 path even when `rich_messages: true` — Telegram Desktop/macOS historically rendered Bot API 10.1 rich CJK payloads with overlapping glyph artifacts ([#47653](https://github.com/NousResearch/hermes-agent/issues/47653)). Telegram clients fixed this in their 2026-07/08 updates. If you are on an up-to-date client and want native rich rendering (tables, task lists, `<details>`, math) for CJK content, set `allow_cjk_rich_messages: true` in the Telegram platform `extra` section. The default stays safe for clients that still exhibit the garble.
 
 **Link previews.** Telegram auto-generates link previews for URLs in bot messages. If you'd rather suppress those (long `/tools` output, agent reply that mentions ten links, etc.):
 

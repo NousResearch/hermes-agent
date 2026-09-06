@@ -894,9 +894,12 @@ gateway:
     telegram:
       extra:
         rich_messages: true
+        allow_cjk_rich_messages: true   # 可选：为中日韩内容启用原生富消息
 ```
 
 这个设置用于客户端渲染/复制兼容性；当 Telegram 拒绝富消息 API 调用时，Hermes 已经会自动回退。如果你只是想在保持富消息启用的同时恢复旧版「始终使用代码块」表格行为，可在 `config.yaml` 中设置 `telegram.pretty_tables: false` 禁用表格规范化（默认：`true`）。
+
+**中日韩（CJK）内容。** 默认情况下，即使开启 `rich_messages: true`，含中文/日文/韩文的消息仍会走旧版 MarkdownV2 路径——Telegram Desktop/macOS 曾将 Bot API 10.1 的富 CJK 载荷渲染成重叠字形（[#47653](https://github.com/NousResearch/hermes-agent/issues/47653)）。Telegram 客户端已在 2026 年 7/8 月的更新中修复此问题。如果你使用新版客户端，并希望 CJK 内容（表格、任务列表、`<details>`、公式）走原生富渲染，可在 Telegram 平台的 `extra` 段设置 `allow_cjk_rich_messages: true`。默认保持安全，不影响仍受字形重叠影响的客户端。
 
 **链接预览。** Telegram 会为机器人消息中的 URL 自动生成链接预览。如果你希望抑制这些预览（长 `/tools` 输出、提及十个链接的 Agent 回复等）：
 

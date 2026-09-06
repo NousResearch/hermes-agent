@@ -1475,6 +1475,9 @@ DEFAULT_CONFIG = {
             # Experimental rich draft previews while streaming DMs; off because Telegram
             # Desktop/macOS can overlay draft frames until the chat redraws.
             "rich_drafts": False,
+            # CJK rich rendering stays on the safe legacy MarkdownV2 path unless users on
+            # unaffected clients explicitly accept the client-side glyph-rendering risk (#47653).
+            "allow_cjk_rich_messages": False,
         },
     },
 

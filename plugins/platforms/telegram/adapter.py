@@ -437,6 +437,13 @@ class TelegramAdapter(BasePlatformAdapter):
         # but skips rich draft rendering; the final reply still lands via sendRichMessage.
         self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
         self._rich_drafts_enabled: bool = self._coerce_bool_extra("rich_drafts", False)
+        # Telegram Desktop/Mac once rendered Bot API 10.1 rich CJK payloads with overlapping glyph
+        # artifacts (#47653), so CJK stays on the legacy path by default.  Users on unaffected clients
+        # (fixed in 2026-07/08 client updates) can explicitly accept that risk to recover native
+        # rich-only constructs (pipe tables, task lists, <details>, math) for CJK content.
+        self._allow_cjk_rich_messages: bool = self._coerce_bool_extra(
+            "allow_cjk_rich_messages", False
+        )
         self._rich_send_disabled = self._rich_draft_disabled = False  # latched after a capability failure
         # Transient sendChatAction failures recur on every keep-typing tick; back off per chat.
         self._telegram_typing_cooldown_until: Dict[str, float] = {}
@@ -1237,10 +1244,16 @@ class TelegramAdapter(BasePlatformAdapter):
     def _has_telegram_desktop_cjk_rich_garble_shape(self, content: str) -> bool:
         """True for CJK content: Telegram Mac/Desktop rich rendering leaves overlapping glyphs.
 
-        Telegram Mac/Desktop Bot API 10.1 rich-message rendering currently leaves overlapping draft/overlay
-        glyph artifacts for CJK text (#47653). The legacy MarkdownV2 path renders the same text cleanly, so
-        skip rich delivery up front until affected clients age out.
+        Telegram Mac/Desktop Bot API 10.1 rich-message rendering historically left overlapping draft/overlay
+        glyph artifacts for CJK text (#47653). Clients fixed this in their 2026-07/08 updates; the legacy
+        MarkdownV2 path renders CJK cleanly everywhere, so by default we skip rich delivery up front.
+
+        Users on unaffected clients can opt in to native CJK rich rendering via
+        ``platforms.telegram.extra.allow_cjk_rich_messages: true`` in config.yaml, restoring rich-only
+        constructs (pipe tables, task lists, <details>, block math) for CJK content.
         """
+        if getattr(self, "_allow_cjk_rich_messages", False):
+            return False
         return bool(content and self._RICH_CJK_RE.search(content))
 
     def _needs_rich_rendering(self, content: str) -> bool:

@@ -126,6 +126,44 @@ async def test_astral_cjk_rich_content_skips_rich_send_to_avoid_tdesktop_garble(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("content", [CJK_RICH_CONTENT, ASTRAL_CJK_RICH_CONTENT])
+async def test_cjk_rich_content_can_be_opted_in_for_send(content):
+    """allow_cjk_rich_messages: true restores native rich delivery for CJK content."""
+    adapter = _make_adapter(extra={"allow_cjk_rich_messages": True})
+
+    result = await adapter.send("12345", content)
+
+    assert result.success is True
+    api_kwargs = _rich_api_kwargs(adapter)
+    assert api_kwargs["rich_message"]["markdown"] == content
+    adapter._bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cjk_rich_content_opt_in_uses_rich_draft():
+    """CJK opt-in also covers the rich draft path."""
+    adapter = _make_adapter(extra={"rich_drafts": True, "allow_cjk_rich_messages": True})
+
+    result = await adapter.send_draft("12345", draft_id=7, content=CJK_RICH_CONTENT)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_awaited_once()
+    adapter._bot.send_message_draft.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cjk_rich_content_default_still_skips_rich_send():
+    """Default (no opt-in) keeps CJK on the legacy MarkdownV2 path."""
+    adapter = _make_adapter()
+
+    result = await adapter.send("12345", CJK_RICH_CONTENT)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_plain_markdown_stays_on_legacy_path():
     """Ordinary replies (no table/task-list/details/math) stay on the legacy
     MarkdownV2 path for consistent client rendering, even with rich enabled."""
@@ -832,3 +870,34 @@ async def test_rich_reply_records_and_recovers_text(monkeypatch, tmp_path):
     )
     assert event.reply_to_message_id == "678"
     assert event.reply_to_text == "Your morning briefing: CI is green."
+
+
+@pytest.mark.asyncio
+async def test_finalize_edit_cjk_opt_in_uses_rich_edit():
+    """CJK opt-in also covers the finalize-edit path: a streamed preview
+    containing CJK + a table finalizes via editMessageText's rich_message
+    param when allow_cjk_rich_messages is enabled."""
+    adapter = _make_adapter(extra={"allow_cjk_rich_messages": True})
+
+    result = await adapter.edit_message(
+        "12345", "555", CJK_RICH_CONTENT, finalize=True,
+    )
+
+    assert result.success is True
+    api_kwargs = _rich_edit_kwargs(adapter)
+    assert api_kwargs["rich_message"]["markdown"] == CJK_RICH_CONTENT
+    adapter._bot.edit_message_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_finalize_edit_cjk_default_skips_rich_edit():
+    """Default (no opt-in) keeps CJK finalize-edit on the legacy edit path."""
+    adapter = _make_adapter()
+
+    result = await adapter.edit_message(
+        "12345", "555", CJK_RICH_CONTENT, finalize=True,
+    )
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.edit_message_text.assert_awaited_once()

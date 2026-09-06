@@ -2905,8 +2905,26 @@ def _unhealthy_cache_key(provider: str, base_url: Optional[str] = None) -> Any:
     label = _normalize_chain_label(provider)
     endpoint = str(base_url or "").strip().lower().rstrip("/")
     if endpoint and (label == "local/custom" or label.startswith("custom:")):
-        return label, endpoint
+        return "custom-endpoint", endpoint
     return label
+
+
+def _custom_health_base_url(provider: str, explicit_base_url: Optional[str] = None) -> str:
+    """Return the concrete custom endpoint used to scope health and failed-route checks."""
+    explicit = str(explicit_base_url or "").strip()
+    if explicit:
+        return explicit
+    label = _normalize_chain_label(provider)
+    if label.startswith("custom:"):
+        with contextlib.suppress(ImportError):
+            from hermes_cli.runtime_provider import _get_named_custom_provider
+            entry = _get_named_custom_provider(provider)
+            if entry:
+                return str(entry.get("base_url") or "").strip()
+        return ""
+    if label == "local/custom":
+        return _current_custom_base_url()
+    return ""
 
 
 def _mark_provider_unhealthy(
@@ -3780,7 +3798,7 @@ def _try_payment_fallback(
         failed_provider, None, failed_base_url=failed_base_url, failure_scope=failure_scope)
     tried = []
     for label, try_fn in _get_provider_chain():
-        candidate_base_url = _current_custom_base_url() if label == "local/custom" else ""
+        candidate_base_url = _custom_health_base_url(label)
         if (not failed_base_url and label in skip_chain_labels) or skip_backend(
                 label, None, candidate_base_url):
             continue
@@ -3836,7 +3854,7 @@ def _try_main_agent_model_fallback(
         main_provider, main_model = _agg_provider, _agg_model
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
         return None, None, ""
-    main_base_url = _current_custom_base_url() if _normalize_chain_label(main_provider) == "local/custom" else ""
+    main_base_url = _custom_health_base_url(main_provider)
     if _failed_backend_skip(
             failed_provider, failed_model, failed_base_url=failed_base_url,
             failure_scope=failure_scope)(main_provider, main_model, main_base_url):
@@ -3931,7 +3949,7 @@ def _try_configured_fallback_chain(
         if not fb_provider:
             continue
         fb_model_raw = str(entry.get("model", "")).strip()
-        fb_base_url = str(entry.get("base_url") or "")
+        fb_base_url = _custom_health_base_url(fb_provider, entry.get("base_url"))
         if skip(fb_provider, fb_model_raw, fb_base_url):
             continue
         if _is_provider_unhealthy(fb_provider, fb_base_url):
@@ -4023,7 +4041,7 @@ def _try_main_fallback_chain(
             continue
         fb_norm = fb_provider.lower()
         label = f"fallback_providers[{i}]({fb_provider})"
-        fb_base_url = str(entry.get("base_url") or "")
+        fb_base_url = _custom_health_base_url(fb_provider, entry.get("base_url"))
         if fb_norm == "auto" or skip(fb_provider, fb_model, fb_base_url):
             tried.append(f"{label} (skipped)")
             continue
@@ -4105,6 +4123,7 @@ def _try_main_provider_route(
         return None
     resolved_provider = main_provider
     explicit_base_url = runtime_base_url or None
+    health_base_url = _custom_health_base_url(main_provider, explicit_base_url)
     explicit_api_key = None
     if runtime_base_url and main_provider == "custom":
         # Anonymous custom endpoint — pass through explicit base_url + api_key.
@@ -4131,8 +4150,8 @@ def _try_main_provider_route(
         explicit_api_key = runtime_api_key
     # Skip if the main provider was recently 402'd (unhealthy TTL bounds the bypass).
     main_chain_label = _normalize_chain_label(resolved_provider)
-    if main_chain_label and _is_provider_unhealthy(main_chain_label, explicit_base_url):
-        _log_skip_unhealthy(main_chain_label, base_url=explicit_base_url)
+    if main_chain_label and _is_provider_unhealthy(main_chain_label, health_base_url):
+        _log_skip_unhealthy(main_chain_label, base_url=health_base_url)
         return None
     client, resolved = resolve_provider_client(
         resolved_provider, main_model, explicit_base_url=explicit_base_url,
@@ -4148,7 +4167,7 @@ def _try_discovery_chain() -> Tuple[Optional[OpenAI], Optional[str], str]:
     """Step 3: hardcoded aggregator/fallback chain, skipping unhealthy providers."""
     tried = []
     for label, try_fn in _get_provider_chain():
-        candidate_base_url = _current_custom_base_url() if label == "local/custom" else ""
+        candidate_base_url = _custom_health_base_url(label)
         if _is_provider_unhealthy(label, candidate_base_url):
             _log_skip_unhealthy(label, base_url=candidate_base_url)
             tried.append(f"{label} (unhealthy)")

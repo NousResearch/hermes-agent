@@ -13,6 +13,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 import hermes_yaml as yaml
+from fastapi import Request
 
 from hermes_cli.config import (
     reload_env,

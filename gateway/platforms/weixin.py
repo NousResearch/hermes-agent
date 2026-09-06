@@ -72,6 +72,12 @@ MAX_CONSECUTIVE_FAILURES, RETRY_DELAY_SECONDS, BACKOFF_DELAY_SECONDS = 3, 2, 30
 SESSION_EXPIRED_ERRCODE, RATE_LIMIT_ERRCODE = -14, -2  # -2: iLink frequency limit — backoff and retry
 MESSAGE_DEDUP_TTL_SECONDS = 300
 MEDIA_IMAGE, MEDIA_VIDEO, MEDIA_FILE, MEDIA_VOICE = 1, 2, 3, 4  # getuploadurl media_type
+# The weixin CDN 500s intermittently on upload, and far more often as the payload grows — measured
+# 2026-09-06: a 2.5MB PNG failed 5/5 while a 290KB JPEG went first time, yet 167KB failed once and
+# 292KB passed. A degraded CDN, not a byte limit. Oversized images walk down the ladder; everything
+# is retried. See _upload_media.
+MEDIA_DOWNSCALE_THRESHOLD, MEDIA_UPLOAD_ATTEMPTS, MEDIA_UPLOAD_RETRY_DELAY = 300 * 1024, 3, 2.0
+MEDIA_DOWNSCALE_LADDER = ((1400, 90), (1280, 88), (1024, 85))  # (max width px, JPEG quality)
 ITEM_TEXT, ITEM_IMAGE, ITEM_VOICE, ITEM_FILE, ITEM_VIDEO = 1, 2, 3, 4, 5  # item_list entry types
 MSG_TYPE_BOT, MSG_STATE_FINISH = 2, 2
 TYPING_START, TYPING_STOP = 1, 2
@@ -88,6 +94,35 @@ def _is_stale_session_ret(ret: "Optional[int]", errcode: "Optional[int]", errmsg
 
 def _is_session_expired(resp: Dict[str, Any], ret: Any, errcode: Any) -> bool:
     return SESSION_EXPIRED_ERRCODE in (ret, errcode) or _is_stale_session_ret(ret, errcode, resp.get("errmsg"))
+
+
+def _coerce_ilink_code(value: Any) -> Optional[int]:
+    """Normalise an iLink ret/errcode to int — getuploadurl answers the string '-1' where getupdates answers int 0,
+    so comparing the raw value against 0 misclassifies string codes. Unparseable => None ("no code reported")."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _assert_sendmessage_ok(resp: Optional[Dict[str, Any]], *, what: str) -> None:
+    """Raise if a sendmessage response reports failure. _api_request only raises on HTTP-level errors, so a message
+    iLink *rejected* (rate limit -2, expired session -14) arrives as an ordinary 200 dict. The text path checks this
+    inline in _send_text_chunk; the media path did not, so a rejected attachment still returned its locally generated
+    client_id and surfaced as SendResult(success=True) — a receipt for a delivery that never happened."""
+    if not isinstance(resp, dict):
+        return
+    ret, errcode = _coerce_ilink_code(resp.get("ret")), _coerce_ilink_code(resp.get("errcode"))
+    if ret in (None, 0) and errcode in (None, 0):
+        return
+    detail = f"ret={ret} errcode={errcode} errmsg={resp.get('errmsg') or resp.get('msg') or 'unknown error'}"
+    if _is_session_expired(resp, ret, errcode):
+        raise RuntimeError(f"iLink session expired sending {what}: {detail}")
+    if ret == RATE_LIMIT_ERRCODE or errcode == RATE_LIMIT_ERRCODE:
+        raise RuntimeError(f"iLink sendmessage rate limited sending {what}: {detail}")
+    raise RuntimeError(f"iLink sendmessage error sending {what}: {detail}")
 
 
 def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
@@ -331,6 +366,27 @@ async def _get_upload_url(
         "filekey": filekey, "media_type": media_type, "to_user_id": to_user_id, "rawsize": rawsize, "rawfilemd5": rawfilemd5,
         "filesize": filesize, "no_need_thumb": True, "aeskey": aeskey_hex}
     return await _api_post(session, base_url=base_url, endpoint=EP_GET_UPLOAD_URL, payload=payload, token=token, timeout_ms=API_TIMEOUT_MS)
+
+
+def _downscale_image(data: bytes, max_width: int, quality: int) -> "Optional[bytes]":
+    """Re-encode *data* as a JPEG at most *max_width* wide. None if Pillow is missing or the bytes are
+    not a decodable image, so callers fall back to sending the original untouched."""
+    try:
+        import io
+
+        from PIL import Image
+    except ImportError:
+        return None
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            im = im.convert("RGB")
+            width = min(max_width, im.width)
+            resized = im.resize((width, max(1, round(im.height * width / im.width))), Image.LANCZOS)
+            buf = io.BytesIO()
+            resized.save(buf, "JPEG", quality=quality, optimize=True)
+            return buf.getvalue()
+    except Exception:  # not an image, truncated, unsupported mode — send the original instead
+        return None
 
 
 async def _upload_ciphertext(session: "aiohttp.ClientSession", *, ciphertext: bytes, upload_url: str) -> str:
@@ -1175,35 +1231,71 @@ class WeixinAdapter(BasePlatformAdapter):
         assert self._send_session is not None and self._token is not None
         plaintext = Path(path).read_bytes()
         media_type, item_builder = self._outbound_media_builder(path, force_file_attachment=force_file_attachment)
+        filename, encrypted_query_param, aes_key, ciphertext_size, rawsize, rawfilemd5 = await self._upload_media(
+            chat_id, Path(path).name, plaintext, media_type)
+        context_token = self._token_store.get(self._account_id, chat_id)
+        # iLink expects aes_key as base64(hex_string), not base64(raw_bytes) — otherwise images render as grey boxes.
+        item_kwargs = {
+            "encrypt_query_param": encrypted_query_param, "aes_key_for_api": base64.b64encode(aes_key.hex().encode("ascii")).decode("ascii"),
+            "ciphertext_size": ciphertext_size, "plaintext_size": rawsize, "filename": filename, "rawfilemd5": rawfilemd5}
+        if media_type == MEDIA_VOICE and path.endswith(".silk"):
+            item_kwargs.update(encode_type=6, sample_rate=24000, bits_per_sample=16)
+        if caption:
+            caption_resp = await _send_message(
+                self._send_session, base_url=self._base_url, token=self._token, to=chat_id, text=self.format_message(caption),
+                context_token=context_token, client_id=f"hermes-weixin-{uuid.uuid4().hex}")
+            _assert_sendmessage_ok(caption_resp, what="media caption")
+        last_message_id = f"hermes-weixin-{uuid.uuid4().hex}"
+        media_resp = await _send_items(
+            self._send_session, base_url=self._base_url, token=self._token, to=chat_id, item_list=[item_builder(**item_kwargs)],
+            context_token=context_token, client_id=last_message_id)
+        # The upload succeeding says nothing about delivery — iLink can still reject the message itself with HTTP 200.
+        _assert_sendmessage_ok(media_resp, what=filename)
+        return last_message_id
+
+    async def _upload_once(self, chat_id: str, data: bytes, media_type: int):
+        """One getUploadUrl + CDN upload. Returns (encrypted_query_param, aes_key, ciphertext_size, rawsize, md5)."""
         filekey, aes_key = secrets.token_hex(16), secrets.token_bytes(16)
-        rawsize, rawfilemd5 = len(plaintext), hashlib.md5(plaintext).hexdigest()
+        rawsize, rawfilemd5 = len(data), hashlib.md5(data).hexdigest()
         upload_response = await _get_upload_url(
             self._send_session, base_url=self._base_url, token=self._token, to_user_id=chat_id, media_type=media_type, filekey=filekey,
             rawsize=rawsize, rawfilemd5=rawfilemd5, filesize=((rawsize + 16) // 16) * 16, aeskey_hex=aes_key.hex())
         upload_param = str(upload_response.get("upload_param") or "")
-        ciphertext = _aes128_ecb_encrypt(plaintext, aes_key)
+        ciphertext = _aes128_ecb_encrypt(data, aes_key)
         # Prefer upload_full_url (direct CDN), else construct from upload_param. Both use POST — PUT 404s on the CDN.
         upload_url = str(upload_response.get("upload_full_url") or "") or (upload_param and (
             f"{self._cdn_base_url.rstrip('/')}/upload?encrypted_query_param={quote(upload_param, safe='')}&filekey={quote(filekey, safe='')}"))
         if not upload_url:
             raise RuntimeError(f"getUploadUrl returned neither upload_param nor upload_full_url: {upload_response}")
-        encrypted_query_param = await _upload_ciphertext(self._send_session, ciphertext=ciphertext, upload_url=upload_url)
-        context_token = self._token_store.get(self._account_id, chat_id)
-        # iLink expects aes_key as base64(hex_string), not base64(raw_bytes) — otherwise images render as grey boxes.
-        item_kwargs = {
-            "encrypt_query_param": encrypted_query_param, "aes_key_for_api": base64.b64encode(aes_key.hex().encode("ascii")).decode("ascii"),
-            "ciphertext_size": len(ciphertext), "plaintext_size": rawsize, "filename": Path(path).name, "rawfilemd5": rawfilemd5}
-        if media_type == MEDIA_VOICE and path.endswith(".silk"):
-            item_kwargs.update(encode_type=6, sample_rate=24000, bits_per_sample=16)
-        if caption:
-            await _send_message(
-                self._send_session, base_url=self._base_url, token=self._token, to=chat_id, text=self.format_message(caption),
-                context_token=context_token, client_id=f"hermes-weixin-{uuid.uuid4().hex}")
-        last_message_id = f"hermes-weixin-{uuid.uuid4().hex}"
-        await _send_items(
-            self._send_session, base_url=self._base_url, token=self._token, to=chat_id, item_list=[item_builder(**item_kwargs)],
-            context_token=context_token, client_id=last_message_id)
-        return last_message_id
+        return (await _upload_ciphertext(self._send_session, ciphertext=ciphertext, upload_url=upload_url),
+                aes_key, len(ciphertext), rawsize, rawfilemd5)
+
+    async def _upload_media(self, chat_id: str, filename: str, plaintext: bytes, media_type: int):
+        """Upload with retries, re-encoding oversized images between rounds.
+
+        Nothing else in the media path retries — text gets ``_send_chunk_retries``, but a single CDN
+        500 loses an attachment outright and the recipient simply sees nothing arrive. Large images
+        are the common case (image generators emit multi-MB PNGs), so oversized ones also walk down
+        MEDIA_DOWNSCALE_LADDER. Non-images and undecodable payloads are retried unchanged.
+        """
+        candidates = [(filename, plaintext)]
+        if media_type == MEDIA_IMAGE and len(plaintext) > MEDIA_DOWNSCALE_THRESHOLD:
+            for max_width, quality in MEDIA_DOWNSCALE_LADDER:
+                smaller = _downscale_image(plaintext, max_width, quality)
+                if smaller and len(smaller) < len(plaintext):
+                    candidates.append((f"{Path(filename).stem}.jpg", smaller))
+        last_exc: Optional[BaseException] = None
+        for name, data in candidates:
+            for attempt in range(1, MEDIA_UPLOAD_ATTEMPTS + 1):
+                try:
+                    return (name, *await self._upload_once(chat_id, data, media_type))
+                except Exception as exc:
+                    last_exc = exc
+                    logger.warning("[%s] media upload failed (%s, %d bytes, attempt %d/%d): %s",
+                                   self.name, name, len(data), attempt, MEDIA_UPLOAD_ATTEMPTS, exc)
+                    if attempt < MEDIA_UPLOAD_ATTEMPTS:
+                        await asyncio.sleep(MEDIA_UPLOAD_RETRY_DELAY * attempt)
+        raise last_exc or RuntimeError("media upload failed with no candidates")
 
     def _outbound_media_builder(self, path: str, force_file_attachment: bool = False):
         mime = mimetypes.guess_type(path)[0] or "application/octet-stream"

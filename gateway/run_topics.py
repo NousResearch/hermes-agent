@@ -638,7 +638,7 @@ class GatewayTopicThreadsMixin:
         title = await db.get_session_title(session_id) or session_id
         last_assistant = None
         with suppress(Exception):
-            for message in reversed(await db.get_messages(session_id)):
+            for message in await db.get_messages_iter(session_id, latest=True):
                 if message.get("role") != "assistant":
                     continue
                 projected = project_compaction_message_for_display(message)

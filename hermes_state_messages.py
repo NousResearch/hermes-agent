@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from agent.context_compressor import _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, split_user_originated_turn
 from agent.memory_manager import sanitize_context
@@ -657,6 +657,68 @@ class SessionMessagesMixin:
             if latest:
                 rows.reverse()
         return [self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True) for row in rows]
+
+    def get_messages_iter(
+        self,
+        session_id: str,
+        include_inactive: bool = False,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        latest: bool = False,
+        after_id: Optional[int] = None,
+    ) -> Iterator[Dict[str, Any]]:
+        """Stream messages for a session as a generator, yielding decoded dicts
+        identical to :meth:`get_messages`.
+
+        Unlike :meth:`get_messages` (which materializes the full result list),
+        this yields rows in batches of 64, so a caller that breaks early on a
+        tail match — e.g. "find the last assistant message" — never loads the
+        whole transcript into memory. On multi-GB transcripts that is the
+        difference between an O(transcript) RSS spike and a bounded 64-row
+        buffer.
+
+        Order: ``latest=False`` yields ascending (chronological, oldest-first);
+        ``latest=True`` yields descending (newest-first) for efficient tail
+        scanning. NOTE this differs from :meth:`get_messages` with
+        ``latest=True``, which buffers and reverses to return chronological
+        order — that buffering is incompatible with streaming, so the iterator
+        yields newest-first instead. Callers scanning for the most recent
+        matching message iterate newest-first and break on the first hit
+        (semantically identical to ``reversed(await get_messages(session_id))``
+        but without materializing the list).
+
+        ``after_id`` is keyset paging (incompatible with ``latest``/``offset``),
+        same as :meth:`get_messages`. ``include_compacted`` is not supported:
+        compacted display reads use :meth:`get_messages`' dedupe path, which
+        does not stream.
+
+        Holds a pooled read connection (via :meth:`_read_ctx`) for the
+        generator's lifetime; exhaust it or let it go out of scope to return
+        the connection to the pool.
+        """
+        if after_id is not None and (latest or offset):
+            raise ValueError("after_id is incompatible with latest/offset paging")
+        active_clause = self._active_clause(include_inactive, include_compacted=False)
+        sql = (
+            f"SELECT * FROM messages WHERE session_id = ?{active_clause}"
+            f"{' AND id > ?' if after_id is not None else ''} ORDER BY id {'DESC' if latest else 'ASC'}"
+        )
+        params: list = [session_id] if after_id is None else [session_id, after_id]
+        if limit is not None or offset:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([-1 if limit is None else limit, offset])
+        with self._read_ctx() as conn:
+            cursor = conn.execute(sql, params)
+            # Fetch in small batches to balance memory vs round-trips. 64 rows
+            # is small enough to bound RSS on multi-GB transcripts, large enough
+            # to amortize cursor overhead.
+            while True:
+                rows = cursor.fetchmany(64)
+                if not rows:
+                    break
+                for row in rows:
+                    yield self._row_to_message_dict(
+                        row, warn_context="get_messages_iter", summary_flag=True)
 
     def find_pr_url_messages(self, session_ids: List[str]) -> List[Dict[str, Any]]:
         """Tool results containing ``/pull/``: a deliberately loose scan, oldest-first so the caller takes the last."""

@@ -17,6 +17,7 @@ $ast = [Management.Automation.Language.Parser]::ParseFile(
 if ($parseErrors.Count -gt 0) { throw 'Installer parse failed' }
 
 $functionNames = @(
+    'Get-ManagedVenvRuntime',
     'Install-Venv',
     'Get-VenvTransactionDirectory',
     'Get-PendingVenvBackup',

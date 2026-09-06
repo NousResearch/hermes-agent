@@ -1,3 +1,32 @@
+function Get-ManagedVenvRuntime {
+    $venvPythonExe = Join-Path $InstallDir 'venv\Scripts\python.exe'
+    if (-not (Test-Path -LiteralPath $venvPythonExe -PathType Leaf)) { return $null }
+    $probe = @'
+import json, sqlite3, sys
+from pathlib import Path
+root = Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(root))
+from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable
+base = Path(getattr(sys, "_base_executable", sys.executable)).resolve()
+managed = (root / ".hermes-runtime" / "python").resolve()
+print(json.dumps({"Path": str(base), "Version": f"{sys.version_info.major}.{sys.version_info.minor}",
+                  "Owned": managed.is_relative_to(root) and base.is_relative_to(managed) and not base.is_relative_to((root / "venv").resolve()),
+                  "Safe": not is_sqlite_wal_reset_vulnerable(sqlite3.sqlite_version_info)}))
+'@
+    try {
+        $result = Invoke-ProcessWithWallClockTimeout -FilePath $venvPythonExe -ArgumentList @('-I', '-c', $probe, $InstallDir) `
+            -TimeoutSec 30 -Label 'Installed Python runtime probe'
+        if ($result.TimedOut -or $result.ExitCode -ne 0) { return $null }
+        $runtime = $result.Output.Trim() | ConvertFrom-Json -ErrorAction Stop
+        if (-not $runtime.Owned -or -not (Test-Path -LiteralPath $runtime.Path -PathType Leaf)) { return $null }
+        return $runtime
+    } catch {
+        if (Get-Variable InstallerNativeCleanupFailure -Scope Script -ValueOnly -ErrorAction SilentlyContinue) { throw }
+        Write-Warn "Could not probe the existing managed Python runtime: $_"
+        return $null
+    }
+}
+
 function Install-Venv {
     if ($NoVenv) {
         Write-Info "Skipping virtual environment (-NoVenv)"
@@ -18,7 +47,15 @@ function Install-Venv {
     # fresh process -- $PythonVersion is back at its "3.11" default.  Trusting it
     # here made `uv venv venv --python 3.11` fail with exit 2 on machines without
     # 3.11 even though the `python` stage reported success (issue #50769).
-    $resolvedPython = Resolve-AvailablePythonVersion
+    # Preserve a repaired base interpreter without mutating the existing venv
+    # in place. The replacement still participates in the recoverable rename
+    # transaction below. A generic uv minor lookup can select an older build.
+    $existingRuntime = Get-ManagedVenvRuntime
+    $resolvedPython = if ($existingRuntime -and $existingRuntime.Safe -and
+        $existingRuntime.Version -in (@($PythonVersion) + $PythonFallbackVersions)) {
+        Initialize-ManagedPythonEnvironment | Out-Null
+        $existingRuntime
+    } else { Resolve-AvailablePythonVersion }
     if (-not $resolvedPython) {
         throw "Hermes-managed Python is unavailable. Run install.ps1 -Stage python first."
     }
@@ -636,6 +673,7 @@ print(','.join(scripts))
     if (-not $NoVenv) {
         # Entry-point and optional web repairs can change dependencies after the
         # first probe. Validate their final state before retiring the original.
+        Repair-ManagedRuntime
         Assert-VenvBaselineImports
         Complete-VenvTransaction
     }
@@ -666,11 +704,20 @@ function Repair-ManagedRuntime {
         throw "Cannot verify managed SQLite runtime: $venvPythonExe is missing"
     }
 
+    $runtime = Get-ManagedVenvRuntime
+    if (-not $runtime) { throw 'Cannot verify the external Hermes-managed Python required for SQLite repair' }
+
     Write-Info "Verifying managed Python/SQLite runtime..."
     $repairScript = @'
-import sys
+import site, sys
 from pathlib import Path
 
+root = Path(sys.argv[2]).resolve()
+# Execute outside the live venv: Windows cannot rename an environment while
+# its own python.exe runs from it. The dependencies were just installed and
+# remain available for the existing holder detector and repair implementation.
+site.addsitedir(str(root / "venv" / "Lib" / "site-packages"))
+sys.path.insert(0, str(root))
 import hermes_cli.main  # Register the Windows venv-holder detector.
 from hermes_cli.managed_uv import repair_vulnerable_runtime
 
@@ -680,11 +727,9 @@ if result.status not in {"safe", "repaired"}:
     print(f"Managed SQLite runtime verification failed: {detail}", file=sys.stderr)
     raise SystemExit(1)
 '@
-    Invoke-NativeWithRelaxedErrorAction {
-        & $venvPythonExe -I -c $repairScript $UvCmd $InstallDir
-    }
-    $repairExitCode = $LASTEXITCODE
-    if ($repairExitCode -ne 0) {
+    $result = Invoke-ProcessWithWallClockTimeout -FilePath $runtime.Path -ArgumentList @('-I', '-c', $repairScript, $UvCmd, $InstallDir) `
+        -TimeoutSec 3600 -Label 'Managed Python/SQLite runtime repair'
+    if ($result.TimedOut -or $result.ExitCode -ne 0) {
         throw "Managed Python/SQLite runtime is not safe"
     }
 
@@ -693,4 +738,3 @@ if result.status not in {"safe", "repaired"}:
     $env:UV_PYTHON = $venvPythonExe
     Write-Success "Managed Python/SQLite runtime verified"
 }
-

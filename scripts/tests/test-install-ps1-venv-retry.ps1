@@ -37,6 +37,28 @@ public class InstallerFixture {
         string joined = String.Join(" ", args);
         File.AppendAllText(Path.Combine(root, "native-events.txt"), Path.GetFileName(self) + " " + joined + Environment.NewLine);
         if (Path.GetFileName(self).Equals("python.exe", StringComparison.OrdinalIgnoreCase)) {
+            if (args.Length == 4 && args[0] == "-I" && args[1] == "-c" && args[2].Contains("is_sqlite_wal_reset_vulnerable")) {
+                Record(root, "managed-runtime-probe");
+                bool repaired = File.Exists(Path.Combine(install, "venv", "repaired-runtime"));
+                string basis = Path.Combine(install, ".hermes-runtime", "python", repaired ? "repaired" : "fixture", "python.exe");
+                Console.WriteLine("{\"Path\":\"" + basis.Replace("\\", "\\\\") + "\",\"Version\":\"3.11\",\"Owned\":true,\"Safe\":" + (repaired ? "true" : "false") + "}");
+                return 0;
+            }
+            if (args.Length == 5 && args[0] == "-I" && args[1] == "-c" && args[2].Contains("repair_vulnerable_runtime")) {
+                Record(root, "sqlite-runtime-repair");
+                Validation(root, install, "sqlite");
+                bool external = !self.StartsWith(Path.Combine(install, "venv") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+                File.AppendAllText(Path.Combine(root, "validation-events.txt"), "sqlite:external=" + external + Environment.NewLine);
+                if (!external) return 15;
+                if (mode == "sqlite-fail") return 14;
+                if (mode == "sqlite-repaired") {
+                    string repairedBase = Path.Combine(install, ".hermes-runtime", "python", "repaired", "python.exe");
+                    Directory.CreateDirectory(Path.GetDirectoryName(repairedBase));
+                    if (!File.Exists(repairedBase)) File.Copy(self, repairedBase);
+                    File.WriteAllText(Path.Combine(install, "venv", "repaired-runtime"), "safe generation");
+                }
+                return 0;
+            }
             if (args.Length == 2 && args[0] == "-c" && args[1] == "import dotenv, openai, rich, prompt_toolkit") {
                 Record(root, "baseline-import");
                 Validation(root, install, "baseline");
@@ -75,11 +97,14 @@ public class InstallerFixture {
         }
         if (args.Length > 0 && args[0] == "venv") {
             Record(root, "uv-venv");
+            bool repairedPython = joined.Contains(Path.Combine("python", "repaired", "python.exe"));
+            if (repairedPython) Record(root, "uv-venv-repaired-python");
             string scripts = Path.Combine(install, "venv", "Scripts");
             Directory.CreateDirectory(scripts);
             if (mode != "venv-no-interpreter") File.Copy(self, Path.Combine(scripts, "python.exe"), true);
             File.Copy(self, Path.Combine(scripts, "hermes.exe"), true);
             File.WriteAllText(Path.Combine(install, "venv", "generation.txt"), "PARTIAL_REPLACEMENT");
+            if (repairedPython) File.WriteAllText(Path.Combine(install, "venv", "repaired-runtime"), "safe generation");
             return mode == "venv-fail" ? 9 : 0;
         }
         if (args.Length > 0 && (args[0] == "pip" || args[0] == "sync")) {

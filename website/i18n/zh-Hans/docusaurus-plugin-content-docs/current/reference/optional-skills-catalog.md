@@ -53,7 +53,6 @@ hermes skills uninstall <skill-name>
 | 技能 | 描述 |
 |-------|-------------|
 | [**audiocraft-audio-generation**](/user-guide/skills/optional/creative/creative-audiocraft-audio-generation) | AudioCraft：MusicGen 文本转音乐、AudioGen 文本转音效。 |
-| [**blender-mcp**](/user-guide/skills/optional/creative/creative-blender-mcp) | 通过 socket 连接 blender-mcp 插件，直接从 Hermes 控制 Blender。创建 3D 对象、材质、动画，并运行任意 Blender Python（bpy）代码。适用于用户希望在 Blender 中创建或修改任何内容的场景。 |
 | [**concept-diagrams**](/user-guide/skills/optional/creative/creative-concept-diagrams) | 生成扁平、极简、支持亮色/暗色模式的 SVG 图表，输出为独立 HTML 文件，采用统一的教育视觉语言，包含 9 种语义色阶、句首大写排版及自动暗色模式。最适合教育和说明类内容。 |
 | [**heartmula**](/user-guide/skills/optional/creative/creative-heartmula) | HeartMuLa：根据歌词 + 标签生成类 Suno 风格的歌曲。 |
 | [**hyperframes**](/user-guide/skills/optional/creative/creative-hyperframes) | 使用 HyperFrames 创建基于 HTML 的视频合成、动态标题卡、社交叠层、字幕访谈视频、音频响应视觉效果及着色器转场。HTML 是视频的唯一来源。适用于用户希望制作任何视频内容的场景。 |

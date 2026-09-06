@@ -8,12 +8,11 @@ import os
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Callable, Optional
-from urllib.parse import urlsplit
-
-logger = logging.getLogger(__name__)
 
 from hermes_constants import get_hermes_home
 from tools.tool_backend_helpers import managed_nous_tools_enabled
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_TOOL_GATEWAY_DOMAIN = "nousresearch.com"
 _DEFAULT_TOOL_GATEWAY_SCHEME = "https"
@@ -28,6 +27,11 @@ class ManagedToolGatewayConfig:
     managed_mode: bool
 
 
+def _clean(value: object) -> Optional[str]:
+    """*value* stripped when it is a non-blank string, else None."""
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
 def auth_json_path():
     """Return the Hermes auth store path, respecting HERMES_HOME overrides."""
     return get_hermes_home() / "auth.json"
@@ -38,49 +42,32 @@ def _read_nous_provider_state() -> Optional[dict]:
         path = auth_json_path()
         if not path.is_file():
             return None
-        data = json.loads(path.read_text(encoding="utf-8"))
-        providers = data.get("providers", {})
-        if not isinstance(providers, dict):
-            return None
-        nous_provider = providers.get("nous", {})
-        if isinstance(nous_provider, dict):
-            return nous_provider
+        providers = json.loads(path.read_text(encoding="utf-8-sig")).get("providers", {})
+        nous_provider = providers.get("nous", {}) if isinstance(providers, dict) else None
+        return nous_provider if isinstance(nous_provider, dict) else None
     except Exception:
-        pass
-    return None
+        return None
 
 
 def _parse_timestamp(value: object) -> Optional[datetime]:
-    if not isinstance(value, str) or not value.strip():
+    normalized = _clean(value)
+    if normalized is None:
         return None
-    normalized = value.strip()
-    if normalized.endswith("Z"):
-        normalized = normalized[:-1] + "+00:00"
     try:
-        parsed = datetime.fromisoformat(normalized)
+        parsed = datetime.fromisoformat(normalized[:-1] + "+00:00" if normalized.endswith("Z") else normalized)
     except ValueError:
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+    return (parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
 
 
 def _access_token_is_expiring(expires_at: object, skew_seconds: int) -> bool:
     expires = _parse_timestamp(expires_at)
-    if expires is None:
-        return True
-    remaining = (expires - datetime.now(timezone.utc)).total_seconds()
-    return remaining <= max(0, int(skew_seconds))
+    return expires is None or (expires - datetime.now(timezone.utc)).total_seconds() <= max(0, int(skew_seconds))
 
 
 def _read_user_token_override() -> Optional[str]:
-    """Read the TOOL_GATEWAY_USER_TOKEN env override through the secret scope.
-
-    Availability scans run both inside agent turns (scope installed) and in
-    unscoped CLI paths, so this uses the Slack pattern: honor the scope's
-    verdict when installed (a scoped miss does NOT borrow the process env
-    under multiplex), fall back to ``os.environ`` only when unscoped.
-    """
+    """Read the TOOL_GATEWAY_USER_TOKEN override through the secret scope. Scope verdict is authoritative
+    when installed (a scoped miss must NOT borrow the process env under multiplex); ``os.environ`` only when unscoped."""
     try:
         from agent.secret_scope import UnscopedSecretError, get_secret
 
@@ -90,190 +77,79 @@ def _read_user_token_override() -> Optional[str]:
             explicit = os.getenv("TOOL_GATEWAY_USER_TOKEN")
     except Exception:
         explicit = os.getenv("TOOL_GATEWAY_USER_TOKEN")
-    if isinstance(explicit, str) and explicit.strip():
-        return explicit.strip()
-    return None
+    return _clean(explicit)
 
 
 def peek_nous_access_token() -> Optional[str]:
-    """Cheap probe for a Nous gateway token without triggering refresh.
-
-    Availability scans (`hermes tools`, banner/status paint, provider
-    `is_available()` checks) must stay off the synchronous OAuth refresh path.
-    This helper therefore only inspects the explicit env override and the
-    cached auth-store token, without checking expiry and without making any
-    network calls. Truthful refresh handling stays in request/session paths
-    that call :func:`read_nous_access_token`.
-    """
-    explicit = _read_user_token_override()
-    if explicit:
-        return explicit
-
-    nous_provider = _read_nous_provider_state() or {}
-    access_token = nous_provider.get("access_token")
-    if isinstance(access_token, str) and access_token.strip():
-        return access_token.strip()
-    return None
+    """Cheap token probe: env override or cached auth-store token, no expiry check and no network —
+    availability scans must stay off the synchronous OAuth refresh path (:func:`read_nous_access_token`)."""
+    return _read_user_token_override() or _clean((_read_nous_provider_state() or {}).get("access_token"))
 
 
 def read_nous_access_token() -> Optional[str]:
     """Read a Nous Subscriber OAuth access token from auth store or env override."""
-    explicit = _read_user_token_override()
-    if explicit:
+    if explicit := _read_user_token_override():
         return explicit
     nous_provider = _read_nous_provider_state() or {}
     cached_token = peek_nous_access_token()
-
-    if cached_token and not _access_token_is_expiring(
-        nous_provider.get("expires_at"),
-        _NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
-    ):
+    if cached_token and not _access_token_is_expiring(nous_provider.get("expires_at"), _NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS):
         return cached_token
-
     try:
         from hermes_cli.auth import resolve_nous_access_token
 
-        refreshed_token = resolve_nous_access_token(
-            refresh_skew_seconds=_NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
-        )
-        if isinstance(refreshed_token, str) and refreshed_token.strip():
-            return refreshed_token.strip()
+        if refreshed_token := _clean(resolve_nous_access_token(refresh_skew_seconds=_NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS)):
+            return refreshed_token
     except Exception as exc:
         logger.debug("Nous access token refresh failed: %s", exc)
-
     return cached_token
 
 
 def get_tool_gateway_scheme() -> str:
     """Return configured shared gateway URL scheme."""
-    scheme = os.getenv("TOOL_GATEWAY_SCHEME", "").strip().lower()
-    if not scheme:
-        return _DEFAULT_TOOL_GATEWAY_SCHEME
-
-    if scheme in {"http", "https"}:
-        return scheme
-
-    raise ValueError("TOOL_GATEWAY_SCHEME must be 'http' or 'https'")
+    scheme = os.getenv("TOOL_GATEWAY_SCHEME", "").strip().lower() or _DEFAULT_TOOL_GATEWAY_SCHEME
+    if scheme not in {"http", "https"}:
+        raise ValueError("TOOL_GATEWAY_SCHEME must be 'http' or 'https'")
+    return scheme
 
 
 def build_vendor_gateway_url(vendor: str) -> str:
     """Return the gateway origin for a specific vendor."""
-    vendor_key = f"{vendor.upper().replace('-', '_')}_GATEWAY_URL"
-    explicit_vendor_url = os.getenv(vendor_key, "").strip().rstrip("/")
-    if explicit_vendor_url:
+    if explicit_vendor_url := os.getenv(f"{vendor.upper().replace('-', '_')}_GATEWAY_URL", "").strip().rstrip("/"):
         return explicit_vendor_url
-
-    shared_scheme = get_tool_gateway_scheme()
-    shared_domain = os.getenv("TOOL_GATEWAY_DOMAIN", "").strip().strip("/")
-    if shared_domain:
-        return f"{shared_scheme}://{vendor}-gateway.{shared_domain}"
-
-    return f"{shared_scheme}://{vendor}-gateway.{_DEFAULT_TOOL_GATEWAY_DOMAIN}"
+    shared_domain = os.getenv("TOOL_GATEWAY_DOMAIN", "").strip().strip("/") or _DEFAULT_TOOL_GATEWAY_DOMAIN
+    return f"{get_tool_gateway_scheme()}://{vendor}-gateway.{shared_domain}"
 
 
 def resolve_managed_tool_gateway(
-    vendor: str,
-    gateway_builder: Optional[Callable[[str], str]] = None,
-    token_reader: Optional[Callable[[], Optional[str]]] = None,
-) -> Optional[ManagedToolGatewayConfig]:
+    vendor: str, gateway_builder: Optional[Callable[[str], str]] = None,
+    token_reader: Optional[Callable[[], Optional[str]]] = None) -> Optional[ManagedToolGatewayConfig]:
     """Resolve shared managed-tool gateway config for a vendor."""
     if not managed_nous_tools_enabled():
         return None
-
-    resolved_gateway_builder = gateway_builder or build_vendor_gateway_url
-    resolved_token_reader = token_reader or read_nous_access_token
-
-    gateway_origin = resolved_gateway_builder(vendor)
-    nous_user_token = resolved_token_reader()
+    gateway_origin = (gateway_builder or build_vendor_gateway_url)(vendor)
+    nous_user_token = (token_reader or read_nous_access_token)()
     if not gateway_origin or not nous_user_token:
         return None
-
-    return ManagedToolGatewayConfig(
-        vendor=vendor,
-        gateway_origin=gateway_origin,
-        nous_user_token=nous_user_token,
-        managed_mode=True,
-    )
+    return ManagedToolGatewayConfig(vendor=vendor, gateway_origin=gateway_origin, nous_user_token=nous_user_token, managed_mode=True)
 
 
 def is_managed_tool_gateway_ready(
-    vendor: str,
-    gateway_builder: Optional[Callable[[str], str]] = None,
-    token_reader: Optional[Callable[[], Optional[str]]] = None,
-) -> bool:
-    """Return True when gateway URL and a likely-usable Nous token are present.
-
-    Defaults to :func:`peek_nous_access_token` so read-only availability scans
-    avoid synchronous OAuth refresh. Callers that are about to make a real
-    gateway request should use :func:`resolve_managed_tool_gateway` (which
-    still defaults to the refresh-aware :func:`read_nous_access_token`).
-    """
-    return resolve_managed_tool_gateway(
-        vendor,
-        gateway_builder=gateway_builder,
-        token_reader=token_reader or peek_nous_access_token,
-    ) is not None
+    vendor: str, gateway_builder: Optional[Callable[[str], str]] = None,
+    token_reader: Optional[Callable[[], Optional[str]]] = None) -> bool:
+    """True when a gateway URL and a likely-usable Nous token are present. Defaults to
+    :func:`peek_nous_access_token` (no OAuth refresh); callers about to make a real request use
+    :func:`resolve_managed_tool_gateway` instead."""
+    return resolve_managed_tool_gateway(vendor, gateway_builder=gateway_builder, token_reader=token_reader or peek_nous_access_token) is not None
 
 
-# ---------------------------------------------------------------------------
-# Managed vendor endpoints
-# ---------------------------------------------------------------------------
-#
-# Vendors the gateway serves on its own origin (rather than on a
-# `{vendor}-gateway` host) are pinned HERE, in code, the same way every other
-# managed vendor's gateway URL is pinned: adding one is a Hermes release, and
-# the exact URL a user's agent may connect to is reviewable in this file. A
-# runtime discovery catalog was tried and deliberately removed — a remote
-# endpoint that can add tools to every entitled install is a bigger trust
-# surface than a code diff.
-#
-# The gateway exposes a Nous-owned REST contract per vendor; it names the
-# vendor but not the vendor's own API, so nothing here needs to know the
-# upstream's endpoint or field names.
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+from urllib.parse import urlsplit  # noqa: F401,E402
+from urllib.parse import urlsplit  # noqa: F401,E402
 
-# Pseudo-vendor used only to resolve the shared tool-gateway origin via
-# build_vendor_gateway_url (honors TOOL_GATEWAY_URL / TOOL_GATEWAY_DOMAIN).
 _MANAGED_GATEWAY_VENDOR = "tool"
-
-def managed_vendor_base_path(vendor: str) -> str:
-    """Base path for a managed vendor's REST routes on the gateway host."""
-    return f"/api/{vendor}"
-
-
-def managed_vendor_upload_path(vendor: str) -> str:
-    """Media upload endpoint for a managed vendor, on the same host."""
-    return f"/api/uploads/{vendor}"
-
-
-def managed_vendor_endpoints(
-    vendor: str,
-    gateway_builder: Optional[Callable[[str], str]] = None,
-) -> Optional[dict]:
-    """Absolute URLs for a managed vendor, or ``None`` when none resolves.
-
-    Address resolution only: entitlement is deliberately not consulted here.
-    What an account may spend on a managed vendor is the gateway's own
-    decision, stated in its refusals, and re-deciding it on the client can only
-    ever disagree with the server. A caller that wants to hide its tools from
-    users who could not call them at all does that in its ``check_fn``.
-
-    ``None`` means no origin could be resolved — a misconfigured
-    ``TOOL_GATEWAY_SCHEME`` — so there is nothing to call.
-    """
-    builder = gateway_builder or build_vendor_gateway_url
-    try:
-        origin = builder(_MANAGED_GATEWAY_VENDOR).rstrip("/")
-    except ValueError:
-        return None
-    if not origin:
-        return None
-
-    return {
-        "origin": origin,
-        "base_url": f"{origin}{managed_vendor_base_path(vendor)}",
-        "upload_path": managed_vendor_upload_path(vendor),
-    }
-
 
 def is_managed_nous_gateway_url(
     url: object,
@@ -296,7 +172,6 @@ def is_managed_nous_gateway_url(
         return False
 
     return bool(actual.scheme) and (actual.scheme, actual.netloc) == (expected.scheme, expected.netloc)
-
 
 def managed_gateway_auth_headers(
     url: object,
@@ -324,27 +199,11 @@ def managed_gateway_auth_headers(
 
     return {"Authorization": f"Bearer {token.strip()}"}
 
-
-# ---------------------------------------------------------------------------
-# Managed media uploads
-# ---------------------------------------------------------------------------
-#
-# Media arguments used to be inlined as base64, which capped a whole tool call
-# at ~2MB of real bytes under the gateway's request ceiling and ruled out video
-# entirely. Each pinned managed server carries an upload endpoint
-# (`upload_path`); the bytes go straight to storage via a presigned URL, and
-# the tool argument carries an opaque `nous-upload:<token>` reference instead.
-#
-# The protocol lives HERE rather than in a vendor tool module: the presign
-# request shape, the response contract, and the `nous-upload:` scheme are Nous
-# gateway specifics shared by every managed vendor that takes media.
-
 _MEDIA_UPLOAD_PRESIGN_TIMEOUT_SECONDS = 15.0
-# The PUT carries up to 50MB of video; a flat 60s would fail a legitimate
-# clip on an ordinary residential uplink, so only the write phase is long.
-_MEDIA_UPLOAD_PUT_READ_TIMEOUT_SECONDS = 60.0
-_MEDIA_UPLOAD_PUT_WRITE_TIMEOUT_SECONDS = 300.0
 
+_MEDIA_UPLOAD_PUT_READ_TIMEOUT_SECONDS = 60.0
+
+_MEDIA_UPLOAD_PUT_WRITE_TIMEOUT_SECONDS = 300.0
 
 def _describe_media_upload_refusal(response) -> str:
     """A model-actionable reason from a gateway refusal, or a generic one.
@@ -361,7 +220,6 @@ def _describe_media_upload_refusal(response) -> str:
     except Exception:
         pass
     return f"the gateway refused the upload (HTTP {response.status_code})"
-
 
 def build_managed_media_uploader(
     server_url: object,
@@ -450,3 +308,40 @@ def build_managed_media_uploader(
 
     return upload
 
+def managed_vendor_base_path(vendor: str) -> str:
+    """Base path for a managed vendor's REST routes on the gateway host."""
+    return f"/api/{vendor}"
+
+def managed_vendor_upload_path(vendor: str) -> str:
+    """Media upload endpoint for a managed vendor, on the same host."""
+    return f"/api/uploads/{vendor}"
+
+def managed_vendor_endpoints(
+    vendor: str,
+    gateway_builder: Optional[Callable[[str], str]] = None,
+) -> Optional[dict]:
+    """Absolute URLs for a managed vendor, or ``None`` when none resolves.
+
+    Address resolution only: entitlement is deliberately not consulted here.
+    What an account may spend on a managed vendor is the gateway's own
+    decision, stated in its refusals, and re-deciding it on the client can only
+    ever disagree with the server. A caller that wants to hide its tools from
+    users who could not call them at all does that in its ``check_fn``.
+
+    ``None`` means no origin could be resolved — a misconfigured
+    ``TOOL_GATEWAY_SCHEME`` — so there is nothing to call.
+    """
+    builder = gateway_builder or build_vendor_gateway_url
+    try:
+        origin = builder(_MANAGED_GATEWAY_VENDOR).rstrip("/")
+    except ValueError:
+        return None
+    if not origin:
+        return None
+
+    return {
+        "origin": origin,
+        "base_url": f"{origin}{managed_vendor_base_path(vendor)}",
+        "upload_path": managed_vendor_upload_path(vendor),
+    }
+# ---- END PLUGIN-COMPAT ----

@@ -128,6 +128,73 @@ class TestCachedFetchApiModels:
         assert out is None
         save.assert_not_called()
 
+
+class TestCacheOnly:
+    """``cache_only=True`` is the no-network read used by picker opens that
+    deliberately skip live probing. It must answer from disk or not at all —
+    never a live fetch, never a background revalidation."""
+
+    def _entry(self, models, age_seconds, fp="fp"):
+        return {"fp": fp, "at": time.time() - age_seconds, "models": list(models)}
+
+    def _call(self, cache, *, fp="fp", **kwargs):
+        import hermes_cli.models as mod
+
+        with patch.object(mod, "_load_provider_models_cache", return_value=cache), \
+             patch.object(mod, "_custom_endpoint_fingerprint", return_value=fp), \
+             patch.object(mod, "_save_provider_models_cache") as save, \
+             patch.object(mod, "_spawn_swr_refresh") as swr, \
+             patch.object(mod, "fetch_api_models") as live:
+            out = mod.cached_fetch_api_models(
+                "sk-key", "https://gw.example.com/v1", cache_only=True, **kwargs
+            )
+        live.assert_not_called()
+        swr.assert_not_called()
+        save.assert_not_called()
+        return out
+
+    def test_fresh_entry_is_served(self):
+        cache = {"custom:https://gw.example.com/v1": self._entry(["m1", "m2"], 10)}
+        assert self._call(cache) == ["m1", "m2"]
+
+    def test_entry_past_ttl_is_still_served_within_the_stale_window(self):
+        """The TTL governs when to *revalidate*, and cache_only cannot. Inside
+        the stale-serve bound the entry is still the best answer available —
+        collapsing to the config subset an hour in would reintroduce the bug."""
+        import hermes_cli.models as mod
+
+        age = mod._PROVIDER_MODELS_CACHE_TTL + 60
+        cache = {"custom:https://gw.example.com/v1": self._entry(["m1", "m2"], age)}
+        assert self._call(cache) == ["m1", "m2"]
+
+    def test_entry_beyond_the_stale_window_is_a_miss(self):
+        import hermes_cli.models as mod
+
+        age = mod._PROVIDER_MODELS_STALE_SERVE_MAX + 60
+        cache = {"custom:https://gw.example.com/v1": self._entry(["ancient"], age)}
+        assert self._call(cache) is None
+
+    def test_empty_cache_is_a_miss(self):
+        assert self._call({}) is None
+
+    def test_rotated_credentials_are_a_miss(self):
+        cache = {"custom:https://gw.example.com/v1": self._entry(["old"], 10, fp="old-fp")}
+        assert self._call(cache, fp="new-fp") is None
+
+    def test_force_refresh_is_a_miss_rather_than_a_live_fetch(self):
+        """cache_only outranks force_refresh: the caller has said no network,
+        so an un-revalidatable entry is withheld instead of fetched."""
+        cache = {"custom:https://gw.example.com/v1": self._entry(["m1"], 10)}
+        assert self._call(cache, force_refresh=True) is None
+
+    def test_missing_base_url_is_a_miss_rather_than_a_live_fetch(self):
+        import hermes_cli.models as mod
+
+        with patch.object(mod, "fetch_api_models") as live:
+            out = mod.cached_fetch_api_models("sk-key", "", cache_only=True)
+        assert out is None
+        live.assert_not_called()
+
     def test_empty_live_result_is_not_persisted(self):
         """An empty list from a transient error must never pin an empty
         cache entry over real data on the next open."""

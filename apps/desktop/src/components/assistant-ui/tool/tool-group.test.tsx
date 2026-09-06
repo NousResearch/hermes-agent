@@ -1,13 +1,19 @@
-import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
+import { type ThreadMessage } from '@assistant-ui/react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $displayTimestamps } from '@/store/display-timestamps'
 import { clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import { $activeSessionId } from '@/store/session'
 import { clearDismissedToolRows } from '@/store/tool-dismiss'
 import { $toolDisclosureStates } from '@/store/tool-view'
 
+import { stubThreadEnvironment, stubThreadViewportSize, ThreadRuntime } from '../test-utils'
 import { Thread } from '../thread'
+import { formatTimelineRange } from '../thread/timestamp'
+
+// Timeline timestamps render only when `display.timestamps` is enabled.
+$displayTimestamps.set(true)
 
 // A run of tool calls collapses to a one-line summary once it has settled, but
 // a run with anything still pending always renders its rows. That rule is what
@@ -20,6 +26,7 @@ const createdAt = new Date('2026-06-03T00:00:00.000Z')
 
 const resizeObservers = new Set<TestResizeObserver>()
 
+// This suite drives resizes by hand, so it needs observers it can reach.
 class TestResizeObserver {
   private target: Element | null = null
 
@@ -38,38 +45,9 @@ class TestResizeObserver {
   }
 }
 
+stubThreadEnvironment()
+stubThreadViewportSize()
 vi.stubGlobal('ResizeObserver', TestResizeObserver)
-vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
-  window.setTimeout(() => callback(performance.now()), 0)
-)
-vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
-
-Element.prototype.scrollTo = function scrollTo() {}
-
-Element.prototype.animate = function animate() {
-  return {
-    cancel: () => {},
-    finished: Promise.resolve()
-  } as unknown as Animation
-}
-
-function stubOffsetDimension(
-  prop: 'offsetHeight' | 'offsetWidth',
-  clientProp: 'clientHeight' | 'clientWidth',
-  fallback: number
-) {
-  const previous = Object.getOwnPropertyDescriptor(HTMLElement.prototype, prop)
-
-  Object.defineProperty(HTMLElement.prototype, prop, {
-    configurable: true,
-    get() {
-      return previous?.get?.call(this) || (this as HTMLElement)[clientProp] || fallback
-    }
-  })
-}
-
-stubOffsetDimension('offsetWidth', 'clientWidth', 800)
-stubOffsetDimension('offsetHeight', 'clientHeight', 600)
 
 // A running assistant message with two tools: a completed read_file plus a
 // pending terminal (no result), rendered as a flat two-row list.
@@ -103,7 +81,7 @@ function groupedPendingMessage(): ThreadMessage {
       steps: [],
       custom: {}
     }
-  } as ThreadMessage
+  } as unknown as ThreadMessage
 }
 
 function pendingOnlyMessage(): ThreadMessage {
@@ -128,7 +106,7 @@ function pendingOnlyMessage(): ThreadMessage {
       steps: [],
       custom: {}
     }
-  } as ThreadMessage
+  } as unknown as ThreadMessage
 }
 
 function completedOnlyMessage(): ThreadMessage {
@@ -142,6 +120,8 @@ function completedOnlyMessage(): ThreadMessage {
         toolName: 'read_file',
         args: { path: '/etc/hosts' },
         argsText: JSON.stringify({ path: '/etc/hosts' }),
+        timestamp: createdAt.getTime() / 1000 + 10.125,
+        completedAt: createdAt.getTime() / 1000 + 12.875,
         result: { content: '127.0.0.1 localhost' }
       }
     ],
@@ -154,7 +134,7 @@ function completedOnlyMessage(): ThreadMessage {
       steps: [],
       custom: {}
     }
-  } as ThreadMessage
+  } as unknown as ThreadMessage
 }
 
 function failedOnlyMessage(): ThreadMessage {
@@ -181,7 +161,7 @@ function failedOnlyMessage(): ThreadMessage {
       steps: [],
       custom: {}
     }
-  } as ThreadMessage
+  } as unknown as ThreadMessage
 }
 
 // Two settled activity calls in a row, so the run earns a summary line and
@@ -197,6 +177,8 @@ function settledRunMessage(): ThreadMessage {
         toolName: 'read_file',
         args: { path: '/repo/src/wiring.tsx' },
         argsText: JSON.stringify({ path: '/repo/src/wiring.tsx' }),
+        timestamp: createdAt.getTime() / 1000 + 20,
+        completedAt: createdAt.getTime() / 1000 + 21,
         result: { content: 'export const Wiring = () => null' }
       },
       {
@@ -205,6 +187,8 @@ function settledRunMessage(): ThreadMessage {
         toolName: 'terminal',
         args: { command: 'ls -la' },
         argsText: JSON.stringify({ command: 'ls -la' }),
+        timestamp: createdAt.getTime() / 1000 + 22,
+        completedAt: createdAt.getTime() / 1000 + 23.5,
         result: { exit_code: 0, stdout: 'wiring.tsx' }
       }
     ],
@@ -217,7 +201,7 @@ function settledRunMessage(): ThreadMessage {
       steps: [],
       custom: {}
     }
-  } as ThreadMessage
+  } as unknown as ThreadMessage
 }
 
 // Activity, an edit, then more activity — all adjacent, so assistant-ui hands
@@ -278,7 +262,7 @@ function editBetweenRunsMessage(): ThreadMessage {
       steps: [],
       custom: {}
     }
-  } as ThreadMessage
+  } as unknown as ThreadMessage
 }
 
 // A finished turn that left a call without a result — interrupted, or the
@@ -313,7 +297,7 @@ function abandonedRunMessage(): ThreadMessage {
       steps: [],
       custom: {}
     }
-  } as ThreadMessage
+  } as unknown as ThreadMessage
 }
 
 // The gap between one sequential call finishing and the next arriving: the
@@ -350,7 +334,7 @@ function betweenSequentialCallsMessage(): ThreadMessage {
       steps: [],
       custom: {}
     }
-  } as ThreadMessage
+  } as unknown as ThreadMessage
 }
 
 // Still streaming, but the agent has moved past its first run and left both of
@@ -392,22 +376,14 @@ function movedOnMessage(): ThreadMessage {
       steps: [],
       custom: {}
     }
-  } as ThreadMessage
+  } as unknown as ThreadMessage
 }
 
-function GroupHarness({ message }: { message: ThreadMessage }) {
-  const runtime = useExternalStoreRuntime<ThreadMessage>({
-    messages: [message],
-    isRunning: message.status?.type === 'running',
-    onNew: async () => {}
-  })
-
-  return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <Thread />
-    </AssistantRuntimeProvider>
-  )
-}
+const GroupHarness = ({ message }: { message: ThreadMessage }) => (
+  <ThreadRuntime messages={[message]}>
+    <Thread />
+  </ThreadRuntime>
+)
 
 beforeEach(() => {
   clearAllPrompts()
@@ -651,5 +627,35 @@ describe('flat tool list approval surfacing', () => {
     })
 
     expect(screen.queryByLabelText('Dismiss')).toBeNull()
+  })
+})
+
+describe('tool lifecycle timestamps', () => {
+  it('shows the precise call and completion times on a settled tool row', async () => {
+    const { container } = render(<GroupHarness message={completedOnlyMessage()} />)
+
+    await screen.findByText(/Read/)
+
+    const timestamps = Array.from(container.querySelectorAll('[data-slot="timeline-timestamp"]')).map(node =>
+      node.textContent?.trim()
+    )
+
+    const startedAt = createdAt.getTime() / 1000 + 10.125
+
+    expect(timestamps).toContain(formatTimelineRange(startedAt, createdAt.getTime() / 1000 + 12.875))
+  })
+
+  it('shows the full lifecycle range when settled calls are collapsed', async () => {
+    const { container } = render(<GroupHarness message={settledRunMessage()} />)
+
+    await waitFor(() => expect(container.querySelector('[data-tool-summary]')).toBeTruthy())
+
+    const timestamps = Array.from(container.querySelectorAll('[data-slot="timeline-timestamp"]')).map(node =>
+      node.textContent?.trim()
+    )
+
+    expect(timestamps).toContain(
+      formatTimelineRange(createdAt.getTime() / 1000 + 20, createdAt.getTime() / 1000 + 23.5)
+    )
   })
 })

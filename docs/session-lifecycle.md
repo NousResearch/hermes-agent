@@ -1,7 +1,7 @@
 # Session Lifecycle
 
 > **Audience:** Gateway developers and maintainers
-> **Source files:** `gateway/session.py` (~1444 lines), `gateway/run.py` (~16800 lines), `gateway/config.py`
+> **Source files:** `gateway/session.py` (~1200 lines + `session_*.py` siblings), `gateway/run.py` (~5500 lines facade + `run_*.py` phases), `gateway/config.py`
 > **Last updated:** 2026-06-16
 
 ## Overview
@@ -14,9 +14,10 @@ The session system lives primarily in two modules:
 
 - `gateway/session.py` — Data model (`SessionSource`, `SessionEntry`, `SessionContext`),
   key generation (`build_session_key`), and the main store (`SessionStore`).
-- `gateway/run.py` — Gateway runner (`GatewayRunner`) that wires sessions into the message
-  processing pipeline: session expiry watching, agent caching, restart recovery, and message
-  queuing.
+- `gateway/run.py` — Gateway runner (`GatewayRunner`) facade that wires sessions into the message
+  processing pipeline; the phases live in `run_*.py` siblings: session expiry watching
+  (`run_watchers.py`), agent caching (`run_agent_cache.py`), restart recovery
+  (`session_recovery.py`), and message queuing (`run_busy.py`).
 
 ---
 
@@ -665,6 +666,14 @@ When a session expires:
 | `agent.agent_cache.memory_high_mb` | `int`/`str` | `auto` | Anon-RSS budget above which LRU transcripts are shed |
 | `agent.agent_cache.max_evictions_per_pass` | `int` | `16` | Cap on sessions shed per pressure pass |
 | `agent.agent_cache.protect_recent` | `int` | `8` | MRU sessions the pressure pass never touches |
+
+## State database and FTS recovery
+
+The canonical transcript lives in the `sessions` and `messages` tables. FTS5
+tables and their sync triggers are derived indexes that can be detached and
+rebuilt without deleting canonical messages. See
+[`docs/state-db-recovery.md`](state-db-recovery.md) for the bounded live failure
+mode and the explicit repair procedure.
 
 ### Reset Policy (per-platform/type, in config.yaml)
 

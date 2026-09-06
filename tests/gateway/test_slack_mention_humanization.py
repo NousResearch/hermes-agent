@@ -95,6 +95,46 @@ async def test_handles_labelled_mention_form():
     assert out == "@Alice Example hi"
 
 
+@pytest.mark.asyncio
+async def test_backslash_in_display_name_does_not_raise():
+    """A display name is arbitrary user-set text. Fed to ``re.sub`` as a
+    replacement template it is parsed for escapes, so ``dev\\ops`` blew up
+    with ``re.error: bad escape \\o`` and the inbound message was lost."""
+    adapter = _adapter_with_names({"U07DEV": r"dev\ops"})
+    out = await adapter._humanize_user_mentions("ping <@U07DEV> please", chat_id="C1")
+    assert out == r"ping @dev\ops please"
+
+
+@pytest.mark.asyncio
+async def test_group_reference_in_display_name_is_literal():
+    """``\\1`` in a name is a group reference in a replacement template — with
+    no groups in the pattern it raised ``invalid group reference``."""
+    adapter = _adapter_with_names({"U07ODD": r"a\1b"})
+    out = await adapter._humanize_user_mentions("hi <@U07ODD>", chat_id="C1")
+    assert out == r"hi @a\1b"
+
+
+@pytest.mark.asyncio
+async def test_named_group_reference_does_not_reinject_the_raw_id():
+    """``\\g<0>`` expands to the whole match, silently putting the opaque
+    ``<@UID>`` back — the exact token this method exists to remove."""
+    adapter = _adapter_with_names({"U07ODD": r"\g<0>"})
+    out = await adapter._humanize_user_mentions("hi <@U07ODD>", chat_id="C1")
+    assert "<@" not in out
+    assert out == r"hi @\g<0>"
+
+
+@pytest.mark.asyncio
+async def test_one_odd_name_does_not_break_the_other_mentions():
+    adapter = _adapter_with_names(
+        {"U07DEV": r"dev\ops", "U07ALICE": "Alice Example"}
+    )
+    out = await adapter._humanize_user_mentions(
+        "<@U07DEV> and <@U07ALICE> ship it", chat_id="C1"
+    )
+    assert out == r"@dev\ops and @Alice Example ship it"
+
+
 # ----- _build_identity_prompt --------------------------------------------------
 
 def test_identity_prompt_names_the_bot():

@@ -607,7 +607,7 @@ _PER_TURN_RESET_STATE: tuple[tuple[str, Any], ...] = (
     ("_thinking_prefill_retries", 0), ("_post_tool_empty_retried", False),
     ("_last_content_with_tools", None), ("_last_content_tools_all_housekeeping", False),
     ("_reused_response_text", None),
-    ("_undelivered_tool_call_content", None), ("_undelivered_tool_call_content_nudged", False),
+    ("_undelivered_tool_call_content", None),
     ("_mute_post_response", False), ("_unicode_sanitization_passes", 0),
     ("_tool_guardrail_halt_decision", None),
     ("_harness_metrics_turn", None),
@@ -1318,7 +1318,6 @@ def build_api_messages(
         # Strip length-continuation marks; some transports keep underscore keys.
         api_msg.pop("_length_continuation_fragment", None)
         api_msg.pop("_length_continuation_nudge", None)
-        api_msg.pop("_undelivered_interim_synthetic", None)
         # Strip Codex Responses fields (call_id, response_item_id): strict providers
         # reject unknown fields. New dicts keep the internal list intact for Codex.
         if agent._should_sanitize_tool_calls():

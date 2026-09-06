@@ -172,6 +172,19 @@ a NAT boundary, put the room's authority on the host every participant can
 reach (typically the public VPS), or bridge the network with Tailscale/VPN.
 :::
 
+### Transferring Hosted Room Authority
+
+If you need to transfer a hosted room's authority to another gateway (e.g. for disaster recovery or to move the room across a NAT boundary), you must use the `groups.peer.promote` and `groups.peer.demote` JSON-RPC methods. 
+
+**These operations must be performed as a pair to avoid data corruption (split-brain).**
+
+1. On the new gateway, invoke `groups.peer.promote` to assume authority. The new gateway will increment the authority epoch and begin accepting `groups.send` operations.
+2. On the original authority gateway, invoke `groups.peer.demote` to relinquish authority.
+
+:::warning
+If you omit the `demote` step on the original authority, it will continue to accept `groups.send` requests and write them to its local state. Because the two gateways do not share storage, they will produce divergent, incompatible room histories (split-brain) that cannot be safely merged.
+:::
+
 ## Bots across machines
 
 When you register several backends in **Settings → Connections** — the local runtime, remote gateways, SSH hosts, Hermes Cloud instances — the roster shows the Bots from **every** connected source, persistently: SSH sources are inventoried without spawning anything on the remote box, and machines that are momentarily unreachable keep their last-known rows instead of vanishing. When the same profile name exists on several sources, handles disambiguate as `@name-device` (for example `@research-homelab`). A Bot's chats, sessions, memory, and routines live on the machine that owns the profile.

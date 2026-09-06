@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import hashlib
 import shutil
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from agent.skill_utils import is_excluded_skill_path
@@ -243,6 +244,31 @@ def bundle_content_hash(bundle: SkillBundle) -> str:
 
 _SOURCE_ID_ALIASES = {"skills.sh": "skills-sh"}
 
+_FETCH_TIMEOUT_SECONDS = 30.0
+
+
+def _fetch_bundle_bounded(
+    src: SkillSource, identifier: str, timeout: float = _FETCH_TIMEOUT_SECONDS,
+) -> Optional[SkillBundle]:
+    """Fetch one bundle with a hard wall-clock bound.
+
+    A dead upstream can hang on network IO far past any useful patience, and
+    every installed skill pays that cost on each update run (#104291). The
+    helper thread is a daemon so an abandoned fetch cannot block CLI exit.
+    """
+    box: Dict[str, SkillBundle] = {}
+
+    def _run() -> None:
+        try:
+            box["bundle"] = src.fetch(identifier)
+        except Exception:
+            pass  # callers already treat a failed fetch as "unavailable"
+
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    return box.get("bundle")
+
 
 def _source_matches(source: SkillSource, source_name: str) -> bool:
     return source.source_id() == _SOURCE_ID_ALIASES.get(source_name, source_name)
@@ -272,12 +298,21 @@ def check_for_skill_updates(
     for entry in installed:
         identifier, source_name = entry.get("identifier", ""), entry.get("source", "")
         row = {"name": entry.get("name", ""), "identifier": identifier, "source": source_name}
+        try:
+            install_dir = _resolve_lock_install_path(
+                entry.get("install_path", ""), entry.get("name", "skill"))
+            orphaned = not install_dir.exists()
+        except ValueError:
+            orphaned = False  # unresolvable entries keep the pre-existing fetch behavior
+        if orphaned:
+            # The lock-file entry points at a directory that is gone: the fetched
+            # bundle could never be applied, so skip the network cost entirely
+            # instead of re-paying it on every update run (#104291).
+            results.append({**row, "status": "orphaned"})
+            continue
         bundle = None
         for src in filter(lambda s: _source_matches(s, source_name), sources):
-            try:
-                bundle = src.fetch(identifier)
-            except Exception:
-                bundle = None
+            bundle = _fetch_bundle_bounded(src, identifier)
             if bundle:
                 break
         if not bundle:

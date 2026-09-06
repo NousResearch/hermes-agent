@@ -53,6 +53,22 @@ function patchUnixTerminalAsarPaths(destRoot) {
   }
 }
 
+function patchGetWindowsMacosAsarPath(destRoot) {
+  const filePath = join(destRoot, 'lib', 'macos.js')
+  const source = readFileSync(filePath, 'utf8')
+  const helperPath = "path.join(__dirname, '../main')"
+  const patchedHelperPath =
+    "path.join(__dirname.replace(/app\\.asar(?!\\.unpacked)/, 'app.asar.unpacked'), '../main')"
+  const patched = source.replace(helperPath, patchedHelperPath)
+
+  if (patched === source) {
+    throw new Error(
+      '[stage-native-deps] get-windows lib/macos.js helper path no longer matches the verified rewrite'
+    )
+  }
+  writeFileSync(filePath, patched)
+}
+
 /**
  * Locate node-pty's package root via real module resolution, so this
  * works whether it's hoisted to a workspace root or local to this app.
@@ -470,6 +486,7 @@ export function stageGetWindowsInto(
   writeFileSync(join(destRoot, 'lib', 'windows.js'), STAGED_WINDOWS_JS)
 
   if (platform === 'darwin') {
+    patchGetWindowsMacosAsarPath(destRoot)
     const helper = join(srcRoot, 'main')
     if (!existsSync(helper)) {
       throw new Error('[stage-native-deps] get-windows is missing its macOS helper binary (main)')

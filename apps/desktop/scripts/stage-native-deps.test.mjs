@@ -368,6 +368,10 @@ function makeFakeGetWindows(srcRoot, { version = '9.3.0', bindings = [] } = {}) 
   fs.mkdirSync(join(srcRoot, 'lib'), { recursive: true })
   fs.writeFileSync(join(srcRoot, 'package.json'), JSON.stringify({ name: 'get-windows', version, main: 'index.js' }))
   fs.writeFileSync(join(srcRoot, 'index.js'), 'export {};')
+  fs.writeFileSync(
+    join(srcRoot, 'lib', 'macos.js'),
+    "const binary = path.join(__dirname, '../main');\n"
+  )
   fs.writeFileSync(join(srcRoot, 'lib', 'windows.js'), '// upstream pre-gyp loader')
   fs.writeFileSync(join(srcRoot, 'main'), '#!/bin/sh\n')
 
@@ -584,7 +588,7 @@ test('staging refuses a get-windows version the lib/windows.js rewrite was not v
   }
 })
 
-test('darwin staging ships the Swift helper executable and the rewritten windows.js', () => {
+test('darwin staging ships the Swift helper with an asar-safe path and rewritten windows.js', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
   try {
     const srcRoot = join(tmp, 'get-windows')
@@ -594,7 +598,15 @@ test('darwin staging ships the Swift helper executable and the rewritten windows
 
     stageGetWindowsInto(srcRoot, destRoot, { platform: 'darwin' })
 
-    assert.equal(fs.statSync(join(destRoot, 'main')).mode & 0o777, 0o755)
+    const stagedMacos = fs.readFileSync(join(destRoot, 'lib', 'macos.js'), 'utf8')
+    assert.match(
+      stagedMacos,
+      /__dirname\.replace\(\/app\\\.asar\(\?!\\\.unpacked\)\//,
+      'packaged helper lookup must leave app.asar before spawning the native binary'
+    )
+    if (process.platform !== 'win32') {
+      assert.equal(fs.statSync(join(destRoot, 'main')).mode & 0o777, 0o755)
+    }
     const staged = fs.readFileSync(join(destRoot, 'lib', 'windows.js'), 'utf8')
     assert.match(staged, /Rewritten by stage-native-deps\.mjs/)
     assert.ok(!staged.includes('node-pre-gyp'), 'pre-gyp loader must not survive staging')

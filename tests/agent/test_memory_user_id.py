@@ -82,10 +82,10 @@ class TestMemoryManagerUserIdThreading:
 
     def test_multiple_providers_all_receive_user_id(self):
         mgr = MemoryManager()
-        # Register one trusted built-in provider and one external provider.
+        # Use one provider named "builtin" (always accepted) and one external
         p1 = RecordingProvider("builtin")
         p2 = RecordingProvider("external")
-        mgr.add_provider(p1, is_builtin=True)
+        mgr.add_provider(p1)
         mgr.add_provider(p2)
 
         mgr.initialize_all(

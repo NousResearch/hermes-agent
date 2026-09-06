@@ -296,7 +296,6 @@ class MemoryManager:
     def __init__(self, *, external_prefetch_timeout: Optional[float] = None) -> None:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
-        self._builtin_provider_ids: set[int] = set()
         self._external_prefetch_spill_config: Optional[Dict[str, Any]] = None
         self._has_external: bool = False
         timeout = external_prefetch_timeout
@@ -330,19 +329,11 @@ class MemoryManager:
                 logger.log(level, "Memory provider '%s' %s: %s", provider.name, label, e, exc_info=exc_info)
         return results
 
-    def _is_builtin_provider(self, provider: MemoryProvider) -> bool:
-        return id(provider) in self._builtin_provider_ids
-
-    def add_provider(self, provider: MemoryProvider, *, is_builtin: bool = False) -> None:
-        """Trust comes from registration, never the provider-controlled name.
-        Reject duplicate instances so their trust cannot change retroactively.
-        """
-        if any(existing is provider for existing in self._providers):
-            logger.warning("Rejected duplicate memory provider instance '%s'", provider.name)
-            return
-        if not is_builtin:
+    def add_provider(self, provider: MemoryProvider) -> None:
+        """Register a provider; builtin always accepted, only ONE external allowed."""
+        if provider.name != "builtin":
             if self._has_external:
-                existing = next((p.name for p in self._providers if not self._is_builtin_provider(p)), "unknown")
+                existing = next((p.name for p in self._providers if p.name != "builtin"), "unknown")
                 logger.warning(
                     "Rejected memory provider '%s' — external provider '%s' is "
                     "already registered. Only one external memory provider is "
@@ -354,8 +345,6 @@ class MemoryManager:
             self._external_prefetch_spill_config = get_spill_config()
 
         self._providers.append(provider)
-        if is_builtin:
-            self._builtin_provider_ids.add(id(provider))
 
         # Core tool names are reserved: built-ins always win at agent init, so a shadowing
         # provider tool would linger in ``_tool_to_provider`` and hijack dispatch.
@@ -415,7 +404,7 @@ class MemoryManager:
     def _prefetch_provider(self, provider: MemoryProvider, query: str, *, session_id: str = "") -> str:
         """Run one provider's prefetch; external providers are bounded by a timeout. A stuck external
         call keeps running on its daemon thread and the provider is skipped on later turns until it returns."""
-        if self._is_builtin_provider(provider):
+        if provider.name == "builtin":
             return provider.prefetch(query, session_id=session_id)
 
         result_box: Dict[str, Any] = {}
@@ -450,6 +439,8 @@ class MemoryManager:
             raise result_box["error"]
         result = result_box.get("value", "")
         if result and result.strip():
+            # Prefetch is stamped into the user turn's api_content and replayed every later turn;
+            # spill oversized results like plugin hook output so one provider can't inflate the prefix.
             result = spill_if_oversized(
                 result, session_id=session_id, source=f"{provider.name} memory prefetch",
                 config=self._external_prefetch_spill_config,
@@ -729,7 +720,7 @@ class MemoryManager:
             else:
                 provider.on_memory_write(action, target, content, metadata=dict(metadata or {}))
 
-        external = [p for p in self._providers if not self._is_builtin_provider(p)]
+        external = [p for p in self._providers if p.name != "builtin"]
         self._each_provider("on_memory_write failed", _notify, providers=external)
 
     # Actions mirrored to external providers; non-mutating results (errors, staged) are

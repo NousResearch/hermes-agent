@@ -72,11 +72,10 @@ def test_zero_count_renders_generic():
 
 
 def test_aggregates_multiple_providers():
-    # Use the trusted builtin slot plus one external to exercise the join path.
+    # builtin is always accepted first; a second external is rejected, so use
+    # builtin + one external to exercise the join path.
     mgr = MemoryManager()
-    mgr.add_provider(
-        _FakeProvider("builtin", RecallStatus("Notes", 2)), is_builtin=True
-    )
+    mgr.add_provider(_FakeProvider("builtin", RecallStatus("Notes", 2)))
     mgr.add_provider(_FakeProvider("hindsight", RecallStatus("Hindsight", 5)))
     result = mgr.describe_recall()
     assert "🧠 Notes — recalled 2 memories" in result
@@ -85,7 +84,7 @@ def test_aggregates_multiple_providers():
 
 def test_failing_provider_is_skipped_not_fatal():
     mgr = MemoryManager()
-    mgr.add_provider(_FakeProvider("builtin", None, raises=True), is_builtin=True)
+    mgr.add_provider(_FakeProvider("builtin", None, raises=True))
     mgr.add_provider(_FakeProvider("hindsight", RecallStatus("Hindsight", 1)))
     # The raising provider is swallowed; the healthy one still surfaces.
     assert mgr.describe_recall() == "🧠 Hindsight — recalled 1 memory"

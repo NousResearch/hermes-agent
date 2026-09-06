@@ -131,6 +131,32 @@ def test_tenant_provision_refuses_paths_that_escape_the_repo(
     assert not (worktree / "etc").exists()
 
 
+def test_entry_already_linked_by_the_nested_scan_is_not_refused(
+    repo, worktree, tmp_path, monkeypatch, caplog
+):
+    """Regression, 2026-09-07 first live run.
+
+    `frontend/node_modules` is picked up by the nested scan AND declared in the
+    tenant list. The bounds check used to `resolve()` the destination, which
+    followed the symlink the scan had just created out of the worktree and
+    logged "refusing provision entry ... it escapes the repo" — a traversal
+    warning fired by the helper's own correct output. Nothing may be refused
+    here, and nothing may be warned about.
+    """
+    _tenant_map(tmp_path, monkeypatch, repo, ["frontend/node_modules", "data/corpus.db"])
+    with caplog.at_level("WARNING"):
+        linked = kb._provision_worktree_toolchain(repo, worktree)
+    assert "frontend/node_modules" in linked
+    assert (worktree / "frontend" / "node_modules" / "react").is_dir()
+    assert "escapes the repo" not in caplog.text
+
+
+def test_bare_dot_and_empty_entries_are_refused(repo, worktree, tmp_path, monkeypatch):
+    """`.` would link the repo root over the worktree itself."""
+    for evil in (".", "./", "  "):
+        assert kb._safe_relative_target(repo, worktree, evil) is None
+
+
 def test_unknown_repo_root_gets_no_tenant_entries(repo, worktree, tmp_path, monkeypatch):
     """The map is looked up by primary_path — a different repo must match nothing."""
     other = tmp_path / "elsewhere"

@@ -8606,20 +8606,33 @@ def _safe_relative_target(repo_root: Path, target: Path, rel: str):
     """Resolve a repo-relative provision entry, or ``None`` if it escapes.
 
     An entry is data from a config file, so it is treated as untrusted: absolute
-    paths and anything that resolves outside the repo (``../../etc/passwd``) are
-    refused rather than linked. Returns ``(src, dst)``.
+    paths and anything that escapes the repo (``../../etc/passwd``) are refused
+    rather than linked. Returns ``(src, dst)``.
+
+    The bounds check is LEXICAL (``normpath``), not ``resolve()``. Resolving
+    followed an existing symlink at the destination out of the worktree and
+    refused the entry — so an entry the nested scan had *already* linked was
+    reported as a traversal attempt on every worktree. Observed on the first
+    live run, 2026-09-07: `frontend/node_modules` was linked correctly and
+    warned about in the same breath. A security check that cries wolf on its own
+    successful output is how a fleet learns to scroll past its warnings.
+    Lexical normalisation is also the right tool here: it collapses ``..``
+    without consulting the filesystem, which is exactly the traversal question
+    being asked.
     """
     rel = (rel or "").strip()
     if not rel or Path(rel).is_absolute():
         return None
-    src = (repo_root / rel).resolve(strict=False)
-    dst = (target / rel).resolve(strict=False)
-    root = repo_root.resolve(strict=False)
-    tgt = target.resolve(strict=False)
+    root = Path(os.path.normpath(str(repo_root)))
+    tgt = Path(os.path.normpath(str(target)))
+    src = Path(os.path.normpath(str(root / rel)))
+    dst = Path(os.path.normpath(str(tgt / rel)))
     try:
         src.relative_to(root)
         dst.relative_to(tgt)
     except ValueError:
+        return None
+    if src == root or dst == tgt:
         return None
     return src, dst
 

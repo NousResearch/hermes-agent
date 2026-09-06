@@ -473,9 +473,16 @@ def _ws_orphan_turn_activity_is_fresh(session: dict) -> bool:
     Reuses the agent's existing activity summary (``_touch_activity`` is stamped by API waits, stream
     tokens, and tool heartbeats — the same clock the turn-liveness watchdog samples; see
     agent/turn_liveness.py). See #100325, #98028.
+    Isolated turns mirror that clock from the child under a unique dispatch token;
+    their monotonic samples keep aging even if the child or its pipe stalls.
     """
     if _WS_ORPHAN_ACTIVITY_STALE_S <= 0:
         return False
+    if session.get("_compute_host_turn_id"):
+        with session["history_lock"]:
+            stamp = session.get("_compute_host_activity_ns")
+            return (session.get("running", False) and isinstance(stamp, int)
+                    and 0 <= (time.perf_counter_ns() - stamp) / 1_000_000_000 < _WS_ORPHAN_ACTIVITY_STALE_S)
     if not callable(summary_fn := getattr(session.get("agent"), "get_activity_summary", None)):
         return False
     try:

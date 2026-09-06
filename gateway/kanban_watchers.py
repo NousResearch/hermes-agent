@@ -493,119 +493,6 @@ class GatewayKanbanWatchersMixin:
         last_warn_at = 0
         dispatcher = _KanbanDispatcher(_kb, settings)
 
-        def _board_db_fingerprint(slug: str) -> tuple[str, int | None, int | None]:
-            path = _kb.kanban_db_path(slug)
-            try:
-                resolved = str(path.expanduser().resolve())
-            except Exception:
-                resolved = str(path)
-            try:
-                stat = path.stat()
-            except OSError:
-                return (resolved, None, None)
-            return (resolved, stat.st_mtime_ns, stat.st_size)
-
-        def _is_corrupt_board_db_error(exc: Exception) -> bool:
-            corrupt_guard_error = getattr(_kb, "KanbanDbCorruptError", None)
-            if corrupt_guard_error is not None and isinstance(exc, corrupt_guard_error):
-                return True
-            if not isinstance(exc, sqlite3.DatabaseError):
-                return False
-            msg = str(exc).lower()
-            return (
-                "file is not a database" in msg
-                or "database disk image is malformed" in msg
-            )
-
-        def _tick_once_for_board(slug: str) -> "Optional[object]":
-            """Run one dispatch_once for a specific board.
-
-            Runs in a worker thread via `asyncio.to_thread`. `board=slug`
-            is passed through `dispatch_once` so `resolve_workspace` and
-            `_default_spawn` see the right paths. The per-board DB is
-            opened explicitly so concurrent boards never share a
-            connection handle or accidentally claim across each other.
-            """
-            conn = None
-            fingerprint = _board_db_fingerprint(slug)
-            disabled_entry = disabled_corrupt_boards.get(slug)
-            if disabled_entry is not None:
-                disabled_fingerprint, disabled_at = disabled_entry
-                age = time.monotonic() - disabled_at
-                if (
-                    disabled_fingerprint == fingerprint
-                    and age < CORRUPT_BOARD_RETRY_AFTER_SECONDS
-                ):
-                    return None
-                if disabled_fingerprint == fingerprint:
-                    logger.info(
-                        "kanban dispatcher: board %s database fingerprint unchanged "
-                        "after %.0fs quarantine; retrying dispatch",
-                        slug,
-                        age,
-                    )
-                else:
-                    logger.info(
-                        "kanban dispatcher: board %s database changed; retrying dispatch",
-                        slug,
-                    )
-                disabled_corrupt_boards.pop(slug, None)
-            try:
-                conn = _kb.connect(board=slug)
-                # `connect()` runs the schema + idempotent migration on
-                # first open per process; the previous explicit
-                # `init_db()` call here busted the per-process cache and
-                # re-ran the migration on a second connection, racing
-                # the first. See the matching comment in
-                # `_kanban_notifier_watcher` and issue #21378.
-                return _kb.dispatch_once(
-                    conn,
-                    board=slug,
-                    max_spawn=max_spawn,
-                    max_in_progress=max_in_progress,
-                    failure_limit=failure_limit,
-                    stale_timeout_seconds=stale_timeout_seconds,
-                    default_assignee=default_assignee,
-                    max_in_progress_per_profile=max_in_progress_per_profile,
-                    reconcile_orphans=reconcile_orphans,
-                )
-            except sqlite3.DatabaseError as exc:
-                if _is_corrupt_board_db_error(exc):
-                    disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
-                    logger.error(
-                        "kanban dispatcher: board %s database %s is not a valid "
-                        "SQLite database; pausing dispatch for this board until "
-                        "the file changes, the gateway restarts, or the "
-                        "quarantine timer expires. Move or restore the file, "
-                        "then run `hermes kanban init` if you need a fresh board.",
-                        slug,
-                        fingerprint[0],
-                    )
-                    return None
-                logger.exception("kanban dispatcher: tick failed on board %s", slug)
-                return None
-            except Exception as exc:
-                if _is_corrupt_board_db_error(exc):
-                    disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
-                    logger.error(
-                        "kanban dispatcher: board %s database %s is not a valid "
-                        "SQLite database; pausing dispatch for this board until "
-                        "the file changes, the gateway restarts, or the "
-                        "quarantine timer expires. Move or restore the file, "
-                        "then run `hermes kanban init` if you need a fresh board.",
-                        slug,
-                        fingerprint[0],
-                    )
-                    return None
-                logger.exception("kanban dispatcher: tick failed on board %s", slug)
-                return None
-            finally:
-                if conn is not None:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
-
         def _tick_once() -> "list[tuple[str, Optional[object]]]":
             """Run one dispatch_once per board. Returns (slug, result) pairs.
 
@@ -620,7 +507,7 @@ class GatewayKanbanWatchersMixin:
             out: list[tuple[str, "Optional[object]"]] = []
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
-                out.append((slug, _tick_once_for_board(slug)))
+                out.append((slug, dispatcher.tick_once_for_board(slug)))
             return out
 
         def _ready_nonempty() -> bool:

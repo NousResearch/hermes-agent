@@ -7,6 +7,7 @@ import {
   type DirectTtsConfig,
   synthesizeSpeechClientDirect
 } from '@/lib/voice-client-direct'
+import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $voicePlayback,
   setVoicePlaybackState,
@@ -125,10 +126,23 @@ export async function resolveSpeakStreamUrl(): Promise<null | string> {
     const profile = getApiRequestProfile()
     const connectionId = getApiRequestConnection()
 
+    // Both awaits below are IPC round-trips into the main process with no
+    // timeout of their own (#93454) — a wedged main-process round-trip
+    // otherwise hangs voice mode's "speaking" state forever instead of
+    // falling back to playSpeechText. Bound the same way
+    // store/gateway's openSecondary bounds the same *For/plain pair.
     const conn =
       connectionId && desktop.getConnectionFor
-        ? await desktop.getConnectionFor({ connectionId, profile })
-        : await desktop.getConnection(profile)
+        ? await withTimeout(
+            desktop.getConnectionFor({ connectionId, profile }),
+            RECONNECT_ATTEMPT_TIMEOUT_MS,
+            `Timed out connecting to profile "${profile}"`
+          )
+        : await withTimeout(
+            desktop.getConnection(profile),
+            RECONNECT_ATTEMPT_TIMEOUT_MS,
+            `Timed out connecting to profile "${profile}"`
+          )
 
     const wsDeps =
       connectionId && desktop.getGatewayWsUrlFor
@@ -137,7 +151,12 @@ export async function resolveSpeakStreamUrl(): Promise<null | string> {
           ? {}
           : desktop
 
-    const wsUrl = await resolveGatewayWsUrl(wsDeps, conn)
+    const wsUrl = await withTimeout(
+      resolveGatewayWsUrl(wsDeps, conn),
+      RECONNECT_ATTEMPT_TIMEOUT_MS,
+      `Timed out re-minting the gateway WebSocket URL for profile "${profile}"`
+    )
+
     const url = new URL(wsUrl)
 
     if (!url.pathname.endsWith('/api/ws')) {

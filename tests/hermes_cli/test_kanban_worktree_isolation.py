@@ -22,6 +22,8 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_workspace as kbw
 
 
 @pytest.fixture
@@ -67,7 +69,7 @@ def _add_worktree(repo: Path, target: Path, branch: str) -> Path:
 
 
 def test_decompose_worktree_children_get_own_workspace(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         root = kb.create_task(conn, title="build the feature", triage=True)
         conn.execute(
             "UPDATE tasks SET workspace_kind='worktree', "
@@ -105,7 +107,7 @@ def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
     repo = _make_repo(tmp_path)
     occupied = _add_worktree(repo, repo / ".worktrees" / "sibling", "wt/sibling")
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(
             conn,
             title="second sibling",
@@ -114,7 +116,7 @@ def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
         )
         task = kb.get_task(conn, tid)
 
-    workspace, branch = kb._resolve_worktree_workspace(task)
+    workspace, branch = kbw._resolve_worktree_workspace(task)
     assert workspace == (repo / ".worktrees" / tid).resolve()
     assert branch == f"wt/{tid}"
     # The sibling's checkout is untouched, still on its own branch.

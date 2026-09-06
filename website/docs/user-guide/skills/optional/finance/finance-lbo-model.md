@@ -15,7 +15,7 @@ Build leveraged buyout workbooks with IRR/MOIC in Excel.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/finance/lbo-model` |
-| Path | `optional-skills/finance/lbo-model` |
+| Path | `optional-skills/finance\lbo-model` |
 | Version | `1.0.0` |
 | Author | Anthropic (adapted by Nous Research) |
 | License | Apache-2.0 |

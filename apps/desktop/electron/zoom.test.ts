@@ -12,8 +12,12 @@ import {
   applyZoomLevel,
   clampZoomLevel,
   DEFAULT_ZOOM_LEVEL,
+  installZoomReassertOnNavigation,
   installZoomReassertOnWindowEvents,
+  isDebouncedReassertEvent,
   percentToZoomLevel,
+  ZOOM_REASSERT_MAX_SETTLE_CHECKS,
+  ZOOM_REASSERT_SETTLE_DELAY_MS,
   ZOOM_RESIZE_REASSERT_DELAY_MS,
   ZOOM_STEP,
   ZOOM_STORAGE_KEY,
@@ -101,7 +105,7 @@ test('installZoomReassertOnWindowEvents wires show, restore, focus, resize, and 
   assert.equal(calls, 5)
 })
 
-test('focus event reasserts zoom immediately without debounce (Windows high-DPI alt-tab, #50837)', () => {
+test('focus event reasserts zoom immediately without debounce on Windows (high-DPI alt-tab, #50837)', () => {
   const handlers = new Map()
 
   const win = {
@@ -120,12 +124,22 @@ test('focus event reasserts zoom immediately without debounce (Windows high-DPI 
     'win32'
   )
 
-  // focus should trigger immediate reassert — no timer involved
+  // focus on Windows triggers immediate reassert — no timer involved
   handlers.get('focus')()
   assert.equal(calls, 1)
 })
 
-test('installZoomReassertOnWindowEvents debounces Linux resize and move events at the trailing edge', () => {
+test('isDebouncedReassertEvent debounces focus only on Linux, not Windows/macOS', () => {
+  assert.equal(isDebouncedReassertEvent('focus', 'linux'), true)
+  assert.equal(isDebouncedReassertEvent('focus', 'win32'), false)
+  assert.equal(isDebouncedReassertEvent('focus', 'darwin'), false)
+  assert.equal(isDebouncedReassertEvent('resize', 'linux'), true)
+  assert.equal(isDebouncedReassertEvent('resize', 'win32'), true)
+  assert.equal(isDebouncedReassertEvent('show', 'linux'), false)
+  assert.equal(isDebouncedReassertEvent('restore', 'linux'), false)
+})
+
+test('installZoomReassertOnWindowEvents debounces Linux resize, move, and focus events at the trailing edge', () => {
   vi.useFakeTimers()
 
   try {
@@ -158,10 +172,102 @@ test('installZoomReassertOnWindowEvents debounces Linux resize and move events a
     vi.advanceTimersByTime(ZOOM_RESIZE_REASSERT_DELAY_MS / 2)
     assert.equal(calls, 1)
 
+    // focus on Linux is also debounced — a session switch fires focus but
+    // the reassert must not jump the zoom mid-interaction.
+    handlers.get('focus')()
+    vi.advanceTimersByTime(ZOOM_RESIZE_REASSERT_DELAY_MS / 2)
+    assert.equal(calls, 1)
+    vi.advanceTimersByTime(ZOOM_RESIZE_REASSERT_DELAY_MS / 2)
+    assert.equal(calls, 2)
+
     handlers.get('resize')()
     destroyed = true
     vi.advanceTimersByTime(ZOOM_RESIZE_REASSERT_DELAY_MS)
-    assert.equal(calls, 1)
+    assert.equal(calls, 2)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('installZoomReassertOnWindowEvents re-verifies Linux zoom after the debounced re-assert so a dropped re-apply is retried', () => {
+  vi.useFakeTimers()
+
+  try {
+    const handlers = new Map()
+
+    const win = {
+      isDestroyed: () => false,
+      on(event, listener) {
+        handlers.set(event, listener)
+      }
+    }
+
+    let calls = 0
+    installZoomReassertOnWindowEvents(
+      win,
+      () => {
+        calls += 1
+      },
+      'linux'
+    )
+
+    handlers.get('resize')()
+    vi.advanceTimersByTime(ZOOM_RESIZE_REASSERT_DELAY_MS)
+    assert.equal(calls, 1, 'debounced re-assert fires once')
+
+    // Cosmic tiling can drop the just-applied zoom mid-reconfigure; the
+    // settle-verify chain re-asserts on a bounded schedule until it converges:
+    // one initial re-assert plus ZOOM_REASSERT_MAX_SETTLE_CHECKS follow-ups.
+    for (let i = 1; i <= ZOOM_REASSERT_MAX_SETTLE_CHECKS; i++) {
+      vi.advanceTimersByTime(ZOOM_REASSERT_SETTLE_DELAY_MS)
+      assert.equal(calls, 1 + i, `settle check ${i} re-asserts`)
+    }
+
+    vi.advanceTimersByTime(ZOOM_REASSERT_SETTLE_DELAY_MS * 2)
+    assert.equal(calls, 1 + ZOOM_REASSERT_MAX_SETTLE_CHECKS, 'settle chain is bounded and stops')
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('installZoomReassertOnWindowEvents resets the settle chain on a fresh re-assert', () => {
+  vi.useFakeTimers()
+
+  try {
+    const handlers = new Map()
+
+    const win = {
+      isDestroyed: () => false,
+      on(event, listener) {
+        handlers.set(event, listener)
+      }
+    }
+
+    let calls = 0
+    installZoomReassertOnWindowEvents(
+      win,
+      () => {
+        calls += 1
+      },
+      'linux'
+    )
+
+    handlers.get('show')()
+    vi.advanceTimersByTime(ZOOM_REASSERT_SETTLE_DELAY_MS)
+    assert.equal(calls, 2, 'initial re-assert plus one settle check')
+
+    // A second transition while the first settle chain is still pending must
+    // restart the chain from zero instead of exhausting the budget.
+    handlers.get('restore')()
+    assert.equal(calls, 3, 'fresh transition re-asserts immediately')
+
+    for (let i = 1; i <= ZOOM_REASSERT_MAX_SETTLE_CHECKS; i++) {
+      vi.advanceTimersByTime(ZOOM_REASSERT_SETTLE_DELAY_MS)
+      assert.equal(calls, 3 + i, `restarted chain settle check ${i} re-asserts`)
+    }
+
+    vi.advanceTimersByTime(ZOOM_REASSERT_SETTLE_DELAY_MS * 2)
+    assert.equal(calls, 3 + ZOOM_REASSERT_MAX_SETTLE_CHECKS, 'restarted chain is bounded too')
   } finally {
     vi.useRealTimers()
   }
@@ -185,6 +291,34 @@ test('installZoomReassertOnWindowEvents skips destroyed windows', () => {
   destroyed = true
   handlers.get('show')()
   assert.equal(calls, 0)
+})
+
+test('installZoomReassertOnNavigation covers full loads and main-frame in-page routes', () => {
+  const handlers = new Map()
+  let destroyed = false
+  let calls = 0
+
+  const webContents = {
+    isDestroyed: () => destroyed,
+    on(event, listener) {
+      handlers.set(event, listener)
+    }
+  }
+
+  installZoomReassertOnNavigation(webContents, () => {
+    calls += 1
+  })
+
+  assert.deepEqual([...handlers.keys()], ['did-finish-load', 'did-navigate-in-page'])
+
+  handlers.get('did-finish-load')()
+  handlers.get('did-navigate-in-page')({}, 'file:///app/index.html#/new', true)
+  handlers.get('did-navigate-in-page')({}, 'file:///app/frame.html#anchor', false)
+  assert.equal(calls, 2)
+
+  destroyed = true
+  handlers.get('did-navigate-in-page')({}, 'file:///app/index.html#/session/next', true)
+  assert.equal(calls, 2)
 })
 
 // Zoom-wiring contract: chat windows keep global UI zoom while fixed-size

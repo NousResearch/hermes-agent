@@ -14,11 +14,8 @@ full credential environment. Two tiers:
 import os
 from unittest.mock import patch
 
-from tools.environments.local import (
-    hermes_subprocess_env,
-    _ALWAYS_STRIP_KEYS,
-    _HERMES_PROVIDER_ENV_FORCE_PREFIX,
-)
+from tools.environments.local import hermes_subprocess_env
+from tools.environments.local_env_policy import _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_FORCE_PREFIX
 
 
 _TIER1_SAMPLE = {
@@ -61,6 +58,19 @@ class TestStripByDefault:
         result = _build(_TIER1_SAMPLE)
         for var in _TIER1_SAMPLE:
             assert var not in result, f"{var} leaked (Tier-1) with inherit_credentials=False"
+
+    def test_buzz_platform_vars_stripped_by_default(self):
+        """BUZZ_* first-party platform credentials must NOT reach the
+        non-terminal spawn surface (browser / TUI host / copilot-executor),
+        even though they pass through to terminal children (issue #78026)."""
+        buzz_sample = {
+            "BUZZ_PRIVATE_KEY": "nsec1fake",
+            "BUZZ_AUTH_TAG": '["tag","data","kind","sig"]',
+            "BUZZ_RELAY_URL": "https://mycommunity.communities.buzz.xyz",
+        }
+        result = _build(buzz_sample)
+        for var in buzz_sample:
+            assert var not in result, f"{var} leaked via hermes_subprocess_env"
 
 
     def test_pythonutf8_set(self):

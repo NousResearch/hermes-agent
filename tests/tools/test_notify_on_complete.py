@@ -168,12 +168,18 @@ class TestCheckpointNotify:
 # =========================================================================
 
 class TestTerminalSchema:
-    def test_schema_has_notify_on_complete(self):
+    def test_schema_advertises_unified_notify(self):
+        """`notify` is the single advertised notification arg: bool (notify on
+        exit) or list of strings (notify on pattern). The legacy
+        notify_on_complete/watch_patterns args stay handler-accepted but
+        unadvertised."""
         from tools.terminal_tool import TERMINAL_SCHEMA
         props = TERMINAL_SCHEMA["parameters"]["properties"]
-        assert "notify_on_complete" in props
-        assert props["notify_on_complete"]["type"] == "boolean"
-        assert props["notify_on_complete"]["default"] is False
+        assert "notify" in props
+        types = {alt["type"] for alt in props["notify"]["anyOf"]}
+        assert types == {"boolean", "array"}
+        assert "notify_on_complete" not in props
+        assert "watch_patterns" not in props
 
     def test_handler_passes_notify(self):
         """_handle_terminal passes notify_on_complete to terminal_tool."""
@@ -193,7 +199,7 @@ class TestTerminalSchema:
 
 class TestCodeExecutionBlocked:
     def test_notify_on_complete_blocked_in_sandbox(self):
-        from tools.code_execution_tool import _TERMINAL_BLOCKED_PARAMS
+        from tools.code_execution_rpc import _TERMINAL_BLOCKED_PARAMS
         assert "notify_on_complete" in _TERMINAL_BLOCKED_PARAMS
 
 

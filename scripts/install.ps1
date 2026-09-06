@@ -248,7 +248,10 @@ function ConvertTo-LongPath {
     if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
     # Only 8.3 short names carry a tilde+digit ("~1"); skip every resolver for
     # ordinary long paths, which is the overwhelmingly common case.
-    if ($Path -notmatch '~\d') { return $Path }
+    if ($Path -notmatch '~\d') {
+        $script:LastResolver = 'skipped-long-path'
+        return $Path
+    }
 
     # 1. kernel32. Compiled on first use only, so a normal profile never pays
     #    the Add-Type cost (this file is re-entered once per install stage).
@@ -326,6 +329,12 @@ function Set-LongProfileEnvVars {
     return $rewrote
 }
 
+# ConvertTo-LongPath only assigns $script:LastResolver when a ~\d short path
+# actually needs expansion, so an ordinary long profile leaves it unset -- and
+# the ResolvedPathReport below reads it unconditionally, which is fatal under
+# Set-StrictMode before any stage starts. 'none' is the resolver's own value
+# for "nothing ran".
+$script:LastResolver = 'none'
 $script:NormalizedProfilePaths = Set-LongProfileEnvVars
 
 # Re-derive the install paths now that the env vars behind their defaults are
@@ -378,18 +387,18 @@ $RepoUrlSsh = "git@github.com:NousResearch/hermes-agent.git"
 $RepoUrlHttps = "https://github.com/NousResearch/hermes-agent.git"
 $PythonVersion = "3.11"
 # Minor versions the installer accepts when the requested $PythonVersion isn't
-# available, in preference order.  uv discovers both uv-managed and system
-# interpreters, so this list also matches a pre-existing system Python.  Single
-# source of truth shared by Test-Python's fallback and Resolve-AvailablePythonVersion.
+# available, in preference order. Only checkout-private uv-managed interpreters
+# are eligible. Single source of truth shared by Test-Python's fallback and
+# Resolve-AvailablePythonVersion.
 $PythonFallbackVersions = @("3.12", "3.13", "3.10")
+$PythonFindTimeoutMs = 30000
 $NodeVersion = "22"
 # The npm range the root package.json pins in `engines.npm`.  A constant rather
 # than a manifest read like the POSIX side does: Test-Node runs BEFORE the repo
 # is cloned, so there is usually no package.json on disk yet (and none at all
-# when install.ps1 is piped straight from the web).  Get-NpmRange prefers the
-# manifest whenever it does exist, so a drifted constant self-corrects on any
-# run against an existing checkout.
-$NpmRange = ">=12.0.0"
+# when install.ps1 is piped straight from the web). Keep this fallback in sync
+# with package.json; Get-NpmRange prefers the manifest once a checkout exists.
+$NpmRange = "<11.10.0 || >=11.17.0"
 
 # Stage-protocol version.  Bumped only for genuinely breaking changes to the
 # manifest schema, stage-name set semantics, or stdout JSON shape.  Adding a
@@ -925,14 +934,93 @@ function Get-NpmRange {
     return $NpmRange
 }
 
-# Upgrade the Hermes-managed Node tree's bundled npm into $NpmRange.
-#
-# The nodejs.org zip ships whatever npm that Node major bundles -- Node 26.5.1
-# bundles npm 11.17.0, one minor below the root package.json's own
-# `engines.npm` floor of >=12.  The repo .npmrc sets `engine-strict=true`, so
-# that is fatal rather than a warning and a brand-new install dies at the first
-# `npm ci` with EBADENGINE.  Provision the right npm here instead of reacting
-# to the failure later.
+# Convert the numeric core of an npm version or range operand into a stable
+# three-component System.Version. npm reports semantic versions, but the
+# installer only needs the numeric core for the comparator ranges authored in
+# package.json (for example, <11.10.0 || >=11.17.0).
+function ConvertTo-NpmVersion {
+    param([string]$Version)
+
+    if (-not $Version) { return $null }
+
+    $core = ($Version.Trim() -replace '^v', '' -replace '-.*$', '')
+    $parts = @($core -split '\.')
+    if ($parts.Count -lt 1 -or $parts.Count -gt 3) { return $null }
+    foreach ($part in $parts) {
+        if ($part -notmatch '^\d+$') { return $null }
+    }
+    while ($parts.Count -lt 3) { $parts += '0' }
+
+    try {
+        return [version]($parts -join '.')
+    } catch {
+        return $null
+    }
+}
+
+# Evaluate the comparator-only npm ranges used by the root manifest and the
+# pre-clone fallback. Alternatives are separated with || and each alternative
+# may contain one or more whitespace-separated <, <=, >, or >= comparators.
+# Unknown range syntax fails closed so an incompatible system npm cannot reach
+# npm ci and fail later with EBADENGINE.
+function Test-NpmVersionOk {
+    param(
+        [string]$Version,
+        [string]$Range = (Get-NpmRange)
+    )
+
+    $actual = ConvertTo-NpmVersion $Version
+    if (-not $actual -or -not $Range) { return $false }
+
+    foreach ($alternative in @($Range -split '\s*\|\|\s*')) {
+        $clause = $alternative.Trim()
+        if (-not $clause) { continue }
+
+        $comparators = [regex]::Matches(
+            $clause,
+            '(?:^|\s)(<=|>=|<|>)\s*(\d+(?:\.\d+){0,2})(?=\s|$)'
+        )
+        if ($comparators.Count -eq 0) { continue }
+
+        $remainder = [regex]::Replace(
+            $clause,
+            '(?:^|\s)(?:<=|>=|<|>)\s*\d+(?:\.\d+){0,2}(?=\s|$)',
+            ''
+        ).Trim()
+        if ($remainder) { continue }
+
+        $matchesClause = $true
+        foreach ($comparator in $comparators) {
+            $target = ConvertTo-NpmVersion $comparator.Groups[2].Value
+            if (-not $target) {
+                $matchesClause = $false
+                break
+            }
+
+            $matchesComparator = switch ($comparator.Groups[1].Value) {
+                '<'  { $actual -lt $target }
+                '<=' { $actual -le $target }
+                '>'  { $actual -gt $target }
+                '>=' { $actual -ge $target }
+                default { $false }
+            }
+            if (-not $matchesComparator) {
+                $matchesClause = $false
+                break
+            }
+        }
+
+        if ($matchesClause) { return $true }
+    }
+
+    return $false
+}
+
+# Upgrade the Hermes-managed Node tree's bundled npm into $NpmRange when
+# needed. Managed Node trees survive updates, so their bundled npm can drift
+# outside a newer root package.json engine range. The repo .npmrc sets
+# `engine-strict=true`, making that mismatch fatal at the first `npm ci`.
+# Provision the right npm here instead of reacting to EBADENGINE later.
 #
 # Three details are load-bearing, mirroring _nb_ensure_bundled_npm_range in
 # scripts/lib/node-bootstrap.sh and upgrade_managed_npm in
@@ -954,17 +1042,11 @@ function Update-ManagedNpm {
     $range = Get-NpmRange
 
     # Skip the network round-trip when the bundled npm already satisfies the
-    # range.  Only the ">=N" shape we actually author is parsed; anything more
-    # exotic falls through to letting npm itself decide.
-    if ($range -match '^>=(\d+)') {
-        $want = [int]$Matches[1]
-        try {
-            $have = (& $npmCmd --version 2>$null)
-            if ($have -match '^(\d+)') {
-                if ([int]$Matches[1] -ge $want) { return $true }
-            }
-        } catch { }
-    }
+    # same range used by the system-Node acceptance gate.
+    try {
+        $have = (& $npmCmd --version 2>$null | Select-Object -First 1)
+        if ($have -and (Test-NpmVersionOk $have $range)) { return $true }
+    } catch { }
 
     # In-app updates run while the desktop app's Node processes are alive.
     # The managed npm lives inside the very tree they execute from, so an
@@ -1083,39 +1165,97 @@ function Resolve-UvCmd {
     throw "uv is not installed. Run install.ps1 -Stage uv first."
 }
 
+function Initialize-ManagedPythonEnvironment {
+    # Python used by Hermes belongs to the checkout, never to another
+    # application or a user-level uv configuration. Keep this aligned with
+    # hermes_cli.managed_uv.managed_python_env(), which owns the update path.
+    foreach ($name in @(
+        "CONDA_DEFAULT_ENV", "CONDA_PREFIX", "UV_PROJECT_ENVIRONMENT",
+        "UV_NO_MANAGED_PYTHON", "UV_PYTHON", "UV_PYTHON_DOWNLOADS",
+        "UV_SYSTEM_PYTHON", "VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH"
+    )) {
+        Remove-Item -Path "Env:$name" -ErrorAction SilentlyContinue
+    }
+
+    $managedRoot = Join-Path $InstallDir ".hermes-runtime\python"
+    New-Item -ItemType Directory -Force -Path $managedRoot | Out-Null
+    $env:UV_MANAGED_PYTHON = "1"
+    $env:UV_NO_CONFIG = "1"
+    $env:UV_PYTHON_INSTALL_BIN = "0"
+    $env:UV_PYTHON_INSTALL_DIR = $managedRoot
+    $env:UV_PYTHON_INSTALL_REGISTRY = "0"
+    return [System.IO.Path]::GetFullPath($managedRoot)
+}
+
 function Resolve-AvailablePythonVersion {
-    # Return the first Python minor version uv can actually find, preferring the
-    # requested $PythonVersion and then $PythonFallbackVersions.  Returns $null
-    # when none are available.
+    # Return the path and minor version of the first Hermes-managed interpreter
+    # uv can find, preferring the requested version and then fallback minors.
+    # System and application-owned interpreters are deliberately ineligible.
     #
-    # This is the cross-process-safe counterpart to Test-Python's in-memory
-    # ``$script:PythonVersion = $fallbackVer`` mutation.  Under Hermes-Setup.exe
-    # each ``-Stage NAME`` runs in a *fresh* powershell.exe, so the fallback the
-    # ``python`` stage settled on (e.g. 3.12 when 3.11 is absent) does NOT
-    # survive into the ``venv`` stage's process -- there $PythonVersion is back
-    # at its "3.11" default.  Consumers re-resolve here instead of trusting that
-    # default, which is exactly the propagation gap behind issue #50769.
+    # Under Hermes-Setup.exe each stage runs in a fresh powershell.exe. The
+    # venv stage therefore re-resolves both version and provenance rather than
+    # relying on state selected by the earlier Python stage (#50769).
+    [string]$managedRoot = Initialize-ManagedPythonEnvironment
+    $managedPrefix = $managedRoot.TrimEnd('\') + '\'
     $candidates = @($PythonVersion) + $PythonFallbackVersions
     $seen = @{}
     foreach ($ver in $candidates) {
         if (-not $ver -or $seen.ContainsKey($ver)) { continue }
         $seen[$ver] = $true
+        $process = $null
         try {
-            $found = & $UvCmd python find $ver 2>$null
-            if ($found) { return $ver }
-        } catch { }
+            # PowerShell 5.1 can lose a nested native command's stdout when
+            # this installer itself is redirected by the desktop bootstrapper.
+            # Capture uv directly through ProcessStartInfo instead of relying
+            # on the native-command pipeline for the interpreter path.
+            $process = New-Object System.Diagnostics.Process
+            $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+            $startInfo.FileName = $UvCmd
+            $startInfo.Arguments = "python find $ver --managed-python --no-config"
+            $startInfo.UseShellExecute = $false
+            $startInfo.CreateNoWindow = $true
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            $process.StartInfo = $startInfo
+            if (-not $process.Start()) { continue }
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit($PythonFindTimeoutMs)) {
+                try { $process.Kill() } catch { }
+                $process.WaitForExit()
+                throw "uv python find $ver timed out after $PythonFindTimeoutMs ms"
+            }
+            $stdout = $stdoutTask.Result
+            $stderrTask.Result | Out-Null
+            if ($process.ExitCode -ne 0) { continue }
+            [string]$foundPath = ($stdout.Trim() -split "`r?`n") | Select-Object -Last 1
+            if ($foundPath) {
+                $absolute = [System.IO.Path]::GetFullPath($foundPath)
+                if ($absolute.StartsWith($managedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    return [PSCustomObject]@{
+                        Path = $absolute
+                        Version = $ver
+                    }
+                }
+            }
+        } catch {
+            throw "Failed to resolve Hermes-managed Python $ver`: $_"
+        } finally {
+            if ($process) { $process.Dispose() }
+        }
     }
     return $null
 }
 
 function Test-Python {
+    Initialize-ManagedPythonEnvironment | Out-Null
     Write-Info "Checking Python $PythonVersion..."
-    
-    # Let uv find or install Python
+
+    # Only a checkout-private uv-managed interpreter satisfies this stage.
     try {
-        $pythonPath = & $UvCmd python find $PythonVersion 2>$null
-        if ($pythonPath) {
-            $ver = & $pythonPath --version 2>$null
+        $resolvedPython = Resolve-AvailablePythonVersion
+        if ($resolvedPython) {
+            $ver = & $resolvedPython.Path --version 2>$null
             Write-Success "Python found: $ver"
             return $true
         }
@@ -1138,15 +1278,15 @@ function Test-Python {
         # semantics or stderr noise.  This fix was previously landed as
         # commit ec1714e71 and then lost in a release squash; reapplied here.
         $ErrorActionPreference = "Continue"
-        $uvOutput = & $UvCmd python install $PythonVersion 2>&1
+        $uvOutput = & $UvCmd python install $PythonVersion --no-bin --no-registry --no-config 2>&1
         $uvExitCode = $LASTEXITCODE
         $ErrorActionPreference = $prevEAP
 
         # Check if Python is now available (more reliable than exit code
         # since uv may return non-zero due to "already installed" etc.)
-        $pythonPath = & $UvCmd python find $PythonVersion 2>$null
-        if ($pythonPath) {
-            $ver = & $pythonPath --version 2>$null
+        $resolvedPython = Resolve-AvailablePythonVersion
+        if ($resolvedPython) {
+            $ver = & $resolvedPython.Path --version 2>$null
             Write-Success "Python installed: $ver"
             return $true
         }
@@ -1162,60 +1302,29 @@ function Test-Python {
         Write-Warn "uv python install error: $_"
     }
 
-    # Fallback: check if ANY Python 3.10+ is already available on the system
-    Write-Info "Trying to find any existing Python 3.10+..."
+    # Preserve the established minor-version fallback contract, but provision
+    # every fallback into the same private store instead of borrowing a system
+    # interpreter. This path is reached only when the preferred install failed.
     foreach ($fallbackVer in $PythonFallbackVersions) {
         try {
-            $pythonPath = & $UvCmd python find $fallbackVer 2>$null
-            if ($pythonPath) {
-                $ver = & $pythonPath --version 2>$null
-                Write-Success "Found fallback: $ver"
-                $script:PythonVersion = $fallbackVer
+            Write-Info "Trying managed Python fallback $fallbackVer..."
+            $previousFallbackEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            & $UvCmd python install $fallbackVer --no-bin --no-registry --no-config 2>&1 | Out-Null
+            $ErrorActionPreference = $previousFallbackEAP
+            $resolvedPython = Resolve-AvailablePythonVersion
+            if ($resolvedPython) {
+                $ver = & $resolvedPython.Path --version 2>$null
+                Write-Success "Python fallback installed: $ver"
                 return $true
             }
-        } catch { }
-    }
-
-    # Fallback: try system python -- but skip the Microsoft Store stub.
-    # On Windows, %LOCALAPPDATA%\Microsoft\WindowsApps\python.exe is a 0-byte
-    # reparse-point stub that prints "Python was not found; run without
-    # arguments to install from the Microsoft Store..." to stdout and exits
-    # non-zero.  Get-Command finds it; invoking it produces a confusing error
-    # that the user sees as our installer crashing.
-    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($pythonCmd) {
-        $isStoreStub = $false
-        try {
-            $pythonSource = $pythonCmd.Source
-            if ($pythonSource -and $pythonSource -like "*\WindowsApps\*") {
-                $isStoreStub = $true
-            } else {
-                # Even outside WindowsApps, a 0-byte file is the stub
-                $item = Get-Item $pythonSource -ErrorAction SilentlyContinue
-                if ($item -and $item.Length -eq 0) { $isStoreStub = $true }
-            }
-        } catch { }
-
-        if (-not $isStoreStub) {
-            try {
-                $prevEAP2 = $ErrorActionPreference
-                $ErrorActionPreference = "Continue"
-                $sysVer = & python --version 2>&1
-                $ErrorActionPreference = $prevEAP2
-                if ($sysVer -match "Python 3\.(1[0-9]|[1-9][0-9])") {
-                    Write-Success "Using system Python: $sysVer"
-                    return $true
-                }
-            } catch {
-                if ($prevEAP2) { $ErrorActionPreference = $prevEAP2 }
-            }
+        } catch {
+            if ($previousFallbackEAP) { $ErrorActionPreference = $previousFallbackEAP }
         }
     }
 
     Write-Err "Failed to install Python $PythonVersion"
-    Write-Info "Install Python 3.11 manually, then re-run this script:"
-    Write-Info "  https://www.python.org/downloads/"
-    Write-Info "  Or: winget install Python.Python.3.11"
+    Write-Info "Check network access to uv's managed Python downloads, then retry."
     return $false
 }
 
@@ -1562,35 +1671,73 @@ function Set-GitBashEnvVar {
     Write-Info "If needed, set HERMES_GIT_BASH_PATH manually to your bash.exe path."
 }
 
-# The dependency tree's real Node floor is >=22.22.0, set by react-router 8.3.0
-# (`engines.node`). Keep this in sync with the root package.json: looser lets an
-# install reach a `npm ci` that dies with EBADENGINE, stricter replaces a working
-# user toolchain for nothing. Returns $true when a `node --version` string
-# clears that floor.
+# The dependency tree supports Node 22.22+, 24.11+, and 26+. nanoid 6 excludes
+# Node 23 and 25 while its >=26 arm accepts later releases, and @babel/* 8.x
+# requires ^22.18.0 || >=24.11.0 -- so accepting 23/25 or an early Node 24
+# only defers the failure to `npm ci` under engine-strict. Keep this in sync
+# with the root package.json.
 function Test-NodeVersionOk {
     param([string]$Version)
+    if ($Version -match '-') { return $false }
     try {
-        $v = [version]($Version -replace '^v', '' -replace '-.*$', '')
+        $v = [version]($Version -replace '^v', '')
     } catch {
         return $false
     }
     if ($v.Major -eq 22) { return ($v.Minor -ge 22) }
-    return ($v.Major -gt 22)
+    if ($v.Major -eq 24) { return ($v.Minor -ge 11) }
+    return ($v.Major -ge 26)
+}
+
+# Accept a system Node only when its companion npm also satisfies the same
+# range used to provision the Hermes-managed tree. Keeping this probe separate
+# lets the initial PATH check and the post-winget check share one authority.
+function Test-SystemNodeReady {
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) { return $false }
+
+    $version = node --version
+    if (Test-NodeVersionOk $version) {
+        Ensure-NodeExeOnPath | Out-Null
+    } else {
+        Write-Warn "Node.js $version is unsupported (Hermes requires Node 22.22+, 24.11+, or 26+)"
+        return $false
+    }
+
+    $npmRange = Get-NpmRange
+    $npmCmd = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    if (-not $npmCmd) {
+        $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+    }
+
+    $npmVersion = $null
+    if ($npmCmd) {
+        try {
+            $npmVersion = (& $npmCmd --version 2>$null | Select-Object -First 1)
+        } catch { }
+    }
+
+    if ($npmVersion -and (Test-NpmVersionOk $npmVersion $npmRange)) {
+        Write-Success "Node.js $version with npm $npmVersion found"
+        return $true
+    }
+
+    if ($npmVersion) {
+        Write-Warn "Node.js $version uses npm $npmVersion, which does not satisfy Hermes requirement $npmRange"
+    } else {
+        Write-Warn "Node.js $version was found, but npm is missing or could not report its version"
+    }
+    return $false
 }
 
 function Test-Node {
     Write-Info "Checking Node.js (for browser tools)..."
 
-    if (Get-Command node -ErrorAction SilentlyContinue) {
-        $version = node --version
-        if (Test-NodeVersionOk $version) {
-            Ensure-NodeExeOnPath | Out-Null
-            Write-Success "Node.js $version found"
-            $script:HasNode = $true
-            return $true
-        }
-        Write-Warn "Node.js $version is too old (Hermes requires Node >=26)"
+    if (Test-SystemNodeReady) {
+        $script:HasNode = $true
+        return $true
     }
+
+    Write-Info "Using a Hermes-managed Node.js installation instead..."
 
     # Prefer a Hermes-managed Node from a previous run over a too-old system one.
     $managedNode = "$HermesHome\node\node.exe"
@@ -1765,9 +1912,7 @@ function Test-Node {
             $ErrorActionPreference = $prevEAP
             # Refresh PATH
             $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
-            if (Get-Command node -ErrorAction SilentlyContinue) {
-                $version = node --version
-                Write-Success "Node.js $version installed via winget"
+            if (Test-SystemNodeReady) {
                 $script:HasNode = $true
                 return $true
             }
@@ -2417,13 +2562,12 @@ function Install-Venv {
     # fresh process -- $PythonVersion is back at its "3.11" default.  Trusting it
     # here made `uv venv venv --python 3.11` fail with exit 2 on machines without
     # 3.11 even though the `python` stage reported success (issue #50769).
-    $resolved = Resolve-AvailablePythonVersion
-    if ($resolved -and $resolved -ne $PythonVersion) {
-        Write-Info "Python $PythonVersion not available; using detected Python $resolved"
-        $script:PythonVersion = $resolved
+    $resolvedPython = Resolve-AvailablePythonVersion
+    if (-not $resolvedPython) {
+        throw "Hermes-managed Python is unavailable. Run install.ps1 -Stage python first."
     }
 
-    Write-Info "Creating virtual environment with Python $PythonVersion..."
+    Write-Info "Creating virtual environment with Python $($resolvedPython.Version)..."
     
     Push-Location $InstallDir
 
@@ -2542,16 +2686,36 @@ function Install-Venv {
         }
     }
     
-    # uv creates the venv and pins the Python version in one step.  uv emits
-    # normal progress such as "Using CPython ..." on stderr; under Windows
-    # PowerShell 5.1 with EAP=Stop that stderr is a NativeCommandError unless
-    # we temporarily relax EAP and trust $LASTEXITCODE for real failures.
-    Invoke-NativeWithRelaxedErrorAction { & $UvCmd venv venv --python $PythonVersion }
-    # Relaxing EAP above means a *genuine* uv-venv failure (exit != 0) no longer
-    # aborts on its own. Capture $LASTEXITCODE immediately and fail fast, so the
-    # `venv` stage can't falsely report success (and Invoke-Stage can't emit
-    # ok=true) when the venv was never created.
-    $venvExitCode = $LASTEXITCODE
+    # Pass the already-validated private interpreter path and prohibit uv from
+    # resolving or downloading a different Python during venv creation. Use
+    # ProcessStartInfo because the desktop bootstrapper redirects this script;
+    # Windows PowerShell 5.1 can otherwise lose nested native output/exit state.
+    $venvProcess = New-Object System.Diagnostics.Process
+    try {
+        $venvStartInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $venvStartInfo.FileName = $UvCmd
+        $venvStartInfo.Arguments = "venv venv --python `"$($resolvedPython.Path)`" --managed-python --no-python-downloads --no-config"
+        $venvStartInfo.WorkingDirectory = $InstallDir
+        $venvStartInfo.UseShellExecute = $false
+        $venvStartInfo.CreateNoWindow = $true
+        $venvStartInfo.RedirectStandardOutput = $true
+        $venvStartInfo.RedirectStandardError = $true
+        $venvProcess.StartInfo = $venvStartInfo
+        if (-not $venvProcess.Start()) {
+            throw "Failed to start uv while creating the virtual environment"
+        }
+        $venvStdoutTask = $venvProcess.StandardOutput.ReadToEndAsync()
+        $venvStderrTask = $venvProcess.StandardError.ReadToEndAsync()
+        $venvProcess.WaitForExit()
+        $venvStdout = $venvStdoutTask.Result
+        $venvStderr = $venvStderrTask.Result
+        $venvExitCode = $venvProcess.ExitCode
+        if ($venvStdout) { Write-Host $venvStdout.TrimEnd() }
+        if ($venvStderr) { Write-Host $venvStderr.TrimEnd() }
+    } finally {
+        $venvProcess.Dispose()
+    }
+    # Fail fast so the stage cannot report ok=true when uv failed.
     if ($venvExitCode -ne 0) {
         throw "Failed to create virtual environment (uv venv exited with $venvExitCode)"
     }
@@ -2645,7 +2809,7 @@ function Install-Venv {
         }
     }
 
-    Write-Success "Virtual environment ready (Python $PythonVersion)"
+    Write-Success "Virtual environment ready (Python $($resolvedPython.Version))"
 }
 
 function Get-PendingVenvBackup {
@@ -3229,7 +3393,7 @@ function Copy-ConfigTemplates {
         # upgrades the old comment-only scaffold to this text on next run, so
         # drift is self-healing, but keep them in sync to avoid first-run churn.
         $soulContent = @"
-You are Hermes Agent, an intelligent AI assistant created by Nous Research. You are helpful, knowledgeable, and direct. You assist users with a wide range of tasks including answering questions, writing and editing code, analyzing information, creative work, and executing actions via your tools. You communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose unless otherwise directed below. Be targeted and efficient in your exploration and investigations.
+You are Hermes Agent, built by Nous Research. Be direct: match the length of your reply to the weight of the ask -- a one-line question gets a one-line answer, and finished work gets a short report of what changed, what's verified, and what's left, never a replay of the process. No filler ("Great question," "I'd be happy to"), no restating the request back, no re-summarizing what you already said, no narrating tool calls the user can see. Plain claims over adjectives; when unsure, say so plainly. Agree because it's right, not because the user said it. Depth is earned -- give it when the user asks for detail, teaches, or the stakes demand it, not by default.
 "@
         $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
         [System.IO.File]::WriteAllText($soulPath, $soulContent, $utf8NoBom)
@@ -3878,8 +4042,8 @@ function Install-Desktop {
 
     # Always re-resolve Node here. Stages run in separate PowerShell processes,
     # so $script:HasNode from Stage-Node isn't visible; more importantly Test-Node
-    # enforces the build floor (Node >=26) and prepends the Hermes-managed
-    # Node to PATH, so the build never runs on a too-old system Node -- the cause
+    # enforces the supported Node lines and prepends the Hermes-managed Node to
+    # PATH, so the build never runs on an unsupported system Node -- the cause
     # of the opaque "Build desktop app ... exit code 1" failure (Vite crashes on
     # old Node).
     Test-Node | Out-Null
@@ -4569,11 +4733,15 @@ function Write-Completion {
 # or arrange to provide answers another way."
 $InstallStages = @(
     @{ Name = "uv";               Title = "Installing uv package manager";        Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Uv" }
-    @{ Name = "python";           Title = "Verifying Python $PythonVersion";      Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Python" }
     @{ Name = "git";              Title = "Installing Git";                       Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Git" }
     @{ Name = "node";             Title = "Detecting Node.js";                    Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Node" }
     @{ Name = "system-packages";  Title = "Installing ripgrep and ffmpeg";        Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-SystemPackages" }
     @{ Name = "repository";       Title = "Cloning Hermes repository";            Category = "install";      NeedsUserInput = $false; Worker = "Stage-Repository" }
+    # Managed Python lives under $InstallDir\.hermes-runtime, so the checkout
+    # must exist before this stage creates that directory. Otherwise the later
+    # repository stage treats the runtime-only directory as a broken checkout,
+    # parks it, and leaves Stage-Venv with no managed interpreter.
+    @{ Name = "python";           Title = "Verifying Python $PythonVersion";      Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Python" }
     @{ Name = "venv";             Title = "Creating Python virtual environment";  Category = "install";      NeedsUserInput = $false; Worker = "Stage-Venv" }
     @{ Name = "dependencies";     Title = "Installing Python dependencies";       Category = "install";      NeedsUserInput = $false; Worker = "Stage-Dependencies" }
     @{ Name = "node-deps";        Title = "Installing Node.js dependencies";      Category = "install";      NeedsUserInput = $false; Worker = "Stage-NodeDeps" }
@@ -4792,6 +4960,13 @@ function Main {
 # All branches funnel through one try/catch so errors don't kill an `irm |
 # iex` PowerShell session, and so failures in stage-driver mode produce a
 # structured JSON error frame instead of a bare exception.
+
+# Dot-sourcing loads the installer's real functions for isolated behavioral
+# tests without running an install. Normal script and `irm | iex` entry points
+# are unchanged.
+if ($MyInvocation.InvocationName -eq ".") {
+    return
+}
 
 try {
     if ($Ensure -ne "") {

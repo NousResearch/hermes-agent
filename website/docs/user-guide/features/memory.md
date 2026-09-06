@@ -350,6 +350,57 @@ Fork usage is persisted in `session_model_usage` with `task='background_review'`
 and a completion line is written to `agent.log`
 (`Background review complete: thread=bg-review calls=… in=… out=… result=…`).
 
+### Allowing a narrowly scoped extra review tool (`extra_tools`)
+
+Background review can use memory, skill-management, and read-only file tools
+by default. If a profile provides another tool that is safe for unattended
+review, opt it in by name:
+
+```yaml
+auxiliary:
+  background_review:
+    extra_tools:
+      - propose_shared_memory
+```
+
+The tool must already be available to the parent agent; this setting only adds
+it to the review fork's runtime whitelist. It does not enable arbitrary tools,
+and tools not listed here remain denied. Keep the list narrow and prefer tools
+that stage a proposal for human review rather than applying external or
+destructive changes directly. The default is an empty list.
+
+### Local models: reviews wait for an idle GPU (`defer`)
+
+On a cloud provider the review finishes in seconds and runs alongside
+whatever you do next. When the review's runtime is the **managed local
+llama-server** (Settings → Local models), the same fork occupies the GPU your
+next prompt needs — for minutes on a large model — and sending a new prompt
+cancels it, discarding the learning. So on the managed local runtime, reviews
+are **deferred by default**: queued at turn end and executed once the machine
+has been quiet for a short settle window. Nothing about the review itself
+changes — same model, same full-transcript replay, same writes — only the
+execution moment moves.
+
+```yaml
+auxiliary:
+  background_review:
+    defer: auto            # auto (default) | never
+    defer_max_age_s: 1800  # run a queued review anyway after this long
+```
+
+| Value | Behaviour |
+|-------|-----------|
+| `auto` (default) | Reviews whose runtime resolves to the managed local server are queued and run at idle; every other runtime (cloud, external servers) spawns immediately as before. |
+| `never` | Old behavior everywhere: spawn immediately at turn end, even on the managed local GPU. |
+
+Queued reviews coalesce per session (a newer turn's snapshot replaces the
+older one — the review replays the whole conversation, so nothing is lost),
+a review preempted by a new prompt is re-queued instead of discarded, and a
+review that has waited longer than `defer_max_age_s` runs even if the machine
+never goes idle. Explicit `/refine` always runs immediately. The queue is
+in-memory: reviews still pending when the app exits are dropped, same as an
+in-flight fork would have been.
+
 ## Controlling skill writes (`skills.write_approval`)
 
 Skills use the same on/off gate, but the review UX differs because a

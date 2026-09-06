@@ -14,6 +14,7 @@ import {
   reasoningPart,
   renderMediaTags,
   sealOpenToolParts,
+  stripPendingClarifyProjectionForCache,
   toChatMessages,
   upsertToolPart,
   withUniqueToolCallIdsWithinMessage
@@ -363,6 +364,28 @@ describe('toChatMessages', () => {
       expect(chatMessageText(message)).not.toContain('Visible response before the interruption')
       expect(chatMessageText(message)).not.toContain('Context from the interrupted assistant response')
     }
+  })
+
+  it('projects persisted composite compaction carriers to their live user turn', () => {
+    const messages = toChatMessages([
+      {
+        id: 71,
+        role: 'user',
+        content: 'internal summary scaffold\n\nREAL ASK',
+        display_content: 'REAL ASK',
+        timestamp: 1
+      },
+      {
+        id: 72,
+        role: 'user',
+        content: 'prior live ask\n\ninternal summary scaffold',
+        display_content: 'prior live ask',
+        timestamp: 2
+      }
+    ])
+
+    expect(messages.map(chatMessageText)).toEqual(['REAL ASK', 'prior live ask'])
+    expect(messages.map(message => message.rowId)).toEqual([71, 72])
   })
 
   it('projects durable timeline kinds without inspecting their text', () => {
@@ -1225,13 +1248,23 @@ describe('mergeFinalAssistantText', () => {
     expect(result.filter(p => p.type === 'text')).toHaveLength(1)
   })
 
-  it('handles empty final text', () => {
+  it('does not erase streamed text when the final completion is empty (#95514)', () => {
     const parts = [{ type: 'text' as const, text: 'streamed' }, reasoningPart('some reasoning')]
 
     const result = mergeFinalAssistantText(parts, '')
 
-    expect(result.filter(p => p.type === 'text')).toHaveLength(0)
+    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
+    expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: 'streamed' })
     expect(result.filter(p => p.type === 'reasoning')).toHaveLength(1)
+  })
+
+  it('treats whitespace-only final text as non-authoritative (#95514)', () => {
+    const parts = [{ type: 'text' as const, text: 'already on screen' }]
+
+    const result = mergeFinalAssistantText(parts, '   \n\t')
+
+    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
+    expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: 'already on screen' })
   })
 })
 
@@ -1308,6 +1341,64 @@ describe('collectUnspokenTurnSpeech', () => {
     expect(collectUnspokenTurnSpeech([], null)).toBeNull()
     expect(collectUnspokenTurnSpeech([assistant('a1', 'Done.')], 'a1')).toBeNull()
     expect(collectUnspokenTurnSpeech([user('u1', 'hello'), assistant('a1', '')], null)).toBeNull()
+  })
+
+  it('does not replay earlier turns when the spoken id is missing or stale', () => {
+    const messages = [
+      user('u1', 'old question'),
+      assistant('a1', 'Previous output from last turn.'),
+      user('u2', 'new question'),
+      assistant('a2', 'Live reply only.')
+    ]
+
+    expect(collectUnspokenTurnSpeech(messages, null)?.text).toBe('Live reply only.')
+    expect(collectUnspokenTurnSpeech(messages, 'vanished-stream-id')?.text).toBe('Live reply only.')
+    expect(collectUnspokenTurnSpeech(messages, 'a1')?.text).toBe('Live reply only.')
+  })
+
+  it('bounds to a hidden user turn too (widget intents render no bubble)', () => {
+    const messages = [
+      user('u1', 'old question'),
+      assistant('a1', 'Previous output from last turn.'),
+      { ...user('u2', 'widget intent'), hidden: true },
+      assistant('a2', 'Live reply only.')
+    ]
+
+    expect(collectUnspokenTurnSpeech(messages, null)?.text).toBe('Live reply only.')
+  })
+})
+
+describe('stripPendingClarifyProjectionForCache', () => {
+  const clarifyPart = (toolCallId: string): ChatMessagePart => ({
+    type: 'tool-call',
+    toolCallId,
+    toolName: 'clarify',
+    args: { choices: ['a'], question: 'Pick' },
+    argsText: '{"question":"Pick","choices":["a"]}'
+  })
+
+  it('drops a synthetic request-id-only clarify row from the durable cache', () => {
+    const messages: ChatMessage[] = [
+      { id: 'user', role: 'user', parts: [{ type: 'text', text: 'choose' }] },
+      { id: 'synthetic', role: 'assistant', parts: [clarifyPart('req-1')], pending: true }
+    ]
+
+    expect(stripPendingClarifyProjectionForCache(messages, 'req-1')).toEqual([messages[0]])
+  })
+
+  it('keeps a provider-authored clarify in position but strips its local running bit', () => {
+    const messages: ChatMessage[] = [
+      {
+        id: 'provider',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'Choose.' }, clarifyPart('call-provider')],
+        pending: true
+      }
+    ]
+
+    const [cached] = stripPendingClarifyProjectionForCache(messages, 'req-1')
+    expect(cached.pending).toBe(false)
+    expect(cached.parts.map(part => part.type)).toEqual(['text', 'tool-call'])
   })
 })
 

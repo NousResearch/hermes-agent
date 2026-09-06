@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -25,11 +25,11 @@ function failBoot() {
   })
 }
 
-function stubDesktop(config: Record<string, unknown>) {
+function stubDesktop(config: Record<string, unknown>, overrides: Record<string, unknown> = {}) {
   const original = window.hermesDesktop
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
-    value: { getRecentLogs: async () => ({ lines: [] }), getConnectionConfig: async () => config }
+    value: { getRecentLogs: async () => ({ lines: [] }), getConnectionConfig: async () => config, ...overrides }
   })
 
   return () => Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: original })
@@ -94,6 +94,98 @@ describe('BootFailureOverlay', () => {
       await waitFor(() => expect(screen.queryByRole('button', { name: /repair/i })).toBeNull())
       expect(screen.getByRole('button', { name: /gateway settings/i })).toBeTruthy()
       expect(screen.getByRole('button', { name: /use local gateway/i })).toBeTruthy()
+    } finally {
+      restore()
+    }
+  })
+
+  it('opens gateway settings with a partial persisted remote config', async () => {
+    const restore = stubDesktop({ mode: 'remote', remoteAuthMode: undefined, remoteUrl: undefined })
+
+    try {
+      render(<BootFailureOverlay />)
+      fireEvent.click(screen.getByRole('button', { name: /gateway settings/i }))
+
+      expect(await screen.findByRole('button', { name: /back/i })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: /retry/i })).toBeNull()
+    } finally {
+      restore()
+    }
+  })
+
+  it('clears and signs in only the failed gateway once', async () => {
+    const gatewayUrl = 'http://100.116.104.53:9191'
+    const logout = vi.fn().mockResolvedValue({ ok: true, connected: false })
+    const login = vi.fn().mockResolvedValue({ ok: true, connected: false })
+
+    const restore = stubDesktop(
+      {
+        ...remoteToken,
+        remoteAuthMode: 'oauth',
+        remoteOauthConnected: false,
+        remoteTokenSet: false,
+        remoteUrl: gatewayUrl
+      },
+      {
+        oauthLoginConnectionConfig: login,
+        oauthLogoutConnectionConfig: logout,
+        probeConnectionConfig: vi.fn().mockResolvedValue({ providers: [{ id: 'basic', type: 'password' }] })
+      }
+    )
+
+    try {
+      render(<BootFailureOverlay />)
+      fireEvent.click(await screen.findByRole('button', { name: /sign out & sign in/i }))
+
+      await waitFor(() => expect(login).toHaveBeenCalledWith(gatewayUrl))
+      expect(logout).toHaveBeenCalledTimes(1)
+      expect(logout).toHaveBeenCalledWith(gatewayUrl)
+      expect(login).toHaveBeenCalledTimes(1)
+    } finally {
+      restore()
+    }
+  })
+
+  it('recovers a cloud connection through the portal cascade instead of native OAuth', async () => {
+    const gatewayUrl = 'https://agent-1.agents.nousresearch.com'
+    const logout = vi.fn().mockResolvedValue({ ok: true, connected: false })
+    const nativeLogin = vi.fn().mockResolvedValue({ ok: true, connected: false })
+    const cloudStatus = vi.fn().mockResolvedValue({ portalBaseUrl: 'https://portal.nousresearch.com', signedIn: false })
+
+    const cloudLogin = vi.fn().mockResolvedValue({
+      ok: true,
+      portalBaseUrl: 'https://portal.nousresearch.com',
+      signedIn: true
+    })
+
+    const cloudAgentSignIn = vi.fn().mockResolvedValue({ baseUrl: gatewayUrl, connected: false })
+
+    const restore = stubDesktop(
+      {
+        ...remoteToken,
+        mode: 'cloud',
+        remoteAuthMode: 'oauth',
+        remoteOauthConnected: false,
+        remoteTokenSet: false,
+        remoteUrl: gatewayUrl
+      },
+      {
+        cloud: { status: cloudStatus, login: cloudLogin, agentSignIn: cloudAgentSignIn },
+        oauthLoginConnectionConfig: nativeLogin,
+        oauthLogoutConnectionConfig: logout,
+        probeConnectionConfig: vi.fn().mockResolvedValue({ providers: [{ id: 'nous', type: 'oauth' }] })
+      }
+    )
+
+    try {
+      render(<BootFailureOverlay />)
+      fireEvent.click(await screen.findByRole('button', { name: /sign in/i }))
+
+      await waitFor(() => expect(cloudAgentSignIn).toHaveBeenCalledWith(gatewayUrl))
+      expect(logout).toHaveBeenCalledWith(gatewayUrl)
+      expect(cloudStatus).toHaveBeenCalledTimes(1)
+      expect(cloudLogin).toHaveBeenCalledTimes(1)
+      expect(nativeLogin).not.toHaveBeenCalled()
     } finally {
       restore()
     }

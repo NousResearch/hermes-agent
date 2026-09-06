@@ -39,3 +39,26 @@ export function ChatSwapOverlay({ profile }: { profile: string | null }) {
     </div>
   )
 }
+
+// Subtle corner badge for a PAINT-FIRST wake (#89843): the stored transcript
+// is already on screen and usable, but the active-profile gate hasn't caught
+// up yet (shared-remote serves every profile through the primary socket).
+// Deliberately quiet — a pill in the corner, not an overlay — because the
+// content is real; only the background profile sync is still settling.
+export function ChatSyncBadge({ profile }: { profile: string | null }) {
+  const { t } = useI18n()
+
+  if (!profile) {
+    return null
+  }
+
+  return (
+    <div
+      aria-live="polite"
+      className="pointer-events-none absolute right-3 top-2 z-30 flex items-center gap-1.5 rounded-full border border-border/50 bg-[color-mix(in_srgb,var(--dt-card)_92%,transparent)] px-2 py-0.5 font-mono text-[0.6875rem] text-muted-foreground shadow-composer"
+    >
+      <GlyphSpinner className="w-3 justify-start text-(--ui-accent)" spinner="braille" />
+      {t.desktop.hydrationSyncing(profile)}
+    </div>
+  )
+}

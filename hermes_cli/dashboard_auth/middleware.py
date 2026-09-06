@@ -1,591 +1,249 @@
 """Auth-gate middleware for the dashboard.
 
-Engaged when ``app.state.auth_required is True``. The gate's job:
-
-  1. Allow a small set of routes through unauthenticated (login page,
-     ``/auth/*`` OAuth round trip, ``/api/auth/providers``, static
-     assets).
-  2. For everything else, demand a valid session cookie and attach the
-     verified :class:`Session` to ``request.state.session``.
-  3. On HTML routes, redirect missing/invalid cookies to ``/login``.
-     On ``/api/*`` routes, return 401 JSON.
-
-The middleware is a no-op when ``auth_required`` is False (loopback
-mode); the legacy ``_SESSION_TOKEN`` ``auth_middleware`` handles those
-binds.
+Engaged when ``app.state.auth_required is True``; a no-op otherwise (loopback
+mode is handled by the legacy ``_SESSION_TOKEN`` ``auth_middleware``). Allows
+the auth-bootstrap routes and static assets through unauthenticated; for
+everything else demands a bearer token or a valid session cookie and attaches
+the verified :class:`Session` to ``request.state.session``. HTML routes are
+redirected to ``/login``; ``/api/*`` routes get a 401 JSON envelope.
 """
 from __future__ import annotations
 
 import logging
 from typing import Awaitable, Callable
+from urllib.parse import quote
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from hermes_cli.dashboard_auth import list_session_providers
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
-from hermes_cli.dashboard_auth.base import (
-    DashboardAuthProvider,
-    ProviderError,
-    RefreshExpiredError,
-)
+from hermes_cli.dashboard_auth.base import ProviderError, RefreshExpiredError
 from hermes_cli.dashboard_auth.cookies import (
-    clear_sso_attempt_cookie,
-    read_session_cookies,
-    read_session_provider,
-    read_sso_attempt_cookie,
-    set_session_provider_cookie,
-    set_sso_attempt_cookie,
-)
+    clear_session_cookies, clear_sso_attempt_cookie, detect_https, read_session_cookies,
+    read_session_provider, read_sso_attempt_cookie, set_session_cookies,
+    set_session_provider_cookie, set_sso_attempt_cookie)
+from hermes_cli.dashboard_auth.prefix import prefix_from_request
 from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
+from hermes_cli.dashboard_auth.request_utils import (
+    access_token_max_age as _expires_in_seconds, client_ip as _client_ip,
+    extract_bearer as _extract_bearer, is_safe_next_path, scan_session_providers,
+    unreachable_response)
 
 _log = logging.getLogger(__name__)
 
-# Prefixes that bypass the auth gate. Match via ``path == prefix`` or
-# ``path.startswith(prefix)`` — so ``/assets/`` (with trailing slash)
-# matches ``/assets/foo.css`` but not ``/assetsleak``. Auth-bootstrap
-# (login page, OAuth round trip, provider listing) and static asset
-# mounts go here.
+# Prefix-matched bypass list: auth bootstrap routes and static asset mounts. ``/assets/`` with
+# the trailing slash matches ``/assets/foo.css`` but not ``/assetsleak``.
 _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
-    "/auth/login",
-    "/auth/callback",
-    "/auth/native/authorize",
-    "/auth/native/token",
-    "/auth/native/refresh",
-    "/auth/password-login",
-    "/auth/logout",
-    "/login",
-    "/api/auth/providers",
-    "/api/mcp/oauth/callback/",
-    "/assets/",
-    "/favicon.ico",
-    "/ds-assets/",
-    "/fonts/",
-    "/fonts-terminal/",
-)
+    "/auth/login", "/auth/callback", "/auth/native/authorize", "/auth/native/token",
+    "/auth/native/refresh", "/auth/password-login", "/auth/logout", "/login",
+    "/api/auth/providers", "/api/mcp/oauth/callback/",
+    "/assets/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/")
 
 
 def _path_is_public(path: str) -> bool:
-    """True if ``path`` bypasses the OAuth auth gate.
-
-    Two sources of public-ness:
-
-    * :data:`PUBLIC_API_PATHS` — the shared ``/api/*`` allowlist that
-      the legacy ``_SESSION_TOKEN`` middleware also honours. Matched
-      exactly (no prefix expansion) so adding ``/api/status`` doesn't
-      accidentally expose ``/api/status/secret-extension``.
-    * :data:`_GATE_PUBLIC_PREFIXES` — auth-bootstrap routes and static
-      mounts. Prefix-matched so ``/assets/foo.css`` lights up via
-      ``/assets/``.
-    """
-    if path in PUBLIC_API_PATHS:
-        return True
-    return any(
-        path == prefix or path.startswith(prefix)
-        for prefix in _GATE_PUBLIC_PREFIXES
-    )
+    """:data:`PUBLIC_API_PATHS` (shared with the legacy middleware) matched exactly so
+    ``/api/status`` never exposes ``/api/status/extension``; :data:`_GATE_PUBLIC_PREFIXES`
+    prefix-matched."""
+    return path in PUBLIC_API_PATHS or any(
+        path == p or path.startswith(p) for p in _GATE_PUBLIC_PREFIXES)
 
 
-def _client_ip(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
-    return request.client.host if request.client else ""
-
-
-def _ordered_session_providers(
-    provider_hint: str | None,
-) -> list[DashboardAuthProvider]:
-    """Prefer the hinted provider without making the hint authoritative.
-
-    The cookie can outlive a provider rename/removal or become stale after a
-    deployment change. A stable sort moves a matching provider to the front
-    while preserving registration order for every remaining candidate; an
-    unknown hint therefore leaves the normal scan unchanged.
-    """
-    providers = list_session_providers()
-    if provider_hint:
-        providers.sort(key=lambda provider: provider.name != provider_hint)
-    return providers
+def _safe_next_target(request: Request) -> str:
+    """URL-encoded ``next`` value for the login redirect, or ``""``. Only same-origin paths outside
+    the auth flow and ``/api`` are kept (query preserved); dropped deep links fall back to the
+    SPA's ``sessionStorage["hermes.lastLocation"]``."""
+    path = request.url.path
+    if not path or not is_safe_next_path(path):
+        return ""
+    query = request.url.query
+    return quote(f"{path}?{query}" if query else path, safe="")
 
 
 def _unauth_response(request: Request, *, reason: str) -> Response:
-    """API routes → 401 JSON with ``login_url``; HTML routes → 302 → /login.
-
-    The JSON envelope carries a ``login_url`` field with a ``next=`` query
-    string so the SPA's global 401 handler can drop the user back where
-    they were after re-auth. The contract is intentionally simple so any
-    fetch-wrapper can implement the redirect without parsing details:
-
-        if response.status === 401 && body.error in ("unauthenticated",
-                                                       "session_expired"):
-            window.location.assign(body.login_url);
-
-    HTML redirects also carry the ``next=`` query string so direct
-    navigation to ``/sessions`` (etc.) without a cookie comes back to
-    ``/sessions`` after login.
-
-    Under a reverse proxy with ``X-Forwarded-Prefix: /hermes``, the
-    ``login_url`` is prefixed (``/hermes/login?next=...``) so the
-    browser's window.location.assign / Location: follow lands on the
-    proxied login page rather than the bare ``/login`` (which the
-    proxy doesn't route to the dashboard).
-    """
-    from hermes_cli.dashboard_auth.prefix import prefix_from_request
-
-    path = request.url.path
+    """API routes -> 401 JSON with ``login_url``; HTML routes -> 302 -> /login. fetch() follows a
+    302 opaquely into the cross-origin OAuth dance, so API routes never get redirects; the SPA's
+    401 handler navigates to ``login_url`` on ``unauthenticated`` / ``session_expired``."""
     next_param = _safe_next_target(request)
     prefix = prefix_from_request(request)
-    login_url = (
-        f"{prefix}/login?next={next_param}" if next_param
-        else f"{prefix}/login"
-    )
-
-    if path.startswith("/api/"):
-        # API routes never get redirects: the browser fetch() API would
-        # follow a 302 into the cross-origin OAuth dance opaquely. Return
-        # 401 with a structured envelope so the SPA can full-page-navigate
-        # to login_url.
-        error_code = (
-            "session_expired"
-            if reason == "invalid_or_expired_session"
-            else "unauthenticated"
-        )
+    login_url = f"{prefix}/login?next={next_param}" if next_param else f"{prefix}/login"
+    if request.url.path.startswith("/api/"):
+        expired = reason == "invalid_or_expired_session"
         return JSONResponse(
-            {
-                "error": error_code,
-                "detail": "Unauthorized",
-                "reason": reason,
-                "login_url": login_url,
-            },
-            status_code=401,
-        )
+            {"error": "session_expired" if expired else "unauthenticated", "detail": "Unauthorized",
+             "reason": reason, "login_url": login_url}, status_code=401)
     return RedirectResponse(url=login_url, status_code=302)
 
 
 def _auto_sso_response(request: Request) -> Response | None:
-    """Maybe auto-initiate the portal OAuth redirect on an unauth HTML load.
+    """302 straight to ``/auth/login`` on an unauthenticated HTML load, or ``None``.
 
-    Returns a 302 → ``/auth/login`` (the existing OAuth-initiation route)
-    when ALL of the following hold, else ``None`` (caller falls back to the
-    ordinary ``/login`` interstitial):
-
-      * the request is an HTML document navigation, not an ``/api/*`` fetch
-        (a fetch() would follow the 302 into the cross-origin OAuth dance
-        opaquely — same reason ``_unauth_response`` never redirects APIs);
-      * exactly ONE interactive provider is registered — with two or more we
-        can't pick for the user, so the ``/login`` chooser must render; with
-        zero there's nothing to redirect to;
-      * that provider is OAuth-style, not a password form provider. Password
-        providers must render ``/login`` so the user can enter credentials;
-      * the one-shot loop-guard marker is ABSENT. Its presence means we
-        already bounced to the portal once and came back still
-        unauthenticated (no portal session) — auto-redirecting again would
-        ping-pong, so we fall through to ``/login`` and clear the marker.
-
-    The portal ``/oauth/authorize`` auto-approves any current member of the
-    dashboard's org and is a silent 302 when the user already holds a portal
-    session, so for the common case (clicked a dashboard link while signed
-    in to the portal) this removes the interstitial CLICK entirely. It
-    removes a click, not a security check: the redirect lands on
-    ``/auth/login`` which runs the unchanged PKCE auth-code flow.
+    Only for a document load (not ``/api/*``) when exactly one interactive OAuth-style provider is
+    registered (a password provider must render the form) and the one-shot loop-guard cookie is
+    absent — a present marker means the portal had no session last time: clear it and fall back
+    to ``/login`` rather than ping-pong. Convenience, not a security check.
     """
-    path = request.url.path
-    # APIs never auto-redirect (see _unauth_response). Only document loads.
-    if path.startswith("/api/"):
+    if request.url.path.startswith("/api/"):
         return None
-
-    # Already bounced once and still no session → portal has no session for
-    # this user. Stop here, clear the marker, let /login render.
     if read_sso_attempt_cookie(request):
-        from hermes_cli.dashboard_auth.prefix import prefix_from_request
         resp = _unauth_response(request, reason="no_cookie")
         clear_sso_attempt_cookie(resp, prefix=prefix_from_request(request))
         return resp
-
-    # list_session_providers() already filters on supports_session=True, so
-    # token-only credentials (drain/service providers) are never candidates.
     providers = list_session_providers()
-    if len(providers) != 1:
-        # Zero → nothing to redirect to. Two+ → user must choose at /login.
+    if len(providers) != 1 or getattr(providers[0], "supports_password", False):
         return None
-
-    from hermes_cli.dashboard_auth.prefix import prefix_from_request
-
     provider = providers[0]
-    if getattr(provider, "supports_password", False):
-        return None
-
     prefix = prefix_from_request(request)
     next_param = _safe_next_target(request)
-    from urllib.parse import quote
     auth_login = f"{prefix}/auth/login?provider={quote(provider.name, safe='')}"
     if next_param:
         auth_login = f"{auth_login}&next={next_param}"
-
     resp = RedirectResponse(url=auth_login, status_code=302)
-    # Drop the one-shot marker so a return trip that's STILL unauthenticated
-    # (portal had no session) trips the guard above next time instead of
-    # looping. Detect HTTPS for the Secure flag the same way the auth routes
-    # do; bind Path via the active prefix.
-    from hermes_cli.dashboard_auth.cookies import detect_https
-    set_sso_attempt_cookie(
-        resp, use_https=detect_https(request), prefix=prefix,
-    )
-    audit_log(
-        AuditEvent.LOGIN_START,
-        provider=provider.name,
-        reason="auto_sso",
-        ip=_client_ip(request),
-    )
+    set_sso_attempt_cookie(resp, use_https=detect_https(request), prefix=prefix)
+    audit_log(AuditEvent.LOGIN_START, provider=provider.name, reason="auto_sso",
+              ip=_client_ip(request))
     return resp
 
 
-def _safe_next_target(request: Request) -> str:
-    """Build the URL-encoded ``next`` query value, or empty string.
+def _verify_access_token(
+    request: Request, *, access_token: str, provider_hint: str | None = None, audit: bool = True):
+    """Run ``verify_session`` across the provider stack; Session or ``None``. ``audit=False`` is
+    the native-app bearer path (no cookie, no server-side refresh — the desktop rotates via
+    ``/auth/native/refresh``); 503-on-outage semantics come from :func:`scan_session_providers`."""
+    def _audit_unreachable(provider):
+        if audit:
+            audit_log(AuditEvent.SESSION_VERIFY_FAILURE, provider=provider.name,
+                      reason="provider_unreachable", ip=_client_ip(request))
 
-    Only same-origin relative paths are accepted; absolute URLs or
-    ``//evil.com`` open-redirect attempts are silently dropped. The empty
-    string return means the caller produces a bare ``/login`` URL — fine,
-    user lands at the dashboard root after re-auth.
-    """
-    path = request.url.path
-    # Reject anything that doesn't start with "/" or starts with "//"
-    # (protocol-relative URL — would open-redirect to an attacker host).
-    if not path or not path.startswith("/") or path.startswith("//"):
-        return ""
-    # Don't redirect back to the auth routes themselves — that loops.
-    if any(
-        path == p or path.startswith(p)
-        for p in ("/login", "/auth/", "/api/auth/")
-    ):
-        return ""
-    # Reject ALL ``/api/*`` paths. The 401-envelope code path fires for
-    # any unauthenticated SPA fetch (e.g. ``GET /api/analytics/models``
-    # from ModelsPage), and the SPA's global 401 handler full-page
-    # navigates to ``login_url``. After the OAuth round trip the user
-    # would land on the API URL and see raw JSON instead of the
-    # dashboard. SPA routes survive (they don't start with ``/api/``);
-    # the SPA's own ``sessionStorage["hermes.lastLocation"]`` fallback
-    # in ``web/src/lib/api.ts`` covers the deep-link case.
-    if path == "/api" or path.startswith("/api/"):
-        return ""
-    # Preserve query string if present (e.g. /sessions?page=2).
-    query = request.url.query
-    target = f"{path}?{query}" if query else path
-    # urlencode the whole thing as a single value.
-    from urllib.parse import quote
-    return quote(target, safe="")
+    return scan_session_providers(
+        provider_hint, lambda p: p.verify_session(access_token=access_token),
+        phase="verify" if audit else "bearer verify", log=_log, on_unreachable=_audit_unreachable)
 
 
-def _extract_bearer(request: Request) -> str:
-    """Return the ``Authorization: Bearer <token>`` value, or ""."""
-    auth = request.headers.get("authorization", "")
-    parts = auth.split(" ", 1)
-    if len(parts) == 2 and parts[0].strip().lower() == "bearer":
-        return parts[1].strip()
-    return ""
+async def _serve_refreshed(request: Request, call_next, new_session, provider: str) -> Response:
+    """Serve the request under a just-rotated session and write the rotated cookies back. Writing
+    the ROTATED RT is mandatory: Portal runs reuse detection, so replaying the stale RT would
+    revoke the session."""
+    request.state.session = new_session
+    response = await call_next(request)
+    set_session_cookies(
+        response, access_token=new_session.access_token, refresh_token=new_session.refresh_token,
+        access_token_expires_in=_expires_in_seconds(new_session), use_https=detect_https(request),
+        prefix=prefix_from_request(request), provider=provider)
+    audit_log(AuditEvent.REFRESH_SUCCESS, provider=provider, user_id=new_session.user_id,
+              ip=_client_ip(request))
+    return response
 
 
-def _verify_bearer(request: Request, *, access_token: str):
-    """Verify a native-app bearer access token via the session-provider stack.
-
-    Returns the :class:`Session` on success, or ``None`` if no provider
-    recognises the token (expired/invalid/unknown). Mirrors the cookie path's
-    verify loop, including the "one provider unreachable ⇒ don't force
-    re-login" semantics: a transient IDP outage returns a 503 rather than a
-    401, so the desktop retries instead of dropping the user to full re-login.
-    Unlike the cookie path there is no server-side refresh — the desktop owns
-    its refresh token and rotates via ``/auth/native/refresh``.
-    """
-    unreachable_provider: str | None = None
-    for provider in list_session_providers():
-        try:
-            session = provider.verify_session(access_token=access_token)
-        except ProviderError as e:
-            _log.warning(
-                "dashboard-auth: provider %r unreachable during bearer verify: %s",
-                provider.name, e,
-            )
-            if unreachable_provider is None:
-                unreachable_provider = provider.name
-            continue
-        if session is not None:
-            return session
-    if unreachable_provider is not None:
-        # Signal transient outage to the caller via a sentinel exception the
-        # middleware turns into 503. Raising keeps the "don't logout on a
-        # flaky IDP" contract identical to the cookie path.
-        raise ProviderError(unreachable_provider)
-    return None
+def _session_expired_response(request: Request) -> Response:
+    """Refresh failed (or no RT): structured 401/redirect and clear the dead cookies under the
+    active prefix so the deletion Path matches the set Path."""
+    audit_log(AuditEvent.SESSION_VERIFY_FAILURE, reason="no_provider_recognises",
+              ip=_client_ip(request))
+    response = _unauth_response(request, reason="invalid_or_expired_session")
+    clear_session_cookies(response, prefix=prefix_from_request(request))
+    return response
 
 
 async def gated_auth_middleware(
-    request: Request,
-    call_next: Callable[[Request], Awaitable[Response]],
-) -> Response:
-    """Engaged only when ``app.state.auth_required is True``.
-
-    No-op pass-through in loopback mode so the legacy auth_middleware can
-    handle those binds via ``_SESSION_TOKEN``.
-    """
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+    """Engaged only when ``app.state.auth_required is True``."""
     if not getattr(request.app.state, "auth_required", False):
         return await call_next(request)
-
-    # A request already authenticated by the token-auth seam (a service caller
-    # on a registered token route) carries ``token_authenticated`` — it is NOT
-    # a cookie session and must not be bounced to /login. Pass it through; the
-    # seam already attached ``request.state.token_principal``.
-    if getattr(request.state, "token_authenticated", False):
+    # Already authenticated by the token-auth seam (service caller on a registered token
+    # route): not a cookie session, must not bounce to /login.
+    if getattr(request.state, "token_authenticated", False) or _path_is_public(request.url.path):
         return await call_next(request)
-
-    path = request.url.path
-    if _path_is_public(path):
-        return await call_next(request)
-
-    # RFC 8252 native-app bearer path (goal: no session cookies). The desktop
-    # authenticates REST with ``Authorization: Bearer <access_token>`` — the
-    # SAME provider-minted access token the cookie flow stores in
-    # ``hermes_session_at``. Verify it with the identical ``verify_session``
-    # provider stack and attach the Session; on success we're done, with no
-    # cookie set or read. A missing/expired/invalid bearer falls through to
-    # the cookie path (a request may legitimately carry neither). Token
-    # rotation for this path is the desktop's job via /auth/native/refresh —
-    # the gate never sets a cookie here, so the transparent cookie-rotation
-    # below must not run for a bearer caller.
+    # RFC 8252 native-app bearer path: the same provider-minted access token the cookie flow
+    # stores, verified with the same provider stack, no cookie read or set. A presented-but-
+    # invalid bearer gets the structured 401 so the desktop refreshes/re-logs instead of
+    # following a cookie redirect.
     bearer = _extract_bearer(request)
     if bearer:
         try:
-            bearer_session = _verify_bearer(request, access_token=bearer)
+            bearer_session = _verify_access_token(request, access_token=bearer, audit=False)
         except ProviderError as e:
-            # At least one provider's IDP/JWKS was unreachable and none
-            # verified the token — transient outage, not bad credentials.
-            return JSONResponse(
-                {"detail": f"Auth provider {str(e)!r} unreachable"},
-                status_code=503,
-            )
+            return unreachable_response(str(e))
         if bearer_session is not None:
             request.state.session = bearer_session
             return await call_next(request)
-        # A bearer was presented but didn't verify (expired/invalid/unknown).
-        # Return the structured 401 so the desktop knows to refresh or
-        # re-login, rather than falling through to the cookie/login redirect.
         return _unauth_response(request, reason="invalid_or_expired_session")
 
     at, _rt = read_session_cookies(request)
     provider_hint = read_session_provider(request)
     if not at and not _rt:
-        # Neither token present — no session at all. Nothing to verify or
-        # refresh. Before falling back to the /login interstitial, try to
-        # silently bounce the user through the portal OAuth flow: the portal
-        # auto-approves org members and 302s straight back when they already
-        # hold a portal session, so the interstitial click is pure friction
-        # for the common case. The one-shot loop-guard inside _auto_sso_response
-        # prevents a ping-pong when the portal genuinely has no session.
+        # No session at all: try the silent portal bounce before /login.
         auto = _auto_sso_response(request)
-        if auto is not None:
-            return auto
-        return _unauth_response(request, reason="no_cookie")
-
-    # Try every registered provider's verify_session in turn. Providers
-    # MUST return None for tokens they don't recognise (not raise). This
-    # lets multiple providers stack — the first one that recognises a
-    # token wins.
-    #
-    # When the access-token cookie is absent but a refresh-token cookie is
-    # present, skip verification and go straight to the refresh path below.
-    # This is the COMMON expiry case, not an edge case: the access-token
-    # cookie is set with ``Max-Age = access_token_expires_in`` (~15 min), so
-    # the browser EVICTS it the moment the token lapses, while the
-    # refresh-token cookie lives for 30 days. From that point the browser
-    # sends only ``hermes_session_rt``. If we bailed on ``not at`` here we'd
-    # bounce the user to /login on every expiry despite holding a perfectly
-    # good refresh token — defeating the whole transparent-refresh feature.
+        return auto if auto is not None else _unauth_response(request, reason="no_cookie")
+    # An absent AT with a present RT is the COMMON expiry case (the AT cookie's Max-Age tracks
+    # the token TTL, so the browser evicts it first) — skip straight to refresh.
     session = None
     if at:
-        # Try every registered provider's verify_session in turn. A provider
-        # that doesn't recognise the token returns None and we move on; the
-        # first provider that returns a Session wins.
-        #
-        # A provider may instead raise ProviderError (its IDP/JWKS is
-        # unreachable, so it can neither confirm nor deny the token). With
-        # multiple providers stacked, that MUST NOT abort the chain — the
-        # token may belong to a *different*, reachable provider. (Concretely:
-        # a self-hosted-OIDC session hits the `nous` provider first, which
-        # tries to reach Nous Portal's JWKS; if that's unreachable it raises,
-        # but the `self-hosted` provider can still verify the token.) So we
-        # remember the unreachable error and keep going. Only if NO provider
-        # verifies the token AND at least one was unreachable do we surface a
-        # 503 — distinguishing "transient IDP outage" (don't force re-login)
-        # from "token genuinely invalid" (fall through to refresh/relogin).
-        unreachable_provider: str | None = None
-        for provider in _ordered_session_providers(provider_hint):
-            try:
-                session = provider.verify_session(access_token=at)
-            except ProviderError as e:
-                _log.warning(
-                    "dashboard-auth: provider %r unreachable during verify: %s",
-                    provider.name, e,
-                )
-                audit_log(
-                    AuditEvent.SESSION_VERIFY_FAILURE,
-                    provider=provider.name,
-                    reason="provider_unreachable",
-                    ip=_client_ip(request),
-                )
-                if unreachable_provider is None:
-                    unreachable_provider = provider.name
-                continue
-            if session is not None:
-                break
-        if session is None and unreachable_provider is not None:
-            # No provider could verify the token and at least one couldn't be
-            # reached — treat as a transient outage rather than forcing a
-            # re-login through a (possibly also-unreachable) refresh.
-            return JSONResponse(
-                {"detail": f"Auth provider {unreachable_provider!r} unreachable"},
-                status_code=503,
-            )
-
-    if session is None:
-        # Access token is expired/invalid. Before forcing re-login, try to
-        # rotate it using the refresh token (if the session cookie carries
-        # one). On success we re-set the rotated cookies on the response and
-        # serve the request transparently; only after every provider rejects
-        # the RT do we fall through to clear-and-relogin.
         try:
-            refreshed = _attempt_refresh(
-                request,
-                refresh_token=_rt,
-                provider_hint=provider_hint,
-            )
+            session = _verify_access_token(request, access_token=at, provider_hint=provider_hint)
         except ProviderError as e:
-            # At least one provider could not confirm or reject the RT, and no
-            # other provider refreshed it. Preserve the cookies and surface a
-            # transient outage instead of turning uncertainty into a logout.
-            return JSONResponse(
-                {"detail": f"Auth provider {str(e)!r} unreachable"},
-                status_code=503,
-            )
-        if refreshed is not None:
-            new_session, refreshing_provider = refreshed
-            request.state.session = new_session
-            response = await call_next(request)
-            # Persist the ROTATED tokens. Portal rotates the refresh token on
-            # every refresh and runs reuse-detection, so writing the new RT
-            # back is mandatory: a stale RT cookie would replay a rotated
-            # token on the next refresh and (outside Portal's grace) revoke
-            # the whole session. Bind cookie Secure/Path to the request shape.
-            from hermes_cli.dashboard_auth.cookies import (
-                detect_https,
-                set_session_cookies,
-            )
-            from hermes_cli.dashboard_auth.prefix import prefix_from_request
-
-            set_session_cookies(
-                response,
-                access_token=new_session.access_token,
-                refresh_token=new_session.refresh_token,
-                access_token_expires_in=_expires_in_seconds(new_session),
-                use_https=detect_https(request),
-                prefix=prefix_from_request(request),
-                provider=refreshing_provider,
-            )
-            audit_log(
-                AuditEvent.REFRESH_SUCCESS,
-                provider=refreshing_provider,
-                user_id=new_session.user_id,
-                ip=_client_ip(request),
-            )
-            return response
-
-        audit_log(
-            AuditEvent.SESSION_VERIFY_FAILURE,
-            reason="no_provider_recognises",
-            ip=_client_ip(request),
-        )
-        response = _unauth_response(request, reason="invalid_or_expired_session")
-        # Clear the dead cookies so the browser doesn't keep sending them.
-        # Refresh already failed (or there was no RT), so the only correct
-        # next step is full re-auth via /login. Importing locally avoids a
-        # cycle with cookies → middleware at module load. Pass the active
-        # prefix so the deletion's Path matches the set-Path (otherwise
-        # the browser ignores it).
-        from hermes_cli.dashboard_auth.cookies import clear_session_cookies
-        from hermes_cli.dashboard_auth.prefix import prefix_from_request
-        clear_session_cookies(response, prefix=prefix_from_request(request))
-        return response
+            return unreachable_response(str(e))
+    if session is None:
+        # Rotate via the refresh token before forcing re-login; on success the request is
+        # served transparently with the rotated cookies re-set.
+        try:
+            refreshed = _attempt_refresh(request, refresh_token=_rt, provider_hint=provider_hint)
+        except ProviderError as e:
+            # Uncertain (provider unreachable), not rejected: keep the cookies.
+            return unreachable_response(str(e))
+        if refreshed is None:
+            return _session_expired_response(request)
+        return await _serve_refreshed(request, call_next, *refreshed)
 
     request.state.session = session
     response = await call_next(request)
     if not provider_hint and session.provider:
-        from hermes_cli.dashboard_auth.cookies import detect_https
-        from hermes_cli.dashboard_auth.prefix import prefix_from_request
-
         set_session_provider_cookie(
-            response,
-            provider=session.provider,
-            use_https=detect_https(request),
-            prefix=prefix_from_request(request),
-        )
+            response, provider=session.provider, use_https=detect_https(request),
+            prefix=prefix_from_request(request))
     return response
 
 
-def _expires_in_seconds(session) -> int:
-    """Seconds until the access token's ``exp``, floored at 60.
-
-    Mirrors the auth-route's ``max(60, exp - now)`` so the access-token
-    cookie's Max-Age tracks the token lifetime even on a slightly skewed
-    clock. ``time`` imported locally to keep the module's import surface
-    minimal.
-    """
-    import time
-
-    return max(60, int(session.expires_at) - int(time.time()))
-
-
 def _attempt_refresh(request: Request, *, refresh_token, provider_hint: str | None = None):
-    """Try to rotate an expired session via the refresh token.
-
-    The provider hint only changes candidate order. ``RefreshExpiredError``
-    rejects the token for that candidate, but cannot prove ownership because
-    providers such as Basic raise it for foreign opaque tokens too. Likewise,
-    ``ProviderError`` only makes that candidate unavailable. Both are audited
-    and the remaining providers are tried. Returns ``None`` only when there is
-    no RT or every reachable provider rejects it. If no provider succeeds and
-    at least one raised ``ProviderError``, re-raises with that provider's name
-    so the caller can return 503 without clearing potentially valid cookies.
-    """
+    """Rotate an expired session via the refresh token; ``(Session, provider_name)`` or ``None``.
+    ``RefreshExpiredError`` rejects that candidate only (Basic raises it for foreign opaque tokens
+    too); if none succeeds and any raised ``ProviderError`` it is re-raised so the caller returns
+    503 without clearing cookies."""
     if not refresh_token:
         return None
-    unavailable_provider: str | None = None
-    for provider in _ordered_session_providers(provider_hint):
-        try:
-            new_session = provider.refresh_session(refresh_token=refresh_token)
-        except RefreshExpiredError:
-            audit_log(
-                AuditEvent.REFRESH_FAILURE,
-                provider=provider.name,
-                reason="refresh_expired",
-                ip=_client_ip(request),
-            )
-            continue
-        except ProviderError as e:
-            _log.warning(
-                "dashboard-auth: provider %r unreachable during refresh: %s",
-                provider.name, e,
-            )
-            audit_log(
-                AuditEvent.REFRESH_FAILURE,
-                provider=provider.name,
-                reason="provider_unreachable",
-                ip=_client_ip(request),
-            )
-            if unavailable_provider is None:
-                unavailable_provider = provider.name
-            continue
-        if new_session is not None:
-            return new_session, provider.name
-    if unavailable_provider is not None:
-        raise ProviderError(unavailable_provider)
-    return None
+
+    def _audit_failure(reason):
+        return lambda provider: audit_log(
+            AuditEvent.REFRESH_FAILURE, provider=provider.name, reason=reason,
+            ip=_client_ip(request))
+
+    def _refresh(provider):
+        new_session = provider.refresh_session(refresh_token=refresh_token)
+        return None if new_session is None else (new_session, provider.name)
+
+    return scan_session_providers(
+        provider_hint, _refresh, phase="refresh", log=_log, swallow=(RefreshExpiredError,),
+        on_swallow=_audit_failure("refresh_expired"),
+        on_unreachable=_audit_failure("provider_unreachable"))
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'DashboardAuthProvider': ('hermes_cli.dashboard_auth.base', 'DashboardAuthProvider'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

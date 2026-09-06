@@ -9,6 +9,7 @@ import '@/store/suggestion-providers/skill'
 import { useAui, useAuiState, useComposerRuntime } from '@assistant-ui/react'
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import {
@@ -75,6 +76,7 @@ export function useComposerDraft({
 }: UseComposerDraftArgs) {
   const aui = useAui()
   const composerRuntime = useComposerRuntime()
+  const paneVisible = usePaneVisible()
   // Which composer this is on the focus bus + which attachment set it owns.
   const { attachments: attachmentScope, target } = useComposerScope()
 
@@ -181,11 +183,15 @@ export function useComposerDraft({
     [paintDraft]
   )
 
+  // Keep-alive tabs keep this composer mounted. A background session whose
+  // turn finished or recovered from a reconnect would otherwise re-run this
+  // effect and steal the caret. usePaneVisible defaults true outside a tab
+  // stack, so tiles, pop-outs, and secondary windows still auto-focus.
   useEffect(() => {
-    if (!inputDisabled) {
+    if (!inputDisabled && paneVisible) {
       focusInput()
     }
-  }, [focusInput, focusKey, focusRequestId, inputDisabled])
+  }, [focusInput, focusKey, focusRequestId, inputDisabled, paneVisible])
 
   // The mirror of the `markActiveComposer` above: give the key back when this
   // composer goes away (a session tile closing, a pane unmounting). Covers both

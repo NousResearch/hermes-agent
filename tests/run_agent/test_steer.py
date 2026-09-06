@@ -663,16 +663,18 @@ class TestSteerMarkerContract:
     def test_system_prompt_scopes_freshness_to_unanswered_marker(self):
         """A delivered marker remains in immutable history on later API calls.
 
-        The prompt contract must distinguish the unanswered tail occurrence
-        from one followed by an assistant response, or a model can interpret a
-        historical steer as newly delivered and repeat non-idempotent work.
+        The freshness contract lives in TWO places and this test pins the
+        split (#95681 diet): the MARKER carries its own replay rule at
+        delivery time ("delivered once at this position", "not a new
+        delivery when replayed"), while the prompt note keeps only the
+        summary clause scoping action to the latest tool results. The
+        detailed only-if-no-later-assistant-message teaching moved out of
+        the prompt because the marker already says it on every delivery.
         """
         from agent.prompt_builder import STEER_CHANNEL_NOTE
 
-        assert "latest tool-result batch" in STEER_CHANNEL_NOTE
-        assert "no later assistant message follows it" in STEER_CHANNEL_NOTE
-        assert "do not treat it as a new message" in STEER_CHANNEL_NOTE
-        assert "repeat completed work" in STEER_CHANNEL_NOTE
+        assert "latest tool results" in STEER_CHANNEL_NOTE
+        assert "history" in STEER_CHANNEL_NOTE
 
         emitted = format_steer_marker("deploy once")
         assert "delivered once at this position" in emitted
@@ -726,9 +728,9 @@ class TestLegacyHiddenPlaceholderWireSubstitution:
         from run_agent import AIAgent
 
         with (
-            patch("run_agent.get_tool_definitions", return_value=[]),
-            patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("run_agent.OpenAI"),
+            patch("model_tools.get_tool_definitions", return_value=[]),
+            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("agent.process_bootstrap.OpenAI"),
         ):
             agent = AIAgent(
                 api_key="test-key-1234567890",

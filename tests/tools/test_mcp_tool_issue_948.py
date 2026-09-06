@@ -5,7 +5,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
-from tools.mcp_tool import MCPServerTask, _format_connect_error, _resolve_stdio_command, _MCP_AVAILABLE
+from tools.mcp_tool import MCPServerTask, _MCP_AVAILABLE
+from tools.mcp_tool_errors import _format_connect_error
+from tools.mcp_tool_config import _resolve_stdio_command
 
 # Ensure the mcp module symbols exist for patching even when the SDK isn't installed
 if not _MCP_AVAILABLE:
@@ -25,7 +27,7 @@ def test_resolve_stdio_command_falls_back_to_hermes_node_bin(tmp_path):
     npx_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     npx_path.chmod(0o755)
 
-    with patch("tools.mcp_tool.shutil.which", return_value=None), \
+    with patch("tools.mcp_tool_config.shutil.which", return_value=None), \
          patch.dict("os.environ", {"HERMES_HOME": str(tmp_path)}, clear=False):
         command, env = _resolve_stdio_command("npx", {"PATH": "/usr/bin"})
 
@@ -55,7 +57,7 @@ def test_resolve_stdio_command_falls_back_to_usr_local_bin():
     def _fake_access(path, _mode):
         return path == target
 
-    with patch("tools.mcp_tool.shutil.which", return_value=None), \
+    with patch("tools.mcp_tool_config.shutil.which", return_value=None), \
          patch("tools.mcp_tool.os.path.isfile", side_effect=_fake_isfile), \
          patch("tools.mcp_tool.os.access", side_effect=_fake_access):
         command, env = _resolve_stdio_command("npx", {"PATH": "/opt/data/bin:/usr/bin:/bin"})

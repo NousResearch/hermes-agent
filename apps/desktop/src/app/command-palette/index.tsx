@@ -13,6 +13,7 @@ import {
   HUD_SURFACE,
   HUD_TEXT
 } from '@/app/floating-hud'
+import { SESSION_IMPORT_ROUTE } from '@/app/routes'
 import { codiconIcon } from '@/components/ui/codicon'
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
@@ -56,6 +57,7 @@ import {
   Wrench,
   Zap
 } from '@/lib/icons'
+import { getServers } from '@/lib/mcp-servers'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
@@ -659,13 +661,9 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     queryFn: () => listAllProfileSessions(200, 0, 'only')
   })
 
-  const mcpServers = useMemo(() => {
-    const raw = configQuery.data?.mcp_servers
-
-    return raw && typeof raw === 'object' && !Array.isArray(raw)
-      ? Object.keys(raw as Record<string, unknown>).sort()
-      : []
-  }, [configQuery.data])
+  // getServers is the shared choke point that also drops malformed (null/
+  // scalar) entries, so the palette never lists a server the MCP tab dropped.
+  const mcpServers = useMemo(() => Object.keys(getServers(configQuery.data ?? null)).sort(), [configQuery.data])
 
   const sessions = useMemo(() => (sessionsQuery.data?.sessions ?? []).map(toSessionEntry), [sessionsQuery.data])
   const archivedSessions = useMemo(() => (archivedQuery.data?.sessions ?? []).map(toSessionEntry), [archivedQuery.data])
@@ -900,6 +898,13 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             keywords: ['command center', 'sessions', 'pin'],
             label: cc.sections.sessions,
             run: go(`${COMMAND_CENTER_ROUTE}?section=sessions`)
+          },
+          {
+            icon: Download,
+            id: 'session-import',
+            keywords: ['import', 'claude', 'codex', 'conversation'],
+            label: t.sessionImport.action,
+            run: go(SESSION_IMPORT_ROUTE)
           },
           {
             icon: Activity,

@@ -578,7 +578,12 @@ const ErrorRecoveryActions: FC = () => {
   )
 }
 
-const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText, onBranchInNewChat }) => {
+const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
+  durationS,
+  messageId,
+  getMessageText,
+  onBranchInNewChat
+}) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
 
@@ -595,6 +600,15 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
 
   return (
     <div className="relative flex w-full shrink-0 items-center justify-end gap-1.5">
+      {durationS !== undefined && (
+        <span
+          className="mr-auto select-none px-0.5 text-[0.6875rem] leading-5 tabular-nums text-muted-foreground"
+          data-slot="aui_turn-duration"
+          title={t.assistant.thread.turnDuration(formatElapsed(durationS))}
+        >
+          ⏱ {formatElapsed(durationS)}
+        </span>
+      )}
       <ActionBarPrimitive.Root
         className={
           // NOTE: intentionally NOT `hideWhenRunning`. That prop unmounts the
@@ -713,19 +727,8 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
 }
 
 const AssistantFooter: FC<MessageActionProps & { durationS?: number }> = ({ durationS, ...props }) => {
-  const { t } = useI18n()
-
   return (
     <div className="flex min-h-6 flex-col items-end gap-1 pr-(--message-text-indent) pl-(--message-text-indent)">
-      {durationS !== undefined && (
-        <span
-          className="select-none px-0.5 text-[0.6875rem] leading-5 tabular-nums text-muted-foreground"
-          data-slot="aui_turn-duration"
-          title={t.assistant.thread.turnDuration(formatElapsed(durationS))}
-        >
-          ⏱ {formatElapsed(durationS)}
-        </span>
-      )}
       <BranchPickerPrimitive.Root
         className="inline-flex h-6 items-center gap-1 text-xs text-muted-foreground"
         hideWhenSingleBranch
@@ -740,7 +743,7 @@ const AssistantFooter: FC<MessageActionProps & { durationS?: number }> = ({ dura
           <Codicon name="chevron-right" size="0.875rem" />
         </BranchPickerPrimitive.Next>
       </BranchPickerPrimitive.Root>
-      <AssistantActionBar {...props} />
+      <AssistantActionBar durationS={durationS} {...props} />
     </div>
   )
 }

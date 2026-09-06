@@ -2,23 +2,20 @@
 
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock, mock_open
 
 import pytest
 
-from tools.browser_tool import (
-    _agent_browser_candidate_present,
-    _discover_homebrew_node_dirs,
-    _find_agent_browser,
-    _run_browser_command,
-    _run_chrome_fallback_command,
-    AGENT_BROWSER_NPX_SPEC,
-    _SANE_PATH,
-    check_browser_requirements,
-)
+from tools.browser_tool_install import _find_agent_browser, check_browser_requirements
+from tools.browser_tool_session import _run_browser_command
+from tools.browser_tool import AGENT_BROWSER_NPX_SPEC, _SANE_PATH
+from tools.browser_tool_install import _agent_browser_candidate_present, _discover_homebrew_node_dirs
+from tools.browser_tool_lightpanda_fallback import _run_chrome_fallback_command
 import tools.browser_tool as _bt
+from tools import browser_tool_install as bt_install
 
 
 @pytest.fixture(autouse=True)
@@ -76,7 +73,7 @@ class TestFindAgentBrowser:
     def test_finds_in_current_path(self):
         """Should return result from shutil.which if available on current PATH."""
         with patch("shutil.which", return_value="/usr/local/bin/agent-browser"), \
-             patch("tools.browser_tool.agent_browser_runnable", return_value=True):
+             patch("tools.browser_tool_install.agent_browser_runnable", return_value=True):
             assert _find_agent_browser() == "/usr/local/bin/agent-browser"
 
 
@@ -93,7 +90,7 @@ class TestFindAgentBrowser:
              patch("os.path.isdir", return_value=False), \
              patch.object(Path, "exists", mock_path_exists), \
              patch(
-                 "tools.browser_tool._discover_homebrew_node_dirs",
+                 "tools.browser_tool_install._discover_homebrew_node_dirs",
                  return_value=[],
              ):
             with pytest.raises(FileNotFoundError, match="agent-browser CLI not found"):
@@ -121,9 +118,9 @@ class TestFindAgentBrowser:
         with patch("shutil.which", side_effect=mock_which), \
              patch("os.path.isdir", return_value=False), \
              patch.object(Path, "is_dir", mock_is_dir), \
-             patch("tools.browser_tool.agent_browser_runnable", return_value=True), \
+             patch("tools.browser_tool_install.agent_browser_runnable", return_value=True), \
              patch(
-                 "tools.browser_tool._discover_homebrew_node_dirs",
+                 "tools.browser_tool_install._discover_homebrew_node_dirs",
                  return_value=[],
              ):
             result = _find_agent_browser()
@@ -147,13 +144,13 @@ class TestFindAgentBrowser:
         with patch("shutil.which", side_effect=mock_which), \
              patch("os.path.isdir", return_value=True), \
              patch(
-                 "tools.browser_tool.agent_browser_runnable",
+                 "tools.browser_tool_install.agent_browser_runnable",
                  side_effect=AssertionError(
                      "validate=False must not call agent_browser_runnable"
                  ),
              ), \
              patch(
-                 "tools.browser_tool._discover_homebrew_node_dirs",
+                 "tools.browser_tool_install._discover_homebrew_node_dirs",
                  return_value=["/opt/homebrew/bin"],
              ):
             result = _find_agent_browser(validate=False)
@@ -187,13 +184,13 @@ class TestFindAgentBrowser:
              patch("os.path.isdir", return_value=False), \
              patch.object(Path, "is_dir", mock_is_dir), \
              patch(
-                 "tools.browser_tool.agent_browser_runnable",
+                 "tools.browser_tool_install.agent_browser_runnable",
                  side_effect=AssertionError(
                      "validate=False must not call agent_browser_runnable"
                  ),
              ), \
              patch(
-                 "tools.browser_tool._discover_homebrew_node_dirs",
+                 "tools.browser_tool_install._discover_homebrew_node_dirs",
                  return_value=[],
              ):
             result = _find_agent_browser(validate=False)
@@ -220,9 +217,9 @@ class TestFindAgentBrowser:
         with patch("shutil.which", side_effect=mock_which), \
              patch("os.path.isdir", return_value=False), \
              patch.object(Path, "exists", mock_path_exists), \
-             patch("tools.browser_tool.node_tool_runnable", return_value=True), \
+             patch("tools.browser_tool_install.node_tool_runnable", return_value=True), \
              patch(
-                 "tools.browser_tool._discover_homebrew_node_dirs",
+                 "tools.browser_tool_install._discover_homebrew_node_dirs",
                  return_value=[],
              ):
             result = _find_agent_browser(validate=False)
@@ -267,7 +264,7 @@ class TestBrowserRequirements:
     def test_cdp_override_does_not_require_agent_browser_cli(self, monkeypatch):
         monkeypatch.setenv("BROWSER_CDP_URL", "ws://127.0.0.1:9222/devtools/browser/test")
         monkeypatch.setattr("tools.browser_tool._is_camofox_mode", lambda: False)
-        monkeypatch.setattr("tools.browser_tool._find_agent_browser", lambda: (_ for _ in ()).throw(FileNotFoundError("not found")))
+        monkeypatch.setattr("tools.browser_tool_install._find_agent_browser", lambda: (_ for _ in ()).throw(FileNotFoundError("not found")))
 
         assert check_browser_requirements() is True
 
@@ -275,8 +272,8 @@ class TestBrowserRequirements:
         monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
         monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
         monkeypatch.setattr("tools.browser_tool._is_camofox_mode", lambda: False)
-        monkeypatch.setattr("tools.browser_tool._get_cloud_provider", lambda: None)
-        monkeypatch.setattr("tools.browser_tool._find_agent_browser", lambda **_kw: "npx agent-browser")
+        monkeypatch.setattr("tools.browser_tool_cloud._get_cloud_provider", lambda: None)
+        monkeypatch.setattr("tools.browser_tool_install._find_agent_browser", lambda **_kw: "npx agent-browser")
 
         assert check_browser_requirements() is False
 
@@ -285,8 +282,8 @@ class TestRunBrowserCommandTermuxFallback:
     def test_termux_local_mode_rejects_bare_npx_fallback(self, monkeypatch):
         monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
         monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
-        monkeypatch.setattr("tools.browser_tool._find_agent_browser", lambda **_kw: "npx agent-browser")
-        monkeypatch.setattr("tools.browser_tool._get_cloud_provider", lambda: None)
+        monkeypatch.setattr("tools.browser_tool_install._find_agent_browser", lambda **_kw: "npx agent-browser")
+        monkeypatch.setattr("tools.browser_tool_cloud._get_cloud_provider", lambda: None)
 
         result = _run_browser_command("task-1", "navigate", ["https://example.com"])
 
@@ -320,11 +317,11 @@ class TestRunBrowserCommandPathConstruction:
         browser_path = "/Users/test/Library/Application Support/hermes/node_modules/.bin/agent-browser"
         hermes_home = str(tmp_path / "hermes-home")
 
-        with patch("tools.browser_tool._find_agent_browser", return_value=browser_path), \
- patch("tools.browser_tool._chromium_installed", return_value=True), \
-             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
+        with patch("tools.browser_tool_install._find_agent_browser", return_value=browser_path), \
+ patch("tools.browser_tool_install._chromium_installed", return_value=True), \
+             patch("tools.browser_tool_session._get_session_info", return_value=fake_session), \
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
-             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
+             patch("tools.browser_tool_install._discover_homebrew_node_dirs", return_value=[]), \
              patch("hermes_constants.Path.home", return_value=tmp_path), \
              patch("subprocess.Popen", side_effect=capture_popen), \
              patch("os.open", return_value=99), \
@@ -376,12 +373,12 @@ class TestRunBrowserCommandPathConstruction:
         fake_json = json.dumps({"success": True})
         hermes_home = str(tmp_path / "hermes-home")
 
-        with patch("tools.browser_tool._find_agent_browser", return_value="npx agent-browser"), \
-             patch("tools.browser_tool._resolve_npx_bin", return_value="/opt/hermes/node/bin/npx"), \
-             patch("tools.browser_tool._chromium_installed", return_value=True), \
-             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
+        with patch("tools.browser_tool_install._find_agent_browser", return_value="npx agent-browser"), \
+             patch("tools.browser_tool_install._resolve_npx_bin", return_value="/opt/hermes/node/bin/npx"), \
+             patch("tools.browser_tool_install._chromium_installed", return_value=True), \
+             patch("tools.browser_tool_session._get_session_info", return_value=fake_session), \
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
-             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
+             patch("tools.browser_tool_install._discover_homebrew_node_dirs", return_value=[]), \
              patch("hermes_constants.Path.home", return_value=tmp_path), \
              patch("subprocess.Popen", side_effect=capture_popen), \
              patch("os.open", return_value=99), \
@@ -437,11 +434,11 @@ class TestRunBrowserCommandPathConstruction:
                 return True
             return real_isdir(path)
 
-        with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
- patch("tools.browser_tool._chromium_installed", return_value=True), \
-             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
+        with patch("tools.browser_tool_install._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
+ patch("tools.browser_tool_install._chromium_installed", return_value=True), \
+             patch("tools.browser_tool_session._get_session_info", return_value=fake_session), \
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
-             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
+             patch("tools.browser_tool_install._discover_homebrew_node_dirs", return_value=[]), \
              patch("os.path.isdir", side_effect=selective_isdir), \
              patch("subprocess.Popen", side_effect=capture_popen), \
              patch("os.open", return_value=99), \
@@ -473,13 +470,13 @@ class TestRunChromeFallbackCommandNpxResolution:
             captured_cmds.append(cmd)
             return mock_proc
 
-        url_result = {"success": True, "data": {"result": "https://example.com"}}
+        url_result = {"success": True, "data": {"url": "https://example.com"}}
 
-        with patch("tools.browser_tool._run_browser_command", return_value=url_result), \
-             patch("tools.browser_tool._find_agent_browser", return_value="npx agent-browser"), \
-             patch("tools.browser_tool._resolve_npx_bin", return_value="/opt/hermes/node/bin/npx"), \
-             patch("tools.browser_tool._chromium_installed", return_value=True), \
-             patch("tools.browser_tool._running_in_docker", return_value=False), \
+        with patch("tools.browser_tool_session._run_browser_command", return_value=url_result), \
+             patch("tools.browser_tool_install._find_agent_browser", return_value="npx agent-browser"), \
+             patch("tools.browser_tool_install._resolve_npx_bin", return_value="/opt/hermes/node/bin/npx"), \
+             patch("tools.browser_tool_install._chromium_installed", return_value=True), \
+             patch("tools.browser_tool_install._running_in_docker", return_value=False), \
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch("subprocess.Popen", side_effect=capture_popen):
             _run_chrome_fallback_command("test-task", "navigate", ["https://example.com"], timeout=10)
@@ -503,43 +500,40 @@ class TestResolveNpxBinPriority:
     validation discipline for agent-browser itself."""
 
     def test_prefers_managed_extended_path_over_bare_path(self, monkeypatch):
-        import tools.browser_tool as bt
 
-        monkeypatch.setattr(bt, "_merge_browser_path", lambda _p: "/hermes/node/bin")
+        monkeypatch.setattr("tools.browser_tool_install._merge_browser_path", lambda _p: "/hermes/node/bin")
         monkeypatch.setattr(
-            bt.shutil, "which",
+            shutil, "which",
             lambda cmd, path=None: (
                 "/hermes/node/bin/npx" if path == "/hermes/node/bin"
                 else "/usr/local/bin/npx"
             ),
         )
-        monkeypatch.setattr(bt, "node_tool_runnable", lambda p: True)
+        monkeypatch.setattr("tools.browser_tool_install.node_tool_runnable", lambda p: True)
 
-        assert bt._resolve_npx_bin() == "/hermes/node/bin/npx"
+        assert bt_install._resolve_npx_bin() == "/hermes/node/bin/npx"
 
     def test_falls_back_to_bare_path_when_managed_candidate_is_broken(self, monkeypatch):
-        import tools.browser_tool as bt
 
-        monkeypatch.setattr(bt, "_merge_browser_path", lambda _p: "/hermes/node/bin")
+        monkeypatch.setattr("tools.browser_tool_install._merge_browser_path", lambda _p: "/hermes/node/bin")
         monkeypatch.setattr(
-            bt.shutil, "which",
+            shutil, "which",
             lambda cmd, path=None: (
                 "/hermes/node/bin/npx" if path == "/hermes/node/bin"
                 else "/usr/local/bin/npx"
             ),
         )
-        monkeypatch.setattr(bt, "node_tool_runnable", lambda p: p == "/usr/local/bin/npx")
+        monkeypatch.setattr("tools.browser_tool_install.node_tool_runnable", lambda p: p == "/usr/local/bin/npx")
 
-        assert bt._resolve_npx_bin() == "/usr/local/bin/npx"
+        assert bt_install._resolve_npx_bin() == "/usr/local/bin/npx"
 
     def test_returns_none_when_nothing_runnable(self, monkeypatch):
-        import tools.browser_tool as bt
 
-        monkeypatch.setattr(bt, "_merge_browser_path", lambda _p: "")
-        monkeypatch.setattr(bt.shutil, "which", lambda cmd, path=None: "/usr/local/bin/npx")
-        monkeypatch.setattr(bt, "node_tool_runnable", lambda p: False)
+        monkeypatch.setattr("tools.browser_tool_install._merge_browser_path", lambda _p: "")
+        monkeypatch.setattr(shutil, "which", lambda cmd, path=None: "/usr/local/bin/npx")
+        monkeypatch.setattr("tools.browser_tool_install.node_tool_runnable", lambda p: False)
 
-        assert bt._resolve_npx_bin() is None
+        assert bt_install._resolve_npx_bin() is None
 
     def test_skips_extended_lookup_when_merge_browser_path_returns_empty(self, monkeypatch):
         """_merge_browser_path("") returning a falsy string (no extended
@@ -548,7 +542,6 @@ class TestResolveNpxBinPriority:
         kwarg (which would silently mean "search cwd only" on some
         platforms rather than "no extended search"), and node_tool_runnable
         must only be asked about the one real candidate."""
-        import tools.browser_tool as bt
 
         which_calls = []
 
@@ -556,11 +549,11 @@ class TestResolveNpxBinPriority:
             which_calls.append((cmd, path))
             return "/usr/bin/npx" if path is None else None
 
-        monkeypatch.setattr(bt, "_merge_browser_path", lambda _p: "")
-        monkeypatch.setattr(bt.shutil, "which", fake_which)
-        monkeypatch.setattr(bt, "node_tool_runnable", lambda p: p == "/usr/bin/npx")
+        monkeypatch.setattr("tools.browser_tool_install._merge_browser_path", lambda _p: "")
+        monkeypatch.setattr(shutil, "which", fake_which)
+        monkeypatch.setattr("tools.browser_tool_install.node_tool_runnable", lambda p: p == "/usr/bin/npx")
 
-        assert bt._resolve_npx_bin() == "/usr/bin/npx"
+        assert bt_install._resolve_npx_bin() == "/usr/bin/npx"
         assert which_calls == [("npx", None)]
 
     def test_falls_back_to_bare_path_when_extended_dir_has_no_npx(self, monkeypatch):
@@ -568,13 +561,12 @@ class TestResolveNpxBinPriority:
         npx binary (shutil.which returns None there) must fall through to
         the bare-PATH rung rather than treating "no extended npx" the same
         as "extended npx found but broken"."""
-        import tools.browser_tool as bt
 
-        monkeypatch.setattr(bt, "_merge_browser_path", lambda _p: "/hermes/node/bin")
+        monkeypatch.setattr("tools.browser_tool_install._merge_browser_path", lambda _p: "/hermes/node/bin")
         monkeypatch.setattr(
-            bt.shutil, "which",
+            shutil, "which",
             lambda cmd, path=None: None if path == "/hermes/node/bin" else "/usr/bin/npx",
         )
-        monkeypatch.setattr(bt, "node_tool_runnable", lambda p: True)
+        monkeypatch.setattr("tools.browser_tool_install.node_tool_runnable", lambda p: True)
 
-        assert bt._resolve_npx_bin() == "/usr/bin/npx"
+        assert bt_install._resolve_npx_bin() == "/usr/bin/npx"

@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
+  type CommandCatalogMeta,
+  type CommandsCatalogLike,
   desktopSkinSlashCompletions,
+  type DesktopSlashArgumentMode,
   desktopSlashCommandArgumentMode,
   desktopSlashDescription,
   desktopSlashUnavailableMessage,
@@ -11,10 +14,66 @@ import {
   isModelPickerCommand,
   isPickerCommand,
   rankSkillCommands,
-  resolveDesktopCommand
+  rememberDesktopCommandsCatalog,
+  resolveDesktopCommand,
+  slashCompletionGroup
 } from './desktop-slash-commands'
 
+function registryCatalog(
+  modes: Record<string, DesktopSlashArgumentMode | null>,
+  aliases: Record<string, string> = {}
+): CommandsCatalogLike {
+  const commands: Record<string, CommandCatalogMeta> = {}
+  const canon: Record<string, string> = {}
+
+  for (const [name, argument_mode] of Object.entries(modes)) {
+    commands[name] = { argument_mode, desktop: null }
+    canon[name] = name
+  }
+
+  for (const [alias, target] of Object.entries(aliases)) {
+    commands[alias] = commands[target]
+    canon[alias] = target
+  }
+
+  return { commands, canon }
+}
+
+const REGISTRY_CATALOG = registryCatalog(
+  {
+    '/approvals': 'options',
+    '/review': 'text',
+    '/refine': 'text',
+    '/usage': null,
+    '/version': null,
+    '/agents': null,
+    '/steer': 'text',
+    '/stop': null,
+    '/bg': 'text',
+    '/btw': 'text',
+    '/debug': null,
+    '/goal': 'mixed',
+    '/personality': 'options',
+    '/queue': 'text',
+    '/retry': null,
+    '/rollback': null,
+    '/tools': 'options',
+    '/undo': null,
+    '/loop': 'mixed',
+    '/lcm': 'text'
+  },
+  { '/tasks': '/agents', '/background': '/bg', '/q': '/queue', '/proactive': '/loop' }
+)
+
 describe('desktop slash command curation', () => {
+  beforeEach(() => {
+    rememberDesktopCommandsCatalog(REGISTRY_CATALOG)
+  })
+
+  afterEach(() => {
+    rememberDesktopCommandsCatalog(undefined)
+  })
+
   it('keeps core desktop chat commands in suggestions', () => {
     expect(isDesktopSlashSuggestion('/new')).toBe(true)
     expect(isDesktopSlashSuggestion('/branch')).toBe(true)
@@ -26,6 +85,31 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/approvals')).toBe(true)
     expect(isDesktopSlashCommand('/approvals')).toBe(true)
     expect(resolveDesktopCommand('/approvals')?.surface).toEqual({ kind: 'exec' })
+    expect(isDesktopSlashSuggestion('/review')).toBe(true)
+    expect(isDesktopSlashCommand('/review')).toBe(true)
+    expect(resolveDesktopCommand('/review')?.surface).toEqual({ kind: 'exec' })
+    expect(resolveDesktopCommand('/review')?.argumentMode).toBe('text')
+  })
+
+  it('treats registry and plugin commands as exec when the catalog says so', () => {
+    expect(resolveDesktopCommand('/refine')?.argumentMode).toBe('text')
+    expect(isDesktopSlashSuggestion('/refine')).toBe(true)
+    expect(isDesktopSlashSuggestion('/background')).toBe(false)
+    expect(isDesktopSlashCommand('/bg')).toBe(true)
+    expect(desktopSlashCommandArgumentMode('/bg')).toBe('text')
+    expect(isDesktopSlashCommand('/btw')).toBe(true)
+    expect(desktopSlashCommandArgumentMode('/btw')).toBe('text')
+    expect(resolveDesktopCommand('/lcm')?.surface).toEqual({ kind: 'exec' })
+    expect(desktopSlashCommandArgumentMode('/lcm')).toBe('text')
+  })
+
+  it('groups complete.slash rows by backend kind, not the desktop table', () => {
+    // A registry command the table has never heard of is still a command.
+    expect(slashCompletionGroup('/refine', 'command')).toBe('Commands')
+    expect(slashCompletionGroup('/docx', 'skill')).toBe('Skills')
+    // Older backends omit kind — fall back to the table.
+    expect(slashCompletionGroup('/new')).toBe('Commands')
+    expect(slashCompletionGroup('/docx')).toBe('Skills')
   })
 
   it('surfaces skill and quick commands (extensions) in suggestions and lets them run', () => {
@@ -95,6 +179,13 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashUnavailableMessage('/wake')).toBeNull()
   })
 
+  it('routes /stop through the desktop action that cancels the active turn', () => {
+    expect(resolveDesktopCommand('/stop')?.surface).toEqual({ kind: 'action', action: 'stop' })
+    expect(isDesktopSlashSuggestion('/stop')).toBe(true)
+    expect(isDesktopSlashCommand('/stop')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/stop')).toBeNull()
+  })
+
   it('treats /browser as an executable action command (local-gateway connect)', () => {
     // /browser used to be terminal-only; it now resolves to a desktop action
     // handler that routes browser.manage RPC when the gateway is local.
@@ -142,14 +233,15 @@ describe('desktop slash command curation', () => {
   })
 
   it('keeps commands with richer CLI semantics on the slash worker', () => {
-    for (const name of ['/agents', '/steer', '/stop', '/usage']) {
+    for (const name of ['/agents', '/steer', '/usage']) {
       expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
     }
   })
 
   it('still routes commands without dedicated RPCs through exec()', () => {
+    // /btw is an action (prompt.btw) — the slash-worker print never reached Desktop.
     const execNames = [
-      '/background',
+      '/bg',
       '/debug',
       '/goal',
       '/personality',
@@ -164,6 +256,13 @@ describe('desktop slash command curation', () => {
     for (const name of execNames) {
       expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
     }
+  })
+
+  it('routes /btw to the prompt.btw side-question action', () => {
+    expect(resolveDesktopCommand('/btw')?.surface).toEqual({ kind: 'action', action: 'btw' })
+    expect(isDesktopSlashCommand('/btw')).toBe(true)
+    expect(isDesktopSlashSuggestion('/btw')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/btw')).toBeNull()
   })
 
   it('distinguishes free prose from finite slash option lists', () => {

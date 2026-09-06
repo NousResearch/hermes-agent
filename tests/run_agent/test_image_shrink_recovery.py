@@ -22,7 +22,7 @@ import sys
 from types import SimpleNamespace
 
 
-from agent.conversation_loop import _image_error_max_dimension
+from agent.turn_recovery import _image_error_max_dimension
 from agent.error_classifier import FailoverReason, classify_api_error
 
 
@@ -53,8 +53,39 @@ class TestImageTooLargeClassification:
         assert result.reason == FailoverReason.image_too_large
         assert result.retryable is True
 
+    def test_minimax_400_media_exceeds_message(self):
+        """A vendor that rejects an oversized image without the word "image".
 
+        MiniMax's Anthropic-compatible endpoint returns this for a native
+        image part over its 10 MB ceiling.  It used to fall through to
+        _REQUEST_VALIDATION_PATTERNS and classify as format_error /
+        non-retryable, which skipped shrink recovery and left the oversized
+        part baked into replayed history — every later turn re-sent the same
+        bytes and failed identically (#76039).
+        """
+        err = _FakeApiError(
+            status_code=400,
+            message="media exceeds size limit: max 10485760 bytes (2013)",
+            body={
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "media exceeds size limit: max 10485760 bytes (2013)",
+                },
+            },
+        )
+        result = classify_api_error(err, provider="minimax", model="MiniMax-M3")
+        assert result.reason == FailoverReason.image_too_large
+        assert result.retryable is True
 
+    def test_unrelated_400_still_not_image_too_large(self):
+        """The new "media" patterns must not widen into ordinary 400s."""
+        err = _FakeApiError(
+            status_code=400,
+            message="messages: unexpected role \"tool\" at index 3",
+        )
+        result = classify_api_error(err, provider="minimax", model="MiniMax-M3")
+        assert result.reason != FailoverReason.image_too_large
 
 
 

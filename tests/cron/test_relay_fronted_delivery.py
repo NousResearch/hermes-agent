@@ -21,12 +21,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from cron import scheduler as sched
-from cron.scheduler import (
-    _deliver_result,
-    _get_home_target_chat_id,
-    _get_home_target_thread_id,
-    _resolve_delivery_targets,
-)
+from cron.scheduler import _deliver_result, _resolve_delivery_targets
+from cron.scheduler_delivery import _get_home_target_chat_id, _get_home_target_thread_id
 from gateway.config import HomeChannel, Platform
 
 
@@ -173,4 +169,19 @@ class TestRelayDeliveryGate:
         config.get_home_channel = lambda p: None
         result = self._run({}, config)
         assert result is not None
-        assert "not configured/enabled" in result
+
+    def test_relay_fronted_without_live_gateway_errors_accurately(self, monkeypatch):
+        """A relay-fronted platform with NO live relay transport (manual
+        in-process `hermes cron run`) fails with the accurate 'gateway required'
+        message — never the native 'not configured/enabled' gate, which
+        misdiagnoses relay-fronted deployments whose credential lives in the
+        connector, not natively."""
+        _clear_home_env(monkeypatch)
+        monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord")
+        config = MagicMock()
+        config.platforms = {}
+        config.get_home_channel = lambda p: None
+        result = self._run({}, config)  # no live adapters
+        assert result is not None
+        assert "relay-fronted" in (result or "")
+        assert "not configured" not in (result or "")

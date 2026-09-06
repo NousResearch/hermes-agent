@@ -1088,13 +1088,10 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
                 f"{est_tokens:,}")
             ttfb_timeout = ttfb_cap
 
-    idle_raw = os.getenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", "").strip()
-    try:
-        float(idle_raw)
-    except ValueError:
-        idle_explicit = False
-    else:
-        idle_explicit = True
+    # An operator-set idle timeout keeps first-event semantics; only the implicit
+    # default defers arming until model progress. Sentinel: env_float returns the
+    # default for unset AND unparseable values, so both count as implicit.
+    idle_explicit = env_float("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", -1.0) != -1.0
     idle_timeout = env_float("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", idle_default)
     return _NonStreamWatchdogs(stale_timeout=stale_timeout, codex=codex, est_tokens=est_tokens,
         ttfb_enabled=ttfb_enabled, ttfb_timeout=ttfb_timeout, idle_enabled=codex and idle_timeout > 0,
@@ -1211,11 +1208,9 @@ class _NonStreamRequest:
         """Watchdog/interrupt kill: abort the request client (kind-aware, #67142)
         and retire the codex token; the worker sees its own forced close via
         the cancel flags."""
-        # Retire before closing the socket: close can wake the worker immediately,
-        # and a retired worker must not open a new physical retry.
-        self._retire_codex_request_token()
         with contextlib.suppress(Exception):
             self.clients.close_once(reason)
+        self._retire_codex_request_token()
 
     def _await_worker_after_kill(self, timeout_message: str) -> None:
         # Wait briefly for the worker to notice the closed connection.

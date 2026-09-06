@@ -881,21 +881,18 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     def _on_event(event: Any) -> None:  # TTFB/activity touch — once per SSE event.
         now = time.time()
         has_progress = _codex_event_has_content(event)
-        reset_progress = False
         if watchdog_state is not None:
             with watchdog_state.lock:
-                reset_progress = watchdog_state.retry_started_ts is not None
-                if reset_progress:
+                if watchdog_state.retry_started_ts is not None:
                     watchdog_state.retry_started_ts = None
                     watchdog_state.last_progress_ts = None
                 watchdog_state.last_event_ts = now
                 if has_progress:
                     watchdog_state.last_progress_ts = now
-        agent._codex_stream_last_event_ts = now
-        if reset_progress:
-            agent._codex_stream_last_progress_ts = None
-        if has_progress:
-            agent._codex_stream_last_progress_ts = now
+        else:  # legacy callers without a request-local state (aux/streaming fallback)
+            agent._codex_stream_last_event_ts = now
+            if has_progress:
+                agent._codex_stream_last_progress_ts = now
         agent._touch_activity("receiving stream response")
 
     def _interrupt_or_superseded() -> bool:

@@ -246,6 +246,18 @@ Kanban task is done or archived. The canonical PR head/base is reread before the
 ledger transition. Active, unknown, or unacknowledged work remains pending; this recovery
 creates no CI receipt and does not satisfy any merge gate.
 
+Repair task completion is also checked at Kanban's shared completion boundary. A task
+bound to a review/comment or repair dispatch cannot become done until its durable action
+is acknowledged or superseded. This covers both `kanban_complete` and CLI completion;
+a local commit, a summary, or an earlier plugin approval cannot satisfy the contract.
+If the push, factual reply, or acknowledgement cannot finish, block the task with the
+actual cause. CI tasks retain their separate exact-receipt contract. Advisory `pr_repair`
+`report:*` tasks are excluded, matching their existing non-mutating admission contract.
+If the control ledger cannot be read, the registered policy rejects completion rather
+than guessing that a task is unbound. A successfully read ledger with no matching repair
+binding leaves ordinary Kanban completion unchanged. The acknowledgement is recorded by
+`complete-feedback` before its downstream CI handoff; the worker then completes Kanban.
+
 PR intake prefers older PR numbers and places an open parent before its child when
 canonical repository/branch identities establish that dependency. Repair inspection
 rotates a durable 12-PR window across the catalogue, so repeated updates to newer PRs

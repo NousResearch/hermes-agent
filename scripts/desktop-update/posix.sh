@@ -290,6 +290,7 @@ stop_ui() { # error/manual outcomes keep the window up briefly so a watching
   if [ -n "$UI_BROWSER_PID" ]; then
     { kill "$UI_BROWSER_PID" && wait "$UI_BROWSER_PID"; } 2>/dev/null
   fi
+  rm -rf "${TMPDIR:-/tmp}/hermes-update-ui-$$" 2>/dev/null || true
   UI_SERVER_PID="" UI_BROWSER_PID=""
 }
 

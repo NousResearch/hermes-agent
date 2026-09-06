@@ -273,3 +273,26 @@ class TestCliBrandingHelpers:
         overrides = get_prompt_toolkit_style_overrides()
         assert overrides["status-bar"] == f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('banner_text')}"
         assert overrides["voice-status"] == f"bg:{skin.get_color('voice_status_bg')} {skin.get_color('ui_label')}"
+
+    def test_session_title_badge_preserves_paired_colors(self, monkeypatch):
+        from hermes_cli.skin_engine import (
+            SkinConfig,
+            get_prompt_toolkit_style_overrides,
+            set_active_skin,
+        )
+
+        original_get_color = SkinConfig.get_color
+        monkeypatch.setattr(
+            SkinConfig,
+            "get_color",
+            lambda self, key, fallback="": (
+                "#1A1A1A"
+                if original_get_color(self, key, fallback) == "#F5F5F5"
+                else original_get_color(self, key, fallback)
+            ),
+        )
+        set_active_skin("sisyphus")
+
+        assert get_prompt_toolkit_style_overrides()["status-bar-session-title"] == (
+            "bg:#F5F5F5 #202020 bold"
+        )

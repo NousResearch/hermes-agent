@@ -979,10 +979,10 @@ class GatewayInboundMixin:
         if command:
             try:
                 from hermes_cli.plugins import (
-                    PluginCommandContext, call_plugin_command_handler, get_plugin_command_handler,
+                    PluginCommandContext, _get_plugin_command_entry, _invoke_plugin_command_handler,
                 )
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
-                if plugin_handler:
+                plugin_entry = _get_plugin_command_entry(command.replace("_", "-"))
+                if plugin_entry:
                     plugin_context = PluginCommandContext(
                         platform=source.platform.value,
                         user_id=source.user_id,
@@ -991,8 +991,8 @@ class GatewayInboundMixin:
                         scope_id=source.scope_id,
                         profile=source.profile,
                     )
-                    result = await call_plugin_command_handler(
-                        plugin_handler, event.get_command_args().strip(), context=plugin_context,
+                    result = await _invoke_plugin_command_handler(
+                        plugin_entry, event.get_command_args().strip(), context=plugin_context,
                     )
                     return True, str(result) if result else None, command
             except Exception as e:

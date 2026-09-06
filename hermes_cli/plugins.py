@@ -35,7 +35,7 @@ from hermes_cli.middleware import VALID_MIDDLEWARE
 from hermes_cli.plugin_capabilities import plugin_capability_granted
 from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, legacy_relay_plugin_keys
 from hermes_cli.plugin_command_context import (
-    PluginCommandContext, call_plugin_command_handler, get_plugin_command_context,
+    PluginCommandContext,
 )
 # Sibling modules' names are re-exported here (origin) so plugins and tests keep one import path.
 from hermes_cli.plugins_manifest import (  # noqa: F401 — re-exported
@@ -654,7 +654,7 @@ class PluginContext:
     @_serialized_replacement
     def register_command(
         self, name: str, handler: Callable, description: str = "", args_hint: str = "",
-        argument_mode: str | None = None,
+        argument_mode: str | None = None, *, authenticated_context: bool = False,
     ) -> Optional[PluginRegistration]:
         """Register an in-session slash command (``/name``); handler ``fn(raw_args: str) -> str | None``
         (sync or async). ``args_hint`` (e.g. ``"<file>"``) lets adapters like Discord surface an argument
@@ -673,6 +673,7 @@ class PluginContext:
         entry = {
             "handler": handler, "description": description or "Plugin command",
             "plugin": self.manifest.name, "plugin_key": self.plugin_id, "args_hint": hint,
+            "authenticated_context": bool(authenticated_context),
             "argument_mode": argument_mode if argument_mode in {"options", "text", "mixed"}
             else ("text" if hint else None),
         }
@@ -1978,6 +1979,25 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
+
+
+def _get_plugin_command_entry(name: str) -> Optional[dict]:
+    """Return host-owned command metadata for internal dispatch only."""
+    return _ensure_plugins_discovered()._plugin_commands.get(name)
+
+
+async def _invoke_plugin_command_handler(
+    entry: dict, raw_args: str, *, context: Optional[PluginCommandContext] = None,
+) -> Any:
+    """Invoke a registered command, passing identity only for explicit opt-in handlers."""
+    handler = entry["handler"]
+    if entry.get("authenticated_context"):
+        result = handler(raw_args, command_context=context)
+    else:
+        result = handler(raw_args)
+    if inspect.isawaitable(result):
+        return await result
+    return result
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0

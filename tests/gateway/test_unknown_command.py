@@ -217,8 +217,11 @@ async def test_command_hook_rewrite_routes_to_plugin(monkeypatch):
     )
     monkeypatch.setattr(
         _plugins_mod,
-        "get_plugin_command_handler",
-        lambda name: (lambda args: f"metrics {args}") if name == "metricas" else None,
+        "_get_plugin_command_entry",
+        lambda name: (
+            {"handler": lambda args: f"metrics {args}", "authenticated_context": False}
+            if name == "metricas" else None
+        ),
     )
 
     result = await runner._handle_message(_make_event("/status"))
@@ -229,19 +232,20 @@ async def test_command_hook_rewrite_routes_to_plugin(monkeypatch):
     assert call_log == ["command:status"]
 
 
-def test_plugin_command_dispatch_binds_authenticated_source_context(monkeypatch):
+def test_plugin_command_dispatch_passes_authenticated_source_context_to_opted_in_handler(monkeypatch):
     runner = _make_runner()
     runner._draining = False
     runner._hm_quick_commands = lambda: {}
     seen = []
 
-    async def handler(raw_args):
-        from hermes_cli.plugins import get_plugin_command_context
-
-        seen.append((raw_args, get_plugin_command_context()))
+    async def handler(raw_args, *, command_context):
+        seen.append((raw_args, command_context))
         return "handled"
 
-    monkeypatch.setattr("hermes_cli.plugins.get_plugin_command_handler", lambda _name: handler)
+    monkeypatch.setattr(
+        "hermes_cli.plugins._get_plugin_command_entry",
+        lambda _name: {"handler": handler, "authenticated_context": True},
+    )
     source = SessionSource(
         platform=Platform.DISCORD,
         user_id="user-42",

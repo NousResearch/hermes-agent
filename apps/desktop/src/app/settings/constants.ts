@@ -386,7 +386,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   desktop: {
     repoScanEnabled: 'Automatic Repository Discovery',
     repoScanRoots: 'Repository Discovery Roots',
-    repoScanExcludePaths: 'Excluded Repository Paths'
+    repoScanExcludePaths: 'Excluded Repository Paths',
+    colorblindMode: 'Colorblind-Friendly Diff Colors'
   },
   agent: {
     maxTurns: 'Max Agent Steps',
@@ -553,7 +554,8 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   desktop: {
     repoScanEnabled: 'Scan local folders for Git repositories to show in Projects.',
     repoScanRoots: 'Folders to scan. Leave empty to scan your home directory.',
-    repoScanExcludePaths: 'Folders and their descendants to skip during repository discovery.'
+    repoScanExcludePaths: 'Folders and their descendants to skip during repository discovery.',
+    colorblindMode: 'When enabled, added lines in a diff use blue and removed lines use orange instead of the default red/green, so colorblind users can still tell them apart.'
   },
   timezone: 'IANA timezone identifier. Blank uses the system timezone.',
   browser: {
@@ -645,7 +647,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'appearance',
     label: 'Appearance',
     icon: Palette,
-    keys: []
+    keys: ['desktop.colorblind_mode']
   },
   {
     id: 'workspace',

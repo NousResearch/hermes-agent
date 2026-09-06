@@ -3,6 +3,7 @@
 import type { SyntaxHighlighterProps } from '@assistant-ui/react-streamdown'
 import { type FC, lazy, Suspense, useMemo } from 'react'
 
+import { useHermesConfigRecord } from '@/app/hooks/use-config-record'
 import { CodeCard, CodeCardBody } from '@/components/chat/code-card'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 // Theme constants live in shiki-config (dependency-free) so the lazy shiki
@@ -31,6 +32,27 @@ interface HermesSyntaxHighlighterProps extends SyntaxHighlighterProps {
   defer?: boolean
 }
 
+/**
+ * Diff-language tokens in the GitHub themes are hard-coded green (added) /
+ * red (removed). Shiki paints them as inline styles, so the `--ui-diff-*`
+ * CSS variable overrides can't reach them. In colorblind mode
+ * (desktop.colorblind_mode) remap the four palette entries (light + dark) to
+ * the same blue/orange pair the CSS overrides use, so a fenced ```diff block
+ * in the stream reads like every other diff. Values mirror the
+ * `:root[data-colorblind='true']` rules in styles.css.
+ */
+const SHIKI_COLORBLIND_REPLACEMENTS: Record<string, Record<string, string>> = {
+  // Keys must be lowercase — shiki looks replacements up via
+  // `color.toLowerCase()`, so mixed-case entries silently no-op.
+  'github-light-default': {
+    '#116329': '#0a6cd2', // diff added (green → blue)
+    '#82071e': '#c2570a' // diff removed (red → orange)
+  },
+  'github-dark-dimmed': {
+    '#8ddb8c': '#a8c8ff', // diff added (green → blue)
+    '#ff938a': '#ffc9a3' // diff removed (red → orange)
+  }
+}
 const MAX_HIGHLIGHT_CHARS = 150_000
 const MAX_HIGHLIGHT_LINES = 3_000
 const CHUNK_LINES = 200
@@ -123,6 +145,27 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
   defer = false
 }) => {
   const { t } = useI18n()
+  const { data: config } = useHermesConfigRecord()
+  const colorblind = ((config?.desktop ?? {}) as { colorblind_mode?: boolean }).colorblind_mode ?? false
+  // Diff-language tokens are hard-coded red/green in the GitHub themes; only
+  // remap them (to blue/orange) while colorblind mode is on. The light theme
+  // keeps its comment-contrast bump, so spread both tables.
+  const colorReplacements = useMemo(() => {
+    if (!colorblind) {
+      return SHIKI_COLOR_REPLACEMENTS
+    }
+
+    return {
+      'github-light-default': {
+        ...SHIKI_COLOR_REPLACEMENTS['github-light-default'],
+        ...SHIKI_COLORBLIND_REPLACEMENTS['github-light-default']
+      },
+      'github-dark-dimmed': {
+        ...SHIKI_COLORBLIND_REPLACEMENTS['github-dark-dimmed']
+      }
+    }
+  }, [colorblind])
+
   const trimmed = (code ?? '').replace(/^\n+/, '').trimEnd()
 
   // Streaming may hand us empty/incomplete fences — render nothing rather
@@ -153,7 +196,7 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
             {plain ? (
               <PlainCode code={trimmed} />
             ) : (
-              <LazyShiki code={trimmed} colorReplacements={SHIKI_COLOR_REPLACEMENTS} language={language || 'text'} />
+              <LazyShiki code={trimmed} colorReplacements={colorReplacements} language={language || 'text'} />
             )}
           </Pre>
         </ExpandableBlock>

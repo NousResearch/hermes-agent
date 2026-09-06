@@ -145,17 +145,22 @@ const TAILWIND_BY_COLOR: Record<AnsiColor, string> = {
   // Tuned for legibility against the muted bg-(--ui-bg-tertiary) surface used
   // in tool cards. We don't paint pure ANSI colors (#000, #fff) because they
   // disappear into the surface.
+  //
+  // red / green / bright-red / bright-green ride CSS variables
+  // (--ui-ansi-*) so colorblind mode (desktop.colorblind_mode) can swap the
+  // pair to blue/orange — git diff paints +/− lines with exactly these SGR
+  // codes, and the default values below match the old hard-coded classes.
   black: 'text-zinc-700 dark:text-zinc-300',
-  red: 'text-red-700 dark:text-red-300',
-  green: 'text-emerald-700 dark:text-emerald-300',
+  red: 'text-(--ui-ansi-red)',
+  green: 'text-(--ui-ansi-green)',
   yellow: 'text-amber-700 dark:text-amber-300',
   blue: 'text-blue-700 dark:text-blue-300',
   magenta: 'text-fuchsia-700 dark:text-fuchsia-300',
   cyan: 'text-cyan-700 dark:text-cyan-300',
   white: 'text-zinc-600 dark:text-zinc-200',
   'bright-black': 'text-zinc-500 dark:text-zinc-400',
-  'bright-red': 'text-rose-600 dark:text-rose-300',
-  'bright-green': 'text-emerald-600 dark:text-emerald-200',
+  'bright-red': 'text-(--ui-ansi-bright-red)',
+  'bright-green': 'text-(--ui-ansi-bright-green)',
   'bright-yellow': 'text-amber-600 dark:text-amber-200',
   'bright-blue': 'text-sky-600 dark:text-sky-300',
   'bright-magenta': 'text-pink-600 dark:text-pink-300',

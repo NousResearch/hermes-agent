@@ -3012,6 +3012,8 @@ export const zh: Translations = {
   },
 
   updates: {
+    rebuildTitle: '桌面应用需要重新构建',
+    rebuildBody: '代码已是最新，但当前运行的应用是由旧版本构建的。立即更新以重新构建。',
     stages: {
       idle: '准备中…',
       prepare: '准备中…',

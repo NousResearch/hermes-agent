@@ -38,6 +38,43 @@ def _finalize(outcome="success", fleet=None):
     return ur.finalize_update_receipt(outcome, fleet=fleet)
 
 
+class TestDescribeLastReceipt:
+    @pytest.fixture(autouse=True)
+    def _reset_last(self):
+        ur._last_finalize.update(path=None, error=None, outcome=None)
+        yield
+        ur._last_finalize.update(path=None, error=None, outcome=None)
+
+    def test_never_started(self):
+        assert "never started" in ur.describe_last_receipt()
+
+    def test_still_open(self, receipt_home):
+        ur.begin_update_receipt()
+        assert "still open" in ur.describe_last_receipt()
+
+    def test_written_names_the_path(self, receipt_home):
+        ur.begin_update_receipt()
+        path = ur.finalize_update_receipt("success")
+        assert path is not None
+        assert str(path) in ur.describe_last_receipt()
+
+    def test_write_failure_names_the_error(self, receipt_home, monkeypatch, caplog):
+        ur.begin_update_receipt()
+        blocker = receipt_home / "logs" / "update_receipts"
+        blocker.parent.mkdir(parents=True, exist_ok=True)
+        blocker.write_text("not a directory", encoding="utf-8")
+        with caplog.at_level("WARNING", logger="hermes_cli.update_receipt"):
+            assert ur.finalize_update_receipt("success") is None
+        assert "NOT written" in ur.describe_last_receipt()
+        assert any("Could not write update receipt" in record.message for record in caplog.records)
+
+    def test_boundary_net_reports_inner_write(self, receipt_home):
+        ur.begin_update_receipt()
+        inner = ur.finalize_update_receipt("partial")
+        assert ur.finalize_pending_update_receipt(0, "completed") is None
+        assert str(inner) in ur.describe_last_receipt()
+
+
 class TestReceiptLifecycle:
     def test_begin_record_finalize_roundtrip(self, receipt_home):
         ur.begin_update_receipt()

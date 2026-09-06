@@ -318,3 +318,49 @@ describe('detectBundleSkew against a real git repo', () => {
     expect(result).toEqual({ desktopCommitsBehind: null, outOfSync: false })
   })
 })
+
+describe('build-needed probe when git cannot place the stamp', () => {
+  // 2026-09-05: a killed update left app.asar at the previous build while the
+  // checkout had been reset onto the merged tip, so the bundle's stamp commit
+  // was unrelated to HEAD and git-only detection said "in sync".
+  const ancestryRefused = { 'merge-base': { code: 1 }, 'rev-list': { stdout: '3\n' } }
+
+  it('reports skew when the checkout says the bundle needs a rebuild', async () => {
+    const { calls, git } = gitAnswering(ancestryRefused)
+
+    const result = await detectBundleSkew(STAMP, git, REPO, async () => true)
+
+    expect(result).toEqual({ desktopCommitsBehind: null, outOfSync: true })
+    expect(calls.map(call => call[0])).toEqual(['merge-base'])
+  })
+
+  it('stays quiet when the checkout says the bundle is current, or cannot answer', async () => {
+    expect(await detectBundleSkew(STAMP, gitAnswering(ancestryRefused).git, REPO, async () => false)).toEqual({
+      desktopCommitsBehind: null,
+      outOfSync: false
+    })
+    expect(await detectBundleSkew(STAMP, gitAnswering(ancestryRefused).git, REPO, async () => null)).toEqual({
+      desktopCommitsBehind: null,
+      outOfSync: false
+    })
+    expect(
+      await detectBundleSkew(STAMP, gitAnswering(ancestryRefused).git, REPO, async () => {
+        throw new Error('python missing')
+      })
+    ).toEqual({ desktopCommitsBehind: null, outOfSync: false })
+  })
+
+  it('keeps the git-only behaviour when no probe is supplied', async () => {
+    expect(await detectBundleSkew(STAMP, gitAnswering(ancestryRefused).git, REPO)).toEqual({
+      desktopCommitsBehind: null,
+      outOfSync: false
+    })
+  })
+
+  it('asks the probe when there is no usable stamp at all', async () => {
+    expect(await detectBundleSkew(null, gitReturning('0'), REPO, async () => true)).toEqual({
+      desktopCommitsBehind: null,
+      outOfSync: true
+    })
+  })
+})

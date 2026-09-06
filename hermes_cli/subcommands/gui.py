@@ -19,6 +19,9 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         "--build-only", action="store_true",
         help="Build the desktop app but do not launch it (used by the installer's --update flow)")
     gui_parser.add_argument(
+        "--build-needed", action="store_true",
+        help="Print whether the desktop bundle needs rebuilding as JSON and exit")
+    gui_parser.add_argument(
         "--fake-boot", action="store_true",
         help="Enable deterministic desktop boot delays for validating startup UI")
     gui_parser.add_argument(

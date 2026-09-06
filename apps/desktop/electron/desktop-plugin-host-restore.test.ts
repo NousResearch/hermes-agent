@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import path from 'node:path'
 
 import { describe, it } from 'vitest'
@@ -8,6 +9,7 @@ import {
   parseTerminatedPluginServiceHost,
   type PluginHostRestoreDeps,
   recordStoppedDesktopPluginHost,
+  relaunchDesktopPluginHost,
   restoreStoppedDesktopPluginHosts,
   STOPPED_PLUGIN_HOSTS_SCHEMA_VERSION,
   stoppedPluginHostsPath
@@ -21,7 +23,7 @@ function host(overrides: Partial<{ pid: number; createdAt: number; argv: string[
   return { pid: 24692, createdAt: 1788436393.1, argv: [WSCRIPT, VBS], cwd: 'C:\\Users\\u', ...overrides }
 }
 
-function memoryFs(existing: Set<string>, files: Map<string, string>) {
+function memoryFs(existing: Set<string>, files: Map<string, string>, spawnOutcomes: Array<'spawn' | 'error'> = []) {
   const spawned: Array<[string, string[], { cwd?: string }]> = []
   const log: string[] = []
 
@@ -45,6 +47,15 @@ function memoryFs(existing: Set<string>, files: Map<string, string>) {
     },
     spawn: (command, args, options) => {
       spawned.push([command, args, options])
+
+      const child = new EventEmitter() as EventEmitter & { unref: () => void }
+
+      child.unref = () => {}
+
+      const outcome = spawnOutcomes.shift() ?? 'spawn'
+      queueMicrotask(() => child.emit(outcome, outcome === 'error' ? new Error('spawn denied') : undefined))
+
+      return child
     },
     log: line => {
       log.push(line)
@@ -85,7 +96,7 @@ describe('isRelaunchableDesktopPluginHost', () => {
 })
 
 describe('record + restore', () => {
-  it('records a stopped supervisor once per script and relaunches it detached, then clears the ledger', () => {
+  it('records a stopped supervisor once per script and relaunches it detached, then clears the ledger', async () => {
     const files = new Map<string, string>()
     const { deps, spawned, log } = memoryFs(new Set([VBS]), files)
 
@@ -98,7 +109,7 @@ describe('record + restore', () => {
     assert.equal(ledger.hosts[0].pid, 24700)
     assert.equal(ledger.hosts[0].stoppedAt, 1_000)
 
-    const outcome = restoreStoppedDesktopPluginHosts(HOME, deps)
+    const outcome = await restoreStoppedDesktopPluginHosts(HOME, deps)
 
     assert.deepEqual(outcome, { relaunched: [VBS], skipped: [] })
     assert.deepEqual(spawned, [[WSCRIPT, [VBS], { cwd: 'C:\\Users\\u' }]])
@@ -106,10 +117,10 @@ describe('record + restore', () => {
     assert.ok(log.some(line => line.includes('relaunched plugin service host')))
 
     // Idempotent: nothing left to relaunch.
-    assert.deepEqual(restoreStoppedDesktopPluginHosts(HOME, deps), { relaunched: [], skipped: [] })
+    assert.deepEqual(await restoreStoppedDesktopPluginHosts(HOME, deps), { relaunched: [], skipped: [] })
   })
 
-  it('refuses to record or relaunch a launch line that is not a desktop-plugins script host', () => {
+  it('refuses to record or relaunch a launch line that is not a desktop-plugins script host', async () => {
     const files = new Map<string, string>()
     const { deps, spawned } = memoryFs(new Set([VBS]), files)
 
@@ -124,26 +135,47 @@ describe('record + restore', () => {
       })
     )
 
-    assert.deepEqual(restoreStoppedDesktopPluginHosts(HOME, deps), { relaunched: [], skipped: [VBS] })
+    assert.deepEqual(await restoreStoppedDesktopPluginHosts(HOME, deps), { relaunched: [], skipped: [VBS] })
     assert.deepEqual(spawned, [])
+    assert.equal(files.has(stoppedPluginHostsPath(HOME)), true, 'a skipped entry remains available for retry')
+  })
+
+  it('retains an async spawn failure and removes it after a successful retry', async () => {
+    const files = new Map<string, string>()
+    const { deps, spawned } = memoryFs(new Set([VBS]), files, ['error', 'spawn'])
+
+    assert.equal(recordStoppedDesktopPluginHost(HOME, host(), deps), true)
+    assert.deepEqual(await restoreStoppedDesktopPluginHosts(HOME, deps), { relaunched: [], skipped: [VBS] })
+    assert.equal(JSON.parse(files.get(stoppedPluginHostsPath(HOME))!).hosts.length, 1)
+
+    assert.deepEqual(await restoreStoppedDesktopPluginHosts(HOME, deps), { relaunched: [VBS], skipped: [] })
+    assert.equal(spawned.length, 2)
     assert.equal(files.has(stoppedPluginHostsPath(HOME)), false)
   })
 
-  it('ignores a corrupt or foreign-schema ledger and is a no-op off Windows', () => {
+  it('offers the same observed spawn path for compensating a failed ledger write', async () => {
+    const files = new Map<string, string>()
+    const { deps } = memoryFs(new Set([VBS]), files, ['error', 'spawn'])
+
+    assert.equal(await relaunchDesktopPluginHost(HOME, host(), deps), false)
+    assert.equal(await relaunchDesktopPluginHost(HOME, host(), deps), true)
+  })
+
+  it('ignores a corrupt or foreign-schema ledger and is a no-op off Windows', async () => {
     const files = new Map<string, string>([[stoppedPluginHostsPath(HOME), '{not json']])
     const { deps, spawned } = memoryFs(new Set([VBS]), files)
 
-    assert.deepEqual(restoreStoppedDesktopPluginHosts(HOME, deps), { relaunched: [], skipped: [] })
+    assert.deepEqual(await restoreStoppedDesktopPluginHosts(HOME, deps), { relaunched: [], skipped: [] })
     assert.deepEqual(spawned, [])
 
     files.set(stoppedPluginHostsPath(HOME), JSON.stringify({ schemaVersion: 99, hosts: [{ ...host(), stoppedAt: 1 }] }))
-    assert.deepEqual(restoreStoppedDesktopPluginHosts(HOME, deps), { relaunched: [], skipped: [] })
+    assert.deepEqual(await restoreStoppedDesktopPluginHosts(HOME, deps), { relaunched: [], skipped: [] })
 
     files.set(
       stoppedPluginHostsPath(HOME),
       JSON.stringify({ schemaVersion: STOPPED_PLUGIN_HOSTS_SCHEMA_VERSION, hosts: [{ ...host(), stoppedAt: 1 }] })
     )
-    assert.deepEqual(restoreStoppedDesktopPluginHosts(HOME, { ...deps, isWindows: false }), { relaunched: [], skipped: [] })
+    assert.deepEqual(await restoreStoppedDesktopPluginHosts(HOME, { ...deps, isWindows: false }), { relaunched: [], skipped: [] })
     assert.equal(files.has(stoppedPluginHostsPath(HOME)), true, 'a non-Windows call leaves the ledger alone')
   })
 })

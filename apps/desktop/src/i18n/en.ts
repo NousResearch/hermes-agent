@@ -2849,6 +2849,9 @@ export const en: Translations = {
   },
 
   updates: {
+    rebuildTitle: 'Desktop app needs a rebuild',
+    rebuildBody:
+      'Your code is current, but the app you’re running was built from an older version. Update now to rebuild it.',
     stages: {
       idle: 'Getting ready…',
       prepare: 'Getting ready…',

@@ -15,7 +15,8 @@ import {
 } from './windows-restart-manager'
 
 describe('windows restart manager listing', () => {
-  it('hands resources to PowerShell through a flagged list file, never inline, and removes the file afterwards', async () => {
+  // Asserts Windows path rendering inside the generated script; the module is Windows-only.
+  it.skipIf(process.platform !== 'win32')('hands resources to PowerShell through a flagged list file, never inline, and removes the file afterwards', async () => {
     const definite = Array.from({ length: 200 }, (_, index) => `C:\\install\\venv\\Scripts\\tool${index}'s.exe`)
     const shared = Array.from({ length: 100 }, (_, index) => `C:\\install\\venv\\Lib\\site-packages\\pkg${index}\\mod.pyd`)
     let capturedScript = ''
@@ -96,7 +97,7 @@ describe('windows restart manager listing', () => {
     assert.equal(listContents, '', 'nothing to query: shared files without a root are skipped entirely')
   })
 
-  it('compiles the native shim once into a cached assembly and reloads it afterwards', () => {
+  it.skipIf(process.platform !== 'win32')('compiles the native shim once into a cached assembly and reloads it afterwards', () => {
     const script = buildRestartManagerScript(path.join(os.tmpdir(), 'list.txt'), { cacheDir: 'C:\\cache dir' })
 
     assert.match(script, /\$rmAssembly = 'C:\\cache dir\\HermesRm-[0-9a-f]{16}\.dll'/)

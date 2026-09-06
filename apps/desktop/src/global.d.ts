@@ -641,6 +641,8 @@ export interface DesktopUpdateCommit {
 export interface DesktopUpdateStatus {
   supported: boolean
   updateAvailable?: boolean
+  /** The running desktop bundle must be rebuilt from the installed checkout. */
+  bundleOutOfSync?: boolean
   branch?: string
   currentBranch?: string
   reason?: string

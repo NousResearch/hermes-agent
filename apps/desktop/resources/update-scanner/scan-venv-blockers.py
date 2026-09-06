@@ -1,8 +1,27 @@
 """Candidate-owned target-root scanner for safe native-Windows updates.
 
+This file is ``hermes_cli/_scan_venv_blockers.py`` as shipped inside the Desktop
+build (``extraResources``). The Desktop runs it with ``python -I <this file>
+--root <install>`` under the target venv interpreter so the scan logic comes
+from the candidate build, never from the mutable checkout being updated; it
+therefore imports nothing from that checkout. Five deliberate substitutions
+separate it from the module copy (``tests/hermes_cli/test_scan_venv_blockers_parity.py``
+asserts everything else is byte-identical):
+
+* the MCP argv classifier is inlined instead of imported from
+  ``hermes_mcp_update_gate``;
+* ``_validated_root`` does not require the scanner to live inside the target
+  root (the carrier lives in the Desktop's resources);
+* ``_redact_sensitive_cmdline`` returns ``"<redacted>"`` unconditionally rather
+  than importing the checkout's redactor; the Desktop classifies holders from
+  the structured fields, never from ``cmdline``;
+* ``_updater_owned_backend_entry`` never consults the checkout's spawn ledger,
+  so no serve/dashboard backend is deferred and ``deferred_backend_evidence``
+  is always empty.
+
 The external interface always writes exactly one JSON document to stdout.
-Valid clear and blocked scans exit zero for backwards compatibility with the
-Desktop probe. Invalid roots and probe failures exit one and are fail-closed.
+Valid clear and blocked scans exit zero. Invalid roots and probe failures exit
+one and are fail-closed.
 """
 
 from __future__ import annotations
@@ -18,6 +37,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Mapping, NoReturn, Sequence
 
 MCP_MAIN_MODULE = "agent.transports.hermes_tools_mcp_server"
+
 
 def is_exact_mcp_module_argv(argv: Sequence[str]) -> bool:
     """True only for an argument-free ``-m <MCP_MAIN_MODULE>`` launch."""
@@ -80,17 +100,22 @@ def is_exact_mcp_module_argv(argv: Sequence[str]) -> bool:
 SCHEMA_VERSION = 2
 _CREATE_TIME_TOLERANCE_SECONDS = 0.01
 
-# Long CLI flags whose argument value must be redacted from the cmdline.
+# Long CLI flags whose argument value must be redacted from the cmdline. Short flags (-t, -k, -p)
+# are intentionally not redacted — ambiguous and useful diagnostics (toolset, port, profile).
 _SENSITIVE_LONG_FLAGS: list[str] = [
-    "--token",
-    "--api-key",
-    "--password",
-    "--secret",
-    "--authorization",
-    "--access-key",
-    "--private-key",
-    "--session-key",
+    "--token", "--api-key", "--password", "--secret", "--authorization", "--access-key",
+    "--private-key", "--session-key",
 ]
+
+_PYTHON_PROCESS_NAMES = {"python.exe", "pythonw.exe", "python", "pythonw"}
+_UPDATER_STOPPABLE_PURPOSES = ("serve", "dashboard")
+# Process names the argv/cwd holder rungs may nominate. The exe-root rungs
+# (an executable under venv\ or .hermes-runtime\) need no name gate; a
+# process merely mentioning the venv path on its command line is a holder
+# only when it is an interpreter or launcher that can have mapped the venv.
+_HOLDER_PROCESS_NAME_PREFIXES = ("python", "pypy")
+_HOLDER_PROCESS_NAMES = frozenset({"uv.exe", "uvx.exe", "hermes.exe", "uv", "uvx", "hermes"})
+_HERMES_SHIM_BASENAMES = frozenset({"hermes", "hermes.exe"})
 
 
 class _ArgumentParser(argparse.ArgumentParser):
@@ -205,15 +230,11 @@ def _emit_probe_fail(
 
 
 def _find_flag(text: str, flag: str) -> int:
-    """Return the index of *flag* when it starts the string or follows space."""
-    low = text.lower()
-    fl = flag.lower()
-    pos = 0
+    """Index of *flag* (case-insensitive) at string start or after a space; -1 if absent."""
+    low, fl, pos = text.lower(), flag.lower(), 0
     while True:
         idx = low.find(fl, pos)
-        if idx == -1:
-            return -1
-        if idx == 0 or text[idx - 1] == " ":
+        if idx == -1 or idx == 0 or text[idx - 1] == " ":
             return idx
         pos = idx + 1
 
@@ -224,28 +245,20 @@ def _redact_sensitive_cmdline(cmdline: str) -> str:
 
 
 def _classify_local_preview_args(args: object) -> dict[str, object]:
-    """Return safe UI metadata for an exact ``python -m http.server`` argv.
+    """Safe UI metadata for an exact ``python -m http.server`` argv; ``{}`` otherwise.
 
-    The general holder detector intentionally truncates its diagnostic command
-    line. Reading argv separately preserves a useful directory label without
-    exposing an unbounded command line to the renderer.
+    The general holder detector truncates its diagnostic command line; reading argv separately
+    preserves a useful directory label without exposing an unbounded command line to the renderer.
     """
     if not isinstance(args, (list, tuple)) or not all(isinstance(arg, str) for arg in args):
         return {}
-
-    # For a real interpreter module invocation, ``-m`` is the first argument
-    # after the executable. A later ``-m http.server`` can merely be data passed
-    # to an unrelated script and must never authorize termination.
+    # ``-m`` must be the first argument after the executable: a later ``-m http.server`` can be
+    # data passed to an unrelated script and must never authorize termination.
     if len(args) < 3 or args[1] != "-m" or args[2].lower() != "http.server":
         return {}
-    module_index = 1
-
     port = 8000
-    if module_index + 2 < len(args):
-        candidate = args[module_index + 2]
-        if candidate.isdigit() and 0 < int(candidate) <= 65535:
-            port = int(candidate)
-
+    if len(args) > 3 and args[3].isdigit() and 0 < int(args[3]) <= 65535:
+        port = int(args[3])
     label = ""
     try:
         directory_index = args.index("--directory")
@@ -253,19 +266,14 @@ def _classify_local_preview_args(args: object) -> dict[str, object]:
             label = PureWindowsPath(args[directory_index + 1]).name
     except ValueError:
         pass
-
-    metadata: dict[str, object] = {
-        "kind": "local-preview",
-        "safeToStop": True,
-        "port": port,
-    }
+    metadata: dict[str, object] = {"kind": "local-preview", "safeToStop": True, "port": port}
     if label:
         metadata["label"] = label
     return metadata
 
 
 def _local_preview_metadata(pid: int, name: str) -> dict[str, object]:
-    if name.lower() not in {"python.exe", "pythonw.exe", "python", "pythonw"}:
+    if name.lower() not in _PYTHON_PROCESS_NAMES:
         return {}
     try:
         import psutil  # noqa: PLC0415
@@ -280,16 +288,13 @@ def _local_preview_metadata(pid: int, name: str) -> dict[str, object]:
 
 
 def _terminate_safe_preview(
-    pid: int,
-    expected_create_time: float,
-    *,
-    psutil_module: object | None = None,
+    pid: int, expected_create_time: float, *, psutil_module: object | None = None,
 ) -> tuple[bool, str | None]:
     """Terminate one verified local preview process tree.
 
-    A fresh ``psutil.Process`` identity check and exact argv classification occur
-    immediately before termination. psutil guards mutating Process methods
-    against PID reuse, avoiding taskkill's stale-PID race.
+    A fresh ``psutil.Process`` identity check and exact argv classification occur immediately before
+    termination; psutil guards mutating Process methods against PID reuse (no taskkill stale-PID
+    race).
     """
     try:
         if psutil_module is None:
@@ -300,9 +305,7 @@ def _terminate_safe_preview(
             return False, "process identity changed"
         if not _classify_local_preview_args(process.cmdline()):
             return False, "process is no longer a local preview"
-
-        children = process.children(recursive=True)
-        targets = [*reversed(children), process]
+        targets = [*reversed(process.children(recursive=True)), process]
         for target in targets:
             target.terminate()
         _gone, alive = psutil_module.wait_procs(targets, timeout=3)  # type: ignore[attr-defined]
@@ -324,21 +327,33 @@ def _tokens(argv: str | Sequence[str]) -> list[str]:
         return []
 
 
+def _process_basename(value: object) -> str:
+    return str(value).replace("\\", "/").rsplit("/", 1)[-1]
+
+
 def _hermes_cli_tail(argv: str | Sequence[str]) -> list[str] | None:
-    """Return the operative ``hermes_cli.main`` argv without global options."""
+    """Return the operative ``hermes_cli.main`` argv without global options.
+
+    Two launch shapes are recognized: ``python [runtime switches] -m
+    hermes_cli.main <tail>`` and the console shim ``hermes[.exe] <tail>``
+    (``gateway/status.py`` accepts the same shim shape for ``gateway run``).
+    """
     parts = _tokens(argv)
-    module_indexes = [
-        index
-        for index in range(1, len(parts) - 1)
-        if parts[index] == "-m" and parts[index + 1] == "hermes_cli.main"
-    ]
-    if len(module_indexes) != 1:
-        return None
-    module_index = module_indexes[0]
+    if parts and _process_basename(parts[0]).casefold() in _HERMES_SHIM_BASENAMES:
+        module_index = -1
+    else:
+        module_indexes = [
+            index
+            for index in range(1, len(parts) - 1)
+            if parts[index] == "-m" and parts[index + 1] == "hermes_cli.main"
+        ]
+        if len(module_indexes) != 1:
+            return None
+        module_index = module_indexes[0]
     # A non-option before ``-m`` is a script operand unless it is the value of
     # a recognized Python runtime switch. Keep this parser deliberately
     # conservative: an unrecognized launch is a hard blocker, never killable.
-    prefix = parts[1:module_index]
+    prefix = parts[1:module_index] if module_index > 0 else []
     index = 0
     while index < len(prefix):
         token = prefix[index]
@@ -414,17 +429,48 @@ def _is_pausable_gateway(argv: str | Sequence[str]) -> bool:
 
 
 def _is_updater_owned_backend(pid: int, cmdline: str) -> bool:
+    """True when *pid* is a Hermes backend the CLI updater can stop (positive ledger identity).
+
+    The gateway exemption above keeps ``gateway run`` holders out of the blocker list because the updater's
+    own pause machinery stops and resumes them. ``hermes serve`` / ``hermes dashboard`` backends had no such
+    deferral, so a leaked serve child (or a Desktop-owned backend the teardown lost track of) dead-ended the
+    hand-off with ``venv-blocked`` — or, worse, survived the hand-off and made the shim quarantine fail with
+    ``os error 32`` (#98336) — even though the updater downstream owns exactly this case with its ledger
+    rungs (`_ledger_reapable_backend_pids` reaps dead-spawner orphans; `_ledger_manual_serve_holders` stops
+    manual serves and relaunches them on their recorded host/port).
+    Positive identity only — never name/substring matching (#90778, and the 99558 identity-guard contract):
+    """
+    return _updater_owned_backend_entry(pid, cmdline) is not None
+
+
+def _updater_owned_backend_entry(pid: int, cmdline: str) -> dict | None:
     """Candidate scan cannot trust a mutable target checkout's ownership ledger."""
-    return False
+    return None
+
+
+def _deferred_backend_evidence(entries: list[dict]) -> list[dict]:
+    """Sanitized evidence (pid, purpose, recorded port — never argv) for deferred backends.
+
+    Structured ledger fields only — pid, purpose, recorded port — never the command line, which can carry
+    tokens or private endpoints. Lets the scan result explain *why* a holder disappeared from ``processes``
+    without echoing argv (#98350).
+    """
+    return [{"pid": entry.get("pid"), "purpose": entry.get("purpose"), "port": entry.get("port")}
+            for entry in entries if isinstance(entry.get("pid"), int)]
 
 
 def _spawner_is_this_handoff_desktop(entry: dict) -> bool:
-    """Prove the recorded live spawner is an ancestor of this scan process."""
+    """True when the entry's live spawner is an ancestor of this scan.
+
+    The scan is spawned by the Desktop app's update preflight, so the Desktop performing the
+    hand-off is in our ancestor chain. Identity is ``(pid, create_time)`` — a recycled PID cannot
+    forge the pair.
+    """
     spawner_pid = entry.get("spawner_pid")
     if not isinstance(spawner_pid, int) or spawner_pid <= 0:
         return False
     try:
-        import psutil
+        import psutil  # noqa: PLC0415
 
         for ancestor in psutil.Process().parents():
             if ancestor.pid != spawner_pid:
@@ -792,14 +838,15 @@ _UPDATE_SHIM_FLAG_OPTIONS = frozenset({
     "--ignore-user-config", "--no-restore-cwd", "--pass-session-id",
     "--safe-mode", "--tui", "--worktree", "--yolo", "-w",
 })
-
 _UPDATE_SHIM_VALUE_OPTIONS = frozenset({
     "--in", "--model", "--oneshot", "--profile", "--provider",
     "--reasoning", "--resume", "--skills", "--toolsets", "--usage-file",
     "-m", "-p", "-r", "-s", "-t", "-z",
 })
 
+
 def _is_current_update_shim_argv(argv: list[str]) -> bool:
+    """True for ``hermes[.exe] [global options] update ...`` (the console shim running the updater)."""
     index = 1
     while index < len(argv):
         token = str(argv[index])
@@ -823,36 +870,64 @@ def _is_current_update_shim_argv(argv: list[str]) -> bool:
         return False
     return False
 
+
 def _is_current_standalone_scanner_argv(argv: list[str], target_root: Path | str) -> bool:
-    if len(argv) != 5 or argv[1] != "-I" or argv[3] != "--root":
+    """True for this scanner's own launch line against *target_root*.
+
+    The Desktop runs the carrier as ``python -I <this file> --root <root>``
+    and the CLI form is ``python -m hermes_cli._scan_venv_blockers --root
+    <root>``; under a uv venv both leave a ``venv\\Scripts\\python.exe``
+    trampoline parent that must not be reported as a holder of its own scan.
+    """
+    if len(argv) != 5 or argv[3] != "--root":
         return False
     try:
-        return (
-            _canonical(argv[2]) == _canonical(__file__)
-            and _canonical(argv[4]) == _canonical(target_root)
-        )
+        if argv[1] == "-I":
+            own_scanner = _canonical(argv[2]) == _canonical(__file__)
+        elif argv[1] == "-m":
+            own_scanner = argv[2] == "hermes_cli._scan_venv_blockers"
+        else:
+            return False
+        return own_scanner and _canonical(argv[4]) == _canonical(target_root)
     except (OSError, TypeError, ValueError):
         return False
 
 
-def _process_basename(value: object) -> str:
-    return str(value).replace("\\", "/").rsplit("/", 1)[-1]
+def _holder_name_gate(name: str, exe: object) -> bool:
+    """Whether a process name/exe may be nominated by the argv or cwd holder rungs."""
+    candidates = {_process_basename(name).casefold(), _process_basename(exe or "").casefold()}
+    candidates.discard("")
+    return any(
+        value.startswith(_HOLDER_PROCESS_NAME_PREFIXES) or value in _HOLDER_PROCESS_NAMES
+        for value in candidates
+    )
 
-def _detect_venv_python_processes(
+
+def _detect_target_venv_holders(
+    root: Path | str,
     *,
     exclude_pids: set[int] | None = None,
-    root: Path | str | None = None,
     strict: bool = False,
     _parent_by_pid: Mapping[int, int] | None = None,
 ) -> list[tuple[int, str, str]]:
-    """Find target-install holders, optionally with strict identity proof."""
-    # An explicit target root is the Desktop scanner contract and is exercised
-    # by the WSL-backed development path with Windows-shaped fixtures. The
-    # legacy no-root API remains platform-gated for normal CLI callers.
-    if root is None:
-        return []
+    """Find live holders of the install at *root*, optionally with strict identity proof.
+
+    A holder is a process whose executable lives under the install venv,
+    or an interpreter/launcher (``python*``, ``pypy*``, ``uv``, ``uvx``,
+    ``hermes``) whose argv[0] names that venv, runs
+    ``hermes_cli.main`` from the install, or is an exact MCP-bridge launch
+    with the install as its working directory. The name gate matters: a
+    shell that once activated the venv, an editor opened on ``pyenv.cfg``
+    or a search over the checkout also carry the venv path on their argv and
+    must never become force-release targets. Base-interpreter workers that
+    re-run a target-venv trampoline's exact argv are added through the
+    parent snapshot, so uv's launcher/worker pairs are reported together.
+
+    ``strict`` raises instead of degrading on unreadable identity metadata,
+    which the Desktop preflight turns into a fail-closed probe failure.
+    """
     try:
-        import psutil
+        import psutil  # noqa: PLC0415
     except Exception as exc:
         if strict:
             raise RuntimeError(f"psutil is not available: {exc}") from exc
@@ -866,11 +941,6 @@ def _detect_venv_python_processes(
         venv_prefix = str(venv_dir.resolve()).lower().rstrip(os.sep) + os.sep
     except OSError:
         venv_prefix = str(venv_dir).lower().rstrip(os.sep) + os.sep
-    managed_dir = target_root / ".hermes-runtime" / "python"
-    try:
-        managed_prefix = str(managed_dir.resolve()).lower().rstrip(os.sep) + os.sep
-    except OSError:
-        managed_prefix = str(managed_dir).lower().rstrip(os.sep) + os.sep
     try:
         root_prefix = str(target_root.resolve()).lower().rstrip(os.sep) + os.sep
     except OSError:
@@ -878,6 +948,9 @@ def _detect_venv_python_processes(
 
     skip = set(exclude_pids or set())
     skip.add(os.getpid())
+    # This scan's own launcher is never a holder of its own scan: the exact
+    # console shim running ``hermes update``, the exact ``python -m
+    # hermes_cli.main update`` trampoline, or this scanner's own trampoline.
     try:
         parent = psutil.Process(os.getpid()).parent()
         expected_hermes = venv_dir / "Scripts" / "hermes.exe"
@@ -936,13 +1009,17 @@ def _detect_venv_python_processes(
         if strict and exe is None and info.get("cmdline") is None and info.get("cwd") is None and Path(name).name.casefold() in {"python.exe", "pythonw.exe", "hermes.exe"}:
             raise RuntimeError(f"process {numeric_pid} ({name}) identity metadata was unreadable")
         process_rows.append({"pid": numeric_pid, "ppid": info.get("ppid"), "exe": str(exe or ""), "exe_norm": exe_norm, "name": name, "argv": argv, "cmdline": cmdline})
-        is_holder = exe_norm.startswith(venv_prefix) or exe_norm.startswith(managed_prefix)
-        if not is_holder and venv_prefix in cmdline.lower():
-            is_holder = True
-        if not is_holder and "hermes_cli.main" in cmdline.lower() and (root_prefix in cmdline.lower() or cwd_low.startswith(root_prefix)):
-            is_holder = True
-        if not is_holder and cwd_low.startswith(root_prefix) and is_exact_mcp_module_argv(argv):
-            is_holder = True
+        # The managed base interpreter can be shared with unrelated Python
+        # users. Its location alone is not ownership of this target venv.
+        is_holder = exe_norm.startswith(venv_prefix)
+        if not is_holder and _holder_name_gate(name, exe):
+            argv0 = argv[0].strip('"') if argv else ""
+            if argv0 and Path(argv0).is_absolute() and _within(argv0, venv_dir):
+                is_holder = True
+            elif cwd_low.startswith(root_prefix) and _hermes_cli_tail(argv) is not None:
+                is_holder = True
+            elif cwd_low.startswith(root_prefix) and is_exact_mcp_module_argv(argv):
+                is_holder = True
         if is_holder:
             matches.append((numeric_pid, name or (Path(exe).name if exe else "unreadable-process"), cmdline))
 
@@ -997,11 +1074,13 @@ def _detect_venv_python_processes(
             matches.append((int(row["pid"]), str(row["name"]) or _process_basename(row["exe"]), str(row["cmdline"])))
     return matches
 
+
 def scan_venv_blockers(root: str | Path) -> dict[str, Any]:
     """Return a strict, typed blocker snapshot for a validated target root."""
     target_root, venv = _validated_root(root)
     try:
         import psutil  # noqa: PLC0415
+
         parent_by_pid: dict[int, int] | None = None
         ppid_map_fn = getattr(psutil, "_ppid_map", None)
         if callable(ppid_map_fn):
@@ -1011,8 +1090,8 @@ def scan_venv_blockers(root: str | Path) -> dict[str, Any]:
         detector_kwargs: dict[str, Any] = {}
         if parent_by_pid is not None:
             detector_kwargs["_parent_by_pid"] = parent_by_pid
-        matches = _detect_venv_python_processes(
-            root=target_root,
+        matches = _detect_target_venv_holders(
+            target_root,
             strict=True,
             **detector_kwargs,
         )
@@ -1084,7 +1163,7 @@ def scan_venv_blockers(root: str | Path) -> dict[str, Any]:
     desktop_plugin_services: list[dict[str, Any]] = []
     processes: list[dict[str, Any]] = []
     gateways: list[dict[str, Any]] = []
-    deferred_backends = 0
+    deferred_entries: list[dict] = []
     owner_by_anchor_generation: dict[tuple[int, float, int], str] = {}
     desktop_plugin_host_verified: dict[tuple[int, float, str], bool] = {}
     desktop_plugin_wrappers = {
@@ -1186,8 +1265,12 @@ def scan_venv_blockers(root: str | Path) -> dict[str, Any]:
             )
             gateways.append(gateway)
             continue
-        if _is_updater_owned_backend(pid, live_cmdline):
-            deferred_backends += 1
+        deferred_entry = _updater_owned_backend_entry(pid, live_cmdline)
+        if deferred_entry is not None:
+            # Ledger-verified serve/dashboard backend the CLI updater's own
+            # rungs stop (and relaunch) downstream — reporting it here would
+            # dead-end the hand-off before that machinery can run (#98336).
+            deferred_entries.append(deferred_entry)
             continue
         processes.append(_generic_record(pid, scanned_name, live_cmdline, snapshot))
 
@@ -1216,12 +1299,10 @@ def scan_venv_blockers(root: str | Path) -> dict[str, Any]:
             "desktop_plugin_services": desktop_plugin_services,
             "pausable_gateways": len(gateways),
             "pausable_gateway_processes": gateways,
-            "deferred_backends": deferred_backends,
-            # Contract parity with hermes_cli/_scan_venv_blockers.py (#98350):
-            # the Desktop parser requires this key. The candidate-owned carrier
-            # never consults the target ledger, so it defers nothing and the
-            # sanitized evidence list is always empty.
-            "deferred_backend_evidence": [],
+            "deferred_backends": len(deferred_entries),
+            # Diagnostic only: sanitized evidence (structured ledger identity,
+            # never argv) explaining which holders the deferral consumed (#98350).
+            "deferred_backend_evidence": _deferred_backend_evidence(deferred_entries),
         }
     )
     return result
@@ -1531,7 +1612,7 @@ def terminate_venv_holder(
     if not math.isfinite(expected_created_at) or expected_created_at <= 0:
         return False
     try:
-        matches = _detect_venv_python_processes(root=target_root, strict=True)
+        matches = _detect_target_venv_holders(target_root, strict=True)
         if int(pid) not in {int(found_pid) for found_pid, _name, _cmdline in matches}:
             return False
         snapshot = _snapshot_for_pid(int(pid))
@@ -1671,7 +1752,6 @@ def _terminate_safe_main(argv: list[str]) -> NoReturn:
     except ValueError:
         print(json.dumps({"ok": False, "error": "invalid process identity"}))
         raise SystemExit(2)
-
     stopped, error = _terminate_safe_preview(pid, create_time)
     print(json.dumps({"ok": stopped, "pid": pid, "error": error}))
     raise SystemExit(0 if stopped else 1)

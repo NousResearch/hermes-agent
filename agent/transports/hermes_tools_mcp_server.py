@@ -12,6 +12,8 @@ import json
 import logging
 import os
 import sys
+import threading
+import time
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -117,8 +119,24 @@ def _build_server() -> Any:
     return mcp
 
 
+def _update_quiesce_requested() -> bool:
+    from hermes_mcp_update_gate import should_quiesce_mcp_bridge
+    return should_quiesce_mcp_bridge()
+
+
+def _watch_for_update_quiesce() -> None:
+    while True:
+        time.sleep(0.5)
+        if _update_quiesce_requested():
+            # Exit without importing or unwinding code the updater may replace.
+            os._exit(0)
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     """Entry point for `python -m agent.transports.hermes_tools_mcp_server`."""
+    if _update_quiesce_requested():
+        return 0
+    threading.Thread(target=_watch_for_update_quiesce, daemon=True, name="hermes-update-marker").start()
     argv = argv or sys.argv[1:]
     verbose = "--verbose" in argv or "-v" in argv
     logging.basicConfig(

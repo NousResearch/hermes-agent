@@ -2474,6 +2474,8 @@ export const ja = defineLocale({
   },
 
   updates: {
+    rebuildTitle: 'デスクトップアプリの再ビルドが必要です',
+    rebuildBody: 'コードは最新ですが、実行中のアプリは古いバージョンからビルドされています。今すぐ更新して再ビルドしてください。',
     stages: {
       idle: '準備中…',
       prepare: '準備中…',

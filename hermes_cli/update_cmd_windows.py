@@ -133,62 +133,43 @@ def _parent_is_live(proc) -> bool:
     return parent is not None and parent.is_running() and parent.create_time() <= proc.create_time()
 
 
-def _detect_venv_python_processes(*, exclude_pids: set[int] | None = None) -> list[tuple[int, str, str]]:
-    """Live processes running from the project venv's interpreter as ``(pid, name, cmdline)``; never raises.
+def _detect_venv_python_processes(
+    *,
+    exclude_pids: set[int] | None = None,
+    root: Path | str | None = None,
+    strict: bool = False,
+    _parent_by_pid=None,
+) -> list[tuple[int, str, str]]:
+    """Live processes holding this install's venv as ``(pid, name, cmdline)``.
 
     The hermes.exe shim guard misses the Desktop backend and anything off ``venv\\Scripts\\python(w).exe``;
-    they keep ``.pyd`` files mapped so a mid-update dependency sync dies half-way. Empty off-Windows / without
-    psutil; self + non-gateway ancestors excluded. cmdline/cwd are expensive per process on Windows (500+
-    procs can blow the Desktop preflight watchdog), so they are fetched lazily for plausible candidates only.
+    they keep ``.pyd`` files mapped so a mid-update dependency sync dies half-way. Holder identification
+    (exe root, name-gated argv/cwd rungs, uv launcher/worker pairing) lives in
+    ``hermes_cli._scan_venv_blockers._detect_target_venv_holders`` so the CLI updater, the standalone scanner
+    and the Desktop's packaged carrier all use one rule.
+
+    Without ``root`` this is the CLI updater's view of its own checkout: empty off-Windows / without psutil,
+    never raises, and self + non-gateway ancestors are excluded (#87594: a GATEWAY ancestor stays visible so the
+    pause machinery downstream can stop it). With an explicit ``root`` (the Desktop scanner contract, also used
+    by the WSL-backed development path) only this process and its exact updater/scanner launcher are excluded,
+    and ``strict`` turns unreadable identity metadata into an exception instead of a silent miss.
     The FULL cmdline is kept: callers parse it (the pausable-gateway exemption looks for ``gateway run``).
     """
-    from hermes_cli.update_cmd import _m
+    from hermes_cli._scan_venv_blockers import _detect_target_venv_holders
     psutil = _psutil()
-    if not _m()._is_windows() or psutil is None:
-        return []
-    venv_prefix = _lower_dir_prefix(_m().PROJECT_ROOT / "venv")
-    root_prefix = _lower_dir_prefix(_m().PROJECT_ROOT)
-    skip = set(exclude_pids or set()) | _self_and_non_gateway_ancestor_pids(psutil)
-    matches: list[tuple[int, str, str]] = []
+    if root is None:
+        from hermes_cli.update_cmd import _m
+        if not _m()._is_windows() or psutil is None:
+            return []
+        root = _m().PROJECT_ROOT
+        exclude_pids = set(exclude_pids or set()) | _self_and_non_gateway_ancestor_pids(psutil)
+    kwargs = {} if _parent_by_pid is None else {"_parent_by_pid": _parent_by_pid}
     try:
-        proc_iter = psutil.process_iter(["pid", "exe", "name"])
+        return _detect_target_venv_holders(root, exclude_pids=exclude_pids, strict=strict, **kwargs)
     except Exception:
+        if strict:
+            raise
         return []
-    for proc in proc_iter:
-        try:
-            info = proc.info
-        except Exception:
-            continue
-        pid, exe = info.get("pid"), info.get("exe")
-        if not exe or pid is None or int(pid) in skip:
-            continue
-        try:
-            exe_norm = str(Path(exe).resolve()).lower()
-        except (OSError, ValueError):
-            exe_norm = str(exe).lower()
-        # Primary match: exe lives under this venv (desktop backend / gateway case).
-        in_venv = exe_norm.startswith(venv_prefix)
-        name = str(info.get("name") or Path(exe).name)
-        name_low = name.lower()
-        if not (in_venv or name_low.startswith(("python", "pypy")) or name_low in {"uv.exe", "uvx.exe", "hermes.exe"}):
-            continue
-        cmdline_raw = _cmdline_or_empty(proc)
-        cmdline_low = cmdline_raw.lower()
-        # Fallback: uv/base-interpreter trampolines have an exe OUTSIDE the venv yet hold
-        # its .pyd files — match cmdline (venv path, or `-m hermes_cli.main` + root/cwd).
-        if in_venv or venv_prefix in cmdline_low or (
-            "hermes_cli.main" in cmdline_low and (root_prefix in cmdline_low or _cwd_prefix(proc).startswith(root_prefix))
-        ):
-            matches.append((int(pid), name, cmdline_raw))
-    return matches
-
-
-def _cwd_prefix(proc) -> str:
-    """Lower-cased cwd of *proc* with one trailing separator; bare ``os.sep`` when unreadable."""
-    try:
-        return str(proc.cwd() or "").lower().rstrip(os.sep) + os.sep
-    except Exception:
-        return os.sep
 
 
 _HOLDER_VALUE_FLAGS_FALLBACK = frozenset({

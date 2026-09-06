@@ -2174,9 +2174,13 @@ def _finalize_update_receipt(code: int, reason: str) -> None:
         # preflight, venv-holder refusal, head-pinned no-op, fetch failure) that never reach an inner
         # finalize. Persist any still-open receipt with the real exit code, then let the exit proceed
         # unchanged. No-op when an inner path already finalized (exactly-once by construction).
-        from hermes_cli.update_receipt import finalize_pending_update_receipt
+        from hermes_cli.update_receipt import (
+            describe_last_receipt,
+            finalize_pending_update_receipt,
+        )
 
         finalize_pending_update_receipt(code, reason)
+        print(describe_last_receipt())
     except Exception:
         pass
 
@@ -2248,12 +2252,19 @@ def cmd_update(args):
     # half-updated. Shares the marker the Tauri/Electron updaters already use.
     from hermes_cli.update_lock import (
         UPDATE_EXIT_CONCURRENT,
+        UpdateMarkerError,
         UpdateLock,
         describe_holder,
     )
 
     _update_lock = UpdateLock()
-    if not _update_lock.acquire():
+    try:
+        acquired = _update_lock.acquire()
+    except UpdateMarkerError as exc:
+        print(f"✗ Update refused: {exc}")
+        _finalize_update_output(_update_io_state)
+        sys.exit(UPDATE_EXIT_CONCURRENT)
+    if not acquired:
         print(describe_holder(_update_lock.holder))
         _finalize_update_output(_update_io_state)
         sys.exit(UPDATE_EXIT_CONCURRENT)

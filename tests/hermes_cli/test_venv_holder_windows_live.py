@@ -470,3 +470,60 @@ class TestUpdaterOwnedBackendDeferral:
             )
         finally:
             _kill(backend)
+
+
+def test_shared_managed_runtime_does_not_own_unrelated_python(tmp_path, monkeypatch):
+    """Shared interpreter location cannot authorize stopping unrelated Python users."""
+    import importlib.util
+    import _winapi
+    import venv
+
+    import psutil
+
+    from hermes_cli import _scan_venv_blockers as in_tree
+
+    root = tmp_path / "install"
+    venv_dir = root / "venv"
+    venv.EnvBuilder(with_pip=False).create(venv_dir)
+    managed = root / ".hermes-runtime" / "python"
+    managed.parent.mkdir()
+    base_python = Path(sys._base_executable).resolve()
+    # Managed runtimes may point to a shared interpreter installation. Use a
+    # junction so both processes really execute the same binary in this test.
+    _winapi.CreateJunction(str(base_python.parent), str(managed))
+    carrier = PROJECT_ROOT / "apps/desktop/resources/update-scanner/scan-venv-blockers.py"
+    spec = importlib.util.spec_from_file_location("live_scanner_carrier_parity", carrier)
+    packaged = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, packaged)
+    spec.loader.exec_module(packaged)
+    children = []
+    try:
+        for executable, extra in (
+            (venv_dir / "Scripts" / "python.exe", []),
+            (base_python, [str(venv_dir / "pyvenv.cfg")]),
+        ):
+            children.append(subprocess.Popen(
+                [str(executable), "-c", "import time; time.sleep(60)", *extra],
+                cwd=tmp_path, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW,
+            ))
+        holder, unrelated = children
+        time.sleep(0.5)
+        assert all(child.poll() is None for child in children)
+        assert managed.resolve() == base_python.parent
+        for module in (in_tree, packaged):
+            matches = module._detect_target_venv_holders(root, strict=True)
+            pids = {pid for pid, _name, _argv in matches}
+            assert holder.pid in pids, "the real target-venv holder must remain visible"
+            assert unrelated.pid not in pids, "shared Python plus a venv operand is not target ownership"
+        assert unrelated.poll() is None
+    finally:
+        descendants = []
+        for child in children:
+            if child.poll() is None:
+                try:
+                    descendants.extend(psutil.Process(child.pid).children(recursive=True))
+                except psutil.Error:
+                    pass
+        _kill(*descendants, *children)
+        managed.rmdir()  # Remove the junction, never its shared target directory.

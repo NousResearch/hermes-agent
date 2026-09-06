@@ -25,6 +25,8 @@
  * waiter could slip through mid-update.
  */
 
+import { UPDATE_MARKER_MAX_AGE_MS } from './update-marker'
+
 export type UpdateGateReason = 'marker' | 'update-in-flight' | null
 
 export interface UpdateGateDeps {
@@ -32,6 +34,27 @@ export interface UpdateGateDeps {
   hasLiveMarker: () => boolean
   /** True while this process is inside applyUpdates()' critical section. */
   isUpdateInFlight: () => boolean
+}
+
+/** One process-local mutex shared by normal update and bootstrap recovery. */
+export class UpdateInFlightTransaction {
+  private active = false
+
+  readonly isActive = (): boolean => this.active
+
+  async run<T>(operation: () => T | Promise<T>): Promise<T> {
+    if (this.active) {
+      throw new Error('An update is already in progress.')
+    }
+
+    this.active = true
+
+    try {
+      return await operation()
+    } finally {
+      this.active = false
+    }
+  }
 }
 
 /** Why the gate is closed right now, or null when it is open. */
@@ -92,4 +115,51 @@ export async function waitForUpdateClearance(
   }
 
   return reason ? 'timeout' : 'finished'
+}
+
+/**
+ * Keep local backend startup parked across bounded UI wait windows.
+ *
+ * The park is bounded: after `blockedBudgetMs` (default: the marker's own
+ * 20-minute age ceiling) of consecutive closed-gate windows the outcome is
+ * 'timeout' and the caller must report a failed startup attempt without spawning
+ * a backend. An unbounded loop parked the backend forever
+ * behind an unreadable, malformed, future-dated or cleanup-race marker that
+ * nothing could self-heal.
+ */
+export async function waitForLocalBackendClearance(
+  deps: UpdateGateDeps,
+  options: WaitForUpdateClearanceOptions & {
+    onStillBlocked?: (reason: Exclude<UpdateGateReason, null>) => void | Promise<void>
+    /** Total consecutive blocked time before giving up; defaults to UPDATE_MARKER_MAX_AGE_MS. */
+    blockedBudgetMs?: number
+  }
+): Promise<UpdateClearanceOutcome> {
+  const now = options.now || Date.now
+  const blockedBudgetMs = Math.max(0, options.blockedBudgetMs ?? UPDATE_MARKER_MAX_AGE_MS)
+  const blockedSince = now()
+  let waited = false
+
+  while (true) {
+    const outcome = await waitForUpdateClearance(deps, options)
+
+    if (outcome === 'clear') {
+      return waited ? 'finished' : 'clear'
+    }
+
+    if (outcome === 'finished') {
+      return 'finished'
+    }
+
+    waited = true
+    const reason = updateGateReason(deps)
+
+    if (reason) {
+      await options.onStillBlocked?.(reason)
+    }
+
+    if (now() - blockedSince >= blockedBudgetMs) {
+      return 'timeout'
+    }
+  }
 }

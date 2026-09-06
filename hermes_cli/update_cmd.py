@@ -426,8 +426,23 @@ def _log_only_write(text: str) -> None:
             log_file.flush()
 
 
-def _run_logged_subprocess(cmd, *, cwd=None, env=None):
-    """Stream combined build output to update.log, retaining it for failure reporting."""
+_LOGGED_SUBPROCESS_PROGRESS_SECONDS = 30.0
+
+
+def _run_logged_subprocess(
+    cmd,
+    *,
+    cwd=None,
+    env=None,
+    label: str = "desktop build",
+    progress_every: float = _LOGGED_SUBPROCESS_PROGRESS_SECONDS,
+):
+    """Stream combined build output to update.log, retaining it for failure reporting.
+
+    A silent stretch is never dressed up as output: the periodic line below only
+    reports how long the build has been running and how much has been captured,
+    and it is emitted from the reader loop, so it stops when the child stops.
+    """
     import codecs
     import io
     from hermes_cli._subprocess_compat import kill_process_tree, windows_hide_flags
@@ -442,14 +457,26 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
     # and the universal-newline behavior callers previously got from text=True.
     decoder = io.IncrementalNewlineDecoder(codecs.getincrementaldecoder("utf-8")("replace"), True)
     output = []
+    started = _time.monotonic()
+    last_progress = started
+    line_count = 0
     try:
         while True:
             chunk = proc.stdout.read1(8192)
             text = decoder.decode(chunk, final=not chunk)
             output.append(text)
+            line_count += text.count("\n")
             _log_only_write(text)
             if not chunk:
                 break
+            now = _time.monotonic()
+            if progress_every > 0 and now - last_progress >= progress_every:
+                last_progress = now
+                print(
+                    f"  … {label} running: {int(now - started)}s, "
+                    f"{line_count} lines captured (full output: logs/update.log)",
+                    flush=True,
+                )
         return subprocess.CompletedProcess(cmd, proc.wait(), stdout="".join(output))
     except BaseException:
         # Unlike Popen.__exit__, do not wait for a cancelled build to finish.

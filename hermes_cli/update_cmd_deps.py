@@ -844,11 +844,17 @@ def _rebuild_desktop_after_update(
     # updater chain loses shell PATH customizations, so a bare-PATH child hits `node: not found`.
     from hermes_constants import with_hermes_node_path
     build_env = with_hermes_node_path()
+    print(
+        "  → Rebuilding desktop app "
+        "(several minutes; progress every 30s, full log: logs/update.log)"
+    )
     for _attempt in range(2):
         build_result = _m()._run_logged_subprocess(
             desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=build_env)
         if build_result.returncode == 0:
             break
+        if _attempt == 0:
+            print(f"  ⚠ Desktop build exited {build_result.returncode}; retrying once")
     if build_result.returncode != 0:
         print("  ⚠ Desktop build failed (run `hermes desktop` to retry)")
         tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])

@@ -529,6 +529,13 @@ async def get_status(profile: Optional[str] = None):
         from hermes_cli.shared_profile_warning import shared_profile_warning
         status["shared_profile_warning"] = bool(await run_in_threadpool(shared_profile_warning))
 
+        # Runtime of the process ANSWERING this request — the backend a desktop connection
+        # actually talks to. Ungated on purpose: it sits beside ``version`` in the same
+        # public liveness payload, and gating it would blank the indicator on exactly the
+        # gated binds (Docker + OAuth) where knowing the runtime matters most.
+        from hermes_constants import runtime_kind
+        status["runtime_kind"] = runtime_kind()
+
         components = await _component_health(gateway)
         status["components"] = components
         status["overall"] = ("ok" if all(item.get("status") == "ok" for item in components.values())

@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -17,6 +18,7 @@ import sys
 import time
 from dataclasses import dataclass
 from dataclasses import field
+from enum import Enum
 from pathlib import Path
 from typing import Any
 from typing import Callable
@@ -70,6 +72,14 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
     re.IGNORECASE,
 )
+
+
+class GuardDecision(str, Enum):
+    ALLOW_ONE_WORKER = "allow_one_worker"
+    BLOCK_DUPLICATE_IMPLEMENTATION = "block_duplicate_implementation"
+    BLOCK_INVALID_EVIDENCE = "block_invalid_evidence"
+    BLOCK_SHA_MISMATCH = "block_sha_mismatch"
+    BLOCK_UNSAFE_CONTEXT = "block_unsafe_context"
 
 
 @dataclass
@@ -1097,14 +1107,24 @@ def _record_task_failure(
         return True
 
 
-def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
+def _set_worker_pid(
+    conn: sqlite3.Connection, task_id: str, pid: int, *,
+    expected_run_id: int, expected_claim_lock: str,
+) -> bool:
     """Record the spawned child's pid + emit a ``spawned`` event carrying it."""
     with _kb.write_txn(conn):
-        conn.execute("UPDATE tasks SET worker_pid = ? WHERE id = ?", (int(pid), task_id))
+        sql = (
+            "UPDATE tasks SET worker_pid = ? WHERE id = ? AND status = 'running' "
+            "AND current_run_id = ? AND claim_lock = ?"
+        )
+        params: list[Any] = [int(pid), task_id, int(expected_run_id), expected_claim_lock]
+        if conn.execute(sql, params).rowcount != 1:
+            return False
         run_id = _kb._current_run_id(conn, task_id)
         if run_id is not None:
             conn.execute("UPDATE task_runs SET worker_pid = ? WHERE id = ?", (int(pid), run_id))
         _kb._append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
+    return True
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -1139,6 +1159,44 @@ def _is_implementation_dispatch_lane(assignee: Optional[str]) -> bool:
     }
 
 
+def _execution_context_reason(row: sqlite3.Row) -> Optional[str]:
+    """Validate durable PR context before interpreting comment evidence."""
+    raw_value = row["execution_context"]
+    try:
+        raw = json.loads(raw_value) if isinstance(raw_value, str) else raw_value
+    except (TypeError, ValueError):
+        return "unsafe_context"
+    downstream = {"integration", "validation", "qa", "review", "release"}
+    if raw is None:
+        return "unsafe_context" if str(row["assignee"] or "").strip().lower() in downstream else None
+    if isinstance(raw, dict) and isinstance(raw.get("pr"), dict):
+        if raw.get("expected_sha") != raw["pr"].get("head_sha"):
+            return "sha_mismatch"
+    try:
+        normalized = _kb.normalize_execution_context(raw)
+    except (TypeError, ValueError):
+        return "unsafe_context"
+    if normalized is None or normalized["lane"] != normalized["task_type"]:
+        return "unsafe_context"
+    # A valid implementation context describes the intended handoff, but is
+    # not evidence that this retry already opened a PR.  Only the concrete,
+    # recent PR URL comment below can activate the duplicate-work guard.
+    return None
+
+
+def evaluate_respawn_guard(
+    conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
+) -> GuardDecision:
+    """Closed guard outcome used by integrations that need typed decisions."""
+    reason = check_respawn_guard(conn, task_id, lane=lane)
+    return {
+        None: GuardDecision.ALLOW_ONE_WORKER,
+        "active_pr": GuardDecision.BLOCK_DUPLICATE_IMPLEMENTATION,
+        "sha_mismatch": GuardDecision.BLOCK_SHA_MISMATCH,
+        "unsafe_context": GuardDecision.BLOCK_UNSAFE_CONTEXT,
+    }.get(reason, GuardDecision.BLOCK_INVALID_EVIDENCE)
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -1157,11 +1215,16 @@ def check_respawn_guard(
     dead claim locks are NOT a guard reason — the reclaim passes own those.
     """
     row = conn.execute(
-        "SELECT assignee, last_failure_error FROM tasks WHERE id = ?",
+        "SELECT assignee, last_failure_error, execution_context FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
         return None
+    context_reason = _execution_context_reason(row)
+    if context_reason in {"unsafe_context", "sha_mismatch"}:
+        return context_reason
+    if context_reason == "active_pr":
+        return "active_pr"
 
     now = int(time.time())
 
@@ -1222,7 +1285,9 @@ def check_respawn_guard(
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    if _is_implementation_dispatch_lane(row["assignee"]):
+    if context_reason == "active_pr" or (
+        context_reason is None and _is_implementation_dispatch_lane(row["assignee"])
+    ):
         for c in conn.execute(
             "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
             (task_id, pr_cutoff),
@@ -1569,6 +1634,25 @@ def _dispatch_lane_task(
     claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
     if claimed is None:
         return False
+    # Read back the fenced claim and the immutable context before starting a
+    # subprocess.  Uncertainty here must not turn into an untracked worker.
+    readback = _kb.get_task(conn, claimed.id)
+    if (
+        readback is None
+        or readback.status != "running"
+        or readback.current_run_id != claimed.current_run_id
+        or _kb.execution_context_fingerprint(readback.execution_context)
+        != _kb.execution_context_fingerprint(claimed.execution_context)
+    ):
+        _kb.reclaim_task(conn, claimed.id, reason="claim_context_readback_failed")
+        return False
+    if claimed.execution_context is not None:
+        with _kb.write_txn(conn):
+            _kb._append_event(
+                conn, claimed.id, "claim_context_verified",
+                {"fingerprint": _kb.execution_context_fingerprint(claimed.execution_context)},
+                run_id=claimed.current_run_id,
+            )
     try:
         resolved_branch_name = None
         if claimed.workspace_kind == "worktree":
@@ -1593,7 +1677,11 @@ def _dispatch_lane_task(
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
-            _set_worker_pid(conn, claimed.id, int(pid))
+            if not _set_worker_pid(
+                conn, claimed.id, int(pid), expected_run_id=claimed.current_run_id,
+                expected_claim_lock=claimed.claim_lock,
+            ):
+                raise RuntimeError("claim lost before worker PID could be fenced")
         # Fires AFTER the PID (when reported) is durably persisted. Best-effort.
         _kb._fire_worker_spawned_hook(conn, claimed, str(workspace), pid, board=board)
         # consecutive_failures is deliberately NOT reset here: resetting on

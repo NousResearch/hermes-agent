@@ -409,6 +409,21 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "primary repo with a deterministic branch (project slug + "
                 "task id), instead of a random branch."
         )),
+        "execution_context": {
+            "type": "object",
+            "description": (
+                "Explicit PR handoff for integration/validation/QA/review/release. "
+                "Must contain lane, task_type, requested_action, expected_sha, actor, "
+                "role, and pr={repository,id,state='open',head_sha}; exact SHA required."
+            ),
+            "properties": {
+                "lane": {"type": "string"}, "task_type": {"type": "string"},
+                "requested_action": {"type": "string"}, "expected_sha": {"type": "string"},
+                "actor": {"type": "string"}, "role": {"type": "string"},
+                "pr": {"type": "object"},
+            },
+            "additionalProperties": False,
+        },
         "triage": _prop("boolean", (
                 "If true, task lands in 'triage' instead of 'todo' "
                 "— a specifier profile is expected to flesh out "

@@ -12,6 +12,7 @@ locks). Schema: tasks, task_links, task_comments, task_events, task_runs, attach
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -96,6 +97,67 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+
+VALID_EXECUTION_LANES = {"implementation", "development", "integration", "validation", "qa", "review", "release"}
+VALID_EXECUTION_TASK_TYPES = frozenset(VALID_EXECUTION_LANES)
+VALID_EXECUTION_ACTIONS = frozenset(VALID_EXECUTION_LANES)
+_FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+def normalize_execution_context(context: Optional[dict]) -> Optional[dict]:
+    """Validate the durable PR handoff; comments are never authorization."""
+    if context is None:
+        return None
+    if not isinstance(context, dict):
+        raise ValueError("execution_context must be an object")
+    allowed = {"lane", "task_type", "requested_action", "pr", "expected_sha", "actor", "role"}
+    if set(context) - allowed:
+        raise ValueError("execution_context contains unsupported fields")
+    fields = ("lane", "task_type", "requested_action", "expected_sha", "actor", "role")
+    if any(not isinstance(context.get(key), str) for key in fields):
+        raise ValueError("execution_context has malformed required fields")
+    lane = context["lane"].strip().lower()
+    task_type = context["task_type"].strip().lower()
+    action = context["requested_action"].strip().lower()
+    role = context["role"].strip().lower()
+    expected_sha = context["expected_sha"].strip().lower()
+    if lane not in VALID_EXECUTION_LANES or task_type not in VALID_EXECUTION_TASK_TYPES:
+        raise ValueError("execution_context has an unknown lane or task_type")
+    if action not in VALID_EXECUTION_ACTIONS or role != task_type or action != task_type:
+        raise ValueError("execution_context lane, action and role are inconsistent")
+    if not _FULL_SHA_RE.fullmatch(expected_sha):
+        raise ValueError("execution_context expected_sha must be an exact 40-character SHA")
+    pr = context.get("pr")
+    if not isinstance(pr, dict) or set(pr) != {"repository", "id", "state", "head_sha"}:
+        raise ValueError("execution_context pr evidence is incomplete")
+    repository = pr.get("repository")
+    pr_id = pr.get("id")
+    state = pr.get("state")
+    head_sha = pr.get("head_sha")
+    if not isinstance(repository, str) or not _REPOSITORY_RE.fullmatch(repository.strip()):
+        raise ValueError("execution_context repository is malformed")
+    if isinstance(pr_id, bool) or not isinstance(pr_id, int) or pr_id <= 0:
+        raise ValueError("execution_context PR id is malformed")
+    if state != "open" or not isinstance(head_sha, str) or not _FULL_SHA_RE.fullmatch(head_sha.strip().lower()):
+        raise ValueError("execution_context PR evidence must describe an open PR with an exact SHA")
+    if head_sha.strip().lower() != expected_sha:
+        raise ValueError("execution_context PR head SHA does not match expected_sha")
+    actor = context["actor"].strip()
+    if not actor or actor != context["actor"]:
+        raise ValueError("execution_context actor is malformed")
+    return {
+        "lane": lane, "task_type": task_type, "requested_action": action,
+        "pr": {"repository": repository.strip(), "id": pr_id, "state": state, "head_sha": head_sha.strip().lower()},
+        "expected_sha": expected_sha, "actor": actor, "role": role,
+    }
+
+
+def execution_context_fingerprint(context: Optional[dict]) -> Optional[str]:
+    if context is None:
+        return None
+    encoded = json.dumps(context, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()[:16]
 
 
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
@@ -714,12 +776,16 @@ class Task:
     # VALID_BLOCK_KINDS or None (legacy); kept across unblock so a same-kind re-block reads as a loop.
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
+    execution_context: Optional[dict] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
         g = lambda col, default=None: _row_get(row, col, default)  # noqa: E731
         parsed = _json_or(g("skills"))
         skills_value = [str(s) for s in parsed if s] if isinstance(parsed, list) else None
+        execution_context = _json_or(g("execution_context"))
+        if not isinstance(execution_context, dict):
+            execution_context = None
         return cls(
             **{col: row[col] for col in _TASK_REQUIRED_COLUMNS},
             **{col: g(col) for col in _TASK_OPTIONAL_COLUMNS},
@@ -729,6 +795,7 @@ class Task:
             consecutive_failures=g("consecutive_failures", g("spawn_failures", 0)),
             last_failure_error=g("last_failure_error", g("last_spawn_error")),
             skills=skills_value,
+            execution_context=execution_context,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
         )
@@ -940,7 +1007,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    execution_context   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1228,6 +1296,7 @@ def create_task(
     goal_mode: bool = False, goal_max_turns: Optional[int] = None, initial_status: str = "running",
     session_id: Optional[str] = None, board: Optional[str] = None, project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
+    execution_context: Optional[dict] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1241,6 +1310,7 @@ def create_task(
     in the active profile's projects.db — see ``_resolve_project_link``.
     """
     model_override, provider_override = _validate_model_override(model_override, provider_override)
+    execution_context = normalize_execution_context(execution_context)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
@@ -1316,8 +1386,8 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, execution_context
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1327,6 +1397,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id,
+                        json.dumps(execution_context, sort_keys=True) if execution_context is not None else None,
                     ),
                 )
                 for pid in parents:

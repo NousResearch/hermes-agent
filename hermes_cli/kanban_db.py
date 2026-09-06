@@ -817,6 +817,7 @@ class Attachment:
     size: int
     uploaded_by: Optional[str]
     created_at: int
+    sha256: Optional[str] = None
 
     @classmethod
     def from_row(cls, r: sqlite3.Row) -> "Attachment":
@@ -824,6 +825,7 @@ class Attachment:
             id=r["id"], task_id=r["task_id"], filename=r["filename"],
             stored_path=r["stored_path"], content_type=r["content_type"],
             size=r["size"] or 0, uploaded_by=r["uploaded_by"], created_at=r["created_at"],
+            sha256=_row_get(r, "sha256"),
         )
 
 
@@ -1009,7 +1011,8 @@ CREATE TABLE IF NOT EXISTS task_attachments (
     content_type TEXT,
     size         INTEGER NOT NULL DEFAULT 0,
     uploaded_by  TEXT,
-    created_at   INTEGER NOT NULL
+    created_at   INTEGER NOT NULL,
+    sha256       TEXT
 );
 
 -- Subscription from a gateway source (platform + chat + thread) to a
@@ -1046,7 +1049,6 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 
 
 # --- ID generation ---
-
 def _new_task_id() -> str:
     """``t_`` + 4 hex bytes (collision ~1e-3 at 100k tasks; 2 bytes would hit 50%
     by 10k). Idempotency belongs to ``idempotency_key``, not id uniqueness."""
@@ -1730,6 +1732,54 @@ class AttachmentTooLarge(ValueError):
     still catch it while the tool/CLI can give a 413-style message."""
 
 
+class AttachmentIntegrityError(RuntimeError):
+    """Raised when a stored attachment fails its integrity self-check.
+
+    Deliberately NOT a :class:`ValueError`: a failed integrity check is a
+    loud operational failure (a fabricated base64 payload that decoded to a
+    12-byte path fragment and was stored under ``ok:true``), not a mere
+    bad-argument error, and generic ``except ValueError`` handlers must not
+    blur it into a bland 400.
+
+    Raised BEFORE the ``task_attachments`` row is inserted — the blob is
+    reaped on the way out — so a corrupt attachment can never be silently
+    recorded.
+    """
+
+
+# mimetypes.guess_type() leaves some common attachment extensions unknown
+# on stock Python (notably ``.md`` through 3.12: guess_type('a.md') is
+# None). Attachments must never store an empty content_type, so these are
+# resolved through this map before falling back to the conventional
+# ``application/octet-stream``. Only extensions actually verified against
+# stock CPython belong here.
+MIMETYPE_FALLBACKS = {
+    "md": "text/markdown",
+    "markdown": "text/markdown",
+}
+
+
+def derive_content_type(filename: str, explicit: Optional[str]) -> str:
+    """Resolve the MIME type to store for an attachment.
+
+    Precedence: the caller's explicit type, then ``mimetypes.guess_type`` on
+    the filename, then :data:`MIMETYPE_FALLBACKS`, then the conventional
+    ``application/octet-stream`` — never NULL/empty (parity companion to the
+    2026-09-05 attach-corruption fix, where the stored row's empty
+    content_type was part of the silent-garbage signature).
+    """
+    if explicit and str(explicit).strip():
+        return str(explicit).strip()
+    import mimetypes
+
+    guessed = mimetypes.guess_type(filename)[0]
+    if guessed:
+        return guessed
+    name = str(filename).strip()
+    suffix = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    return MIMETYPE_FALLBACKS.get(suffix, "application/octet-stream")
+
+
 def _safe_attachment_name(raw: str) -> str:
     """Client filename -> safe basename: strip directories (both separators),
     control chars and leading dots (no dotfiles, no traversal); ValueError when
@@ -1754,40 +1804,121 @@ def _collision_free_path(dest_dir: Path, safe_name: str) -> Path:
 
 
 def store_attachment_bytes(
-    conn: sqlite3.Connection, task_id: str, filename: str, data: bytes, *,
-    content_type: Optional[str] = None, uploaded_by: Optional[str] = None,
-    board: Optional[str] = None, max_bytes: Optional[int] = None,
+    conn: sqlite3.Connection,
+    task_id: str,
+    filename: str,
+    data: bytes,
+    *,
+    content_type: Optional[str] = None,
+    uploaded_by: Optional[str] = None,
+    board: Optional[str] = None,
+    max_bytes: Optional[int] = None,
+    expected_size: Optional[int] = None,
+    expected_sha256: Optional[str] = None,
+    verify: bool = True,
 ) -> int:
-    """Single attachment write path (dashboard, tools, CLI): size cap, safe
-    basename, collision-free blob under :func:`task_attachments_dir`, then the
-    metadata row. Raises :class:`AttachmentTooLarge` / ``ValueError``; a blob
-    whose row insert fails is removed before re-raising. Returns the new id."""
+    """Validate, size-check, persist a blob, and record its metadata row.
+
+    This is the single write path shared by the dashboard endpoint, the
+    agent toolset (``kanban_attach`` / ``kanban_attach_url`` /
+    ``kanban_attach_file``), and the CLI (``hermes kanban attach``) so
+    name-sanitisation, the size cap, the integrity self-check, and the
+    collision-resolution all behave identically everywhere.
+
+    Steps: enforce ``max_bytes``, sanitise ``filename`` to a safe basename,
+    write the bytes under :func:`task_attachments_dir` with a
+    collision-free name, self-check what landed on disk (below), then
+    insert the ``task_attachments`` row via :func:`add_attachment`.
+    Returns the new attachment id.
+
+    Integrity self-check (added after a fabricated payload was stored
+    silently under an ok result): when ``verify`` is
+    true, the blob is read back from disk and must be byte-identical to
+    ``data`` — the re-read must also equal ``len(data)``, and when
+    ``expected_sha256`` is given the re-read digest must match it. Any
+    mismatch raises :class:`AttachmentIntegrityError` BEFORE the metadata
+    row is inserted and the blob is reaped, so silent garbage cannot be
+    recorded. ``expected_size`` (when given) is checked against
+    ``len(data)`` up front. ``verify=False`` documents a legacy-escape for
+    callers that must bypass the self-check; no Hermes surface uses it by
+    default. Every call records the payload's sha256 in the row's
+    ``sha256`` column.
+
+    Raises :class:`AttachmentTooLarge` when ``data`` exceeds ``max_bytes``,
+    :class:`AttachmentIntegrityError` when the self-check fails, or
+    :class:`ValueError` for a bad filename / unknown task. On any failure
+    after the blob is written (self-check failure, the task disappearing)
+    the orphaned blob is removed before re-raising.
+    """
     if max_bytes is None:
         max_bytes = KANBAN_ATTACHMENT_MAX_BYTES
     if len(data) > max_bytes:
-        raise AttachmentTooLarge(f"attachment exceeds {max_bytes // (1024 * 1024)} MB limit")
+        raise AttachmentTooLarge(
+            f"attachment exceeds {max_bytes // (1024 * 1024)} MB limit"
+        )
+    if expected_size is not None and expected_size != len(data):
+        raise AttachmentIntegrityError(
+            f"attachment integrity check failed for {filename!r}: "
+            f"expected_size={expected_size} but payload is {len(data)} bytes"
+        )
+    digest = hashlib.sha256(data).hexdigest()
+    if verify and expected_sha256 is not None:
+        want = str(expected_sha256).strip().lower()
+        if want and want != digest:
+            raise AttachmentIntegrityError(
+                f"attachment integrity check failed for {filename!r}: "
+                f"payload sha256 {digest} != expected {want}"
+            )
     safe_name = _safe_attachment_name(filename)
     dest_dir = task_attachments_dir(task_id, board=board)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = _collision_free_path(dest_dir, safe_name)
     dest_path.write_bytes(data)
     try:
+        if verify:
+            written = dest_path.read_bytes()
+            on_disk_size = dest_path.stat().st_size
+            on_disk_sha = hashlib.sha256(written).hexdigest()
+            if on_disk_size != len(data) or written != data:
+                raise AttachmentIntegrityError(
+                    f"attachment integrity check failed for {filename!r}: "
+                    f"wrote {len(data)} bytes but read back {on_disk_size} "
+                    f"bytes from {dest_path} — refusing to record"
+                )
+            if expected_sha256 is not None:
+                want = str(expected_sha256).strip().lower()
+                if want and on_disk_sha != want:
+                    raise AttachmentIntegrityError(
+                        f"attachment integrity check failed for {filename!r}: "
+                        f"on-disk sha256 {on_disk_sha} != expected {want}"
+                    )
         return add_attachment(
-            conn, task_id, filename=dest_path.name, stored_path=str(dest_path.resolve()),
-            content_type=content_type, size=len(data), uploaded_by=uploaded_by,
+            conn,
+            task_id,
+            filename=dest_path.name,
+            stored_path=str(dest_path.resolve()),
+            content_type=derive_content_type(dest_path.name, content_type),
+            size=len(data),
+            sha256=digest,
+            uploaded_by=uploaded_by,
         )
     except Exception:
-        # Don't leave an orphan blob if the metadata insert fails (most
-        # commonly: the task id doesn't exist).
-        with contextlib.suppress(OSError):
-            dest_path.unlink(missing_ok=True)
+        # Don't leave an orphan blob if the self-check or the metadata
+        # insert fails (most commonly: the task id doesn't exist).
+        with contextlib.suppress(OSError):            dest_path.unlink(missing_ok=True)
         raise
 
 
 def add_attachment(
-    conn: sqlite3.Connection, task_id: str, *, filename: str, stored_path: str,
-    content_type: Optional[str] = None, size: int = 0, uploaded_by: Optional[str] = None,
-) -> int:
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    filename: str,
+    stored_path: str,
+    content_type: Optional[str] = None,
+    size: int = 0,
+    uploaded_by: Optional[str] = None,
+    sha256: Optional[str] = None,) -> int:
     """Record the metadata row (+ ``attached`` event) for a blob the caller already wrote."""
     if not filename or not filename.strip():
         raise ValueError("attachment filename is required")
@@ -1798,10 +1929,18 @@ def add_attachment(
         _require_task(conn, task_id)
         cur = conn.execute(
             "INSERT INTO task_attachments "
-            "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (task_id, filename.strip(), stored_path, content_type, int(size), uploaded_by, now),
-        )
+            "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at, sha256) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                task_id,
+                filename.strip(),
+                stored_path,
+                content_type,
+                int(size),
+                uploaded_by,
+                now,
+                sha256,
+            ),        )
         _append_event(
             conn, task_id, "attached",
             {"filename": filename.strip(), "size": int(size), "by": uploaded_by},
@@ -1816,7 +1955,6 @@ def list_attachments(conn: sqlite3.Connection, task_id: str) -> list[Attachment]
 def get_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[Attachment]:
     r = conn.execute("SELECT * FROM task_attachments WHERE id = ?", (attachment_id,)).fetchone()
     return None if r is None else Attachment.from_row(r)
-
 
 def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[Attachment]:
     """Delete the row (source of truth) and best-effort its blob; None when no row matched."""
@@ -2839,11 +2977,20 @@ def _insert_completion_attachment(
     created_at: int,
 ) -> None:
     """Record a worker-produced artifact in the existing attachment table."""
+    # Digest the bytes we are certifying (not a re-read race: the file was
+    # fully copied to the attachments dir before this insert). On any read
+    # failure the row is still recorded — the completion artifacts channel
+    # must not lose an artifact over an unreadable-at-hash-time file — but
+    # the digest stays NULL so verifiers know it was never computed.
+    try:
+        digest = hashlib.sha256(Path(stored_path).read_bytes()).hexdigest()
+    except OSError:
+        digest = None
     conn.execute(
         "INSERT INTO task_attachments "
-        "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
-        "VALUES (?, ?, ?, NULL, ?, 'kanban_complete', ?)",
-        (task_id, filename, stored_path, size, created_at),
+        "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at, sha256) "
+        "VALUES (?, ?, ?, NULL, ?, 'kanban_complete', ?, ?)",
+        (task_id, filename, stored_path, size, created_at, digest),
     )
     _append_event(conn, task_id, "attached", {"filename": filename, "size": size, "by": "kanban_complete"})
 

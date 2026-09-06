@@ -313,6 +313,31 @@ KANBAN_ATTACH_SCHEMA = _schema(
     ["filename", "content_base64"],
 )
 
+KANBAN_ATTACH_FILE_SCHEMA = _schema(
+    "kanban_attach_file",
+    (
+        "Attach a local file to a task by its path — Hermes reads the bytes "
+        "from disk and stores them as a real attachment (capped at 25 MB), "
+        "byte-verified with a sha256 recorded in the attachment row. The "
+        "preferred way to attach a file you already have on disk: the bytes "
+        "never pass through the model, so no encoding mistakes are possible."
+    ),
+    {
+        "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "path": _prop("string", (
+            "Absolute path to the file on disk (worktree paths included; "
+            "'~' expands). Must be a regular file."
+        )),
+        "filename": _prop("string", (
+            "Optional name to store it under. Defaults to the source "
+            "path's leaf component."
+        )),
+        "content_type": _prop("string",
+                              "Optional MIME type. Defaults to the type derived from the filename."),
+    },
+    ["path"],
+)
+
 KANBAN_ATTACH_URL_SCHEMA = _schema(
     "kanban_attach_url",
     (

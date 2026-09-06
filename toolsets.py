@@ -32,7 +32,9 @@ _HERMES_CORE_TOOLS = [
     "kanban_heartbeat",
     "kanban_comment", "kanban_create", "kanban_link",
     "kanban_unblock",
-    "kanban_attach", "kanban_attach_url", "kanban_attachments",
+    "kanban_attach", "kanban_attach_file", "kanban_attach_url",
+    "kanban_attachments",
+    # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
 ]
 
@@ -126,7 +128,6 @@ TOOLSETS = {
     "session_search": _ts("Search and recall past conversations with summarization", ["session_search"]),
     "project": _ts("Desktop Projects — create/switch named workspaces (GUI sessions only)", ["desktop_project"]),
     "bot_room": _ts("Verified text-only Group Chat turn capabilities"),
-
     # GUI-renderer affordances, enabled per desktop-sourced SESSION by the GUI
     # gateway (tui_gateway/server.py::_load_enabled_toolsets) — never by a
     # process env var, which is blind to a desktop client on a remote backend.

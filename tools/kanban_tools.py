@@ -8,19 +8,20 @@ shlex quoting of JSON metadata, structured-JSON failures). Humans use CLI/dashbo
 from __future__ import annotations
 
 import functools
+import hashlib
 import json
 import logging
 import os
 import time
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Callable, Optional
-
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 from tools.kanban_tools_schemas import (
-    KANBAN_ATTACH_SCHEMA,
+    KANBAN_ATTACH_FILE_SCHEMA, KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
     KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
@@ -700,19 +701,82 @@ def _handle_comment(args: dict, **kw) -> str:
         return _ok(task_id=tid, comment_id=cid)
 
 
-def _store_attachment(board, tid, filename, data, content_type) -> str:
+def _store_attachment(board, tid, filename, data, content_type, expected_sha256=None) -> str:
     """Store via ``kanban_db.store_attachment_bytes`` (shared size cap, per-task
-    dir, metadata row) so agent, dashboard, and CLI surfaces stay in lockstep."""
+    dir, metadata row) so agent, dashboard, and CLI surfaces stay in lockstep.
+
+    Every stored blob records its sha256 digest and the returned JSON echoes
+    it (plus the derived content_type) so the caller can verify byte-identity
+    downstream. When ``expected_sha256`` is given, the payload must match it
+    or the write is refused with an integrity error before any row is
+    recorded.
+    """
     with _board(board) as (kb, conn):
+        digest = hashlib.sha256(data).hexdigest()
         att_id = kb.store_attachment_bytes(
             conn, tid, str(filename), data,
-            content_type=content_type, uploaded_by="agent", board=board)
-        return _ok(task_id=tid, attachment_id=att_id, size=len(data))
+            content_type=content_type, uploaded_by="agent", board=board,
+            expected_sha256=expected_sha256 or digest)
+        return _ok(
+            task_id=tid, attachment_id=att_id, size=len(data),
+            sha256=digest, content_type=kb.derive_content_type(str(filename), content_type))
+
+
+# Payload fragments that indicate the model emitted a made-up path/placeholder
+# instead of mechanically encoding the source file. Decoding to one of these
+# shapes is the signature of a fabricated attachment: a hallucinated
+# ``L2FuZHJvaWQvLi4v`` decodes to ``/android/../`` and would otherwise be
+# stored as a 12-byte "attachment" under ``ok:true``. Checked AFTER base64
+# validation so the error message can show the decoded payload.
+_FABRICATED_PATH_PREFIXES = (
+    "/android/",
+    "/android",       # the canonical fragment has no trailing slash
+    "/users/",
+    "/home/",
+    "/tmp/",
+    "/library/",
+    "/system/",
+    "/etc/",
+    "/var/",
+    "/private/",
+    "/volumes/",
+    "~/",
+    "../",
+    "./",
+)
+
+
+def _looks_like_fabricated_path(data: bytes) -> bool:
+    """Heuristic: does this decoded payload look like a path fragment?
+
+    Catches the placeholder family (a path string handed to
+    ``content_base64`` instead of the file's actual encoded bytes) without
+    outlawing any legitimate content: short binary/text payloads that begin
+    with ``/`` or ``.`` are rare, and any real file attach can bypass the
+    heuristic entirely via :func:`_handle_attach_file` (path-based, bytes
+    read server-side) or ``kanban_complete(artifacts=[...])``.
+    """
+    text = data.lstrip()[:64]
+    if not text:
+        return False
+    try:
+        probe = text.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    lowered = probe.lower()
+    return any(lowered.startswith(prefix) for prefix in _FABRICATED_PATH_PREFIXES)
 
 
 @_kanban_handler("kanban_attach")
 def _handle_attach(args: dict, **kw) -> str:
-    """Attach an inline (base64) file to a task."""
+    """Attach an inline (base64) file to a task.
+
+    The decoded payload's sha256 is recorded on the stored row and echoed in
+    the result so the caller can compare it against a digest of its own
+    source bytes. For on-disk files prefer :func:`_handle_attach_file`
+    (the model never touches the bytes) or
+    ``kanban_complete(artifacts=[...])``.
+    """
     tid = _worker_guard("kanban_attach", args)
     filename = _require_text(args, "filename")
     content_b64 = _require_text(args, "content_base64")
@@ -722,6 +786,15 @@ def _handle_attach(args: dict, **kw) -> str:
         data = base64.b64decode(str(content_b64), validate=True)
     except (binascii.Error, ValueError) as e:
         raise _Reject(f"content_base64 is not valid base64: {e}")
+    if _looks_like_fabricated_path(data):
+        return tool_error(
+            "kanban_attach integrity guard: decoded payload looks like a "
+            f"filesystem-path fragment ({len(data)} bytes), not encoded file "
+            "content — refusing to store a fabricated placeholder. Encode "
+            "the source file mechanically (base64 of its full bytes), or "
+            "prefer kanban_attach_file with the source path, or "
+            "kanban_complete(artifacts=[...]) for on-disk deliverables."
+        )
     return _store_attachment(args.get("board"), tid, filename, data, args.get("content_type"))
 
 
@@ -947,6 +1020,34 @@ def _handle_link(args: dict, **kw) -> str:
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 
 # kanban_list / kanban_unblock route the board and are hidden from task workers.
+@_kanban_handler("kanban_attach_file")
+def _handle_attach_file(args: dict, **kw) -> str:
+    """Attach a local file by absolute path — the bytes are read from disk
+    server-side and never pass through the model (same trust level as
+    ``kanban_complete(artifacts=[...])``).
+
+    The stored row records the source's sha256 and the result echoes it, so
+    byte-identity is verifiable downstream; a mismatch with the re-read
+    blob fails the integrity self-check before any row is recorded.
+    """
+    tid = _worker_guard("kanban_attach_file", args)
+    raw_path = _require_text(args, "path")
+    src = Path(str(raw_path)).expanduser()
+    if not src.exists():
+        return tool_error(f"kanban_attach_file: no such file: {src}")
+    if not src.is_file():
+        return tool_error(f"kanban_attach_file: not a file: {src}")
+    filename = args.get("filename") or src.name
+    try:
+        data = src.read_bytes()
+    except OSError as e:
+        return tool_error(f"kanban_attach_file: cannot read {src}: {e}")
+    digest = hashlib.sha256(data).hexdigest()
+    return _store_attachment(
+        args.get("board"), tid, str(filename), data, args.get("content_type"),
+        expected_sha256=digest)
+
+
 _ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock"})
 _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
@@ -959,10 +1060,13 @@ _TOOLS = (
     ("kanban_comment", KANBAN_COMMENT_SCHEMA, _handle_comment, "💬"),
     ("kanban_attach", KANBAN_ATTACH_SCHEMA, _handle_attach, "📎"),
     ("kanban_attach_url", KANBAN_ATTACH_URL_SCHEMA, _handle_attach_url, "📎"),
+    ("kanban_attach_file", KANBAN_ATTACH_FILE_SCHEMA, _handle_attach_file, "📎"),
     ("kanban_attachments", KANBAN_ATTACHMENTS_SCHEMA, _handle_attachments, "📎"),
     ("kanban_create", KANBAN_CREATE_SCHEMA, _handle_create, "➕"),
     ("kanban_unblock", KANBAN_UNBLOCK_SCHEMA, _handle_unblock, "▶"),
     ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"))
+
+
 
 for _name, _sch, _handler, _emoji in _TOOLS:
     _gate = _check_kanban_orchestrator_mode if _name in _ORCHESTRATOR_TOOLS else _check_kanban_mode

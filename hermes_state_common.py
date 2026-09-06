@@ -388,6 +388,26 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
 );
 
+-- Local observations only; deliberately independent of session deletion/rollups.
+CREATE TABLE IF NOT EXISTS usage_events (
+    attempt_id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    profile TEXT NOT NULL,
+    completed_at_us INTEGER NOT NULL,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    reasoning_tokens INTEGER,
+    retry_count INTEGER,
+    status TEXT,
+    usage_state TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_usage_events_timeline
+    ON usage_events(provider, completed_at_us);
+CREATE INDEX IF NOT EXISTS idx_usage_events_retention ON usage_events(completed_at_us);
+
 CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
     value TEXT

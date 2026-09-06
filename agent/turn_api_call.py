@@ -66,6 +66,8 @@ def perform_api_call(
 ) -> ApiCallVerdict:
     """Issue the request (see ``_should_stream`` for the streaming decision)."""
     response = None
+    # Middleware can short-circuit without executing: never reuse an earlier observation.
+    agent._usage_event_observation = None
 
     def _verdict(action: str) -> ApiCallVerdict:
         return ApiCallVerdict(
@@ -80,6 +82,10 @@ def perform_api_call(
     _use_streaming = _should_stream(agent)
 
     def _perform_api_call(next_api_kwargs):
+        from agent.usage_event_capture import observe_execution
+        return observe_execution(agent, next_api_kwargs, _execute_api_call, retry_count=retry_count)
+
+    def _execute_api_call(next_api_kwargs):
         if agent.api_mode == "codex_responses":
             next_api_kwargs = agent._get_transport().preflight_kwargs(
                 next_api_kwargs, allow_stream=False, is_github_responses=agent._is_copilot_url(),

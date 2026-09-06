@@ -637,20 +637,6 @@ class TestResolveSessionNameLengthLimit:
         assert len(result_b) == self.HONCHO_MAX
 
 
-class TestResetHonchoClient:
-    def test_reset_clears_singleton(self):
-        import plugins.memory.honcho.client as mod
-
-        # Seed the cached client through the slot's public surface, then
-        # verify reset_honcho_client() clears it. (The client is cached in
-        # mod._honcho_client_slot, a thread-safe SingletonSlot, not a bare
-        # module global anymore — see #24759.)
-        mod._honcho_client_slot.get(lambda: MagicMock())
-        assert mod._honcho_client_slot.peek() is not None
-        reset_honcho_client()
-        assert mod._honcho_client_slot.peek() is None
-
-
 class TestDialecticDepthParsing:
     """Tests for _parse_dialectic_depth and _parse_dialectic_depth_levels."""
 

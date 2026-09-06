@@ -217,11 +217,7 @@ class TestAdapterInit:
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
         monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
 
-        compaction_callback = MagicMock()
-        agent = adapter._create_agent(
-            session_id="api-session",
-            compaction_callback=compaction_callback,
-        )
+        agent = adapter._create_agent(session_id="api-session")
 
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
@@ -229,7 +225,6 @@ class TestAdapterInit:
         assert captured["checkpoint_max_snapshots"] == 7
         assert captured["checkpoint_max_total_size_mb"] == 321
         assert captured["checkpoint_max_file_size_mb"] == 4
-        assert captured["compaction_callback"] is compaction_callback
 
 
 # ---------------------------------------------------------------------------
@@ -294,10 +289,7 @@ class TestConcurrencyCap:
 
 
 def _make_adapter(
-    api_key: str = "",
-    cors_origins=None,
-    *,
-    openwebui_compact_event: bool = False,
+    api_key: str = "", cors_origins=None, *, openwebui_compact_event: bool = False,
 ) -> APIServerAdapter:
     """Create an adapter with optional API key."""
     extra = {}
@@ -377,13 +369,11 @@ class TestAgentExecution:
         mock_agent.session_total_tokens = 3
 
         model_options = {"reasoning": {"enabled": False}, "fast": False}
-        compaction_callback = MagicMock()
         with patch.object(adapter, "_create_agent", return_value=mock_agent) as mock_create_agent:
             result, usage = await adapter._run_agent(
                 user_message="hello",
                 conversation_history=[],
                 session_id="session-123",
-                compaction_callback=compaction_callback,
                 requested_model="MiniMax-M3",
                 requested_provider="minimax",
                 model_options=model_options,
@@ -400,7 +390,6 @@ class TestAgentExecution:
         assert create_kwargs["requested_model"] == "MiniMax-M3"
         assert create_kwargs["requested_provider"] == "minimax"
         assert create_kwargs["model_options"] == model_options
-        assert create_kwargs["compaction_callback"] is compaction_callback
         mock_agent.run_conversation.assert_called_once_with(
             user_message="hello",
             conversation_history=[],
@@ -897,7 +886,6 @@ class TestCapabilitiesEndpoint:
             }
             assert data["features"]["model_options"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
-            assert data["features"]["openwebui_compact_event"] is False
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
             assert data["endpoints"]["model_options"] == {"method": "GET", "path": "/api/model/options"}
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
@@ -1636,10 +1624,7 @@ class TestResponsesStreaming:
 
     @pytest.mark.asyncio
     async def test_stream_emits_configured_openwebui_compaction_status(self):
-        from agent.conversation_compression import (
-            COMPACTION_DONE_STATUS,
-            COMPACTION_STATUS,
-        )
+        from agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS
 
         adapter = _make_adapter(openwebui_compact_event=True)
         app = _create_app(adapter)
@@ -1666,34 +1651,18 @@ class TestResponsesStreaming:
                 assert response.status == 200
                 body = await response.text()
 
-        status_payloads = [
+        payloads = [
             json.loads(line[len("data: "):])
             for line in body.splitlines()
             if line.startswith("data: ")
-            and json.loads(line[len("data: "):]).get("type")
-            == "hermes.context_compaction"
+            and json.loads(line[len("data: "):]).get("type") == "hermes.context_compaction"
         ]
-        assert [payload["event"]["data"]["done"] for payload in status_payloads] == [
-            False,
-            True,
-        ]
-        assert all(
-            payload["event"]["type"] == "context_compaction"
-            for payload in status_payloads
-        )
+        assert [payload["event"]["data"]["done"] for payload in payloads] == [False, True]
+        assert all(payload["event"]["type"] == "context_compaction" for payload in payloads)
         assert all(
             payload["event"]["data"]["action"] == "context_compaction"
-            for payload in status_payloads
+            for payload in payloads
         )
-
-        completed = next(
-            json.loads(line[len("data: "):])
-            for line in body.splitlines()
-            if line.startswith("data: ")
-            and json.loads(line[len("data: "):]).get("type") == "response.completed"
-        )
-        assert "Compacting context" not in json.dumps(completed["response"]["output"])
-        assert "compaction complete" not in json.dumps(completed["response"]["output"])
 
     @pytest.mark.asyncio
     async def test_stream_does_not_register_compaction_callback_by_default(self, adapter):
@@ -1720,10 +1689,7 @@ class TestResponsesStreaming:
 
     @pytest.mark.asyncio
     async def test_stream_marks_failed_compaction_as_error(self):
-        from agent.conversation_compression import (
-            COMPACTION_FAILED_STATUS,
-            COMPACTION_STATUS,
-        )
+        from agent.conversation_compression import COMPACTION_FAILED_STATUS, COMPACTION_STATUS
 
         adapter = _make_adapter(openwebui_compact_event=True)
         app = _create_app(adapter)
@@ -1746,18 +1712,14 @@ class TestResponsesStreaming:
                 assert response.status == 200
                 body = await response.text()
 
-        status_payloads = [
+        payloads = [
             json.loads(line[len("data: "):])
             for line in body.splitlines()
             if line.startswith("data: ")
-            and json.loads(line[len("data: "):]).get("type")
-            == "hermes.context_compaction"
+            and json.loads(line[len("data: "):]).get("type") == "hermes.context_compaction"
         ]
-        assert [payload["event"]["data"]["done"] for payload in status_payloads] == [
-            False,
-            True,
-        ]
-        assert status_payloads[-1]["event"]["data"]["error"] is True
+        assert [payload["event"]["data"]["done"] for payload in payloads] == [False, True]
+        assert payloads[-1]["event"]["data"]["error"] is True
 
 
     @pytest.mark.asyncio

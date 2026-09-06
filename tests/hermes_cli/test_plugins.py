@@ -1354,6 +1354,7 @@ class TestResolvePreToolBlock:
     def test_approve_gate_receives_tool_observability_context(self, monkeypatch):
         from hermes_cli.plugins import resolve_pre_tool_block
         from tools import approval
+        from tools import approval_context
 
         seen = {}
         monkeypatch.setattr(
@@ -1364,8 +1365,8 @@ class TestResolvePreToolBlock:
         )
 
         def _approve(*args, **kwargs):
-            seen["turn_id"] = approval._approval_turn_id.get()
-            seen["tool_call_id"] = approval._approval_tool_call_id.get()
+            seen["turn_id"] = approval_context._approval_turn_id.get()
+            seen["tool_call_id"] = approval_context._approval_tool_call_id.get()
             return {"approved": True, "message": None}
 
         monkeypatch.setattr("tools.approval.request_tool_approval", _approve)

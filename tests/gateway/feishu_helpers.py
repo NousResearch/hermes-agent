@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from types import SimpleNamespace
 from typing import Any, Optional
@@ -59,6 +60,7 @@ def install_dedup_state(adapter: Any, seen: Optional[dict] = None) -> None:
     adapter._seen_message_order = list((seen or {}).keys())
     adapter._dedup_cache_size = 100
     adapter._dedup_lock = threading.Lock()
+    adapter._dedup_persist_lock = asyncio.Lock()
     adapter._dedup_state_path = None
     adapter._persist_seen_message_ids = lambda: None
 

@@ -10,6 +10,7 @@ import yaml
 
 from hermes_cli.config import (
     DEFAULT_CONFIG,
+    InvalidUserConfigError,
     check_config_version,
     get_hermes_home,
     ensure_hermes_home,
@@ -738,7 +739,9 @@ class TestConfigMigrationSecretPrompts:
         saved = {}
 
         monkeypatch.setattr(cfg_mod, "sanitize_env_file", lambda: 0)
-        monkeypatch.setattr(cfg_mod, "check_config_version", lambda: (999, 999))
+        monkeypatch.setattr(
+            cfg_mod, "check_config_version", lambda **_kwargs: (999, 999)
+        )
         monkeypatch.setattr(cfg_mod, "get_missing_config_fields", lambda: [])
         monkeypatch.setattr(cfg_mod, "get_missing_skill_config_vars", lambda: [])
         monkeypatch.setattr(
@@ -782,6 +785,48 @@ class TestConfigVersionDetection:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             assert load_config()["_config_version"] == DEFAULT_CONFIG["_config_version"]
             assert check_config_version() == (0, DEFAULT_CONFIG["_config_version"])
+
+    _LATEST = DEFAULT_CONFIG["_config_version"]
+    # (bytes, strict match, tolerant return): tolerant malformed YAML keeps
+    # the historical latest/latest fallback; a parseable non-mapping root is
+    # reported as legacy (0).
+    _INVALID_CONFIG_CASES = [
+        pytest.param(
+            b"model: [unterminated\n", "not valid YAML", (_LATEST, _LATEST), id="malformed-yaml"
+        ),
+        pytest.param(b"- just_a_list\n", "must be a mapping", (0, _LATEST), id="list-root"),
+        pytest.param(b"[]\n", "must be a mapping", (0, _LATEST), id="empty-list-root"),
+    ]
+
+    @pytest.mark.parametrize("config_bytes, match, tolerant", _INVALID_CONFIG_CASES)
+    def test_strict_check_rejects_invalid_config(
+        self, tmp_path, config_bytes, match, tolerant
+    ):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_bytes(config_bytes)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with pytest.raises(InvalidUserConfigError, match=match):
+                check_config_version(raise_on_parse_error=True)
+            # Tolerant callers keep the historical non-raising behavior.
+            assert check_config_version() == tolerant
+
+    @pytest.mark.parametrize("config_bytes, match, _tolerant", _INVALID_CONFIG_CASES)
+    def test_migration_rejects_invalid_config_before_sanitizing_env(
+        self, tmp_path, config_bytes, match, _tolerant
+    ):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_bytes(config_bytes)
+        env_path = tmp_path / ".env"
+        env_bytes = b"OPENAI_API_KEY=test-without-final-newline"
+        env_path.write_bytes(env_bytes)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with pytest.raises(InvalidUserConfigError, match=match):
+                migrate_config(interactive=False, quiet=True)
+
+        assert config_path.read_bytes() == config_bytes
+        assert env_path.read_bytes() == env_bytes
 
 
 class TestConfigSupportFloor:

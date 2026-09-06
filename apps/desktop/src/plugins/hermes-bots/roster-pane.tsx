@@ -626,7 +626,9 @@ export function BotsPane() {
 
           return (
             <SectionDropZone
-              isSource={Boolean(dragging) && block.rows.some(row => row.kind !== 'group' && botRosterKey(row.bot) === dragging)}
+              isSource={
+                Boolean(dragging) && block.rows.some(row => row.kind !== 'group' && botRosterKey(row.bot) === dragging)
+              }
               key={key}
               nested={nested}
               onDropBot={rosterKey => {
@@ -683,9 +685,7 @@ export function BotsPane() {
           option={section.option}
         />
         {collapsed ? null : (
-          <div className="grid min-w-0 gap-0.5">
-            {renderUserSections(section.rows, `${section.id}:`)}
-          </div>
+          <div className="grid min-w-0 gap-0.5">{renderUserSections(section.rows, `${section.id}:`)}</div>
         )}
       </div>
     )

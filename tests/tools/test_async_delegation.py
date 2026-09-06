@@ -946,3 +946,77 @@ def test_batch_model_rejection_notice_requires_configured_model_in_text(monkeypa
     text = format_process_notification(evt)
     assert text is not None
     assert "SUBAGENT MODEL REJECTED" not in text
+
+
+def test_sanitize_for_persistence_cycle_safe_and_types():
+    from pathlib import Path
+    import datetime
+
+    # Cyclic dictionary
+    d = {"name": "test"}
+    d["self"] = d
+
+    sanitized = ad._sanitize_for_persistence(d)
+    assert sanitized["name"] == "test"
+    assert sanitized["self"] == "<circular_reference>"
+
+    # Custom types: Path, datetime, Exception, bytes
+    p = Path("/tmp/test_path")
+    dt = datetime.datetime(2026, 9, 5, 3, 0, 0)
+    exc = ValueError("bad parameter")
+    b = b"binary data"
+
+    res = ad._sanitize_for_persistence({
+        "path": p,
+        "timestamp": dt,
+        "error": exc,
+        "bytes": b,
+    })
+    assert res["path"] == str(p)
+    assert res["timestamp"] == dt.isoformat()
+    assert res["error"]["__type__"] == "ValueError"
+    assert "bad parameter" in res["error"]["error"]
+    assert res["bytes"] == "<bytes len=11>"
+
+
+def test_sanitize_for_persistence_redacts_secrets():
+    payload = {
+        "api_key": "sk-1234567890",
+        "nested": {
+            "auth_token": "secret_token_abc",
+            "safe_val": "regular_value",
+            "PASSWORD": "my_password",
+        },
+    }
+    sanitized = ad._sanitize_for_persistence(payload)
+    assert sanitized["api_key"] == "[REDACTED]"
+    assert sanitized["nested"]["auth_token"] == "[REDACTED]"
+    assert sanitized["nested"]["PASSWORD"] == "[REDACTED]"
+    assert sanitized["nested"]["safe_val"] == "regular_value"
+
+
+def test_finalization_guarantees_cleanup_even_if_push_fails(monkeypatch):
+    delegation_id = "test_del_cleanup_fail"
+    with ad._records_lock:
+        ad._records[delegation_id] = {
+            "delegation_id": delegation_id,
+            "status": "running",
+            "dispatched_at": time.time(),
+            "completed_at": None,
+            "interrupt_fn": None,
+            "progress_fn": None,
+        }
+
+    def _broken_push(*args, **kwargs):
+        raise RuntimeError("Queue connection broken")
+
+    monkeypatch.setattr(ad, "_push_completion_event", _broken_push)
+
+    try:
+        ad._finalize(delegation_id, {"summary": "done"}, "completed")
+    except RuntimeError:
+        pass
+
+    with ad._records_lock:
+        assert ad._records[delegation_id]["status"] == "completed"
+

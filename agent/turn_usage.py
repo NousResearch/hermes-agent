@@ -96,8 +96,9 @@ def record_response_usage(
     # footer reads this so the owner sees the exact model that answered, not the alias.
     try:
         agent._last_routed_model = getattr(response, "model", None) or getattr(agent, "_last_routed_model", None)
-    except Exception:
-        pass
+        logger.info("routed_model stamped: %s (requested %s)", agent._last_routed_model, agent.model)
+    except Exception as _rm_err:
+        logger.warning("routed_model stamp failed: %s", _rm_err)
     canonical_usage = normalize_usage(response.usage, provider=agent.provider, api_mode=agent.api_mode)
     # Aggregator-only usage kept for pricing: advisor tokens are priced at each advisor's
     # OWN model rate and added as dollars below.

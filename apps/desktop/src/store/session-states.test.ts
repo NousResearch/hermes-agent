@@ -1,3 +1,4 @@
+import { registryBackendScopeKey } from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
@@ -12,6 +13,7 @@ import {
 } from '@/components/pane-shell/workspace-scope'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $activeSessionId, $connection, $selectedStoredSessionId, setSessions } from '@/store/session'
+import { recordSessionOwnerScope } from '@/store/session-owner-ledger'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import type { SessionTile } from '@/store/session-states'
 import type * as SessionStatesModule from '@/store/session-states'
@@ -259,6 +261,43 @@ describe('resetTileRuntimeBindings', () => {
     expect(workBot).toMatchObject({ runtimeId: 'runtime-work-live', storedSessionId: 'stored-work-bot' })
     expect(ordinarySession).not.toHaveProperty('runtimeId')
     expect(invalidateRuntimeBindings).toHaveBeenCalledWith(new Set(['stored-work-bot']))
+  })
+
+  it('keeps a route-less tile bound when a different profile\'s socket reconnects', () => {
+    // A Sessions-list tile opened for a secondary profile has no ownerRoute,
+    // but its resume recorded an owner scope in the ledger. An UNRELATED
+    // profile's reconnect must not drop the binding — dropping re-arms the
+    // tile's resume and remounts the composer, stealing focus on every
+    // sibling-socket reopen (e.g. a background roster poll).
+    const invalidateRuntimeBindings = vi.fn()
+    setSessionTileDelegate({ invalidateRuntimeBindings } as unknown as SessionTileDelegate)
+
+    recordSessionOwnerScope('stored-mara', registryBackendScopeKey('local', 'mara'))
+    $sessionTiles.set([{ storedSessionId: 'stored-mara', runtimeId: 'rt-mara' }])
+    const before = $sessionTiles.get()
+
+    resetTileRuntimeBindings({ connectionId: 'local', profile: 'otto' })
+
+    expect($sessionTiles.get()[0]?.runtimeId).toBe('rt-mara')
+    // A no-op keeps the array identity so subscribers do not re-render.
+    expect($sessionTiles.get()).toBe(before)
+    expect(invalidateRuntimeBindings).toHaveBeenCalledWith(new Set(['stored-mara']))
+  })
+
+  it('rebinds a route-less tile when its own profile\'s socket reconnects', () => {
+    // Guard against over-fixing: a ledger-known tile must not become
+    // un-resettable. Its OWN scope reconnecting still drops the binding so the
+    // tile re-resumes against the fresh runtime.
+    const invalidateRuntimeBindings = vi.fn()
+    setSessionTileDelegate({ invalidateRuntimeBindings } as unknown as SessionTileDelegate)
+
+    recordSessionOwnerScope('stored-mara', registryBackendScopeKey('local', 'mara'))
+    $sessionTiles.set([{ storedSessionId: 'stored-mara', runtimeId: 'rt-mara' }])
+
+    resetTileRuntimeBindings({ connectionId: 'local', profile: 'mara' })
+
+    expect($sessionTiles.get()[0]).not.toHaveProperty('runtimeId')
+    expect(invalidateRuntimeBindings).toHaveBeenCalledWith(new Set())
   })
 })
 

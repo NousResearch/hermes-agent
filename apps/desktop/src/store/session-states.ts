@@ -16,7 +16,7 @@
  * itself here as the delegate so tile UI stays dependency-light.
  */
 
-import { LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
+import { backendScopePrefix, LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import type { ClientSessionState } from '@/app/types'
@@ -56,6 +56,7 @@ import {
   setBusy,
   setSessions
 } from './session'
+import { sessionOwnerScopeFor } from './session-owner-ledger'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import {
   requestForSessionProfile,
@@ -243,6 +244,15 @@ export function foregroundSessionScopes(): Set<string> {
   for (const tile of $sessionTiles.get()) {
     addRuntimeScope(tile.runtimeId)
     addRouteScope(tile.ownerRoute)
+
+    // Route-less tile rung — see session-owner-ledger.
+    if (!tile.ownerRoute) {
+      const scope = sessionOwnerScopeFor(tile.storedSessionId)
+
+      if (scope) {
+        scopes.add(scope)
+      }
+    }
   }
 
   // Create → foreground holds. A hold whose scope the rungs above already
@@ -1192,7 +1202,8 @@ export function setSessionTileWorkspaceScope(storedSessionId: string, scope: Ses
 }
 
 /** Drop live runtime bindings so every tile re-resumes — used on gateway
- *  reconnect, where a respawned backend re-mints (recycles) runtime ids.
+ *  reconnect, where a respawned backend re-mints (recycles) runtime ids;
+ *  tiles with a known live owner keep their binding.
  *  Also invalidates the wiring cache's stored→runtime map: clearing only the
  *  tile atoms left `resumeTile`'s warm path free to re-bind the same dead
  *  runtime id from the cache, so post-wake tiles repainted empty and never
@@ -1231,35 +1242,53 @@ export function resetTileRuntimeBindings(
           }
         : null
 
+  // Derive a tile's owner scope — an exact route stamps one directly; a
+  // route-less (Sessions-list) tile falls back to the resume-owner ledger,
+  // the SECOND rung that names who actually owns its socket.
+  const tileOwnerScope = (tile: SessionTile): string | undefined =>
+    tile.ownerRoute?.connectionId
+      ? registryBackendScopeKey(tile.ownerRoute.connectionId, tile.ownerRoute.targetProfile || tile.ownerRoute.profile)
+      : sessionOwnerScopeFor(tile.storedSessionId)
+
   const belongsToReconnectedRuntime = (tile: SessionTile): boolean => {
-    const route = tile.ownerRoute
+    const ownerScope = tileOwnerScope(tile)
+
+    if (!ownerScope) {
+      return false
+    }
 
     if (liveConnectionIds) {
       // Unknown restarted identity: a tile survives only when its owner is a
       // connection we know is still live — anything else rebinds on resume.
-      return !route?.connectionId || !liveConnectionIds.has(route.connectionId)
+      return ![...liveConnectionIds].some(id => ownerScope.startsWith(backendScopePrefix(id)))
     }
 
-    if (!reconnected?.connectionId || route?.connectionId !== reconnected.connectionId) {
+    if (!reconnected?.connectionId) {
       return false
     }
 
-    return !reconnected.profile || (route.targetProfile || route.profile) === reconnected.profile
+    // Compare on the scope key built from the reconnect side (never parse the
+    // scope string back); a profile-less reconnect re-mints the whole
+    // connection.
+    return reconnected.profile
+      ? ownerScope === registryBackendScopeKey(reconnected.connectionId, reconnected.profile)
+      : ownerScope.startsWith(backendScopePrefix(reconnected.connectionId))
   }
 
   const preservedStoredIds = new Set(
     tiles
       .filter(
-        // Any tile with an EXACT owner route — bot tabs always, and a
-        // sessions tile whose opener stamped one (a branch child on its
-        // parent's connection). Its runtime lives on that owner's socket,
-        // not the ambient gateway, so an unrelated connection's reconnect
-        // must not drop the binding: each drop re-arms the tile's resume,
-        // and a flapping sibling connection turns that into 4+ re-resumes
-        // inside the storm window — latching the "keeps losing its backend
-        // runtime" card over a session that is actually healthy.
+        // Any tile whose owner scope is known — an exact route (bot tabs
+        // always, a sessions tile whose opener stamped one), or the
+        // resume-owner ledger for a route-less Sessions-list tile. Its
+        // runtime lives on that owner's socket, not the ambient gateway, so
+        // an unrelated connection's reconnect must not drop the binding:
+        // each drop re-arms the tile's resume, and a flapping sibling
+        // connection turns that into 4+ re-resumes inside the storm window —
+        // latching the "keeps losing its backend runtime" card over a
+        // session that is actually healthy.
         tile =>
-          Boolean(tile.ownerRoute?.connectionId) &&
+          Boolean(tileOwnerScope(tile)) &&
           (!(reconnected || liveConnectionIds) || !belongsToReconnectedRuntime(tile))
       )
       .map(tile => tile.storedSessionId)

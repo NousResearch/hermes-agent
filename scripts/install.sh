@@ -71,6 +71,9 @@ USE_VENV=true
 RUN_SETUP=true
 SKIP_BROWSER=false
 SKIP_COMPUTER_USE=false
+# Force the cua-driver pre-install where it is otherwise opt-in only
+# (headless hosts, update runs over an existing install). See #104413.
+WITH_COMPUTER_USE=false
 NO_SKILLS=false
 BRANCH="main"
 INSTALL_COMMIT=""
@@ -109,6 +112,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-computer-use)
             SKIP_COMPUTER_USE=true
+            shift
+            ;;
+        --with-computer-use)
+            WITH_COMPUTER_USE=true
             shift
             ;;
         --no-skills)
@@ -171,6 +178,9 @@ while [[ $# -gt 0 ]]; do
             echo "  --skip-setup   Skip interactive setup wizard"
             echo "  --skip-browser Skip Playwright/Chromium install (browser tools won't work)"
             echo "  --skip-computer-use  Skip the cua-driver (Computer Use) install"
+            echo "  --with-computer-use  Pre-install cua-driver even on a headless host or"
+            echo "                   when updating an existing install (otherwise those"
+            echo "                   only get it via 'hermes computer-use install')"
             echo "  --no-skills    Start with a blank slate — seed no bundled skills, and"
             echo "                   write \$HERMES_HOME/.no-bundled-skills so future"
             echo "                   'hermes update' runs never inject bundled skills either"
@@ -2848,10 +2858,48 @@ install_browser_use_cli() {
     fi
 }
 
+# Locate an installed cua-driver the way the Hermes runtime does
+# (tools/computer_use/cua_backend_driver.py): PATH first, then the upstream
+# installer's default link at ~/.local/bin. A bare `command -v` misses the
+# latter whenever ~/.local/bin is not on this shell's PATH (service accounts,
+# fresh headless boxes), which made every install.sh run re-download the
+# driver and, worse, made an existing install look like a fresh one.
+find_cua_driver() {
+    local candidate
+    candidate="$(command -v cua-driver 2>/dev/null)" && { echo "$candidate"; return 0; }
+    candidate="$HOME/.local/bin/cua-driver"
+    if [ -x "$candidate" ]; then
+        echo "$candidate"
+        return 0
+    fi
+    return 1
+}
+
+# Can this host ever drive a desktop? Linux without a display (the headless
+# VPS/gateway case, #104413) cannot use Computer Use at all, so provisioning a
+# third-party binary there is pure surprise. macOS/Windows/WSLg always have
+# one; on Linux require a graphical session to be visible from this shell.
+host_can_use_computer_use() {
+    case "$(uname -s)" in
+        Linux)
+            if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+                return 0
+            fi
+            case "${XDG_SESSION_TYPE:-}" in
+                x11|wayland) return 0 ;;
+            esac
+            return 1
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
 cua_driver_runtime_compatible() {
     local driver_path version_output manifest_output
     local major minor
-    driver_path="$(command -v cua-driver 2>/dev/null)" || return 1
+    driver_path="$(find_cua_driver)" || return 1
     version_output="$("$driver_path" --version 2>/dev/null)" || return 1
     if [[ ! "$version_output" =~ ([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
         return 1
@@ -2896,12 +2944,36 @@ install_computer_use_driver() {
             return 0
             ;;
     esac
-    if command -v cua-driver >/dev/null 2>&1; then
+    local existing_driver=""
+    if existing_driver="$(find_cua_driver)"; then
         if cua_driver_runtime_compatible; then
             log_success "Computer Use driver (cua-driver) already installed and compatible"
             return 0
         fi
-        log_warn "Existing cua-driver is old or incomplete; repairing it"
+        log_warn "Existing cua-driver ($existing_driver) is old or incomplete; repairing it"
+    fi
+    # The pre-install is a convenience for FRESH installs on hosts that can
+    # actually drive a desktop. Two cases are opt-in only (#104413):
+    #   * no graphical session (headless VPS / gateway box) — the toolset
+    #     can never work here, so a silent third-party install is pure
+    #     surprise;
+    #   * re-running install.sh over an existing install (an update) — like
+    #     `hermes update`, an update repairs a driver that is already
+    #     present but never introduces a new one. Enabling the toolset
+    #     (`hermes tools`, dashboard, `hermes computer-use install`) is the
+    #     consent that installs it.
+    # `--with-computer-use` forces the pre-install in both cases.
+    if [ -z "$existing_driver" ] && [ "$WITH_COMPUTER_USE" != true ]; then
+        if ! host_can_use_computer_use; then
+            log_info "Skipping Computer Use driver (cua-driver): no graphical session on this host."
+            log_info "  Install it later with: hermes computer-use install  (or pass --with-computer-use)"
+            return 0
+        fi
+        if [ -f "$INSTALL_DIR/.install_method" ]; then
+            log_info "Skipping Computer Use driver (cua-driver): updates never add it to an existing install."
+            log_info "  Install it with: hermes computer-use install  (or enable Computer Use in 'hermes tools')"
+            return 0
+        fi
     fi
     # Non-admin macOS accounts can't receive the CuaDriver.app bundle in
     # /Applications; skip cleanly instead of failing loudly (#47865 class).
@@ -2910,15 +2982,25 @@ install_computer_use_driver() {
         return 0
     fi
 
+    # Say up front what the upstream installer writes OUTSIDE $HERMES_HOME, so
+    # nobody discovers ~/.cua-driver by accident weeks later (#104413).
     log_info "Installing Computer Use driver (cua-driver)..."
+    log_info "  Writes ~/.cua-driver (packages) and ~/.local/bin/cua-driver — outside \$HERMES_HOME;"
+    log_info "  'hermes uninstall' lists them and how to remove them."
     # Same upstream installer `hermes computer-use install` runs; time-boxed
     # so a stalled GitHub download can't hang the Hermes install. The
     # upstream installer serializes with its own lock (600s stale window),
     # so give it a ceiling above that — matching Hermes'
     # _CUA_INSTALLER_TIMEOUT (660s).
+    # Env mirrors the Python installer (hermes_cli/tools_config_cua.py):
+    #   CUA_DRIVER_RS_NO_MODIFY_PATH=1  — never append to ~/.bashrc/.zshrc;
+    #     setup_path already manages the ~/.local/bin PATH line, and Hermes
+    #     resolves ~/.local/bin/cua-driver without PATH anyway.
+    #   CUA_DRIVER_RS_TELEMETRY_ENABLED=0 — the upstream install-event is
+    #     default-on; Hermes' policy is opt-in (computer_use.cua_telemetry).
     local cua_log
     cua_log="$(mktemp)"
-    if run_with_timeout 660 /bin/bash -c \
+    if run_with_timeout 660 env CUA_DRIVER_RS_NO_MODIFY_PATH=1 CUA_DRIVER_RS_TELEMETRY_ENABLED=0 /bin/bash -c \
         'curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh | /bin/bash' \
         >"$cua_log" 2>&1; then
         log_success "Computer Use driver installed (enable via 'hermes tools' → Computer Use)"

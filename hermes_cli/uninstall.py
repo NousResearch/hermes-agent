@@ -684,6 +684,8 @@ def _perform_uninstall(
     _print_box("│              ✓ Uninstall Complete!                      │", Colors.GREEN)
     print()
 
+    _print_cua_driver_leftovers()
+
     if not full_uninstall:
         print(color("Your configuration and data have been preserved:", Colors.CYAN))
         print(f"  {hermes_home}/")
@@ -696,6 +698,42 @@ def _perform_uninstall(
         print(color(line, col) if col else line)
     print()
     print("Thank you for using Hermes Agent! ⚕")
+    print()
+
+
+def cua_driver_leftover_paths() -> "list[Path]":
+    """Paths the upstream cua-driver installer writes OUTSIDE ``$HERMES_HOME`` that still exist.
+    Hermes may have installed them (install.sh pre-install, ``hermes computer-use install``, the
+    toolset toggle) but cannot prove it owns them — Cua's driver and skill pack are shared with
+    other agent harnesses — so the uninstall never deletes them; it names them (#104413)."""
+    home = Path(os.path.expanduser("~"))
+    candidates = [Path(os.environ.get("CUA_DRIVER_RS_HOME") or home / ".cua-driver")]
+    if _is_windows():
+        local_app_data = Path(os.environ.get("LOCALAPPDATA") or home / "AppData" / "Local")
+        candidates.append(local_app_data / "Programs" / "Cua" / "cua-driver")
+    else:
+        candidates.append(home / ".local" / "bin" / "cua-driver")
+    return [p for p in candidates if p.exists() or p.is_symlink()]
+
+
+_CUA_UNINSTALL_HINT = {
+    True: "  irm https://cua.ai/driver/uninstall.ps1 | iex",
+    False: '  /bin/bash -c "$(curl -fsSL https://cua.ai/driver/uninstall.sh)"'}
+
+
+def _print_cua_driver_leftovers() -> None:
+    """Tell the user about the cua-driver (Computer Use) files left outside ``$HERMES_HOME``."""
+    try:
+        leftovers = cua_driver_leftover_paths()
+    except Exception:
+        return
+    if not leftovers:
+        return
+    print(color("Left in place (cua-driver / Computer Use, installed outside HERMES_HOME):", Colors.CYAN))
+    for path in leftovers:
+        print(f"  {path}")
+    print("Other agents may share it. To remove it too, run the upstream uninstaller:")
+    print(color(_CUA_UNINSTALL_HINT[_is_windows()], Colors.DIM))
     print()
 
 

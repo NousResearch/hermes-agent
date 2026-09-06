@@ -41,10 +41,16 @@ no-foreground invariant, click-dispatch internals — see
 
 ## Enabling
 
-**Fresh installs already have the driver.** The Hermes installer
+**Fresh desktop installs already have the driver.** The Hermes installer
 (`install.sh` / `install.ps1`) pre-installs `cua-driver` (best-effort;
 pass `--skip-computer-use` / `-SkipComputerUse` to opt out), so enabling
-Computer Use is just a config flip:
+Computer Use is just a config flip. Two cases are opt-in only, because the
+driver is installed **outside `$HERMES_HOME`** (see
+[Where it lives](#where-it-lives)): a headless Linux host with no graphical
+session, and re-running the installer over an existing install (an update —
+like `hermes update`, it repairs a driver that is already present but never
+adds one). Pass `--with-computer-use` / `-WithComputerUse` to force the
+pre-install there, or use one of the enable paths below:
 
 - **`hermes tools`** → pick `🖱️  Computer Use` — installs the driver
   automatically if it's still missing.
@@ -70,6 +76,29 @@ the upstream installer (at most once per session at runtime). A binary
 selected with `HERMES_CUA_DRIVER_CMD` stays
 under your control, so Hermes reports the incompatibility and leaves it
 unchanged.
+
+### Where it lives
+
+`cua-driver` is a third-party binary with its own installer, and it does
+not live under `$HERMES_HOME`. On macOS/Linux the upstream installer writes
+`~/.cua-driver/` (versioned packages, release-channel state) and links the
+binary at `~/.local/bin/cua-driver`; on Windows it writes
+`%USERPROFILE%\.cua-driver\` and `%LOCALAPPDATA%\Programs\Cua\cua-driver\`.
+Every Hermes path that installs it says so up front, and Hermes runs the
+installer with `CUA_DRIVER_RS_NO_MODIFY_PATH=1` (so it never appends to your
+`~/.bashrc`/`~/.zshrc` — Hermes finds `~/.local/bin/cua-driver` on its own)
+and with the upstream install-event telemetry off (at runtime, driver
+telemetry follows `computer_use.cua_telemetry`, default off). `hermes update`
+only refreshes a driver that is already installed; it never installs one.
+
+`hermes uninstall` leaves these files in place (Cua's driver and skill pack
+may be shared with other agent harnesses) and prints the upstream
+uninstaller command to remove them:
+
+```
+/bin/bash -c "$(curl -fsSL https://cua.ai/driver/uninstall.sh)"   # macOS/Linux
+irm https://cua.ai/driver/uninstall.ps1 | iex                        # Windows
+```
 
 If you install Cua Driver first, `cua-driver skills install` installs Cua's
 skill pack under `~/.cua-driver/skills/cua-driver`. Hermes autodetection is a

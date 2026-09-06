@@ -136,7 +136,7 @@ Running Hermes as a dedicated unprivileged user (e.g. a `hermes` systemd service
    curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-browser
    ```
 
-   The installer also pre-installs [`cua-driver`](../user-guide/features/computer-use.md) so the Computer Use toolset works the moment you enable it; pass `--skip-computer-use` to opt out (it will then install on demand when you enable the tool).
+   On a fresh install with a graphical session, the installer also pre-installs [`cua-driver`](../user-guide/features/computer-use.md) so the Computer Use toolset works the moment you enable it. The driver lives **outside** `$HERMES_HOME` (`~/.cua-driver` and `~/.local/bin/cua-driver`), so two cases are opt-in only: a headless host (no `DISPLAY`/`WAYLAND_DISPLAY`, like this service-user setup) and re-running the installer over an existing install. In both, the installer prints a one-line notice and leaves it to `hermes computer-use install` (or enabling the toolset in `hermes tools`); pass `--with-computer-use` to force the pre-install, or `--skip-computer-use` to opt out entirely.
 
 3. **Make `hermes` available to the service user's shells.** The installer writes the launcher to `~/.local/bin/hermes`. System service accounts often have a minimal PATH that doesn't include `~/.local/bin`. Either add it to the user's environment, or symlink the launcher into a system location:
    ```bash

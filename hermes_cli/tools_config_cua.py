@@ -727,9 +727,22 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True,
     if show_progress:
         _print_info(f"    {label} cua-driver (background computer-use)..." if verbose
                     else f"→ {label} cua-driver (Computer Use)...")
+        if label == "Installing" and not is_windows:
+            # A fresh install writes outside $HERMES_HOME; say so up front rather than letting the
+            # user discover ~/.cua-driver weeks later (#104413). Refresh/repair runs touch paths
+            # that already exist, so they stay quiet.
+            _print_info(f"    Writes {_cua_install_home()} (packages) and ~/.local/bin/cua-driver "
+                        "— outside HERMES_HOME; 'hermes uninstall' lists them and how to remove them.")
     driver_cmd = _cua_driver_cmd()
     timeout = _CUA_INSTALLER_TIMEOUT if installer_timeout is None else installer_timeout
     installer_env = _cua_driver_env()
+    # Never let the upstream installer append to ~/.bashrc / ~/.zshrc: Hermes resolves
+    # ~/.local/bin/cua-driver itself (cua_backend_driver._candidate_cua_driver_commands) and
+    # install.sh's setup_path already manages the ~/.local/bin PATH line — a second, unlabelled
+    # one is a shell-rc edit nothing in Hermes owns or cleans up (#104413). The POSIX installer
+    # honours CUA_DRIVER_RS_NO_MODIFY_PATH; install.ps1 ignores unknown env, so setting it
+    # unconditionally is harmless.
+    installer_env.setdefault("CUA_DRIVER_RS_NO_MODIFY_PATH", "1")
     if pin_version:  # both upstream installers honour CUA_DRIVER_RS_VERSION over the baked default
         installer_env["CUA_DRIVER_RS_VERSION"] = pin_version
     # A previous timed-out install can leave upstream's concurrent-install lock behind; clear it

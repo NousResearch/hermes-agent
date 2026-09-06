@@ -1809,3 +1809,135 @@ def test_docker_env_warnings_never_echo_values(caplog):
     with caplog.at_level(logging.WARNING, logger="tools.environments.docker"):
         docker_env._normalize_env_dict({"TOKEN": ["sk-live-value"], "OK": "1"})
     assert "TOKEN" in caplog.text and "sk-live-value" not in caplog.text
+
+
+def test_redact_docker_env_args_preserves_keys_only():
+    redacted = docker_env._redact_docker_env_args([
+        "-e",
+        "MY_SECRET=sk-test-12345",
+        "--env",
+        "NO_VALUE",
+        "--env=TOKEN=oauth-token",
+        "-ePASSWORD=hunter2",
+        "-e=USERNAME=alice",
+        "--env-file",
+        "/tmp/env.list",
+    ])
+
+    assert redacted == [
+        "-e",
+        "MY_SECRET=***",
+        "--env",
+        "NO_VALUE",
+        "--env=TOKEN=***",
+        "-ePASSWORD=***",
+        "-e=USERNAME=***",
+        "--env-file",
+        "/tmp/env.list",
+    ]
+
+@pytest.mark.parametrize("shape", [list, tuple])
+@pytest.mark.parametrize("error_type", [subprocess.CalledProcessError, subprocess.TimeoutExpired])
+def test_redact_subprocess_error_preserves_keys_only(shape, error_type):
+    cmd = [
+        "/usr/bin/docker",
+        "run",
+        "-e",
+        "MY_SECRET=sk-test-12345",
+        "--env=TOKEN=oauth-token",
+        "python:3.11",
+    ]
+    cmd = shape(cmd)
+    error = (error_type(125, cmd, output="stdout-secret", stderr="stderr-secret")
+             if error_type is subprocess.CalledProcessError else
+             error_type(cmd, 120, output="stdout-secret", stderr="stderr-secret"))
+
+    message = docker_env._redact_subprocess_error(error)
+    assert error.cmd is cmd
+    assert error.output == "stdout-secret" and error.stderr == "stderr-secret"
+    assert "stdout-secret" not in message and "stderr-secret" not in message
+
+    assert "sk-test-12345" not in message
+    assert "oauth-token" not in message
+    assert "MY_SECRET=***" in message
+    assert "--env=TOKEN=***" in message
+
+
+def test_docker_env_values_are_redacted_from_logs(monkeypatch, caplog):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    with caplog.at_level(logging.DEBUG, logger="tools.environments.docker"):
+        _make_dummy_env(
+            extra_args=["-e", "MY_SECRET=sk-test-12345"],
+            persist_across_processes=False,
+        )
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "sk-test-12345" not in log_text
+    assert "MY_SECRET=***" in log_text
+
+    run_args = _run_args_from_calls(calls)
+    assert "MY_SECRET=sk-test-12345" in run_args
+
+def test_docker_run_failure_redacts_env_values_from_logs(monkeypatch, caplog):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+
+    def _run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            sub = cmd[1]
+            if sub == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if sub == "run":
+                raise subprocess.CalledProcessError(125, cmd, stderr="daemon error")
+            if sub == "rm":
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    with caplog.at_level(logging.WARNING, logger="tools.environments.docker"):
+        with pytest.raises(subprocess.CalledProcessError):
+            _make_dummy_env(
+                extra_args=["-e", "MY_SECRET=sk-test-12345"],
+                persist_across_processes=False,
+            )
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "sk-test-12345" not in log_text
+    assert "MY_SECRET=***" in log_text
+
+def test_recreate_container_failure_redacts_env_values_from_logs(monkeypatch, caplog):
+    env = docker_env.DockerEnvironment.__new__(docker_env.DockerEnvironment)
+    env._container_id = "old-container-id"
+    env._labels = {
+        "hermes-agent": "1",
+        "hermes-task-id": "task",
+        "hermes-profile": "default",
+    }
+    env._image = "python:3.11"
+    env._image_uses_s6_init = False
+    env._all_run_args = ["-e", "MY_SECRET=sk-test-12345"]
+    env._docker_exe = "/usr/bin/docker"
+    env.cwd = "/root"
+    env._snap_compat = False
+    env._run_env_values = {}
+
+    monkeypatch.setattr(
+        docker_env.DockerEnvironment,
+        "_find_reusable_container",
+        lambda self, task_label, profile_label, egress_mode: None,
+    )
+
+    def _run(cmd, **kwargs):
+        raise subprocess.CalledProcessError(125, cmd, stderr="daemon error")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    with caplog.at_level(logging.ERROR, logger="tools.environments.docker"):
+        assert env._recreate_container() is False
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "sk-test-12345" not in log_text
+    assert "MY_SECRET=***" in log_text

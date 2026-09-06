@@ -50,6 +50,13 @@ export const SessionControlLoopSection = memo(function SessionControlLoopSection
   const [menuOpen, setMenuOpen] = useState(false)
   const isBusy = Boolean(pendingAction)
 
+  const iconClass =
+    loop.status === 'done'
+      ? 'text-muted-foreground/70'
+      : loop.status === 'paused' || loop.deferred_by_goal
+        ? 'text-amber-500'
+        : 'text-emerald-500'
+
   const handleAction = useCallback(
     async (action: SessionControlAction, args?: SessionControlActionArgs): Promise<boolean> => {
       onFeedback(null, null)
@@ -185,7 +192,7 @@ export const SessionControlLoopSection = memo(function SessionControlLoopSection
                 </DropdownMenu>
               }
               defaultCollapsed={true}
-              icon={<Codicon className="text-muted-foreground/70" name="sync" size="0.8rem" />}
+              icon={<Codicon className={iconClass} name="sync" size="0.8rem" />}
               label={headerLabel}
             >
               <div className="space-y-1 px-1 py-1 text-xs">

@@ -461,6 +461,137 @@ describe('ComposerStatusStack session-control UI', () => {
   })
 
   // 12. heartbeat interval/next/fire count and controls
+  it("shows a precise live countdown and makes an overdue heartbeat's idle wait explicit", () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(1_700_000_030_000))
+
+    try {
+      $sessionControlBySession.set({
+        [SID]: mockEntry({
+          snapshot: sampleSnapshot({
+            goal: null,
+            heartbeat: sampleHeartbeat({
+              created_at: 1_700_000_000,
+              fire_count: 0,
+              interval_seconds: 90,
+              last_fired_at: 0,
+              status: 'active'
+            })
+          })
+        })
+      })
+
+      renderStack()
+
+      expect(screen.getByText(/Heartbeat active · every 90s · next 00:01:00/)).toBeTruthy()
+
+      act(() => {
+        vi.advanceTimersByTime(60_000)
+      })
+
+      expect(screen.getByText(/Heartbeat active · every 90s · due — waiting for idle/)).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('colors the heartbeat icon for active, due, and paused states', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(1_700_000_030_000))
+
+    try {
+      $sessionControlBySession.set({
+        [SID]: mockEntry({
+          snapshot: sampleSnapshot({
+            goal: null,
+            heartbeat: sampleHeartbeat({
+              created_at: 1_700_000_000,
+              interval_seconds: 90,
+              last_fired_at: 0,
+              status: 'active'
+            })
+          })
+        })
+      })
+
+      renderStack()
+
+      const icon = () => window.document.querySelector('[data-slot="session-control-heartbeat"] .codicon-pulse')
+
+      expect(icon()?.className).toContain('text-emerald-500')
+
+      act(() => {
+        vi.advanceTimersByTime(60_000)
+      })
+
+      expect(icon()?.className).toContain('text-amber-500')
+
+      act(() => {
+        $sessionControlBySession.set({
+          [SID]: mockEntry({
+            snapshot: sampleSnapshot({ heartbeat: sampleHeartbeat({ status: 'paused' }) })
+          })
+        })
+      })
+
+      expect(icon()?.className).toContain('text-red-500')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('colors the loop, goal, and criteria markers from their verified state', () => {
+    $sessionControlBySession.set({
+      [SID]: mockEntry({
+        snapshot: sampleSnapshot({
+          goal: sampleGoal({ status: 'active', last_verdict: 'continue' }),
+          loop: sampleLoop({ status: 'active' })
+        })
+      })
+    })
+
+    renderStack()
+
+    const loopIcon = () => window.document.querySelector('[data-slot="session-control-loop"] .codicon-sync')
+    const goalIcon = () => window.document.querySelector('[data-slot="session-control-goal"] .codicon-target')
+    const criteriaMarker = () => window.document.querySelector('[data-slot="session-control-goal"] [data-slot="criteria-state-marker"]')
+
+    expect(loopIcon()?.className).toContain('text-emerald-500')
+    expect(goalIcon()?.className).toContain('text-emerald-500')
+    expect(criteriaMarker()?.className).toContain('text-emerald-500')
+
+    act(() => {
+      $sessionControlBySession.set({
+        [SID]: mockEntry({
+          snapshot: sampleSnapshot({
+            goal: sampleGoal({ status: 'paused', paused_reason: 'Paused for review' }),
+            loop: sampleLoop({ status: 'paused', paused_reason: 'Paused for review' })
+          })
+        })
+      })
+    })
+
+    expect(loopIcon()?.className).toContain('text-amber-500')
+    expect(goalIcon()?.className).toContain('text-amber-500')
+    expect(criteriaMarker()?.className).toContain('text-amber-500')
+
+    act(() => {
+      $sessionControlBySession.set({
+        [SID]: mockEntry({
+          snapshot: sampleSnapshot({
+            goal: sampleGoal({ last_verdict: 'blocked', status: 'active' }),
+            loop: sampleLoop({ status: 'done', last_stop_reason: 'Reached configured run count' })
+          })
+        })
+      })
+    })
+
+    expect(screen.getByText(/Goal blocked · Turn 3\/20/)).toBeTruthy()
+    expect(goalIcon()?.className).toContain('text-red-500')
+    expect(criteriaMarker()?.className).toContain('text-red-500')
+    expect(loopIcon()?.className).toContain('text-muted-foreground/70')
+  })
+
   it('renders heartbeat and triggers heartbeat.pause', async () => {
     mockRunSessionControlAction.mockResolvedValue({
       type: 'exec',

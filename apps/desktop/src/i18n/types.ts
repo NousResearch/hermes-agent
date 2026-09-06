@@ -2261,6 +2261,7 @@ export interface Translations {
     agents: string
     background: (count: number) => string
     goalActive: string
+    goalBlocked: string
     goalDone: string
     goalPaused: string
     goalWaiting: string
@@ -2340,6 +2341,7 @@ export interface Translations {
       heartbeatEveryHours: (hours: number) => string
       heartbeatEverySeconds: (seconds: number) => string
       heartbeatNext: (time: string) => string
+      heartbeatDueWaitingForIdle: string
       heartbeatActions: string
       pauseHeartbeat: string
       resumeHeartbeat: string

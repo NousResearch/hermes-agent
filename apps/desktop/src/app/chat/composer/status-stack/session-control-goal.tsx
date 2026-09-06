@@ -133,8 +133,19 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
         ? 'done'
         : 'active'
 
+  const iconClass =
+    goal.last_verdict === 'blocked'
+      ? 'text-red-500'
+      : visibleState === 'done'
+        ? 'text-muted-foreground/70'
+        : visibleState === 'active'
+          ? 'text-emerald-500'
+          : 'text-amber-500'
+
   const stateLabel =
-    visibleState === 'waiting'
+    goal.last_verdict === 'blocked'
+      ? s.goalBlocked
+      : visibleState === 'waiting'
       ? s.goalWaiting
       : visibleState === 'paused'
         ? s.goalPaused
@@ -297,7 +308,7 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
                 </DropdownMenu>
               }
               defaultCollapsed={false}
-              icon={<Codicon className="text-muted-foreground/70" name="target" size="0.8rem" />}
+              icon={<Codicon className={iconClass} name="target" size="0.8rem" />}
               label={headerLabel}
             >
               <div className="space-y-1.5 px-1 py-1">
@@ -337,7 +348,12 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
                 {/* Criteria subsection */}
                 <div className="mt-2 border-t border-(--ui-stroke-tertiary)/40 pt-1.5">
                   <div className="flex items-center justify-between pb-1 text-[0.68rem] font-medium text-muted-foreground/75">
-                    <span>{ctrl.criteriaHeader(goal.subgoals.length)}</span>
+                    <div className="flex items-center gap-1.5">
+                      <span aria-hidden="true" className={`inline-flex ${iconClass}`} data-slot="criteria-state-marker">
+                        <Codicon name="target" size="0.68rem" />
+                      </span>
+                      <span>{ctrl.criteriaHeader(goal.subgoals.length)}</span>
+                    </div>
                     <div className="flex items-center gap-1">
                       <Button
                         className="text-[0.68rem] text-muted-foreground/75 hover:text-foreground/90"

@@ -810,6 +810,25 @@ _SLASH_BUILTINS = {
     "loop": _cmd_loop, "undo": _cmd_undo, "snapshot": _cmd_snapshot, "snap": _cmd_snapshot,
     "compress": _cmd_compress, "compact": _cmd_compress}
 
+_SESSION_CONTROL_SLASHES = frozenset({"goal", "heartbeat", "loop", "subgoal"})
+
+
+def _publish_session_control_snapshot(sid: str, session: dict, command_name: str) -> None:
+    """Best-effort immediate Desktop repaint after a worker-backed automation slash command."""
+    session_key = str(session.get("session_key") or "")
+    if not session_key:
+        return
+    try:
+        with _session_profile_runtime_scope(session):
+            control = _snapshot_control(session_key)
+    except Exception:
+        logger.debug("session.control snapshot after /%s failed", command_name, exc_info=True)
+        return
+    try:
+        _emit("session.control.update", sid, {"control": control})
+    except Exception:
+        logger.debug("session.control.update emit after /%s failed", command_name, exc_info=True)
+
 
 @method("command.dispatch")
 def _(rid, params: dict) -> dict:
@@ -876,6 +895,8 @@ def _(rid, params: dict) -> dict:
         payload = {"output": worker.run(cmd) or "(no output)"}
         if warning := _mirror_slash_side_effects(sid, session, cmd):
             payload["warning"] = warning
+        if base in _SESSION_CONTROL_SLASHES:
+            _publish_session_control_snapshot(sid, session, base)
         return _ok(rid, payload)
     except Exception as e:
         with contextlib.suppress(Exception):

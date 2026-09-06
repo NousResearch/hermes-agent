@@ -7,8 +7,11 @@
 import os
 import posixpath
 import re
+import shlex
+import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -316,6 +319,66 @@ class SearchMixin:
         self._rg_modified_capability[executable] = error
         return error
 
+    # --- native rg transport (local POSIX) --------------------------------------
+
+    def _native_rg_enabled(self) -> bool:
+        """Whether rg may run as a direct argv subprocess instead of through the
+        backend shell. Same gate and kill switch as ``_native_read_enabled``: local
+        POSIX host only (Windows keeps Git-Bash paths; remote backends have their
+        own filesystem), ``HERMES_NATIVE_FILE_READ=0`` turns both off."""
+        return self._native_read_enabled()
+
+    def _run_rg_native(self, argv: List[str], fetch_limit: int, timeout: int,
+                       merge_stderr: bool = False) -> ExecuteResult:
+        """Run ``argv`` (shell-quoted rg words) natively and stop reading after
+        ``fetch_limit`` lines — the ``| head -n`` of the shell pipeline without the
+        two bash spawns. ``shlex.split`` undoes the escaping the builders apply for
+        the shell path, so both transports see identical arguments. Exit code and
+        stdout follow the shell contract (rg 0/1/2; 124 on timeout with partial
+        output), so ``_parse_search_output`` is shared. Once the bound is reached rg
+        is killed like ``head`` closing the pipe would. ``merge_stderr`` mirrors the
+        shell path's stderr handling: merged for content search (diagnostics feed
+        the error message), discarded (``2>/dev/null``) for file lists and probes."""
+        from tools.environments.local import _make_run_env
+        cwd = getattr(self.env, "cwd", None) or self.cwd
+        args = shlex.split(" ".join(argv))
+        try:
+            proc = subprocess.Popen(
+                args, cwd=cwd, env=_make_run_env(self.env.env), stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT if merge_stderr else subprocess.DEVNULL,
+                start_new_session=True)
+        except OSError as exc:
+            return ExecuteResult(stdout=f"rg: {exc}", exit_code=2)
+        lines: List[bytes] = []
+        deadline = time.monotonic() + timeout
+        timed_out = False
+        bounded = False
+        try:
+            for raw in proc.stdout:
+                lines.append(raw)
+                if len(lines) >= fetch_limit:
+                    bounded = True
+                    break
+                if time.monotonic() > deadline:
+                    timed_out = True
+                    break
+            if bounded or timed_out:
+                proc.kill()
+            try:
+                proc.wait(timeout=max(0.1, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                timed_out = True
+        finally:
+            proc.stdout.close()
+        stdout = b"".join(lines).decode("utf-8", errors="replace")
+        if timed_out:
+            return ExecuteResult(stdout=stdout + f"\n[Command timed out after {timeout}s]", exit_code=124)
+        # A killed-at-bound rg reports a signal (negative returncode); head would have
+        # left the pipeline at 0 unless rg itself already failed.
+        return ExecuteResult(stdout=stdout, exit_code=0 if bounded else proc.returncode)
+
     def _quote_executable(self, executable: str) -> str:
         """Quote an executable without leaking controller path semantics."""
         if re.fullmatch(r"[A-Za-z0-9_.-]+", executable):
@@ -393,6 +456,9 @@ class SearchMixin:
 
     def _path_exists_probe(self, path: str) -> str:
         """Stdout of the existence probe: contains "exists" or "not_found"."""
+        if self._native_rg_enabled():
+            full = path if os.path.isabs(path) else os.path.join(getattr(self.env, "cwd", None) or self.cwd, path)
+            return "exists" if os.path.exists(full) else "not_found"
         return self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found").stdout
 
     def _dispatch_search(self, pattern: str, path: str, target: str,
@@ -512,11 +578,12 @@ class SearchMixin:
                 glob_expr_probe = f"{glob_expr} {self._search_prune_glob_args()}"
             else:
                 glob_expr_probe = glob_expr
-            probe = self._exec(
-                f"{rg} {flags} --count-matches{glob_expr_probe} "
-                f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
-                f"2>/dev/null | head -50",
-                timeout=30)
+            probe_words = [rg, flags, "--count-matches", glob_expr_probe,
+                           self._escape_shell_arg(pattern), self._escape_native_tool_arg(path)]
+            if self._native_rg_enabled():
+                probe = self._run_rg_native(probe_words, 50, timeout=30)
+            else:
+                probe = self._exec(" ".join(probe_words) + " 2>/dev/null | head -50", timeout=30)
             total, per_file = 0, []
             for line in (probe.stdout or "").strip().splitlines():
                 p, _sep, n = line.rpartition(":")
@@ -694,9 +761,14 @@ class SearchMixin:
         root_args = " ".join(self._escape_native_tool_arg(root) for root in command_roots)
         cd_prefix = f"cd {self._escape_shell_arg(scoped_common)} && " if scoped_common else ""
         # ``--`` terminates options so a dash-prefixed root is never parsed as a flag.
-        cmd = (f"set -o pipefail; {cd_prefix}{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
-               f"{exclusion_args} -- {root_args} 2>/dev/null | head -n {fetch_limit}")
-        result = self._exec(cmd, timeout=60)
+        if not scoped_common and self._native_rg_enabled():
+            argv = [rg, "--files", *([sort_arg.strip()] if sort_arg else []), "-g",
+                    self._escape_shell_arg(glob_pattern), *exclusion_terms, "--", root_args]
+            result = self._run_rg_native(argv, fetch_limit, timeout=60)
+        else:
+            cmd = (f"set -o pipefail; {cd_prefix}{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
+                   f"{exclusion_args} -- {root_args} 2>/dev/null | head -n {fetch_limit}")
+            result = self._exec(cmd, timeout=60)
         stdout, limit_reason = _search_stdout_and_limit(result)
         all_files = [f for f in stdout.splitlines() if f]
         if scoped_common:
@@ -752,6 +824,9 @@ class SearchMixin:
         (grep): bounds giant single-line matches at the pipe layer; skipped for
         files_only/count where lines are paths/counts."""
         fetch_limit = limit + offset + (200 if context > 0 else 0)
+        if not line_cap and self._native_rg_enabled():
+            result = self._run_rg_native(cmd_parts, fetch_limit, timeout=60, merge_stderr=True)
+            return _parse_search_output(result, output_mode, limit, offset, context, warning=warning)
         parts = cmd_parts + ["|", "head", "-n", str(fetch_limit)]
         if line_cap and output_mode not in ("files_only", "count"):
             parts += ["|", "cut", "-c1-2000"]

@@ -16,41 +16,18 @@ from types import SimpleNamespace
 from typing import Optional
 
 from hermes_constants import get_hermes_home
+from hermes_cli.debug_log_redaction import _redact_log_text, _redact_debug_share_privacy
+from hermes_cli.debug_log_snapshot import LogSnapshot, capture_log_snapshot
 from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 
 # Prepended to upload-bound content when redaction is enabled so paste reviewers know.
 _REDACTION_BANNER = (
-    "[hermes debug share: log content redacted at upload time. "
+    "[hermes debug share: log content redacted at upload time; "
+    "best-effort secret and privacy redaction applied; "
+    "unrecognized personal data may remain. "
     "run with --no-redact to disable]\n")
-_EMAIL_ADDRESS_RE = re.compile(
-    r"(?<![A-Za-z0-9._%+-])"
-    r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
-    r"(?![A-Za-z0-9._%+-])"
-)
-_MESSAGE_FIELD_SINGLE_RE = re.compile(
-    r"\b(?P<key>msg|message|prompt|response|content)="
-    r"'(?:\\.|[^'\\])*'"
-)
-_MESSAGE_FIELD_DOUBLE_RE = re.compile(
-    r'\b(?P<key>msg|message|prompt|response|content)="'
-    r'(?:\\.|[^"\\])*"'
-)
-_MESSAGE_FIELD_BARE_RE = re.compile(
-    r"\b(?P<key>msg|message|prompt|response|content)=(?!['\"])[^\s]+"
-)
-_USER_FIELD_RE = re.compile(
-    r"\b(?P<key>user|user_id)="
-    r".*?"
-    r"(?=\s+(?:platform|user|user_id|chat|chat_id|session|session_id|thread|"
-    r"thread_id|msg|message|prompt|response|content)=|$)"
-)
-_IDENTITY_TOKEN_FIELD_RE = re.compile(
-    r"\b(?P<key>chat|chat_id|session|session_id|thread|thread_id)=[^\s]+"
-)
-_UNIX_HOME_COMPONENT_RE = re.compile(r"(?<![\w.-])/(?:home|Users)/[^/\s:'\"]+")
-_WINDOWS_HOME_COMPONENT_RE = re.compile(r"(?i)\b[A-Z]:\\Users\\[^\\\s:'\"]+")
 
 
 # ---------------------------------------------------------------------------
@@ -135,10 +112,10 @@ def _best_effort_sweep_expired_pastes() -> None:
 _PRIVACY_NOTICE = """\
 ⚠️  This will upload system info + logs to a PUBLIC paste service.
 
-Cryptographic secrets (API keys, tokens, passwords) are redacted before
-upload, but the following personal data is NOT redacted and will be public:
+Best-effort secret and privacy filters run before upload. Unrecognized
+personal data may remain in the report, including:
   • Your display name and persistent platform user ID
-  • Verbatim content of your recent messages (prompts, responses, tool output)
+  • Conversation fragments (prompts, responses, tool output)
   • Local filesystem paths
   • Any other PII present in the logs
 
@@ -245,14 +222,6 @@ def upload_to_pastebin(content: str, expiry_days: int = 1) -> str:
     raise RuntimeError("Failed to upload to any paste service:\n  " + "\n  ".join(errors))
 
 
-@dataclass
-class LogSnapshot:
-    """Single-read snapshot of a log file used by debug-share."""
-    path: Optional[Path]
-    tail_text: str
-    full_text: Optional[str]
-
-
 def _primary_log_path(log_name: str) -> Optional[Path]:
     """Where *log_name* would live if present. Doesn't check existence."""
     from hermes_cli.logs import LOG_FILES
@@ -289,93 +258,6 @@ def _resolve_log_path(log_name: str) -> Optional[Path]:
     return None
 
 
-def _redact_log_text(text: str) -> str:
-    """Run forced secret and privacy redaction over upload-bound text.
-
-    Uses ``force=True`` so secret redaction fires regardless of the operator's
-    ``security.redact_secrets`` setting. A second debug-share-only pass removes
-    common PII-bearing log fields such as user/chat identifiers, message
-    snippets, and local home paths. The on-disk log file is never modified;
-    only the diagnostic copy is sanitized. Local and private reports use the
-    same collector; public report policy is handled by the caller.
-    """
-    if not text:
-        return text
-    from agent.redact import redact_sensitive_text
-    text = redact_sensitive_text(text, force=True)
-    return _redact_debug_share_privacy(text)
-
-
-def _redact_debug_share_privacy(text: str) -> str:
-    """Remove personal context that is not covered by secret redaction."""
-    text = _EMAIL_ADDRESS_RE.sub("[REDACTED_EMAIL]", text)
-    text = _MESSAGE_FIELD_SINGLE_RE.sub(
-        lambda m: f"{m.group('key')}='[REDACTED_MESSAGE]'", text
-    )
-    text = _MESSAGE_FIELD_DOUBLE_RE.sub(
-        lambda m: f'{m.group("key")}="[REDACTED_MESSAGE]"', text
-    )
-    text = _MESSAGE_FIELD_BARE_RE.sub(
-        lambda m: f"{m.group('key')}=[REDACTED_MESSAGE]", text
-    )
-    text = _USER_FIELD_RE.sub(
-        lambda m: f"{m.group('key')}=[REDACTED_ID]", text
-    )
-    text = _IDENTITY_TOKEN_FIELD_RE.sub(
-        lambda m: f"{m.group('key')}=[REDACTED_ID]", text
-    )
-
-    for raw_path, replacement in _privacy_path_replacements():
-        text = text.replace(raw_path, replacement)
-        text = text.replace(raw_path.replace("\\", "/"), replacement.replace("\\", "/"))
-
-    text = _UNIX_HOME_COMPONENT_RE.sub("~", text)
-    return _WINDOWS_HOME_COMPONENT_RE.sub("~", text)
-
-
-def _privacy_path_replacements() -> list[tuple[str, str]]:
-    """Return local paths that should not be exposed in public debug pastes."""
-    replacements: list[tuple[str, str]] = []
-    seen: set[str] = set()
-    candidates = [
-        (get_hermes_home(), "~/.hermes"),
-        (Path.home(), "~"),
-    ]
-
-    for path, replacement in candidates:
-        raw = str(path)
-        if raw and raw not in seen:
-            seen.add(raw)
-            replacements.append((raw, replacement))
-
-    return replacements
-
-
-def _read_tail_bytes(
-    log_path: Path, size: int, max_bytes: int, tail_lines: int) -> tuple[bytes, bool]:
-    """Whole file, or (oversized) a backwards read holding ``max_bytes`` for the full upload AND
-    enough newlines for the summary tail from the same snapshot → (raw, truncated)."""
-    with open(log_path, "rb") as f:
-        if size <= max_bytes:
-            return f.read(), False
-        chunk_size = 8192
-        pos = size
-        chunks: list[bytes] = []
-        total = 0
-        newline_count = 0
-        while (pos > 0 and total < max_bytes * 2
-               and (total < max_bytes or newline_count <= tail_lines + 1)):
-            read_size = min(chunk_size, pos)
-            pos -= read_size
-            f.seek(pos)
-            chunk = f.read(read_size)
-            chunks.insert(0, chunk)
-            total += len(chunk)
-            newline_count += chunk.count(b"\n")
-            chunk_size = min(chunk_size * 2, 65536)
-        return b"".join(chunks), pos > 0
-
-
 def _capture_log_snapshot(
     log_name: str, *, tail_lines: int, max_bytes: int = _MAX_LOG_BYTES, redact: bool = True,
 ) -> LogSnapshot:
@@ -387,30 +269,9 @@ def _capture_log_snapshot(
         tail = "(file empty)" if primary and primary.exists() else _missing_log_note(log_name)
         return LogSnapshot(path=None, tail_text=tail, full_text=None)
 
-    try:
-        size = log_path.stat().st_size
-        if size == 0:  # truncated between _resolve_log_path and stat
-            return LogSnapshot(path=log_path, tail_text="(file empty)", full_text=None)
-        raw, truncated = _read_tail_bytes(log_path, size, max_bytes, tail_lines)
-        full_raw = raw
-        if truncated and len(full_raw) > max_bytes:
-            cut = len(full_raw) - max_bytes
-            # Drop a partial first line only when the cut lands genuinely mid-line.
-            on_boundary = cut > 0 and full_raw[cut - 1 : cut] == b"\n"
-            full_raw = full_raw[cut:]
-            if not on_boundary and b"\n" in full_raw:
-                full_raw = full_raw.split(b"\n", 1)[1]
-        all_text = raw.decode("utf-8", errors="replace")
-        tail_text = "".join(all_text.splitlines(keepends=True)[-tail_lines:]).rstrip("\n")
-        full_text = full_raw.decode("utf-8", errors="replace")
-        if truncated:
-            full_text = f"[... truncated — showing last ~{max_bytes // 1024}KB ...]\n{full_text}"
-        if redact:
-            tail_text = _redact_log_text(tail_text)
-            full_text = _redact_log_text(full_text)
-        return LogSnapshot(path=log_path, tail_text=tail_text, full_text=full_text)
-    except Exception as exc:
-        return LogSnapshot(path=log_path, tail_text=f"(error reading: {exc})", full_text=None)
+    return capture_log_snapshot(
+        log_path, tail_lines=tail_lines, max_bytes=max_bytes, redact=redact
+    )
 
 
 # Logs the debug report tails, in output order. ``agent`` gets the full ``--lines`` budget;
@@ -480,9 +341,16 @@ def collect_share_bundle(log_lines: int = 200, redact: bool = True) -> dict[str,
     redaction banner is prepended when ``redact`` is True.
     """
     dump_text = _capture_dump()
+    if redact:
+        dump_text = _redact_log_text(dump_text)
     log_snapshots = _capture_default_log_snapshots(log_lines, redact=redact)
     report = collect_debug_report(log_lines=log_lines, dump_text=dump_text,
                                   log_snapshots=log_snapshots)
+    if redact:
+        # Snapshot bodies and dump text are already projected. This pass
+        # covers generated paths/labels without reclassifying safe snapshots
+        # as new unframed message records.
+        report = _redact_debug_share_privacy(report)
     banner = _REDACTION_BANNER if redact else ""
     bundle: dict[str, str] = {"report": banner + report}
     for name in _FULL_LOGS:

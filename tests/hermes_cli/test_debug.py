@@ -870,7 +870,8 @@ class TestShareIncludesAutoDelete:
 
         out = capsys.readouterr().out
         assert "PUBLIC paste service" in out
-        assert "NOT redacted" in out
+        assert "Best-effort secret and privacy filters" in out
+        assert "personal data may remain" in out
 
     def test_share_output_warns_on_dpaste_fallback(self, hermes_home, capsys):
         """With dpaste.com URLs the output must not promise 6-hour auto-delete

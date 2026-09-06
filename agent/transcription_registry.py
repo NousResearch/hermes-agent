@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # :mod:`tools.transcription_tools`** (TestBuiltinSync fails on drift); importing it
 # directly would be a circular import.
 _BUILTIN_NAMES = frozenset({
-    "local", "local_command", "groq", "openai", "mistral", "xai", "elevenlabs", "deepinfra",
+    "local", "local_command", "groq", "openai", "mistral", "xai", "elevenlabs", "deepinfra", "dashscope",
 })
 
 

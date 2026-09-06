@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # would be a circular import.
 _BUILTIN_NAMES = frozenset({
     "edge", "elevenlabs", "openai", "minimax", "xai", "mistral", "gemini", "neutts", "kittentts",
-    "piper", "deepinfra",
+    "piper", "deepinfra", "dashscope",
 })
 
 

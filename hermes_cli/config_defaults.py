@@ -990,10 +990,10 @@ DEFAULT_CONFIG = {
     # Text-to-speech. Each provider accepts an optional `max_text_length:` override for the
     # per-request input-character cap; omit to use the provider's documented limit (OpenAI 4096, xAI
     # 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware, Gemini 32000, Edge 5000, Mistral 4000,
-    # NeuTTS/KittenTTS 2000).
+    # DashScope 500, NeuTTS/KittenTTS 2000).
     "tts": {
         # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" |
-        # "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        # "gemini" | "dashscope" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "provider": "edge",
         "edge": {
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -1017,6 +1017,12 @@ DEFAULT_CONFIG = {
             # Optional local text file with performance direction; may include a `{transcript}`
             # placeholder, else the live transcript is appended.
             "persona_prompt_file": "",
+        },
+        "dashscope": {
+            "model": "qwen3-tts-flash",
+            "voice": "Cherry",
+            "language_type": "Auto",
+            # Optional "base_url" points to a regional/workspace DashScope native API root.
         },
         "xai": {
             "voice_id": "eve",  # or a custom voice ID (docs.x.ai custom voices)
@@ -1062,7 +1068,7 @@ DEFAULT_CONFIG = {
         "echo_transcripts": True,
         # No seeded "provider": a stored value counts as an explicit user pick; unset = autodetect
         # ladder. Valid: "local" (faster-whisper) | "groq" | "openai" | "mistral" | "elevenlabs" |
-        # "deepinfra". Global language hint unless a per-provider language overrides it. "en"
+        # "deepinfra" | "dashscope". Global language hint unless a per-provider language overrides it. "en"
         # because Whisper auto-detect misreads short/accented clips; "" = auto; or "es", "zh", ...
         "language": "en",
         # Client-side ffmpeg silence trim before cloud upload (local whisper uses VAD): silence
@@ -1105,6 +1111,12 @@ DEFAULT_CONFIG = {
             "language_code": "",  # auto-detect; set "eng", "spa", ... to force
             "tag_audio_events": False,
             "diarize": False,
+        },
+        "dashscope": {
+            "model": "qwen3-asr-flash",
+            "language": "",  # auto-detect; set "zh", "yue", "en", ... to force
+            "enable_itn": False,
+            # Optional "base_url" points to a regional/workspace DashScope native API root.
         },
         "deepinfra": {
             "model": "",  # empty = first stt-tagged model from the live catalog

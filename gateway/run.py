@@ -940,32 +940,6 @@ def _float_env(name: str, default: float) -> float:
         return float(default)
 
 
-def _format_iteration_progress(api_call_count: Any, max_iterations: Any) -> str:
-    """Render an ``iteration N/M`` status fragment for a running turn.
-
-    Shared by every user-facing status line that formats
-    ``AIAgent.get_activity_summary()``'s ``api_call_count`` / ``max_iterations`` pair: the
-    long-running heartbeat (``run_turn._run_agent_notify_long_running``), the busy-session
-    acknowledgment (``run_busy._handle_active_session_busy_message``), and the
-    gateway-timeout diagnostic message (``run_turn._run_agent_timeout_result``).
-
-    ``AIAgent.max_iterations`` defaults to ``sys.maxsize`` (unlimited tool-calling
-    iterations — see ``run_agent.py``), so a top-level session almost never has a real
-    ceiling. Printing that default verbatim renders the literal ``9223372036854775807`` in
-    a user-facing status line, which reads as a bug rather than "unbounded" (#102806). Omit
-    the denominator once the configured ceiling is at or above that sentinel; a genuinely
-    finite budget (e.g. a subagent's ``delegation.max_iterations: 250``) still prints both
-    numbers.
-    """
-    try:
-        _max = int(max_iterations)
-    except (TypeError, ValueError):
-        _max = None
-    if _max is None or _max >= sys.maxsize:
-        return f"iteration {api_call_count}"
-    return f"iteration {api_call_count}/{_max}"
-
-
 def _stamp_hygiene_compression_provenance(
     agent: Any, desc: str, provenance: "ActivityProvenance", debug_label: str) -> None:
     """Best-effort activity provenance stamp for hygiene compression transitions."""

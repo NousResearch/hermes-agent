@@ -15,6 +15,7 @@ import json
 import os
 import time
 from agent.i18n import t
+from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import SessionSource
@@ -534,8 +535,7 @@ class GatewayBusySessionMixin:
         demoted_for_subagents: bool, demoted_for_compression: bool,
     ) -> str:
         from gateway.run import (
-            _AGENT_PENDING_SENTINEL, _format_iteration_progress, _hermes_home,
-            _load_gateway_config, _platform_config_key,
+            _AGENT_PENDING_SENTINEL, _hermes_home, _load_gateway_config, _platform_config_key
         )
         from gateway.display_config import resolve_display_setting
 
@@ -557,7 +557,7 @@ class GatewayBusySessionMixin:
                     status_parts.append(f"{elapsed_min} min elapsed")
                 if summary.get("max_iterations", 0):
                     status_parts.append(
-                        _format_iteration_progress(
+                        format_iteration_progress(
                             summary.get("api_call_count", 0), summary.get("max_iterations", 0)
                         )
                     )

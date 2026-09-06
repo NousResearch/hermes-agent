@@ -272,10 +272,10 @@ def _status_card(
 # refresh. xai: source_label is a human-readable origin (auth-store path /
 # credential source), not the internal auth_mode string ("oauth_pkce").
 _PROVIDER_STATUS: Dict[str, tuple[str, Callable[[dict], dict]]] = {
-    "nous": ("get_nous_auth_status_local", lambda r: _status_card(
+    "nous": ("get_nous_auth_status_local", lambda r: {**_status_card(
         r, "nous_portal", r.get("portal_base_url") or "Nous Portal",
         _truncate_token(r.get("access_token")), r.get("access_expires_at"), bool(r.get("has_refresh_token")),
-    )),
+    ), "free_tier": bool(r.get("free_tier")), "account_tier": r.get("account_tier")}),
     "openai-codex": ("get_codex_auth_status", lambda r: _status_card(
         r, r.get("source") or "openai_codex", r.get("auth_mode") or "OpenAI Codex",
         _truncate_token(r.get("api_key")), None, False, r.get("last_refresh"),
@@ -324,24 +324,50 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
 
 
 async def _start_nous_device_code(profile: Optional[str]) -> Dict[str, Any]:
+    """Start a Nous sign-in. Over a free-tier identity (``nous.guest`` on) the same start also registers
+    the connector transfer with the account service, so the browser leg is that transfer's consent
+    page and its code, and the poller waits for the transfer before the token grant. Without one it is
+    the plain device-code flow."""
+    from hermes_cli import anon_auth
     from hermes_cli.auth import PROVIDER_REGISTRY, _request_device_code
+    from hermes_cli.web_server_profiles import _profile_scope
     pconfig = PROVIDER_REGISTRY["nous"]
     portal_base_url = (
         os.getenv("HERMES_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL") or pconfig.portal_base_url
     ).rstrip("/")
-    device_data = await _httpx_call(lambda client: _request_device_code(
-        client=client, portal_base_url=portal_base_url, client_id=pconfig.client_id, scope=pconfig.scope,
-    ))
+    with _profile_scope(_oauth_profile_name(profile)):
+        guest = anon_auth.current_nous_state() if anon_auth.guest_enabled() else None
+    anon_token = str(guest.get("anon_token") or "") if anon_auth.is_guest_state(guest) else ""
+
+    def _start(client):
+        device = _request_device_code(
+            client=client, portal_base_url=portal_base_url, client_id=pconfig.client_id, scope=pconfig.scope)
+        if not anon_token:
+            return device, None
+        intent = anon_auth.register_promotion_intent(
+            client, portal_base_url, anon_token, user_code=str(device["user_code"]),
+            device_code=str(device["device_code"]))
+        return device, intent
+
+    device_data, intent = await _httpx_call(_start)
+    user_code = str(device_data["user_code"])
+    verification_url = str(device_data["verification_uri_complete"])
+    expires_in, interval = int(device_data["expires_in"]), int(device_data["interval"])
+    fields = dict(
+        device_code=str(device_data["device_code"]), portal_base_url=portal_base_url,
+        client_id=pconfig.client_id, scope=pconfig.scope)
+    if intent is not None:
+        claim_url = str(intent.get("claim_url") or "")
+        if claim_url.startswith("/"):
+            claim_url = f"{portal_base_url}{claim_url}"
+        user_code = str(intent["claim_code"])
+        verification_url = claim_url or verification_url
+        expires_in = min(expires_in, int(intent.get("expires_in") or expires_in))
+        interval = int(intent.get("interval") or interval)
+        fields["claim_code"] = user_code
+    fields.update(interval=interval, expires_at=time.time() + expires_in)
     return _device_session_started(
-        "nous", profile, _nous_poller,
-        dict(
-            device_code=str(device_data["device_code"]), interval=int(device_data["interval"]),
-            expires_at=time.time() + int(device_data["expires_in"]), portal_base_url=portal_base_url,
-            client_id=pconfig.client_id, scope=pconfig.scope,
-        ),
-        str(device_data["user_code"]), str(device_data["verification_uri_complete"]),
-        int(device_data["expires_in"]), int(device_data["interval"]),
-    )
+        "nous", profile, _nous_poller, fields, user_code, verification_url, expires_in, interval)
 
 
 async def _start_codex_device_code(profile: Optional[str]) -> Dict[str, Any]:
@@ -640,6 +666,9 @@ async def poll_oauth_session(provider_id: str, session_id: str, profile: Optiona
     return {
         "session_id": session_id, "status": sess["status"],
         "error_message": sess.get("error_message"), "expires_at": sess.get("expires_at"),
+        # Nous over a free-tier identity: why a transfer ended, who signed in, and the default model
+        # the completion settled on (None when the config was on the user's own model).
+        "reason": sess.get("reason"), "account_email": sess.get("account_email"), "model": sess.get("model"),
     }
 
 

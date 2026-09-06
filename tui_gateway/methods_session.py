@@ -1541,8 +1541,21 @@ def _billing_view(name: str, module: str, builder: str, serializer: str, fallbac
             return _ok(rid, dict(fallback))
 
 
-_billing_view("billing.state", "agent.billing_view", "build_billing_state", "_serialize_billing_state",
-              {"ok": True, "logged_in": False, "error": "could not load billing state"})
+@method("billing.state")
+def _(rid, params: dict) -> dict:
+    """Read-only billing view (no scope required); fail-open. The Nous free tier has no account to
+    bill, so its state is answered locally (``free_tier`` set, ``logged_in`` false) without a portal
+    round-trip that could only fail."""
+    try:
+        from agent.billing_view import BillingState, build_billing_state
+        from hermes_cli.anon_auth import guest_carries_inference
+        if guest_carries_inference():
+            return _ok(rid, _serialize_billing_state(BillingState(logged_in=False), free_tier=True))
+        return _ok(rid, _serialize_billing_state(build_billing_state()))
+    except Exception:
+        return _ok(rid, {"ok": True, "logged_in": False, "free_tier": False, "error": "could not load billing state"})
+
+
 _billing_view("usage.bars", "agent.billing_usage", "build_usage_model", "_serialize_usage_model",  # two-bar $ view
               {"ok": True, "available": False})
 _billing_view("subscription.state", "agent.subscription_view", "build_subscription_state",

@@ -198,8 +198,15 @@ def _oauth_poller(label: str):
             try:
                 fn(session_id, sess)
                 with _oauth_sessions_lock:
-                    sess["status"] = "approved"
-                _log.info("oauth/device: %s login completed (session=%s)", label, session_id)
+                    # A body that already settled the session (a sign-in the user declined in the
+                    # browser is ``denied`` with a ``reason``) keeps its verdict.
+                    settled = sess["status"] != "pending"
+                    if not settled:
+                        sess["status"] = "approved"
+                if settled:
+                    _log.info("oauth/device: %s login ended %s (session=%s)", label, sess["status"], session_id)
+                else:
+                    _log.info("oauth/device: %s login completed (session=%s)", label, session_id)
             except Exception as e:
                 _log.warning("%s device-code poll failed (session=%s): %s", label, session_id, e)
                 with _oauth_sessions_lock:
@@ -209,17 +216,55 @@ def _oauth_poller(label: str):
     return deco
 
 
+def _settle_promotion_failure(sess: Dict[str, Any], outcome: Dict[str, Any]) -> None:
+    """Record a transfer that did not complete on the session: ``denied`` when the user rejected it in
+    the browser, else ``error``; ``reason`` and the ruled copy ride along for the renderer."""
+    from hermes_cli import anon_auth
+    status = str(outcome.get("status") or "unknown")
+    reason = "timeout" if status == "timeout" else str(outcome.get("reason") or status)
+    message = (anon_auth.UPGRADE_TIMED_OUT if reason == "timeout"
+               else anon_auth.UPGRADE_REASON_COPY.get(reason, anon_auth.UPGRADE_NOT_COMPLETED))
+    with _oauth_sessions_lock:
+        sess["status"] = "denied" if reason == "user_declined" else "error"
+        sess["reason"] = reason
+        sess["error_message"] = message
+    if reason in anon_auth._RETIRED_REASONS:
+        anon_auth.clear_dead_guest("retired")
+
+
 @_oauth_poller("nous")
 def _nous_poller(session_id: str, sess: Dict[str, Any]) -> None:
-    """Background poller that drives a Nous device-code flow to completion."""
+    """Background poller that drives a Nous device-code flow to completion.
+
+    A session started over a free-tier identity carries ``claim_code``: the transfer of that identity's
+    connectors into the account is watched first (``wait_for_promotion``), and only a completed
+    transfer is followed by the token grant, so an install never loses its connectors to a sign-in the
+    user did not confirm. Every completion then runs ``settle_after_upgrade`` so a config still on the
+    free tier's route moves to the account's host and model; ``account_email`` and ``model`` land on
+    the session for the poll response.
+    """
     from hermes_cli.web_server_profiles import _profile_scope
     from hermes_cli.auth import _poll_for_token, persist_nous_credentials, refresh_nous_oauth_from_state
+    from hermes_cli import anon_auth
     import httpx
     portal_base_url, client_id = sess["portal_base_url"], sess["client_id"]
+    claim_code = str(sess.get("claim_code") or "")
+    outcome: Dict[str, Any] = {}
     with httpx.Client(timeout=httpx.Timeout(15.0), headers={"Accept": "application/json"}) as client:
+        expires_in = max(60, int(sess["expires_at"] - time.time()))
+        if claim_code:
+            try:
+                outcome = anon_auth.wait_for_promotion(
+                    client, portal_base_url, claim_code, expires_in=expires_in, interval=int(sess["interval"]))
+            except anon_auth.AnonCredentialDead:
+                outcome = {"status": "voided", "reason": "account_retired"}
+            if str(outcome.get("status")) != "completed":
+                with _profile_scope(_oauth_session_profile(session_id)):
+                    _settle_promotion_failure(sess, outcome)
+                return
         token_data = _poll_for_token(
             client=client, portal_base_url=portal_base_url, client_id=client_id,
-            device_code=sess["device_code"], expires_in=max(60, int(sess["expires_at"] - time.time())),
+            device_code=sess["device_code"], expires_in=expires_in,
             poll_interval=sess["interval"],
         )
     # Same post-processing as _nous_device_code_login (validate/refresh JWT)
@@ -242,7 +287,13 @@ def _nous_poller(session_id: str, sess: Dict[str, Any]) -> None:
     }
     with _profile_scope(_oauth_session_profile(session_id)):
         full_state = refresh_nous_oauth_from_state(auth_state, timeout_seconds=15.0, force_refresh=False)
+        if claim_code:
+            full_state["auth_method"] = anon_auth.UPGRADED_AUTH_METHOD
         persist_nous_credentials(full_state)
+        settled = anon_auth.settle_after_upgrade(full_state)
+    with _oauth_sessions_lock:
+        sess["account_email"] = str(outcome.get("account_email") or "") or None
+        sess["model"] = settled.get("model") or None
 
 
 @_oauth_poller("minimax")

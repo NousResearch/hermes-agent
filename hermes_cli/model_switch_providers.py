@@ -455,6 +455,10 @@ def _free_tier_nous_row(row: dict) -> dict | None:
     out["name"] = anon_auth.FREE_TIER_LABEL
     out["models"] = [anon_auth.GUEST_MODEL]
     out["total_models"] = 1
+    # The explicit flag every consumer keys on (pricing, badges): never the display name. It also
+    # tells the picker this is the free tier's identity, distinct from ``free_tier`` (an account on
+    # the free plan) which pricing sets from the Portal's entitlement read.
+    out["free_tier_row"] = True
     return out
 
 

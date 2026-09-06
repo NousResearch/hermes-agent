@@ -216,12 +216,24 @@ class TestTokenAcquisitionSeam:
 
 
 class TestModelPin:
-    def test_normalize_pins_welcome_model_only_while_guest_carries_inference(self, portal):
-        from hermes_cli.model_normalize import normalize_model_for_provider
-        assert normalize_model_for_provider("openai/gpt-5", "nous") == "openai/gpt-5"
+    """The pin is a property of the selected ROUTE (welcome host), never of profile state: a paid
+    pool credential routed to the portal host keeps its model even beside a guest singleton."""
+
+    def test_pin_keys_on_the_welcome_host_not_on_guest_state(self, portal):
+        anon_auth.ensure_portal_identity(blocking=True)  # guest singleton exists
+        assert anon_auth.route_is_welcome_host(WELCOME)
+        assert not anon_auth.route_is_welcome_host("https://inference-api.nousresearch.com/v1")
+        assert not anon_auth.route_is_welcome_host("")
+
+    def test_agent_init_pins_only_on_welcome_route(self, portal):
         anon_auth.ensure_portal_identity(blocking=True)
-        assert normalize_model_for_provider("openai/gpt-5", "nous") == anon_auth.GUEST_MODEL
-        assert normalize_model_for_provider("gpt-5", "openrouter") != anon_auth.GUEST_MODEL
+        from run_agent import AIAgent
+        welcome = AIAgent(provider="nous", base_url=WELCOME, api_key="k", model="openai/gpt-5",
+                          quiet_mode=True, skip_context_files=True, skip_memory=True)
+        paid = AIAgent(provider="nous", base_url="https://inference-api.nousresearch.com/v1", api_key="k",
+                       model="nous/paid-model", quiet_mode=True, skip_context_files=True, skip_memory=True)
+        assert welcome.model == anon_auth.GUEST_MODEL
+        assert paid.model == "nous/paid-model"
 
 
 class TestLogout:
@@ -259,3 +271,22 @@ class TestModelSwitchCopy:
         msg = (result.error_message or "").lower()
         assert "hermes auth upgrade" in msg
         assert "openrouter" not in msg and "switching" not in msg
+
+
+class TestBackgroundRetry:
+    def test_background_failure_releases_the_latch(self, portal):
+        import time as _t
+        portal.gate_closed = True
+        assert anon_auth.ensure_portal_identity(blocking=False) is None
+        for _ in range(50):
+            if not anon_auth._background_started:
+                break
+            _t.sleep(0.05)
+        assert anon_auth._background_started is False, "a failed background attempt must not consume the latch"
+        portal.gate_closed = False
+        anon_auth.ensure_portal_identity(blocking=False)
+        for _ in range(50):
+            if anon_auth.has_guest():
+                break
+            _t.sleep(0.05)
+        assert anon_auth.has_guest()

@@ -108,8 +108,30 @@ def has_guest() -> bool:
 
 
 def guest_carries_inference() -> bool:
-    """True when the Nous provider selected for inference is the free tier (a guest state)."""
+    """True when the profile's Nous identity is the free tier and the free tier is on.
+
+    Profile-level: use for status, picker and notice surfaces. Routing decisions (which model a
+    request may carry) must use :func:`route_is_welcome_host` on the SELECTED runtime instead: a
+    credential-pool entry can pick a paid Nous key while the profile singleton is still a guest.
+    """
     return guest_enabled() and has_guest()
+
+
+WELCOME_HOSTS = frozenset({"welcome-api.nousresearch.com"})
+
+
+def route_is_welcome_host(base_url: Any) -> bool:
+    """The routing predicate for the free tier: the welcome host serves exactly ``nous/welcome``.
+
+    Keyed on the resolved endpoint, never on profile state, so a paid pool credential routed to the
+    portal host keeps its model even when a guest singleton exists beside it.
+    """
+    from urllib.parse import urlparse
+    try:
+        host = (urlparse(str(base_url or "")).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in WELCOME_HOSTS
 
 
 def anon_secret() -> str:
@@ -293,10 +315,15 @@ def ensure_portal_identity(*, blocking: bool = True, timeout_seconds: float = GU
         _background_started = True
 
     def _run() -> None:
+        global _background_started
         try:
             _adopt_or_mint()
         except Exception as exc:
             logger.debug("Nous free tier background setup skipped: %s", exc)
+            # A transient failure must not consume the process's only attempt: release the latch
+            # so a later non-blocking call can try again (still one setup in flight at a time).
+            with _background_lock:
+                _background_started = False
 
     threading.Thread(target=_run, name="nous-guest-identity", daemon=True).start()
     return None

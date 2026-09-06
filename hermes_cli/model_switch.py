@@ -1221,10 +1221,10 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
     if st.resolved_alias or resolved_in_current_catalog or st.target_provider != current_provider:
         return None
     if current_provider == "nous":
-        # Free tier serves nous/welcome only; a model outside it needs an account or a key. Never
-        # hop to another provider on the user's behalf here (there is no key to hop to).
-        from hermes_cli.anon_auth import GUEST_MODEL, guest_carries_inference
-        if guest_carries_inference() and st.new_model != GUEST_MODEL:
+        # The welcome host serves nous/welcome only; a model outside it needs an account or a key.
+        # Never hop to another provider on the user's behalf here (there is no key to hop to).
+        from hermes_cli.anon_auth import GUEST_MODEL, route_is_welcome_host
+        if route_is_welcome_host(st.current_base_url) and st.new_model != GUEST_MODEL:
             return st.fail(
                 f"{st.new_model} needs a Nous account or an API key. "
                 "Run `hermes auth upgrade` to sign in, or `hermes model` to pick another provider.")

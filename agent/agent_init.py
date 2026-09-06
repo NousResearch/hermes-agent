@@ -457,11 +457,12 @@ def _finalize_routing(agent, api_mode, credential_pool):
         if agent.provider not in _AGGREGATOR_PROVIDERS:
             agent.model = normalize_model_for_provider(agent.model, agent.provider)
 
-    # Nous free tier (guest identity) serves exactly one model on the welcome host; every surface
-    # (CLI, gateway, TUI, cron) constructs an agent through here, so the pin lives here once.
+    # The Nous welcome host serves exactly one model. The pin keys on the SELECTED route (base_url),
+    # not on profile state, so a paid pool credential routed to the portal host keeps its model.
+    # Every surface (CLI, gateway, TUI, cron) constructs an agent through here: one site.
     if agent.provider == "nous":
-        from hermes_cli.anon_auth import GUEST_MODEL, guest_carries_inference
-        if guest_carries_inference():
+        from hermes_cli.anon_auth import GUEST_MODEL, route_is_welcome_host
+        if route_is_welcome_host(agent.base_url):
             if agent.model and agent.model != GUEST_MODEL:
                 logger.info("Nous free tier: using %s instead of configured model %s", GUEST_MODEL, agent.model)
             agent.model = GUEST_MODEL

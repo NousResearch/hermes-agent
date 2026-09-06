@@ -599,19 +599,14 @@ def settle_after_upgrade(account_state: Dict[str, Any]) -> Dict[str, Any]:
             model = ""
     try:
         from hermes_cli.auth import _update_config_for_provider
-        from hermes_cli.config import load_config, save_config
+        # One write: host and default move together, so a failure leaves the config as it was
+        # rather than the account host paired with the welcome model. No eligible recommendation
+        # (Portal unreachable, or the plan and org policy admit nothing) clears the default in that
+        # same write; the runtime's silent default applies until the user picks one with `hermes model`.
         _update_config_for_provider(
             "nous", str(account_state.get("inference_base_url") or ""),
-            default_model=model if on_welcome_model else None)
-        if on_welcome_model and not model:
-            # No eligible recommendation (Portal unreachable, or the plan and org policy admit
-            # nothing): leave NO default rather than a model the account may not use. The runtime's
-            # silent default applies until the user picks one with `hermes model`.
-            config = load_config()
-            model_cfg = config.get("model")
-            if isinstance(model_cfg, dict) and model_cfg.get("default") == GUEST_MODEL:
-                model_cfg.pop("default", None)
-                save_config(config)
+            default_model=model if on_welcome_model else None,
+            clear_default=on_welcome_model and not model)
     except Exception as exc:
         logger.warning("sign-in completion: could not update the default model: %s", exc)
         return {"model": current, "changed": False}

@@ -2128,12 +2128,15 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
 # ── CLI Commands — login / logout ───────────────────────────────────────────────────────────────────
 
 def _update_config_for_provider(
-    provider_id: str, inference_base_url: str, default_model: Optional[str] = None) -> Path:
+    provider_id: str, inference_base_url: str, default_model: Optional[str] = None,
+    *, clear_default: bool = False) -> Path:
     """Update config.yaml and auth.json to reflect the active provider.
 
     *default_model*, when given, is written as ``model.default`` in the same step so the gateway
     (which re-reads config per message) can't pick up the new provider before model selection
-    finishes and send an OpenRouter-style ``vendor/model`` name to a direct API."""
+    finishes and send an OpenRouter-style ``vendor/model`` name to a direct API. *clear_default*
+    removes ``model.default`` in that same write, for a caller that has no model to offer and must
+    not leave the previous provider's model paired with the new host."""
     with _auth_store_lock():  # so auto-resolution picks this provider
         auth_store = _load_auth_store()
         auth_store["active_provider"] = provider_id
@@ -2165,6 +2168,8 @@ def _update_config_for_provider(
         cur_default = model_cfg.get("default", "")
         if not cur_default or "/" in cur_default:
             model_cfg["default"] = default_model
+    elif clear_default:
+        model_cfg.pop("default", None)
     config["model"] = model_cfg
     atomic_yaml_write(config_path, config, sort_keys=False)
     return config_path

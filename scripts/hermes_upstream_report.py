@@ -103,9 +103,9 @@ def _render_noop(metadata: dict[str, Any]) -> str:
     upstream = _short(metadata.get("upstream_sha"))
     return "\n".join(
         [
-            "✅ Hermes upstream 每日檢查：目前沒有新的 upstream 更新。",
-            f"目前 upstream/main：{upstream}",
-            "尚未執行 deploy、restart 或 push。下一次檢查將照常進行。",
+            "✅ Hermes upstream 每日提醒：目前沒有新更新。",
+            f"upstream/main：{upstream}",
+            "請維持目前 live release；下一次檢查將照常進行。",
         ]
     )
 
@@ -122,51 +122,16 @@ def render_report(repo: Path, metadata: dict[str, Any], checked_at: str | None =
         raise ValueError("candidate metadata lacks source_sha/candidate_sha")
 
     files, additions, deletions, changed_paths = _diff_stats(repo, source_sha, candidate_sha)
-    symbols = _added_symbols(repo, source_sha, candidate_sha)
-    commits = _upstream_commits(repo, metadata)
-    tests = "passed" if checks.get("tests_ok") else "not recorded"
-
     lines = [
-        "🔔 Hermes upstream 有新更新，等待你的核准。",
+        "🔔 Hermes upstream 更新提醒",
         f"檢查時間：{checked_at}",
         f"upstream SHA：{_short(metadata.get('upstream_sha'))}",
         f"candidate SHA：{_short(candidate_sha)}",
         f"變更規模：{files} files，+{additions}/-{deletions}",
         "",
-        "新增功能／symbols：",
+        "請使用 code workflow 手動檢查與更新。",
+        "Telegram 只提醒，不會自動 deploy、restart 或 push。",
     ]
-    if symbols:
-        lines.extend(f"- {item}" for item in symbols[:MAX_SYMBOLS])
-        if len(symbols) > MAX_SYMBOLS:
-            lines.append(f"- …另有 {len(symbols) - MAX_SYMBOLS} 個新增 symbols")
-    else:
-        lines.append("- 未偵測到新增 Python function/class；可能是既有功能修改或其他檔案類型變更。")
-
-    lines.extend(["", "主要 upstream commits："])
-    if commits:
-        lines.extend(f"- {item}" for item in commits[:MAX_COMMITS])
-        if len(commits) > MAX_COMMITS:
-            lines.append(f"- …另有 {len(commits) - MAX_COMMITS} 個 upstream commits")
-    else:
-        lines.append("- metadata 未提供可列出的 upstream commit 摘要。")
-
-    lines.extend(
-        [
-            "",
-            "Review checks：",
-            f"- preflight：{'passed' if checks.get('preflight_ok') else 'failed'}",
-            f"- rebase：{'passed' if checks.get('rebase_ok') else 'failed'}",
-            f"- targeted tests：{tests}",
-            "",
-            f"若要執行 real update，請回覆：核准套用 upstream 更新 {metadata.get('run_id', '?')}",
-            "收到明確核准後才會 verify → build release → restart → postcheck；目前尚未變更 live service。",
-        ]
-    )
-    if changed_paths:
-        lines.extend(["", "變更檔案（前 15 個）："])
-        lines.extend(f"- {path}" for path in changed_paths[:MAX_FILES])
-        if len(changed_paths) > MAX_FILES:
-            lines.append(f"- …另有 {len(changed_paths) - MAX_FILES} 個檔案")
     return "\n".join(lines)
 
 

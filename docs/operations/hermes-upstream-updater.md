@@ -16,16 +16,12 @@ then verify both service health and the expected candidate SHA.
 The Hermes cron job named "Hermes upstream update guard" runs every day at
 04:30 (Asia/Taipei) and delivers its stdout to the configured Telegram chat.
 It always performs review-only checks. When upstream has advanced, the message
-includes the candidate SHA, diff size, upstream commit subjects, changed file
-paths, newly added Python functions/classes, and the review/test results.
+only includes the upstream/candidate SHA and diff size, then reminds the
+operator to use the code workflow manually.
 
-The message ends with a candidate-specific approval request:
-
-    核准套用 upstream 更新 <run_id>
-
-That reply is the only trigger for a real update. A review alert never deploys,
-restarts, or pushes by itself. When there is no new upstream commit, the daily
-message reports that state and confirms that no deployment action occurred.
+Telegram is reminder-only: it never accepts approval, deploys, restarts, or
+pushes. When there is no new upstream commit, the daily message reports that
+state and confirms that no deployment action occurred.
 
 ## Inspect and review
 

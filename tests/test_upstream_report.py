@@ -44,10 +44,8 @@ def test_diff_stats_handles_binary_files(monkeypatch):
     )
 
 
-def test_render_report_contains_update_action_and_summary(monkeypatch):
+def test_render_report_is_a_concise_manual_update_reminder(monkeypatch):
     monkeypatch.setattr(report, "_diff_stats", lambda *_args: (2, 20, 4, ["src/new.py", "README.md"]))
-    monkeypatch.setattr(report, "_added_symbols", lambda *_args: ["src/new.py: function new_feature"])
-    monkeypatch.setattr(report, "_upstream_commits", lambda *_args: ["abc1234 add new feature"])
 
     rendered = report.render_report(
         Path("/repo"),
@@ -61,11 +59,11 @@ def test_render_report_contains_update_action_and_summary(monkeypatch):
         checked_at="2026-09-05 20:00 CST",
     )
 
-    assert "🔔 Hermes upstream 有新更新" in rendered
+    assert "🔔 Hermes upstream 更新提醒" in rendered
     assert "變更規模：2 files，+20/-4" in rendered
-    assert "src/new.py: function new_feature" in rendered
-    assert "abc1234 add new feature" in rendered
-    assert "核准套用 upstream 更新 20260905-123422" in rendered
+    assert "請使用 code workflow 手動檢查與更新" in rendered
+    assert "Telegram 只提醒" in rendered
+    assert "核准套用" not in rendered
 
 
 def test_render_noop_does_not_request_apply():
@@ -75,5 +73,5 @@ def test_render_noop_does_not_request_apply():
         checked_at="2026-09-05 20:00 CST",
     )
 
-    assert "沒有新的 upstream 更新" in rendered
+    assert "沒有新更新" in rendered
     assert "核准套用" not in rendered

@@ -65,6 +65,7 @@ class TestFailoverReason:
             "model_not_found", "format_error",
             "invalid_encrypted_content",
             "multimodal_tool_content_unsupported",
+            "reasoning_mandatory",
             "provider_policy_blocked",
             "content_policy_blocked",
             "thinking_signature", "long_context_tier",
@@ -689,6 +690,46 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.invalid_encrypted_content
         assert result.retryable is True
         assert result.should_fallback is False
+
+    # ── Codex masked encrypted-reasoning replay rejection (#92353) ──
+
+    _CODEX_MASKED = {"message": "Request blocked.", "type": "invalid_request_error", "param": None, "code": "invalid_prompt"}
+
+    @pytest.mark.parametrize("error", [
+        MockAPIError("Error code: 400 - Request blocked.", status_code=400, body=_CODEX_MASKED),  # SDK unwraps body["error"]
+        MockAPIError("Request blocked.", status_code=None, body={"error": _CODEX_MASKED}),  # SSE ``error`` frame
+        RuntimeError("invalid_prompt: Request blocked."),  # ``response.failed`` terminal frame
+    ], ids=["http400", "sse-frame", "response-failed"])
+    def test_codex_masked_replay_rejection_reaches_replay_strip(self, error):
+        result = classify_api_error(error, provider="openai-codex", model="gpt-5.5")
+        assert result.reason == FailoverReason.invalid_encrypted_content
+        assert result.retryable is False and result.should_fallback is True  # format_error's terminal hints kept
+
+    @pytest.mark.parametrize(("provider", "body", "expected"), [
+        ("custom", _CODEX_MASKED, FailoverReason.format_error),  # same envelope, other provider
+        ("openai-codex", {**_CODEX_MASKED, "message": "Invalid prompt: too long."}, FailoverReason.format_error),
+        ("openai-codex", {**_CODEX_MASKED, "code": "server_error"}, FailoverReason.format_error),
+        ("openai-codex", {**_CODEX_MASKED, "message": "Request blocked. Your request was flagged by our safety system."},
+         FailoverReason.content_policy_blocked),  # #18028 refusal still wins
+    ], ids=["other-provider", "other-message", "other-code", "safety-refusal"])
+    def test_codex_masked_replay_rejection_stays_narrow(self, provider, body, expected):
+        e = MockAPIError("Error code: 400 - " + body["message"], status_code=400, body=body)
+        assert classify_api_error(e, provider=provider, model="gpt-5.5").reason == expected
+
+    # ── Reasoning-mandatory route rejecting a disable ──
+
+    def test_reasoning_mandatory_400_is_retryable_not_format_error(self):
+        e = MockAPIError(
+            "Error code: 400 - This request is not valid. Check the model name "
+            "and other parameters. Additional info: Reasoning is mandatory for "
+            "this endpoint and cannot be disabled.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="nous", model="z-ai/glm-5.3-flash")
+        assert result.reason == FailoverReason.reasoning_mandatory
+        assert result.retryable is True
+        assert result.should_fallback is False
+        assert result.should_compress is False
 
     # ── Provider-specific: llama.cpp grammar-parse ──
 

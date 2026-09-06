@@ -47,9 +47,9 @@ def _captured_context_cwd(agent):
         return ""
 
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", side_effect=fake_context_files),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", side_effect=fake_context_files),
     ):
         build_system_prompt_parts(agent)
     return captured["cwd"]
@@ -66,21 +66,65 @@ class TestContextFileCwd:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         assert _captured_context_cwd(_make_agent()) == tmp_path
 
+    def test_desktop_launch_artifact_does_not_load_bundled_agents_md(
+        self, monkeypatch, tmp_path
+    ):
+        import agent.runtime_cwd as runtime_cwd
+
+        monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", tmp_path.resolve())
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "AGENTS.md").write_text("bundled contributor instructions")
+
+        agent = _make_agent(
+            platform="desktop",
+            _context_cwd_is_launch_artifact=True,
+        )
+        with (
+            patch("agent.prompt_builder.load_soul_md", return_value=""),
+            patch("agent.prompt_builder.build_environment_hints", return_value=""),
+            patch("agent.system_prompt.resolve_context_cwd", return_value=tmp_path),
+        ):
+            context = build_system_prompt_parts(agent)["context"]
+
+        assert "bundled contributor instructions" not in context
+
+    def test_desktop_explicit_install_tree_workspace_still_loads_agents_md(
+        self, monkeypatch, tmp_path
+    ):
+        import agent.runtime_cwd as runtime_cwd
+
+        monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", tmp_path.resolve())
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "AGENTS.md").write_text("chosen workspace instructions")
+
+        agent = _make_agent(
+            platform="desktop",
+            _context_cwd_is_launch_artifact=False,
+        )
+        with (
+            patch("agent.prompt_builder.load_soul_md", return_value=""),
+            patch("agent.prompt_builder.build_environment_hints", return_value=""),
+            patch("agent.system_prompt.resolve_context_cwd", return_value=tmp_path),
+        ):
+            context = build_system_prompt_parts(agent)["context"]
+
+        assert "chosen workspace instructions" in context
+
 
 def _stable_prompt(agent):
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value=""),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
     ):
         return build_system_prompt_parts(agent)["stable"]
 
 
 def _prompt_parts(agent):
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value=""),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
     ):
         return build_system_prompt_parts(agent)
 
@@ -267,9 +311,9 @@ class TestNamedProfileHintIntegration:
 def test_build_system_prompt_records_stable_prefix():
     agent = _make_agent()
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value="context"),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value="context"),
     ):
         prompt = build_system_prompt(agent)
 
@@ -316,9 +360,9 @@ def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
     ))
 
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value="CONTEXT_FILES"),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value="CONTEXT_FILES"),
         patch(
             "agent.coding_context.coding_system_prompt_parts",
             return_value=(
@@ -460,11 +504,11 @@ def _build(builder, **overrides):
     """Run a build_* function with skills + context files present."""
     agent = _make_agent(valid_tool_names=["skills_list"], **overrides)
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value=_CONTEXT),
-        patch("run_agent.get_toolset_for_tool", return_value=None),
-        patch("run_agent.build_skills_system_prompt", return_value=_SKILLS),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value=_CONTEXT),
+        patch("model_tools.get_toolset_for_tool", return_value=None),
+        patch("agent.prompt_builder.build_skills_system_prompt", return_value=_SKILLS),
     ):
         return builder(agent)
 
@@ -666,9 +710,9 @@ def test_conversation_start_uses_session_start_not_build_time(monkeypatch):
     monkeypatch.setattr(system_prompt, "get_hermes_home", lambda: Path("/hermes"))
 
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value="CONTEXT_FILES"),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value="CONTEXT_FILES"),
         patch(
             "agent.coding_context.coding_system_prompt_parts",
             return_value=([], [], []),

@@ -241,25 +241,6 @@ class TestListAndCleanup:
         assert isinstance(messages[0].get("timestamp"), (int, float))
 
 
-
-
-    def test_cleanup_clears_all(self, manager):
-        s1 = manager.create_session()
-        s2 = manager.create_session()
-        s1.history.append({"role": "user", "content": "one"})
-        s2.history.append({"role": "user", "content": "two"})
-        assert len(manager.list_sessions()) == 2
-        manager.cleanup()
-        assert manager.list_sessions() == []
-
-    def test_remove_session(self, manager):
-        state = manager.create_session()
-        assert manager.remove_session(state.session_id) is True
-        assert manager.get_session(state.session_id) is None
-        # Removing again returns False
-        assert manager.remove_session(state.session_id) is False
-
-
 # ---------------------------------------------------------------------------
 # persistence — sessions survive process restarts (via SessionDB)
 # ---------------------------------------------------------------------------

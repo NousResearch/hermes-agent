@@ -9,10 +9,9 @@ import json
 import pytest
 
 from hermes_cli.foreign_sessions import (
+    _list_sessions,
     gather_foreign_sessions,
     import_foreign_session,
-    list_claude_sessions,
-    list_codex_sessions,
     parse_claude_session,
     parse_codex_session,
 )
@@ -171,8 +170,8 @@ def test_malformed_lines_are_skipped(tmp_path):
 def test_list_sessions(tmp_path):
     _write_claude_fixture(tmp_path)
     _write_codex_fixture(tmp_path)
-    claude = list_claude_sessions(tmp_path / ".claude" / "projects")
-    codex = list_codex_sessions(tmp_path / ".codex" / "sessions")
+    claude = _list_sessions("claude", tmp_path / ".claude" / "projects")
+    codex = _list_sessions("codex", tmp_path / ".codex" / "sessions")
     assert len(claude) == 1 and claude[0].source == "claude"
     assert claude[0].turn_count == 4
     assert len(codex) == 1 and codex[0].source == "codex"
@@ -186,8 +185,8 @@ def test_list_sessions(tmp_path):
 
 
 def test_list_sessions_missing_roots(tmp_path):
-    assert list_claude_sessions(tmp_path / "nope") == []
-    assert list_codex_sessions(tmp_path / "nope") == []
+    assert _list_sessions("claude", tmp_path / "nope") == []
+    assert _list_sessions("codex", tmp_path / "nope") == []
 
 
 # ── import into SessionDB ────────────────────────────────────────────────

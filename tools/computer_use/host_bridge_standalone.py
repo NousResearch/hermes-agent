@@ -223,12 +223,19 @@ async def _cua_driver_session_context(
 
 
 def _build_child_session_context(driver_cmd: str) -> AsyncContextManager[Any]:
-    """Build a standard-mode local cua-driver stdio session context."""
-    env = dict(os.environ)
-    # Strip sensitive vars so the driver child never sees the bridge token or
-    # approval bypass; keep telemetry off for the third-party binary.
-    for key in ["HERMES_CUA_REMOTE_TOKEN", "CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"]:
-        env.pop(key, None)
+    """Build a standard-mode local cua-driver stdio session context.
+
+    The driver child env is built from the sanitizer allowlist (the same
+    ``_sanitize_standalone_env`` used for X-stack children), NOT raw
+    ``os.environ``.  The third-party driver binary must never inherit parent
+    secrets — ``/proc/<pid>/environ`` is readable by the same user, so an
+    allowlist is the only reliable boundary.  ``_sanitize_standalone_env``
+    already strips ``HERMES_CUA_REMOTE_TOKEN`` and
+    ``CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS``; the two explicit assignments
+    below force the driver into standard mode and disable telemetry regardless
+    of what the parent environment contained.
+    """
+    env = _sanitize_standalone_env(os.environ)
     env["CUA_DRIVER_PERMISSION_MODE"] = "standard"
     env["CUA_DRIVER_RS_TELEMETRY_ENABLED"] = "0"
 
@@ -278,7 +285,11 @@ def main() -> None:
         raise RuntimeError("HERMES_CUA_REMOTE_TOKEN must contain only ASCII characters") from exc
     if len(token_bytes) < 32:
         raise RuntimeError("HERMES_CUA_REMOTE_TOKEN must contain at least 32 bytes")
-    # Don't pop the token — the standalone script may need it for reference
+    # Pop the token from the process environment so it stops living in
+    # /proc/self/environ (world-readable to the same user).  The value is
+    # already in ``token`` for the bridge verifier below; the CLI launcher
+    # does the same pop (host_bridge_cli.py).
+    os.environ.pop("HERMES_CUA_REMOTE_TOKEN", None)
 
     try:
         _ensure_xvfb()

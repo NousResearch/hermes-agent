@@ -394,6 +394,39 @@ export function ModelCatalogMenu({
     closeMenu()
   }
 
+  // ── Keyboard access to the per-row options submenu ────────────────────────
+  // Rows are highlighted via data-kb-active, not DOM-focused, so Radix's own
+  // submenu keyboard handling (ArrowRight on a focused SubTrigger) never
+  // fires, and hover-open fails in pointer environments that drop boundary
+  // events (WSLg/RDP) — ArrowRight in the search input is the fallback.
+  const triggerRefs = useRef(new Map<string, HTMLDivElement>())
+
+  // Open ONE row's options submenu by asking Radix to do it: dispatch one
+  // bubbling `pointermove` on the row's SubTrigger — the exact event Radix's
+  // SubTrigger listens to for hover-open — so the submenu opens through the
+  // normal path (its open timer, safe polygon, focus management) and there is
+  // no duplicated state, timer, or global listener to clean up. Used by the
+  // search input's ArrowRight (#86966) AND by the caret click: a click-open
+  // alone skips Radix's pointer-grace setup, so the submenu dies the moment
+  // the pointer jumps toward the effort radios (no pointerenter fires → close
+  // timer wins, ~300ms). The synthetic pointermove runs onItemEnter, which
+  // seeds the safe polygon the close logic then respects (#97505).
+  const openRowSubmenu = (key: null | string) => {
+    if (!key) {
+      return
+    }
+
+    const trigger = triggerRefs.current.get(key)
+
+    // jsdom (unit tests) has no PointerEvent; hover-open is untestable there.
+    if (trigger && typeof PointerEvent === 'function') {
+      trigger.scrollIntoView({ block: 'nearest' })
+      trigger.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerType: 'mouse' }))
+    }
+  }
+
+  const openHighlightedRowSubmenu = () => openRowSubmenu(kbActiveKey)
+
   // Keep the selected row in view while arrowing through the scrollable list.
   const listRef = useRef<HTMLDivElement>(null)
 
@@ -424,6 +457,15 @@ export function ModelCatalogMenu({
             event.preventDefault()
             event.stopPropagation()
             stepKb(event.key === 'ArrowDown' ? 1 : -1)
+          } else if (event.key === 'ArrowRight' && kbActiveKey) {
+            // Open the highlighted row's thinking/effort/fast submenu. Upstream
+            // #86966: hover was the only way in, which silently strands
+            // keyboard users (and pointer environments where hover events are
+            // dropped, e.g. WSLg/RDP). With no row highlighted, let the
+            // ArrowRight reach the input (cursor movement) unclaimed.
+            event.preventDefault()
+            event.stopPropagation()
+            openHighlightedRowSubmenu()
           } else if (event.key === 'Enter') {
             event.preventDefault()
             event.stopPropagation()
@@ -531,9 +573,18 @@ export function ModelCatalogMenu({
                       .join(' ')
 
                     // Clicking the row commits the model and closes; the edit
-                    // submenu (reasoning/fast) is reached by HOVER, so you can
-                    // tweak those without the click dismissing everything.
-                    const activate = () => {
+                    // submenu (reasoning/fast) is reached by HOVER, by the
+                    // caret, or by keyboard (ArrowRight from search). A click
+                    // on the caret must NOT commit the model (#86966); it
+                    // seeds Radix's hover-open via openRowSubmenu so the
+                    // pointer-grace polygon exists, then lets Radix's built-in
+                    // SubTrigger click-open finish immediately.
+                    const activate = (event?: { target?: EventTarget | null }) => {
+                      if (event?.target instanceof Element && event.target.closest('[data-row-caret]')) {
+                        openRowSubmenu(`${group.provider.slug}:${family.id}`)
+                        return
+                      }
+
                       if (!isCurrent) {
                         void selectFamily(family, group.provider)
                       }
@@ -545,10 +596,21 @@ export function ModelCatalogMenu({
                       <DropdownMenuSub key={`${group.provider.slug}:${family.id}`}>
                         <DropdownMenuSubTrigger
                           hideChevron
-                          onClick={activate}
+                          onClick={event => activate(event)}
                           onKeyDown={event => {
                             if (event.key === 'Enter' || event.key === ' ') {
                               activate()
+                            }
+                          }}
+                          ref={node => {
+                            // Register the trigger node so the search input's
+                            // ArrowRight can reach this row's submenu (#86966).
+                            const key = `${group.provider.slug}:${family.id}`
+
+                            if (node) {
+                              triggerRefs.current.set(key, node)
+                            } else {
+                              triggerRefs.current.delete(key)
                             }
                           }}
                           {...kbRowProps(`${group.provider.slug}:${family.id}`)}
@@ -573,6 +635,20 @@ export function ModelCatalogMenu({
                               </span>
                             </span>
                           ) : null}
+                          {/* Always-visible affordance (#86966): the options
+                              submenu was previously reachable by hover alone,
+                              with zero visual hint. Clicking the caret is also
+                              a hover-free pointer path: the click bubbles to
+                              Radix's SubTrigger, whose built-in onClick opens
+                              the submenu — activate() below sees data-row-caret
+                              and steps aside instead of committing the model. */}
+                          <Codicon
+                            className="shrink-0 cursor-pointer text-(--ui-text-tertiary)"
+                            data-row-caret=""
+                            name="chevron-right"
+                            size="0.75rem"
+                            title={t.shell.modelOptions.options}
+                          />
                           {isCurrent ? (
                             <Codicon
                               className={cn('text-foreground', loadProgress ? 'ml-1' : 'ml-auto')}

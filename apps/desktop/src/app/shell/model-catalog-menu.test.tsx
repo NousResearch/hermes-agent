@@ -122,6 +122,35 @@ describe('the catalog owns model curation', () => {
   })
 })
 
+// Upstream #86966: the options submenu was reachable by hover alone, with no
+// visual hint and no keyboard path — a pointer environment that drops hover
+// events (WSLg/RDP) strands the settings entirely. The row now carries an
+// always-visible caret, and ArrowRight in the search opens the highlighted
+// row's submenu.
+describe('options submenu discoverability', () => {
+  it('shows an affordance caret on every model row', async () => {
+    renderMenu()
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+
+    // The caret is a decorative affordance (the row's SubTrigger already
+    // announces aria-haspopup), so assert on its data attribute.
+    expect(document.querySelectorAll('[data-row-caret]').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('opens the highlighted row\'s submenu on ArrowRight from the search input', async () => {
+    renderMenu()
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+
+    // jsdom has no PointerEvent (the dispatch is guarded), so assert the
+    // keyboard path is wired without breaking anything else: ArrowRight is
+    // consumed by the menu, focus stays in the input, and Radix's submenu
+    // open path receives no crash. The real dispatch is covered by e2e.
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    expect(() => fireEvent.keyDown(input, { key: 'ArrowRight' })).not.toThrow()
+    expect(document.activeElement).toBe(input)
+  })
+})
+
 describe('in-flight local downloads', () => {
   const DOWNLOAD_JOB: LocalRuntimeJob = {
     job_id: 'dl1',

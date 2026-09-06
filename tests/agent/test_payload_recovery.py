@@ -118,6 +118,8 @@ def test_incomplete_payload_recovers_without_partial_batch_side_effects(
     ), patch(
         "tools.tool_search.load_config_readonly",
         return_value=SimpleNamespace(effective_defer_tools=frozenset({"execute_code"})),
+    ), patch("tools.tool_search.is_deferrable_tool_name", return_value=True), patch(
+        "tools.tool_search.validate_deferred_call_args", return_value=None
     ), patch("agent.tool_executor._tool_search_scoped_names", return_value={"execute_code"}):
         result = agent.run_conversation("write it")
 
@@ -242,6 +244,8 @@ def test_python_preflight_does_not_block_out_of_scope_bridge_sibling(monkeypatch
     ), patch(
         "tools.tool_search.load_config_readonly",
         return_value=SimpleNamespace(effective_defer_tools=frozenset({"execute_code"})),
+    ), patch(
+        "tools.tool_search.is_deferrable_tool_name", return_value=True
     ):
         result = agent.run_conversation("write it")
 

@@ -198,7 +198,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
   //   - 'steer'     : inject into the current turn via session.steer; falls
   //                   back to queue when steer is rejected (no agent / no
   //                   tool window).
-  //   - 'interrupt' (default): submit immediately; the backend redirects the
+  //   - 'interrupt': submit immediately; the backend redirects the
   //                   active model request (or safely steers after a tool),
   //                   with legacy interrupt + queue as its compatibility path.
   //

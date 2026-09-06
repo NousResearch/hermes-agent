@@ -121,9 +121,9 @@ class TestFallbackChainInit:
 
 
 class TestBusyInputMode:
-    def test_default_busy_input_mode_is_interrupt(self):
+    def test_default_busy_input_mode_is_queue(self):
         cli = _make_cli()
-        assert cli.busy_input_mode == "interrupt"
+        assert cli.busy_input_mode == "queue"
 
     def test_busy_input_mode_queue_is_honored(self):
         cli = _make_cli(config_overrides={"display": {"busy_input_mode": "queue"}})
@@ -141,8 +141,8 @@ class TestBusyInputMode:
 
 
     def test_interrupt_mode_routes_busy_enter_to_interrupt(self):
-        """In interrupt mode (default), Enter while busy goes to _interrupt_queue."""
-        cli = _make_cli()
+        """In explicit interrupt mode, Enter while busy goes to _interrupt_queue."""
+        cli = _make_cli(config_overrides={"display": {"busy_input_mode": "interrupt"}})
         cli._agent_running = True
         text = "redirect"
         if cli.busy_input_mode == "queue":

@@ -1925,9 +1925,9 @@ class BasePlatformAdapter(ABC):
         self._pending_messages: Dict[str, MessageEvent] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
         # Legacy env knob; the runner syncs the busy_input_mode value after construction.
-        # Default "interrupt" so a pre-sync read never silently queues.
+        # Default "queue" so a pre-sync read never unexpectedly interrupts.
         self._busy_text_mode: str = (
-            os.environ.get("HERMES_GATEWAY_BUSY_TEXT_MODE", "interrupt").strip().lower() or "interrupt")
+            os.environ.get("HERMES_GATEWAY_BUSY_TEXT_MODE", "queue").strip().lower() or "queue")
         self._busy_text_debounce_seconds: float = _float_env("HERMES_GATEWAY_BUSY_TEXT_DEBOUNCE_SECONDS", 0.35)
         self._busy_text_hard_cap_seconds: float = _float_env("HERMES_GATEWAY_BUSY_TEXT_HARD_CAP_SECONDS", 1.0)
         self._text_debounce: dict[str, TextDebounceState] = {}
@@ -3344,7 +3344,7 @@ class BasePlatformAdapter(ABC):
     def _is_queue_text_debounce_candidate(self, event: MessageEvent) -> bool:
         """Return True for normal text eligible for queue-mode debounce."""
         result = (
-            getattr(self, "_busy_text_mode", "interrupt") == "queue"
+            getattr(self, "_busy_text_mode", "queue") == "queue"
             and event.message_type == MessageType.TEXT and not getattr(event, "internal", False)
             and not event.is_command() and bool((event.text or "").strip()))
         if result:

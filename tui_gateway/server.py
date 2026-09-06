@@ -325,7 +325,7 @@ def _display_cfg() -> dict:
 
 def _load_busy_input_mode() -> str:
     raw = str(_display_cfg().get("busy_input_mode", "") or "").strip().lower()
-    return raw if raw in {"queue", "steer", "interrupt"} else "interrupt"
+    return raw if raw in {"queue", "steer", "interrupt"} else "queue"
 
 
 def _load_interim_assistant_messages() -> bool:

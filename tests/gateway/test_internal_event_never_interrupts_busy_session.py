@@ -4,7 +4,7 @@ Reported by @Heeervas (June 2026): an ``async_delegation`` completion from a
 ``delegate_task(background=true)`` subagent re-enters the originating gateway
 session as an internal ``MessageEvent``. When that session was busy running a
 turn, the completion was treated exactly like a user TEXT message and hit the
-default ``busy_input_mode='interrupt'`` path — calling
+explicit ``busy_input_mode='interrupt'`` path — calling
 ``running_agent.interrupt()`` and aborting the active turn, plus sending a
 "⚡ Interrupting current task" ack. The same shape affects background-process
 completions (terminal ``notify_on_complete``), which also re-enter as internal
@@ -108,7 +108,7 @@ def _make_running_parent() -> MagicMock:
 async def test_internal_event_does_not_interrupt_busy_session() -> None:
     """The async-delegation completion must not abort the active turn."""
     runner = _make_runner()
-    runner._busy_input_mode = "interrupt"  # the default that caused the bug
+    runner._busy_input_mode = "interrupt"  # the explicit mode that caused the bug
     adapter = _make_adapter()
     event = _make_internal_event()
     sk = build_session_key(event.source)

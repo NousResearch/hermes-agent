@@ -96,3 +96,10 @@ class TestBusyCommandRegistry(unittest.TestCase):
         busy = next(c for c in COMMAND_REGISTRY if c.name == "busy")
         assert busy.args_hint == "[queue|steer|interrupt|status]"
         assert busy.category == "Configuration"
+
+
+class TestBusyInputModeDefault(unittest.TestCase):
+    def test_default_config_queues_busy_input(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        self.assertEqual(DEFAULT_CONFIG["display"]["busy_input_mode"], "queue")

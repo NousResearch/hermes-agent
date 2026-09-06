@@ -405,14 +405,14 @@ Send a message while the agent is working to correct the active turn:
 
 ### Queue vs interrupt vs steer (busy-input mode)
 
-By default, messaging a busy agent redirects its active turn (a running foreground terminal command is moved to the background rather than killed, so your message is read immediately). Two other modes are available:
+By default, messages sent to a busy agent are queued for the next turn. Two other modes are available:
 
-- `queue` — follow-up messages wait and run as the next turn after the current task finishes.
+- `interrupt` — redirect the active turn while preserving completed work; a running foreground terminal command is moved to the background rather than killed.
 - `steer` — follow-up messages are injected into the current run via `/steer`, arriving at the agent after the next tool call. No interrupt, no new turn. Falls back to `queue` behavior if the agent hasn't started yet.
 
 ```yaml
 display:
-  busy_input_mode: steer   # or queue, or interrupt (default)
+  busy_input_mode: queue   # or interrupt, or steer
   busy_ack_enabled: true   # set to false to suppress the ⚡/⏳/⏩ chat reply entirely
 ```
 

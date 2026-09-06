@@ -457,6 +457,16 @@ def _timestamp_line(agent: Any) -> str:
     return timestamp_line + "".join(f"\n{label}: {value}" for label, value in trailer if value)
 
 
+def platform_surface_hint(agent: Any) -> str:
+    """The rendering-surface guidance for ``agent.platform`` ("" when the surface has none).
+
+    Public because a session that changed surface mid-conversation keeps its stored prompt
+    (rebuilding it re-prefills the whole request) and delivers the CURRENT surface's guidance
+    through the per-turn user-message channel instead — see ``_SURFACE_SWITCH_NOTE_PREFIX``
+    in ``agent.conversation_loop`` (#104414)."""
+    return _platform_hint(agent) or ""
+
+
 def _memory_parts(agent: Any) -> List[str]:
     """Built-in memory/USER.md blocks plus the external provider block (gated on
     the same check ``inject_memory_provider_tools`` uses, so we never advertise
@@ -736,7 +746,7 @@ def format_tools_for_system_message(agent: Any) -> str:
 
 
 __all__ = ["build_system_prompt_parts", "build_system_prompt", "invalidate_system_prompt",
-           "restore_plugin_prompt_sections", "format_tools_for_system_message"]
+           "platform_surface_hint", "restore_plugin_prompt_sections", "format_tools_for_system_message"]
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

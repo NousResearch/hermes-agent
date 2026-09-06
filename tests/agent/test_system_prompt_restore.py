@@ -20,7 +20,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent.conversation_loop import _restore_or_build_system_prompt
+from agent.conversation_loop import _SURFACE_SWITCH_NOTE_PREFIX, _restore_or_build_system_prompt
 
 
 def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
@@ -38,6 +38,111 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     agent._use_prompt_caching = False
     agent._build_system_prompt = MagicMock(return_value=prebuilt_prompt)
     return agent
+
+
+# ---------------------------------------------------------------------------
+# Surface switch (#104414)
+# ---------------------------------------------------------------------------
+
+
+class TestSurfaceSwitch:
+    """A desktop <-> TUI switch must not rebuild the system prompt.
+
+    The rebuild it used to trigger changed the first blocks of a 200K+ token request, so
+    the whole conversation re-prefilled at a ~1% cache hit. The stored bytes are now reused
+    and the new surface's guidance is delivered as a per-turn note behind the cached prefix.
+    """
+
+    @staticmethod
+    def _stored(platform: str) -> str:
+        return (
+            "SYSTEM PROMPT BODY\n\nConversation started: Monday, January 05, 2026\n"
+            "Model: test-model\nProvider: openrouter\n"
+            f"Platform: {platform}"
+        )
+
+    def _restore(self, *, stored: str, current: str, history=None, tool_names=None):
+        db = MagicMock()
+        row = {"system_prompt": self._stored(stored)}
+        if tool_names is not None:
+            row["tool_names"] = tool_names
+        db.get_session.return_value = row
+        agent = _make_agent(session_db=db)
+        agent.platform = current
+        agent._platform_hint_overrides = None
+        agent._surface_switch_note = ""
+        agent._gateway_turn_context_notes = ""
+        _restore_or_build_system_prompt(
+            agent, None, history if history is not None else [{"role": "user", "content": "hi"}]
+        )
+        return agent
+
+    def test_switch_reuses_the_stored_prompt(self):
+        agent = self._restore(stored="desktop", current="tui")
+        assert agent._cached_system_prompt == self._stored("desktop")
+        agent._build_system_prompt.assert_not_called()
+
+    def test_switch_stages_the_new_surface_guidance(self):
+        agent = self._restore(stored="desktop", current="tui")
+        note = agent._surface_switch_note
+        assert note.startswith(f"{_SURFACE_SWITCH_NOTE_PREFIX}tui (")
+        # The correction carries the CURRENT surface's hint, so the model is not left
+        # following the desktop guidance still sitting in the reused prompt.
+        assert "terminal UI (TUI)" in note
+
+    def test_same_surface_stages_nothing(self):
+        assert self._restore(stored="cli", current="cli")._surface_switch_note == ""
+
+    def test_unknown_surface_stages_nothing(self):
+        assert self._restore(stored="", current="tui")._surface_switch_note == ""
+
+    def test_not_restaged_once_the_transcript_carries_it(self):
+        # The note is stamped into the byte-stable api_content sidecar, and the gateway
+        # builds a fresh AIAgent per turn — without the dedup every turn would add a copy.
+        history = [
+            {"role": "user", "content": "hi",
+             "api_content": f"hi\n\n{_SURFACE_SWITCH_NOTE_PREFIX}tui (...)]"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        agent = self._restore(stored="desktop", current="tui", history=history)
+        assert agent._surface_switch_note == ""
+
+    def test_a_further_switch_is_announced_again(self):
+        # Only the NEWEST note counts: it names the surface the conversation has left.
+        history = [
+            {"role": "user", "content": f"hi\n\n{_SURFACE_SWITCH_NOTE_PREFIX}tui (...)]"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        agent = self._restore(stored="desktop", current="cli", history=history)
+        assert agent._surface_switch_note.startswith(f"{_SURFACE_SWITCH_NOTE_PREFIX}cli (")
+
+    def test_tool_prefix_is_not_pinned_across_a_switch(self):
+        """The saved names are the PREVIOUS surface's toolset.
+
+        The tool registry is process-global, so ``_merge_preserving_prefix`` would keep a
+        saved-but-not-loaded tool (e.g. the desktop_ui toolset a `coding_context: focus`
+        desktop session gets) and re-advertise it on a TUI session that cannot run it.
+        """
+        from unittest.mock import patch
+
+        with patch("tools.mcp_tool_agent.restore_agent_tool_prefix") as pin:
+            self._restore(stored="desktop", current="tui", tool_names='["desktop_ui_tool"]')
+        pin.assert_not_called()
+
+    def test_tool_prefix_is_still_pinned_on_the_same_surface(self):
+        from unittest.mock import patch
+
+        with patch("tools.mcp_tool_agent.restore_agent_tool_prefix") as pin:
+            self._restore(stored="cli", current="cli", tool_names='["read_file"]')
+        pin.assert_called_once()
+
+    def test_note_rides_the_user_message_channel_once(self):
+        from agent.turn_context import _merge_gateway_notes, consume_surface_switch_note
+
+        agent = self._restore(stored="desktop", current="tui")
+        staged = agent._surface_switch_note
+        assert _merge_gateway_notes(agent, [{"role": "user", "content": "hi"}], 0, "") == staged
+        assert consume_surface_switch_note(agent) == ""
 
 
 # ---------------------------------------------------------------------------

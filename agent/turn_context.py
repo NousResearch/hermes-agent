@@ -124,6 +124,20 @@ def consume_gateway_turn_context_notes(agent: Any) -> str:
     return notes if isinstance(notes, str) else ""
 
 
+def consume_surface_switch_note(agent: Any) -> str:
+    """Pop the one-shot surface-change note staged by the system-prompt restore.
+
+    Rides the same user-message channel as the gateway's must-deliver notes: a session that
+    moved between surfaces keeps its stored system prompt (rebuilding it re-prefills the whole
+    request) and gets the new surface's guidance here, behind the cached prefix (#104414).
+    """
+    note = getattr(agent, "_surface_switch_note", "") or ""
+    if hasattr(agent, "_surface_switch_note"):
+        with suppress(Exception):
+            agent._surface_switch_note = ""
+    return note if isinstance(note, str) else ""
+
+
 def append_notes_to_multimodal_content(content: Any, notes: str) -> bool:
     """Append must-deliver notes as a durable text part on a multimodal (list) user
     message (the sidecar path returns ``None`` for non-string content)."""
@@ -663,11 +677,15 @@ def _collect_pre_llm_call_context(
 def _merge_gateway_notes(
     agent: Any, messages: List[Any], current_turn_user_idx: int, plugin_user_context: str
 ) -> str:
-    """Gateway must-deliver notes ride the user-message injection channel (one-shot,
-    gateway-staged) so the ephemeral system prompt stays byte-stable. Multimodal (list)
-    content can't take the string sidecar — append a durable text part instead."""
-    _gateway_notes = consume_gateway_turn_context_notes(agent)
-    if not _gateway_notes:
+    """Must-deliver per-turn notes ride the user-message injection channel (one-shot) so the
+    ephemeral system prompt stays byte-stable: the gateway's staged notes, then the
+    surface-switch correction. Multimodal (list) content can't take the string sidecar —
+    append a durable text part instead."""
+    _turn_notes = "\n\n".join(
+        part for part in (consume_gateway_turn_context_notes(agent),
+                          consume_surface_switch_note(agent)) if part
+    )
+    if not _turn_notes:
         return plugin_user_context
     _gw_turn_content = (
         messages[current_turn_user_idx].get("content")
@@ -676,10 +694,10 @@ def _merge_gateway_notes(
         else None
     )
     if isinstance(_gw_turn_content, list):
-        append_notes_to_multimodal_content(_gw_turn_content, _gateway_notes)
+        append_notes_to_multimodal_content(_gw_turn_content, _turn_notes)
         return plugin_user_context
     return (
-        plugin_user_context + "\n\n" + _gateway_notes if plugin_user_context else _gateway_notes
+        plugin_user_context + "\n\n" + _turn_notes if plugin_user_context else _turn_notes
     )
 
 

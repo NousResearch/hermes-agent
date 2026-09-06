@@ -17,6 +17,16 @@ from tools.registry import registry
 logger = logging.getLogger("model_tools")
 
 
+def _record_repair(pattern: str, tool_name: str) -> None:
+    """Record a repair-observability event (no-op when stats unavailable)."""
+    try:
+        from agent.tool_repair_stats import RepairPattern, record_repair
+
+        record_repair(RepairPattern(pattern), tool_name)
+    except Exception:
+        pass
+
+
 def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     """Coerce string-typed args to their JSON-Schema types; originals kept on failure."""
     if not args or not isinstance(args, dict):
@@ -59,9 +69,11 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                                    "Falling back to single-element list.", tool_name, key)
                 args[key] = [value]
                 logger.info("coerce_tool_args: wrapped bare string in list for %s.%s", tool_name, key)
+                _record_repair("bare_string_wrap", tool_name)
                 continue
             args[key] = [value]
             logger.info("coerce_tool_args: wrapped bare %s in list for %s.%s", type(value).__name__, tool_name, key)
+            _record_repair("bare_object_wrap", tool_name)
             continue
 
         if not isinstance(value, str):

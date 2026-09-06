@@ -72,6 +72,7 @@ def _agent(*tool_names: str) -> AIAgent:
         ("write_file", '{"path":"out.txt","content":"cut'),
         ("execute_code", json.dumps({"code": 'payload = """cut'})),
         ("execute_code", json.dumps({"code": "print('cut')\u0000"})),
+        ("execute_code", json.dumps({"code": "print(" + chr(0xD800) + ")"})),
         (
             "tool_call",
             json.dumps({"name": "execute_code", "arguments": {"code": "if True:\n"}}),

@@ -325,9 +325,10 @@ def validate_tool_calls(
                 detail = f"{exc.msg} at line {exc.lineno or '?'}, column {exc.offset or '?'}"
             else:
                 detail = str(exc)
+            source_bytes = len(source.encode("utf-8", errors="replace"))
             return (
                 "Error: Python source did not compile, so no call in this batch was executed. "
-                f"Received {len(source)} characters / {len(source.encode('utf-8'))} bytes; "
+                f"Received {len(source)} characters / {source_bytes} bytes; "
                 f"{detail}. Resend the complete source, or split it into smaller "
                 "independently complete calls; do not send only the missing closing syntax."
             )

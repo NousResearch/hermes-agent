@@ -188,10 +188,12 @@ def test_dashscope_tts_downloads_native_audio_result(tmp_path):
         "https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/signed.wav?token=secret",
         timeout=60,
         stream=True,
+        allow_redirects=False,
     )
 
 
-def test_dashscope_tts_rejects_non_alibaba_http_audio_url():
+def test_dashscope_tts_rejects_insecure_audio_downloads(tmp_path):
+    from tools import tts_tool
     from tools.tts_tool_providers import _dashscope_audio_download_url
 
     try:
@@ -200,6 +202,22 @@ def test_dashscope_tts_rejects_non_alibaba_http_audio_url():
         assert str(exc) == "DashScope TTS returned an invalid audio URL"
     else:
         raise AssertionError("non-Alibaba HTTP audio URL was accepted")
+
+    response = _JsonResponse({
+        "output": {
+            "audio": {"url": "https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/signed.wav"},
+        },
+    })
+    config = {"provider": "dashscope", "dashscope": {}}
+    with patch.object(tts_tool, "_load_tts_config", return_value=config), \
+         patch.object(tts_tool, "_resolve_provider_key", return_value="dashscope-key"), \
+         patch("requests.post", return_value=response), \
+         patch("requests.get", return_value=_JsonResponse({}, status_code=302)) as get:
+        result = json.loads(tts_tool.text_to_speech_tool("hello", output_path=str(tmp_path / "speech.wav")))
+
+    assert result["success"] is False
+    assert "audio download failed (HTTP 302)" in result["error"]
+    assert get.call_args.kwargs["allow_redirects"] is False
 
 
 def test_dashscope_tts_default_path_matches_wav_response(tmp_path):

@@ -200,7 +200,7 @@ def _generate_dashscope_tts(text: str, output_path: str, tts_config: Dict[str, A
     except (KeyError, TypeError) as exc:
         raise RuntimeError("DashScope TTS response did not include output.audio.url") from exc
     audio_url = _dashscope_audio_download_url(audio_url)
-    audio_response = requests.get(audio_url, timeout=60, stream=True)
+    audio_response = requests.get(audio_url, timeout=60, stream=True, allow_redirects=False)
     if audio_response.status_code != 200:
         _close_response(audio_response)
         raise RuntimeError(f"DashScope TTS audio download failed (HTTP {audio_response.status_code})")

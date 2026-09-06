@@ -861,9 +861,9 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           <Codicon name="gear" />
         </Button>
       </Tip>
-      <Tip label={b.group.disbandHint(group)}>
+      <Tip label={hostedDeleted ? b.group.hostedDeleteLocally : b.group.disbandHint(group)}>
         <Button
-          aria-label={b.group.disbandLabel(group)}
+          aria-label={hostedDeleted ? b.group.hostedDeleteLocally : b.group.disbandLabel(group)}
           className="shrink-0 text-(--ui-text-tertiary) hover:text-destructive"
           onClick={() => setConfirmDisband(true)}
           size="sm"
@@ -1581,32 +1581,36 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         open={settingsOpen}
       />
       <ConfirmDialog
-        busyLabel={b.group.disbanding}
-        confirmLabel={b.group.disbandAction}
+        busyLabel={hostedDeleted ? undefined : b.group.disbanding}
+        confirmLabel={hostedDeleted ? b.group.deleteAction : b.group.disbandAction}
         description={
           /* New rooms title member sessions by roomId, legacy rooms by name — */
           /* so the copy names the concept, not a literal session title. The */
           /* name is bolded mid-sentence, so the copy splits around it and the */
           /* prefix goes empty where the name leads (core's deleteDesc* shape). */
-          <span>
-            {b.group.disbandDescPrefix}
-            <span className="font-medium text-foreground">{group}</span>
-            {b.group.disbandDescSuffix(members.length)}
-          </span>
+          hostedDeleted ? (
+            b.group.hostedDeleteLocally
+          ) : (
+            <span>
+              {b.group.disbandDescPrefix}
+              <span className="font-medium text-foreground">{group}</span>
+              {b.group.disbandDescSuffix(members.length)}
+            </span>
+          )
         }
         destructive
-        doneLabel={b.group.disbandDone}
+        doneLabel={hostedDeleted ? undefined : b.group.disbandDone}
         onClose={() => setConfirmDisband(false)}
         onConfirm={async () => {
           clearGroupComposerDraft(composerKeyRef.current)
           await disbandGroupChat(group, members)
           host.notify({
             kind: 'success',
-            message: b.group.disbanded(group)
+            message: hostedDeleted ? b.group.hostedDeletedLocally(group) : b.group.disbanded(group)
           })
         }}
         open={confirmDisband}
-        title={b.group.disbandTitle}
+        title={hostedDeleted ? b.group.hostedDeleteLocalTitle : b.group.disbandTitle}
       />
       <ConfirmDialog
         confirmLabel={b.group.retryAction}

@@ -236,6 +236,8 @@ type BotsMessages = {
     hostedReconnectToStop: (host: string) => string
     hostedDeleted: string
     hostedDeleteLocally: string
+    hostedDeleteLocalTitle: string
+    hostedDeletedLocally: (group: string) => string
     hostedMembersFixed: string
     hostedRenameQueued: (host: string) => string
     hostedRenameFailed: (host: string) => string
@@ -548,6 +550,8 @@ const en: BotsMessages = {
     hostedReconnectToStop: host => `Reconnect ${host} to stop this Group Chat.`,
     hostedDeleted: 'This Group Chat was deleted.',
     hostedDeleteLocally: 'Delete this Desktop’s copy of the group and its history.',
+    hostedDeleteLocalTitle: 'Delete this Desktop’s copy?',
+    hostedDeletedLocally: group => `Deleted this Desktop’s copy of “${group}”`,
     hostedMembersFixed: 'Members cannot change while this Group Chat keeps running without Desktop.',
     hostedRenameQueued: host => `Rename saved. It will sync when ${host} is online.`,
     hostedRenameFailed: host => `Could not rename. Reconnect ${host} and retry.`,
@@ -855,6 +859,8 @@ const ja: BotsMessages = {
     hostedReconnectToStop: host => `このグループチャットを停止するには ${host} を再接続してください。`,
     hostedDeleted: 'このグループチャットは削除されました。',
     hostedDeleteLocally: 'ローカルのメンバーシップと履歴を削除するには、ここで削除してください。',
+    hostedDeleteLocalTitle: 'このデスクトップのコピーを削除しますか？',
+    hostedDeletedLocally: group => `このデスクトップの「${group}」のコピーを削除しました`,
     hostedMembersFixed: 'Desktopなしで実行中のグループチャットではメンバーを変更できません。',
     hostedRenameQueued: host => `名前変更を保存しました。${host} がオンラインになると同期されます。`,
     hostedRenameFailed: host => `名前を変更できませんでした。${host} を再接続して再試行してください。`,
@@ -1156,6 +1162,8 @@ const zh: BotsMessages = {
     hostedReconnectToStop: host => `请重新连接 ${host} 以停止此群聊。`,
     hostedDeleted: '此群聊已被删除。',
     hostedDeleteLocally: '请在此处删除，以移除本地成员关系和历史记录。',
+    hostedDeleteLocalTitle: '删除此桌面端的副本？',
+    hostedDeletedLocally: group => `已删除此桌面端的“${group}”副本`,
     hostedMembersFixed: '此群聊在没有 Desktop 的情况下运行时无法更改成员。',
     hostedRenameQueued: host => `重命名已保存。${host} 上线后将同步。`,
     hostedRenameFailed: host => `无法重命名。请重新连接 ${host} 后重试。`,
@@ -1457,6 +1465,8 @@ const zhHant: BotsMessages = {
     hostedReconnectToStop: host => `請重新連接 ${host} 以停止此群組聊天。`,
     hostedDeleted: '此群組聊天已被刪除。',
     hostedDeleteLocally: '請在此處刪除，以移除本機成員關係和歷史記錄。',
+    hostedDeleteLocalTitle: '刪除此桌面端的副本？',
+    hostedDeletedLocally: group => `已刪除此桌面端的「${group}」副本`,
     hostedMembersFixed: '此群組聊天在沒有 Desktop 的情況下運作時無法變更成員。',
     hostedRenameQueued: host => `重新命名已儲存。${host} 上線後將同步。`,
     hostedRenameFailed: host => `無法重新命名。請重新連接 ${host} 後再試一次。`,

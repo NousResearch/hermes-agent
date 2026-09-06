@@ -63,7 +63,7 @@ async def test_reply_prefix_injected_when_text_absent_from_history():
 @pytest.mark.asyncio
 async def test_telegram_long_reply_reaches_prompt_without_losing_later_items():
     """The native reply already has the full message; preparation must not trim it."""
-    from gateway.platforms.base import MessageType
+    from gateway.platforms.event import MessageType
     from tests.gateway.test_telegram_reply_quote import _make_adapter, _make_message
 
     quoted = "\n".join(

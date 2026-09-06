@@ -25,7 +25,7 @@ def child(out: Path) -> None:
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore, SessionSource
     from gateway.config import Platform
-    from gateway.platforms.base import MessageEvent
+    from gateway.platforms.event import MessageEvent
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig()

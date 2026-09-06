@@ -195,3 +195,36 @@ def test_completion_item_custom():
     item = ContextCompletionItem(text="1", display="ENG-1", meta="Bug")
     assert item.display == "ENG-1"
     assert item.meta == "Bug"
+
+
+class _HugeProvider(ContextReferenceProvider):
+    """Provider whose expand() returns more than the inline budget."""
+
+    prefix = "huge"
+    description = "huge provider"
+
+    async def autocomplete(self, query: str, *, limit: int = 10) -> list[ContextCompletionItem]:
+        return []
+
+    async def expand(self, target: str) -> str | None:
+        return "FULL-CONTENT-MARKER\n" + ("x" * 8_000)
+
+
+def test_oversized_plugin_reference_falls_back_instead_of_blocking_the_turn():
+    """One huge plugin ref must not refuse the whole turn (#61987, plugin sibling)."""
+    from agent.context_references import preprocess_context_references
+
+    _context_reference_providers.pop("huge", None)
+    register_context_reference_provider(_HugeProvider())
+    try:
+        result = preprocess_context_references(
+            "Check @huge:thing", cwd=Path.cwd(), context_length=1_000
+        )
+    finally:
+        _context_reference_providers.pop("huge", None)
+
+    assert result.expanded
+    assert not result.blocked
+    assert "too large to inline safely" in result.message
+    assert "FULL-CONTENT-MARKER" not in result.message
+    assert not result.warnings

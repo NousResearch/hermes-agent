@@ -389,3 +389,66 @@ def test_format_reference_value_round_trips_through_the_parser(value):
 
     assert match is not None
     assert match.group("value").strip("`\"'") == value
+
+
+def test_oversized_url_falls_back_instead_of_blocking_the_turn():
+    """A single huge page must not poison the aggregate budget (#61987, url sibling)."""
+    from agent.context_references import preprocess_context_references
+
+    async def _fetcher(url: str) -> str:
+        return "FULL-CONTENT-MARKER\n" + ("x" * 8_000)
+
+    result = preprocess_context_references(
+        "Read @url:https://example.com/huge",
+        cwd=Path.cwd(),
+        context_length=1_000,
+        url_fetcher=_fetcher,
+    )
+
+    assert result.expanded
+    assert not result.blocked
+    assert "too large to inline safely" in result.message
+    assert "web_extract" in result.message
+    assert "FULL-CONTENT-MARKER" not in result.message
+    assert not result.warnings
+
+
+def test_oversized_git_diff_falls_back_instead_of_blocking_the_turn(sample_repo: Path):
+    """@diff on a large working tree degrades to guidance, not a refused turn."""
+    from agent.context_references import preprocess_context_references
+
+    (sample_repo / "huge.txt").write_text(
+        "FULL-CONTENT-MARKER\n" + "\n".join(f"line {i}" for i in range(4_000)),
+        encoding="utf-8",
+    )
+    _git(sample_repo, "add", "-A")
+
+    result = preprocess_context_references(
+        "Review @staged", cwd=sample_repo, context_length=1_000
+    )
+
+    assert result.expanded
+    assert not result.blocked
+    assert "too large to inline safely" in result.message
+    assert "--stat" in result.message
+    assert "FULL-CONTENT-MARKER" not in result.message
+    assert not result.warnings
+
+
+def test_undersized_url_still_inlines_in_full():
+    """The cap only trips above the limit; normal refs keep inlining verbatim."""
+    from agent.context_references import preprocess_context_references
+
+    async def _fetcher(url: str) -> str:
+        return "SMALL-CONTENT-MARKER"
+
+    result = preprocess_context_references(
+        "Read @url:https://example.com/small",
+        cwd=Path.cwd(),
+        context_length=1_000,
+        url_fetcher=_fetcher,
+    )
+
+    assert not result.blocked
+    assert "SMALL-CONTENT-MARKER" in result.message
+    assert "too large to inline safely" not in result.message

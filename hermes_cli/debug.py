@@ -27,8 +27,37 @@ _REDACTION_BANNER = (
 _EMAIL_ADDRESS_RE = re.compile(
     r"(?<![A-Za-z0-9._%+-])"
     r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
-    r"(?![A-Za-z0-9._%+-])")
-_PASTE_RS_URL = "https://paste.rs/"  # primary; dpaste.com is the fallback
+    r"(?![A-Za-z0-9._%+-])"
+)
+_MESSAGE_FIELD_SINGLE_RE = re.compile(
+    r"\b(?P<key>msg|message|prompt|response|content)="
+    r"'(?:\\.|[^'\\])*'"
+)
+_MESSAGE_FIELD_DOUBLE_RE = re.compile(
+    r'\b(?P<key>msg|message|prompt|response|content)="'
+    r'(?:\\.|[^"\\])*"'
+)
+_MESSAGE_FIELD_BARE_RE = re.compile(
+    r"\b(?P<key>msg|message|prompt|response|content)=(?!['\"])[^\s]+"
+)
+_USER_FIELD_RE = re.compile(
+    r"\b(?P<key>user|user_id)="
+    r".*?"
+    r"(?=\s+(?:platform|user|user_id|chat|chat_id|session|session_id|thread|"
+    r"thread_id|msg|message|prompt|response|content)=|$)"
+)
+_IDENTITY_TOKEN_FIELD_RE = re.compile(
+    r"\b(?P<key>chat|chat_id|session|session_id|thread|thread_id)=[^\s]+"
+)
+_UNIX_HOME_COMPONENT_RE = re.compile(r"(?<![\w.-])/(?:home|Users)/[^/\s:'\"]+")
+_WINDOWS_HOME_COMPONENT_RE = re.compile(r"(?i)\b[A-Z]:\\Users\\[^\\\s:'\"]+")
+
+
+# ---------------------------------------------------------------------------
+# Paste services — try paste.rs first, dpaste.com as fallback.
+# ---------------------------------------------------------------------------
+
+_PASTE_RS_URL = "https://paste.rs/"
 _DPASTE_COM_URL = "https://dpaste.com/api/"
 _USER_AGENT = "hermes-agent/debug-share"
 _MAX_LOG_BYTES = 512_000  # per log file for upload (paste.rs caps at ~1 MB)
@@ -261,13 +290,65 @@ def _resolve_log_path(log_name: str) -> Optional[Path]:
 
 
 def _redact_log_text(text: str) -> str:
-    """``redact_sensitive_text(force=True)`` + email scrub — fires regardless of the operator's
-    ``security.redact_secrets`` setting; only the in-memory upload copy is sanitized."""
+    """Run forced secret and privacy redaction over upload-bound text.
+
+    Uses ``force=True`` so secret redaction fires regardless of the operator's
+    ``security.redact_secrets`` setting. A second debug-share-only pass removes
+    common PII-bearing log fields such as user/chat identifiers, message
+    snippets, and local home paths. The on-disk log file is never modified;
+    only the diagnostic copy is sanitized. Local and private reports use the
+    same collector; public report policy is handled by the caller.
+    """
     if not text:
         return text
     from agent.redact import redact_sensitive_text
     text = redact_sensitive_text(text, force=True)
-    return _EMAIL_ADDRESS_RE.sub("[REDACTED_EMAIL]", text)
+    return _redact_debug_share_privacy(text)
+
+
+def _redact_debug_share_privacy(text: str) -> str:
+    """Remove personal context that is not covered by secret redaction."""
+    text = _EMAIL_ADDRESS_RE.sub("[REDACTED_EMAIL]", text)
+    text = _MESSAGE_FIELD_SINGLE_RE.sub(
+        lambda m: f"{m.group('key')}='[REDACTED_MESSAGE]'", text
+    )
+    text = _MESSAGE_FIELD_DOUBLE_RE.sub(
+        lambda m: f'{m.group("key")}="[REDACTED_MESSAGE]"', text
+    )
+    text = _MESSAGE_FIELD_BARE_RE.sub(
+        lambda m: f"{m.group('key')}=[REDACTED_MESSAGE]", text
+    )
+    text = _USER_FIELD_RE.sub(
+        lambda m: f"{m.group('key')}=[REDACTED_ID]", text
+    )
+    text = _IDENTITY_TOKEN_FIELD_RE.sub(
+        lambda m: f"{m.group('key')}=[REDACTED_ID]", text
+    )
+
+    for raw_path, replacement in _privacy_path_replacements():
+        text = text.replace(raw_path, replacement)
+        text = text.replace(raw_path.replace("\\", "/"), replacement.replace("\\", "/"))
+
+    text = _UNIX_HOME_COMPONENT_RE.sub("~", text)
+    return _WINDOWS_HOME_COMPONENT_RE.sub("~", text)
+
+
+def _privacy_path_replacements() -> list[tuple[str, str]]:
+    """Return local paths that should not be exposed in public debug pastes."""
+    replacements: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    candidates = [
+        (get_hermes_home(), "~/.hermes"),
+        (Path.home(), "~"),
+    ]
+
+    for path, replacement in candidates:
+        raw = str(path)
+        if raw and raw not in seen:
+            seen.add(raw)
+            replacements.append((raw, replacement))
+
+    return replacements
 
 
 def _read_tail_bytes(

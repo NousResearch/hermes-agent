@@ -199,6 +199,11 @@ def _profile_create(args):
     clone_config = clone or clone_from is not None
     cloned = clone_config or clone_all
     source_label = clone_from or get_active_profile_name()
+    from hermes_cli.profile_runtime import resolve_profile_runtime
+    try:
+        runtime_kind, runtime_reason = resolve_profile_runtime(getattr(args, "runtime", None))
+    except ValueError as e:
+        _die(f"Error: {e}")
     try:
         profile_dir = create_profile(
             name=name, clone_from=clone_from, clone_all=clone_all, clone_config=clone_config,
@@ -208,6 +213,7 @@ def _profile_create(args):
     except (ValueError, FileExistsError, FileNotFoundError) as e:
         _die(f"Error: {e}")
     print(f"\nProfile '{name}' created at {profile_dir}")
+    print(f"Runtime: {runtime_kind} — {runtime_reason}")
     if cloned:
         if clone_all:
             print(f"Full copy from {source_label} (excluding session history, cron jobs, backups, and snapshots).")
@@ -265,6 +271,14 @@ def _profile_create(args):
     elif served is not None:
         # The multiplexer did not pick the profile up (older gateway or the signal failed): a restart serves it.
         print("  hermes gateway restart    Serve this profile from the running multiplexed gateway")
+    elif runtime_kind == "container":
+        # No verifiable live multiplexer from here (its PID lives in the container): hand off to it.
+        from hermes_cli.profile_runtime import container_name
+        container = container_name()
+        print(f"  docker exec {container} hermes -p {name} gateway start")
+        print("                            Start the supervised gateway (registers its s6 slot)")
+        print(f"  ⚠ Do not run '{name} gateway start' on this host — it would start a second,")
+        print(f"    unsupervised gateway for a profile the {container} container already serves.")
     else:
         print(f"  {name} gateway start      Start the messaging gateway")
     if clone or clone_all:

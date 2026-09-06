@@ -1973,7 +1973,7 @@ class TestRetryAfterCap:
         class _HTTPError(Exception):
             def __init__(self, code):
                 self.status_code = code
-                self.response = SimpleNamespace(headers={"retry-after": str(retry_after_value)})
+                self.response = SimpleNamespace(headers={"retry-after": str(retry_after_value)} if retry_after_value is not None else {})
 
             def __str__(self):
                 if self.status_code == 429:
@@ -2014,6 +2014,31 @@ class TestRetryAfterCap:
     def test_retry_after_under_cap_is_honored_529_overloaded(self, agent):
         status = self._drive_once(agent, 300, status_code=529)
         assert "Retrying in 300.0s" in status
+
+    def test_retry_after_overloaded_no_header_falls_back(self, agent):
+        """Overloaded (503) without Retry-After header must not crash; the
+        backoff falls through to jittered/adaptive backoff."""
+        status = self._drive_once(agent, None, status_code=503)
+        assert "Retrying" in status or "Waiting" in status
+
+    def test_retry_after_over_cap_is_capped(self, agent):
+        """Retry-After values above the 600s ceiling must be capped, not used
+        verbatim (which would block the conversation loop for 30+ minutes on
+        a pathological provider response)."""
+        status = self._drive_once(agent, 3600)
+        assert "Waiting 600.0s" in status
+
+    def test_retry_after_non_numeric_value_is_ignored(self, agent):
+        """A non-numeric Retry-After header (e.g. ``retry-after: abc``) must
+        not crash float() — the try/except in compute_error_backoff catches
+        TypeError/ValueError and falls through to jittered backoff."""
+        status = self._drive_once(agent, "abc")
+        assert "Waiting" in status or "Retrying" in status
+
+    def test_retry_after_overloaded_over_cap_is_capped(self, agent):
+        """Same cap applies to overloaded (503) responses with Retry-After."""
+        status = self._drive_once(agent, 3600, status_code=503)
+        assert "Retrying in 600.0s" in status
 
 
 

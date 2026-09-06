@@ -1500,6 +1500,10 @@ class GatewayInboundMixin:
             reply_snippet = event.reply_to_text[:500]
             _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
             message_text = f'[Replying to{_who}: "{reply_snippet}"]\n\n{message_text}'
+        if getattr(event, "metadata", None) and event.metadata.get("edited_message"):
+            # Platform edit forwarded as a new turn (e.g. Matrix ``process_edits``): flag it so the
+            # agent treats this as a correction/follow-up rather than an unrelated fresh prompt.
+            message_text = f"[Edited message — this corrects/replaces your previous prompt]\n\n{message_text}"
         return message_text
 
     async def _inbound_model_context_length(self, source: SessionSource, session_key: str) -> int:

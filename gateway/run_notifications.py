@@ -35,6 +35,44 @@ _DURABLE_CLAIM_OPS = {
     "release": ("release_completion_delivery", "Could not release durable completion claim"),
 }
 
+# Session sources with NO gateway delivery route: a CLI/TUI spawn has no bound platform
+# to receive a completion turn. ``api_server`` is deliberately absent — its outbound HTTP
+# response (and cron ``deliver='origin'`` backposts) is the route.
+_UNROUTABLE_COMPLETION_SOURCES = frozenset({"cli", "tui"})
+
+
+async def _unroutable_completion_verdict(runner, evt: Dict[str, Any]) -> Optional[str]:
+    """Verdict only — reads no claim and writes nothing: a human-readable reason when a
+    durable completion's spawn session came from a source with no gateway delivery
+    route, else None (routable, or the origin cannot be determined).
+
+    The completion event itself carries no source stamp (``_push_completion_event``
+    emits routing keys only), so resolve it from the persisted ``sessions`` row of
+    ``parent_session_id`` — the same store read ``_classify_completion_target`` already
+    performs. Fail-open on every lookup failure: the unroutable drop is terminal and a
+    wrong verdict is worse than a few extra self-limiting retries.
+    """
+    if evt.get("type") != "async_delegation" or not evt.get("delegation_id"):
+        return None
+    parent_session_id = str(evt.get("parent_session_id") or "").strip()
+    if not parent_session_id:
+        return None
+    session_db = getattr(runner, "_session_db", None)
+    if session_db is None:
+        return None
+    try:
+        parent = await session_db.get_session(parent_session_id)
+    except Exception:
+        logger.debug("Unroutable-origin pre-flight parent lookup failed for %s",
+                     parent_session_id, exc_info=True)
+        return None
+    if parent is None:
+        return None
+    source = str(parent.get("source") or "").strip().lower()
+    if source in _UNROUTABLE_COMPLETION_SOURCES:
+        return f"originated from unroutable session source '{source}'"
+    return None
+
 
 class GatewayNotificationsMixin:
     """Process/completion/update notifications, media delivery and async-delegation delivery for GatewayRunner."""
@@ -1035,8 +1073,12 @@ class GatewayNotificationsMixin:
         """
         claim = self._CompletionClaim()
         evt_type = evt.get("type")
+        unroutable_reason = None
         if evt_type == "async_delegation":
             claim.delegation_id = str(evt.get("delegation_id") or "")
+            # Resolve the unroutable-origin verdict BEFORE claiming: the check must not
+            # consume the claim, and a wrong verdict must never cost an attempt.
+            unroutable_reason = await _unroutable_completion_verdict(self, evt)
             if claim.delegation_id:
                 try:
                     from tools.async_delegation import claim_completion_delivery
@@ -1047,6 +1089,25 @@ class GatewayNotificationsMixin:
                 except Exception as exc:
                     logger.warning("Could not claim durable async completion %s: %s", claim.delegation_id, exc)
                     claim.proceed, claim.early_result = False, False
+                    return claim
+                if unroutable_reason:
+                    # The spawning session came from a source with no gateway delivery route
+                    # (cli/tui): this completion can NEVER route — neither now nor after a
+                    # restart. Settle the claim as a terminal drop before any injection is
+                    # attempted, so a CLI restart can never replay the completion into the
+                    # pipeline and land it in whatever session the TUI happens to resume. The
+                    # generic end_reason classifier below cannot catch this: after a restart it
+                    # resolves the stale identity to a brand-new session and answers "retry",
+                    # so without this check the attempts cap — not the end_reason — is what
+                    # ends the restart-churn.
+                    if claim.claim_id:
+                        self._settle_durable_claim("drop", claim.delegation_id, claim.claim_id)
+                    logger.info(
+                        "Async delegation %s: completion %s; notification suppressed, "
+                        "result remains queryable.",
+                        claim.delegation_id, unroutable_reason,
+                    )
+                    claim.proceed, claim.early_result = False, True
                     return claim
         elif evt_type != "completion":
             return claim
@@ -1100,6 +1161,11 @@ class GatewayNotificationsMixin:
         try:
             injection_result = await self._inject_watch_notification(synth_text, evt)
             if injection_result is not True:
+                if injection_result is None and claim.delegation_id and claim.claim_id:
+                    # A None verdict is terminal (no route, never will be): settle the
+                    # claim as a drop now instead of releasing it into an 8-attempt
+                    # restart-replay churn that ends in the same state anyway.
+                    self._settle_durable_claim("drop", claim.delegation_id, claim.claim_id)
                 return injection_result
             accepted = True
             if identity is not None:

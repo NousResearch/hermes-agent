@@ -97,14 +97,8 @@ def _find_git_root(start: Path) -> Optional[Path]:
     """Nearest ancestor (or *start* itself) containing ``.git``, else None."""
     current = start.resolve()
     # A parent the process may not stat (locked-down /home on shared hosts) is "no .git here", not a crash.
-    return next((p for p in (current, *current.parents) if _exists_or_denied(p / ".git")), None)
-
-
-def _exists_or_denied(path: Path) -> bool:
-    try:
-        return path.exists()
-    except OSError:
-        return False
+    from hermes_constants import exists_or_denied
+    return next((p for p in (current, *current.parents) if exists_or_denied(p / ".git")), None)
 
 
 def _find_hermes_md(cwd: Path) -> Optional[Path]:

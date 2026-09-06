@@ -52,6 +52,38 @@ def _job_skill_names(job: dict) -> list[str]:
 
 _MAX_CONTEXT_CHARS = 8000
 
+# Run docs written when no agent ran (monitor no_change tick, silent gates). They are the
+# audit trail of a suppressed tick, not output — see #104541.
+_STUB_DOC_MARKERS = (
+    "**Status:** no_change",
+    "**Status:** silent",
+    "Script gate returned `wakeAgent=false`",
+)
+
+
+def _is_stub_run_doc(path) -> bool:
+    """True for output docs that record a tick where no agent ran.
+
+    Monitor-suppressed and gate-silent ticks still write a short doc so the ledger proves the
+    job is alive. Selecting one as the "latest output" would inject a placeholder as continuity
+    context — the quieter the job, the faster its real output is buried under stubs (#104541).
+    Real run docs carry ``## Prompt``/``## Response`` sections and marker lines anchored at line
+    start, so a report that merely quotes a stub marker stays selectable.
+    """
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(512).decode("utf-8", errors="replace")
+    except OSError:
+        return False
+    if "## Prompt" in head or "## Response" in head:
+        return False
+    return any(
+        line.lstrip().startswith(marker)
+        for line in head.splitlines()
+        for marker in _STUB_DOC_MARKERS
+    )
+
+
 _SELF_CONTEXT_INTRO = (
     "The following is this job's most recent output from its previous run. Use it for "
     "continuity: avoid repeating what was already reported, and continue where the last run "
@@ -88,7 +120,12 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
             continue
         try:
             output_files = sorted(
-                (output_dir / source_job_id).glob("*.md"), key=lambda f: f.stat().st_mtime,
+                (
+                    f
+                    for f in (output_dir / source_job_id).glob("*.md")
+                    if not _is_stub_run_doc(f)
+                ),
+                key=lambda f: f.stat().st_mtime,
                 reverse=True,
             )
             if not output_files:

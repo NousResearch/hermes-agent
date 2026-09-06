@@ -454,6 +454,17 @@ _TOOL_STATUS_ERROR_ALIASES = {"error", "failed", "failure"}
 _TOOL_STATUS_COMPLETED_ALIASES = {"completed", "complete", "success", "succeeded"}
 
 
+def _is_timeout_error(error: BaseException) -> bool:
+    """True for httpx/socket timeouts raised anywhere in the recall path."""
+    if isinstance(error, TimeoutError):
+        return True
+    try:
+        import httpx
+        return isinstance(error, httpx.TimeoutException)
+    except Exception:
+        return False
+
+
 def _resolve_user_space(client, *, timeout: Optional[float] = None) -> Optional[str]:
     """Server-asserted current user for explicit-uid URIs; ``None`` when the probe fails or
     reports no user. Callers may fall back to a configured value for that one operation but
@@ -1613,7 +1624,14 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 deadline=deadline, request_timeout=cfg["request_timeout_seconds"], full_read_limit=cfg["full_read_limit"],
             ))
         except Exception as e:
-            logger.debug("OpenViking context search failed: %s", e)
+            # A recall timeout is a silent capability loss (no memories injected, no user-visible
+            # error), so it is logged at WARNING while other failures stay at debug.
+            if _is_timeout_error(e):
+                logger.warning("OpenViking recall timed out user=%s budget_s=%s request_s=%s: %s",
+                               self._user_space(client), cfg["timeout_seconds"],
+                               cfg["request_timeout_seconds"], e)
+            else:
+                logger.debug("OpenViking context search failed: %s", e)
             return ""
 
     # -- typed settings ------------------------------------------------------

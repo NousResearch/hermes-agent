@@ -411,6 +411,14 @@ def _apply_output_hooks(
         session_id=agent.session_id or "",
         model=agent.model,
         platform=platform,
+        # Additive payload field: the turn's original user request (including any
+        # mid-turn steering appended by the loop). Transform plugins need it to
+        # honor request-level contracts they cannot see in the response alone
+        # (exact-output requests, explicit language/format overrides). Legacy
+        # narrow-signature callbacks never receive it — PluginDispatchMixin's
+        # _invoke_hook_callback filters additive fields, so this is backward
+        # compatible. Mirrors post_llm_call's user_message kwarg below.
+        original_user_message=original_user_message,
     ):
         if isinstance(_hook_result, str) and _hook_result:
             pre_transform, final_response, transformed = final_response, _hook_result, True

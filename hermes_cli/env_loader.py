@@ -398,7 +398,7 @@ def _reapply_terminal_config_bridge(home_path: Path) -> None:
     ``apply_terminal_config_to_env`` (also used by terminal_tool and the TUI/dashboard launchers) so the
     semantics can't drift between sites."""
     try:
-        if Path(home_path).resolve() != _process_hermes_home().resolve():
+        if Path(home_path).resolve() != get_hermes_home().resolve():
             return
         from hermes_cli.config import apply_terminal_config_to_env
 

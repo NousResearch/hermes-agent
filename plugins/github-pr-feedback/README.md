@@ -573,3 +573,5 @@ the card before `kanban_complete`. Retirement verifies canonical closure twice
 and marks that dispatch superseded in the feedback ledger. It neither posts a
 completion comment nor claims passing CI. Open, changed-head, and raced PRs keep
 their pending gate. Protected terminal replay preserves the lifecycle result.
+
+Repair completion policies also gate the shared `request_review` transition. A worker must finish its durable push/reply/acknowledgement contract before handing the implementation to an independent reviewer; review and CI still remain separate requirements. Original dispatch identities remain provenance, not evidence that the published repair still has its original head.

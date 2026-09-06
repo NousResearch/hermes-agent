@@ -30,7 +30,7 @@ def registered_manager(monkeypatch, home):
     return manager
 
 
-@pytest.mark.parametrize("surface", ["tool", "cli"])
+@pytest.mark.parametrize("surface", ["tool", "cli", "review_tool", "review_cli"])
 @pytest.mark.parametrize("action", ["pending", "resolving", "completed", "superseded", "unbound"])
 def test_real_completion_surfaces_require_the_task_bound_feedback_contract(tmp_path, monkeypatch, surface, action):
     from hermes_cli import kanban as cli, kanban_db as kb, kanban_db_connect as kbc
@@ -45,6 +45,7 @@ def test_real_completion_surfaces_require_the_task_bound_feedback_contract(tmp_p
     with kbc.connect() as connection:
         tid = kb.create_task(connection, title="Repair an exact PR", assignee="worker")
         kb.claim_task(connection, tid)
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(kb.get_task(connection, tid).current_run_id))
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
     manager = registered_manager(monkeypatch, home)
     # Completion approval from another plugin cannot mask the repair contract.
@@ -67,6 +68,13 @@ def test_real_completion_surfaces_require_the_task_bound_feedback_contract(tmp_p
         if surface == "tool":
             result = json.loads(kanban_tools._handle_complete({"task_id": tid, "summary": "Local tests passed"}))
             allowed = result.get("ok") is True
+        elif surface == "review_tool":
+            result = json.loads(kanban_tools._handle_request_review({"task_id": tid, "summary": "Ready for review"}))
+            allowed = result.get("ok") is True
+        elif surface == "review_cli":
+            result = cli._cmd_request_review(argparse.Namespace(task_id=tid, summary="Ready for review",
+                                                                 metadata=None, reviewer=None, force=True))
+            allowed = result == 0
         else:
             result = cli._cmd_complete(argparse.Namespace(task_id=tid, task_ids=[tid], result=None,
                                                          summary="Local tests passed", metadata=None))
@@ -74,7 +82,8 @@ def test_real_completion_surfaces_require_the_task_bound_feedback_contract(tmp_p
         expected = action in {"completed", "superseded", "unbound"}
         assert allowed is expected
         with kbc.connect() as connection:
-            assert (kb.get_task(connection, tid).status == "done") is expected
+            landed = "review" if surface.startswith("review_") else "done"
+            assert (kb.get_task(connection, tid).status == landed) is expected
     finally:
         ledger.close()
 

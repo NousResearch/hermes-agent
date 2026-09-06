@@ -3422,6 +3422,19 @@ def request_review(
     def _ret(ok: bool, reason: Optional[str] = None):
         return (ok, reason) if with_reason else ok
 
+    from hermes_cli.kanban_completion_policy import CompletionPolicyError, enforce_completion_policies
+
+    task = get_task(conn, task_id)
+    if task is None:
+        return _ret(False, "task not found")
+    try:
+        enforce_completion_policies(
+            task_id=task_id, board=_lifecycle_board(conn, None), assignee=task.assignee,
+            summary=summary or "",
+        )
+    except CompletionPolicyError as exc:
+        return _ret(False, str(exc))
+
     summary = redact_review_value(summary)
     metadata = redact_review_value(metadata)
     with write_txn(conn):

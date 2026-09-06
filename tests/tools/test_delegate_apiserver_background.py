@@ -1,21 +1,12 @@
 """delegate_task(background=true) on stateless API-server sessions.
 
-Previously async_delivery_supported()=False forced SYNCHRONOUS execution for
-every background dispatch on the API server, blocking the whole turn. Now
-that background completions can wake the originating session via the
-/v1/chat/completions self-post (gateway/wake.py), a session-continuable
-turn (raw session id bound as the api_server chat_id) dispatches async; only
-session-id-less one-shot requests keep the sync fallback.
-
-The wake target must be captured from the request-scoped chat_id binding,
-NOT from HERMES_SESSION_ID: constructing a child agent calls
-set_current_session_id(child.session_id), clobbering the HERMES_SESSION_ID
-ContextVar and os.environ with the subagent's internal id before the
-dispatch code reads it — the fake child build below reproduces that clobber.
+An OpenAI-compatible request cannot consume a detached completion after its
+response ends. A bound raw session id only makes the result durable for
+polling clients; it does not make delivery reachable from a plain client.
+Both declared and derived API sessions therefore use the synchronous fallback.
 """
 
 import json
-import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -52,15 +43,6 @@ def _clean_queue_and_context(monkeypatch):
             process_registry.completion_queue.get_nowait()
         except Exception:
             break
-
-
-def _drain_one(timeout=5.0):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if not process_registry.completion_queue.empty():
-            return process_registry.completion_queue.get_nowait()
-        time.sleep(0.02)
-    return None
 
 
 def _fake_parent():
@@ -107,10 +89,8 @@ def _patch_delegate(monkeypatch):
     return dt
 
 
-def test_apiserver_session_with_id_dispatches_background(monkeypatch):
-    """async_delivery=False + a raw session id (HERMES_SESSION_ID) →
-    background dispatch (the completion wakes the session via the
-    api_server self-post), NOT the forced-sync fallback."""
+def test_apiserver_session_with_id_returns_completion_synchronously(monkeypatch):
+    """A raw session id does not make detached delivery client-reachable."""
     dt = _patch_delegate(monkeypatch)
     monkeypatch.setenv("HERMES_SESSION_ID", "raw-sid-7")
     set_session_vars(
@@ -126,18 +106,9 @@ def test_apiserver_session_with_id_dispatches_background(monkeypatch):
         background=True, parent_agent=_fake_parent(),
     )
     parsed = json.loads(out)
-    assert parsed["status"] == "dispatched", parsed
-    assert parsed["mode"] == "background"
-
-    evt = _drain_one()
-    assert evt is not None
-    assert evt["type"] == "async_delegation"
-    # The raw session id is stamped so the gateway drain can self-post the
-    # wake to the REAL session (session_key alone is the raw id here, which
-    # carries no parseable routing metadata). Crucially this is the SPAWNER's
-    # id, not the subagent-internal id the child build clobbered
-    # HERMES_SESSION_ID with (see clobbering_build_child).
-    assert evt["origin_session_id"] == "raw-sid-7"
+    assert parsed["results"][0]["summary"] == "done: bg on api_server"
+    assert "SYNCHRONOUSLY" in parsed["note"]
+    assert process_registry.completion_queue.empty()
 
 
 # ---------------------------------------------------------------------------

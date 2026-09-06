@@ -199,14 +199,13 @@ def _run_sync_with_note(batch: _Batch, reason: str) -> str:
         result["note"] = _SYNC_FALLBACK_NOTES[reason]
     return json.dumps(result, ensure_ascii=False)
 
-def _resolve_async_wake_sid(origin_wake_sid: str) -> Optional[str]:
+def _resolve_async_wake_sid(_origin_wake_sid: str) -> Optional[str]:
     """Wake target for a detached batch, or None to force synchronous execution.
 
-    Finite sessions (stateless HTTP requests, one-shot Kanban workers) cannot route a detached result back after their
-    turn/process ends — but if a raw session id is bound (the API server always binds one), gateway.wake can still
-    reach it by self-POSTing /v1/chat/completions, so only fall back to sync when there is truly no session id to
-    wake. Uses the origin captured BEFORE child construction — HERMES_SESSION_ID here would be the subagent's internal
-    id.
+    Finite sessions (stateless HTTP requests, one-shot Kanban workers) cannot
+    route a detached result back after their turn/process ends. A raw session
+    id may make a completion durable, but it does not make that result reachable
+    by a plain request/response client, so it must not bypass the sync fallback.
     """
     try:
         # Finite sessions cannot route a detached subagent result back to the agent after their turn/process
@@ -218,13 +217,6 @@ def _resolve_async_wake_sid(origin_wake_sid: str) -> Optional[str]:
             return ""
     except Exception:
         return ""
-    if origin_wake_sid:
-        logger.info(
-            "delegate_task: async delivery unsupported on this session, but a session id is bound (%s) — dispatching "
-            "in the background and waking the session via self-post when it completes instead of forcing synchronous "
-            "execution.", origin_wake_sid,
-        )
-        return origin_wake_sid
     return None
 
 def _resolve_async_session_key(parent_agent: Any, origin_ui_session_id: str) -> tuple[str, str]:

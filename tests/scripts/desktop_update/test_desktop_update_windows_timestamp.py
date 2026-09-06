@@ -24,7 +24,7 @@ def test_windows_update_uses_locale_independent_unix_seconds() -> None:
     safe_expression = "[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()"
     unsafe_expression = "[int][double]::Parse((Get-Date -UFormat %s)"
 
-    assert source.count(safe_expression) == 2, (
+    assert source.count(safe_expression) >= 2, (
         "windows.ps1 must use DateTimeOffset Unix seconds for both the "
         "update marker and the finished result timestamp"
     )

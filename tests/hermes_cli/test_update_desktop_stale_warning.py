@@ -73,6 +73,8 @@ def test_failed_rebuild_returns_false_and_keeps_the_retry_hint(desktop_env, caps
     assert _run(desktop_dir) is False
     assert calls["builds"] == 2
     out = capsys.readouterr().out
+    assert "Rebuilding desktop app" in out
+    assert "Desktop build exited 1; retrying once" in out
     assert "Desktop build failed" in out
     assert "stage-native-deps" in out
     assert "Update complete" not in out

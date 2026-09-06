@@ -83,13 +83,42 @@ export function isFallbackCommit(commit: string): boolean {
   return /^0{7,40}$/.test(commit)
 }
 
+/**
+ * Asks the checkout whether its desktop bundle needs rebuilding — the same
+ * content-hash test `hermes update` runs (`hermes desktop --build-needed`).
+ * Null means "could not ask" and never claims skew.
+ */
+export type BuildNeededProbe = () => Promise<boolean | null>
+
 export async function detectBundleSkew(
   stamp: BundleSkewStamp | null,
   runGit: RunGit,
-  repoRoot: string
+  repoRoot: string,
+  probeBuildNeeded?: BuildNeededProbe
 ): Promise<BundleSkewResult> {
+  // Git can only say something when the stamp commit is in HEAD's history.
+  // After a same-branch reset (the nightly rewrite, or `hermes update`
+  // resetting a diverged checkout) a bundle whose swap never happened carries
+  // a stamp that is simply unrelated to HEAD — the 2026-09-05 shape, where
+  // install-stamp named the new commit while app.asar was still the previous
+  // build. The checkout's own content-hash stamp knows; ask it when git
+  // cannot answer, and stay quiet without a probe (dev, unpackaged).
+  const probe = async (): Promise<BundleSkewResult> => {
+    if (!probeBuildNeeded) {
+      return NOT_STALE
+    }
+
+    try {
+      const needed = await probeBuildNeeded()
+
+      return needed === true ? { desktopCommitsBehind: null, outOfSync: true } : NOT_STALE
+    } catch {
+      return NOT_STALE
+    }
+  }
+
   if (!stamp?.commit || stamp.source === 'fallback' || isFallbackCommit(stamp.commit)) {
-    return NOT_STALE
+    return probe()
   }
 
   try {
@@ -109,7 +138,7 @@ export async function detectBundleSkew(
     })
 
     if (ancestry.code !== 0) {
-      return NOT_STALE
+      return probe()
     }
 
     const result = await runGit(['rev-list', '--count', `${stamp.commit}..HEAD`, '--', ...RUNTIME_PATHS], {

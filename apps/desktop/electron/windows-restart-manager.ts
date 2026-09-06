@@ -28,16 +28,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 
-/** One process Restart Manager (or module attribution) proved to hold an install file. */
-export type RestartManagerHolder = {
-  pid: number
-  createdAt: number
-  name: string
-  cmdline: string
-  source: 'restart-manager'
-  resource: string
-  role: 'other'
-}
+import type { ForceReleaseHolder } from './windows-update-force-release'
 
 const execFileAsync = promisify(execFile)
 
@@ -275,7 +266,7 @@ $items | ConvertTo-Json -Compress -Depth 3
 export function parseRestartManagerOutput(
   stdout: string,
   resources: readonly string[]
-): RestartManagerHolder[] {
+): ForceReleaseHolder[] {
   const text = String(stdout || '').trim()
 
   if (!text || text === '[]') {return []}
@@ -290,7 +281,7 @@ export function parseRestartManagerOutput(
 
   const rows = Array.isArray(parsed) ? parsed : [parsed]
   const fallbackResource = resources[0]
-  const holders: RestartManagerHolder[] = []
+  const holders: ForceReleaseHolder[] = []
   const seen = new Set<string>()
 
   for (const row of rows) {
@@ -365,7 +356,7 @@ export async function listRestartManagerHoldersForResources(
     shared?: readonly string[]
     attributionRoot?: string
   } = {}
-): Promise<RestartManagerHolder[]> {
+): Promise<ForceReleaseHolder[]> {
   const definite = resources.filter(Boolean)
   const ambiguous = attributionRoot ? shared.filter(Boolean) : []
 

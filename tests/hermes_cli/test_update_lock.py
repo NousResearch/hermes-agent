@@ -25,6 +25,7 @@ from hermes_cli.update_lock import (
     HANDOFF_PID_ENV,
     UPDATE_MARKER_MAX_AGE_SECONDS,
     UpdateLock,
+    UpdateMarkerError,
     describe_holder,
     read_live_update,
     update_marker_path,
@@ -112,13 +113,15 @@ def test_dead_owner_is_reclaimed_not_honored(marker):
     assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == os.getpid()
 
 
-def test_owner_past_the_age_ceiling_is_reclaimed(marker):
-    """A live-but-wedged updater must not hold the lock forever."""
+def test_proven_live_owner_past_the_age_ceiling_is_not_reclaimed(marker, monkeypatch):
+    """A slow live updater must never race a second installation mutation."""
     long_ago = int(time.time()) - UPDATE_MARKER_MAX_AGE_SECONDS - 60
+    monkeypatch.setattr("hermes_cli.update_lock._pid_create_time", lambda pid: long_ago - 1)
     marker.write_text(f"{os.getpid()}\n{long_ago}\n", encoding="utf-8")
 
     lock = UpdateLock(path=marker)
-    assert lock.acquire() is True
+    assert lock.acquire() is False
+    assert marker.exists()
 
 
 @pytest.mark.parametrize(
@@ -126,11 +129,14 @@ def test_owner_past_the_age_ceiling_is_reclaimed(marker):
     ["", "not-a-pid\n123\n", "\n\n", "12345"],
     ids=["empty", "garbage-pid", "blank-lines", "no-start-time"],
 )
-def test_malformed_markers_never_block_an_update(marker, body):
+def test_malformed_markers_block_without_deletion(marker, body):
     marker.write_text(body, encoding="utf-8")
 
-    assert read_live_update(path=marker) is None
-    assert UpdateLock(path=marker).acquire() is True
+    with pytest.raises(UpdateMarkerError):
+        read_live_update(path=marker)
+    with pytest.raises(UpdateMarkerError):
+        UpdateLock(path=marker).acquire()
+    assert marker.read_text(encoding="utf-8") == body
 
 
 def test_stale_marker_is_removed_on_read(marker):
@@ -165,17 +171,12 @@ def test_describe_holder_names_the_pid_and_elapsed_time(marker):
     assert "already running" in message
 
 
-def test_unwritable_marker_location_does_not_block_the_update(tmp_path):
-    """Degrade to pre-lock behavior rather than refusing to update at all.
-
-    An unwritable marker path is a worse reason to block an update than the
-    race the lock prevents.
-    """
+def test_unwritable_marker_location_blocks_the_update(tmp_path):
     lock = UpdateLock(path=tmp_path / "nonexistent-file" / "marker")
-    (tmp_path / "nonexistent-file").write_text("i am a file, not a dir", encoding="utf-8")
-
-    assert lock.acquire() is True
-    assert lock.acquired is False, "nothing was written, so there is nothing to release"
+    (tmp_path / "nonexistent-file").write_text("file", encoding="utf-8")
+    with pytest.raises(UpdateMarkerError):
+        lock.acquire()
+    assert lock.acquired is False
 
 
 class TestHandoffFromOrchestratingUpdater:
@@ -262,3 +263,60 @@ class TestAncestryHandoff:
         assert lock.acquire() is False
         assert lock.holder is not None
         assert lock.holder.pid == DEAD_PID
+
+
+def test_release_restores_claim_replaced_during_isolation(marker, monkeypatch):
+    from pathlib import Path
+    lock = UpdateLock(path=marker)
+    assert lock.acquire()
+    rename = Path.rename
+    successor = f"{DEAD_PID}\n{int(time.time())}\n"
+    def replace_then_rename(path, destination):
+        marker.write_text(successor)
+        return rename(path, destination)
+    monkeypatch.setattr(Path, "rename", replace_then_rename)
+    lock.release()
+    assert marker.read_text() == successor
+
+
+def test_unknown_old_owner_does_not_expire(marker, monkeypatch):
+    monkeypatch.setattr("hermes_cli.update_lock._pid_alive", lambda pid: True)
+    monkeypatch.setattr("hermes_cli.update_lock._pid_create_time", lambda pid: None)
+    marker.write_text(f"{DEAD_PID}\n{int(time.time()) - 10000}\n")
+    assert UpdateLock(path=marker).acquire() is False
+    assert marker.exists()
+
+
+def test_unknown_cleanup_artifact_never_expires(marker):
+    artifact = marker.with_name(marker.name + ".cas-unknown")
+    artifact.write_text("123\n100\n")
+    with pytest.raises(UpdateMarkerError):
+        UpdateLock(path=marker).acquire()
+    assert artifact.exists()
+
+
+def test_reader_does_not_restore_an_active_release(marker, monkeypatch):
+    from pathlib import Path
+
+    lock = UpdateLock(path=marker)
+    assert lock.acquire()
+    rename = Path.rename
+
+    def read_during_release(path, destination):
+        result = rename(path, destination)
+        with pytest.raises(UpdateMarkerError, match="cleanup"):
+            read_live_update(path=marker)
+        return result
+
+    monkeypatch.setattr(Path, "rename", read_during_release)
+    lock.release()
+    assert not marker.exists()
+    assert not list(marker.parent.glob(marker.name + ".cas-*"))
+
+
+def test_handoff_cannot_authorize_an_unreadable_owner_identity(marker, monkeypatch):
+    marker.write_text(f"{os.getpid()}\n{int(time.time())}\n")
+    monkeypatch.setenv(HANDOFF_PID_ENV, str(os.getpid()))
+    monkeypatch.setattr("hermes_cli.update_lock._pid_create_time", lambda pid: None)
+    assert UpdateLock(path=marker).acquire() is False
+    assert marker.exists()

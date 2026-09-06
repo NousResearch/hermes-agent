@@ -11,15 +11,18 @@ from __future__ import annotations
 import logging
 import os
 import time
-from contextlib import suppress
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
+
+from hermes_mcp_update_gate import (
+    UpdateMarkerError, _pid_alive, _pid_create_time as _stdlib_pid_create_time, live_update_marker_owner,
+)
 
 logger = logging.getLogger(__name__)
 
 # Keep in sync with UPDATE_MARKER_MAX_AGE_MS in apps/desktop/electron/update-marker.ts:
-# a shorter ceiling here would let Python steal a lock Electron still considers live.
-# A full update (git pull + uv sync + desktop rebuild) is minutes.
+# Age is diagnostic only; a slow live or unknown owner remains blocking.
 UPDATE_MARKER_MAX_AGE_SECONDS = 20 * 60
 
 MARKER_NAME = ".hermes-update-in-progress"
@@ -47,22 +50,14 @@ def update_marker_path() -> Path:
     return get_process_hermes_home() / MARKER_NAME
 
 
-def _pid_alive(pid: int) -> bool:
-    """True when a process with ``pid`` currently exists.
-
-    Delegates to :func:`gateway.status._pid_exists`. Do NOT hand-roll ``os.kill(pid, 0)``: on
-    Windows CPython routes ``sig=0`` to ``GenerateConsoleCtrlEvent``, which Ctrl+C's the
-    target's whole console process group (bpo-14484). Any pid we cannot evaluate counts as
-    dead so a corrupt marker never wedges the lock.
-    """
-    if pid <= 0:
-        return False
+def _pid_create_time(pid: int) -> float | None:
+    if os.name == "nt":
+        return _stdlib_pid_create_time(pid)
     try:
-        from gateway.status import _pid_exists
-        return bool(_pid_exists(pid))
-    except Exception as exc:
-        logger.debug("Could not probe pid %s: %s", pid, exc)
-        return False
+        import psutil
+        return float(psutil.Process(pid).create_time())
+    except Exception:
+        return None
 
 
 def _handoff_pid() -> int | None:
@@ -94,39 +89,71 @@ def _is_ancestor_pid(pid: int) -> bool:
 
 @dataclass(frozen=True)
 class UpdateHolder:
-    """A confirmed-live update currently holding the lock."""
+    """A live or unprovable owner currently holding the lock."""
 
     pid: int
     age_seconds: float
+    identity: str = "unknown"
+
+
+def _restore_marker(marker: Path, isolated: Path) -> None:
+    """Restore without overwriting a successor; unresolved artifacts stay blocking."""
+    try:
+        os.link(isolated, marker)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        raise UpdateMarkerError("Cannot restore the isolated update marker") from exc
+    isolated.unlink()
+
+
+def _remove_exact_marker(marker: Path, expected: str) -> None:
+    isolated = marker.with_name(f"{marker.name}.cas-release-{os.getpid()}-{uuid.uuid4()}")
+    try:
+        marker.rename(isolated)
+    except FileNotFoundError:
+        return
+    try:
+        if isolated.read_text(encoding="utf-8") != expected:
+            _restore_marker(marker, isolated)
+            return
+        isolated.unlink()
+    except (OSError, UnicodeError) as exc:
+        if isolated.exists():
+            _restore_marker(marker, isolated)
+        raise UpdateMarkerError("Cannot reclaim the update marker safely") from exc
 
 
 def read_live_update(*, path: Path | None = None) -> UpdateHolder | None:
-    """Return the live update holding the lock, or ``None``.
+    """Read the shared claim, reclaiming only a proven stale exact marker.
 
-    Mirrors ``readLiveUpdateMarker`` in ``electron/update-marker.ts``: absent, unreadable,
-    malformed, dead-pid, and past-the-ceiling all mean "no live update", and a stale marker
-    file is deleted so it can't strand future runs. Never raises.
+    Unreadable, malformed and uncertain cleanup states raise UpdateMarkerError;
+    callers must stop, never interpret these states as permission to update.
     """
     marker = path or update_marker_path()
-    try:
-        lines = marker.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return None
-    try:
-        pid = int(lines[0].strip())
-    except (IndexError, ValueError):
-        pid = -1
-    try:
-        started_at = float(lines[1].strip())
-    except (IndexError, ValueError):
-        started_at = float("-inf")
-
-    age = time.time() - started_at
-    if not _pid_alive(pid) or age > UPDATE_MARKER_MAX_AGE_SECONDS:
-        with suppress(OSError):
-            marker.unlink()
-        return None
-    return UpdateHolder(pid=pid, age_seconds=age)
+    for _ in range(3):
+        try:
+            artifacts = list(marker.parent.glob(marker.name + ".cas-*"))
+            if artifacts:
+                if len(artifacts) == 1 and artifacts[0].name.startswith(marker.name + ".cas-release-") and not marker.exists():
+                    releaser = artifacts[0].name[len(marker.name + ".cas-release-"):].split("-", 1)[0]
+                    # A live releaser owns the rename/read/unlink transaction.
+                    # Recover only an abandoned release, never resurrect one
+                    # that another process is still removing.
+                    if releaser.isdecimal() and int(releaser) > 0 and not _pid_alive(int(releaser)):
+                        _restore_marker(marker, artifacts[0])
+                        continue
+                raise UpdateMarkerError("Update marker cleanup is unresolved; retry after the updater finishes")
+            raw = marker.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+        except (OSError, UnicodeError) as exc:
+            raise UpdateMarkerError("Cannot read the update marker safely") from exc
+        owner = live_update_marker_owner(marker, pid_alive=_pid_alive, pid_create_time=_pid_create_time)
+        if owner is not None:
+            return UpdateHolder(owner.pid, owner.age_seconds, owner.identity)
+        _remove_exact_marker(marker, raw)
+    raise UpdateMarkerError("Update marker changed during reclamation; retry")
 
 
 def describe_holder(holder: UpdateHolder) -> str:
@@ -166,18 +193,30 @@ class UpdateLock:
         """
         existing = read_live_update(path=self.path)
         if existing is not None:
-            if existing.pid == _handoff_pid() or _is_ancestor_pid(existing.pid):
+            if existing.identity == "matching" and (existing.pid == _handoff_pid() or _is_ancestor_pid(existing.pid)):
                 return True
             self.holder = existing
             return False
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8")
         except OSError as exc:
-            # Best-effort, like the Rust guard: an unwritable marker must not block the
-            # update itself (worse than the race it prevents). Degrade to pre-lock behavior.
-            logger.debug("Could not write update marker %s: %s", self.path, exc)
-            return True
+            raise UpdateMarkerError("Cannot create the update marker directory") from exc
+        try:
+            with self.path.open("x", encoding="utf-8") as claim:
+                self._claim = f"{os.getpid()}\n{int(time.time())}\n"
+                claim.write(self._claim)
+                claim.flush()
+                os.fsync(claim.fileno())
+        except FileExistsError:
+            self.holder = read_live_update(path=self.path)
+            if self.holder is None:
+                raise UpdateMarkerError("Update marker changed during acquisition; retry")
+            return False
+        except OSError as exc:
+            raise UpdateMarkerError("Cannot claim the update marker; installation was not changed") from exc
+        if list(self.path.parent.glob(self.path.name + ".cas-*")):
+            _remove_exact_marker(self.path, self._claim)
+            raise UpdateMarkerError("Update marker cleanup started during acquisition; retry")
         self.acquired = True
         return True
 
@@ -187,13 +226,9 @@ class UpdateLock:
             return
         self.acquired = False
         try:
-            owner = int(self.path.read_text(encoding="utf-8").splitlines()[0].strip())
-        except (OSError, IndexError, ValueError):
-            return
-        if owner != os.getpid():
-            return  # a handoff partner took ownership — still a live update
-        with suppress(OSError):
-            self.path.unlink()
+            _remove_exact_marker(self.path, self._claim)
+        except (OSError, UpdateMarkerError):
+            logger.warning("Could not release update marker %s", self.path)
 
     def __enter__(self) -> "UpdateLock":
         self.acquire()

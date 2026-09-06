@@ -32,6 +32,14 @@ export interface StoppedDesktopPluginHost extends TerminatedPluginServiceHost {
   stoppedAt: number
 }
 
+export interface SpawnedPluginHostProcess {
+  once(event: 'spawn', listener: () => void): this
+  once(event: 'error', listener: (error: Error) => void): this
+  removeListener(event: 'spawn', listener: () => void): this
+  removeListener(event: 'error', listener: (error: Error) => void): this
+  unref(): void
+}
+
 export interface PluginHostRestoreDeps {
   isWindows?: boolean
   now?: () => number
@@ -40,7 +48,7 @@ export interface PluginHostRestoreDeps {
   writeFileSync?: (target: string, contents: string) => void
   mkdirSync?: (target: string) => void
   rmSync?: (target: string) => void
-  spawn?: (command: string, args: string[], options: { cwd?: string }) => void
+  spawn?: (command: string, args: string[], options: { cwd?: string }) => SpawnedPluginHostProcess
   log?: (line: string) => void
 }
 
@@ -68,10 +76,60 @@ function defaultDeps(deps: PluginHostRestoreDeps) {
           windowsHide: true
         })
 
-        child.unref()
+        return child
       }),
     log: deps.log ?? (() => {})
   }
+}
+
+async function launchDesktopPluginHost(
+  hermesHome: string,
+  host: TerminatedPluginServiceHost,
+  io: ReturnType<typeof defaultDeps>
+): Promise<boolean> {
+  const label = scriptArgument(host.argv) ?? host.argv.join(' ')
+
+  if (!isRelaunchableDesktopPluginHost(hermesHome, host, io.existsSync)) {
+    io.log(`[updates] not relaunching plugin service host ${label}: launch line no longer qualifies`)
+
+    return false
+  }
+
+  try {
+    const [command, ...args] = host.argv
+    const child = io.spawn(command!, args, host.cwd ? { cwd: host.cwd } : {})
+
+    return await new Promise(resolve => {
+      const onSpawn = () => {
+        child.removeListener('error', onError)
+        child.unref()
+        io.log(`[updates] relaunched plugin service host ${label}`)
+        resolve(true)
+      }
+
+      const onError = (error: Error) => {
+        child.removeListener('spawn', onSpawn)
+        io.log(`[updates] could not relaunch plugin service host ${label}: ${error.message}`)
+        resolve(false)
+      }
+
+      child.once('error', onError)
+      child.once('spawn', onSpawn)
+    })
+  } catch (error) {
+    io.log(`[updates] could not relaunch plugin service host ${label}: ${error instanceof Error ? error.message : String(error)}`)
+
+    return false
+  }
+}
+
+/** Relaunch one stopped supervisor, resolving only after spawn succeeds or fails. */
+export async function relaunchDesktopPluginHost(
+  hermesHome: string,
+  host: TerminatedPluginServiceHost,
+  deps: PluginHostRestoreDeps = {}
+): Promise<boolean> {
+  return launchDesktopPluginHost(hermesHome, host, defaultDeps(deps))
 }
 
 // The launch line is a Windows Script Host argv, so its paths are Windows
@@ -221,14 +279,13 @@ export function recordStoppedDesktopPluginHost(
 }
 
 /**
- * Relaunch every recorded supervisor and clear the ledger. Best-effort and
- * never throws: a supervisor that cannot be relaunched is logged and dropped
- * (the user can relaunch it from the Startup folder; the next login does too).
+ * Relaunch every recorded supervisor. Successful entries are removed from the
+ * ledger; failed or no-longer-qualified entries remain available for retry.
  */
-export function restoreStoppedDesktopPluginHosts(
+export async function restoreStoppedDesktopPluginHosts(
   hermesHome: string,
   deps: PluginHostRestoreDeps = {}
-): { relaunched: string[]; skipped: string[] } {
+): Promise<{ relaunched: string[]; skipped: string[] }> {
   const io = defaultDeps(deps)
   const outcome = { relaunched: [] as string[], skipped: [] as string[] }
 
@@ -236,32 +293,28 @@ export function restoreStoppedDesktopPluginHosts(
 
   const target = stoppedPluginHostsPath(hermesHome)
   const hosts = readLedger(target, io)
-
-  try {
-    io.rmSync(target)
-  } catch {
-    void 0
-  }
+  const remaining: StoppedDesktopPluginHost[] = []
 
   for (const host of hosts) {
     const label = scriptArgument(host.argv) ?? host.argv.join(' ')
 
-    if (!isRelaunchableDesktopPluginHost(hermesHome, host, io.existsSync)) {
-      outcome.skipped.push(label)
-      io.log(`[updates] not relaunching plugin service host ${label}: launch line no longer qualifies`)
-
-      continue
-    }
-
-    try {
-      const [command, ...args] = host.argv
-      io.spawn(command!, args, host.cwd ? { cwd: host.cwd } : {})
+    if (await launchDesktopPluginHost(hermesHome, host, io)) {
       outcome.relaunched.push(label)
-      io.log(`[updates] relaunched plugin service host ${label}`)
-    } catch (error) {
+    } else {
       outcome.skipped.push(label)
-      io.log(`[updates] could not relaunch plugin service host ${label}: ${error instanceof Error ? error.message : String(error)}`)
+      remaining.push(host)
     }
+  }
+
+  try {
+    if (remaining.length === 0) {
+      io.rmSync(target)
+    } else {
+      io.mkdirSync(path.dirname(target))
+      io.writeFileSync(target, JSON.stringify({ schemaVersion: STOPPED_PLUGIN_HOSTS_SCHEMA_VERSION, hosts: remaining }, null, 2))
+    }
+  } catch (error) {
+    io.log(`[updates] could not update stopped plugin service host ledger: ${error instanceof Error ? error.message : String(error)}`)
   }
 
   return outcome

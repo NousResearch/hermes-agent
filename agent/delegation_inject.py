@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 _PENDING_CLAIMS_ATTR = "_pending_delegation_inject_claims"
 _CLAIM_HEARTBEAT_ATTR = "_delegation_inject_claim_heartbeat"
 _CLAIM_HEARTBEAT_INTERVAL_SECONDS = 60.0
+_CLAIM_ABANDONED_KEY = "_delegation_local_claim_abandoned"
 _CARRIER_SPILL_TOOL_NAME = "__delegation_carrier__"
 _CARRIER_MARKER = (
     "\n\n[DELEGATION RESULT READY — background evidence for the current task; "
@@ -144,8 +145,33 @@ def _durable_event_is_in_history(
     )
 
 
+def _entry_is_renewable(agent: Any, entry: dict[str, Any]) -> bool:
+    """Whether this RAM claim may still be renewed for the active parent turn.
+
+    A claim is useful only to the turn that created its carrier. Once a cached
+    agent advances, retaining or renewing the old local latch can only delay the
+    durable fallback and must never block a new carrier.
+    """
+    if entry.get(_CLAIM_ABANDONED_KEY):
+        return False
+    active_turn_id = str(getattr(agent, "_active_turn_id", "") or "")
+    entry_turn_id = str(entry.get("turn_id") or "")
+    if active_turn_id and entry_turn_id and entry_turn_id != active_turn_id:
+        entry[_CLAIM_ABANDONED_KEY] = True
+        return False
+    return True
+
+
+def _claim_status(entry: dict[str, Any]) -> tuple[str | None, bool]:
+    """Return durable state and whether this exact local token still owns it."""
+    from tools.async_delegation import get_event_delivery_claim_status
+
+    return get_event_delivery_claim_status(entry["event"], entry["claim_id"])
+
+
 def _stop_claim_heartbeat_if_idle(agent: Any) -> None:
-    if getattr(agent, _PENDING_CLAIMS_ATTR, None):
+    pending = list(getattr(agent, _PENDING_CLAIMS_ATTR, []) or [])
+    if any(_entry_is_renewable(agent, entry) for entry in pending):
         return
     heartbeat = getattr(agent, _CLAIM_HEARTBEAT_ATTR, None)
     if isinstance(heartbeat, dict):
@@ -157,7 +183,9 @@ def _stop_claim_heartbeat_if_idle(agent: Any) -> None:
 def ensure_pending_inject_heartbeat(agent: Any) -> bool:
     """Renew live same-turn claims throughout provider retries and backoff."""
 
-    if not getattr(agent, _PENDING_CLAIMS_ATTR, None):
+    pending = list(getattr(agent, _PENDING_CLAIMS_ATTR, []) or [])
+    if not any(_entry_is_renewable(agent, entry) for entry in pending):
+        _stop_claim_heartbeat_if_idle(agent)
         return False
     existing = getattr(agent, _CLAIM_HEARTBEAT_ATTR, None)
     if isinstance(existing, dict):
@@ -176,23 +204,42 @@ def ensure_pending_inject_heartbeat(agent: Any) -> bool:
     def _heartbeat() -> None:
         from tools.async_delegation import renew_event_delivery
 
-        while not stop.wait(_CLAIM_HEARTBEAT_INTERVAL_SECONDS):
-            pending = list(getattr(agent, _PENDING_CLAIMS_ATTR, []) or [])
-            if not pending:
-                break
-            for entry in pending:
-                try:
-                    if not renew_event_delivery(entry["event"], entry["claim_id"]):
-                        logger.warning(
-                            "Could not renew same-turn delegation claim %s",
-                            entry.get("event_id"),
+        try:
+            while not stop.wait(_CLAIM_HEARTBEAT_INTERVAL_SECONDS):
+                pending = list(getattr(agent, _PENDING_CLAIMS_ATTR, []) or [])
+                renewable = [
+                    entry for entry in pending if _entry_is_renewable(agent, entry)
+                ]
+                if not renewable:
+                    break
+                for entry in renewable:
+                    try:
+                        renewed = renew_event_delivery(
+                            entry["event"], entry["claim_id"]
                         )
-                except Exception:
+                    except Exception:
+                        logger.warning(
+                            "Failed to renew same-turn delegation claim %s",
+                            entry.get("event_id"),
+                            exc_info=True,
+                        )
+                        continue
+                    if renewed:
+                        continue
+                    # A False UPDATE is authoritative: the row is terminal/missing
+                    # or another token owns it. Stop presenting this RAM entry as
+                    # live. Cleanup restores an uncommitted carrier without touching
+                    # the row now owned by another consumer.
+                    entry[_CLAIM_ABANDONED_KEY] = True
                     logger.warning(
-                        "Failed to renew same-turn delegation claim %s",
+                        "Lost ownership of same-turn delegation claim %s; "
+                        "retiring its local latch",
                         entry.get("event_id"),
-                        exc_info=True,
                     )
+                if not any(_entry_is_renewable(agent, entry) for entry in pending):
+                    break
+        finally:
+            stop.set()
 
     from tools.thread_context import propagate_context_to_thread
 
@@ -213,7 +260,7 @@ def acknowledge_pending_injects(agent: Any, *, turn_id: str | None = None) -> in
 
     pending = list(getattr(agent, _PENDING_CLAIMS_ATTR, []) or [])
     keep: list[dict[str, Any]] = []
-    acknowledged_messages: list[dict[str, Any]] = []
+    settled_messages: list[dict[str, Any]] = []
     acknowledged = 0
     for entry in pending:
         if turn_id is not None and str(entry.get("turn_id") or "") != str(turn_id):
@@ -231,18 +278,37 @@ def acknowledge_pending_injects(agent: Any, *, turn_id: str | None = None) -> in
             committed = False
         if committed:
             acknowledged += 1
-            message = entry.get("message")
-            if isinstance(message, dict):
-                acknowledged_messages.append(message)
-        else:
+            settled_messages.append(message)
+            continue
+        try:
+            state, still_owned = _claim_status(entry)
+        except Exception:
+            keep.append(entry)
+            logger.warning(
+                "Could not classify failed delegation acknowledgement %s; "
+                "retaining local claim for retry",
+                entry.get("event_id"),
+                exc_info=True,
+            )
+            continue
+        if still_owned:
             keep.append(entry)
             logger.warning(
                 "Delegation carrier persisted but durable event ack did not commit: %s",
                 entry.get("event_id"),
             )
+            continue
+        entry[_CLAIM_ABANDONED_KEY] = True
+        settled_messages.append(message)
+        logger.warning(
+            "Retired stale local delegation claim %s after failed acknowledgement "
+            "(durable state=%s)",
+            entry.get("event_id"),
+            state,
+        )
     setattr(agent, _PENDING_CLAIMS_ATTR, keep)
     still_pending_ids = {str(entry.get("event_id") or "") for entry in keep}
-    for message in acknowledged_messages:
+    for message in settled_messages:
         if not (_message_event_ids(message) & still_pending_ids):
             _clear_carrier_metadata(message)
     _stop_claim_heartbeat_if_idle(agent)
@@ -267,6 +333,7 @@ def release_pending_injects(
     pending = list(getattr(agent, _PENDING_CLAIMS_ATTR, []) or [])
     keep: list[dict[str, Any]] = []
     removable_event_ids: set[str] = set()
+    settled_messages: list[dict[str, Any]] = []
     settled = 0
     for entry in pending:
         if turn_id is not None and str(entry.get("turn_id") or "") != str(turn_id):
@@ -277,24 +344,74 @@ def release_pending_injects(
         if _durable_event_is_in_history(messages, event_id):
             if complete_event_delivery(event, entry["claim_id"]):
                 settled += 1
-            else:
+                message = entry.get("message")
+                if isinstance(message, dict):
+                    settled_messages.append(message)
+                continue
+            try:
+                state, still_owned = _claim_status(entry)
+            except Exception:
                 keep.append(entry)
-        else:
-            # Remove the unconsumed marker by durable identity even when
-            # compression replaced the Python dict object.
-            removable_event_ids.add(event_id)
-            committed = release_event_delivery(event, entry["claim_id"])
-            state = get_event_delivery_state(event)
-            if committed:
-                # At the attempt cap release transitions to dropped, not pending.
-                if state == "pending":
-                    with process_registry.completion_routing_lock:
-                        process_registry.completion_queue.put(event)
-                settled += 1
-            elif state == "delivered":
-                settled += 1
-            else:
+                logger.warning(
+                    "Could not classify failed durable carrier settlement %s; "
+                    "retaining local claim for retry",
+                    event_id,
+                    exc_info=True,
+                )
+                continue
+            if still_owned:
                 keep.append(entry)
+                continue
+            entry[_CLAIM_ABANDONED_KEY] = True
+            settled += 1
+            message = entry.get("message")
+            if isinstance(message, dict):
+                settled_messages.append(message)
+            logger.warning(
+                "Retired stale local delegation claim %s while preserving its "
+                "durable carrier (state=%s)",
+                event_id,
+                state,
+            )
+            continue
+
+        # Remove the unconsumed marker by durable identity even when compression
+        # replaced the Python dict object.
+        removable_event_ids.add(event_id)
+        committed = release_event_delivery(event, entry["claim_id"])
+        state = get_event_delivery_state(event)
+        if committed:
+            # At the attempt cap release transitions to dropped, not pending.
+            if state == "pending":
+                with process_registry.completion_routing_lock:
+                    process_registry.completion_queue.put(event)
+            settled += 1
+            continue
+        if state == "delivered":
+            settled += 1
+            continue
+        try:
+            state, still_owned = _claim_status(entry)
+        except Exception:
+            keep.append(entry)
+            logger.warning(
+                "Could not classify failed delegation release %s; "
+                "retaining local claim for retry",
+                event_id,
+                exc_info=True,
+            )
+            continue
+        if still_owned:
+            keep.append(entry)
+            continue
+        entry[_CLAIM_ABANDONED_KEY] = True
+        settled += 1
+        logger.warning(
+            "Retired stale local delegation claim %s after ownership moved "
+            "elsewhere (durable state=%s)",
+            event_id,
+            state,
+        )
 
     if removable_event_ids:
         retained: list[dict[str, Any]] = []
@@ -310,6 +427,10 @@ def release_pending_injects(
             retained.append(message)
         messages[:] = retained
         agent._session_messages = messages
+    still_pending_ids = {str(entry.get("event_id") or "") for entry in keep}
+    for message in settled_messages:
+        if not (_message_event_ids(message) & still_pending_ids):
+            _clear_carrier_metadata(message)
     setattr(agent, _PENDING_CLAIMS_ATTR, keep)
     _stop_claim_heartbeat_if_idle(agent)
     return settled
@@ -355,7 +476,18 @@ def attach_ready_injects_to_tool_results(
         return 0
     if not _normal_budget_available(agent):
         return 0
-    if getattr(agent, _PENDING_CLAIMS_ATTR, None):
+
+    # The single-flight latch is scoped to the carrier's originating turn. A
+    # cached agent may retain an older entry after an uncertain DB failure, but
+    # that obsolete local bookkeeping must never disable injection forever.
+    pending = list(getattr(agent, _PENDING_CLAIMS_ATTR, []) or [])
+    for entry in pending:
+        _entry_is_renewable(agent, entry)  # marks prior-turn entries abandoned
+    _stop_claim_heartbeat_if_idle(agent)
+    if any(
+        str(entry.get("turn_id") or "") in {"", active_turn_id}
+        for entry in pending
+    ):
         return 0
 
     # Only the newest result is eligible. Never search backwards past an already

@@ -395,6 +395,35 @@ def get_event_delivery_state(evt: Dict[str, Any]) -> Optional[str]:
     return row[0] if row else None
 
 
+def get_event_delivery_claim_status(
+    evt: Dict[str, Any], claim_id: str,
+) -> tuple[Optional[str], bool]:
+    """Return durable state and ownership of one exact delivery token.
+
+    Callers use the pair after a failed UPDATE to distinguish a transient/local
+    failure (the token still owns a pending row) from definitive owner loss. A
+    stale RAM claimant must not release or requeue a row owned by another consumer.
+    """
+    if evt.get("type") != "async_delegation":
+        return None, False
+    delegation_id = str(evt.get("delegation_id") or "")
+    if not delegation_id:
+        return None, False
+    with _DB_LOCK, _transaction() as conn:
+        row = conn.execute(
+            "SELECT delivery_state, delivery_claim FROM async_delegations "
+            "WHERE delegation_id=?",
+            (delegation_id,),
+        ).fetchone()
+    if row is None:
+        return None, False
+    return row[0], bool(
+        claim_id
+        and row[0] == "pending"
+        and row[1] == claim_id
+    )
+
+
 def renew_event_delivery(evt: Dict[str, Any], claim_id: str) -> bool:
     """Keep the existing single-row lease live until the transcript flush settles."""
     if not claim_id or evt.get("type") != "async_delegation":

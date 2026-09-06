@@ -34,6 +34,20 @@ class TestAuxProbeMode:
         with aux._client_cache_lock:
             assert key not in aux._client_cache
 
+    def test_probe_chain_detection_is_bounded_for_dynamic_proxies(self):
+        import agent.auxiliary_client as aux
+
+        class EndlessProxy:
+            accesses = 0
+
+            @property
+            def _real_client(self):
+                type(self).accesses += 1
+                return type(self)()
+
+        assert aux._AuxProbeClientStub.is_in_client_chain(EndlessProxy()) is False
+        assert 0 < EndlessProxy.accesses <= 8
+
     def test_probe_stub_raises_on_runtime_use(self):
         import agent.auxiliary_client as aux
 
@@ -97,6 +111,56 @@ class TestVisionCheckUsesProbeMode:
         with patch.object(aux, "resolve_vision_provider_client", fake_resolver):
             assert vision_tools.check_vision_requirements() is True
         assert states and all(states)
+
+    def test_explicit_codex_probe_wrapper_is_not_cached(self, monkeypatch, tmp_path):
+        from tools import vision_tools
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "auxiliary:\n"
+            "  vision:\n"
+            "    provider: openai-codex\n"
+            "    model: gpt-5.4\n"
+        )
+        resolved_clients = []
+        real_resolver = aux.resolve_vision_provider_client
+
+        def capture_resolved_client(*args, **kwargs):
+            result = real_resolver(*args, **kwargs)
+            resolved_clients.append(result[1])
+            return result
+
+        aux.shutdown_cached_clients()
+        try:
+            with (
+                patch.object(aux, "_select_pool_entry", return_value=(False, None)),
+                patch.object(aux, "_read_codex_access_token", return_value="codex-token"),
+                patch.object(aux, "resolve_vision_provider_client", capture_resolved_client),
+            ):
+                assert vision_tools.check_vision_requirements() is True
+                with aux._client_cache_lock:
+                    assert not aux._client_cache
+
+                _provider, runtime_client, _model = real_resolver()
+
+            assert isinstance(runtime_client, aux.CodexAuxiliaryClient)
+            assert not isinstance(runtime_client._real_client, aux._AuxProbeClientStub)
+
+            probe_client = resolved_clients[0]
+            assert isinstance(probe_client, aux.CodexAuxiliaryClient)
+            assert isinstance(probe_client._real_client, aux._AuxProbeClientStub)
+
+            # Exercise the separate shared-store path with that real wrapper shape.
+            with aux._client_cache_lock:
+                aux._client_cache.clear()
+            key = ("wrapped-probe-test", False, "", "", "", (), False, "", None, "gpt-5.4")
+            aux._store_cached_client(key, probe_client, "gpt-5.4")
+            with aux._client_cache_lock:
+                assert key not in aux._client_cache
+        finally:
+            with aux._client_cache_lock:
+                aux._client_cache.clear()
 
 
 class TestLazyMcpSdk:

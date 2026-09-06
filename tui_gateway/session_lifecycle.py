@@ -444,14 +444,25 @@ def _cancel_ws_orphan_reap(sid: str) -> None:
 
 
 def _reattach_refusal(rid, sid: str, session: dict) -> dict | None:
-    """Under ``_session_resume_lock``: the error a reattaching RPC (resume/activate/prompt.submit) must return
-    instead of rebinding — ``session`` is no longer the live record for ``sid``, or a client-gone interrupt is
-    still settling and the reap Timer must keep polling. None when the reattach may proceed."""
+    """Under ``_session_resume_lock``: why a reattaching RPC (resume/activate/prompt.submit) must NOT rebind
+    ``session`` — it is stale, or a client-gone interrupt is still settling and the reap Timer must keep
+    polling. None when the reattach may proceed."""
     if _sessions.get(sid) is not session:
         return _err(rid, 4007, "session no longer live; retry resume")
     if session.get("_client_gone_interrupt_requested"):
         return _err(rid, 4009, "session disconnect interrupt settling")
     return None
+
+
+def _rebind_live_transport(sid: str, session: dict, transport: Transport) -> None:
+    """Point a live session at ``transport`` (caller holds ``history_lock``)."""
+    session["transport"] = transport
+    # Every transport that showed this session (pop-outs resume the same sid); on disconnect the last
+    # viewer becomes the transport instead of the drop sentinel.
+    session.setdefault("viewers", {})[transport] = time.time()
+    # See #83716.
+    if transport is not _detached_ws_transport:
+        _cancel_ws_orphan_reap(sid)  # the client is back — a pending ws-orphan reap must not fire
 
 
 def _ws_orphan_turn_activity_is_fresh(session: dict) -> bool:

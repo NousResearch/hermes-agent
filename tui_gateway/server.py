@@ -2444,8 +2444,8 @@ def _claim_or_reuse_live(sid: str, session_key: str, record: dict, lease) -> tup
         if live is not None:
             if lease is not None:
                 lease.release()
-            # Guarded reuse cancels the reap only after accepting reattachment;
-            # a rejected resume must leave an in-flight orphan interrupt polling.
+            # The reap is cancelled by the guarded reuse (_reattach_refusal), not here: a rejected
+            # reattach must leave an in-flight orphan interrupt polling.
             return live
         with _sessions_lock:
             _sessions[sid] = record
@@ -2684,17 +2684,6 @@ def _live_visible_history(session: dict, db, in_memory_fallback: list[dict]) -> 
         except Exception:
             logger.debug("live display projection read failed", exc_info=True)
     return in_memory_fallback
-
-
-def _rebind_live_transport(sid: str, session: dict, transport: Transport) -> None:
-    """Point a live session at ``transport`` (caller holds ``history_lock``)."""
-    session["transport"] = transport
-    # Every transport that showed this session (pop-outs resume the same sid); on disconnect the last
-    # viewer becomes the transport instead of the drop sentinel.
-    session.setdefault("viewers", {})[transport] = time.time()
-    # See #83716.
-    if transport is not _detached_ws_transport:
-        _cancel_ws_orphan_reap(sid)  # the client is back — a pending ws-orphan reap must not fire
 
 
 def _live_session_payload(

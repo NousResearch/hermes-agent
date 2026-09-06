@@ -230,38 +230,49 @@ class GatewayKanbanWatchersMixin:
                            "on config control alone.", _lock_path)
         return _load_config, _kb, kanban_cfg
 
+    def _kanban_board_metadata(self):
+        """Return every non-archived board or fail closed."""
+        from hermes_cli import kanban_db as _kb
+        from hermes_cli import kanban_db_connect as _kbc
+        from hermes_cli import kanban_db_dispatch as _kbd
+
+        try:
+            boards = _kb.list_boards(include_archived=False)
+        except Exception as exc:
+            raise _kbd.KanbanWorkerScanError(
+                "kanban restart drain: board enumeration failed"
+            ) from exc
+        if not isinstance(boards, list):
+            raise _kbd.KanbanWorkerScanError(
+                "kanban restart drain: board enumeration returned a non-list"
+            )
+        return _kb, _kbc, _kbd, boards
+
     def _kanban_running_workers(self, *, include_wedged: bool = True) -> list[dict]:
         """Read live Kanban workers across every non-archived board.
 
         Workers are child processes with durable PIDs in board databases, not
-        gateway turns.  Enumerating every board prevents a profile-scoped
-        gateway restart from leaving workers on another board to systemd's
-        KillMode escalation.
+        gateway turns. Any enumeration or per-board DB failure is fatal to this
+        scan: proceeding with a partial list could still leave a worker for
+        systemd's KillMode to SIGKILL.
         """
-        try:
-            from hermes_cli import kanban_db as _kb
-            from hermes_cli import kanban_db_connect as _kbc
-            from hermes_cli import kanban_db_dispatch as _kbd
-            boards = _kb.list_boards(include_archived=False)
-        except Exception:
-            logger.exception("kanban restart drain: cannot enumerate boards")
-            return []
-
+        _kb, _kbc, _kbd, boards = self._kanban_board_metadata()
         workers: list[dict] = []
         for board_meta in boards:
             slug = board_meta.get("slug") or _kb.DEFAULT_BOARD
             conn = None
             try:
                 conn = _kbc.connect(board=slug)
-                workers.extend(_kbd.list_running_workers(conn, include_wedged=include_wedged))
-            except Exception:
-                logger.debug("kanban restart drain: worker scan failed on board %s", slug, exc_info=True)
+                workers.extend(
+                    _kbd.list_running_workers(conn, include_wedged=include_wedged)
+                )
+            except Exception as exc:
+                raise _kbd.KanbanWorkerScanError(
+                    f"kanban restart drain: worker scan failed on board {slug}"
+                ) from exc
             finally:
                 if conn is not None:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
+                    conn.close()
         return workers
 
     def _active_kanban_worker_count(self) -> int:
@@ -270,18 +281,18 @@ class GatewayKanbanWatchersMixin:
 
     def _wedged_kanban_worker_count(self) -> int:
         """Count live workers excluded from the graceful restart wait."""
-        return sum(1 for worker in self._kanban_running_workers(include_wedged=True) if worker.get("wedged"))
+        return sum(
+            1
+            for worker in self._kanban_running_workers(include_wedged=True)
+            if worker.get("wedged")
+        )
 
     def _interrupt_kanban_workers_for_restart(self) -> int:
         """Durably block and SIGTERM every worker still live at the deadline."""
-        try:
-            from hermes_cli import kanban_db as _kb
-            from hermes_cli import kanban_db_connect as _kbc
-            from hermes_cli import kanban_db_dispatch as _kbd
-            boards = _kb.list_boards(include_archived=False)
-        except Exception:
-            logger.exception("kanban restart drain: cannot enumerate boards for force cleanup")
-            return 0
+        # Preflight every board before changing any task. If any board cannot be
+        # inspected, propagate the scan error and keep the gateway draining.
+        self._kanban_running_workers(include_wedged=True)
+        _kb, _kbc, _kbd, boards = self._kanban_board_metadata()
 
         interrupted = 0
         for board_meta in boards:
@@ -296,16 +307,16 @@ class GatewayKanbanWatchersMixin:
                 if prepared:
                     logger.warning(
                         "kanban restart drain: blocked and SIGTERM'd %d worker(s) on board %s",
-                        len(prepared), slug,
+                        len(prepared),
+                        slug,
                     )
-            except Exception:
-                logger.exception("kanban restart drain: force cleanup failed on board %s", slug)
+            except Exception as exc:
+                raise _kbd.KanbanWorkerScanError(
+                    f"kanban restart drain: force-interrupt failed on board {slug}"
+                ) from exc
             finally:
                 if conn is not None:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
+                    conn.close()
         return interrupted
 
     async def _kanban_dispatcher_watcher(self) -> None:

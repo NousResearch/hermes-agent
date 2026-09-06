@@ -506,6 +506,10 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
 _STALE_HEARTBEAT_GAP_SECONDS = 3600
 
 
+class KanbanWorkerScanError(RuntimeError):
+    """A gateway restart cannot prove that every board was inspected."""
+
+
 def list_running_workers(
     conn: sqlite3.Connection,
     *,

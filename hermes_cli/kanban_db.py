@@ -4188,6 +4188,7 @@ from hermes_cli.kanban_db_dispatch import (  # noqa: E402
     DEFAULT_FAILURE_LIMIT,
     DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
     DispatchResult,
+    KanbanWorkerScanError,
     _clear_failure_counter,
     _defer_reclaim_for_live_worker,
     _pid_alive,

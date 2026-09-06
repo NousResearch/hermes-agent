@@ -76,6 +76,23 @@ class TestCompactionEventsStore(unittest.TestCase):
     def test_store_without_append_method_is_noop(self):
         self.assertFalse(record_compaction_event(SimpleNamespace(), "sess-a", "att-1", "start"))
 
+    def test_telemetry_emitter_persists_end_event(self):
+        # Bites the wiring in _emit_compression_attempt_telemetry (#104099): reverting the
+        # recorder call there makes this fail, so the audit path can't silently detach.
+        from agent.conversation_compression import _emit_compression_attempt_telemetry
+
+        agent = SimpleNamespace(_session_db=self.db, session_id="sess-a", model="m", provider="p",
+                                _compression_attempt_id="att-emit")
+        agent.context_compressor = SimpleNamespace(_last_compression_telemetry={"trigger_source": "auto"})
+        _emit_compression_attempt_telemetry(
+            agent, started_at=0.0, commit_status="committed", split_status="committed",
+        )
+        rows = self.db._read_all(
+            "SELECT event, payload_json FROM compaction_events WHERE attempt_id = 'att-emit'"
+        )
+        self.assertEqual([r[0] for r in rows], ["end"])
+        self.assertEqual(json.loads(rows[0][1])["commit_status"], "committed")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -756,7 +756,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # profile closure. getattr tolerates partially-constructed adapters (object.__new__ in tests).
         if getattr(self, "_authorization_check", None) is not None:
             injected = self._is_sender_authorized(
-                normalized_user_id, chat_type=normalized_chat_type, chat_id=str(chat_id or normalized_user_id),
+                normalized_user_id, chat_type=normalized_chat_type,
+                chat_id=str(chat_id or normalized_user_id),
                 thread_id=str(thread_id) if thread_id is not None else None)
             if injected is not None:
                 return injected
@@ -1201,12 +1202,80 @@ class TelegramAdapter(BasePlatformAdapter):
             parsed = min(parsed, max_value)
         return parsed
 
-    def _link_preview_kwargs(self) -> Dict[str, Any]:
-        if not getattr(self, "_disable_link_previews", False):
+    def _link_preview_disabled(self, metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """Return whether this send should disable Telegram link previews.
+
+        ``metadata["disable_link_preview"]`` overrides the adapter-level
+        ``disable_link_previews`` extra when the key is present.
+        """
+        if metadata is not None and "disable_link_preview" in metadata:
+            return bool(metadata.get("disable_link_preview"))
+        return bool(getattr(self, "_disable_link_previews", False))
+
+    def _link_preview_kwargs(self, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        if not self._link_preview_disabled(metadata):
             return {}
         if LinkPreviewOptions is not None:
             return {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
         return {"disable_web_page_preview": True}
+
+    def _coerce_send_reply_markup(self, value: Any) -> Any:
+        """Turn send() metadata ``reply_markup`` into an InlineKeyboardMarkup.
+
+        Accepts an already-built markup object, Telegram's
+        ``{"inline_keyboard": [...]}`` shape, or structured rows of button
+        dicts (``text`` plus ``callback_data`` and/or ``url``).
+        """
+        if value is None:
+            return None
+        if isinstance(value, (list, tuple)):
+            rows = value
+        elif isinstance(value, dict) and "inline_keyboard" in value:
+            rows = value.get("inline_keyboard")
+        else:
+            return value
+        if not isinstance(rows, (list, tuple)):
+            return None
+        built: List[List[Any]] = []
+        for row in rows:
+            if not isinstance(row, (list, tuple)):
+                continue
+            buttons: List[Any] = []
+            for btn in row:
+                if isinstance(InlineKeyboardButton, type) and isinstance(
+                    btn, InlineKeyboardButton
+                ):
+                    buttons.append(btn)
+                    continue
+                if not isinstance(btn, dict):
+                    continue
+                text = btn.get("text")
+                if not text:
+                    continue
+                kwargs: Dict[str, Any] = {}
+                if btn.get("callback_data") is not None:
+                    kwargs["callback_data"] = str(btn["callback_data"])
+                if btn.get("url") is not None:
+                    kwargs["url"] = str(btn["url"])
+                if not kwargs:
+                    continue
+                buttons.append(InlineKeyboardButton(str(text), **kwargs))
+            if buttons:
+                built.append(buttons)
+        if not built:
+            return None
+        return InlineKeyboardMarkup(built)
+
+    def _send_reply_markup_kwargs(
+        self, metadata: Optional[Dict[str, Any]], chunk_index: int
+    ) -> Dict[str, Any]:
+        """Attach inline keyboard markup to the first chunk only."""
+        if chunk_index != 0 or not metadata:
+            return {}
+        markup = self._coerce_send_reply_markup(metadata.get("reply_markup"))
+        if markup is None:
+            return {}
+        return {"reply_markup": markup}
 
     # --- Bot API 10.1 Rich Messages (sendRichMessage): final/new-message replies opportunistically send
     # RAW agent markdown so tables, task lists, <details>, math render natively; legacy MarkdownV2 send()
@@ -1287,6 +1356,10 @@ class TelegramAdapter(BasePlatformAdapter):
             and self._rich_content_ok(content))
 
     def _should_attempt_rich(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
+        # sendRichMessage does not carry plugin inline keyboards. Skip rich
+        # so the legacy path can attach reply_markup instead of dropping it.
+        if (metadata or {}).get("reply_markup"):
+            return False
         return bool(not (metadata or {}).get("expect_edits") and self._rich_eligible(content))
 
     def prefers_fresh_final_streaming(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
@@ -1408,7 +1481,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if routing is None:
             return None
         reply_to_id, thread_kwargs = routing
-        payload = self._rich_payload_base(chat_id, content)
+        payload = self._rich_payload_base(chat_id, content, metadata)
         # Only non-None routing keys: direct_messages_topic_id is paired with message_thread_id=None.
         payload.update({k: v for k, v in thread_kwargs.items() if v is not None})
         payload.update(self._notification_kwargs(metadata))
@@ -1439,9 +1512,9 @@ class TelegramAdapter(BasePlatformAdapter):
             self._record_rich_sent(chat_id, message_id, content)
         return SendResult(success=True, message_id=str(message_id) if message_id is not None else None)
 
-    def _rich_payload_base(self, chat_id: str, content: str) -> Dict[str, Any]:
+    def _rich_payload_base(self, chat_id: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"chat_id": normalize_telegram_chat_id(chat_id), "rich_message": self._rich_message_payload(content)}
-        if getattr(self, "_disable_link_previews", False):
+        if self._link_preview_disabled(metadata):
             payload["link_preview_options"] = {"is_disabled": True}
         return payload
 
@@ -3240,7 +3313,8 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 send_kwargs = {
                     "chat_id": normalize_telegram_chat_id(chat_id), "reply_to_message_id": reply_to_id, **thread_kwargs,
-                    **self._link_preview_kwargs(), **self._notification_kwargs(metadata)}
+                    **self._link_preview_kwargs(metadata), **self._send_reply_markup_kwargs(metadata, index),
+                    **self._notification_kwargs(metadata)}
                 return await self._send_chunk_markdown_or_plain(chunk, send_kwargs), used_thread_fallback
             except _NetErr as send_err:
                 # BadRequest subclasses NetworkError in PTB but is permanent; handle specific cases.
@@ -3567,7 +3641,7 @@ class TelegramAdapter(BasePlatformAdapter):
         thread_id: Optional[str], metadata: Optional[Dict[str, Any]], finalize: bool):
         """Send one continuation chunk (MarkdownV2 then plain on finalize; raw when streaming); drops the
         reply anchor once on 'reply message not found'. Returns the sent message or None."""
-        base = {**self._link_preview_kwargs(), **self._notification_kwargs(metadata)}
+        base = {**self._link_preview_kwargs(metadata), **self._notification_kwargs(metadata)}
         for use_markdown in (True, False) if finalize else (False,):
             try:
                 if use_markdown:
@@ -3742,7 +3816,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send a control-style message (prompt/picker) with topic routing + thread fallback."""
         reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=reply_to_mode)
         kwargs: Dict[str, Any] = {
-            "chat_id": normalize_telegram_chat_id(chat_id), "text": text, "parse_mode": parse_mode, **self._link_preview_kwargs()}
+            "chat_id": normalize_telegram_chat_id(chat_id), "text": text, "parse_mode": parse_mode, **self._link_preview_kwargs(metadata)}
         if reply_markup is not None:
             kwargs["reply_markup"] = reply_markup
         kwargs["reply_to_message_id"] = reply_to_id

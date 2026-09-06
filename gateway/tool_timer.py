@@ -216,19 +216,29 @@ class ToolTimerMixin:
                 # No live tick loop — arm normally (fires the synchronous first
                 # tick that renders "💭 Thinking (0s)" without a 1s delay).
                 self._tool_timer_loop.call_soon_threadsafe(self._arm_tool_timer)
-            elif thinking_was_new:
-                # Zombie handle: on_tool_completed pops the finished tool's
-                # _tool_start_times entry but never cancels _tool_timer_handle,
-                # so a periodic handle armed for the just-finished tool survives
-                # the tool boundary.  On the FIRST thinking of a continuation
-                # round the normal need_arm check (handle is None) is False, so
-                # _arm_tool_timer — the only place the synchronous first tick
-                # fires — would be skipped and the 💭 Thinking frame would stall
-                # until the next call_later(1.0) tick.  ``thinking_was_new``
-                # proves no live thinking loop owns the handle (a live one keeps
-                # _thinking in _tool_start_times), so the handle must be a stale
-                # tool handle: cancel it and re-arm so the continuation gets the
-                # same immediate first frame the first call gets.
+            else:
+                # A handle is already set, so the normal arm path (need_arm =
+                # handle is None) is a no-op — _arm_tool_timer, the ONLY place the
+                # synchronous first tick fires, would be skipped and the 💭 Thinking
+                # frame would stall until the next call_later(1.0) tick.  Route
+                # through _rearm_after_tool (cancel the existing handle, then arm)
+                # in BOTH residual cases, distinguished by thinking_was_new only for
+                # documentation — the fix is identical either way:
+                #   * thinking_was_new=True  → the handle is a zombie *tool* handle:
+                #     on_tool_completed pops the finished tool's _tool_start_times
+                #     entry but never cancels _tool_timer_handle, so a periodic
+                #     handle armed for the just-finished tool survives the boundary.
+                #   * thinking_was_new=False → a LIVE *thinking* tick loop already
+                #     owns the handle (a prior _thinking entry outlived the body
+                #     text).  This is the intermittent "stalls a beat" case.
+                # Cancel+rearm is safe against a live loop too: both callbacks run
+                # on the event-loop thread, so _rearm_after_tool's cancel always
+                # precedes the pending call_later tick (no race); it clears the
+                # handle before _arm_tool_timer, whose idempotency guard (handle is
+                # None) then yields exactly one loop — no double-arm, no zombie.  It
+                # never touches _tool_start_times, so the preserved _thinking start
+                # keeps the elapsed count accurate; the only visible effect is the
+                # immediate first frame the first call also gets.
                 self._tool_timer_loop.call_soon_threadsafe(self._rearm_after_tool)
 
     def _consume_pending_thinking(self) -> None:

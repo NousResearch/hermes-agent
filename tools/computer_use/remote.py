@@ -35,9 +35,12 @@ def _resolve_token(environ: Mapping[str, str]) -> str:
         scoped = get_secret(_REMOTE_TOKEN_ENV)
         if scoped is not None:
             return scoped
-        # Scope active but var absent: fall back to the injected environ, NOT
-        # os.environ — under multiplexing a scope miss must not borrow another
-        # profile's process-wide value.
+        # Scope active but var absent. Under multiplexing, a scope miss must
+        # not borrow another profile's process-wide value — fail closed. In a
+        # single-profile deployment (multiplex off) the scope is just a .env
+        # overlay, so fall through to the injected environ.
+        if is_multiplex_active():
+            return ""
         return environ.get(_REMOTE_TOKEN_ENV, "")
     if is_multiplex_active():
         raise RuntimeError(

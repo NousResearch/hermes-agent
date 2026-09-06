@@ -64,6 +64,7 @@ def test_shell_wrapped_forbidden_operation_is_blocked():
         ["bash", "-c", '"$@"', "_", "launchctl", "kickstart", "ai.hermes.gateway"],
         ["env", "-S", "git fetch https://example.invalid/live.git"],
         ["env", "-Sgit fetch https://example.invalid/live.git"],
+        ["env", "-C", str(Path.cwd()), "git", "fetch", "https://example.invalid/live.git"],
         ["xargs", "git", "fetch"],
     ):
         with pytest.raises(RuntimeError, match="guard"):
@@ -136,6 +137,23 @@ def test_git_local_fixture_operations_are_allowed_but_remote_alias_is_blocked(
             cwd=tmp_path,
             check=False,
         )
+    with pytest.raises(RuntimeError, match="git remote network operation"):
+        subprocess.run(
+            ["git", "clone", "-qu/bin/false", str(origin), str(tmp_path / "bad-cluster")],
+            cwd=tmp_path,
+            check=False,
+        )
+    for secondary in (
+        "--recurse-submodules",
+        "--bundle-uri=https://example.invalid/bundle",
+        "--config=url.https://example.invalid/.insteadOf=/",
+    ):
+        with pytest.raises(RuntimeError, match="git remote network operation"):
+            subprocess.run(
+                ["git", "clone", secondary, str(origin), str(tmp_path / "secondary")],
+                cwd=tmp_path,
+                check=False,
+            )
     exec_env = os.environ.copy()
     exec_env["GIT_EXEC_PATH"] = str(tmp_path)
     with pytest.raises(RuntimeError, match="git remote network operation"):

@@ -765,13 +765,29 @@ def _git_remote_is_test_local(
         token == "--repo" or token.startswith("--repo=") for token in args
     ):
         return False
+    secondary_remote_options = {
+        "--also-filter-submodules",
+        "--bundle-uri",
+        "--recurse-submodules",
+        "--remote-submodules",
+    }
+    if any(
+        token.split("=", 1)[0] in secondary_remote_options for token in args
+    ):
+        return False
+    if subcommand == "clone" and any(
+        token == "--config" or token.startswith("--config=") for token in args
+    ):
+        return False
     transport_helper_options = {"--exec", "--receive-pack", "--upload-pack"}
     if any(
         token.split("=", 1)[0] in transport_helper_options for token in args
     ):
         return False
     if subcommand == "clone" and any(
-        token == "-u" or (token.startswith("-u") and len(token) > 2)
+        token.startswith("-")
+        and not token.startswith("--")
+        and "u" in token[1:]
         for token in args
     ):
         return False
@@ -825,6 +841,9 @@ def _check_wrapped_commands(
         index = 1
         while index < len(tokens):
             token = tokens[index]
+            if token == "--":
+                index += 1
+                break
             if token in {"-i", "--ignore-environment"}:
                 inherited.clear()
                 index += 1
@@ -864,8 +883,7 @@ def _check_wrapped_commands(
                 index += 1
                 continue
             if token.startswith("-"):
-                index += 1
-                continue
+                raise _violation(f"{operation} unsupported env wrapper option", tokens)
             if "=" in token and not token.startswith("="):
                 key, value = token.split("=", 1)
                 inherited[key] = value

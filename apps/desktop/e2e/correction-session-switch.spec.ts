@@ -45,7 +45,9 @@ async function steer(page: Page, text: string): Promise<void> {
   await composer.waitFor({ state: 'visible', timeout: 15_000 })
   await composer.click()
   await composer.type(text, { delay: 5 })
-  await expect(primary).toHaveAttribute('aria-label', /Steer/)
+  // Since "running is not busy" (3bc52fb9df) the primary keeps the Send label
+  // mid-turn; the submit engine still routes a text payload to steer.
+  await expect(primary).toHaveAttribute('aria-label', 'Send')
   await primary.click()
 }
 
@@ -209,17 +211,36 @@ test.describe('correction session switch', () => {
 
     // Reproduce the observed race: switch to another persisted session while
     // the foreground tool is live, then return before its redirect settles.
-    await openSidebarSession(page, MOCK_REPLY, OTHER_SESSION_PROMPT)
+    // Sidebar rows title by the session's first user prompt (auto-title is
+    // disabled in the e2e fixture config).
+    await openSidebarSession(page, OTHER_SESSION_PROMPT, OTHER_SESSION_PROMPT)
     await reopenOriginalSession(page)
-    await page.waitForTimeout(500)
+    // The warm resume first paints the persisted history and then reconciles
+    // the live turn (including a steer whose persistence may lag on a loaded
+    // runner) back in. Poll to the converged order instead of sampling one
+    // arbitrary mid-reconcile frame; the duplicate checks then pin the
+    // regression (the prompt/correction must appear exactly once).
+    await expect
+      .poll(async () => relevantOrder(await transcriptTextOrder(page)), {
+        message: 'correction should stay in place after the warm resume',
+        timeout: 30_000,
+      })
+      .toEqual(orderBeforeSwitch)
     await page.screenshot({ path: testInfo.outputPath('correction-after-warm-resume.png') })
 
-    expect(relevantOrder(await transcriptTextOrder(page))).toEqual(orderBeforeSwitch)
     expect(await textNodeOccurrences(page, ORIGINAL_PROMPT)).toBe(1)
     expect(await textNodeOccurrences(page, CORRECTION)).toBe(1)
 
     await waitForTranscriptText(page, CORRECTED_REPLY)
-    expect(steerTurnOrder(await transcriptMessageOrder(page))).toEqual([ORIGINAL_PROMPT, CORRECTION, CORRECTED_REPLY])
+    // The post-turn stored-history reconcile can momentarily repaint from a
+    // snapshot in which the steer's user row hasn't been folded back in yet —
+    // poll to the converged order instead of sampling one frame.
+    await expect
+      .poll(async () => steerTurnOrder(await transcriptMessageOrder(page)), {
+        message: 'steered turn should settle as prompt → correction → corrected reply',
+        timeout: 30_000,
+      })
+      .toEqual([ORIGINAL_PROMPT, CORRECTION, CORRECTED_REPLY])
   })
 
   test('keeps an inference-time correction visible through a warm session switch', async ({}, testInfo: TestInfo) => {
@@ -236,7 +257,7 @@ test.describe('correction session switch', () => {
     await send(page, INFERENCE_CORRECTION)
     await waitForTranscriptText(page, INFERENCE_CORRECTION)
 
-    await openSidebarSession(page, MOCK_REPLY, OTHER_SESSION_PROMPT)
+    await openSidebarSession(page, OTHER_SESSION_PROMPT, OTHER_SESSION_PROMPT)
     await reopenInferenceSession(page)
 
     expect(await textNodeOccurrences(page, INFERENCE_PROMPT)).toBe(1)

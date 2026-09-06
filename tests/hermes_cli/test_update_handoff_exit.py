@@ -21,6 +21,7 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_cli.main as main_mod
+from hermes_cli import update_cmd
 from hermes_cli.main import cmd_update
 
 
@@ -62,7 +63,7 @@ def _run_cmd_update(monkeypatch, impl, *, reexec: bool):
     monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
     monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda root: "git")
     monkeypatch.setattr("hermes_cli.update_lock.UpdateLock", lambda: _FakeLock(events["order"]))
-    monkeypatch.setattr(main_mod, "_cmd_update_impl", fake_impl)
+    monkeypatch.setattr(update_cmd, "_cmd_update_impl", fake_impl)
     monkeypatch.setattr(main_mod, "_install_hangup_protection", lambda gateway_mode=False: None)
     monkeypatch.setattr(main_mod, "_finalize_update_output", fake_finalize_io)
     monkeypatch.setattr("hermes_cli.update_receipt.finalize_pending_update_receipt", fake_receipt)

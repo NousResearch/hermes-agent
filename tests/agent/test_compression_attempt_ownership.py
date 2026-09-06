@@ -165,15 +165,14 @@ class TestCancelledCheckOwnership:
         assert compressor._compression_cancelled_check is None
 
 
-class TestDigestCallsFollowThePinnedRoute:
-    """Secondary item: lean digests must not return to the stalled route."""
+class TestSummaryRoutePinSingleUse:
+    """The pin is single-use: consumed by the one summary call per attempt."""
 
-    def test_consumed_pin_still_routes_sibling_digest_calls(self):
+    def test_pin_is_consumed_once(self):
         import contextvars
 
         def _probe():
             from agent.context_compressor import (
-                attempt_summary_route_kwargs,
                 pin_summary_route,
                 take_pinned_summary_route,
             )
@@ -183,29 +182,16 @@ class TestDigestCallsFollowThePinnedRoute:
                 # Summary call consumes the pin (single-use preserved)...
                 consumed = take_pinned_summary_route()
                 assert consumed == route
+                # ...and the main-model retry never re-issues it.
                 assert take_pinned_summary_route() is None
-                # ...but sibling digest calls still see the attempt route.
-                kwargs = attempt_summary_route_kwargs()
-                assert kwargs.get("provider") == "fallback-prov"
-                assert kwargs.get("model") == "fallback-model"
             return True
 
-        # Fresh context per test: the consumed echo must not leak in from
-        # any other test that touched the contextvars.
+        # Fresh context per test: state must not leak in from any other
+        # test that touched the contextvars.
         assert contextvars.copy_context().run(_probe) is True
 
-    def test_no_pin_means_no_route_override(self):
-        import contextvars
-
-        def _probe():
-            from agent.context_compressor import attempt_summary_route_kwargs
-
-            return attempt_summary_route_kwargs()
-
-        assert contextvars.copy_context().run(_probe) == {}
-
-    def test_consumed_echo_is_context_local(self):
-        """The echo cannot leak into an unrelated attempt's context."""
+    def test_consume_is_context_local(self):
+        """A consume in one context cannot leak into an unrelated attempt's."""
         import contextvars
 
         def _consume_in_isolated_context():
@@ -220,10 +206,10 @@ class TestDigestCallsFollowThePinnedRoute:
         ctx = contextvars.copy_context()
         ctx.run(_consume_in_isolated_context)
 
-        # Outer context never saw the pin or its echo.
-        from agent.context_compressor import attempt_summary_route_kwargs
+        # Outer context never saw the pin.
+        from agent.context_compressor import take_pinned_summary_route
 
-        assert attempt_summary_route_kwargs() == {}
+        assert take_pinned_summary_route() is None
 
 
 class TestMidRestoreClaimRace:

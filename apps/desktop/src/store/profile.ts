@@ -21,11 +21,13 @@ import {
   ensureGatewayForAgent,
   ensureGatewayForProfile,
   openGatewayForAgent,
-  openGatewayForProfile
+  openGatewayForProfile,
+  openSecondaryCount
 } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
+import { $poolLimits } from '@/store/pool-limits'
 import { notifyRemoteOverrideAuthFailure } from '@/store/profile-remote-override'
-import { setConnection } from '@/store/session'
+import { clearComposerSelectionOwner, setComposerSelectionOwner, setConnection } from '@/store/session'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
@@ -268,8 +270,8 @@ export const $newChatRoute = atom<AgentProfileRoute | null>(null)
 // string "omar", and every follow-up RPC dialed requestGatewayForProfile
 // ("omar") — a DIFFERENT socket than the one that created the session —
 // and 4001'd "session not found" (#94071). null = the intent dials the legacy
-// profile-only path (a v1 primary with no registry identity, or a profile
-// pick on the explicit `local` source — see profilePickConnectionId).
+// profile-only path (a v1 primary with no registry identity, or a named
+// profile pick on the explicit `local` source — see profilePickConnectionId).
 export const $newChatConnectionId = atom<null | string>(null)
 
 /** Capture the registry source a new-chat profile intent lands on — by
@@ -281,17 +283,30 @@ export function captureNewChatSource(connectionId: null | string = activeGateway
 
 /**
  * The registry source a PROFILE PICK dials, mirroring activateOnCurrentSource:
- * a live remote registry source keeps its connection id, while the primary and
- * the explicit `local` source take the legacy profile-only path (null) so the
- * main process can resolve a per-profile remote override before falling back
- * to a local backend. The draft's owner must name the socket that activation
- * dials — capturing `local` for a pick would mint the session on the registry
- * entry local::x while the window shows the override's socket.
+ * a live remote registry source keeps its connection id. Named picks on the
+ * explicit `local` source (and the window primary) take the legacy
+ * profile-only path (null) so the main process can resolve a per-profile
+ * remote override before falling back to a local backend (#94166).
+ *
+ * Default on that same `local` source is different: it is also the window
+ * primary's profile key. The legacy door would activate the remote primary on
+ * a VPS-primary desktop, and Bots would show the VPS as Current Gateway.
+ * Keep Default on `local` so This-device home stays on This device.
  */
-function profilePickConnectionId(): null | string {
+function profilePickConnectionId(profile?: string): null | string {
   const connectionId = activeGatewayConnectionId()
 
-  return connectionId && connectionId !== LOCAL_CONNECTION_ID ? connectionId : null
+  if (connectionId && connectionId !== LOCAL_CONNECTION_ID) {
+    return connectionId
+  }
+
+  if (connectionId === LOCAL_CONNECTION_ID) {
+    const key = normalizeProfileKey(profile ?? $newChatProfile.get())
+
+    return key === 'default' ? LOCAL_CONNECTION_ID : null
+  }
+
+  return null
 }
 
 /**
@@ -304,17 +319,19 @@ function profilePickConnectionId(): null | string {
  * the owner hint, the optimistic row and every later session-scoped RPC name
  * the same registry entry. A legacy profile-only activation yields null.
  */
-export function resolveNewChatOwnerRoute(): AgentProfileRoute | null {
+export function resolveNewChatOwnerRoute(forProfile?: string): AgentProfileRoute | null {
   const explicit = $newChatRoute.get()
 
-  if (explicit) {
+  if (explicit && (!forProfile || normalizeProfileKey(explicit.profile) === normalizeProfileKey(forProfile))) {
     return explicit
   }
 
-  const intentProfile = $newChatProfile.get()
+  const intentProfile = forProfile ? normalizeProfileKey(forProfile) : $newChatProfile.get()
 
   const connectionId = (
-    (intentProfile ? ($newChatConnectionId.get() ?? profilePickConnectionId()) : activeGatewayConnectionId()) ?? ''
+    (intentProfile
+      ? ($newChatConnectionId.get() ?? profilePickConnectionId(intentProfile))
+      : activeGatewayConnectionId()) ?? ''
   ).trim()
 
   if (!connectionId) {
@@ -408,6 +425,17 @@ export function prewarmProfileBackend(name: string): void {
     return
   }
 
+  // Prewarm/cap harmony (#91545): the pool caps spawned backends at the
+  // configured max, and a spawn over the cap LRU-evicts the warmest idle
+  // backend. A hover sweep across the rail therefore evicted backends for
+  // profiles the user was about to click — prewarming caused the exact churn
+  // it exists to prevent. Skip speculative spawns once every pool slot is
+  // occupied by an open socket; the real click still spawns on demand, it
+  // just doesn't get a head start.
+  if (openSecondaryCount() + 1 > $poolLimits.get().maxBackends) {
+    return
+  }
+
   prewarmedAt.set(key, now)
   openGatewayForProfile(key).catch(() => undefined)
 }
@@ -476,7 +504,7 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 
   const target = normalizeProfileKey(profile)
 
-  if (normalizeProfileKey($activeGatewayProfile.get()) === target && $gateway.get()) {
+  if (normalizeProfileKey($activeGatewayProfile.get()) === target && $gateway.get()?.connectionState === 'open') {
     return
   }
 
@@ -488,7 +516,7 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
     await gatewaySwitch.catch(() => undefined)
   }
 
-  if (normalizeProfileKey($activeGatewayProfile.get()) === target && $gateway.get()) {
+  if (normalizeProfileKey($activeGatewayProfile.get()) === target && $gateway.get()?.connectionState === 'open') {
     return
   }
 
@@ -508,11 +536,13 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
     // descriptor become visible together; a null descriptor (no bridge, or a
     // failed best-effort lookup) keeps the previous one — fail open.
     batch(() => {
-      $activeGatewayProfile.set(target)
-
       if (connection) {
         setConnection(connection)
+      } else {
+        clearComposerSelectionOwner()
       }
+
+      $activeGatewayProfile.set(target)
     })
   })()
 
@@ -695,11 +725,15 @@ export async function ensureGatewayAgent(
     // descriptor keeps the previous one — fail open, resynced by
     // boot/reconnect later.
     batch(() => {
-      $activeGatewayProfile.set(target)
-
       if (descriptor) {
         setConnection(descriptor)
       }
+
+      // The activated registry coordinate is authoritative even when the
+      // best-effort descriptor lookup failed. Publish it before the profile
+      // atom wakes forced model reseeds or a picker can persist a selection.
+      setComposerSelectionOwner(connection, target)
+      $activeGatewayProfile.set(target)
     })
   })()
 
@@ -763,7 +797,7 @@ export function selectProfile(name: string): void {
   // is made on the source the user is looking at (activateOnCurrentSource
   // dials exactly that pair), so the draft's exact owner is that pair — or the
   // legacy profile-only path when that is the door the pick takes.
-  captureNewChatSource(profilePickConnectionId())
+  captureNewChatSource(profilePickConnectionId(target))
 
   if (switching) {
     requestFreshSession()
@@ -825,14 +859,27 @@ async function isLocalDesktopProfile(target: string): Promise<boolean> {
 
 // Route a profile pick at the source the user is LOOKING at. $profiles is the
 // active gateway's list, so a pick made while a remote registry source is live
-// names one of THAT source's profiles and must keep its connection id. The
-// primary and explicit "local" source stay on the legacy profile-only path so
-// the main process can resolve a per-profile remote override before falling
-// back to a local backend.
+// names one of THAT source's profiles and must keep its connection id. Named
+// picks on the primary and explicit "local" source stay on the legacy
+// profile-only path so the main process can resolve a per-profile remote
+// override before falling back to a local backend. Default on `local` stays
+// on that source — see profilePickConnectionId.
 function activateOnCurrentSource(target: string): Promise<void> {
-  const connectionId = profilePickConnectionId()
+  const connectionId = profilePickConnectionId(target)
 
   return connectionId ? ensureGatewayAgent(connectionId, target) : ensureGatewayProfile(target)
+}
+
+// Pin the next new chat to `name` (legacy profile-only door) so session.create
+// reads the profile the user clicked "+" under, not whatever
+// $activeGatewayProfile holds once an in-flight profile swap settles (#79005).
+export function pinNewChatProfile(name: string): string {
+  const target = normalizeProfileKey(name)
+  $newChatProfile.set(target)
+  $newChatRoute.set(null)
+  captureNewChatSource(profilePickConnectionId(target))
+
+  return target
 }
 
 // Start a fresh session in `name` WITHOUT collapsing the "All profiles" browse
@@ -842,10 +889,7 @@ function activateOnCurrentSource(target: string): Promise<void> {
 // is in. Points new chats at the profile and opens its backend so the next
 // message lands in the right place.
 export function newSessionInProfile(name: string): void {
-  const target = normalizeProfileKey(name)
-  $newChatProfile.set(target)
-  $newChatRoute.set(null)
-  captureNewChatSource(profilePickConnectionId())
+  const target = pinNewChatProfile(name)
   requestFreshSession()
   // #81094: surface the failed dial instead of failing silently.
   void activateOnCurrentSource(target).catch((error: unknown) => {

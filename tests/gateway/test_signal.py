@@ -270,7 +270,10 @@ class TestSignalAttachmentFetch:
 
         adapter._rpc, captured = _stub_rpc({"data": b64_data})
 
-        with patch("gateway.platforms.signal.cache_image_from_bytes", return_value="/tmp/test.png"):
+        with patch(
+            "gateway.platforms.signal.cache_image_from_bytes_async",
+            new=AsyncMock(return_value="/tmp/test.png"),
+        ):
             await adapter._fetch_attachment("attachment-123")
 
         call = captured[0]
@@ -1327,7 +1330,10 @@ class TestSignalContentlessEnvelope:
         b64_data = base64.b64encode(png_data).decode()
         adapter._rpc, _ = _stub_rpc({"data": b64_data})
 
-        with patch("gateway.platforms.signal.cache_image_from_bytes", return_value="/tmp/img.png"):
+        with patch(
+            "gateway.platforms.signal.cache_image_from_bytes_async",
+            new=AsyncMock(return_value="/tmp/img.png"),
+        ):
             await adapter._handle_envelope({
                 "envelope": {
                     "sourceNumber": "+155****9999",

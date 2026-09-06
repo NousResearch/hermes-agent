@@ -76,7 +76,7 @@ class _Adapter:
         self.dedup_keys = []
         self.profile_requests = []
 
-    def _is_duplicate(self, key):
+    async def _is_duplicate(self, key):
         self.dedup_keys.append(key)
         return self.duplicate
 
@@ -165,6 +165,19 @@ class TestMeetingInviteHandler(unittest.TestCase):
         self.assertIsNone(event.message_id)
         self.assertIn("You have been invited to join a meeting: 赵磊的视频会议", event.text)
         self.assertNotIn("{'open_id'", event.text)
+
+    def test_duplicate_event_is_dropped_without_routing(self):
+        """_is_duplicate() is async on the real FeishuAdapter (dedup persist
+        is offloaded off the event loop); the dedup check here must await
+        it — a missing await would leave an un-awaited coroutine, which is
+        always truthy, and drop every event as a false duplicate."""
+        adapter = _Adapter(duplicate=True)
+
+        self._run(handle_meeting_invited_event(adapter, _make_payload()))
+
+        self.assertEqual(adapter.dedup_keys, ["vc_invite:evt_1"])
+        self.assertEqual(adapter.events, [])
+        self.assertEqual(adapter.profile_requests, [])
 
 
 class TestMeetingInviteSendRouting(unittest.TestCase):

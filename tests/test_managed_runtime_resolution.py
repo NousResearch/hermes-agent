@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import ast
 import functools
+import os
 from pathlib import Path
 
 import pytest
@@ -63,11 +64,11 @@ _ALLOWED: dict[tuple[str, str], str] = {
         "can only run what is on that subshell's PATH, which local.py populates "
         "with the managed dirs — so PATH is the correct question to ask here."
     ),
-    ("hermes_cli/update_cmd.py", "uv"): (
+    ("hermes_cli/update_cmd_deps.py", "uv"): (
         "Termux fallback: a pkg-installed uv lands on PATH but not in the "
         "managed bin dir, and it is checked only after resolve_uv() misses."
     ),
-    ("hermes_cli/update_cmd.py", "npm"): (
+    ("hermes_cli/update_cmd_deps.py", "npm"): (
         "WSL diagnostic: deliberately inspects what PATH resolves so it can "
         "warn that the only reachable npm is the Windows one."
     ),
@@ -84,14 +85,17 @@ _ALLOWED: dict[tuple[str, str], str] = {
         "Fallback rung of _append_node_dir_for_service(), after the managed "
         "dirs from iter_hermes_node_dirs() are already appended."
     ),
-    ("hermes_cli/main.py", "node"): (
+    ("hermes_cli/main_tui_launch.py", "node"): (
         "_ensure_tui_node()'s idempotence gate: the question really is 'is "
         "node already discoverable on PATH', before bootstrapping one."
     ),
-    ("hermes_cli/main.py", "npm"): (
+    ("hermes_cli/main_tui_launch.py", "npm"): (
         "Same _ensure_tui_node() gate as node."
     ),
-    ("tools/browser_tool.py", "npx"): (
+    ("hermes_cli/main_install_repair.py", "npm"): (
+        "_resolve_node_runtime_npm()'s WSL re-scan: PATH minus /mnt/* IS the question."
+    ),
+    ("tools/browser_tool_install.py", "npx"): (
         "agent-browser runs via `npx`, resolved against the extended browser "
         "PATH that _merge_browser_path() already seeds with the managed dirs."
     ),
@@ -122,21 +126,23 @@ def _iter_which_calls(tree: ast.AST):
 
 def _source_files() -> list[Path]:
     files: list[Path] = []
-    for path in REPO_ROOT.rglob("*.py"):
-        rel = path.relative_to(REPO_ROOT)
-        if rel.parts and rel.parts[0] in _EXEMPT_DIRS:
-            continue
-        # Skip packaging copies of the source tree (sdist extractions like
-        # hermes_agent-0.20.5/, build/ and *.egg-info dirs). CI jobs that
-        # build the wheel leave one in the workspace; scanning it re-finds
-        # every already-exempted call site under a versioned path prefix
-        # that can never match an _ALLOWED key, failing the guard on code
-        # that was never touched. A dir is a packaging copy iff its top
-        # level carries PKG-INFO (sdist/egg metadata) or it is a build/
-        # dist output directory.
-        if rel.parts and _is_packaging_copy(rel.parts[0]):
-            continue
-        files.append(path)
+    # os.walk instead of Path.rglob: rglob raises FileNotFoundError when a
+    # directory vanishes mid-scan — a sibling CI job's sdist extraction
+    # (hermes_agent-<version>/) gets created and deleted concurrently, and
+    # that TOCTOU failed this guard on runs 33531869442/33455779041-era
+    # workspaces. os.walk tolerates vanishing dirs (onerror=None), and
+    # pruning exempt/packaging dirs at the top level also skips their
+    # subtrees entirely.
+    for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
+        rel_dir = Path(dirpath).relative_to(REPO_ROOT)
+        if rel_dir == Path("."):
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in _EXEMPT_DIRS and not _is_packaging_copy(d)
+            ]
+        for fname in filenames:
+            if fname.endswith(".py"):
+                files.append(Path(dirpath) / fname)
     return files
 
 

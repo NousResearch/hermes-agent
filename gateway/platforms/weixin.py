@@ -889,7 +889,7 @@ class WeixinAdapter(BasePlatformAdapter):
         # Secondary content-fingerprint dedup: upstream re-sends identical text under new message_ids.
         item_list = message.get("item_list") or []
         text = _extract_text(item_list)
-        if text and self._dedup.is_duplicate(f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"):
+        if text and self._dedup.is_duplicate(f"content:{sender_id}:{hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()}"):
             logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
             return
         chat_type, effective_chat_id = _guess_chat_type(message, self._account_id)
@@ -1176,7 +1176,7 @@ class WeixinAdapter(BasePlatformAdapter):
         plaintext = Path(path).read_bytes()
         media_type, item_builder = self._outbound_media_builder(path, force_file_attachment=force_file_attachment)
         filekey, aes_key = secrets.token_hex(16), secrets.token_bytes(16)
-        rawsize, rawfilemd5 = len(plaintext), hashlib.md5(plaintext).hexdigest()
+        rawsize, rawfilemd5 = len(plaintext), hashlib.md5(plaintext, usedforsecurity=False).hexdigest()
         upload_response = await _get_upload_url(
             self._send_session, base_url=self._base_url, token=self._token, to_user_id=chat_id, media_type=media_type, filekey=filekey,
             rawsize=rawsize, rawfilemd5=rawfilemd5, filesize=((rawsize + 16) // 16) * 16, aeskey_hex=aes_key.hex())

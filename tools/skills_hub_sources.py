@@ -138,7 +138,7 @@ class WellKnownSkillSource(GuardedFetchMixin, SkillSource):
                 return None
             return {"index_url": index_url, "base_url": index_url[:-len("/index.json")], "skills": skills}
 
-        return _memo_json(f"well_known_index_{hashlib.md5(index_url.encode()).hexdigest()}", compute,
+        return _memo_json(f"well_known_index_{hashlib.md5(index_url.encode(), usedforsecurity=False).hexdigest()}", compute,
                           valid=lambda c: isinstance(c, dict) and isinstance(c.get("skills"), list))
 
     def _index_entry(self, index_url: str, skill_name: str) -> Optional[dict]:

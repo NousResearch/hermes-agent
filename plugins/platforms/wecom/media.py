@@ -256,7 +256,7 @@ class WeComMediaMixin:
         total_size, total_chunks = len(data), (len(data) + UPLOAD_CHUNK_SIZE - 1) // UPLOAD_CHUNK_SIZE
         if total_chunks > MAX_UPLOAD_CHUNKS:
             raise ValueError(f"File too large: {total_chunks} chunks exceeds maximum of {MAX_UPLOAD_CHUNKS} chunks")
-        init_payload = {"type": media_type, "filename": filename, "total_size": total_size, "total_chunks": total_chunks, "md5": hashlib.md5(data).hexdigest()}
+        init_payload = {"type": media_type, "filename": filename, "total_size": total_size, "total_chunks": total_chunks, "md5": hashlib.md5(data, usedforsecurity=False).hexdigest()}
         init_response = await self._checked_request(APP_CMD_UPLOAD_MEDIA_INIT, init_payload, "media upload init")
         upload_id = str(_dict_at(init_response, "body").get("upload_id") or "").strip()
         if not upload_id:

@@ -57,7 +57,7 @@ def test_format_footer_all_fields(monkeypatch, tmp_path):
         cwd=None,  # falls back to TERMINAL_CWD env var
         fields=("model", "context_pct", "cwd"),
     )
-    assert out == "gpt-5.4 · 68% · ~/projects/hermes"
+    assert out == "openrouter/openai/gpt-5.4 · 68% of 100k · ~/projects/hermes"
 
 
 def test_format_footer_skips_missing_context_length():
@@ -222,7 +222,7 @@ def test_format_footer_latency_in_field_order(monkeypatch, tmp_path):
         turn_seconds=65.0,
         fields=("model", "context_pct", "latency", "cwd"),
     )
-    assert out == "gpt-5.4 · 68% · 1m05s · ~"
+    assert out == "openai/gpt-5.4 · 68% of 100k · 1m05s · ~"
 
 
 def test_build_footer_line_threads_turn_seconds(monkeypatch):
@@ -275,11 +275,11 @@ def test_resolve_footer_config_default_fields_exclude_latency():
 @pytest.mark.parametrize(
     "model,tokens,window,cwd,expected",
     [
-        ("openai/gpt-5.4", 50_247, 1_000_000, "/var/data", "gpt-5.4 · 5% · /var/data"),
-        ("claude-opus-4-8", 68_000, 100_000, "/var/data", "claude-opus-4-8 · 68% · /var/data"),
+        ("openai/gpt-5.4", 50_247, 1_000_000, "/var/data", "openai/gpt-5.4 · 5% of 1M · /var/data"),
+        ("claude-opus-4-8", 68_000, 100_000, "/var/data", "claude-opus-4-8 · 68% of 100k · /var/data"),
         ("m", 0, None, "/var/data", "m · /var/data"),
-        ("", 10, 100, "/var/data", "10% · /var/data"),
-        ("m", 10, 100, "", "m · 10%"),
+        ("", 10, 100, "/var/data", "10% of 0k · /var/data"),
+        ("m", 10, 100, "", "m · 10% of 0k"),
     ],
 )
 def test_default_footer_renders_byte_identically(
@@ -315,5 +315,5 @@ def test_default_build_footer_line_ignores_turn_seconds(monkeypatch):
     )
     baseline = build_footer_line(**common)
     with_timing = build_footer_line(**common, turn_seconds=125.0)
-    assert baseline == "gpt-5.4 · 5% · /var/data"
+    assert baseline == "openai/gpt-5.4 · 5% of 1M · /var/data"
     assert with_timing == baseline

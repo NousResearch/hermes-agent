@@ -1491,20 +1491,25 @@ class GatewayTurnMixin:
             except Exception as _eff_err:
                 logger.debug("footer effort resolution failed: %s", _eff_err)
                 _effort_override = None
-            _line = _bfl(
+            # Ground truth: routed model captured from the live response at stamp time (file
+            # written by turn_usage). Survives agent re-creation; footer stays pure.
+            _routed = agent_result.get("routed_model")
+            if _routed is None:
+                try:
+                    import json as _json
+                    with open("/tmp/hermes-routed-model.json") as _f:
+                        _routed = _json.load(_f).get("routed_model")
+                except Exception:
+                    _routed = None
+            return _bfl(
                 user_config=_load_gateway_config(),
                 platform_key=_platform_config_key(source.platform), model=agent_result.get("model"),
-                routed_model=agent_result.get("routed_model"),
+                routed_model=_routed,
                 effort_override=_effort_override,
                 context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                 context_length=agent_result.get("context_length") or None,
                 cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,
             )
-            logger.info(
-                "runtime_footer: routed_model=%r model=%r -> %r",
-                agent_result.get("routed_model"), agent_result.get("model"), _line,
-            )
-            return _line
         except Exception as _footer_err:
             logger.debug("runtime_footer build failed: %s", _footer_err)
             return ""

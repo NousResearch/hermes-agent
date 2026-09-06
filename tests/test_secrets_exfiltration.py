@@ -2229,3 +2229,177 @@ def test_moa_reference_masks_malformed_alternate_json_fragments_without_mutation
     assert ALTERNATE_JSON_SECRET not in rendered
     assert ALTERNATE_JSON_SPELLING not in rendered
     assert messages == original
+
+
+
+def test_title_output_is_masked_before_persistence(applied_secret_home, monkeypatch):
+    from agent.title_generator import _persist_session_title, generate_title
+
+    _home, secret = applied_secret_home
+    monkeypatch.setattr(
+        "agent.title_generator.call_llm", lambda **_kwargs: _response(secret)
+    )
+    stored = {}
+
+    class SessionStore:
+        def set_auto_title_if_empty(self, session_id, title):
+            stored[session_id] = title
+            return True
+
+    title = generate_title("request", "response")
+    persisted = _persist_session_title(
+        SessionStore(), "session-77487", title, source="llm"
+    )
+
+    assert title == "***"
+    assert persisted == "***"
+    assert stored == {"session-77487": "***"}
+
+
+def test_title_input_masks_before_maximum_length_cap(tmp_path, monkeypatch):
+    import agent.auxiliary_client as auxiliary_client
+    import agent.title_generator as title_generator
+    from agent.title_generator import generate_title
+    from hermes_cli import env_loader
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    secret = "cycle16-background-title-secret-" + "ABCDEFGHIJ" * 7
+    home_key = str(tmp_path.resolve())
+    monkeypatch.setitem(
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME,
+        home_key,
+        {"PROFILE_TITLE_API_TOKEN": secret},
+    )
+    source = "x" * (title_generator.MAX_TITLE_INPUT_CHARS - 30) + secret
+    captured = {}
+
+    def fake_impl(**kwargs):
+        captured["messages"] = copy.deepcopy(kwargs["messages"])
+        return _response('{"title":"Safe title"}')
+
+    monkeypatch.setattr(title_generator, "_auto_title_enabled", lambda: True)
+    monkeypatch.setattr(title_generator, "_title_language", lambda: "")
+    monkeypatch.setattr(auxiliary_client, "_call_llm_impl", fake_impl)
+    home_token = set_hermes_home_override(tmp_path)
+    try:
+        title = generate_title(source)
+    finally:
+        reset_hermes_home_override(home_token)
+
+    provider_text = json.dumps(captured["messages"])
+    assert title == "Safe title"
+    assert secret not in provider_text
+    assert secret[:30] not in provider_text
+    assert source == "x" * (title_generator.MAX_TITLE_INPUT_CHARS - 30) + secret
+
+
+def test_instant_title_masks_long_secret_before_truncation(tmp_path, monkeypatch):
+    from agent.title_generator import apply_instant_title
+    from hermes_cli import env_loader
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    secret = "cycle16-instant-title-secret-material-" + "ABCDEFGHIJ" * 4
+    home_key = str(tmp_path.resolve())
+    monkeypatch.setitem(
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME,
+        home_key,
+        {"PROFILE_TITLE_API_TOKEN": secret},
+    )
+    source = f"Investigate {secret} and details"
+    stored = []
+    callbacks = []
+
+    class SessionStore:
+        def set_auto_title_if_empty(self, session_id, title):
+            stored.append((session_id, title))
+            return True
+
+    home_token = set_hermes_home_override(tmp_path)
+    try:
+        result = apply_instant_title(
+            SessionStore(),
+            "session-instant-title-77487",
+            source,
+            lambda title, title_source: callbacks.append((title, title_source)),
+        )
+    finally:
+        reset_hermes_home_override(home_token)
+
+    assert result == "Investigate *** and details"
+    assert callbacks == [(result, "derived")]
+    assert stored == [("session-instant-title-77487", result)]
+    assert secret not in result
+    assert secret[:48] not in result
+    assert source == f"Investigate {secret} and details"
+
+
+def test_maybe_auto_title_thread_preserves_profile_redaction_context(
+    tmp_path, monkeypatch
+):
+    """The real background worker keeps profile-only input/output masking."""
+    import threading
+
+    import agent.auxiliary_client as auxiliary_client
+    import agent.title_generator as title_generator
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from hermes_cli import env_loader
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    secret = "profile-title-thread-secret-77487"
+    home_key = str(tmp_path.resolve())
+    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", True)
+    monkeypatch.setitem(
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME,
+        home_key,
+        {"PROFILE_ONLY_TITLE_SECRET": secret},
+    )
+    captured = {}
+    persisted = threading.Event()
+    worker_persisted = threading.Event()
+    source_user = f"request contains {secret}"
+    persist_calls = []
+
+    class SessionStore:
+        def get_session_title(self, _session_id):
+            return None
+
+        def get_conversation_root(self, session_id):
+            return session_id
+
+        def set_auto_title_if_empty(self, session_id, title):
+            captured["persisted"] = (session_id, title)
+            persist_calls.append((session_id, title))
+            persisted.set()
+            if len(persist_calls) >= 2:
+                worker_persisted.set()
+            return True
+
+    def fake_impl(**kwargs):
+        captured["messages"] = copy.deepcopy(kwargs["messages"])
+        return _response(secret)
+
+    monkeypatch.setattr(title_generator, "_auto_title_enabled", lambda: True)
+    monkeypatch.setattr(title_generator, "_title_language", lambda: "")
+    monkeypatch.setattr(auxiliary_client, "_call_llm_impl", fake_impl)
+    home_token = set_hermes_home_override(tmp_path)
+    secret_token = set_secret_scope({"PROFILE_ONLY_TITLE_TOKEN": secret})
+    try:
+        title_generator.maybe_auto_title(
+            SessionStore(),
+            "session-title-context-77487",
+            source_user,
+            [{"role": "user", "content": source_user}],
+        )
+        assert persisted.wait(timeout=10), "auto-title worker did not persist"
+        assert worker_persisted.wait(timeout=10), "auto-title upgrade did not persist"
+    finally:
+        reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)
+
+    assert secret not in json.dumps(captured["messages"])
+    assert "***" in captured["messages"][1]["content"]
+    assert captured["persisted"] == ("session-title-context-77487", "***")
+    assert source_user == f"request contains {secret}"

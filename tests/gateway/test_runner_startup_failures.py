@@ -743,7 +743,7 @@ def test_setup_logging_registers_rotating_gateway_error_log(monkeypatch, tmp_pat
 
     calls = []
 
-    def record_handler(_logger, path, **kwargs):
+    def record_handler(path, **kwargs):
         calls.append((path, kwargs))
 
     monkeypatch.setattr(hermes_logging, "_add_rotating_handler", record_handler)

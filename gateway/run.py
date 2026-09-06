@@ -4797,6 +4797,11 @@ def _resolve_stderr_level(
 
 def _clear_takeover_marker_quiet() -> None:
     """Best-effort: the marker is scoped to one target; a stale one would grief an unrelated shutdown."""
+    try:
+        from gateway.status import clear_takeover_marker
+        clear_takeover_marker()
+    except Exception:
+        pass
 
 
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:

@@ -98,6 +98,17 @@ def test_git_local_fixture_operations_are_allowed_but_remote_alias_is_blocked(
     subprocess.run(["git", "push", "-u", "origin", "HEAD"], cwd=clone, check=False)
     with pytest.raises(RuntimeError, match="git remote network operation"):
         subprocess.run(["git", "fetch"], cwd=clone, check=False)
+    (clone / ".gitmodules").write_text(
+        '[submodule "live"]\n\tpath = live\n\turl = https://example.invalid/live.git\n'
+    )
+    with pytest.raises(RuntimeError, match="git remote network operation"):
+        subprocess.run(["git", "fetch", "origin"], cwd=clone, check=False)
+    subprocess.run(
+        ["git", "fetch", "--no-recurse-submodules", "origin"],
+        cwd=clone,
+        check=True,
+    )
+    (clone / ".gitmodules").unlink()
 
     env = os.environ.copy()
     env["GIT_DIR"] = str(clone / ".git")

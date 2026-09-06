@@ -577,6 +577,29 @@ def _git_repository_config(cwd: Path) -> list[str] | None:
     return lines
 
 
+def _git_repository_has_submodules(cwd: Path, lines: list[str]) -> bool:
+    current = cwd
+    while True:
+        if (current / ".gitmodules").exists():
+            return True
+        if (current / ".git").exists() or current.parent == current:
+            break
+        current = current.parent
+    section = ""
+    for raw in lines:
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip().lower()
+            if section == "submodule" or section.startswith("submodule "):
+                return True
+            continue
+        if "=" in line:
+            key = line.split("=", 1)[0].strip().lower()
+            if key == "recursesubmodules" and section in {"fetch", "submodule"}:
+                return True
+    return False
+
+
 def _configured_git_remote(
     lines: list[str], name: str, *, for_push: bool = False
 ) -> list[str] | None:
@@ -796,6 +819,12 @@ def _git_remote_is_test_local(
     if config_lines is None:
         return False
     if _configured_git_remote(config_lines, "__hermetic_audit__") is None:
+        return False
+    if (
+        subcommand in {"fetch", "pull"}
+        and "--no-recurse-submodules" not in args
+        and _git_repository_has_submodules(working_directory, config_lines)
+    ):
         return False
     operand = _first_git_positional(args, subcommand=subcommand)
     if subcommand in {"fetch", "pull", "push"}:

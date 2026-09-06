@@ -13,6 +13,7 @@ import time
 from unittest.mock import patch, MagicMock
 
 import pytest
+from hermes_cli import model_switch_providers
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +102,7 @@ class TestPrefetchProviderModelsParallel:
 
     def test_skips_all_fresh_entries(self, monkeypatch):
         """When all cache entries are fresh, no fetch is made."""
-        from hermes_cli.model_switch import _prefetch_provider_models_parallel
+        from hermes_cli.model_switch_providers import _prefetch_provider_models_parallel
 
         fresh_cache = {
             "openrouter": {"fp": "fp", "at": time.time(), "models": ["m1"]},
@@ -117,7 +118,7 @@ class TestPrefetchProviderModelsParallel:
 
     def test_fetches_only_stale_entries(self, monkeypatch):
         """Only providers with stale/missing cache entries are fetched."""
-        from hermes_cli.model_switch import _prefetch_provider_models_parallel
+        from hermes_cli.model_switch_providers import _prefetch_provider_models_parallel
 
         cache = {
             "fresh_prov": {"fp": "fp_f", "at": time.time(), "models": ["m1"]},
@@ -140,7 +141,7 @@ class TestPrefetchProviderModelsParallel:
 
     def test_fetches_in_parallel(self, monkeypatch):
         """Multiple providers are fetched concurrently, not serially."""
-        from hermes_cli.model_switch import _prefetch_provider_models_parallel
+        from hermes_cli.model_switch_providers import _prefetch_provider_models_parallel
 
         # Track overlap: if serial, no two fetches should overlap in time.
         active = []
@@ -168,7 +169,7 @@ class TestPrefetchProviderModelsParallel:
 
     def test_swallows_exceptions(self):
         """A failing provider fetch doesn't raise — best-effort."""
-        from hermes_cli.model_switch import _prefetch_provider_models_parallel
+        from hermes_cli.model_switch_providers import _prefetch_provider_models_parallel
 
         def mock_fetch(slug, force_refresh=False):
             raise ConnectionError("simulated network failure")
@@ -182,7 +183,7 @@ class TestPrefetchProviderModelsParallel:
 
     def test_empty_list_is_noop(self):
         """Empty provider list does nothing."""
-        from hermes_cli.model_switch import _prefetch_provider_models_parallel
+        from hermes_cli.model_switch_providers import _prefetch_provider_models_parallel
 
         with patch("hermes_cli.models.cached_provider_model_ids") as fetch:
             _prefetch_provider_models_parallel([])
@@ -206,8 +207,8 @@ class TestPrefetchIntegration:
         def mock_collect(data, curated, excluded):
             return slugs
 
-        with patch.object(model_switch, "_collect_authed_provider_slugs", side_effect=mock_collect), \
-             patch.object(model_switch, "_prefetch_provider_models_parallel") as prefetch:
+        with patch.object(model_switch_providers, "_collect_authed_provider_slugs", side_effect=mock_collect), \
+             patch.object(model_switch_providers, "_prefetch_provider_models_parallel") as prefetch:
             try:
                 model_switch.list_authenticated_providers()
             except Exception:
@@ -226,8 +227,8 @@ class TestPrefetchIntegration:
         def mock_collect(data, curated, excluded):
             return slugs
 
-        with patch.object(model_switch, "_collect_authed_provider_slugs", side_effect=mock_collect), \
-             patch.object(model_switch, "_prefetch_provider_models_parallel") as prefetch:
+        with patch.object(model_switch_providers, "_collect_authed_provider_slugs", side_effect=mock_collect), \
+             patch.object(model_switch_providers, "_prefetch_provider_models_parallel") as prefetch:
             try:
                 model_switch.list_authenticated_providers()
             except Exception:
@@ -239,8 +240,8 @@ class TestPrefetchIntegration:
         """When refresh=True, prefetch is skipped (serial path force-refreshes)."""
         from hermes_cli import model_switch
 
-        with patch.object(model_switch, "_collect_authed_provider_slugs") as collect, \
-             patch.object(model_switch, "_prefetch_provider_models_parallel") as prefetch:
+        with patch.object(model_switch_providers, "_collect_authed_provider_slugs") as collect, \
+             patch.object(model_switch_providers, "_prefetch_provider_models_parallel") as prefetch:
             try:
                 model_switch.list_authenticated_providers(refresh=True)
             except Exception:

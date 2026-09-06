@@ -21,6 +21,7 @@ test runner at ``scripts/run_tests.sh``.
 
 import asyncio
 import atexit
+import importlib
 import os
 import shutil
 import sqlite3
@@ -98,7 +99,7 @@ if _hermes_home_points_at_production(os.environ.get("HERMES_HOME", "")):
 # the child at the same moment the child lost the HERMES_HOME redirect.
 # HERMES_TEST_ISOLATION is OUR marker: exported here (before any test module
 # imports), inherited by every child by default, and honored by
-# hermes_state._running_under_pytest() as a test-context signal. A child
+# hermes_state_guard._running_under_pytest() as a test-context signal. A child
 # that carries it and still resolves the production state.db fails hard.
 # Tests that legitimately need a child to look like a non-test process AND
 # open a real DB must export HERMES_STATE_DB_GUARD_BYPASS=1 in that child's
@@ -186,6 +187,7 @@ _CREDENTIAL_NAMES = frozenset({
     "PARALLEL_API_KEY",
     "EXA_API_KEY",
     "TAVILY_API_KEY",
+    "PERPLEXITY_API_KEY",
     "WANDB_API_KEY",
     "ELEVENLABS_API_KEY",
     "HONCHO_API_KEY",
@@ -347,6 +349,10 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # (user shell, earlier leaky test, CI env), they change gateway auth
     # behavior and flake button-authorization tests.
     "TELEGRAM_ALLOWED_USERS",
+    "TELEGRAM_GROUP_ALLOWED_USERS",
+    "TELEGRAM_GROUP_ALLOWED_CHATS",
+    "QQ_ALLOWED_USERS",
+    "QQ_GROUP_ALLOWED_USERS",
     "DISCORD_ALLOWED_USERS",
     "WHATSAPP_ALLOWED_USERS",
     "SLACK_ALLOWED_USERS",
@@ -584,10 +590,10 @@ def _neutralize_kanban_memory_guard(request, monkeypatch):
     if request.node.get_closest_marker("real_memory_guard"):
         return
     try:
-        from hermes_cli import kanban_db as _kb_mod
+        from hermes_cli import kanban_db_dispatch as _kbd_mod
     except Exception:
         return
-    monkeypatch.setattr(_kb_mod, "_system_memory_sample", lambda: {}, raising=False)
+    monkeypatch.setattr(_kbd_mod, "_system_memory_sample", lambda: {}, raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -627,12 +633,11 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
         return None
 
     try:
-        import agent.anthropic_adapter as _anthropic_adapter
+        _mod = importlib.import_module("agent.anthropic_credentials")
     except Exception:
         return None
-
     monkeypatch.setattr(
-        _anthropic_adapter,
+        _mod,
         "_read_claude_code_credentials_from_keychain",
         lambda *_args, **_kwargs: None,
         raising=False,
@@ -643,7 +648,7 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
 # ── Kanban write guard (#69283) ─────────────────────────────────────────────
 # When hermetic isolation is bypassed (stale checkout, wrong rootdir, direct
 # invocation), kanban writes silently pollute the real ~/.hermes. This autouse
-# fixture patches ``kanban_db.connect`` to refuse writes whose resolved DB
+# fixture patches ``kanban_db_connect.connect`` to refuse writes whose resolved DB
 # path lands under the REAL kanban root (captured at import time, before any
 # fixture rewires the environment). A deny-list is used instead of an
 # allow-list because test-level fixtures legitimately move HERMES_HOME to
@@ -690,15 +695,16 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
     ``~/.hermes`` captured at import time. Hermetic tests that legitimately
     move HERMES_HOME to sibling tempdirs are unaffected.
 
-    Only patches when ``hermes_cli.kanban_db`` is *already imported* — a
-    ``sys.modules`` probe, not an import — so the guard never drags the
+    Only patches when ``hermes_cli.kanban_db_connect`` is *already imported*
+    — a ``sys.modules`` probe, not an import — so the guard never drags the
     kanban module into unrelated test processes.
 
     Uses ``monkeypatch.setattr`` so pytest restores ``connect`` automatically
     after each test (no stacked wrappers or state leakage across tests).
     """
     _kdb = sys.modules.get("hermes_cli.kanban_db")
-    if _kdb is None:
+    _kdbc = sys.modules.get("hermes_cli.kanban_db_connect")
+    if _kdb is None or _kdbc is None:
         return
 
     # The sys.modules probe can observe the module MID-IMPORT: a fixture
@@ -707,8 +713,8 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
     # doesn't exist yet (AttributeError flake, caught in a full-suite run).
     # A half-imported module has no callers yet either — nothing to guard
     # this round; the next test's fixture will patch the completed module.
-    _orig_connect = getattr(_kdb, "connect", None)
-    if _orig_connect is None:
+    _orig_connect = getattr(_kdbc, "connect", None)
+    if _orig_connect is None or getattr(_kdb, "kanban_db_path", None) is None:
         return
 
     def _guarded_connect(db_path=None, *args, **kwargs):
@@ -732,7 +738,7 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
             f"to the real ~/.hermes. See #69283."
         )
 
-    monkeypatch.setattr(_kdb, "connect", _guarded_connect)
+    monkeypatch.setattr(_kdbc, "connect", _guarded_connect)
 
 
 # ── Live state.db write guard ───────────────────────────────────────────────

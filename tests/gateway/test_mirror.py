@@ -119,14 +119,21 @@ class TestMirrorToSession:
 
 
 class TestAppendToSqlite:
-    def test_connection_is_closed_after_use(self, tmp_path):
-        """Verify _append_to_sqlite closes the SessionDB connection."""
+    def test_connection_is_released_after_use(self, tmp_path):
+        """Verify _append_to_sqlite returns the shared SessionDB reference."""
         from gateway.mirror import _append_to_sqlite
         mock_db = MagicMock()
+        released = []
 
-        with patch("hermes_state.SessionDB", return_value=mock_db):
+        with patch("hermes_state_registry.acquire", return_value=mock_db), \
+             patch(
+                 "hermes_state_registry.release_or_close",
+                 side_effect=lambda db: released.append(db),
+             ):
             _append_to_sqlite("sess_1", {"role": "assistant", "content": "hello"})
 
         mock_db.append_message.assert_called_once()
-        mock_db.close.assert_called_once()
+        assert released == [mock_db], (
+            "the shared handle must be released exactly once after use"
+        )
 

@@ -39,6 +39,7 @@ _dashboard_requester_scope = late("_dashboard_requester_scope")
 _load_configured_gateway_platforms = late("_load_configured_gateway_platforms", "hermes_cli.web_server_gateway")
 _machine_env_mtime = late("_machine_env_mtime")
 _probe_gateway_health = late("_probe_gateway_health", "hermes_cli.web_server_gateway")
+_require_dashboard_admin = late("_require_dashboard_admin")
 _require_token = late("_require_token")
 _resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profiles")
 _resolve_restart_drain_timeout = late("_resolve_restart_drain_timeout", "hermes_cli.web_server_lifecycle")
@@ -722,8 +723,15 @@ async def run_debug_share_endpoint(body: DebugShareRequest | None = None):
 
 @logs_router.get("/api/logs")
 async def get_logs(
-    file: str = "agent", lines: int = 100, level: Optional[str] = None,
+    request: Request, file: str = "agent", lines: int = 100, level: Optional[str] = None,
     component: Optional[str] = None, search: Optional[str] = None):
+    # Mini App token route (required=False), admin-tier only -- this
+    # endpoint predates the Mini App and had no per-handler check at all
+    # (implicitly desktop-only, gated purely by the cookie/session auth
+    # wrapper around every /api/* route). Adding the explicit check here is
+    # a no-op for the desktop operator (scope is None) and is what makes it
+    # safe to register as a Mini App token route.
+    _require_dashboard_admin(request)
     from hermes_cli.logs import _read_tail, LOG_FILES
     log_name = LOG_FILES.get(file)
     if not log_name:

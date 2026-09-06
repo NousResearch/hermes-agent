@@ -20772,9 +20772,10 @@ def test_prompt_submit_rebind_map_clears_active_row_hidden_by_sequence_repair(
     repaired = db.get_messages_as_conversation(
         session_key, repair_alternation=True, include_row_ids=True
     )
-    # Provider repair merges the wedge and necessarily drops the second
-    # physical user's row identity from the replay view.
-    assert physical_ids[1] not in {
+    # Canonical repair preserves adjacent user turns as distinct rows (the
+    # user;user merge happens later on the per-request provider copy), so the
+    # replay view keeps the second physical user's row identity.
+    assert physical_ids[1] in {
         server._message_row_id(message) for message in repaired
     }
 
@@ -20803,7 +20804,14 @@ def test_prompt_submit_rebind_map_clears_active_row_hidden_by_sequence_repair(
         )
         assert response.get("error") is None, response
         row_id_map = response["result"]["survivor_row_id_map"]
-        assert row_id_map[str(physical_ids[1])] is None
+        # Survivors rebind to their fresh row ids — the preserved second
+        # user turn is a survivor, not a row hidden by repair.
+        assert isinstance(row_id_map[str(physical_ids[1])], int)
+        # Rows dropped by the truncation clear to None so the client drops
+        # its cached stamp instead of keeping a stale one.
+        assert row_id_map[str(physical_ids[3])] is None
+        assert row_id_map[str(physical_ids[4])] is None
+        # A requested id that never existed stays out of the map entirely.
         assert "999999" not in row_id_map
     finally:
         server._sessions.pop(sid, None)

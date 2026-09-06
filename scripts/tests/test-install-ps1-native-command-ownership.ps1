@@ -29,6 +29,16 @@ try {
     ) -TimeoutSec 10 -RedirectStandardOutput $stdout -RedirectStandardError $stderr
     Check ($result.ExitCode -eq 0 -and -not $result.TimedOut) 'healthy quiet work is allowed its full wall-clock budget'
 
+    $elapsed = [Diagnostics.Stopwatch]::StartNew()
+    $result = Invoke-ProcessWithWallClockTimeout -FilePath $hostExe -ArgumentList @(
+        '-NoProfile', '-NonInteractive', '-EncodedCommand',
+        (Encoded '$chunk = "x" * 8192; while ($true) { [Console]::Out.Write($chunk); [Threading.Thread]::Sleep(1) }')
+    ) -TimeoutSec 8 -RedirectStandardOutput $stdout -RedirectStandardError $stderr 6>$null
+    $elapsed.Stop()
+    Check ($result.TimedOut -and $result.ExitCode -eq 124) 'continuous native output cannot starve the deadline'
+    Check ($result.Output.Length -gt 8192) 'chatty child produced sustained output before termination'
+    Check ($elapsed.Elapsed.TotalSeconds -lt 25) 'chatty child teardown and final output drain are bounded'
+
     $pidFile = Join-Path $caseRoot 'descendant.pid'
     $identityFile = Join-Path $caseRoot 'descendant.start'
     $writeFile = Join-Path $caseRoot 'descendant-writes.log'

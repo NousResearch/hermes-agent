@@ -788,6 +788,7 @@ function Invoke-ProcessWithWallClockTimeout {
     $temporary = @()
     $owner = $null
     $readers = @()
+    $buffer = New-Object char[] 4096
     $output = [Text.StringBuilder]::new()
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $timedOut = $false
@@ -815,8 +816,14 @@ function Invoke-ProcessWithWallClockTimeout {
         }
         do {
             foreach ($reader in $readers) {
-                $chunk = $reader.ReadToEnd()
-                if ($chunk) { [void]$output.Append($chunk); Write-Host -NoNewline $chunk }
+                # A continuously chatty child must not keep this drain busy
+                # forever and starve the deadline or ownership observation.
+                $count = $reader.Read($buffer, 0, $buffer.Length)
+                if ($count -gt 0) {
+                    $chunk = [string]::new($buffer, 0, $count)
+                    [void]$output.Append($chunk)
+                    Write-Host -NoNewline $chunk
+                }
             }
             $active = $owner.ActiveProcesses
             if ($active -eq 0) { break }

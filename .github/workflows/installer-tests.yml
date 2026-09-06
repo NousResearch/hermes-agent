@@ -60,3 +60,19 @@ jobs:
       - name: Interrupted venv transaction recovery (Windows PowerShell 5.1)
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-venv-retry-transaction.ps1
+
+      - name: Native deadlines, output, and retry ownership (pwsh 7)
+        shell: pwsh
+        run: |
+          foreach ($fixture in @('native-command-ownership', 'desktop-deadlines', 'package-deadlines', 'winget-timeout')) {
+            pwsh -NoProfile -ExecutionPolicy Bypass -File "scripts/tests/test-install-ps1-$fixture.ps1"
+            if ($LASTEXITCODE -ne 0) { throw "$fixture failed ($LASTEXITCODE)" }
+          }
+
+      - name: Native deadlines, output, and retry ownership (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          foreach ($fixture in @('native-command-ownership', 'desktop-deadlines', 'package-deadlines', 'winget-timeout')) {
+            powershell -NoProfile -ExecutionPolicy Bypass -File "scripts/tests/test-install-ps1-$fixture.ps1"
+            if ($LASTEXITCODE -ne 0) { throw "$fixture failed ($LASTEXITCODE)" }
+          }

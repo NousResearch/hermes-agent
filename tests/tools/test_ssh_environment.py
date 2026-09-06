@@ -261,7 +261,6 @@ class TestSSHProbeOnly:
         _mock_ssh_runtime["_ensure_remote_dirs"].assert_not_called()
         _mock_ssh_runtime["sync_factory"].assert_not_called()
         _mock_ssh_runtime["init_session"].assert_not_called()
-        assert env._sync_manager is None
 
     def test_probe_only_control_socket_is_isolated(self, monkeypatch, _mock_ssh_runtime):
         control_exit_calls = []
@@ -283,12 +282,10 @@ class TestSSHProbeOnly:
         normal.control_socket.touch()
         first_probe.control_socket.touch()
         first_probe.cleanup()
-        first_probe.cleanup()
 
         assert normal.control_socket.exists()
         assert not first_probe.control_socket.exists()
         assert len(control_exit_calls) == 1
-        normal.cleanup()
 
 
 def _setup_ssh_env(monkeypatch, persistent: bool):

@@ -48,7 +48,6 @@ class SSHEnvironment(BaseEnvironment):
     Spawn-per-call: every execute() spawns a fresh ``ssh ... bash -c`` process.
     Session snapshot preserves env vars across calls; CWD persists via in-band
     stdout markers. Uses SSH ControlMaster for connection reuse.
-    Probe-only instances use an isolated connection without sync or session state.
     """
 
     # Passthrough values are re-forwarded on every command (see _run_bash), so like docker/local
@@ -60,8 +59,6 @@ class SSHEnvironment(BaseEnvironment):
                  probe_only: bool = False):
         super().__init__(cwd=cwd, timeout=timeout)
         self.host, self.user, self.port, self.key_path = host, user, port, key_path
-        self._probe_only = probe_only
-        self._sync_manager = None
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
         self.control_dir.mkdir(parents=True, exist_ok=True)
         # Short, deterministic socket name: the path must stay under macOS's 104-byte sun_path
@@ -69,16 +66,15 @@ class SSHEnvironment(BaseEnvironment):
         # stability across reconnects keeps ControlMaster reuse working. A probe gets its own
         # per-instance socket so its cleanup() can never close the agent's shared master.
         socket_key = f"{user}@{host}:{port}"
-        if self._probe_only:
+        if probe_only:
             socket_key = f"{socket_key}:probe:{self._session_id}"
         _socket_id = hashlib.sha256(socket_key.encode()).hexdigest()[:16]
         self.control_socket = self.control_dir / f"{_socket_id}.sock"
         _ensure_ssh_available()
         self._establish_connection()
-        if self._probe_only:
-            self._remote_home = ""
+        if probe_only:
+            self._sync_manager = None
             return
-
         self._remote_home = self._detect_remote_home()
         self._ensure_remote_dirs()
         self._sync_manager = FileSyncManager(

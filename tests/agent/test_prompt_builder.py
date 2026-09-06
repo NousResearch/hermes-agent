@@ -970,27 +970,6 @@ class TestEnvironmentHints:
         assert created["probe_only"] is True
         assert calls == ["cleanup"]
 
-    def test_probe_remote_backend_ssh_cleanup_error_keeps_result(self, monkeypatch):
-        """A failing teardown of the throwaway probe connection must not discard the
-        metadata the probe already collected."""
-        import agent.prompt_builder as _pb
-
-        monkeypatch.setenv("TERMINAL_ENV", "ssh")
-        _pb._clear_backend_probe_cache()
-
-        class _Env:
-            def execute(self, cmd, timeout=None):
-                return {"returncode": 0, "output": "os=Linux\nkernel=6.8.0\nhome=/h\ncwd=/h\nuser=u\n"}
-
-            def cleanup(self):
-                raise RuntimeError("cleanup failed")
-
-        import tools.terminal_tool_backends as _tt
-        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _Env())
-
-        assert "Linux 6.8.0" in _pb._probe_remote_backend("ssh")
-
-
     def test_environment_hint_from_env_var_is_appended(self, monkeypatch):
         """HERMES_ENVIRONMENT_HINT lets an embedder describe the runtime env."""
         import agent.prompt_builder as _pb

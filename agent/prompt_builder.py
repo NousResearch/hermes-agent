@@ -876,10 +876,10 @@ def _run_backend_probe(env_type: str, terminal_tool) -> str:
         container_config=(_container_config_from_config(config)
                           if terminal_tool._is_container_backend(env_type) else None),
         task_id="prompt-backend-probe", host_cwd=config.get("host_cwd"),
-        # ssh: an isolated ControlMaster socket and no remote dir setup / file sync / snapshot —
-        # a normal SSHEnvironment would upload the whole ~/.hermes tree just to run `uname`, and
-        # its later __del__ would sync_back() and close the master shared with the agent's own env.
-        probe_only=env_type == "ssh",
+        # Only ssh honors this: an isolated ControlMaster socket and no remote dir setup / file sync /
+        # snapshot. A normal SSHEnvironment would upload the whole ~/.hermes tree just to run `uname`,
+        # and its later __del__ would sync_back() and close the master shared with the agent's own env.
+        probe_only=True,
     )
     try:
         result = env.execute(_BACKEND_PROBE_CMD, timeout=4)

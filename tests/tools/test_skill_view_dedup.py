@@ -92,3 +92,60 @@ class TestSkillViewDedup:
         # conversation_compression imports this lazily; keep the seam stable.
         from tools.skills_tool import reset_skill_view_dedup as f
         f(None)
+
+
+class TestCompactionResetsDedup:
+    """Both compaction paths must re-arm skill_view, not just file reads.
+
+    A skill re-viewed after compaction has to return full content: the earlier
+    result the stub points at was summarised away. The Codex app-server path
+    opted out of the skill half (`skills=False`), so a parent that reloaded a
+    contract mid-run got a stub naming content no longer in its context.
+    """
+
+    def _calls(self, monkeypatch):
+        import agent.conversation_compression as cc
+        import tools.file_tools_read_tracking as frt
+        import tools.skills_tool as st
+
+        seen = []
+        monkeypatch.setattr(frt, "reset_file_dedup", lambda t: seen.append(("file", t)))
+        monkeypatch.setattr(st, "reset_skill_view_dedup", lambda t: seen.append(("skill", t)))
+        return cc, seen
+
+    def test_hermes_path_helper_resets_both(self, monkeypatch):
+        cc, seen = self._calls(monkeypatch)
+        cc._reset_read_dedup_caches("t-1")
+        assert seen == [("file", "t-1"), ("skill", "t-1")]
+
+    def test_codex_app_server_path_resets_skill_view(self, monkeypatch):
+        cc, seen = self._calls(monkeypatch)
+
+        class _Result:
+            interrupted = False
+            error = None
+            should_retire = False
+            thread_id = "th-1"
+            turn_id = "tu-1"
+
+        class _Session:
+            def compact_thread(self):
+                return _Result()
+
+        class _Agent:
+            session_id = "s-1"
+            codex_app_server_auto_compaction = "hermes"
+            _codex_session = _Session()
+            context_compressor = object()
+            _cached_system_prompt = "SYS"
+            status_callback = None
+
+            def _emit_status(self, *a, **k):
+                pass
+
+        messages = [{"role": "user", "content": "hi"}]
+        out, prompt = cc._compress_context_via_codex_app_server(
+            _Agent(), messages, "SYS", task_id="t-2", force=True
+        )
+        assert out is messages and prompt == "SYS"
+        assert ("skill", "t-2") in seen, "codex compaction left skill_view dedup armed"

@@ -76,3 +76,17 @@ def log_safe_gateway_error(platform: object, error: object) -> str:
 def session_error_for_log(session_key: object, error: object) -> str:
     """Select the error projection from the session key's structured platform slot."""
     return log_safe_gateway_error(_session_platform(session_key), error)
+
+
+def log_safe_gateway_payload(platform: object, value: object) -> str:
+    """Omit WhatsApp filenames and captions while keeping other diagnostics exact."""
+    name = str(getattr(platform, "value", platform) or "").lower()
+    if name in {"whatsapp", "whatsapp_cloud"}:
+        return "present" if value else "absent"
+    return str(value or "")
+
+
+def log_safe_gateway_exc_info(platform: object, exc_info=True):
+    """Keep non-WhatsApp tracebacks; WhatsApp exception text stays out of log records."""
+    name = str(getattr(platform, "value", platform) or "").lower()
+    return None if name in {"whatsapp", "whatsapp_cloud"} else exc_info

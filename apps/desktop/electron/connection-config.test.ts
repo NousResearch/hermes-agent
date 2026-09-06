@@ -46,6 +46,7 @@ import {
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
+  runtimeKindFromStatus,
   sanitizeRemoteHeaderValue,
   savedProfileSsh,
   tokenPreview,
@@ -1383,4 +1384,25 @@ test('FIX #95701: transport and server failures at the ticket mint stay retryabl
     assert.equal(wrapped.needsOauthLogin, undefined)
     assert.equal(wrapped.isReauthRequired, undefined)
   }
+})
+
+// --- runtimeKindFromStatus ---
+
+test('runtimeKindFromStatus accepts the two declared literals', () => {
+  assert.equal(runtimeKindFromStatus({ runtime_kind: 'container' }), 'container')
+  assert.equal(runtimeKindFromStatus({ runtime_kind: 'native' }), 'native')
+})
+
+test('runtimeKindFromStatus yields undefined for anything else', () => {
+  // An older backend simply omits the field. Reading that as 'native' would paint a
+  // confident, wrong badge on every gateway that predates it — the one outcome the
+  // indicator must never produce.
+  assert.equal(runtimeKindFromStatus({}), undefined)
+  assert.equal(runtimeKindFromStatus({ runtime_kind: 'docker' }), undefined)
+  assert.equal(runtimeKindFromStatus({ runtime_kind: 'Container' }), undefined)
+  assert.equal(runtimeKindFromStatus({ runtime_kind: true }), undefined)
+  assert.equal(runtimeKindFromStatus({ runtime_kind: null }), undefined)
+  assert.equal(runtimeKindFromStatus(null), undefined)
+  assert.equal(runtimeKindFromStatus(undefined), undefined)
+  assert.equal(runtimeKindFromStatus('container'), undefined)
 })

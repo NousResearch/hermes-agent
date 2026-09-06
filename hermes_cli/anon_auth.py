@@ -337,7 +337,12 @@ def ensure_portal_identity(*, blocking: bool = True, timeout_seconds: float = GU
             with _background_lock:
                 _background_started = False
 
-    threading.Thread(target=_run, name="nous-guest-identity", daemon=True).start()
+    try:
+        threading.Thread(target=_run, name="nous-guest-identity", daemon=True).start()
+    except Exception as exc:  # thread limit / interpreter shutdown: release so a later call can retry
+        with _background_lock:
+            _background_started = False
+        logger.debug("Nous free tier background setup could not start: %s", exc)
     return None
 
 

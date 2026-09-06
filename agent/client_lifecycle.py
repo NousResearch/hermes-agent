@@ -931,6 +931,11 @@ class ClientLifecycleMixin:
         from hermes_cli.route_identity import normalize_route_base_url
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(runtime_base)
         stripped_base = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
+        # The route may have moved between the welcome host and the portal host: decide the Nous
+        # model together with the endpoint, on every wire mode, before any mode-specific return.
+        if getattr(self, "provider", None) == "nous":
+            from hermes_cli.anon_auth import pin_model_for_route
+            self.model = pin_model_for_route("nous", stripped_base, getattr(self, "model", None))
         if self.api_mode == "anthropic_messages":
             with suppress(Exception):
                 self._anthropic_client.close()
@@ -940,11 +945,6 @@ class ClientLifecycleMixin:
             self.api_key, self.base_url = runtime_key, stripped_base
             return
         self.api_key, self.base_url = runtime_key, stripped_base
-        # The route may have moved between the welcome host and the portal host: re-apply the Nous
-        # model policy so endpoint and model are always decided together.
-        if getattr(self, "provider", None) == "nous":
-            from hermes_cli.anon_auth import pin_model_for_route
-            self.model = pin_model_for_route("nous", self.base_url, getattr(self, "model", None))
         # Inlined (not _sync_client_kwargs_credentials): tests call this unbound on a SimpleNamespace agent.
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url

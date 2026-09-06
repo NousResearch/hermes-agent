@@ -306,3 +306,22 @@ class TestPoolSwapKeepsRouteAndModelTogether:
         agent.model = "nous/paid-model"
         swap(agent, SimpleNamespace(id="p", runtime_api_key="key", runtime_base_url="https://inference-api.nousresearch.com/v1"))
         assert agent.model == "nous/paid-model"
+
+
+class TestSwapCoversEveryWireMode:
+    def test_anthropic_messages_swap_pins_before_returning(self, portal):
+        from types import SimpleNamespace
+        from agent.client_lifecycle import ClientLifecycleMixin
+        agent = SimpleNamespace(provider="nous", api_mode="anthropic_messages", base_url="https://inference-api.nousresearch.com/v1",
+                                api_key="k", model="anthropic/claude-sonnet", _client_kwargs={}, _anthropic_client=SimpleNamespace(close=lambda: None),
+                                _build_direct_anthropic_client=lambda key, url: object(), _anthropic_oauth_flag=lambda key: False)
+        ClientLifecycleMixin._swap_credential(agent, SimpleNamespace(id="g", runtime_api_key="jwt", runtime_base_url=WELCOME))
+        assert agent.model == anon_auth.GUEST_MODEL
+
+    def test_thread_start_failure_releases_latch(self, portal, monkeypatch):
+        import threading
+        class Boom(threading.Thread):
+            def start(self): raise RuntimeError("can't start new thread")
+        monkeypatch.setattr(anon_auth.threading, "Thread", Boom)
+        assert anon_auth.ensure_portal_identity(blocking=False) is None
+        assert anon_auth._background_started is False

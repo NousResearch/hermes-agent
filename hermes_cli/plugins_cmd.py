@@ -1767,6 +1767,27 @@ def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
         _write_raw_config_value(("platform_toolsets", platform), toolsets)
 
 
+def _managed_plugin_toggle_keys(name: str, *, enable: bool) -> list[str]:
+    """Return administrator-managed config keys this toggle would write."""
+    from hermes_cli import managed_scope
+    from hermes_cli.config import load_config
+
+    keys = ["plugins.enabled", "plugins.disabled"]
+    toolset_key = _get_plugin_toolset_key(name)
+    if toolset_key:
+        platform_toolsets = load_config().get("platform_toolsets")
+        if not isinstance(platform_toolsets, dict):
+            platform_toolsets = {}
+        changed_platforms = [
+            platform for platform, toolsets in platform_toolsets.items()
+            if isinstance(toolsets, list) and enable != (toolset_key in toolsets)
+        ]
+        if enable and not changed_platforms and not platform_toolsets:
+            changed_platforms.append("cli")
+        keys.extend(f"platform_toolsets.{platform}" for platform in changed_platforms)
+    return [key for key in keys if managed_scope.is_key_managed(key)]
+
+
 def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str, Any]:
     """Enable or disable a plugin in ``config.yaml`` (runtime allow/deny lists)."""
     if _resolve_plugin_key(name) is None:
@@ -1775,6 +1796,15 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
     dis = _get_disabled_set()
     if ((name in en and name not in dis) if enabled else (name not in en and name in dis)):
         return {"ok": True, "name": name, "unchanged": True}
+    managed_keys = _managed_plugin_toggle_keys(name, enable=enabled)
+    if managed_keys:
+        return {
+            "ok": False,
+            "error": (
+                "Cannot change plugin enablement: "
+                f"{', '.join(managed_keys)} is managed by your administrator."
+            ),
+        }
     _set_plugin_enabled(name, enable=enabled)
     _toggle_plugin_toolset(name, enable=enabled)
     return {"ok": True, "name": name, "unchanged": False}

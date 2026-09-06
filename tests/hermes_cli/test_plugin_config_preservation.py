@@ -5,7 +5,7 @@ import copy
 import pytest
 import yaml
 
-from hermes_cli import config, plugins_cmd
+from hermes_cli import config, managed_scope, plugins_cmd
 
 
 @pytest.mark.parametrize("operation", ["enable", "disable", "flag"])
@@ -135,3 +135,54 @@ def test_plugin_mutation_refuses_unreadable_document(tmp_path, monkeypatch, inva
         with pytest.raises(RuntimeError):
             plugins_cmd._save_enabled_set({"example"})
     assert path.read_text() == original
+
+
+@pytest.mark.parametrize("managed_key", ["plugins.enabled", "plugins.disabled"])
+def test_dashboard_plugin_toggle_refuses_managed_scope_before_writes(tmp_path, monkeypatch, managed_key):
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(config, "is_managed", lambda: False)
+    monkeypatch.setattr(plugins_cmd, "_resolve_plugin_key", lambda _: "example")
+    monkeypatch.setattr(plugins_cmd, "_get_plugin_toolset_key", lambda _: None)
+    monkeypatch.setattr(managed_scope, "is_key_managed", lambda key: key == managed_key)
+    path = home / "config.yaml"
+    original = "plugins:\n  enabled: []\n  disabled: [other]\n"
+    path.write_text(original)
+
+    result = plugins_cmd.dashboard_set_agent_plugin_enabled("example", enabled=True)
+
+    assert result["ok"] is False
+    assert managed_key in result["error"]
+    assert path.read_text() == original
+
+
+def test_tui_plugin_toggle_translates_managed_scope_error(monkeypatch):
+    from types import SimpleNamespace
+
+    from tui_gateway import methods_tools
+
+    monkeypatch.setattr(
+        methods_tools,
+        "_tools_mod",
+        lambda _: SimpleNamespace(
+            dashboard_set_agent_plugin_enabled=lambda name, enabled: {
+                "ok": False,
+                "error": "Cannot change plugin enablement: plugins.disabled is managed by your administrator.",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        methods_tools,
+        "_err",
+        lambda rid, code, message: {"rid": rid, "code": code, "error": message},
+        raising=False,
+    )
+
+    result = methods_tools._plugins_toggle("request-1", {"key": "example", "enable": True})
+
+    assert result == {
+        "rid": "request-1",
+        "code": 5026,
+        "error": "Cannot change plugin enablement: plugins.disabled is managed by your administrator.",
+    }

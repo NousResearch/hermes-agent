@@ -388,6 +388,7 @@ class SessionManager:
         kwargs = {
             "platform": "acp", "quiet_mode": True, "session_id": session_id, "session_db": self._get_db(),
             "enabled_toolsets": _expand_acp_enabled_toolsets(["hermes-acp"], mcp_server_names=configured_mcp_servers),
+            "disabled_toolsets": list((config.get("agent") or {}).get("disabled_toolsets") or []),
             "model": model or default_model,
         }
         try:

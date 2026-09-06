@@ -755,7 +755,7 @@ class CLISessionMixin:
         changed = RuntimeError("session history changed before the rewind could be persisted")
         expected_active_ids = self._session_db.get_active_message_ids(self.session_id)
         durable = self._session_db.get_messages_as_conversation(
-            self.session_id, include_row_ids=True)
+            self.session_id, include_row_ids=True, display_projection=False)
         warm_persistence_history = [m for m in warm_history if not _is_ephemeral_scaffolding(m)]
         warm_user_indices = _user_indices(warm_persistence_history)
         durable_user_indices = _user_indices(durable)

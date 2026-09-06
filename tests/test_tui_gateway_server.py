@@ -16157,14 +16157,12 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
         def get_next_title_in_lineage(self, current):
             return f"{current} (branch)"
 
-        def get_resume_conversations(self, key):
+        def get_messages_as_conversation(self, key, **kwargs):
             assert key == "parent-key"
-            # The model projection has already been compacted to a summary + tail;
-            # the display projection still contains every visible turn.
-            return (
-                [{"role": "assistant", "content": "compact summary"}],
-                display_history,
-            )
+            assert kwargs == {"include_ancestors": True, "include_compacted": True,
+                              "include_row_ids": True, "display_projection": False}
+            # The complete lineage retains archived turns with raw provider metadata.
+            return display_history
 
         def create_session(self, _new_key, **_kwargs):
             return None

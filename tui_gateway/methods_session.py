@@ -1937,19 +1937,21 @@ _BRANCH_COPY_FIELDS = (
 
 
 def _branch_source_history(db, session: dict, old_key: str) -> list:
-    """Rows a branch copies: the persisted DISPLAY projection reconciled with live memory (live history is
-    the MODEL projection — post-compaction summary + tail — the child would lose every archived turn)."""
+    """Copy the complete persisted lineage, including archived turns, reconciled with live memory.
+    Keep provider metadata raw for the child; its UI applies its own display projection."""
     with session["history_lock"]:
         in_memory_history = [
             dict(msg) for msg in list(session.get("display_history_prefix") or []) + list(session.get("history", []))
             if isinstance(msg, dict)]
     history = None
-    if callable(get_resume_conversations := getattr(db, "get_resume_conversations", None)):
+    if callable(read_history := getattr(db, "get_messages_as_conversation", None)):
         try:
-            _, display_history = get_resume_conversations(old_key)
-            history = _visible_branch_history(_reconcile_display_with_live(display_history, in_memory_history))
+            lineage = read_history(
+                old_key, include_ancestors=True, include_compacted=True, include_row_ids=True,
+                display_projection=False)
+            history = _visible_branch_history(_reconcile_display_with_live(lineage, in_memory_history))
         except Exception:
-            logger.debug("branch display projection read failed", exc_info=True)
+            logger.debug("branch lineage read failed", exc_info=True)
     return history or _visible_branch_history(in_memory_history)
 
 

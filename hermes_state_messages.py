@@ -10,7 +10,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.context_compressor import _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, split_user_originated_turn
-from agent.memory_manager import sanitize_context
+from agent.memory_manager import sanitize_context, sanitize_context_for_transcript
 from agent.message_sanitization import _sanitize_surrogates
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
@@ -49,7 +49,7 @@ def _json_or(raw: Any, fallback: Any, warning: str) -> Any:
     """``json.loads(raw)``; on failure log *warning* and return *fallback*."""
     try:
         return json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError, RecursionError):
         logger.warning(warning)
         return fallback
 
@@ -72,7 +72,7 @@ def _parse_tool_calls(tool_calls: Any) -> Any:
         return tool_calls
     try:
         return json.loads(tool_calls)
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError, RecursionError):
         return []
 
 
@@ -891,7 +891,8 @@ class SessionMessagesMixin:
     def get_messages_as_conversation(self, session_id: str, include_ancestors: bool = False,
                                      include_inactive: bool = False, repair_alternation: bool = False,
                                      include_row_ids: bool = False,
-                                     include_compacted: bool = False) -> List[Dict[str, Any]]:
+                                     include_compacted: bool = False,
+                                     display_projection: Optional[bool] = None) -> List[Dict[str, Any]]:
         """Load messages in OpenAI format. ``include_compacted`` (deduped display history) is for DISPLAY reads
         only: the model-fed restore must not regrow what compaction summarized away. ``repair_alternation``
         repairs the loaded list for LIVE REPLAY callers (a durable ``user;user`` pair would re-trigger the
@@ -904,7 +905,8 @@ class SessionMessagesMixin:
             rows = self._dedupe_display_generations(rows)
         return self._rows_to_conversation(rows, session_id=session_id, include_ancestors=include_ancestors,
             repair_alternation=repair_alternation, include_row_ids=include_row_ids,
-            include_summary_markers=repair_alternation)
+            include_summary_markers=repair_alternation,
+            display_projection=not repair_alternation if display_projection is None else display_projection)
 
     def _dedupe_replayed_user(self, messages, msg, exact_user_clones) -> Tuple[bool, Any]:
         """Ancestor-lineage dedupe of one decoded user *msg* -> ``(skip, exact_clone_key)``. Rotation
@@ -929,8 +931,8 @@ class SessionMessagesMixin:
         return not prefer_current, exact_clone_key
 
     def _rows_to_conversation(self, rows, *, session_id: str, include_ancestors: bool, repair_alternation: bool,
-                              include_row_ids: bool = False,
-                              include_summary_markers: bool = False) -> List[Dict[str, Any]]:
+                              include_row_ids: bool = False, include_summary_markers: bool = False,
+                              display_projection: bool = False) -> List[Dict[str, Any]]:
         """Decode fetched rows (ordered by id, pre-filtered) into OpenAI format, stable key order. Every dict is
         stamped ``_DB_PERSISTED_MARKER_KEY`` (born durable) so an identity-losing handoff never re-appends the
         transcript on flush. ``_row_id`` is opt-in (gateway reactions); reasoning restored on assistant rows
@@ -940,8 +942,11 @@ class SessionMessagesMixin:
         exact_user_clones: Dict[Tuple[Any, str], Dict[str, Any]] = {}
         for row in rows:
             content = self._decode_content(row["content"])
-            if row["role"] in {"user", "assistant"} and isinstance(content, str):
-                content = sanitize_context(content).strip()
+            if isinstance(content, str):
+                sanitizer = sanitize_context_for_transcript if row["role"] == "user" else sanitize_context
+                content = sanitizer(content)
+                if row["role"] in {"user", "assistant"}:
+                    content = content.strip()
             # Underscore-prefixed like ``_row_id``: transports strip it before the wire; compression's
             # assembly copies strip it so rotated child handoffs still flush (_fresh_compaction_message_copy).
             msg = {"role": row["role"], "content": content, _DB_PERSISTED_MARKER_KEY: True}
@@ -973,6 +978,19 @@ class SessionMessagesMixin:
                 msg.update(
                     (col, _json_or(row[col], None, f"Failed to deserialize {col}, falling back to None"))
                     for col in ("reasoning_details", "codex_reasoning_items", "codex_message_items") if row[col])
+            if display_projection:
+                # Provider replay keeps structured content, executable arguments and signed
+                # reasoning exact. Only this disposable display copy is recursively fenced.
+                for field in ("content", "tool_calls", "reasoning", "reasoning_content",
+                              "reasoning_details", "codex_reasoning_items", "codex_message_items"):
+                    if field not in msg or (field == "content" and isinstance(content, str)):
+                        continue
+                    try:
+                        msg[field] = self._sanitize_display_value(
+                            msg[field], strict=field != "content" or row["role"] != "user")
+                    except RecursionError:
+                        logger.warning("Failed to sanitize %s for display; dropping payload", field)
+                        msg[field] = [] if field == "tool_calls" else None
             if include_ancestors:
                 skip, exact_clone_key = self._dedupe_replayed_user(messages, msg, exact_user_clones)
                 if skip:
@@ -991,6 +1009,43 @@ class SessionMessagesMixin:
                     "restoring session %s — durable transcript kept them, "
                     "see repair_message_sequence", repaired, session_id)
         return messages
+
+    @classmethod
+    def _sanitize_reasoning_display_value(cls, value: Any) -> Any:
+        """Copy reasoning metadata with provider recall fenced for display."""
+        return cls._sanitize_display_value(value, strict=True)
+
+    @classmethod
+    def _sanitize_display_value(cls, value: Any, *, strict: bool = True) -> Any:
+        """Recursively fence display strings, including structured keys."""
+        sanitizer = sanitize_context if strict else sanitize_context_for_transcript
+        if isinstance(value, str):
+            return sanitizer(value)
+        if isinstance(value, dict):
+            safe: dict[Any, Any] = {}
+            next_suffix: dict[str, int] = {}
+            for key, item in value.items():
+                safe_key = cls._sanitize_display_value(key, strict=strict)
+                try:
+                    hash(safe_key)
+                except TypeError:
+                    safe_key = str(safe_key)
+                if safe_key in safe:
+                    base = str(safe_key)
+                    suffix = next_suffix.get(base, 2)
+                    candidate = f"{base}#{suffix}"
+                    while candidate in safe:
+                        suffix += 1
+                        candidate = f"{base}#{suffix}"
+                    next_suffix[base] = suffix + 1
+                    safe_key = candidate
+                safe[safe_key] = cls._sanitize_display_value(item, strict=strict)
+            return safe
+        if isinstance(value, list):
+            return [cls._sanitize_display_value(item, strict=strict) for item in value]
+        if isinstance(value, tuple):
+            return tuple(cls._sanitize_display_value(item, strict=strict) for item in value)
+        return value
 
     def get_resume_conversations(self, session_id: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """``(model_history, display_history)`` for a resume from ONE SELECT; byte-identical to the separate
@@ -1011,7 +1066,7 @@ class SessionMessagesMixin:
             include_ancestors=False, repair_alternation=True, include_row_ids=True, include_summary_markers=True)
         display_history = self._rows_to_conversation(
             self._dedupe_display_generations(rows), session_id=session_id,
-            include_ancestors=True, repair_alternation=False, include_row_ids=True)
+            include_ancestors=True, repair_alternation=False, include_row_ids=True, display_projection=True)
         return model_history, display_history
 
     def _resume_lineage_ids(self, session_id: str) -> List[str]:
@@ -1065,7 +1120,7 @@ class SessionMessagesMixin:
         if not ancestor_ids:
             return []
         lineage = self._rows_to_conversation(
-            rows, session_id=session_id, include_ancestors=True, repair_alternation=False, include_row_ids=True)
+            rows, session_id=session_id, include_ancestors=True, repair_alternation=False, include_row_ids=True, display_projection=True)
         return [{k: v for k, v in message.items() if k != "_row_id"}
             for message in lineage if message.get("_row_id") in ancestor_ids]
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import json
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -149,3 +151,53 @@ def test_dev_relaunch_passes_the_checkout_as_electron_argument(tmp_path: Path) -
     assert invocation["Executable"] == str(electron)
     assert invocation["Arguments"] == str(app)
     assert invocation["CommandLine"] == f'"{electron}" "{app}"'
+
+
+@pytest.mark.windows_only
+@pytest.mark.parametrize("direct", [False, True])
+def test_relaunch_preserves_app_path_and_custom_environment(tmp_path: Path, direct: bool) -> None:
+    output = tmp_path / "environment.json"
+    probe = tmp_path / "relaunch probe.py"
+    probe.write_text(
+        "import json, os\n"
+        "from pathlib import Path\n"
+        "keys = ['HERMES_HOME', 'HERMES_DESKTOP_USER_DATA_DIR', 'HERMES_DESKTOP_HERMES_ROOT', 'PATH']\n"
+        "Path(os.environ['HERMES_RELAUNCH_TEST_OUTPUT']).write_text("
+        "json.dumps({key: os.environ.get(key) for key in keys}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    env = {
+        **os.environ,
+        "HERMES_HOME": str(tmp_path / "custom home"),
+        "HERMES_DESKTOP_USER_DATA_DIR": str(tmp_path / "custom desktop data"),
+        "HERMES_DESKTOP_HERMES_ROOT": str(tmp_path / "custom source"),
+        "HERMES_RELAUNCH_TEST_OUTPUT": str(output),
+    }
+    result = subprocess.run(
+        [str(_powershell()), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(SCRIPT),
+         "-SelfTestRelaunchEnvironment", "-RelaunchExe", sys.executable,
+         "-RelaunchAppPath", str(probe), "-NoUi", *(["-SelfTestDirectRelaunch"] if direct else [])],
+        capture_output=True, text=True, env=env, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["ReturnValue"] == 0
+    deadline = time.monotonic() + 10
+    while not output.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    observed = json.loads(output.read_text(encoding="utf-8"))
+    for key in ("HERMES_HOME", "HERMES_DESKTOP_USER_DATA_DIR", "HERMES_DESKTOP_HERMES_ROOT"):
+        assert observed[key] == env[key]
+    assert observed["PATH"] == env.get("PATH", env.get("Path"))
+
+
+@pytest.mark.windows_only
+def test_direct_packaged_relaunch_omits_empty_argument_list() -> None:
+    # With no arguments, rundll32 exits without loading a DLL or opening UI.
+    executable = _powershell().parents[2] / "rundll32.exe"
+    result = subprocess.run(
+        [str(_powershell()), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(SCRIPT),
+         "-SelfTestRelaunchEnvironment", "-SelfTestDirectRelaunch", "-RelaunchExe", str(executable), "-NoUi"],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["ProcessId"] > 0

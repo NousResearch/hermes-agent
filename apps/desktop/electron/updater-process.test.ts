@@ -11,11 +11,18 @@ import {
   resolvePosixScriptHandoff,
   resolveStagedUpdaterBinary,
   resolveUpdateScriptHandoff,
+  resolveWindowsDevRelaunchAppPath,
   resolveWindowsUpdateTransport,
   sandboxFallbackFromEnv,
   spawnUpdaterProcess,
   wrapHandoffForDetachedConsole
 } from './updater-process'
+
+test('dev relaunch uses Electron resolved app path independently of launch switches', () => {
+  const appPath = 'C:\\Hermes proof\\apps\\desktop'
+  assert.equal(resolveWindowsDevRelaunchAppPath(true, appPath), appPath)
+  assert.equal(resolveWindowsDevRelaunchAppPath(false, appPath), undefined)
+})
 
 
 test('staged marker allows delayed acquisition only for the exact active child generation', () => {

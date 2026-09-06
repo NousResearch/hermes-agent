@@ -56,10 +56,12 @@ param(
     [switch]$SelfTestPipeDrain,
     [switch]$SelfTestMarker,
     [switch]$SelfTestLog,
-    [switch]$SelfTestRelaunchCommand
+    [switch]$SelfTestRelaunchCommand,
+    [switch]$SelfTestRelaunchEnvironment,
+    [switch]$SelfTestDirectRelaunch
 )
 
-if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $SelfTestLog -and -not $SelfTestRelaunchCommand -and -not $InstallRoot) {
+if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $SelfTestLog -and -not $SelfTestRelaunchCommand -and -not $SelfTestRelaunchEnvironment -and -not $InstallRoot) {
     # Mandatory in spirit; relaxed in the signature only so the self-test
     # switches can drive the UI / the pipe drain / the log without a checkout.
     throw "-InstallRoot is required"
@@ -742,6 +744,35 @@ function Get-DesktopRelaunchInvocation {
     }
 }
 
+function Start-DetachedDesktopProcess($Invocation) {
+    # WMI launches through its service, not as our child, so it otherwise loses
+    # HERMES_HOME and the Desktop's custom user-data/source-root overrides.
+    $environment = [Environment]::GetEnvironmentVariables('Process').GetEnumerator() |
+        ForEach-Object { "$($_.Key)=$($_.Value)" }
+    $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{
+        EnvironmentVariables = [string[]]$environment
+    }
+    return Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+        CommandLine = $Invocation.CommandLine
+        CurrentDirectory = (Split-Path -Parent $Invocation.Executable)
+        ProcessStartupInformation = $startup
+    } -ErrorAction Stop
+}
+
+function Start-DirectDesktopProcess($Invocation) {
+    $options = @{
+        FilePath = $Invocation.Executable
+        WorkingDirectory = (Split-Path -Parent $Invocation.Executable)
+        PassThru = $true
+    }
+    if ($Invocation.Arguments.Count -gt 0) {
+        # Start-Process joins ArgumentList without quoting its elements. There
+        # is exactly one app path here; an empty list must omit the parameter.
+        $options.ArgumentList = '"{0}"' -f @($Invocation.Arguments)[0]
+    }
+    return Start-Process @options
+}
+
 function Start-DesktopRelaunch {
     # Returns $true only when a launch VERIFIABLY happened (WMI accepted and
     # the pid exists, or the fallback spawn returned a live process). The
@@ -772,11 +803,7 @@ function Start-DesktopRelaunch {
     # attach -- same detachment explorer.exe gives a normal launch.
     $spawned = $false
     try {
-        $workDir = Split-Path -Parent $RelaunchExe
-        $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
-            CommandLine      = $relaunch.CommandLine
-            CurrentDirectory = $workDir
-        } -ErrorAction Stop
+        $r = Start-DetachedDesktopProcess $relaunch
         if ($r -and $r.ReturnValue -eq 0) {
             Write-HandoffLog "desktop relaunched detached (pid $($r.ProcessId))"
             $spawned = $true
@@ -820,7 +847,9 @@ function Start-DesktopRelaunch {
     } catch {
         Write-HandoffLog "WARNING: WMI relaunch failed: $($_.Exception.Message); falling back"
     }
-    if (-not $spawned) {
+    # Explorer cannot carry the caller's environment. With an explicit home or
+    # source override, use the environment-preserving direct fallback instead.
+    if (-not $spawned -and -not $env:HERMES_HOME -and -not $env:HERMES_DESKTOP_USER_DATA_DIR -and -not $env:HERMES_DESKTOP_HERMES_ROOT) {
         # Middle rung: explorer.exe-mediated launch. On some machines
         # Win32_Process.Create fails outright (observed ReturnValue 8,
         # "unknown failure"), and the tethered fallback below re-attaches the
@@ -877,7 +906,7 @@ function Start-DesktopRelaunch {
         try {
             # Fallback keeps the old behavior (console tie-in and all) --
             # a tethered Desktop beats no Desktop.
-            $p = Start-Process -FilePath $RelaunchExe -ArgumentList $relaunch.Arguments -WorkingDirectory (Split-Path -Parent $RelaunchExe) -PassThru
+            $p = Start-DirectDesktopProcess $relaunch
             Start-Sleep -Milliseconds 1500
             if ($p -and -not $p.HasExited) { $spawned = $true }
             elseif ($p) { Write-HandoffLog "WARNING: fallback relaunch exited immediately" }
@@ -1428,6 +1457,17 @@ $script:TreeSafeToFinalize = $true
 
 if ($SelfTestRelaunchCommand) {
     Get-DesktopRelaunchInvocation | ConvertTo-Json -Compress
+    exit 0
+}
+
+if ($SelfTestRelaunchEnvironment) {
+    if ($SelfTestDirectRelaunch) {
+        $child = Start-DirectDesktopProcess (Get-DesktopRelaunchInvocation)
+        @{ ReturnValue = 0; ProcessId = $child.Id } | ConvertTo-Json -Compress
+    } else {
+        Start-DetachedDesktopProcess (Get-DesktopRelaunchInvocation) |
+            Select-Object ReturnValue, ProcessId | ConvertTo-Json -Compress
+    }
     exit 0
 }
 

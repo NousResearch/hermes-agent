@@ -392,10 +392,8 @@ export function spawnUpdaterProcess(
   return child
 }
 
-export function resolveWindowsDevRelaunchAppPath(defaultApp: boolean, argv: readonly string[]): string | undefined {
-  const appEntry = argv[1]
-
-  return defaultApp && appEntry && !appEntry.startsWith('-') ? path.win32.resolve(appEntry) : undefined
+export function resolveWindowsDevRelaunchAppPath(defaultApp: boolean, appPath: string): string | undefined {
+  return defaultApp && appPath ? path.win32.resolve(appPath) : undefined
 }
 
 export function formatPowerShellArgvForDisplay(argv: string[]): string {

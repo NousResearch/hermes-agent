@@ -4274,7 +4274,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
           branch: prepared.branch,
           desktopPid: process.pid,
           installRoot: prepared.updateRoot,
-          relaunchAppPath: resolveWindowsDevRelaunchAppPath(process.defaultApp, process.argv),
+          relaunchAppPath: resolveWindowsDevRelaunchAppPath(process.defaultApp, app.getAppPath()),
           relaunchExe: process.execPath
         },
         {

@@ -13,6 +13,7 @@ import time
 import threading as _threading
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
+from agent.command_token_source import resolve_probe_token
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug, get_label
 from utils import base_url_host_matches
 
@@ -468,10 +469,30 @@ def _entry_api_mode(entry: dict) -> str | None:
 
 
 def _entry_credentials(entry: dict, *key_env_keys: str) -> tuple[str, str, str]:
-    """``(inline_api_key, key_env, identity)`` — identity is the inline key, else ``env:<VAR>``, else ""."""
+    """``(inline_api_key, key_env, identity)`` — identity is the inline key, else
+    ``env:<VAR>``, else ``cmd:<key_cmd>``, else "".
+
+    ``key_cmd`` (#86891) authenticates a provider with a SHORT-LIVED bearer
+    minted by a command — SSO/OIDC brokers, cloud IAM, internal auth proxies.
+    The request path has honoured it since it landed, but the picker resolved
+    probe credentials from ``api_key``/``key_env`` only, so a key_cmd provider
+    probed ``/v1/models`` with an EMPTY key. An authenticated endpoint answers
+    401, discovery returns nothing, and the row collapses to its single
+    configured default model — indistinguishable from an endpoint that
+    genuinely serves one, while inference keeps working.
+
+    The identity is keyed on the COMMAND, never the minted token: the token
+    rotates on every refresh, so keying on its value would change the group
+    fingerprint constantly and force a re-probe on every open. Two entries on
+    one URL with different helpers still get distinct rows.
+    """
     inline_api_key = str(entry.get("api_key", "") or "").strip()
     key_env = str(next((entry.get(k) for k in key_env_keys if entry.get(k)), "")).strip()
-    return inline_api_key, key_env, inline_api_key or (f"env:{key_env}" if key_env else "")
+    key_cmd = str(entry.get("key_cmd", "") or "").strip()
+    identity = inline_api_key or (
+        f"env:{key_env}" if key_env else (f"cmd:{key_cmd}" if key_cmd else "")
+    )
+    return inline_api_key, key_env, identity
 
 
 def _discover_flag(entry: dict):
@@ -842,7 +863,8 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
             # else key_env through the per-profile secret scope).
             ep_groups[group_key] = {
                 "slug": ep_name, "name": _group_display_name(display_name), "api_url": api_url, "models": [],
-                "has_explicit_models": False, "api_key": inline_api_key or _scoped_key_env(key_env),
+                "has_explicit_models": False,
+                "api_key": inline_api_key or _scoped_key_env(key_env) or resolve_probe_token(ep_cfg),
                 "headers": headers, "api_mode": ep_cfg.get("api_mode"),
                 "discovery_allowed": bool(api_url) and _discover_flag(ep_cfg), "raw_names": [], "aliases": set()}
         grp = ep_groups[group_key]
@@ -922,7 +944,7 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
         if not raw_name or not api_url:
             continue
         inline_api_key, key_env, cred_identity = _entry_credentials(entry, "key_env")
-        api_key = inline_api_key or _scoped_key_env(key_env)
+        api_key = inline_api_key or _scoped_key_env(key_env) or resolve_probe_token(entry)
         api_mode = _entry_api_mode(entry)
         discover = _discover_flag(entry)
         entry_extra_headers = _extra_headers_from_config(entry)

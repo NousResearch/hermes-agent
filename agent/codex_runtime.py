@@ -535,6 +535,11 @@ def _output_text_of(item: Any) -> str:
     ).strip()
 
 
+def _provider_async_marker(item: Any) -> bool:
+    """Read the Responses provider's async marker without conflating it with tool metadata."""
+    return any(_event_field(item, key, False) is True for key in ("async", "async_"))
+
+
 class _CodexResponseAssembler:
     """Assemble a Response-shaped ``SimpleNamespace`` from raw Responses SSE events.
 
@@ -552,9 +557,12 @@ class _CodexResponseAssembler:
     # terminal_status defaults to "completed", so settlement needs an explicitly observed response.completed frame.
     saw_response_completed = False
 
-    def __init__(self, *, model, on_text_delta, on_reasoning_delta, on_commentary_message, on_first_delta):
+    def __init__(self, *, model, on_text_delta, on_reasoning_delta, on_commentary_message, on_first_delta,
+                 on_async_tool_call=None, on_async_tool_announcement=None):
         self.model, self.on_text_delta, self.on_reasoning_delta = model, on_text_delta, on_reasoning_delta
         self.on_commentary_message, self.on_first_delta = on_commentary_message, on_first_delta
+        self.on_async_tool_call = on_async_tool_call
+        self.on_async_tool_announcement = on_async_tool_announcement
         self.output_items: List[Any] = []
         # output_index / first-observed sequence per output item, in lockstep, so settled pending calls merge
         # back in stream order.
@@ -564,6 +572,27 @@ class _CodexResponseAssembler:
         # first-observed (sequence, output_index) per announced item id so a later .done keeps its announced position.
         self.pending_function_calls: Dict[str, Dict[str, Any]] = {}
         self.announced_output_order: Dict[str, tuple] = {}
+
+    def _emit_async_tool_call(self, item: Any, arguments: Any = None) -> None:
+        """Admit one completed provider-marked call exactly once."""
+        if not _provider_async_marker(item) or self.on_async_tool_call is None:
+            return
+        item_id = str(_event_field(item, "id", "") or _event_field(item, "call_id", ""))
+        pending = self.pending_function_calls.get(item_id) if item_id else None
+        if pending is not None and pending.get("async_emitted"):
+            return
+        if pending is not None:
+            pending["async_emitted"] = True
+        call_arguments = (str(arguments) if arguments is not None else str(_event_field(item, "arguments", "") or "")) or "{}"
+        call_name = _event_field(item, "name", None)
+        call = SimpleNamespace(
+            type="function", id=_event_field(item, "id", None), call_id=_event_field(item, "call_id", None),
+            response_item_id=_event_field(item, "id", None), status="completed",
+            function=SimpleNamespace(name=call_name, arguments=call_arguments),
+        )
+        setattr(call, "async", True)
+        setattr(call, "async_", True)
+        self._safe(self.on_async_tool_call, "on_async_tool_call", call)
 
     def _safe(self, cb: Callable | None, label: str, *args: Any) -> None:
         _call_guarded(cb, f"Codex stream {label} raised", args=args)
@@ -588,6 +617,8 @@ class _CodexResponseAssembler:
                     "item": item, "arguments": str(_event_field(item, "arguments", "") or ""),
                     "output_index": announced_index, "sequence": announced_sequence,
                 }
+                if _provider_async_marker(item):
+                    self._safe(self.on_async_tool_announcement, "on_async_tool_announcement", item)
 
     def _on_text_delta(self, event: Any, event_type: str) -> None:
         delta_text = _event_field(event, "delta", "")
@@ -623,6 +654,7 @@ class _CodexResponseAssembler:
             # missing field keeps the streamed deltas.
             if (done_args := _event_field(event, "arguments", None)) is not None:
                 pending["arguments"] = str(done_args)
+            self._emit_async_tool_call(pending["item"], pending["arguments"] or "{}")
 
     def _on_reasoning_delta(self, event: Any, event_type: str) -> None:
         reasoning_text = _event_field(event, "delta", "")
@@ -649,6 +681,8 @@ class _CodexResponseAssembler:
         self.output_indexes.append(_event_field(event, "output_index", announced_index))
         self.output_sequences.append(announced_sequence)
         # Confirmed by the authoritative done event; never settle it twice.
+        if "function_call" in str(_event_field(done_item, "type", "")):
+            self._emit_async_tool_call(done_item, _event_field(done_item, "arguments", "{}"))
         self.pending_function_calls.pop(done_id, None)
         if _message_phase(done_item) == "commentary" and self.on_commentary_message is not None:
             commentary_text = "".join(self.commentary_text_deltas).strip() or _output_text_of(done_item)
@@ -696,13 +730,17 @@ class _CodexResponseAssembler:
         indexed = list(zip(self.output_indexes, self.output_sequences, self.output_items))
         for pending in self.pending_function_calls.values():
             item = pending["item"]
-            indexed.append((pending.get("output_index"), pending["sequence"], SimpleNamespace(
+            settled_arguments = (pending["arguments"] or "").strip() or "{}"
+            self._emit_async_tool_call(item, settled_arguments)
+            settled_item = SimpleNamespace(
                 type="function_call", id=_event_field(item, "id", None), call_id=_event_field(item, "call_id", None),
                 name=_event_field(item, "name", None), status="completed",
                 # Empty/whitespace arguments become "{}" so zero-delta calls stay executable; malformed
                 # non-empty JSON passes through untouched.
-                arguments=(pending["arguments"] or "").strip() or "{}",
-            )))
+                arguments=settled_arguments,
+                **({"async": True} if _provider_async_marker(item) else {}),
+            )
+            indexed.append((pending.get("output_index"), pending["sequence"], settled_item))
         # output_index is optional: protocol order only when every entry has one, else wire order.
         if all(entry[0] is not None for entry in indexed):
             with suppress(TypeError):  # non-comparable index values: keep wire order
@@ -732,7 +770,8 @@ class _CodexResponseAssembler:
 
 def _consume_codex_event_stream(
     event_iter: Any, *, model: str, on_text_delta=None, on_reasoning_delta=None, on_commentary_message=None,
-    on_first_delta=None, on_event=None, interrupt_check=None,
+    on_first_delta=None, on_event=None, interrupt_check=None, on_async_tool_call=None,
+    on_async_tool_announcement=None,
 ) -> SimpleNamespace:
     """Consume a Codex Responses SSE stream into a Response-shaped ``SimpleNamespace`` (see
     :class:`_CodexResponseAssembler`; ``status`` is ``completed`` when the stream ended with content but no
@@ -745,7 +784,9 @@ def _consume_codex_event_stream(
     True breaks the loop and may raise ``TimeoutError`` / ``InterruptedError`` for request retirement that
     must not become a partial final response."""
     assembler = _CodexResponseAssembler(model=model, on_text_delta=on_text_delta, on_reasoning_delta=on_reasoning_delta,
-                                        on_commentary_message=on_commentary_message, on_first_delta=on_first_delta)
+                                        on_commentary_message=on_commentary_message, on_first_delta=on_first_delta,
+                                        on_async_tool_call=on_async_tool_call,
+                                        on_async_tool_announcement=on_async_tool_announcement)
     for event in event_iter:
         if on_event is not None:
             try:
@@ -821,6 +862,18 @@ def _bypass_sdk_request_transform(stream_kwargs: dict) -> dict:
 
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """One streaming Responses API request over raw ``responses.create(stream=True)`` events."""
+    from agent.transports.astra_websocket_session import (
+        AstraPreDispatchError, is_astra_websocket_eligible, run_astra_websocket_stream,
+    )
+    if is_astra_websocket_eligible(agent, api_kwargs):
+        try:
+            # The WS API has implicit streaming and receives the already-built Responses body directly.
+            return run_astra_websocket_stream(
+                agent, _sanitize_consumer_codex_request(agent, api_kwargs), on_first_delta=on_first_delta,
+            )
+        except AstraPreDispatchError as exc:
+            # A connect failure before any request bytes were sent is the only safe native-WS fallback.
+            logger.warning("Astra WebSocket connect failed before dispatch; falling back to SSE: %s", exc)
     import httpx as _httpx
     from openai import APIConnectionError as _APIConnectionError
     from agent import relay_llm
@@ -910,6 +963,11 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     on_commentary_message = _fenced(lambda text: agent._fire_streamed_codex_commentary(text)) if wants_commentary else None
     call_role = ("delegated" if getattr(agent, "is_subagent", False)
                  else "fallback" if int(getattr(agent, "_fallback_index", 0) or 0) > 0 else "primary")
+    from agent.astra_async_tools import is_direct_astra
+
+    def _astra_executor():
+        return getattr(agent, "_astra_async_executor", None) if is_direct_astra(agent) else None
+
     for attempt in range(max_stream_retries + 1):
         if agent._interrupt_requested:
             raise InterruptedError("Agent interrupted before Codex stream retry")
@@ -929,13 +987,30 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                               "api_request_id": getattr(agent, "_current_api_request_id", None)},
                     defer_logical_completion=True,
                 )
+                async_executor = _astra_executor()
+                async_callback = getattr(async_executor, "admit", None)
+                async_callback = _fenced(async_callback) if callable(async_callback) else None
+                async_announcement = getattr(async_executor, "reserve", None)
+                async_announcement = _fenced(async_announcement) if callable(async_announcement) else None
                 final = _consume_codex_event_stream(
                     event_stream, model=model, on_text_delta=_fenced(_on_text_delta),
                     on_reasoning_delta=_fenced(lambda text: agent._fire_reasoning_delta(text)),
                     on_commentary_message=on_commentary_message, on_first_delta=on_first_delta,
                     on_event=_fenced(_on_event), interrupt_check=_interrupt_or_superseded,
+                    on_async_tool_call=async_callback, on_async_tool_announcement=async_announcement,
                 )
+            except (InterruptedError, TimeoutError):
+                executor = _astra_executor()
+                if executor is not None:
+                    executor.abort_stream()
+                raise
             except transport_errors as exc:
+                executor = _astra_executor()
+                if executor is not None and executor.has_admitted:
+                    # A durable assistant fragment already owns every admitted side effect.  Do not
+                    # retry this physical request: the resume cleanup will classify any unpaired call.
+                    executor.abort_stream()
+                    raise
                 if attempt >= max_stream_retries:
                     _log_failure(exc)
                     raise
@@ -947,12 +1022,27 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 continue
             except RuntimeError:
                 # "No terminal response"; Relay may still hold a finalizer-assembled response.
+                executor = _astra_executor()
+                if executor is not None and (executor.has_admitted or executor.failed):
+                    executor.abort_stream()
                 if event_stream is not None and event_stream.final_response is not None:
                     return event_stream.final_response
                 raise
             except _APIConnectionError as exc:
+                executor = _astra_executor()
+                if executor is not None and executor.has_admitted:
+                    executor.abort_stream()
                 _log_failure(exc)
                 raise
+            executor = _astra_executor()
+            if executor is not None and (executor.has_admitted or executor.has_pending or executor.failed):
+                if not executor.finish_stream(
+                    assistant_content=getattr(final, "output_text", "") or "",
+                    settled_calls=getattr(final, "output", None),
+                ):
+                    raise RuntimeError("Astra async tool execution did not reach a durable result boundary")
+            elif executor is not None and executor.retire_empty():
+                agent._astra_async_executor = None
             if not agent._interrupt_requested:
                 _drain_for_finalizer(event_stream)
             if final.status in {"incomplete", "failed"}:

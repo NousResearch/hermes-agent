@@ -11,6 +11,23 @@ from agent.usage_pricing import (
 from decimal import Decimal
 
 
+def test_astra_whole_request_price_tier_includes_cache_writes():
+    below = estimate_usage_cost(
+        "gpt-6-astra",
+        CanonicalUsage(input_tokens=100_000, output_tokens=10_000, cache_read_tokens=10_000, cache_write_tokens=10_000),
+        provider="openai",
+    )
+    above = estimate_usage_cost(
+        "gpt-6-astra",
+        CanonicalUsage(input_tokens=100_000, output_tokens=10_000, cache_read_tokens=100_000, cache_write_tokens=100_001),
+        provider="openai",
+    )
+
+    assert below.amount_usd == Decimal("1.635")
+    assert above.amount_usd == Decimal("5.450025")
+    assert above.pricing_version == "openai-gpt-6-astra-2026-09"
+
+
 
 
 

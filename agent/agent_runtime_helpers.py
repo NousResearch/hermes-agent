@@ -1169,6 +1169,14 @@ def restore_primary_runtime(agent) -> bool:
         saved_reasoning = rt.get("reasoning_config")
         if saved_reasoning is not None:
             agent.reasoning_config = dict(saved_reasoning)
+        # A restored primary is a new compatible segment; never carry an Astra update
+        # marker or effective effort across an issuer/model transition.
+        agent._astra_reasoning_state = {}
+        agent._astra_base_effort = None
+        agent._astra_effective_effort = None
+        agent._astra_pending_configuration_update = None
+        agent._astra_segment_base_seed = None
+        agent._astra_force_new_segment = True
         agent._fallback_activated = False
         agent._fallback_index = 0
         agent._rate_limit_backoff_count = 0
@@ -2148,6 +2156,14 @@ def switch_model(
         logger.debug("switch_model: could not re-resolve reasoning_config: %s", _reasoning_err)
     # Invalidate the cached system prompt so it rebuilds next turn.
     agent._cached_system_prompt = None
+    # Model/provider/base/auth changes begin a new compatible segment. The next request
+    # must establish a fresh top-level effort rather than replaying an old Astra update.
+    agent._astra_reasoning_state = {}
+    agent._astra_base_effort = None
+    agent._astra_effective_effort = None
+    agent._astra_pending_configuration_update = None
+    agent._astra_segment_base_seed = None
+    agent._astra_force_new_segment = True
     # Publish the destination capability map only after every runtime setup above has succeeded.
     # Failed switches must leave the old map intact.
     agent.runtime_capabilities = destination_capabilities

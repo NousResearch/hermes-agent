@@ -3,6 +3,7 @@
 import asyncio
 import threading
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -75,6 +76,7 @@ async def test_compress_command_works_when_auto_compaction_disabled():
         history[-1],
     ]
     runner = _make_runner(history)
+    runner._arm_astra_segment_reset = MagicMock()
     agent_instance = MagicMock()
     agent_instance.shutdown_memory_provider = MagicMock()
     agent_instance.close = MagicMock()
@@ -83,6 +85,7 @@ async def test_compress_command_works_when_auto_compaction_disabled():
     agent_instance.compression_enabled = False
     agent_instance.context_compressor.has_content_to_compress.return_value = True
     agent_instance.session_id = "sess-1"
+    agent_instance._last_compaction_in_place = True
     agent_instance._compress_context.return_value = (compressed, "")
     # Explicit non-lock-skip: MagicMock getattr would return a truthy mock.
     agent_instance._compression_skipped_due_to_lock = False
@@ -102,6 +105,98 @@ async def test_compress_command_works_when_auto_compaction_disabled():
     assert "Compressed:" in result
     agent_instance._compress_context.assert_called_once()
     assert agent_instance._compress_context.call_args.kwargs.get("force") is True
+    runner._arm_astra_segment_reset.assert_called_once_with(build_session_key(_make_source()))
+
+
+@pytest.mark.asyncio
+async def test_manual_astra_compaction_persists_checkpoint_before_gateway_update(monkeypatch):
+    """Manual Astra compaction uses the real trigger path and orders its durable sidecar
+    before the gateway's session bookkeeping update."""
+    history = [
+        {"role": "user", "content": "one", "_row_id": 1},
+        {"role": "assistant", "content": "two", "_row_id": 2},
+        {"role": "user", "content": "three", "_row_id": 3},
+        {"role": "assistant", "content": "four", "_row_id": 4},
+    ]
+    runner = _make_runner(history)
+    events = []
+    sent = {}
+
+    class DB:
+        def merge_message_display_metadata(self, session_id, row_id, metadata):
+            assert (session_id, row_id) == ("sess-1", 4)
+            assert metadata["astra_native_compaction"]["route"] == "direct_openai"
+            events.append("persist")
+            return 1
+
+    class Responses:
+        def create(self, **kwargs):
+            sent.update(kwargs)
+            return SimpleNamespace(
+                status="completed",
+                output=[{"type": "compaction", "encrypted_content": "opaque"}],
+            )
+
+    tmp_agent = MagicMock()
+    tmp_agent.model = "gpt-6-astra"
+    tmp_agent.base_url = "https://api.openai.com/v1"
+    tmp_agent.api_mode = "codex_responses"
+    tmp_agent.api_key = "fixture-key"
+    tmp_agent.auth_mode = "api_key"
+    tmp_agent.provider = "openai-api"
+    tmp_agent.is_subagent = False
+    tmp_agent.platform = "telegram"
+    tmp_agent._delegate_depth = 0
+    tmp_agent.compression_checkpoint_required = False
+    tmp_agent.codex_responses_native_compaction = True
+    tmp_agent.compression_enabled = True
+    tmp_agent._astra_native_compaction_disabled = False
+    tmp_agent._hard_interrupt_requested = None
+    tmp_agent._codex_reasoning_replay_enabled = True
+    tmp_agent._astra_reasoning_state = {}
+    tmp_agent.reasoning_config = {"enabled": True, "effort": "high"}
+    tmp_agent.session_id = "sess-1"
+    tmp_agent._session_db = DB()
+    tmp_agent._cached_system_prompt = "fixture system"
+    tmp_agent.tools = []
+    tmp_agent.context_compressor.has_content_to_compress.return_value = True
+    tmp_agent.shutdown_memory_provider = MagicMock()
+    tmp_agent.close = MagicMock()
+    tmp_agent._last_compaction_in_place = False
+    tmp_agent._create_request_openai_client = lambda *, reason, api_kwargs: SimpleNamespace(
+        responses=Responses())
+    tmp_agent._close_request_openai_client = lambda _client, *, reason: None
+
+    runner._async_session_store = SimpleNamespace(
+        _store=runner.session_store,
+        get_or_create_session=AsyncMock(return_value=runner.session_store.get_or_create_session.return_value),
+        update_session=AsyncMock(side_effect=lambda *_args, **_kwargs: events.append("gateway-update")),
+    )
+    runner._session_db = None
+    runner._session_key_for_source = MagicMock(return_value="telegram:dm:c1:u1")
+    runner._resolve_session_agent_runtime = MagicMock(return_value=(
+        "gpt-6-astra", {
+            "api_key": "fixture-key", "base_url": "https://api.openai.com/v1",
+            "api_mode": "codex_responses", "provider": "openai-api",
+        }))
+    runner._build_manual_compression_agent = AsyncMock(return_value=tmp_agent)
+    runner._run_in_executor_with_context = AsyncMock(side_effect=lambda fn: fn())
+    runner._evict_cached_agent = MagicMock()
+    runner._cleanup_agent_resources_off_loop = AsyncMock()
+    monkeypatch.setattr("agent.model_metadata.estimate_request_tokens_rough", lambda *_args, **_kwargs: 100)
+    from agent.native_compaction import is_astra_native_compaction_eligible
+    assert is_astra_native_compaction_eligible(tmp_agent)
+
+    result = await runner._run_manual_compression(
+        _make_source(), runner.session_store.get_or_create_session.return_value,
+        history, False, None, None,
+    )
+
+    assert result == "✅ Astra native context compaction completed."
+    assert sent["extra_body"]["input"][-1] == {"type": "compaction_trigger"}
+    assert events == ["persist", "gateway-update"]
+    runner._async_session_store.update_session.assert_awaited_once()
+    tmp_agent._compress_context.assert_not_called()
 
 
 @pytest.mark.asyncio

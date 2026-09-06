@@ -7,17 +7,27 @@ structured rejection — hence the hard model-family gate these tests pin.
 """
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
 from agent.native_compaction import (
+    ASTRA_COMPACTION_METADATA_KEY,
+    AstraCompactionResult,
+    astra_compaction_content_digest,
+    astra_compaction_prefix_with_row_ids,
     DEFAULT_COMPACT_THRESHOLD,
     is_direct_openai_route,
+    is_astra_native_compaction_eligible,
     is_native_compaction_model,
     is_native_compaction_rejection,
     native_compaction_context_management,
+    persist_astra_compaction_result,
+    request_astra_compaction,
     resolve_compact_threshold,
+    restore_astra_compaction_state,
 )
+from agent.transports.codex import ResponsesApiTransport
 
 
 def _agent(
@@ -84,6 +94,338 @@ class TestRequestGate:
         assert payload == [
             {"type": "compaction", "compact_threshold": DEFAULT_COMPACT_THRESHOLD}
         ]
+
+    def test_direct_astra_uses_explicit_trigger_instead_of_context_management(self):
+        agent = _agent(model="gpt-6-astra")
+        agent.api_mode = "codex_responses"
+        agent.api_key = "fixture-key"
+        agent.auth_mode = "api_key"
+        agent.provider = "openai"
+        agent.is_subagent = False
+        agent.platform = "cli"
+        agent._delegate_depth = 0
+        assert is_astra_native_compaction_eligible(agent)
+        assert native_compaction_context_management(agent, is_codex_backend=False) is None
+
+    def test_direct_astra_api_provider_alias_is_eligible(self):
+        agent = _agent(model="gpt-6-astra")
+        agent.api_mode = "codex_responses"
+        agent.api_key = "fixture-key"
+        agent.auth_mode = "api_key"
+        agent.provider = "openai-api"
+        assert is_astra_native_compaction_eligible(agent)
+
+    def test_explicit_trigger_request_persists_canonical_window_before_activation(self):
+        sent = {}
+
+        class Responses:
+            def create(self, **kwargs):
+                sent.update(kwargs)
+                return SimpleNamespace(
+                    status="completed",
+                    output=[
+                        {"type": "compaction", "encrypted_content": "opaque-checkpoint"},
+                        {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "kept"}]},
+                    ],
+                )
+
+        client = Mock()
+        client.responses = Responses()
+
+        class DB:
+            def __init__(self):
+                self.metadata = None
+
+            def merge_message_display_metadata(self, session_id, row_id, metadata):
+                assert (session_id, row_id) == ("fixture-session", 4)
+                self.metadata = metadata
+                return 1
+
+        db = DB()
+        agent = SimpleNamespace(
+            model="gpt-6-astra", base_url="https://api.openai.com/v1", api_mode="codex_responses",
+            api_key="fixture-key", auth_mode="api_key", provider="openai", is_subagent=False,
+            platform="cli", _delegate_depth=0, compression_checkpoint_required=False,
+            codex_responses_native_compaction=True, compression_enabled=True,
+            _codex_reasoning_replay_enabled=True, _astra_reasoning_state={}, session_id="fixture-session",
+            reasoning_config={"enabled": True, "effort": "high"},
+            _session_db=db,
+        )
+        from agent.client_lifecycle import ClientLifecycleMixin
+        lifecycle = ClientLifecycleMixin()
+        lifecycle.client = client
+        lifecycle.provider = "openai"
+
+        def create_request_client(*, reason, api_kwargs):
+            assert reason == "astra_compaction_maintenance"
+            assert api_kwargs["input"][-1] == {"type": "compaction_trigger"}
+            return lifecycle._create_request_openai_client(reason=reason, api_kwargs=api_kwargs)
+
+        agent._create_request_openai_client = create_request_client
+        agent._close_request_openai_client = lambda _client, *, reason: None
+        prefix = [
+            {"role": "user", "content": "first", "_row_id": 2},
+            {"role": "assistant", "content": "done", "_row_id": 4},
+        ]
+        result = request_astra_compaction(agent, prefix, system_message="fixture system", tools=[])
+        assert result is not None
+        assert sent["extra_body"]["input"][-1] == {"type": "compaction_trigger"}
+        assert sent["reasoning"]["effort"] == "high"
+        assert "tools" not in sent
+        assert persist_astra_compaction_result(agent, prefix, result)
+        assert db.metadata[ASTRA_COMPACTION_METADATA_KEY]["window"] == result.window
+        assert agent._astra_native_compaction["covered_boundary"]["message_count"] == 2
+
+    def test_invalid_maintenance_output_never_activates(self):
+        class Responses:
+            def create(self, **_kwargs):
+                return SimpleNamespace(status="completed", output=[
+                    {"type": "compaction", "encrypted_content": ""},
+                ])
+
+        agent = _agent(model="gpt-6-astra")
+        agent.__dict__.update(
+            api_mode="codex_responses", api_key="fixture-key", auth_mode="api_key", provider="openai",
+            _astra_reasoning_state={}, _codex_reasoning_replay_enabled=True,
+        )
+        client = SimpleNamespace(responses=Responses())
+        agent._create_request_openai_client = lambda *, reason, api_kwargs: client
+        agent._close_request_openai_client = lambda _client, *, reason: None
+        assert request_astra_compaction(agent, [{"role": "assistant", "content": "done", "_row_id": 4}]) is None
+        assert not hasattr(agent, "_astra_native_compaction")
+
+    def test_structured_trigger_rejection_disables_session_attempts(self):
+        class Rejected(Exception):
+            status_code = 400
+
+            def __str__(self):
+                return "Unknown parameter: compaction_trigger"
+
+        class Responses:
+            def create(self, **_kwargs):
+                raise Rejected()
+
+        agent = _agent(model="gpt-6-astra")
+        agent.__dict__.update(
+            api_mode="codex_responses", api_key="fixture-key", auth_mode="api_key", provider="openai",
+            _astra_reasoning_state={}, _codex_reasoning_replay_enabled=True,
+        )
+        client = SimpleNamespace(responses=Responses())
+        agent._create_request_openai_client = lambda *, reason, api_kwargs: client
+        agent._close_request_openai_client = lambda _client, *, reason: None
+        assert request_astra_compaction(agent, [{"role": "assistant", "content": "done", "_row_id": 4}]) is None
+        assert agent._astra_native_compaction_disabled is True
+
+    def test_usage_accounting_is_called_once_for_invisible_request(self, monkeypatch):
+        calls = []
+
+        def record(*args, **kwargs):
+            calls.append((args, kwargs))
+
+        monkeypatch.setattr("agent.turn_usage.record_response_usage", record)
+
+        class Responses:
+            def create(self, **_kwargs):
+                return SimpleNamespace(
+                    status="completed", usage={"input_tokens": 10},
+                    output=[{"type": "compaction", "encrypted_content": "opaque"}],
+                )
+
+        agent = _agent(model="gpt-6-astra")
+        agent.__dict__.update(
+            api_mode="codex_responses", api_key="fixture-key", auth_mode="api_key", provider="openai",
+            _astra_reasoning_state={}, _codex_reasoning_replay_enabled=True, session_api_calls=0,
+        )
+        client = SimpleNamespace(responses=Responses())
+        agent._create_request_openai_client = lambda *, reason, api_kwargs: client
+        agent._close_request_openai_client = lambda _client, *, reason: None
+        assert request_astra_compaction(agent, [{"role": "assistant", "content": "done", "_row_id": 4}])
+        assert len(calls) == 1
+
+    def test_persistence_requires_carrier_row_and_handles_db_error(self):
+        result = AstraCompactionResult(
+            window=[{"type": "compaction", "encrypted_content": "opaque"}],
+            covered_boundary={"message_count": 1, "last_row_id": None},
+        )
+
+        class DB:
+            def latest_message_row_id(self, *_args, **_kwargs):
+                raise AssertionError("latest-row fallback must not run")
+
+            def merge_message_display_metadata(self, *_args, **_kwargs):
+                raise RuntimeError("fixture persistence failure")
+
+        agent = SimpleNamespace(session_id="fixture-session", _session_db=DB())
+        assert not persist_astra_compaction_result(
+            agent, [{"role": "assistant", "content": "done"}], result,
+        )
+        assert not hasattr(agent, "_astra_native_compaction")
+        assert not persist_astra_compaction_result(
+            agent, [{"role": "assistant", "content": "done", "_row_id": 4}], result,
+        )
+        assert not hasattr(agent, "_astra_native_compaction")
+
+    def test_turn_prefix_uses_ordered_durable_rows_and_rejects_mismatch(self):
+        class DB:
+            def get_messages_as_conversation(self, session_id, *, include_row_ids):
+                assert (session_id, include_row_ids) == ("fixture-session", True)
+                return [
+                    {"role": "user", "content": "same", "_row_id": 11},
+                    {"role": "assistant", "content": "done", "_row_id": 12},
+                ]
+
+        agent = SimpleNamespace(session_id="fixture-session", _session_db=DB())
+        prefix = [
+            {"role": "user", "content": "same"},
+            {"role": "assistant", "content": "done"},
+        ]
+        resolved = astra_compaction_prefix_with_row_ids(agent, prefix)
+        assert [item["_row_id"] for item in resolved] == [11, 12]
+        mismatch = [prefix[0], {"role": "assistant", "content": "duplicate"}]
+        assert astra_compaction_prefix_with_row_ids(agent, mismatch) == []
+
+    def test_durable_checkpoint_reloads_and_replays_only_live_tail(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(tmp_path / "state.db")
+        try:
+            db.create_session(session_id="astra-replay", source="cli", model="gpt-6-astra")
+            user_id = db.append_message("astra-replay", "user", "old")
+            assistant_id = db.append_message("astra-replay", "assistant", "done")
+            history = db.get_messages_as_conversation("astra-replay", include_row_ids=True)
+            window = [{"type": "compaction", "encrypted_content": "opaque"}]
+            assert db.merge_message_display_metadata(
+                "astra-replay", assistant_id,
+                {ASTRA_COMPACTION_METADATA_KEY: {
+                    "version": 1, "window": window,
+                    "covered_boundary": {
+                        "message_count": 2, "last_row_id": assistant_id, "last_role": "assistant",
+                        "covered_digest": astra_compaction_content_digest(history),
+                    },
+                    "route": "direct_openai",
+                }},
+            ) == 1
+            history = db.get_messages_as_conversation("astra-replay", include_row_ids=True)
+            agent = SimpleNamespace()
+            state = restore_astra_compaction_state(agent, history)
+            assert state["window"] == window
+            transport = ResponsesApiTransport()
+            request = transport.build_kwargs(
+                model="gpt-6-astra", messages=history + [{"role": "user", "content": "new"}],
+                reasoning_config={"effort": "low"}, api_mode="codex_responses", api_key="fixture-key",
+                auth_mode="api_key", provider="openai", base_url="https://api.openai.com/v1",
+                session_id="astra-replay", astra_state={}, astra_compaction_state=state,
+                astra_compaction_enabled=True,
+            )
+            assert request["input"] == window + [{"role": "user", "content": "new"}]
+            assert len(db.get_messages("astra-replay")) == 2
+            assert user_id != assistant_id
+        finally:
+            db.close()
+
+    def test_checkpoint_replay_is_disabled_when_native_setting_closes(self):
+        from agent.native_compaction import astra_compaction_content_digest
+
+        history = [
+            {"role": "user", "content": "old", "_row_id": 1},
+            {"role": "assistant", "content": "done", "_row_id": 2},
+        ]
+        state = {
+            "version": 1, "route": "direct_openai",
+            "window": [{"type": "compaction", "encrypted_content": "opaque"}],
+            "covered_boundary": {
+                "message_count": 2, "last_row_id": 2, "last_role": "assistant",
+                "covered_digest": astra_compaction_content_digest(history),
+            },
+        }
+        request = ResponsesApiTransport().build_kwargs(
+            model="gpt-6-astra", messages=history + [{"role": "user", "content": "new"}],
+            api_mode="codex_responses", api_key="fixture-key", auth_mode="api_key",
+            provider="openai", base_url="https://api.openai.com/v1", astra_state={},
+            astra_compaction_state=state, astra_compaction_enabled=False,
+        )
+        assert all(item.get("type") != "compaction" for item in request["input"])
+        assert {"role": "assistant", "content": "done"} in request["input"]
+
+    def test_accepted_steer_invalidates_covered_prefix_replay(self):
+        from agent.turn_iteration_prep import _inject_steer_into_newest_tool_result
+
+        history = [
+            {"role": "user", "content": "old", "_row_id": 1},
+            {"role": "assistant", "content": "", "_row_id": 2,
+             "tool_calls": [{"id": "call-1", "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call-1", "content": "result", "_row_id": 3},
+            {"role": "assistant", "content": "finished", "_row_id": 4},
+        ]
+        state = {
+            "version": 1, "route": "direct_openai",
+            "window": [{"type": "compaction", "encrypted_content": "opaque"}],
+            "covered_boundary": {
+                "message_count": 4, "last_row_id": 4, "last_role": "assistant",
+                "covered_digest": astra_compaction_content_digest(history),
+            },
+        }
+        _inject_steer_into_newest_tool_result(SimpleNamespace(), history, "accepted steer")
+        request = ResponsesApiTransport().build_kwargs(
+            model="gpt-6-astra", messages=history + [{"role": "user", "content": "new"}],
+            api_mode="codex_responses", api_key="fixture-key", auth_mode="api_key",
+            provider="openai", base_url="https://api.openai.com/v1", astra_state={},
+            astra_compaction_state=state, astra_compaction_enabled=True,
+        )
+        assert all(item.get("type") != "compaction" for item in request["input"])
+        assert "accepted steer" in str(request["input"])
+
+    def test_turn_start_restores_checkpoint_before_duplicate_boundary_check(self, monkeypatch):
+        from agent.turn_context_compaction import run_turn_start_compaction
+
+        prefix = [
+            {"role": "user", "content": "old", "_row_id": 1},
+            {"role": "assistant", "content": "done", "_row_id": 2},
+        ]
+        state = {
+            "version": 1, "route": "direct_openai",
+            "window": [{"type": "compaction", "encrypted_content": "opaque"}],
+            "covered_boundary": {
+                "message_count": 2, "last_row_id": 2, "last_role": "assistant",
+                "covered_digest": astra_compaction_content_digest(prefix),
+            },
+        }
+        prefix[1]["display_metadata"] = {ASTRA_COMPACTION_METADATA_KEY: state}
+
+        class Compressor:
+            protect_first_n = 0
+            protect_last_n = 0
+            threshold_tokens = 10
+            last_real_prompt_tokens = 0
+
+            @staticmethod
+            def should_defer_preflight_to_real_usage(_tokens):
+                return False
+
+            @staticmethod
+            def should_compress(_tokens):
+                return False
+
+        agent = SimpleNamespace(
+            model="gpt-6-astra", base_url="https://api.openai.com/v1",
+            api_mode="codex_responses", api_key="fixture-key", auth_mode="api_key",
+            provider="openai", is_subagent=False, platform="cli", _delegate_depth=0,
+            compression_checkpoint_required=False, codex_responses_native_compaction=True,
+            compression_enabled=True, codex_responses_compact_threshold=10,
+            context_compressor=Compressor(), _astra_native_compaction_disabled=False,
+        )
+        monkeypatch.setattr("agent.turn_context._preflight_request_tokens", lambda *_args: 100)
+        monkeypatch.setattr("agent.turn_context_compaction._engine_preflight_maintenance", lambda *_args: None)
+        calls = []
+        monkeypatch.setattr("agent.native_compaction.request_astra_compaction", lambda *_args, **_kwargs: calls.append(1))
+
+        run_turn_start_compaction(
+            agent, messages=prefix + [{"role": "user", "content": "new"}], system_message=None,
+            active_system_prompt="", conversation_history=None, current_turn_user_idx=2,
+            user_message="new", effective_task_id="fixture",
+        )
+        assert calls == []
+        assert agent._astra_native_compaction["covered_boundary"]["message_count"] == 2
 
     def test_codex_backend_gets_payload(self):
         payload = native_compaction_context_management(
@@ -337,6 +679,24 @@ class TestWirePlumbing:
             ]
         )
         assert all(item.get("type") != "compaction" for item in items)
+
+    def test_preflight_accepts_compaction_trigger_only_at_final_input_position(self):
+        from agent.codex_responses_adapter import _preflight_codex_input_items
+
+        items = _preflight_codex_input_items(
+            [{"role": "assistant", "content": "done"}, {"type": "compaction_trigger"}]
+        )
+        assert items[-1] == {"type": "compaction_trigger"}
+        with pytest.raises(ValueError, match="final input item"):
+            _preflight_codex_input_items(
+                [{"type": "compaction_trigger"}, {"role": "user", "content": "next"}]
+            )
+
+    def test_preflight_rejects_extra_compaction_trigger_fields(self):
+        from agent.codex_responses_adapter import _preflight_codex_input_items
+
+        with pytest.raises(ValueError, match="unsupported fields"):
+            _preflight_codex_input_items([{"type": "compaction_trigger", "id": "x"}])
 
 
 class TestResponseCapture:

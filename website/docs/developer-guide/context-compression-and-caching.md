@@ -107,8 +107,8 @@ compression:
   codex_gpt55_autoraise: true  # gpt-5.5 on Codex OAuth: raise trigger to 85% (default: true)
   codex_gpt55_autoraise_notice: true  # Show the one-time autoraise notice (default: true)
   codex_app_server_auto: native  # native|hermes|off for Codex app-server thread compaction
-  codex_responses_native: false  # gpt-5.6 on direct OpenAI/Codex: server-side compaction (opt-in)
-  codex_responses_compact_threshold: null  # Automatic server compaction trigger
+  codex_responses_native: false  # gpt-5.6 automatic; gpt-6-astra explicit direct-API compaction (opt-in)
+  codex_responses_compact_threshold: null  # Native/explicit server trigger
   in_place: true             # Compact on the same session id, no rotation (default: true)
 
 # Summarization model/provider configured under auxiliary:
@@ -286,6 +286,25 @@ threshold such as 200,000. Invalid values select automatic behavior. If no
 usable local trigger exists, automatic mode uses 200,000. The provider minimum
 is 1,024 tokens, so an unusually small local trigger at or below that floor
 cannot preserve strict native first ordering.
+
+### Explicit Astra Responses compaction (gpt-6-astra direct API key)
+
+The `gpt-6-astra` direct OpenAI API route uses the same opt-in flag and threshold, but
+does not send automatic `context_management`. After a completed ordinary response,
+when the resolved threshold is reached and no tool job or accepted steering work is
+pending, Hermes sends one maintenance HTTP request whose final input item is
+`{type: "compaction_trigger"}`. The request retains the selected reasoning effort and
+tool schemas while setting `tool_choice: "none"`, so the maintenance response cannot
+dispatch application tools. Hermes never uses a standalone `compact` request or puts
+the trigger on an ordinary user request.
+
+The returned ordered Responses window, opaque checkpoint items, route provenance, and
+covered row boundary are written to the existing message display-metadata sidecar
+before the window becomes active. Later direct Astra turns replay that canonical window
+plus the live tail; the complete transcript and system prompt remain in `state.db` for
+search and recovery. Missing, incomplete, invalid, rejected, or failed-to-persist
+checkpoints leave the previous window active and fall back to the local compressor.
+OAuth, Azure, custom/relay, delegated, and checkpoint-required routes remain ineligible.
 
 ### Computed Values (for a 200K context model at defaults)
 

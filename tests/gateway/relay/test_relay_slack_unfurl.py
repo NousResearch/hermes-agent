@@ -412,6 +412,93 @@ class TestConsumerRoutesForceOnFinalAsFreshSend:
         assert ops[-1] == "edit", f"ops={ops}"
 
 
+class TestMultiplexPerChatFreshFinalSeam:
+    """The consumer must resolve the fresh-final decision through the CHAT's
+    negotiated platform, not the relay's primary identity (the scalar-vs-
+    per-chat descriptor seam).  Two failure directions:
+
+    - Slack PRIMARY + force-on unfurl: a fronted TELEGRAM chat must keep the
+      edit lane — its descriptor advertises no ``delete`` op, so a fresh
+      final would deliver the answer twice (orphaned preview).
+    - Non-Slack primary: a fronted SLACK chat must still get the fresh
+      stamped final, or the shipped feature is dark on exactly the chats it
+      was built for.
+    """
+
+    class _MultiplexTransport(_RecordingTransport):
+        def __init__(self):
+            super().__init__()
+            self.descriptors = {
+                "telegram": make_desc(
+                    platform="telegram",
+                    supports_edit=True,
+                    supported_ops=("send", "edit", "typing"),
+                ),
+                "slack": make_desc(
+                    platform="slack",
+                    supports_edit=True,
+                    supported_ops=("send", "edit", "typing", "delete"),
+                ),
+            }
+
+        def descriptor_for_platform(self, platform):
+            return self.descriptors.get(platform)
+
+    def _consumer(self, adapter, chat_id):
+        from gateway.stream_consumer import (
+            GatewayStreamConsumer,
+            StreamConsumerConfig,
+        )
+
+        return GatewayStreamConsumer(
+            adapter=adapter, chat_id=chat_id, config=StreamConsumerConfig(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_telegram_chat_on_slack_primary_keeps_edit_lane(self):
+        transport = self._MultiplexTransport()
+        a = RelayAdapter(
+            PlatformConfig(extra={"slack": {"unfurl_links": True}}),
+            make_desc(platform="slack", supports_edit=True),  # Slack PRIMARY
+            transport=transport,
+        )
+        # Relay learned this chat is Telegram from inbound traffic.
+        a._platform_by_chat["TG1"] = "telegram"
+
+        consumer = self._consumer(a, "TG1")
+        await consumer._send_or_edit("Working on it…")
+        await consumer._send_or_edit("see https://studiotwin.ai", finalize=True)
+
+        ops = [x.get("op") for x in transport.actions]
+        assert ops[-1] == "edit", (
+            f"telegram chat misrouted through fresh-final: ops={ops}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_slack_chat_on_telegram_primary_gets_fresh_final(self):
+        transport = self._MultiplexTransport()
+        a = RelayAdapter(
+            PlatformConfig(extra={"slack": {"unfurl_links": True}}),
+            make_desc(platform="telegram", supports_edit=True),  # non-Slack primary
+            transport=transport,
+        )
+        a._platform_by_chat["D1"] = "slack"
+
+        consumer = self._consumer(a, "D1")
+        await consumer._send_or_edit("Working on it…")
+        await consumer._send_or_edit("see https://studiotwin.ai", finalize=True)
+
+        ops = [x.get("op") for x in transport.actions]
+        # Fresh stamped final followed by cleanup of the sealed preview
+        # (Slack's descriptor advertises delete) — no duplicate.
+        assert "delete" in ops, f"preview not cleaned up: ops={ops}"
+        sends = [x for x in transport.actions if x.get("op") == "send"]
+        assert len(sends) == 2, f"slack chat on non-slack primary left dark: ops={ops}"
+        final = sends[-1]
+        assert final["content"] == "see https://studiotwin.ai"
+        assert final["metadata"]["unfurl_links"] is True
+
+
 class TestDeleteOpForFreshFinalCleanup:
     """Relay delete_message: emitted only when the negotiated descriptor
     advertises the additive `delete` op; older connectors degrade to the

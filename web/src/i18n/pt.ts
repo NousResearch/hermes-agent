@@ -470,6 +470,8 @@ export const pt: Translations = {
     copyCliCommand: "Copiar comando CLI (para externo / fallback)",
     connect: "Ligar",
     sessionExpires: "A sessão expira em {time}",
+    sessionExpiredNoError:
+      "O login expirou sem alcançar o provedor. Isso geralmente significa que a página de login travou na aba aberta (problema do lado do servidor) — conclua o login lá e clique em Tentar novamente. Se continuar falhando, use uma chave de API ou a CLI.",
     initiatingLogin: "A iniciar fluxo de início de sessão…",
     exchangingCode: "A trocar código por tokens…",
     connectedClosing: "Ligado! A fechar…",

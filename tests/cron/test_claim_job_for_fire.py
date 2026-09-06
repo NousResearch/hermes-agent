@@ -215,3 +215,51 @@ def test_fire_claim_fence_rejects_stale_owner(temp_home):
 
     with fire_claim_fence(job["id"], expected_owner="stale") as owns_claim:
         assert owns_claim is False
+
+
+def test_same_process_fire_fence_refuses_second_claim_after_timeout(temp_home, monkeypatch):
+    """A wedged local holder must not indefinitely block another claimant."""
+    import cron.jobs as jobs
+
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="local-fence-timeout")
+    monkeypatch.setattr(jobs, "_JOBS_LOCK_TIMEOUT_SECONDS", 0.1)
+    completed = threading.Event()
+    result = {}
+
+    def second_claimant():
+        result["claimed"] = jobs.claim_job_for_fire(job["id"])
+        completed.set()
+
+    with jobs._fire_job_lock(job["id"]) as acquired:
+        assert acquired is True
+        thread = threading.Thread(target=second_claimant)
+        thread.start()
+        assert completed.wait(timeout=2), "same-process claimant waited past the fire-fence timeout"
+        assert result["claimed"] is False
+
+    thread.join(timeout=2)
+    assert thread.is_alive() is False
+    assert jobs.claim_job_for_fire(job["id"]) is True
+
+
+def test_same_thread_fire_fence_reentrancy_preserves_ownership(temp_home):
+    """Nested same-thread callers retain the existing fire fence."""
+    import cron.jobs as jobs
+
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="local-fence-reentrant")
+    completed = threading.Event()
+    result = {}
+
+    def reentrant_claimant():
+        with jobs._fire_job_lock(job["id"]) as outer_acquired:
+            result["outer"] = outer_acquired
+            with jobs._fire_job_lock(job["id"]) as inner_acquired:
+                result["inner"] = inner_acquired
+        completed.set()
+
+    thread = threading.Thread(target=reentrant_claimant, daemon=True)
+    thread.start()
+    assert completed.wait(timeout=2), "same-thread nested fire fence did not return"
+    assert result == {"outer": True, "inner": True}
+    thread.join(timeout=2)
+    assert thread.is_alive() is False

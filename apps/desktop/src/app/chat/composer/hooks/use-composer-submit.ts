@@ -1,5 +1,6 @@
-import { type RefObject, useEffect, useRef } from 'react'
+import { type RefObject, useLayoutEffect, useRef } from 'react'
 
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
@@ -13,7 +14,7 @@ import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
 import { pathifyRefs } from '../path-refs'
 import { composerPlainText } from '../rich-editor'
-import { useComposerScope } from '../scope'
+import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
 
 interface UseComposerSubmitArgs {
@@ -76,11 +77,13 @@ export function useComposerSubmit({
   setComposerText,
   stashAt
 }: UseComposerSubmitArgs) {
+  const paneVisible = usePaneVisible()
   const scope = useComposerScope()
+  const surfaceId = useComposerSurfaceId()
 
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
   // === false) or throws, re-load + re-stash the draft so the words survive.
-  const dispatchSubmit = (text: string, attachments?: ComposerAttachment[]) => {
+  const dispatchSubmit = (text: string, attachments?: ComposerAttachment[], displayKind?: 'hidden') => {
     const submittedScope = activeQueueSessionKeyRef.current
     const submittedAttachments = attachments ?? []
 
@@ -95,27 +98,34 @@ export function useComposerSubmit({
 
     void Promise.resolve(
       attachments
-        ? onSubmit(text, { attachments, composerScope: submittedScope })
-        : onSubmit(text, { composerScope: submittedScope })
+        ? onSubmit(text, { attachments, composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
+        : onSubmit(text, { composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
     )
       .then(accepted => void (accepted === false ? restore() : clearSessionDraft(submittedScope)))
       .catch(restore)
   }
 
   // External "submit this prompt" requests (e.g. the review pane's agent-ship
-  // button) route through the same send path. A ref keeps the listener stable
-  // while always calling the latest dispatchSubmit closure.
+  // button) route through the same send path. Match both the composer target
+  // and the exact visible surface captured at click time — every tile stays
+  // mounted, and a session can be rendered in more than one pane.
   const dispatchSubmitRef = useRef(dispatchSubmit)
   dispatchSubmitRef.current = dispatchSubmit
 
-  useEffect(
+  useLayoutEffect(
     () =>
-      onComposerSubmitRequest(({ target, text }) => {
-        if (target === 'main' && !inputDisabled) {
-          dispatchSubmitRef.current(text)
+      onComposerSubmitRequest(({ surfaceId: requestedSurfaceId, target, text, displayKind }) => {
+        if (
+          target === scope.target &&
+          surfaceId !== null &&
+          requestedSurfaceId === surfaceId &&
+          paneVisible &&
+          !inputDisabled
+        ) {
+          dispatchSubmitRef.current(text, undefined, displayKind)
         }
       }),
-    [inputDisabled]
+    [inputDisabled, paneVisible, scope.target, surfaceId]
   )
 
   const submitDraft = () => {

@@ -100,18 +100,18 @@ describe('parseMcpImport', () => {
 
   describe('claude mcp add lines', () => {
     it('parses a stdio add with env and a -- separator', () => {
-      expect(parseMcpImport('claude mcp add airtable -e AIRTABLE_API_KEY=YOUR_KEY -- npx -y airtable-mcp-server')).toEqual(
-        [
-          {
-            config: {
-              args: ['-y', 'airtable-mcp-server'],
-              command: 'npx',
-              env: { AIRTABLE_API_KEY: 'YOUR_KEY' }
-            },
-            name: 'airtable'
-          }
-        ]
-      )
+      expect(
+        parseMcpImport('claude mcp add airtable -e AIRTABLE_API_KEY=YOUR_KEY -- npx -y airtable-mcp-server')
+      ).toEqual([
+        {
+          config: {
+            args: ['-y', 'airtable-mcp-server'],
+            command: 'npx',
+            env: { AIRTABLE_API_KEY: 'YOUR_KEY' }
+          },
+          name: 'airtable'
+        }
+      ])
     })
 
     it('parses a stdio add without a -- separator', () => {
@@ -131,7 +131,9 @@ describe('parseMcpImport', () => {
 
     it('parses an sse add with a header', () => {
       expect(
-        parseMcpImport('claude mcp add --transport sse api -H "Authorization: Bearer TOKEN_HERE" https://api.example.com/sse')
+        parseMcpImport(
+          'claude mcp add --transport sse api -H "Authorization: Bearer TOKEN_HERE" https://api.example.com/sse'
+        )
       ).toEqual([
         {
           config: {

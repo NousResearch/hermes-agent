@@ -58,7 +58,10 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   `awaitingResponse`, `busyBySession`, `cwd`, `gateway` (socket state, not
   turn-busy), `model`, `profile`, `viewport`, plus the tile-aware focused
   session atoms: `focusedSessionId` (runtime id — key for `session.*` RPC),
-  `focusedStoredSessionId` (durable id — navigation / list matching), and
+  `focusedStoredSessionId` (durable id — navigation / list matching),
+  `focusedSessionProfile` (owner profile of the focused chat — prefer over
+  `profile` for per-bot/profile readouts; `profile` is the gateway socket's
+  home, which does not move with tab focus), and
   `focusedUsage` (live streamed `UsageStats` of the focused session, no RPC
   needed). `busy` is true while the focused chat is working after a send
   (thinking and streaming). `awaitingResponse` is true until the first
@@ -78,7 +81,13 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   `'panes'` (layout zones — set `title` and
   `data: { placement, dock?, width?, height? }`; the pane auto-joins a
   matching zone), `PALETTE_AREA` (⌘K commands), `KEYBINDS_AREA` (rebindable
-  actions).
+  actions), `THEMES_AREA` (`data` is a full `DesktopTheme`).
+- THEMES: registering one only lists it in the picker. Select it with
+  `useTheme().setTheme(name)` from a component, or `requestTheme(name)` from a
+  callback with no component around it (a gateway event, a socket handler).
+  `requestTheme` returns `false` for a name that doesn't resolve and leaves the
+  appearance alone, so use it as the availability check instead of coercing the
+  user back to the default skin.
 - Pane placement: `placement: 'left'|'right'|'bottom'|'main'` is the
   semantic role — the pane stacks (tabs) with existing panes of that role.
   To land on a specific EDGE instead, add `dock: { pane, pos }` — the same
@@ -93,12 +102,25 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   `ctx.register({ id: 'nav', area: SIDEBAR_NAV_AREA, data: { path: '/my-page', label: 'My Page', codicon: 'project' } })`
   (renders below Artifacts, lights up at the route) — and/or a
   `PALETTE_AREA` command calling `host.navigate('/my-page')`.
+- TRANSCRIPT directives: register `area: TRANSCRIPT_DIRECTIVE_AREA` with
+  `data: { name: 'task', render: ({ attrs, streaming }) => jsx(...) }` and
+  the assistant can render your component inline in a chat message by
+  emitting `::task{id="BB-12"}` alone on its own line. Attrs are untrusted
+  `key="value"` strings — validate them. Unclaimed/malformed directives fall
+  back to plain text; core's own `::preview{file="…"}` is the reference.
+  After registering one, TELL the model it exists (a bundled skill or the
+  user's instructions) — it won't discover the name on its own.
 - `ctx.storage.get/set/remove` — persistence namespaced to your plugin.
 - `ctx.os` — the curated OS door, attributed to your plugin:
-  `ctx.os.notify({ title, body?, silent? })` posts a native OS notification.
-  Fires only while the user is away from Hermes (use `host.notify` for the
-  in-app toast); gated by Settings ▸ Notifications ▸ "Plugin notifications"
-  and throttled per plugin — reserve it for genuinely notable events.
+  `ctx.os.notify({ title, body?, silent?, icon?, activate?, onActivate?, actions? })`
+  posts a native OS notification. Fires only while the user is away from Hermes
+  (use `host.notify` for the in-app toast); gated by Settings ▸ Notifications ▸
+  "Plugin notifications" and throttled per plugin — reserve it for genuinely
+  notable events. `activate` accepts a plugin deep link
+  (`hermes://index-network/intent/1`), a hash path (`/index-network/intent/1`),
+  or `{ path, params }` — same resolver as OS deep links. Action buttons may
+  set their own `activate` or an `onAction`
+  callback (renderer-only; only the action id crosses IPC).
   `ctx.os.openExternal(url)`, `ctx.os.revealPath(path)`, and
   `ctx.os.writeClipboard(text)` resolve `false` (never throw) when the
   capability isn't available.

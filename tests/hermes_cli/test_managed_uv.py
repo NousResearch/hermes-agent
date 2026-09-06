@@ -83,6 +83,74 @@ class TestManagedUvPath:
             assert managed_uv_path() == tmp_path / "bin" / "uv"
 
 
+class TestMacOSManagedPythonSigning:
+    def test_signs_with_stable_identifier_and_verifies(self, tmp_path, monkeypatch):
+        import hermes_cli.managed_uv as managed_uv
+
+        python = tmp_path / "generation" / "bin" / "python3.11"
+        python.parent.mkdir(parents=True)
+        python.touch()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(managed_uv.shutil, "which", lambda name: "/usr/bin/codesign")
+        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
+
+        assert managed_uv._macos_sign_managed_python(python) is True
+        assert calls[0][0] == [
+            "/usr/bin/codesign",
+            "--force",
+            "--deep",
+            "--sign",
+            "-",
+            "--timestamp=none",
+            "--identifier",
+            "com.nousresearch.hermes.managed-python",
+            "--requirements",
+            '=designated => identifier "com.nousresearch.hermes.managed-python"',
+            str(python),
+        ]
+        assert calls[1][0] == [
+            "/usr/bin/codesign",
+            "--verify",
+            "--deep",
+            "--strict",
+            str(python),
+        ]
+
+    def test_is_non_blocking_when_signing_fails(self, tmp_path, monkeypatch):
+        import hermes_cli.managed_uv as managed_uv
+
+        python = tmp_path / "python3.11"
+        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(managed_uv.shutil, "which", lambda name: "/usr/bin/codesign")
+        monkeypatch.setattr(
+            managed_uv.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=1, stdout="", stderr="not signable"
+            ),
+        )
+
+        assert managed_uv._macos_sign_managed_python(python) is False
+
+    def test_skips_non_macos(self, tmp_path, monkeypatch):
+        import hermes_cli.managed_uv as managed_uv
+
+        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(
+            managed_uv.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("codesign must not run on Linux"),
+        )
+
+        assert managed_uv._macos_sign_managed_python(tmp_path / "python") is False
+
+
 # ---------------------------------------------------------------------------
 # resolve_uv
 # ---------------------------------------------------------------------------
@@ -1287,3 +1355,147 @@ class TestVenvPythonUpdateBoundary:
             if sys.platform == "win32" else Path("/opt/hermes/venv/bin/python")
         assert _venv_python(Path("/opt/hermes/venv")) == expected
 
+
+
+class TestWindowsRuntimeSelfLock:
+    """The repair pre-flight must see the ONE holder the generic scan hides:
+    the updater itself (#93032).
+
+    A CLI ``hermes update`` runs from the venv's own python, and
+    ``_detect_venv_python_processes`` excludes the calling process and its
+    ancestors on purpose (correct for the dependency-sync path).  For the
+    whole-venv park rename that exemption is fatal on Windows: a directory
+    containing an executable mapped by a running process cannot be renamed,
+    so the cutover retries burn out against a lock that cannot be released
+    while the updater lives.  The repair must detect the self-lock and defer
+    with honest guidance instead of provisioning a candidate for a doomed
+    rename.
+    """
+
+    def _checkout(self, tmp_path):
+        root, live, sentinel = _make_runtime_install(tmp_path)
+        # Windows-layout interpreter so sys.executable can point inside the
+        # live venv on any host (the detector only string-compares paths).
+        scripts_python = live / "Scripts" / "python.exe"
+        scripts_python.parent.mkdir(parents=True, exist_ok=True)
+        scripts_python.write_text("live interpreter", encoding="utf-8")
+        return root, live, sentinel, scripts_python
+
+    def test_self_lock_defers_repair_before_provisioning(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Regression for #93032: pre-fix, the repair walks straight into the
+        doomed rename (provisioning + cutover) whenever the updater itself
+        maps the live venv; the park then fails with WinError 5 and the user
+        gets the misleading 'next update will retry' message forever."""
+        from hermes_cli import managed_uv
+        from hermes_cli.managed_uv import repair_vulnerable_runtime
+
+        root, live, sentinel, scripts_python = self._checkout(tmp_path)
+        current = _runtime_info(scripts_python, (3, 50, 4))
+        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(sys, "executable", str(scripts_python))
+
+        with patch(
+                 "hermes_cli.managed_uv._windows_runtime_holders",
+                 return_value=(False, ""),
+             ), \
+             patch(
+                 "hermes_cli.managed_uv.probe_sqlite_runtime",
+                 return_value=current,
+             ), \
+             patch(
+                 "hermes_cli.managed_uv._install_safe_python_generation"
+             ) as mock_install:
+            result = repair_vulnerable_runtime("uv", project_root=root)
+
+        assert result.status == "skipped"
+        assert "live venv" in result.detail
+        assert mock_install.call_count == 0, (
+            "a self-locked updater must not provision a candidate it can "
+            "never cut over"
+        )
+        assert sentinel.read_text(encoding="utf-8") == "live"
+        assert not (root / ".hermes-runtime").exists()
+
+        out = capsys.readouterr().out
+        assert "SQLite runtime repair deferred" in out
+        assert "will retry" not in out, (
+            "the structural self-lock must not promise that retrying helps"
+        )
+        assert "outside" in out, "the deferral must point at an escape hatch"
+
+    def test_non_self_locked_repair_proceeds(self, tmp_path, monkeypatch):
+        """The guard must fail OPEN when the updater runs from outside the
+        venv — an always-firing deferral would recreate the never-converging
+        loop this fix removes (#86735 class)."""
+        from hermes_cli import managed_uv
+        from hermes_cli.managed_uv import repair_vulnerable_runtime
+
+        root, live, sentinel, scripts_python = self._checkout(tmp_path)
+        current = _runtime_info(scripts_python, (3, 50, 4))
+        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(
+            sys, "executable", str(tmp_path / "outside" / "python.exe")
+        )
+
+        with patch(
+                 "hermes_cli.managed_uv._windows_runtime_holders",
+                 return_value=(False, ""),
+             ), \
+             patch(
+                 "hermes_cli.managed_uv.probe_sqlite_runtime",
+                 return_value=current,
+             ), \
+             patch(
+                 "hermes_cli.managed_uv._install_safe_python_generation",
+                 return_value=None,
+             ) as mock_install:
+            result = repair_vulnerable_runtime("uv", project_root=root)
+
+        assert result.status == "failed"
+        assert "provision" in result.detail
+        mock_install.assert_called_once()
+        assert sentinel.read_text(encoding="utf-8") == "live"
+
+    def test_self_lock_is_a_noop_off_windows(self, tmp_path, monkeypatch):
+        """POSIX renames work while the updater maps the venv, so the guard
+        must stay Windows-only."""
+        from hermes_cli import managed_uv
+
+        root, live, sentinel, scripts_python = self._checkout(tmp_path)
+        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(sys, "executable", str(scripts_python))
+
+        locked, detail = managed_uv._windows_runtime_self_lock(live)
+        assert (locked, detail) == (False, "")
+
+    def test_venv_launcher_ancestor_is_a_self_lock(self, tmp_path, monkeypatch):
+        r"""The venv\Scripts\hermes.exe shim stays mapped while it waits for
+        this child — an ancestor running from the venv blocks the rename too."""
+        from hermes_cli import managed_uv
+
+        root, live, sentinel, scripts_python = self._checkout(tmp_path)
+        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(
+            sys, "executable", str(tmp_path / "outside" / "python.exe")
+        )
+
+        class _FakeProc:
+            def __init__(self, pid, exe):
+                self.pid = pid
+                self._exe = exe
+
+            def exe(self):
+                return self._exe
+
+        fake_psutil = SimpleNamespace(
+            Process=lambda: SimpleNamespace(
+                parents=lambda: [_FakeProc(999, str(scripts_python))],
+            ),
+        )
+        with patch.dict(sys.modules, {"psutil": fake_psutil}):
+            locked, detail = managed_uv._windows_runtime_self_lock(live)
+
+        assert locked
+        assert "999" in detail

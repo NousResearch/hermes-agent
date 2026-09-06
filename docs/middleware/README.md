@@ -233,8 +233,9 @@ Execution middleware may call `next_call(modified_args)` to pass a changed
 payload to later middleware and the base tool dispatcher.
 
 Plugin-specific examples should live with the plugin that owns the behavior.
-For NeMo Relay adaptive execution middleware, see
-[`plugins/observability/nemo_relay/README.md`](../../plugins/observability/nemo_relay/README.md).
+NeMo Relay execution middleware is installed through an explicitly selected
+Relay `plugins.toml`; see
+[Relay shared metrics](../observability/relay-shared-metrics.md).
 
 ## Safety Notes
 

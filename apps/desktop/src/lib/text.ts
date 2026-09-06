@@ -13,3 +13,17 @@ export const normalize = (v: unknown): string => asText(v).trim().toLowerCase()
 /** Uppercase the first character, leave the rest. Matches the
  *  `s.charAt(0).toUpperCase() + s.slice(1)` idiom (empty-safe). */
 export const capitalize = (v: string): string => (v ? v.charAt(0).toUpperCase() + v.slice(1) : v)
+
+/** First non-empty string among `keys`, trimmed. For reading tool args and
+ *  results, where the key carrying the interesting value varies by tool. */
+export const firstStringField = (record: Record<string, unknown>, keys: readonly string[]): string => {
+  for (const key of keys) {
+    const value = record[key]
+
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim()
+    }
+  }
+
+  return ''
+}

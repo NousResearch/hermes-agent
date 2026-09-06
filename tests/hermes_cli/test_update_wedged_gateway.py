@@ -991,7 +991,7 @@ class TestLoopTickTcpWitness:
     consumer probes 127.0.0.1:<port> instead of the AF_UNIX node. The
     two-witness contract must hold identically over TCP."""
 
-    pytestmark = pytest.mark.skipif(
+    _NEEDS_HERMETIC_LOOPBACK = pytest.mark.skipif(
         sys.platform == "darwin",
         reason="macOS hermetic Seatbelt denies loopback to protect the live gateway",
     )
@@ -1032,6 +1032,7 @@ class TestLoopTickTcpWitness:
             stamp = time.time() - age_s
             os.utime(path, (stamp, stamp))
 
+    @_NEEDS_HERMETIC_LOOPBACK
     def test_stale_file_with_answering_tcp_witness_is_alive(self, tmp_path):
         """#90502 shape over TCP: a stalled write must not kill a live loop."""
         port, stop, srv = self._tcp_answerer()
@@ -1045,6 +1046,7 @@ class TestLoopTickTcpWitness:
             stop.set()
             srv.close()
 
+    @_NEEDS_HERMETIC_LOOPBACK
     def test_stale_file_with_silent_tcp_witness_is_wedged(self, tmp_path):
         """Armed TCP witness that never answers across the window: WEDGED."""
         silent = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1062,6 +1064,7 @@ class TestLoopTickTcpWitness:
         finally:
             silent.close()
 
+    @_NEEDS_HERMETIC_LOOPBACK
     def test_fresh_file_with_silent_tcp_witness_is_unknown(self, tmp_path):
         """Fresh file + silent TCP witness: an off-loop write landed after a
         freeze — not proof of liveness, never destructive authority."""

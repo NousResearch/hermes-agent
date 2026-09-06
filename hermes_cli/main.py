@@ -76,6 +76,32 @@ if _argv_is_gateway_run(sys.argv[1:]):
         pass
 
 
+def _handler_exit_code(rc: object) -> int | None:
+    """Exact nonzero int to propagate as a process status, else None (success).
+
+    ``bool`` subclasses ``int``, so ``isinstance(rc, int) and rc != 0`` maps
+    ``True`` to exit 1. Plugin CLI handlers are unconstrained callables and
+    some internals return booleans for success. Only an exact ``int`` is a
+    status. See #62810.
+    """
+    if type(rc) is int and rc != 0:
+        return rc
+    return None
+
+
+def _oneshot_exit_code(rc: object) -> int:
+    """Process status for one-shot teardown after the response has printed.
+
+    Exact ints keep their value (including 0). None and bool are success.
+    Any other leftover value stays a failure so a garbage rc cannot look green.
+    """
+    if type(rc) is int:
+        return rc
+    if rc is None or type(rc) is bool:
+        return 0
+    return 1
+
+
 def _exit_after_oneshot(rc: object) -> None:
     """Exit one-shot mode without letting late native finalizers change rc.
 
@@ -96,7 +122,7 @@ def _exit_after_oneshot(rc: object) -> None:
         logging.shutdown()
     except Exception:
         pass
-    os._exit(rc if isinstance(rc, int) else (0 if rc is None else 1))
+    os._exit(_oneshot_exit_code(rc))
 
 
 _oneshot_cleanup_done = False
@@ -1748,8 +1774,9 @@ def cmd_proxy(args):
     from hermes_cli.proxy.cli import cmd_proxy as _cmd_proxy
 
     rc = _cmd_proxy(args)
-    if isinstance(rc, int) and rc != 0:
-        raise SystemExit(rc)
+    code = _handler_exit_code(rc)
+    if code is not None:
+        raise SystemExit(code)
 
 
 def _forward_command(name: str, module: str, attr: str, *, forward_return: bool = False, doc: str = ""):
@@ -3394,11 +3421,12 @@ def main():
         _default_to_chat(args)
         return
 
-    # A handler's int return code becomes the exit code (None = success).
+    # A handler's exact-int return code becomes the exit code (None/bool = success).
     if hasattr(args, "func"):
         rc = args.func(args)
-        if isinstance(rc, int) and rc != 0:
-            sys.exit(rc)
+        code = _handler_exit_code(rc)
+        if code is not None:
+            sys.exit(code)
     else:
         parser.print_help()
 

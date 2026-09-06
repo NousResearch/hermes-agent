@@ -1081,6 +1081,141 @@ def test_restart_does_not_redeliver_committed_carrier_without_ack(tmp_path, monk
     db.close()
 
 
+@pytest.mark.parametrize("consumer", ["poller", "post_turn"])
+def test_reconciled_carrier_claim_rejection_leaves_tui_runnable(
+    tmp_path, monkeypatch, consumer,
+):
+    """A restart receipt rejection must not reserve ``session['running']``.
+
+    Exercise both TUI consumers named in the review: the background notification
+    poller and the immediate post-turn safety drain.  The durable row is still
+    ``pending`` when queued, but the committed tool transcript is authoritative;
+    its claim reconciles to ``delivered`` and no synthetic turn is dispatched.
+    """
+    from tui_gateway import server
+
+    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "receipt.db")
+    db = SessionDB(db_path=tmp_path / "receipt.db")
+    db.create_session("parent-session", source="tui", model="test")
+    delegation_id = _record()
+    assert _complete_unit(delegation_id, _child(0, "receipt already committed"))
+    agent = _tool_boundary_agent()
+    messages = [{
+        "role": "tool", "tool_call_id": "tc", "tool_name": "terminal",
+        "content": "original",
+    }]
+    assert attach_ready_injects_to_tool_results(agent, messages, 1) == 1
+    event = agent._pending_delegation_inject_claims[0]["event"]
+    db.append_message(
+        "parent-session", "tool", messages[0]["content"], tool_call_id="tc",
+        tool_name="terminal", display_metadata=messages[0]["display_metadata"],
+    )
+
+    # Hard exit after transcript commit and before durable acknowledgement.
+    heartbeat = agent._delegation_inject_claim_heartbeat
+    heartbeat["stop"].set()
+    heartbeat["thread"].join(timeout=1)
+    agent._pending_delegation_inject_claims = []
+    ad._reset_for_tests()
+    process_registry.completion_queue.put(event)
+
+    sid = f"review-{consumer}"
+    session = {
+        "session_key": event["session_key"],
+        "history_lock": threading.Lock(),
+        "running": False,
+        "_finalized": False,
+    }
+    server._sessions[sid] = session
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        server, "_run_prompt_submit",
+        lambda *_args, **_kwargs: pytest.fail("reconciled carrier was redelivered"),
+    )
+    monkeypatch.setattr(server, "_drain_queued_prompt", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        server, "_dispatch_followup_turn",
+        lambda *_args, **_kwargs: pytest.fail("reconciled carrier started a follow-up"),
+    )
+    try:
+        if consumer == "poller":
+            stop = threading.Event()
+            stop.set()  # one bounded shutdown drain
+            server._notification_poller_loop(stop, sid, session)
+        else:
+            server._run_post_turn_followups("rid", sid, session, {}, None)
+
+        assert session["running"] is False
+        assert process_registry.completion_queue.empty()
+        assert _event_state(delegation_id) == ("delivered", 1)
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_tui_busy_dequeue_cannot_hide_ready_inject_from_tool_boundary(monkeypatch):
+    """A busy TUI requeues under routing ownership before the active drain proceeds."""
+    from tui_gateway import server
+
+    delegation_id = _record()
+    assert _complete_unit(delegation_id, _child(0, "tui race result"))
+    event = _queue_contents()[0]
+    agent = _tool_boundary_agent()
+    messages = [{"role": "tool", "tool_call_id": "tc", "content": "foreground result"}]
+    session = {
+        "session_key": event["session_key"],
+        "history_lock": threading.Lock(),
+        "running": True,
+        "_finalized": False,
+    }
+
+    tui_dequeued = threading.Event()
+    release_tui = threading.Event()
+    original_owns = server._session_owns_notification_event
+
+    def paused_owns(sid, candidate_session, candidate):
+        tui_dequeued.set()
+        assert release_tui.wait(timeout=2)
+        return original_owns(sid, candidate_session, candidate)
+
+    monkeypatch.setattr(server, "_session_owns_notification_event", paused_owns)
+    reserved = []
+
+    def reserve():
+        with process_registry.completion_routing_lock:
+            reserved.append(server._notif_reserve_event(
+                "tui-race", session, process_registry))
+
+    tui_thread = threading.Thread(target=reserve)
+    tui_thread.start()
+    assert tui_dequeued.wait(timeout=2)
+
+    attached: list[int] = []
+    attach_done = threading.Event()
+
+    def attach():
+        attached.append(attach_ready_injects_to_tool_results(agent, messages, 1))
+        attach_done.set()
+
+    attach_thread = threading.Thread(target=attach)
+    attach_thread.start()
+    assert not attach_done.wait(timeout=0.05)
+
+    release_tui.set()
+    tui_thread.join(timeout=2)
+    attach_thread.join(timeout=2)
+    assert not tui_thread.is_alive()
+    assert not attach_thread.is_alive()
+    assert reserved and reserved[0][1] == "busy"
+    assert attached == [1]
+    assert "tui race result" in messages[0]["content"]
+
+    messages[0]["_db_persisted"] = True
+    assert acknowledge_pending_injects(agent) == 1
+    agent._delegation_inject_claim_heartbeat["thread"].join(timeout=1)
+
+
 @pytest.mark.parametrize("wrong_field", ["session", "role", "identity", "kind", "malformed"])
 def test_unrelated_transcript_metadata_cannot_suppress_delivery(tmp_path, monkeypatch, wrong_field):
     monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "receipt.db")

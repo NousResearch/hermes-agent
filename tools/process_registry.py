@@ -38,6 +38,12 @@ from tools.process_registry_results import load_completed_results, save_complete
 
 logger = logging.getLogger(__name__)
 
+# Some focused tests and embedders construct a lightweight ProcessRegistry via
+# ``object.__new__`` and inject only the queue fields they exercise.  Production
+# instances install their own lock in ``__init__``; the shared fallback preserves
+# the routing invariant for those intentionally partial instances too.
+_FALLBACK_COMPLETION_ROUTING_LOCK = threading.RLock()
+
 # Crash-recovery checkpoint (gateway only)
 CHECKPOINT_PATH = get_hermes_home() / "processes.json"
 _CHECKPOINT_PATH_AT_IMPORT = CHECKPOINT_PATH
@@ -634,6 +640,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
     # Class default so registries built via __new__ (tests) still restore on first drain.
     _completions_restored = False
 
+    @property
+    def completion_routing_lock(self):
+        return getattr(self, "_completion_routing_lock", _FALLBACK_COMPLETION_ROUTING_LOCK)
+
+    @completion_routing_lock.setter
+    def completion_routing_lock(self, value):
+        self._completion_routing_lock = value
+
     def __init__(self):
         self._running: Dict[str, ProcessSession] = {}
         self._finished: Dict[str, ProcessSession] = {}
@@ -649,6 +663,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # (creates, migrates) the launch profile's state.db (#123265). Importing the module is
         # side-effect free and keeps its import-order contract for later completion writers.
         import tools.async_delegation  # noqa: F401
+        # Every completion consumer uses this short reservation while it dequeues,
+        # classifies, and either keeps or requeues a bounded snapshot.  No formatter,
+        # model, adapter, or database I/O belongs under this lock.  In particular,
+        # current-turn delegation injection and idle gateway/TUI drains cannot make
+        # an eligible event temporarily disappear from one another.
+        self.completion_routing_lock = threading.RLock()
         # Completions the agent already consumed via wait()/read_log() (output in
         # hand): drain loops AND gateway/tui watchers skip them.
         self._completion_consumed: set = set()
@@ -1941,47 +1961,65 @@ class ProcessRegistry(ProcessCheckpointMixin):
         equality; non-owned events are re-queued for their owner. No filter consumes
         everything (legacy single-session) except restored delegation payloads (fail-closed)."""
         self.restore_completions()
-        results: "list[tuple[dict, str]]" = []
+        owned_events: "list[dict]" = []
         requeue: "list[dict]" = []
         # delegation.surface_child_process_notifications, read at most once per drain
         # and only when an sa- event shows up.
         surface_child: "bool | None" = None
-        while not self.completion_queue.empty():
+        with self.completion_routing_lock:
             try:
-                evt = self.completion_queue.get_nowait()
+                scan_count = self.completion_queue.qsize()
             except Exception:
-                break
-            is_async_delegation = evt.get("type") == "async_delegation"
-            if not self._owns_event(evt, session_key, owns_event, is_async_delegation):
-                requeue.append(evt)
-                continue
-            # Routing happened first so a foreign session cannot drop the owner's
-            # event via its own consumed/observed state.
-            _evt_sid = evt.get("session_id", "")
-            if evt.get("type") == "completion" and self._drain_should_skip(
-                _evt_sid, skip_poll_observed=skip_poll_observed):
-                continue
-            # Subagent-owned process notifications are suppressed by default — the
-            # child's delegation result is the deliverable. Judge ownership on
-            # owner_task_id (RAW spawning id; task_id is the container key, collapsed
-            # by _resolve_container_task_id). Dropped, NOT requeued: children never
-            # drain, so a requeue would pin the event forever. 'async_delegation'
-            # is the result itself and is NEVER suppressed.
-            _evt_task_id = str(evt.get("owner_task_id") or evt.get("task_id") or "")
-            if not is_async_delegation and _evt_task_id.startswith("sa-"):
-                if surface_child is None:
-                    surface_child = self._surface_child_process_notifications()
-                if not surface_child:
-                    logger.debug(
-                        "Suppressed subagent-owned process notification "
-                        "(delegation.surface_child_process_notifications=false): "
-                        "type=%s session_id=%s task_id=%s",
-                        evt.get("type", "completion"), _evt_sid, _evt_task_id)
+                scan_count = 0
+            for _ in range(max(0, scan_count)):
+                try:
+                    evt = self.completion_queue.get_nowait()
+                except Exception:
+                    break
+                is_async_delegation = evt.get("type") == "async_delegation"
+                if not self._owns_event(evt, session_key, owns_event, is_async_delegation):
+                    requeue.append(evt)
                     continue
-            if text := format_process_notification(evt):
+                # Routing happened first so a foreign session cannot drop the owner's
+                # event via its own consumed/observed state.
+                _evt_sid = evt.get("session_id", "")
+                if evt.get("type") == "completion" and self._drain_should_skip(
+                    _evt_sid, skip_poll_observed=skip_poll_observed):
+                    continue
+                # Subagent-owned process notifications are suppressed by default — the
+                # child's delegation result is the deliverable. Judge ownership on
+                # owner_task_id (RAW spawning id; task_id is the container key, collapsed
+                # by _resolve_container_task_id). Dropped, NOT requeued: children never
+                # drain, so a requeue would pin the event forever. 'async_delegation'
+                # is the result itself and is NEVER suppressed.
+                _evt_task_id = str(evt.get("owner_task_id") or evt.get("task_id") or "")
+                if not is_async_delegation and _evt_task_id.startswith("sa-"):
+                    if surface_child is None:
+                        surface_child = self._surface_child_process_notifications()
+                    if not surface_child:
+                        logger.debug(
+                            "Suppressed subagent-owned process notification "
+                            "(delegation.surface_child_process_notifications=false): "
+                            "type=%s session_id=%s task_id=%s",
+                            evt.get("type", "completion"), _evt_sid, _evt_task_id)
+                        continue
+                owned_events.append(evt)
+            for evt in requeue:
+                self.completion_queue.put(evt)
+
+        # Formatting can touch configuration and redactors; keep it outside the
+        # routing reservation so a slow formatter never blocks a current-turn carrier.
+        results: "list[tuple[dict, str]]" = []
+        for evt in owned_events:
+            try:
+                text = format_process_notification(evt)
+            except Exception:
+                with self.completion_routing_lock:
+                    self.completion_queue.put(evt)
+                logger.exception("Could not format completion; kept for retry")
+                continue
+            if text:
                 results.append((evt, text))
-        for evt in requeue:
-            self.completion_queue.put(evt)
         return results
 
     # Minimum suffix chars for prefix resolution; "p"/"proc_1" are too collision-prone.

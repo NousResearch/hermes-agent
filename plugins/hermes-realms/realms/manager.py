@@ -31,10 +31,20 @@ from .lifecycle import (
 
 
 class Manager:
-    def __init__(self, home=None):
+    def __init__(self, home=None, *, realm_id=None):
         self.home = effective_home(home)
-        self.config = Config.load(self.home)
+        if realm_id is None:
+            self.config = Config.load(self.home)
         self.registry = Registry(self.home)
+        if realm_id is not None:
+            # Payload-only launchers attach to an already owned generation.
+            # Its validated launch spec, not the host's current config, governs
+            # that desktop; importing the host core here would break -P routing.
+            with self.registry.lock():
+                record = self.registry.get(realm_id)
+                validate_live(record)
+                spec = Path(record["runtime_dir"]) / "spec.json"
+                self.config = Config(**json.loads(spec.read_text(encoding="utf-8")))
 
     def list(self):
         with self.registry.lock():

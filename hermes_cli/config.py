@@ -2016,11 +2016,16 @@ def load_config() -> Dict[str, Any]:
     return _load_config_impl(want_deepcopy=True)
 
 
-def load_config_readonly() -> Dict[str, Any]:
+def load_config_readonly(*, home: Optional[Path] = None) -> Dict[str, Any]:
     """``load_config()`` without the defensive deepcopy (~half of the 265us cache-hit cost).
     **Mutating the returned dict (or any nested structure) corrupts the in-process cache for
-    every subsequent caller** — only for code paths that never write to the result."""
-    return _load_config_impl(want_deepcopy=False)
+    every subsequent caller** — only for code paths that never write to the result.
+
+    An explicit ``home`` selects that profile without changing the process or context home.
+    This mode never initializes directories or writes corrupt-file backups; read/parse errors
+    propagate to the caller. Defaults, managed overlay and scoped env expansion still apply.
+    """
+    return _load_config_impl(want_deepcopy=False, home=home)
 
 
 def _ensure_dict(parent: Dict[str, Any], key: str) -> Dict[str, Any]:
@@ -2196,16 +2201,20 @@ def _merge_managed_overlay(expanded: Dict[str, Any]) -> Tuple[Dict[str, Any], An
     return _deep_merge(expanded, _expand_env_vars(managed_normalized)), managed_config
 
 
-def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
+def _load_config_impl(*, want_deepcopy: bool, home: Optional[Path] = None) -> Dict[str, Any]:
     with _CONFIG_LOCK:
-        ensure_hermes_home()
-        config_path = get_config_path()
+        if home is None:
+            ensure_hermes_home()
+            config_path = get_config_path()
+        else:
+            config_path = Path(home).expanduser().resolve() / "config.yaml"
         path_key = str(config_path)
 
         user_sig, cache_sig = _load_config_cache_sig(config_path)
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:4] == cache_sig:
+        if (cached is not None and cache_sig is not None and cached[:4] == cache_sig
+                and not (home is not None and _CONFIG_PARSE_FAILURES.get(path_key, ())[:2] == user_sig)):
             # Signatures match, but the cached expansion is only valid if every ${VAR} it was
             # expanded against still has the same value — otherwise a load before
             # load_hermes_dotenv() pins unexpanded literals for the process lifetime.
@@ -2231,6 +2240,8 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
                 config = _deep_merge(config, user_config)
             except Exception as e:
+                if home is not None:
+                    raise
                 lkg_copy = _last_known_good_fallback(config_path, path_key, cache_sig, e)
                 if lkg_copy is not None:
                     return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy

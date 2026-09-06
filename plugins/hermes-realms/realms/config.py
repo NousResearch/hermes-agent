@@ -54,10 +54,10 @@ class Config:
     def load(cls, home):
         import yaml
         from dataclasses import fields
+        from hermes_cli.config import load_config_readonly
 
-        path = Path(home) / "config.yaml"
         try:
-            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {} if path.exists() else {}
+            data = load_config_readonly(home=Path(home))
             settings = data.get("plugins", {}).get("realms", {}) or {}
             return cls(
                 **{f.name: settings[f.name] for f in fields(cls) if f.name in settings}

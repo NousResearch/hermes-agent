@@ -119,7 +119,12 @@ if entry == 'realms/bootstrap.py':
     assert json.loads((runtime / 'display.json').read_text()) == {}
 '''
     env = {key: os.environ[key] for key in ("PATH", "LANG", "TZ") if key in os.environ}
+    # The administrative CLI consumes Hermes' canonical config owner. Provide
+    # the owning source tree just as an installed Hermes runtime provides it;
+    # payload-only supervisor/FD/driver routing is exercised in the native lane.
     env.update(HOME=str(tmp_path), HERMES_HOME=str(tmp_path / "profile"))
+    if entry == "cli.py":
+        env["PYTHONPATH"] = str(ROOT)
     result = subprocess.run([sys.executable, "-c", code, str(PLUGIN), entry],
                             cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr

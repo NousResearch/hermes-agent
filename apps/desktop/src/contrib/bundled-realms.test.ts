@@ -9,8 +9,10 @@ it('ships Realms in the real loader, registering nothing until explicitly toggle
   const { registry } = await import('./registry')
   const { SESSION_AREAS } = await import('./session')
   $pluginDecisions.set({})
+
   const contributions = () => Object.values(SESSION_AREAS).flatMap(area => registry.getArea(area))
     .filter(row => row.source === 'plugin:hermes-realms')
+
   const { discoverBundledPlugins } = await import('./plugins')
   discoverBundledPlugins()
   expect($pluginRecords.get()['hermes-realms']).toMatchObject({ kind: 'bundled', status: 'disabled' })

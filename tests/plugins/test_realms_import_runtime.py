@@ -26,6 +26,24 @@ record = None
 try:
     record = manager.start('import-isolation')
     rid = record['id']
+    # Running helpers consume the owned launch spec, not a newly edited host
+    # config, and need no host-core imports on their payload-only -P path.
+    (manager.home / 'config.yaml').write_text('plugins: [broken', encoding='utf-8')
+    frozen_code = """import runpy, sys
+from pathlib import Path
+load = runpy.run_path(sys.argv[1])['load_runtime']
+before = list(sys.path)
+manager = load('manager').Manager(sys.argv[2], realm_id=sys.argv[3])
+assert manager.config.size == '320x240'
+assert manager.config.renderer == 'pixman' and manager.config.overlay is False
+assert sys.path == before
+assert 'hermes_cli.config' not in sys.modules
+"""
+    child_env = dict(manager.env(rid), PYTHONPATH=str(root))
+    frozen = subprocess.run([sys.executable, '-P', '-c', frozen_code,
+                             str(root / 'realms/_binding.py'), str(manager.home), rid],
+                            env=child_env, capture_output=True, text=True, timeout=20)
+    assert frozen.returncode == 0, frozen.stdout + frozen.stderr
     result = manager.exec(rid, ['/usr/bin/printf', 'canonical-job'], wait=True)
     assert result['returncode'] == 0 and result['stdout'] == 'canonical-job', result
     run = subprocess.run([*manager.command_prefix(rid), '/usr/bin/printf', 'canonical-fd'],
@@ -53,7 +71,12 @@ finally:
             assert time.monotonic() < deadline, 'guardian cleanup did not finish'
             time.sleep(0.05)
     assert manager.list() == []
-print(json.dumps({'source': str(root), 'jobs': 'captured and FD', 'driver': 'generated launcher /usr/bin/true inside bubblewrap', 'capture': 'PNG', 'cleanup': 'runtime, processes, scope, guardian, registry removed'}))
+if record:
+    stale = subprocess.run([sys.executable, '-P', '-c', frozen_code,
+                            str(root / 'realms/_binding.py'), str(manager.home), record['id']],
+                           env=child_env, capture_output=True, text=True, timeout=20)
+    assert stale.returncode != 0 and 'realm not found' in stale.stderr, stale.stdout + stale.stderr
+print(json.dumps({'source': str(root), 'jobs': 'captured and FD', 'driver': 'generated launcher /usr/bin/true inside bubblewrap', 'capture': 'PNG', 'config': 'frozen owned spec; corrupt host config not read; stale owner rejected', 'cleanup': 'runtime, processes, scope, guardian, registry removed'}))
 '''
     home = tmp_path / "profile"
     home.mkdir()
@@ -61,7 +84,7 @@ print(json.dumps({'source': str(root), 'jobs': 'captured and FD', 'driver': 'gen
         "renderer": "pixman", "size": "320x240", "overlay": False
     }}}))
     env = {key: os.environ[key] for key in ("PATH", "LANG", "TZ") if key in os.environ}
-    env.update(HOME=str(tmp_path), HERMES_HOME=str(home))
+    env.update(HOME=str(tmp_path), HERMES_HOME=str(home), PYTHONPATH=str(PLUGIN.parents[1]))
     result = subprocess.run([sys.executable, "-c", code, str(PLUGIN)],
                             cwd=tmp_path, env=env, capture_output=True, text=True, timeout=90)
     assert result.returncode == 0, result.stdout + result.stderr

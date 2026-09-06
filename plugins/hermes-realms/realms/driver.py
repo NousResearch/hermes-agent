@@ -130,7 +130,7 @@ def driver_main(home, realm_id, binary):
     import sys
     from .manager import Manager
 
-    manager = Manager(home)
+    manager = Manager(home, realm_id=realm_id)
     manager.env(realm_id)
     record = next(r for r in manager.list() if r["id"] == realm_id)
     command = sandbox_command(record, binary, sys.argv[1:])

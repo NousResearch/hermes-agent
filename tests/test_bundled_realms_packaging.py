@@ -1,6 +1,7 @@
 """Exercise built payloads, not a downloader or a source-text snapshot."""
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -8,7 +9,41 @@ import tarfile
 
 import pytest
 
-from tests.test_packaging_build_guard import _build_artifact
+from tests.test_packaging_build_guard import PROJECT_ROOT, _build_artifact as _build_in_root
+
+
+def _build_artifact(kind, tmp_path, *, nix_build):
+    # build_base/egg_base do not relocate sdist's <name>-<version>/ tree.
+    # Other test files build concurrently, so even the source cwd must be private.
+    source = tmp_path / 'source'
+    source.mkdir()
+    tracked = set(subprocess.check_output(
+        ['git', 'ls-files', '-z', '--cached'], cwd=PROJECT_ROOT,
+    ).split(b'\0'))
+    untracked = set(subprocess.check_output(
+        ['git', 'ls-files', '-z', '--others', '--exclude-standard'], cwd=PROJECT_ROOT,
+    ).split(b'\0'))
+    excluded = {'.git', '.venv', 'venv', 'node_modules', '__pycache__',
+                '.hermes', '.worktrees', 'logs'}
+    for name in sorted((tracked | untracked) - {b''}):
+        relative = Path(os.fsdecode(name))
+        if (excluded.intersection(relative.parts)
+                # Some plugins intentionally check in their dashboard dist assets.
+                or (name not in tracked and {'build', 'dist'}.intersection(relative.parts))
+                or any(part.endswith('.egg-info') or part.startswith('hermes_agent-')
+                       for part in relative.parts)
+                or (relative.name.startswith('.env') and name not in tracked)
+                or relative.suffix in {'.log', '.pem', '.key', '.pyc', '.whl', '.gz'}):
+            continue
+        original = PROJECT_ROOT / relative
+        if not original.is_file():  # Include current edits, not files deleted since staging.
+            continue
+        assert original.resolve().is_relative_to(PROJECT_ROOT), original
+        target = source / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Copy bytes, never hardlink: build backends may rewrite source files.
+        shutil.copy2(original, target)
+    return _build_in_root(kind, tmp_path, nix_build=nix_build, project_root=source)
 
 
 @pytest.mark.linux_only

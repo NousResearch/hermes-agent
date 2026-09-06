@@ -20,6 +20,8 @@ import {
   type ComposerStatusItem,
   dismissBackgroundProcess,
   groupStatusItems,
+  isSessionGone,
+  prunePeerBackgroundProcesses,
   refreshBackgroundProcesses,
   type StatusGroup,
   stopBackgroundProcess
@@ -32,9 +34,19 @@ import { openSessionInNewWindow } from '@/store/windows'
 import { PreviewStatusRow } from './preview-row'
 import { StatusItemRow } from './status-row'
 
-// Slow safety-net poll for silent exits (processes without notify_on_complete
-// emit no event when they die). Only armed while a running row is on screen.
+// Safety-net poll for silent exits (processes without notify_on_complete emit
+// no event when they die). Armed while a running row is on screen.
 const BACKGROUND_POLL_MS = 5_000
+
+// Idle cadence, armed while a live session is mounted with NO background row.
+// A `terminal(background=true)` job started through another gateway client
+// (Telegram, a second window, the CLI) reaches this window only through the
+// backend's shared process registry — it broadcasts no event here. Without a
+// poll while the stack is empty, the first row is never discovered, and the
+// fast tick above (which only starts once a row exists) is never armed.
+// Deliberately much slower: this is discovery, not liveness, and one timer runs
+// per mounted tile.
+const BACKGROUND_DISCOVERY_POLL_MS = 15_000
 
 // A localhost/loopback preview is only meaningful while its dev server is up, so
 // we tie it to a live background process rather than persisting dismissals or
@@ -109,11 +121,18 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   // against that id. The latch is reset at the actual rebind seams instead —
   // gateway reconnect and runtime re-mint (see resetBackgroundPollingGuard
   // call sites in use-gateway-boot.ts and store/gateway.ts).
+  // Cleanup is keyed on the session alone — never on the poll cadence — so an
+  // unmount or a session switch drops that session's peer mirrors (nothing would
+  // refresh them again), while a fast/slow cadence flip leaves them untouched.
   useEffect(() => {
-    if (sessionId) {
-      void refreshBackgroundProcesses(sessionId)
-      void refreshSessionGoal(sessionId)
+    if (!sessionId) {
+      return
     }
+
+    void refreshBackgroundProcesses(sessionId)
+    void refreshSessionGoal(sessionId)
+
+    return () => prunePeerBackgroundProcesses(sessionId)
   }, [sessionId])
 
   const hasRunningBackground = groups.some(g => g.type === 'background' && g.items.some(i => i.state === 'running'))
@@ -122,15 +141,33 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   // dead `localhost:5174` chips stick around. On-disk file previews are kept.
   const visiblePreviews = previews.filter(item => hasRunningBackground || !isLocalhostPreview(item.target))
 
+  // One timer, two cadences: fast while something is running (catch a silent
+  // exit), slow while the stack is empty (discover work created elsewhere).
+  // `pollMs` re-runs the effect, whose cleanup tears the old timer down first,
+  // so a session never holds two — and a parent re-render changes neither dep.
+  const pollMs = hasRunningBackground ? BACKGROUND_POLL_MS : BACKGROUND_DISCOVERY_POLL_MS
+
   useEffect(() => {
-    if (!sessionId || !hasRunningBackground) {
+    // The gone-latch still bounds this: a runtime id the gateway no longer holds
+    // answers 4001 forever, so never arm against one, and a session that dies
+    // mid-poll drops its own timer on the next tick. Discovery must not become
+    // the 4001 storm the latch exists to stop.
+    if (!sessionId || isSessionGone(sessionId)) {
       return
     }
 
-    const timer = setInterval(() => void refreshBackgroundProcesses(sessionId), BACKGROUND_POLL_MS)
+    const timer = setInterval(() => {
+      if (isSessionGone(sessionId)) {
+        clearInterval(timer)
+
+        return
+      }
+
+      void refreshBackgroundProcesses(sessionId)
+    }, pollMs)
 
     return () => clearInterval(timer)
-  }, [hasRunningBackground, sessionId])
+  }, [pollMs, sessionId])
 
   const openAgents = () => navigate(AGENTS_ROUTE)
 

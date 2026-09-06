@@ -5,6 +5,7 @@ import {
   $backgroundStatusBySession,
   dismissBackgroundProcess,
   isSessionGoneForBackgroundPolling,
+  prunePeerBackgroundProcesses,
   reconcileBackgroundProcesses,
   refreshBackgroundProcesses,
   resetBackgroundPollingGuard,
@@ -163,6 +164,77 @@ describe('reconcileBackgroundProcesses', () => {
     vi.advanceTimersByTime(5_000)
 
     expect(itemsOf('sess-arm')).toEqual([])
+  })
+
+  // A row mirrored from another gateway process is display/status only: this
+  // window holds no handle on that PID and must not offer an action it cannot
+  // perform (the backend refuses to signal a process it does not own).
+  it('marks rows mirrored from a peer gateway so they are not offered a Stop', () => {
+    reconcileBackgroundProcesses(SID, [{ ...running('mine') }, { ...running('theirs'), peer: true }])
+
+    expect(items().map(i => [i.id, i.peer ?? false])).toEqual([
+      ['mine', false],
+      ['theirs', true]
+    ])
+  })
+
+  // Nothing refreshes a session's rows once its stack unmounts, so a peer mirror
+  // left behind reports "running" forever — the sidebar keeps a hollow dot on a
+  // conversation whose foreign job may have finished long ago. Locally-owned rows
+  // are different: this window's own event stream still updates them.
+  it('drops only the peer mirrors when a session stops being watched', () => {
+    reconcileBackgroundProcesses(SID, [
+      { ...running('mine') },
+      { ...running('theirs'), peer: true },
+      { ...exited('theirs-done', 0), peer: true }
+    ])
+
+    prunePeerBackgroundProcesses(SID)
+
+    expect(items().map(i => i.id)).toEqual(['mine'])
+  })
+
+  it('never kills anything while pruning peer mirrors', async () => {
+    const request = vi.fn(async () => ({}))
+    $gateway.set({ request } as never)
+    reconcileBackgroundProcesses(SID, [{ ...running('theirs'), peer: true }])
+
+    prunePeerBackgroundProcesses(SID)
+    await Promise.resolve()
+
+    // We hold no handle on that PID; the owning gateway is still running it.
+    expect(request).not.toHaveBeenCalled()
+    $gateway.set(null as never)
+  })
+
+  it('lets a peer row come back on the next poll rather than latching it dismissed', () => {
+    reconcileBackgroundProcesses(SID, [{ ...running('theirs'), peer: true }])
+    prunePeerBackgroundProcesses(SID)
+
+    reconcileBackgroundProcesses(SID, [{ ...running('theirs'), peer: true }])
+
+    expect(items().map(i => i.id)).toEqual(['theirs'])
+  })
+
+  it('only ever prunes background rows, whatever else carries the flag', () => {
+    reconcileBackgroundProcesses(SID, [{ ...running('theirs'), peer: true }])
+    // Todos, subagents and goals reach the stack through their own stores; a
+    // `peer` flag arriving on one of those must never make it a prune target.
+    const foreign = { id: 'sub-1', peer: true, state: 'running', title: 'child', type: 'subagent' } as const
+    $backgroundStatusBySession.set({ [SID]: [...items(), foreign] })
+
+    prunePeerBackgroundProcesses(SID)
+
+    expect(items().map(i => i.id)).toEqual(['sub-1'])
+  })
+
+  it('is a no-op for a session with no peer rows', () => {
+    reconcileBackgroundProcesses('sess-nopeer', [running('a')])
+    const before = $backgroundStatusBySession.get()
+
+    prunePeerBackgroundProcesses('sess-nopeer')
+
+    expect($backgroundStatusBySession.get()).toBe(before)
   })
 })
 

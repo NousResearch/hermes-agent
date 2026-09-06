@@ -38,6 +38,10 @@ export interface ComposerStatusItem {
   id: string
   /** background process: captured stdout/stderr tail for the inline viewer. */
   output?: string
+  /** background process: mirrored from another gateway process's registry
+   *  (a Telegram job on the same conversation). Display/status only — this
+   *  backend holds no handle on that PID and refuses to signal it. */
+  peer?: boolean
   /** subagent: its own stored session id — row click opens that session window
    *  (livestreamed by the gateway's child-session mirror). */
   sessionId?: string
@@ -191,6 +195,7 @@ const sameStatusItem = (a: ComposerStatusItem, b: ComposerStatusItem) =>
   a.title === b.title &&
   a.output === b.output &&
   a.exitCode === b.exitCode &&
+  a.peer === b.peer &&
   a.currentTool === b.currentTool &&
   a.goalStatus === b.goalStatus &&
   a.todoStatus === b.todoStatus &&
@@ -292,6 +297,8 @@ interface GatewayProcessEntry {
   command?: string
   exit_code?: number
   output_tail?: string
+  /** Owned by another gateway process; older gateways never send it. */
+  peer?: boolean
   session_id?: string
   status?: string
 }
@@ -304,6 +311,7 @@ const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
     exitCode,
     id: proc.session_id ?? '',
     output: proc.output_tail || undefined,
+    peer: proc.peer === true,
     state: exited ? (exitCode ? 'failed' : 'done') : 'running',
     title: (proc.command ?? '').split('\n')[0]!.trim() || 'background process',
     type: 'background'
@@ -311,7 +319,7 @@ const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
 }
 
 const sameItem = (a: ComposerStatusItem, b: ComposerStatusItem) =>
-  a.state === b.state && a.title === b.title && a.output === b.output && a.exitCode === b.exitCode
+  a.state === b.state && a.title === b.title && a.output === b.output && a.exitCode === b.exitCode && a.peer === b.peer
 
 /**
  * Layout-stable sync of the registry snapshot into the store: existing rows
@@ -426,6 +434,45 @@ export async function refreshBackgroundProcesses(sid: string): Promise<void> {
   }
 }
 
+/**
+ * Stop tracking this session's PEER rows — mirrors of processes owned by another
+ * gateway process.
+ *
+ * Nothing refreshes a session's rows once its stack stops watching it, so a mirror
+ * left behind claims "running" forever and keeps the sidebar's background dot lit on
+ * a conversation whose foreign job may have finished long ago. Locally-owned rows
+ * stay: this window's own event stream still updates them.
+ *
+ * Deliberately not a dismissal. No kill goes out — we hold no handle on that PID and
+ * the backend refuses to signal it — and no dismissed-id is recorded, so the row
+ * reappears on the next poll if the peer is still running. Pending self-clear timers
+ * for the pruned rows are cancelled, or one firing later would latch the row
+ * dismissed and suppress exactly that reappearance.
+ */
+export function prunePeerBackgroundProcesses(sid: string) {
+  const list = $backgroundStatusBySession.get()[sid]
+
+  // `peer` only ever means "another gateway process owns this PROCESS"; requiring
+  // the type keeps the predicate honest if the flag ever appears on another kind
+  // of row, and states the one thing this prune is allowed to touch.
+  const isPeerRow = (item: ComposerStatusItem) => item.type === 'background' && item.peer === true
+
+  if (!list?.some(isPeerRow)) {
+    return
+  }
+
+  for (const item of list) {
+    if (isPeerRow(item)) {
+      cancelAutoDismiss(sid, item.id)
+    }
+  }
+
+  writeBackground(
+    sid,
+    list.filter(item => !isPeerRow(item))
+  )
+}
+
 /** X on a finished row: drop it now and keep it dropped across refreshes. */
 export function dismissBackgroundProcess(sid: string, id: string) {
   cancelAutoDismiss(sid, id)
@@ -500,7 +547,10 @@ export function resetSessionBackground(sid: string) {
   for (const item of list) {
     dismissed.add(item.id)
 
-    if (item.state === 'running') {
+    // A peer row's process was never spawned by the timeline being discarded
+    // (it belongs to another gateway process, which refuses our signal anyway):
+    // drop the row, don't ask for a kill that can only fail.
+    if (item.state === 'running' && !item.peer) {
       if (gateway && !isSessionGone(sid)) {
         void requestForOwnedSession(sid, ambientRequestFor(gateway), 'process.kill', {
           process_id: item.id,

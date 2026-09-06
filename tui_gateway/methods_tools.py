@@ -233,19 +233,31 @@ for _name, (_code, _build) in _SIMPLE_RPCS.items():
     # Look the builder up at call time: bind_module rebinds the table's lambdas onto server globals.
     _rpc(_name, _code)(lambda rid, params, _n=_name: _ok(rid, _SIMPLE_RPCS[_n][1](params)))
 del _name, _code, _build
-_rpc("process.list", 5010, live_session=True)(
-    lambda rid, params, session: _ok(rid, {"processes": _session_processes(session)}))
 
 
-@_rpc("process.kill", live_session=True, fail_code=5010)
-def _(rid, params: dict, session) -> dict:
+@_rpc("process.list", 5010)
+def _(rid, params: dict) -> dict:
+    """Background processes for this conversation, live runtime or durable scope (``_process_scope_session``)."""
+    session, err = _process_scope_session(params, rid)
+    return err or _ok(rid, {"processes": _session_processes(session)})
+
+
+@_rpc("process.kill", fail_code=5010)
+def _(rid, params: dict) -> dict:
     """Kill ONE background process, scoped to the caller's session (unlike process.stop's kill_all)."""
+    session, err = _process_scope_session(params, rid)
+    if err:
+        return err
     proc_id = str(params.get("process_id") or "")
     if not proc_id:
         return _err(rid, 4012, "process_id required")
     registry = _tools_mod("tools.process_registry").process_registry
+    # Same peer import process.list does, so a row the user can SEE is a row this
+    # RPC can resolve; the registry itself refuses to signal a peer-owned PID.
+    with contextlib.suppress(Exception):
+        registry.sync_from_checkpoint()
     proc = registry.get(proc_id)
-    if proc is None or str(getattr(proc, "session_key", "") or "") != str(session.get("session_key") or ""):
+    if proc is None or not _process_owned_by_session(proc, str(session.get("session_key") or "")):
         return _err(rid, 4044, f"no such process: {proc_id}")
     return _ok(rid, registry.kill_process(proc_id))
 

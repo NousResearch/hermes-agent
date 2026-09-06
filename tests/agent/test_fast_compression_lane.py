@@ -412,7 +412,7 @@ def test_timing_hooks_propagate_to_protected_call_worker_thread():
     source both active).
     """
     from agent.auxiliary_client import (
-        _aux_timing_hook,
+        _aux_thread_local_hook,
         _aux_dispatch,
         _aux_provider_response,
         _notify_aux_dispatch,
@@ -431,8 +431,8 @@ def test_timing_hooks_propagate_to_protected_call_worker_thread():
         return "ok"
 
     with (
-        _aux_timing_hook(_aux_dispatch, lambda: seen.append("dispatch")),
-        _aux_timing_hook(_aux_provider_response, lambda: seen.append("response")),
+        _aux_thread_local_hook(_aux_dispatch, lambda: seen.append("dispatch")),
+        _aux_thread_local_hook(_aux_provider_response, lambda: seen.append("response")),
         aux_interrupt_protection(cancel_check=lambda: False),
     ):
         result = _run_protected_sync_provider_call(_callback, {})

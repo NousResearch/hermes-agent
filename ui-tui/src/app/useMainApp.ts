@@ -60,7 +60,7 @@ import { $uiState, getUiState, patchUiState } from './uiStore.js'
 import { useBatteryPoll } from './useBatteryPoll.js'
 import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
-import { useInputHandlers } from './useInputHandlers.js'
+import { shouldDetachEditedHistoryInput, useInputHandlers } from './useInputHandlers.js'
 import { useLongRunToolCharms } from './useLongRunToolCharms.js'
 import { useSessionLifecycle } from './useSessionLifecycle.js'
 import { useSubmission } from './useSubmission.js'
@@ -207,6 +207,7 @@ export function useMainApp(gw: GatewayClient) {
   // Bumped by the gateway `reaction` event (core-detected affection).
   const goodVibesTick = useStore($goodVibesTick)
   const [bellOnComplete, setBellOnComplete] = useState(false)
+  const [bellOnPrompt, setBellOnPrompt] = useState(false)
 
   const ui = useStore($uiState)
   const overlay = useStore($overlayState)
@@ -578,7 +579,7 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [ui.busy, turnStartedAt])
 
-  useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
+  useConfigSync({ gw, setBellOnComplete, setBellOnPrompt, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
   useBatteryPoll(gw)
 
   useEffect(() => {
@@ -857,7 +858,7 @@ export function useMainApp(gw: GatewayClient) {
           setCatalog
         },
         submission: { submitLiteralRef, submitRef },
-        system: { bellOnComplete, stdout, sys },
+        system: { bellOnComplete, bellOnPrompt, stdout, sys },
         transcript: { appendMessage, panel, setHistoryItems },
         voice: {
           setProcessing: setVoiceProcessing,
@@ -869,6 +870,7 @@ export function useMainApp(gw: GatewayClient) {
     [
       appendMessage,
       bellOnComplete,
+      bellOnPrompt,
       composerActions.setInput,
       gateway,
       panel,
@@ -909,7 +911,7 @@ export function useMainApp(gw: GatewayClient) {
       // dead/respawning gateway. recoverSidRef carries the session forward, and
       // resumeById restores sid once the fresh gateway is ready.
       recoveryAtRef.current = plan.attempts
-      patchUiState({ busy: false, sid: null, status: 'gateway exited' })
+      patchUiState({ busy: false, compacting: false, sid: null, status: 'gateway exited' })
 
       if (plan.recover && plan.sid) {
         recoverSidRef.current = plan.sid
@@ -1203,10 +1205,15 @@ export function useMainApp(gw: GatewayClient) {
 
         composerActions.syncTokens(value)
 
+        if (shouldDetachEditedHistoryInput(composerState.historyIdx, composerRefs.historyRef.current, value)) {
+          composerRefs.historyDraftRef.current = value
+          composerActions.setHistoryIdx(null)
+        }
+
         return value
       })
     },
-    [composerActions]
+    [composerActions, composerRefs, composerState.historyIdx]
   )
 
   const appComposer = useMemo(

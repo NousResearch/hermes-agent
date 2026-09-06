@@ -319,7 +319,7 @@ class TestSvgNormalization:
 
     @pytest.mark.asyncio
     async def test_svg_rasterized_when_converter_available(self, tmp_path, monkeypatch):
-        from tools import vision_tools as vt
+        from tools import vision_tools_image_prep as vt
         isrc = _reload(monkeypatch, tmp_path / "hermes")
         monkeypatch.setenv("TERMINAL_ENV", "local")
         svg = tmp_path / "art.svg"
@@ -339,7 +339,7 @@ class TestSvgNormalization:
         path.unlink()
 
     def test_svg_actionable_error_when_no_converter(self, tmp_path, monkeypatch):
-        from tools import vision_tools as vt
+        from tools import vision_tools_image_prep as vt
         _reload(monkeypatch, tmp_path / "hermes")
         svg = tmp_path / "art.svg"
         svg.write_bytes(b'<svg xmlns="http://www.w3.org/2000/svg"/>')

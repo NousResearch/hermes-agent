@@ -10,6 +10,7 @@ import yaml
 
 from hermes_cli.config import (
     DEFAULT_CONFIG,
+    InvalidUserConfigError,
     check_config_version,
     get_hermes_home,
     ensure_hermes_home,
@@ -666,13 +667,23 @@ class TestOptionalEnvVarsRegistry:
         from hermes_cli.config import OPTIONAL_ENV_VARS
         assert OPTIONAL_ENV_VARS["KEENABLE_API_KEY"]["url"] == "https://keenable.ai"
 
-    def test_removed_tavily_var_not_in_env_vars_by_version(self):
-        """TAVILY_API_KEY was removed with the Tavily backend."""
+    def test_tavily_api_key_registered(self):
+        """TAVILY_API_KEY is listed in OPTIONAL_ENV_VARS."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        assert "TAVILY_API_KEY" in OPTIONAL_ENV_VARS
+
+    def test_tavily_api_key_has_url(self):
+        """TAVILY_API_KEY has a URL."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        assert OPTIONAL_ENV_VARS["TAVILY_API_KEY"]["url"] == "https://app.tavily.com/home"
+
+    def test_tavily_in_env_vars_by_version(self):
+        """TAVILY_API_KEY is listed in ENV_VARS_BY_VERSION."""
         from hermes_cli.config import ENV_VARS_BY_VERSION
         all_vars = []
         for vars_list in ENV_VARS_BY_VERSION.values():
             all_vars.extend(vars_list)
-        assert "TAVILY_API_KEY" not in all_vars
+        assert "TAVILY_API_KEY" in all_vars
 
     def test_max_iterations_not_offered_as_env_var(self):
         """HERMES_MAX_ITERATIONS must NOT be in OPTIONAL_ENV_VARS (issue #17534).
@@ -728,7 +739,9 @@ class TestConfigMigrationSecretPrompts:
         saved = {}
 
         monkeypatch.setattr(cfg_mod, "sanitize_env_file", lambda: 0)
-        monkeypatch.setattr(cfg_mod, "check_config_version", lambda: (999, 999))
+        monkeypatch.setattr(
+            cfg_mod, "check_config_version", lambda **_kwargs: (999, 999)
+        )
         monkeypatch.setattr(cfg_mod, "get_missing_config_fields", lambda: [])
         monkeypatch.setattr(cfg_mod, "get_missing_skill_config_vars", lambda: [])
         monkeypatch.setattr(
@@ -772,6 +785,48 @@ class TestConfigVersionDetection:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             assert load_config()["_config_version"] == DEFAULT_CONFIG["_config_version"]
             assert check_config_version() == (0, DEFAULT_CONFIG["_config_version"])
+
+    _LATEST = DEFAULT_CONFIG["_config_version"]
+    # (bytes, strict match, tolerant return): tolerant malformed YAML keeps
+    # the historical latest/latest fallback; a parseable non-mapping root is
+    # reported as legacy (0).
+    _INVALID_CONFIG_CASES = [
+        pytest.param(
+            b"model: [unterminated\n", "not valid YAML", (_LATEST, _LATEST), id="malformed-yaml"
+        ),
+        pytest.param(b"- just_a_list\n", "must be a mapping", (0, _LATEST), id="list-root"),
+        pytest.param(b"[]\n", "must be a mapping", (0, _LATEST), id="empty-list-root"),
+    ]
+
+    @pytest.mark.parametrize("config_bytes, match, tolerant", _INVALID_CONFIG_CASES)
+    def test_strict_check_rejects_invalid_config(
+        self, tmp_path, config_bytes, match, tolerant
+    ):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_bytes(config_bytes)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with pytest.raises(InvalidUserConfigError, match=match):
+                check_config_version(raise_on_parse_error=True)
+            # Tolerant callers keep the historical non-raising behavior.
+            assert check_config_version() == tolerant
+
+    @pytest.mark.parametrize("config_bytes, match, _tolerant", _INVALID_CONFIG_CASES)
+    def test_migration_rejects_invalid_config_before_sanitizing_env(
+        self, tmp_path, config_bytes, match, _tolerant
+    ):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_bytes(config_bytes)
+        env_path = tmp_path / ".env"
+        env_bytes = b"OPENAI_API_KEY=test-without-final-newline"
+        env_path.write_bytes(env_bytes)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with pytest.raises(InvalidUserConfigError, match=match):
+                migrate_config(interactive=False, quiet=True)
+
+        assert config_path.read_bytes() == config_bytes
+        assert env_path.read_bytes() == env_bytes
 
 
 class TestConfigSupportFloor:
@@ -886,7 +941,9 @@ class TestConfigSupportFloor:
         },
         "memory": {"write_approval": True},
         "model": {"default": "openai/gpt-5.4", "provider": "openrouter"},
-        "model_catalog": {"ttl_hours": 1},
+        # v25 lowered the old 24h default to 1h; v40 drops that 1h default so
+        # the shipped ttl_minutes (20) applies.
+        "model_catalog": {},
         "plugins": {"enabled": []},
         "stt": {"provider": "local"},
     }
@@ -905,7 +962,7 @@ class TestConfigSupportFloor:
         # default (opt-in) so the write invariant strips it from disk.
         "agent": {},
         "model": {"default": "anthropic/claude-fable-5", "provider": "nous"},
-        "model_catalog": {"ttl_hours": 1},
+        "model_catalog": {},
         "plugins": {"disabled": ["foo"], "enabled": []},
     }
 

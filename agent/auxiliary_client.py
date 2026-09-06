@@ -1429,6 +1429,8 @@ class _CodexCompletionsAdapter:
                     })
             if converted:
                 resp_kwargs["tools"] = converted
+        from agent.provider_redaction import redact_provider_api_kwargs
+        resp_kwargs = redact_provider_api_kwargs(resp_kwargs)
         # Stable prompt-cache routing: key is content-addressed from the static prefix
         # (instructions + tool schemas) so it survives across turns, scoped by the owning
         # conversation (rotation-stable logical scope, else the physical session id). Skip the
@@ -1685,6 +1687,8 @@ class _AnthropicCompletionsAdapter:
                 if not isinstance(existing, dict):
                     existing = {}
                 anthropic_kwargs["extra_body"] = {**existing, **passthrough}
+        from agent.provider_redaction import redact_provider_api_kwargs
+        anthropic_kwargs = redact_provider_api_kwargs(anthropic_kwargs)
         response = create_anthropic_message(
             self._client,
             anthropic_kwargs,
@@ -2480,11 +2484,13 @@ def _relay_sync_completion(
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
     from agent.auxiliary_wire import prepare_chat_messages
+    from agent.provider_redaction import redact_provider_api_kwargs
 
     kwargs = prepare_chat_messages(client, kwargs)
     # The progress hook is installed per TASK, so every attempt (retries, recovery rungs, fallbacks)
     # must stream through _create_with_progress or the compression watchdog sees silence (#98466).
-    callback = create or (lambda request: _create_with_progress(client, request))
+    provider_call = create or (lambda request: _create_with_progress(client, request))
+    callback = lambda request: provider_call(redact_provider_api_kwargs(request))
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
     # transaction on hard cancel without touching the shared client.
@@ -2504,10 +2510,16 @@ async def _relay_async_completion(
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
     from agent.auxiliary_wire import prepare_chat_messages
+    from agent.provider_redaction import redact_provider_api_kwargs
 
     kwargs = prepare_chat_messages(client, kwargs)
     # Async twin of the seam default above (#98466).
-    callback = create or (lambda request: _acreate_with_progress(client, request))
+    provider_call = create or (lambda request: _acreate_with_progress(client, request))
+
+    async def callback(request):
+        import asyncio
+        payload = await asyncio.to_thread(redact_provider_api_kwargs, request)
+        return await provider_call(payload)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return await callback(kwargs)
@@ -2523,15 +2535,17 @@ def _relay_sync_stream(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None, api_mode: str | None = None
 ) -> Any:
     from agent.auxiliary_wire import prepare_chat_messages
+    from agent.provider_redaction import redact_provider_api_kwargs
 
     kwargs = prepare_chat_messages(client, kwargs)
+    callback = lambda request: client.chat.completions.create(**redact_provider_api_kwargs(request))
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
-        return client.chat.completions.create(**kwargs)
+        return callback(kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     return relay_llm.stream_current(
-        kwargs, lambda request: client.chat.completions.create(**request), name=provider_name,
+        kwargs, callback, name=provider_name,
         model_name=str(kwargs.get("model") or fallback_model), finalizer=dict, metadata=metadata,
         completed_response_predicate=lambda value: hasattr(value, "choices"),
     )
@@ -7201,6 +7215,10 @@ def call_llm(
     latency_info: Optional[Dict[str, int]] = None,
 ) -> Any:
     """Run an auxiliary LLM request, applying the configured task limit."""
+    from agent.provider_redaction import redact_provider_api_kwargs
+
+    # Keep caller history exact, including executable and signed replay fields.
+    provider_payload = redact_provider_api_kwargs({"messages": messages, "extra_body": extra_body})
     queue_started_at = time.monotonic()
     semaphore = _acquire_sync_aux_semaphore(task)
     if semaphore is not None:
@@ -7223,8 +7241,8 @@ def call_llm(
         ):
             response = _call_llm_impl(
                 task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,
-                main_runtime=main_runtime, messages=messages, temperature=temperature,
-                max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
+                main_runtime=main_runtime, messages=provider_payload["messages"], temperature=temperature,
+                max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=provider_payload["extra_body"],
                 reasoning_config=reasoning_config, extra_headers=extra_headers, api_mode=api_mode,
                 stream=stream, stream_options=stream_options, route_info=route_info,
             )
@@ -7499,14 +7517,22 @@ async def async_call_llm(
     route_info: Optional[Dict[str, str]] = None,
 ) -> Any:
     """Run an asynchronous auxiliary LLM request under the configured limit."""
+    import asyncio
+
+    from agent.provider_redaction import redact_provider_api_kwargs
+
+    # Offload parsing and copying while propagating the active profile scope.
+    provider_payload = await asyncio.to_thread(
+        redact_provider_api_kwargs, {"messages": messages, "extra_body": extra_body}
+    )
     semaphore = _acquire_async_aux_semaphore(task)
     if semaphore is not None:
         await semaphore.acquire()
     try:
         return await _async_call_llm_impl(
             task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,
-            main_runtime=main_runtime, messages=messages, temperature=temperature,
-            max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
+            main_runtime=main_runtime, messages=provider_payload["messages"], temperature=temperature,
+            max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=provider_payload["extra_body"],
             reasoning_config=reasoning_config, route_info=route_info,
         )
     finally:

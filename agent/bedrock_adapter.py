@@ -880,7 +880,8 @@ def build_converse_kwargs(
         kwargs["guardrailConfig"] = guardrail_config
     if not inference_config:
         del kwargs["inferenceConfig"]  # optional on the wire; don't send {}
-    return kwargs
+    from agent.provider_redaction import redact_provider_api_kwargs
+    return redact_provider_api_kwargs(kwargs)
 
 
 def call_converse(

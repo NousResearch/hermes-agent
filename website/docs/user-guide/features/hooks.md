@@ -470,6 +470,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `kanban_task_claimed` | Observer | After claim commit, in dispatcher process before worker spawn; return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id` | Board/task/profile/assignee identifiers. |
 | `kanban_task_completed` | Observer | After completion and cleanup, usually in worker process; return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `summary` | Summary may contain project/user content. |
 | `kanban_task_blocked` | Observer | After a blocked transition; the dependency-wait path fires before its transaction exits. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `reason` | Reason may contain project/user content. |
+| [`kanban_worktree_created`](#kanban_worktree_created) | Directive/control | Synchronously after a kanban `git worktree add` succeeds and before the worker spawns (dispatcher or `hermes kanban claim`); the first `{"action": "block", "message"}` removes the worktree and fails the card with the message. Not timeout-bounded. | `task_id`, `profile_name`, `board`, `worktree_path`, `repo_root`, `branch` | `worktree_path` / `repo_root` are filesystem paths and may reveal project layout or usernames. |
 | `on_kanban_worker_spawned` | Observer | After `spawn_fn` returns and the worker PID is persisted; runs inside the dispatch lock, keep callbacks fast. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `worker_pid`, `workspace_path` | `workspace_path` is a filesystem path and may reveal project layout or usernames. |
 | `on_kanban_worker_exited` | Observer | Tick-derived: after `detect_crashed_workers` reclaims a dead-PID task and the reclaim commits. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `worker_pid`, `exit_kind`, `exit_code`, `outcome`, `retry_status` | Identifiers and exit metadata only. |
 | `on_kanban_worker_stale_claim` | Observer | After a TTL-expired claim is reclaimed; live-PID extensions don't fire. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `worker_pid`, `heartbeat_stale`, `retry_status` | Identifiers and claim metadata only. |
@@ -1547,7 +1548,7 @@ Fires for a failed provider attempt with status/retry timing, an `error` object,
 
 Fires after an authoritative skill-usage state change. It is observer-only and exposes the local `skill_name`, provenance, correlation IDs, usage count, and reuse flags.
 
-### Kanban lifecycle observers
+### Kanban lifecycle hooks
 
 #### `kanban_task_claimed`
 
@@ -1561,7 +1562,11 @@ Fires after completion and cleanup, usually in the worker process. Its `summary`
 
 Fires after a normal blocked transition. The dependency-wait path invokes it before that write transaction exits. Its `reason` can contain project or user content.
 
-All three kanban hooks are observer-only and carry `task_id`, `profile_name`, `board`, `assignee`, and `run_id`; completed adds `summary`, and blocked adds `reason`.
+The three hooks above are observer-only and carry `task_id`, `profile_name`, `board`, `assignee`, and `run_id`; completed adds `summary`, and blocked adds `reason`. The fourth, below, is a gate with its own payload.
+
+#### `kanban_worktree_created`
+
+The one kanban hook that is a **gate** rather than an observer. Fires synchronously — on the caller's thread, not timeout-bounded — right after the dispatcher (or `hermes kanban claim`) has run `git worktree add` for a `worktree` workspace and before any worker is spawned. Payload: `task_id`, `profile_name`, `board`, `worktree_path`, `repo_root`, `branch`. Return `None` to accept; return `{"action": "block", "message": "..."}` to have the caller remove the just-created worktree (`git worktree remove --force`, branch kept) and fail the card with the message — the dispatcher then releases the claim and the retry re-creates the tree and fires again. A callback that raises is logged and skipped like any other hook, so return the directive. From a shell hook the block is exit code **2** (stderr becomes the message), or a timeout / spawn failure under `fail_closed: true`. Use case and a worked script: [seeding a worktree workspace](/user-guide/features/kanban#kanban-worktree-created-hook).
 
 ### Kanban worker-lifecycle, task-mutation, and dispatch observers
 
@@ -1586,7 +1591,7 @@ Use shell hooks when you want a drop-in, single-file script (Bash, Python, anyth
 - **Inject context into the next LLM turn** — prepend `git status` output, the current weekday, or retrieved documents to the user message (see [`pre_llm_call`](#pre_llm_call)).
 - **Observe lifecycle events** — write a log line when a subagent completes (`subagent_stop`) or a session starts (`on_session_start`).
 
-Shell hooks are registered by calling `agent.shell_hooks.register_from_config(cfg)` at both CLI startup (`hermes_cli/main.py`) and gateway startup (`gateway/run.py`). They compose naturally with Python plugin hooks — both flow through the same dispatcher.
+Shell hooks are registered by calling `agent.shell_hooks.register_from_config(cfg)` at CLI startup (`hermes_cli/main.py`, for the commands that run an agent turn), at gateway startup (`gateway/run.py`, which also hosts the kanban dispatcher), and by the standalone kanban entry points that create workspaces — `hermes kanban claim`, `hermes kanban dispatch` and `hermes kanban daemon --force` (`hermes_cli/kanban_ops.py`). Other `hermes` subcommands do not register them. They compose naturally with Python plugin hooks — both flow through the same dispatcher.
 
 ### Comparison at a glance
 
@@ -1610,13 +1615,14 @@ hooks:
     - matcher: "<regex>"         # Optional; used for pre/post_tool_call only
       command: "<shell command>" # Required; runs via shlex.split, shell=False
       timeout: <seconds>         # Optional; default 60, capped at 300
-      fail_closed: <bool>        # Optional; default false. pre_tool_call only.
+      fail_closed: <bool>        # Optional; default false. Blocking-capable events only
+                                 # (pre_tool_call, kanban_worktree_created).
                                  # `failClosed` also accepted (Cursor/Claude Code compat)
 
 hooks_auto_accept: false         # See "Consent model" below
 ```
 
-Event names must be one of the [plugin hook events](#plugin-hooks); typos produce a "Did you mean X?" warning and are skipped. Unknown keys inside a single entry are ignored; missing `command` is a skip-with-warning. `timeout > 300` is clamped with a warning. `fail_closed: true` on an event other than `pre_tool_call` warns and is ignored (only blocking-capable events can fail closed).
+Event names must be one of the [plugin hook events](#plugin-hooks); typos produce a "Did you mean X?" warning and are skipped. Unknown keys inside a single entry are ignored; missing `command` is a skip-with-warning. `timeout > 300` is clamped with a warning. `fail_closed: true` on an event that cannot block (anything but `pre_tool_call` / `kanban_worktree_created`) warns and is ignored.
 
 ### JSON wire protocol
 
@@ -1662,7 +1668,7 @@ Malformed JSON, non-zero exit codes, and timeouts log a warning but never abort 
 
 ### Exit code 2 = block (Claude Code / Cursor compatible)
 
-A `pre_tool_call` hook that exits with code **2** blocks the tool call even when its stdout carries no block JSON. The block message is resolved in priority order:
+A hook on a blocking-capable event (`pre_tool_call`, `kanban_worktree_created`) that exits with code **2** blocks the action — the tool call, or the just-created kanban worktree — even when its stdout carries no block JSON. The block message is resolved in priority order:
 
 1. stdout block JSON (`reason` / `message`), when present;
 2. the first 400 characters of stderr;
@@ -1676,7 +1682,7 @@ echo "policy violation: rm -rf is not permitted" >&2
 exit 2
 ```
 
-For events whose block directive is not honored (everything except `pre_tool_call`), exit 2 is treated like any other non-zero exit: a warning is logged and stdout is still parsed.
+For events whose block directive is not honored (everything except `pre_tool_call` and `kanban_worktree_created`), exit 2 is treated like any other non-zero exit: a warning is logged and stdout is still parsed.
 
 ### Fail-open vs fail-closed
 
@@ -1693,7 +1699,7 @@ hooks:
       fail_closed: true
 ```
 
-With `fail_closed: true`, each of these now **blocks** the tool call with `hook <command> failed closed: <reason>`:
+With `fail_closed: true`, each of these now **blocks** the action with `hook <command> failed closed: <reason>`:
 
 | Failure | Fail-open (default) | `fail_closed: true` |
 |---------|--------------------|--------------------|
@@ -1702,7 +1708,7 @@ With `fail_closed: true`, each of these now **blocks** the tool call with `hook 
 | Non-JSON stdout (e.g. a stack trace) | warn, proceed | **block** |
 | Clean exit, valid no-op JSON (`{}`) | proceed | proceed |
 
-`fail_closed` only applies to blocking-capable events (`pre_tool_call` today); setting it on any other event logs a warning at config-parse time and is ignored. `hermes hooks test` reflects these semantics — the `parsed` line shows exactly the block shape the dispatcher would receive.
+`fail_closed` only applies to blocking-capable events (`pre_tool_call` and `kanban_worktree_created`); setting it on any other event logs a warning at config-parse time and is ignored. `hermes hooks test` reflects these semantics — the `parsed` line shows exactly the block shape the dispatcher would receive.
 
 ### Worked examples
 

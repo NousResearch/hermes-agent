@@ -955,8 +955,9 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 | `kanban_task_claimed` | A kanban task is claimed (dispatcher process, before the worker spawns) | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | ignored |
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
+| [`kanban_worktree_created`](/user-guide/features/hooks#kanban_worktree_created) | A kanban worktree was just created, before the worker spawns (dispatcher process, or `hermes kanban claim`) | `task_id: str, board: str \| None, profile_name: str, worktree_path: str, repo_root: str, branch: str` | `{"action": "block", "message"}` removes the worktree and fails the card |
 
-Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation, and `pre_tool_call`, which can return a block/approve directive.
+Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation, `pre_tool_call`, which can return a block/approve directive, and `kanban_worktree_created`, whose block directive fails the card.
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 

@@ -144,6 +144,14 @@ VALID_HOOKS: Set[str] = {
     # spawn; completed/blocked fire in the WORKER (or whichever process drove it). Kwargs: task_id,
     # board, assignee, run_id, profile_name; completed adds summary, blocked adds reason.
     "kanban_task_claimed", "kanban_task_completed", "kanban_task_blocked",
+    # kanban_worktree_created: the one kanban GATE (hermes_cli.kanban_db_workspace). Fires synchronously
+    # right after `git worktree add` succeeds and BEFORE the worker spawns (dispatcher, or `hermes kanban
+    # claim`) so an operator can seed what a fresh checkout lacks (gitignored .env files, caches). Kwargs:
+    # task_id, board, profile_name, worktree_path, repo_root, branch. Return None to accept; {"action":
+    # "block", "message"} (shell bridge: exit 2 / fail_closed) makes the caller remove the worktree and
+    # fail the card with the message; the retry re-creates and re-fires. A RAISING callback is logged and
+    # skipped like any other hook, so plugins must return the directive. Not timeout-bounded (kanban_*).
+    "kanban_worktree_created",
     # Kanban worker/mutation/tick observers; returns ignored; fire sites short-circuit on
     # has_hook(). Kwargs: task_id, profile_name, board, assignee, run_id plus, per hook:
     # worker_spawned (DISPATCHER, after PID persisted, inside the dispatch lock — stay fast):

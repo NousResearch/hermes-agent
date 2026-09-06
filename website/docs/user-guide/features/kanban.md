@@ -65,7 +65,7 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
 - **Workspace** — the directory a worker operates in. Three kinds:
   - `scratch` (default) — fresh tmp dir under `~/.hermes/kanban/workspaces/<id>/` (or `~/.hermes/kanban/boards/<slug>/workspaces/<id>/` on non-default boards). **Deleted when the task completes** — scratch is ephemeral by design. Files explicitly declared through `kanban_complete(artifacts=[...])` are copied into durable per-task attachment storage before cleanup; existing deliverable paths in legacy completion summaries receive the same treatment. Other scratch files are removed. A missing declared scratch artifact keeps the task in-flight so the worker can correct the path and retry. Use `worktree:` or `dir:<path>` when the whole workspace should remain available. The first time a scratch workspace is created on an install, the dispatcher logs a warning and emits a `tip_scratch_workspace` event on the task (visible via `hermes kanban show <id>`).
   - `dir:<path>` — an existing shared directory (Obsidian vault, mail ops dir, per-account folder). **Must be an absolute path.** Relative paths like `dir:../tenants/foo/` are rejected at dispatch because they'd resolve against whatever CWD the dispatcher happens to be in, which is ambiguous and a confused-deputy escape vector. The path is otherwise trusted — it's your box, your filesystem, the worker runs with your uid. This is the trusted-local-user threat model; kanban is single-host by design. **Preserved on completion.**
-  - `worktree` — a git worktree under `.worktrees/<id>/` for coding tasks. Use `worktree:<path>` to pin the exact target path. Worker-side `git worktree add` creates it, using `--branch` when provided. **Preserved on completion.**
+  - `worktree` — a git worktree under `.worktrees/<id>/` for coding tasks. Use `worktree:<path>` to pin the exact target path. The dispatcher's `git worktree add` creates it, using `--branch` when provided. **Preserved on completion.** A fresh checkout carries no gitignored files, so a project that needs its `.env` should subscribe to the [`kanban_worktree_created` hook](#kanban-worktree-created-hook).
 - **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. After `kanban.failure_limit` consecutive spawn failures on the same task (default: 2) the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose profile doesn't exist, workspace can't mount, etc.
 - **Tenant** — optional string namespace *within* a board. One specialist fleet can serve multiple businesses (`--tenant business-a`) with data isolation by workspace path and memory key prefix. Tenants are a soft filter; boards are the hard isolation boundary.
 
@@ -509,6 +509,47 @@ def register(ctx):
         ctx.dispatch_tool("terminal", {"command": f"notify-send 'kanban blocked: {task_id}'"})
     ctx.register_hook("kanban_task_blocked", on_blocked)
 ```
+
+### Seeding a worktree workspace (`kanban_worktree_created`) {#kanban-worktree-created-hook}
+
+A linked worktree is a fresh checkout: it holds **tracked files and nothing else**, so everything git ignores is absent by definition — and for most real projects that includes the one file the project cannot start without (`.env`, `.env.dev`, `local.settings.json`). The worker lands in a repo that looks complete and fails at the first command that reads configuration, with an error about the *application* rather than about the *checkout*.
+
+Which secrets a project needs, and where they are kept, is deployment knowledge, so there is a hook for it. Right after `git worktree add` succeeds — and before any worker is spawned — the dispatcher (or `hermes kanban claim`) fires the `kanban_worktree_created` [plugin hook](/user-guide/features/hooks#plugin-hooks) with `task_id`, `board`, `profile_name`, `worktree_path`, `repo_root` and `branch`. Unlike the observers above it is a **gate**: return `None` to accept the worktree, or `{"action": "block", "message": "..."}` to fail the card.
+
+The shortest way to use it is a shell script wired through the same [`hooks:` block](/user-guide/features/hooks#shell-hooks) every other event uses — no plugin needed:
+
+```yaml
+# ~/.hermes/config.yaml (the dispatcher's profile)
+hooks:
+  kanban_worktree_created:
+    - command: "~/.hermes/agent-hooks/seed-worktree.sh"
+      timeout: 120        # npm ci or decrypting a bundle takes a while; max 300
+      fail_closed: true   # a hook that hangs or cannot start must fail the card, not pass it
+```
+
+```bash
+#!/usr/bin/env bash
+# ~/.hermes/agent-hooks/seed-worktree.sh — the payload arrives as JSON on stdin
+payload="$(cat -)"
+worktree=$(jq -r '.extra.worktree_path' <<<"$payload")
+repo=$(jq -r '.extra.repo_root' <<<"$payload")
+found=0
+for f in "$repo"/.env*; do
+  [ -e "$f" ] || continue
+  ln -s "$f" "$worktree/$(basename "$f")" && found=1
+done
+[ "$found" = 1 ] || { echo "no .env* in $repo — nothing to seed" >&2; exit 2; }
+```
+
+Approve the `(event, command)` pair once — at the TTY prompt the first time you run `hermes` (or `hermes kanban claim`), or with `hooks_auto_accept: true` / `HERMES_ACCEPT_HOOKS=1` for a gateway that has no TTY — and inspect it with `hermes hooks list`, `hermes hooks doctor` or `hermes hooks test kanban_worktree_created`, which all know the event and its payload. `doctor` and `test` run the script against a synthetic payload (`repo_root: /tmp/repo`), so the script above exits 2 there and doctor reports the block it returned — that is the gate working, not a broken hook.
+
+- **No subscriber → nothing changes.** Without a plugin or a `hooks:` entry the worktree is created exactly as before.
+- **It fires once per creation**, not on every dispatch: re-resolving an existing worktree takes the idempotent path and does not fire.
+- **A block fails the card, atomically.** On `{"action": "block"}` — for a shell hook: exit **2**, or with `fail_closed: true` a timeout or an unstartable command — the just-created worktree is **removed** (`git worktree remove --force`; the branch is kept) and the card fails with the hook's message (for exit 2: its stderr) in the reason. Removal is the point, not tidiness: the dispatcher releases the claim and retries a card whose workspace failed, and a worktree left behind would make that retry skip both `git worktree add` and the hook, handing the worker the unseeded checkout with no error attached. Because the tree is gone, the retry re-creates it and re-fires the hook. If the removal itself fails, the reason says so and names the worktree path — remove it by hand before the card retries, or that retry will spawn into the unseeded tree.
+- **Only a block fails the card.** A shell hook that exits with any other non-zero code is logged as a warning and the card proceeds (the bridge's normal fail-open rule), so make the failing path `exit 2`, and set `fail_closed: true` so a hang or a missing script cannot pass an unseeded worktree either. A Python callback that *raises* is likewise logged and skipped — return the directive instead. If a step is genuinely optional, exit 0 and write the warning to stderr (kept in the debug log).
+- **A timeout kills the whole hook process tree**, so an `npm ci` the hook started cannot keep writing into a worktree that has just been removed.
+- **Every path that creates the worktree wires the `hooks:` block first.** The gateway-hosted dispatcher registers it at gateway startup; `hermes kanban dispatch`, `hermes kanban daemon --force` and `hermes kanban claim` register it themselves before resolving the workspace, with the same consent rules. Python plugin hooks fire on all of these regardless.
+- **`hermes kanban claim`** resolves the workspace the same way and fires the same hook, but there is no dispatcher to release the claim: a block there leaves the card claimed with no workspace until the claim TTL expires.
 
 ### Goal-mode cards (`--goal`)
 

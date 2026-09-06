@@ -2,7 +2,8 @@
 callbacks on the plugin hook manager, so every ``invoke_hook()`` site dispatches to the scripts.
 Wire: stdin JSON ``{hook_event_name, tool_name, tool_input, session_id, cwd, extra}``; optional stdout
 JSON ``{"decision"|"action": "block"|"modify", ...}`` / ``{"context": ...}`` via ``_parse_response``.
-Exit code 2 blocks a ``pre_tool_call`` even without JSON (Claude-Code / Cursor). Fail open unless ``fail_closed``."""
+Exit code 2 blocks a blocking-capable event (``pre_tool_call``, ``kanban_worktree_created``) even without JSON
+(Claude-Code / Cursor). Fail open unless ``fail_closed``."""
 
 from __future__ import annotations
 
@@ -42,7 +43,8 @@ _DEFAULT_BLOCK_MESSAGE = "Blocked by shell hook."
 # Exit code that signals "block this action" independent of stdout (Claude Code / Cursor).
 BLOCK_EXIT_CODE = 2
 # Events whose block directive is honored downstream; exit-2 blocking and fail_closed only apply here.
-_BLOCKING_EVENTS = frozenset({"pre_tool_call"})
+# kanban_worktree_created: the dispatcher removes the just-created worktree and fails the card.
+_BLOCKING_EVENTS = frozenset({"pre_tool_call", "kanban_worktree_created"})
 _TOOL_EVENTS = frozenset({"pre_tool_call", "post_tool_call"})
 _STDERR_MESSAGE_LIMIT = 400
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -393,10 +395,18 @@ def _block_message(primary: Any, secondary: Any) -> str:
 _PRE_TOOL_DIALECTS = (("action", "message", "reason", "args"), ("decision", "reason", "message", "tool_input"))
 
 
-def _parse_pre_tool_call(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _parse_block_directive(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The block half of the dialects — the only directive ``kanban_worktree_created`` consumes."""
     for verb, primary, secondary, _ in _PRE_TOOL_DIALECTS:
         if data.get(verb) == "block":
             return {"action": "block", "message": _block_message(data.get(primary), data.get(secondary))}
+    return None
+
+
+def _parse_pre_tool_call(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    block = _parse_block_directive(data)
+    if block is not None:
+        return block
     for verb, _, _, payload in _PRE_TOOL_DIALECTS:
         if data.get(verb) == "modify" and isinstance(data.get(payload), dict):
             return {"action": "modify", "args": data[payload]}
@@ -417,7 +427,10 @@ def _parse_context(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return {"context": context} if isinstance(context, str) and context.strip() else None
 
 
-_RESPONSE_PARSERS: Dict[str, Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = {"pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify}
+_RESPONSE_PARSERS: Dict[str, Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = {
+    "pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify,
+    "kanban_worktree_created": _parse_block_directive,
+}
 
 
 def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:

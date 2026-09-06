@@ -30,6 +30,7 @@ from hermes_cli.kanban_output import (
 from hermes_cli.kanban_boards import _dispatch_boards
 from hermes_cli.kanban_ops import (
     _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_repair, _cmd_tail, _cmd_watch,
+    _register_config_hooks,
 )
 from hermes_cli.kanban_parser import build_parser  # noqa: F401  (re-exported: hermes_cli.main, run_slash)
 
@@ -712,6 +713,9 @@ def _cmd_claim(args: argparse.Namespace) -> int:
                 return _err(f"no such task: {args.task_id}")
             return _err(f"cannot claim {args.task_id}: status={existing.status} "
                         f"lock={existing.claim_lock or '(none)'}")
+        # A worktree card fires kanban_worktree_created from resolve_workspace; the
+        # hooks: block has to be wired first or a configured seed script never runs.
+        _register_config_hooks(args)
         workspace = kbw.resolve_workspace(task)
         kbw.set_workspace_path(conn, task.id, str(workspace))
     print(f"Claimed {task.id}\nWorkspace: {workspace}")

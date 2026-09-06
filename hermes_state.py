@@ -51,6 +51,7 @@ from hermes_state_dbfile import (
     refuse_deleted_wal_generation,
 )
 from hermes_state_messages import SessionMessagesMixin
+from hermes_state_provider import SQLiteProviderMixin, SessionDBProvider
 from hermes_state_wal import _WAL_INCOMPAT_MARKERS, apply_database_pragmas, apply_wal_with_fallback
 from hermes_state_repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
 from hermes_state_titles import SessionTitlesMixin
@@ -325,12 +326,18 @@ def _foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
 
 
 class SessionDB(
+    SQLiteProviderMixin,
     SessionSessionsMixin, SessionFtsSetupMixin, SessionSearchMixin, SessionSchemaMixin,
     SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
     SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
     SessionMessagesMixin,
+    SessionDBProvider,
 ):
-    """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
+    """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL).
+
+    Implements the SessionDBProvider contract (RFC #23717); SQLiteProviderMixin precedes the
+    ABC so its concrete name/is_available/initialize/shutdown win MRO, and the ABC trails the
+    feature mixins so their implementations satisfy the abstract declarations."""
 
     # Only these state-owned producers join automatic stale-open reconciliation; messaging/UI
     # sources have their own lifecycle owners; unknown sources fail closed.
@@ -1279,10 +1286,10 @@ class SessionDB(
 
 
 class AsyncSessionDB:
-    """Async door onto SessionDB: every call runs via asyncio.to_thread so a blocking SQLite call
-    never freezes the event loop (no method returns a live cursor)."""
+    """Async door onto a SessionDBProvider: every call runs via asyncio.to_thread so a blocking
+    backend call never freezes the event loop (no method returns a live cursor)."""
 
-    def __init__(self, db: "SessionDB") -> None:
+    def __init__(self, db: "SessionDBProvider") -> None:
         self._db = db
 
     def __getattr__(self, name: str):

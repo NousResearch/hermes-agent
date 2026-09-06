@@ -72,7 +72,9 @@ class TestInterfaceEnforcement:
             contract_attr = getattr(SessionDBProvider, member)
             contract_fn = contract_attr.fget if isinstance(contract_attr, property) else contract_attr
             contract = inspect.signature(contract_fn)
-            impl = inspect.signature(getattr(SessionDB, member))
+            impl_attr = getattr(SessionDB, member)
+            impl_fn = impl_attr.fget if isinstance(impl_attr, property) else impl_attr
+            impl = inspect.signature(impl_fn)
             impl_params = set(impl.parameters) - {"self"}
             impl_accepts_kwargs = any(
                 p.kind is inspect.Parameter.VAR_KEYWORD for p in impl.parameters.values()

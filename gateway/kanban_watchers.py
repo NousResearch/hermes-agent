@@ -714,7 +714,7 @@ class GatewayKanbanWatchersMixin:
                         bad_ticks += 1
                     else:
                         bad_ticks = 0
-                if bad_ticks >= HEALTH_WINDOW:
+                if bad_ticks >= _HEALTH_WINDOW:
                     now = int(time.time())
                     if now - last_warn_at >= 300:
                         logger.warning(

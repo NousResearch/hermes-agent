@@ -145,6 +145,39 @@ def test_repeated_incomplete_payloads_stop_after_three_requests(monkeypatch):
     assert dispatched == []
 
 
+def test_python_preflight_ignores_unknown_call_and_dispatches_valid_sibling(monkeypatch):
+    agent = _agent("tool_call", "write_file")
+    responses = iter(
+        (
+            _response(
+                _tool_call("execute_code", json.dumps({"code": "if True:"}), "unknown"),
+                _tool_call("write_file", json.dumps({"path": "valid", "content": "x"}), "valid"),
+            ),
+            _response(content="done", finish_reason="stop"),
+        )
+    )
+    dispatched = []
+    agent._interruptible_api_call = lambda api_kwargs: next(responses)
+    monkeypatch.setattr(
+        "model_tools.handle_function_call",
+        lambda name, args, *positional, **kwargs: dispatched.append((name, args))
+        or json.dumps({"success": True}),
+    )
+
+    with patch("tools.terminal_tool._get_env_config", return_value={"env_type": "local"}), patch(
+        "tools.code_execution_tool._get_execution_mode", return_value="strict"
+    ):
+        result = agent.run_conversation("write it")
+
+    assert result["completed"] is True
+    assert [(name, args["path"]) for name, args in dispatched] == [("write_file", "valid")]
+    unknown_result = next(
+        message for message in result["messages"]
+        if message["role"] == "tool" and message["tool_call_id"] == "unknown"
+    )
+    assert "does not exist" in unknown_result["content"]
+
+
 def test_python_preflight_defers_to_remote_interpreter(monkeypatch):
     agent = _agent("execute_code")
     responses = iter(

@@ -289,6 +289,8 @@ def validate_tool_calls(
     if any(tc.function.name in {"execute_code", "tool_call"} for tc, _ in parsed_args):
         if _python_preflight_supported():
             for tc, args in parsed_args:
+                if _mixed_invalid_batch and tc.function.name not in valid_names:
+                    continue
                 error = _python_source_error(tc.function.name, args)
                 if error is not None:
                     python_errors.append((tc, *error))

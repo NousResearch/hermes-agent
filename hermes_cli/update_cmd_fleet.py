@@ -248,7 +248,7 @@ def _run_pending_fleet_restart() -> bool:
         print("  ✓ No running gateways — nothing to restart.")
         return True
 
-    failed: list = []
+    restarted, failed = [], []
     try:
         # --- Systemd services (Linux) --- Discover all hermes-gateway* units (default + profiles) plus
         # hermes-serve* units (the Desktop app's backend, #83438).
@@ -259,7 +259,7 @@ def _run_pending_fleet_restart() -> bool:
         # isolation happens inside.
         if is_macos():
             try:
-                _restart_macos_launchd_gateways([], failed, 45.0)
+                _restart_macos_launchd_gateways(restarted, failed, 45.0)
             except Exception as exc:
                 logger.debug("Pending fleet restart: launchd failed: %s", exc)
                 failed.append("launchd")

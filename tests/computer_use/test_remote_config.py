@@ -211,6 +211,27 @@ class TestTokenScopeResolution:
         finally:
             set_multiplex_active(False)
 
+    def test_multiplex_active_scope_present_var_absent_fails_closed(self, monkeypatch):
+        """Multiplex ON + scope installed + token absent from scope + ambient
+        token present must fail closed, NOT borrow the process-wide token.
+        This is the cross-profile credential-isolation guarantee: profile B's
+        scope must never send profile A's bearer to A's endpoint."""
+        from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
+
+        monkeypatch.setenv("HERMES_CUA_REMOTE_TOKEN", self._ENV_TOKEN)
+        set_multiplex_active(True)
+        token = set_secret_scope({"OTHER_SECRET": "other"})  # scope without our var
+        try:
+            # The resolver returns empty token (scope miss, multiplex on → fail closed).
+            # The token-length validation then rejects it — the remote transport
+            # cannot start with a borrowed credential, and it cannot silently fall
+            # back to the local desktop either.
+            with pytest.raises(RuntimeError, match="must contain at least 32 bytes"):
+                resolve_remote_cua_config(self._CFG, permission_mode="standard")
+        finally:
+            reset_secret_scope(token)
+            set_multiplex_active(False)
+
 
 class TestConfigShape:
     def test_non_mapping_remote_raises(self):

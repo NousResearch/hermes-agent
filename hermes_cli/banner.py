@@ -409,11 +409,17 @@ def _compute_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]
     repo_dir = repo_dir or _resolve_repo_dir()
     if repo_dir is None:
         return _baked_banner_state()
-    upstream, local = (_git_stdout(["rev-parse", "--short=8", rev], cwd=repo_dir) for rev in ("origin/main", "HEAD"))
+
+    from hermes_cli.update_cmd import resolve_compare_ref
+
+    branch = _resolve_current_branch(repo_dir)
+    compare_ref, _remote_name = resolve_compare_ref(["git"], repo_dir, branch)
+
+    upstream, local = (_git_stdout(["rev-parse", "--short=8", rev], cwd=repo_dir) for rev in (compare_ref, "HEAD"))
     if not upstream or not local:
-        # Live-git lookup failed (e.g. shallow clone without origin/main).
+        # Live-git lookup failed (e.g. shallow clone without compare_ref).
         return _baked_banner_state()
-    ahead = _git_count(["rev-list", "--count", "origin/main..HEAD"], cwd=repo_dir) or 0
+    ahead = _git_count(["rev-list", "--count", f"{compare_ref}..HEAD"], cwd=repo_dir) or 0
     return {"upstream": upstream, "local": local, "ahead": max(ahead, 0)}
 
 

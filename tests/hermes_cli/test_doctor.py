@@ -1612,43 +1612,40 @@ class TestCheckForkUpstreamDrift:
         (tmp_path / ".git").mkdir()
         monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
 
-        issues = []
         side_effect = self._side_effect(upstream_counts=(0, 7))
         with patch("subprocess.run", side_effect=side_effect):
-            doctor._check_fork_upstream_drift(issues)
+            f = doctor._check_fork_upstream_drift(False)
 
         out = capsys.readouterr().out
         assert "7 commit(s) behind upstream" in out
         assert "⚠" in out
-        assert issues == ["7 commit(s) behind upstream — run 'hermes update' to sync."]
+        assert f.manual_issues == ["7 commit(s) behind upstream — run 'hermes update' to sync."]
 
     def test_diverged_from_upstream_warns_with_distinct_message(self, monkeypatch, tmp_path, capsys):
         monkeypatch.setattr(doctor, "PROJECT_ROOT", tmp_path)
         (tmp_path / ".git").mkdir()
         monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
 
-        issues = []
         side_effect = self._side_effect(upstream_counts=(2, 5))
         with patch("subprocess.run", side_effect=side_effect):
-            doctor._check_fork_upstream_drift(issues)
+            f = doctor._check_fork_upstream_drift(False)
 
         out = capsys.readouterr().out
         assert "Fork diverged from upstream: 2 ahead, 5 behind" in out
-        assert any("diverged" in i for i in issues)
+        assert any("diverged" in i for i in f.manual_issues)
 
     def test_up_to_date_with_upstream_is_ok_not_warn(self, monkeypatch, tmp_path, capsys):
         monkeypatch.setattr(doctor, "PROJECT_ROOT", tmp_path)
         (tmp_path / ".git").mkdir()
         monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
 
-        issues = []
         side_effect = self._side_effect(upstream_counts=(0, 0))
         with patch("subprocess.run", side_effect=side_effect):
-            doctor._check_fork_upstream_drift(issues)
+            f = doctor._check_fork_upstream_drift(False)
 
         out = capsys.readouterr().out
         assert "Up to date with upstream" in out
-        assert issues == []
+        assert f.manual_issues == []
 
     def test_no_upstream_remote_is_informational_only(self, monkeypatch, tmp_path, capsys):
         """No upstream configured is a valid, deliberate setup — info, not warn."""
@@ -1656,28 +1653,26 @@ class TestCheckForkUpstreamDrift:
         (tmp_path / ".git").mkdir()
         monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
 
-        issues = []
         side_effect = self._side_effect(has_upstream=False)
         with patch("subprocess.run", side_effect=side_effect):
-            doctor._check_fork_upstream_drift(issues)
+            f = doctor._check_fork_upstream_drift(False)
 
         out = capsys.readouterr().out
         assert "upstream: not configured" in out
         assert "⚠" not in out
-        assert issues == []
+        assert f.manual_issues == []
 
     def test_no_git_checkout_is_silent_noop(self, monkeypatch, tmp_path, capsys):
         """Mirrors _check_version_consistency's graceful skip when there's no
         git checkout to inspect (e.g. the Docker image path)."""
         monkeypatch.setattr(doctor, "PROJECT_ROOT", tmp_path)  # no .git dir created
 
-        issues = []
         with patch("subprocess.run") as mock_run:
-            doctor._check_fork_upstream_drift(issues)
+            f = doctor._check_fork_upstream_drift(False)
 
         out = capsys.readouterr().out
         assert "Fork / Upstream Sync" not in out
-        assert issues == []
+        assert f.manual_issues == []
         mock_run.assert_not_called()
 
     def test_skip_upstream_prompt_marker_reported_when_present(self, monkeypatch, tmp_path, capsys):
@@ -1686,10 +1681,9 @@ class TestCheckForkUpstreamDrift:
         monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
         (tmp_path / ".skip_upstream_prompt").touch()
 
-        issues = []
         side_effect = self._side_effect()
         with patch("subprocess.run", side_effect=side_effect):
-            doctor._check_fork_upstream_drift(issues)
+            f = doctor._check_fork_upstream_drift(False)
 
         out = capsys.readouterr().out
         assert "Upstream-add prompt previously declined" in out
@@ -1710,10 +1704,9 @@ class TestCheckForkUpstreamDrift:
             json.dumps({"ts": time.time(), "behind": 0, "rev": None, "ver": "0.19.1"})
         )
 
-        issues = []
         side_effect = self._side_effect()
         with patch("subprocess.run", side_effect=side_effect):
-            doctor._check_fork_upstream_drift(issues)
+            f = doctor._check_fork_upstream_drift(False)
 
         out = capsys.readouterr().out
         assert "Last update check:" in out
@@ -1734,11 +1727,10 @@ class TestCheckForkUpstreamDrift:
             calls.append(branch)
             return real(git_cmd, cwd, branch)
 
-        issues = []
         side_effect = self._side_effect()
         with patch("subprocess.run", side_effect=side_effect), \
              patch.object(update_cmd, "resolve_compare_ref", side_effect=spy):
-            doctor._check_fork_upstream_drift(issues)
+            f = doctor._check_fork_upstream_drift(False)
 
         assert calls == ["main"]
 class TestMacOSTCCGrants:

@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import strip_stale_dangerous_confirmations
 from gateway.log_redaction import (
+    log_safe_gateway_error,
+    log_safe_gateway_exc_info,
     session_key_for_log,
 )
 from gateway.config import Platform
@@ -1235,7 +1237,7 @@ class TurnRunner:
         except (TimeoutError, Exception) as err:
             if cancelled_flag is not None:
                 cancelled_flag["cancelled"] = True
-            logger.warning("%s boundary timed out or failed: %s", reason, err)
+            logger.warning("%s boundary timed out or failed: %s", reason, log_safe_gateway_error(getattr(self._ctx._status_adapter, "platform", None), err))
             return False
 
     def _clarify_callback_sync(self, question: str, choices, multi_select: bool = False) -> str:
@@ -1270,7 +1272,7 @@ class TurnRunner:
             if callable(flush):
                 flush(timeout=3.0)
         except Exception:
-            logger.debug("Stream-consumer flush before clarify prompt failed", exc_info=True)
+            logger.debug("Stream-consumer flush before clarify prompt failed", exc_info=log_safe_gateway_exc_info(getattr(ctx._status_adapter, "platform", None)))
         fut = self._schedule(
             ctx._status_adapter.send_clarify(
                 chat_id=ctx._status_chat_id, question=question, choices=choices, clarify_id=clarify_id,
@@ -1281,7 +1283,7 @@ class TurnRunner:
         # Boundary rule (see _approval_send_outcome): a send timeout is AMBIGUOUS — the card may
         # have posted with a late ack. Only a definitive failure tears down the registration;
         # ambiguous falls through to the bounded wait so a late reply resolves.
-        response = _clarify_send_then_wait(fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod)
+        response = _clarify_send_then_wait(fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod, platform=getattr(ctx._status_adapter, "platform", None))
         # Only re-arm typing when the user actually answered — the undeliverable sentinel and the
         # timeout/cancellation strings start with '[' and must pass through untouched.
         if not (isinstance(response, str) and response.startswith("[")):
@@ -1293,11 +1295,11 @@ class TurnRunner:
                 try:
                     sc.request_reopen_seed()
                 except Exception:
-                    logger.debug("request_reopen_seed after clarify answer failed", exc_info=True)
+                    logger.debug("request_reopen_seed after clarify answer failed", exc_info=log_safe_gateway_exc_info(getattr(ctx._status_adapter, "platform", None)))
             try:
                 ctx._status_adapter.resume_typing_for_chat(ctx._status_chat_id)
             except Exception:
-                logger.debug("resume_typing_for_chat after clarify answer failed", exc_info=True)
+                logger.debug("resume_typing_for_chat after clarify answer failed", exc_info=log_safe_gateway_exc_info(getattr(ctx._status_adapter, "platform", None)))
         return response
 
     def _approval_notify_sync(self, approval_data: dict) -> None:
@@ -1328,7 +1330,7 @@ class TurnRunner:
                 )
                 if fut is None:
                     raise RuntimeError("send_exec_approval: loop unavailable")
-                outcome = _approval_send_outcome(fut, timeout=15)
+                outcome = _approval_send_outcome(fut, timeout=15, platform=getattr(adapter, "platform", None))
                 if outcome == "sent":
                     return
                 if outcome == "ambiguous":
@@ -1373,7 +1375,7 @@ class TurnRunner:
                 # the destination the connector just refused.
                 raise
             except Exception as e:
-                logger.warning("Button-based approval failed, falling back to text: %s", e)
+                logger.warning("Button-based approval failed, falling back to text: %s", log_safe_gateway_error(getattr(adapter, "platform", None), e))
         # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
         # in Slack threads and reserved by Matrix clients.
         msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
@@ -1386,7 +1388,7 @@ class TurnRunner:
             if fut is not None:
                 fut.result(timeout=15)
         except Exception as e:
-            logger.error("Failed to send approval request: %s", e)
+            logger.error("Failed to send approval request: %s", log_safe_gateway_error(getattr(adapter, "platform", None), e))
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 

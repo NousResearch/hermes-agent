@@ -1395,6 +1395,16 @@ class TestIsPaymentError:
 
 
 
+    @pytest.mark.parametrize("spelling", ["RESOURCE_EXHAUSTED", "ResourceExhausted", "resource-exhausted"])
+    @pytest.mark.parametrize("status", [None, 429])
+    def test_resource_exhausted_separator_variants_are_payment(self, spelling, status):
+        """NIM / gRPC wrappers serialize the quota signal without the space; the fallback gate
+        must read every spelling like the literal ``resource exhausted`` (#85649)."""
+        exc = Exception(f"{spelling}: Worker local total request limit reached (32/32)")
+        if status is not None:
+            exc.status_code = status
+        assert _is_payment_error(exc) is True
+
     def test_403_subscription_required_is_payment(self):
         exc = Exception(
             "this model requires a subscription, upgrade for access: "

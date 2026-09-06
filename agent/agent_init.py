@@ -433,6 +433,17 @@ def _finalize_routing(agent, api_mode, credential_pool):
     with suppress(Exception):
         agent._get_transport()
 
+    # The Nous agent key lives ~1 h. Without the proactive refresher every agent in the process
+    # discovers expiry reactively, on its own next request, all in the same minute: with 200
+    # in-process subagents that was a 401 storm each hour (620 in one run) and the credential
+    # pool benched the provider for all of them. The gateway and web server start this thread
+    # at boot; the CLI process (and everything spawned inside it) never did. Idempotent,
+    # process-wide, daemon.
+    if agent.provider == "nous":
+        with suppress(Exception):
+            from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
+            start_nous_auth_keepalive()
+
     with suppress(Exception):
         from hermes_cli.model_normalize import (
             _AGGREGATOR_PROVIDERS, normalize_model_for_provider
@@ -564,6 +575,10 @@ _SESSION_STATE: Dict[str, Any] = {
     # prefix, kept separately only to place an early cache marker.
     "_cached_system_prompt": None,
     "_cached_system_prompt_static": None,
+    # ``(cwd, workspace_block)`` pinned on the first build: the git/workspace snapshot is
+    # probed once per session and replayed on every rebuild, so a moving repo can't push the
+    # prefix-cache divergence point ahead of the volatile band at a compaction boundary.
+    "_frozen_workspace_snapshot": None,
     # Whether close() also closes _session_db. False: a caller-supplied handle is usually the
     # SHARED launch handle; callers handing over a DEDICATED handle set True.
     "_owns_session_db": False,

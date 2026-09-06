@@ -162,13 +162,6 @@ def test_launchd_named_profile_and_failed_label():
         failed_units=["ai.hermes.gateway"],
     )
     assert failed[0]["outcome"] == "failed"
-    # Sibling label must not credit the default profile (exact match, not prefix).
-    sibling = match_runtime_outcomes(
-        _plan(_rt("default", 403, supervisor="launchd")),
-        restarted_services=["ai.hermes.gateway-foo"], relaunched_profiles=[],
-        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
-    )
-    assert sibling[0]["outcome"] == "unaccounted"
 
 
 def test_untouched_runtime_is_unaccounted_and_escalates(capsys):

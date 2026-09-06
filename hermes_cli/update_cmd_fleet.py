@@ -543,10 +543,6 @@ def _surviving_gateway_pids_after_failed_restart():
         return None
 
 
-# `_gateway_service_matches_profile` is imported from update_inventory so plan
-# reconciliation and abort-recovery share one systemd/launchd/s6 matcher.
-
-
 _MANUAL_GATEWAY_SKIP_REASON = (
     "manual gateway has no supervisor relaunch authority; left running for explicit operator restart"
 )

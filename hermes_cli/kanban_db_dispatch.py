@@ -1726,6 +1726,8 @@ def _delivery_role_hold(conn: sqlite3.Connection, task_id: str, assignee: str) -
     role, phase = contract.get("role"), contract.get("phase")
     if contract.get("assignee") != assignee:
         return "delivery role binding no longer matches assignee; update the explicit handoff"
+    if not isinstance(role, str) or not isinstance(phase, str):
+        return "delivery role and phase must be strings"
     if role not in capabilities or phase not in capabilities[role]:
         return f"incompatible delivery phase/role: {phase}/{role}; select a compatible worker"
     target = contract.get("validation_target")

@@ -3779,9 +3779,8 @@ def invalidate_descendants_for_parent_reopen(
             evidence = _completed_artifact_evidence(conn, row["id"]) if previous_status == "done" else None
             if evidence:
                 preserved.append({"id": row["id"], **evidence})
-                # Keep the historical verdict attached to its exact artifact;
-                # this does not approve a changed parent or a new generation.
-                continue
+                # Preserve the immutable run, not dependency satisfaction:
+                # a historical PASS cannot release a new generation's children.
             resume_status = "ready"
             run_id = None
             if previous_status == "review":

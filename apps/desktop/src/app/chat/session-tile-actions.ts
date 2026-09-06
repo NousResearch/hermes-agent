@@ -121,9 +121,18 @@ interface SessionTileActionsArgs {
   runtimeId: string
   scope: ComposerScope
   storedSessionId: string
+  /** Where a recovered runtime id gets recorded. Defaults to the tile
+   *  registry; a detached surface owns its own binding and passes its own. */
+  onRuntimeBound?: (runtimeId: string) => void
 }
 
-export function useSessionTileActions({ requestGateway, runtimeId, scope, storedSessionId }: SessionTileActionsArgs) {
+export function useSessionTileActions({
+  onRuntimeBound,
+  requestGateway,
+  runtimeId,
+  scope,
+  storedSessionId
+}: SessionTileActionsArgs) {
   const { t } = useI18n()
   const copy = t.desktop
 
@@ -137,11 +146,21 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
   const runtimeIdByStoredSessionIdRef = useRef(new Map([[storedSessionId, runtimeId]]))
   runtimeIdByStoredSessionIdRef.current.set(storedSessionId, runtimeId)
 
+  const bindRef = useRef(onRuntimeBound)
+  bindRef.current = onRuntimeBound
+
   const bindRecoveredRuntime = useCallback((recoveredId: string) => {
     const storedId = storedIdRef.current
 
     runtimeIdRef.current = recoveredId
     runtimeIdByStoredSessionIdRef.current.set(storedId, recoveredId)
+
+    if (bindRef.current) {
+      bindRef.current(recoveredId)
+
+      return
+    }
+
     patchSessionTile(storedId, { error: undefined, runtimeId: recoveredId })
   }, [])
 

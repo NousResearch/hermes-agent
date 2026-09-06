@@ -7,6 +7,7 @@
 import {
   Button,
   Codicon,
+  Field,
   host,
   Input,
   Select,
@@ -14,6 +15,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  SIDE_PANEL_LABEL,
   Switch,
   useMutation,
   useQuery,
@@ -31,7 +33,7 @@ import {
   saveProfileDescription
 } from './api'
 import type { KanbanProfile } from './types'
-import { errText, FIELD_LABEL, useKanban } from './ui'
+import { errText, useKanban } from './ui'
 
 const DEFAULT_SENTINEL = '__default__'
 
@@ -49,8 +51,7 @@ function ProfilePicker({
   const k = useKanban()
 
   return (
-    <label className="flex min-w-0 flex-col gap-1">
-      <span className={FIELD_LABEL}>{label}</span>
+    <Field className="min-w-0" label={label}>
       <Select onValueChange={name => onSave(name === DEFAULT_SENTINEL ? '' : name)} value={value || DEFAULT_SENTINEL}>
         <SelectTrigger className="w-44">
           <SelectValue />
@@ -64,7 +65,7 @@ function ProfilePicker({
           ))}
         </SelectContent>
       </Select>
-    </label>
+    </Field>
   )
 }
 
@@ -172,7 +173,7 @@ export function OrchestrationPanel() {
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <span className={FIELD_LABEL}>{k.profileDescriptions}</span>
+        <span className={SIDE_PANEL_LABEL}>{k.profileDescriptions}</span>
         <p className="text-[0.6875rem] text-(--ui-text-quaternary)">{k.profileDescriptionsHint}</p>
         {roster.profiles.map(profile => (
           <ProfileDescriptionRow key={`${profile.name}:${profile.description}`} profile={profile} />

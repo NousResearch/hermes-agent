@@ -115,8 +115,8 @@ fill/shadow), `ghost`, `link`, `text` (boxless quiet inline — "Cancel",
 
 **Sizes:** `default`, `xs`, `sm`, `lg`, `inline` (flush, zero box — for buttons
 that sit inside a heading/sentence; replaces `h-auto px-0 py-0`), `micro`
-(status-stack/table-footers), and the icon family `icon` / `icon-xs` /
-`icon-sm` / `icon-lg` / `icon-titlebar`.
+(status-stack/table-footers), and the icon family `icon` / `icon-2xs` /
+`icon-xs` / `icon-sm` / `icon-lg` / `icon-titlebar`.
 
 **Tooltips only when hover teaches something new.** `<Tip>` is for discovery,
 not a tax on every icon. Ask: does hover reveal something the user cannot
@@ -168,12 +168,18 @@ Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 
 - **`controlVariants`** (`src/components/ui/control.ts`) is the shared shape for
   `Input` / `Textarea` / `SelectTrigger`. New text-entry controls compose it.
+  Chrome: `default` (boxed `desktop-input-chrome` field) and `plain` (same type,
+  no box — an editable heading or an id sitting in toolbar chrome).
 - **`SearchField`** — borderless, underline-on-focus, auto-width. The only
   search input. Don't build boxed search bars; don't wrap it in a bordered tile.
   Empty lists hide their search field.
 - **`SegmentedControl`** — the choice control for small mutually-exclusive sets
   (color mode, tool-call display, usage period). Replaces radio piles and
   pill rows.
+- **`Field`** (`src/components/ui/field.tsx`) — label above the control.
+  `FIELD_STACK` / `FIELD_LABEL` are the classes `SidePanelMetaRow` reuses, so
+  the Kanban drawer and the workflow inspector cannot drift. `row` is only for
+  a small control (stepper, switch) that would look lost at full width.
 - **`Switch`** (`size="xs"`) — bare, with `aria-label`. No bordered text wrapper.
 
 ## Layout
@@ -186,6 +192,12 @@ Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
   shell.
 - **Rows:** `ListRow` (settings `primitives.tsx`) for label/description/action
   rows. Flat, flush-left; no per-row indentation that fights flush headers.
+- **Detail panels:** `SidePanel` (`src/components/ui/side-panel.tsx`) — the
+  Kanban task drawer and the Workflows inspector. `SidePanelTitleInput` is the
+  heading worn as an input (`chrome="plain"`). `SidePanelMetaRow` takes
+  `control` when the value is a form control and `wrap` when a read-only value
+  must not truncate. Meta rows stack like `Field` (label above), not a 6rem
+  key/value table.
 - **No dividers between rows** unless the list genuinely needs them; prefer
   spacing. When you do need one, it's a single `--ui-stroke-tertiary` hairline.
 

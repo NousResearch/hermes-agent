@@ -4,6 +4,7 @@ import * as React from 'react'
 import { Codicon } from '@/components/ui/codicon'
 import { type ControlVariantProps, controlVariants } from '@/components/ui/control'
 import { usePopoverPortalContainer } from '@/components/ui/dialog-portal-context'
+import { useFieldControl } from '@/components/ui/field'
 import { cn } from '@/lib/utils'
 
 function Select({ ...props }: React.ComponentProps<typeof SelectPrimitive.Root>) {
@@ -13,13 +14,17 @@ function Select({ ...props }: React.ComponentProps<typeof SelectPrimitive.Root>)
 function SelectTrigger({
   className,
   children,
+  chrome,
   size,
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Trigger> & ControlVariantProps) {
+  const status = useFieldControl()
+
   return (
     <SelectPrimitive.Trigger
+      {...status}
       className={cn(
-        controlVariants({ size }),
+        controlVariants({ chrome, size }),
         'flex items-center justify-between gap-2 whitespace-nowrap data-placeholder:text-muted-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0',
         className
       )}

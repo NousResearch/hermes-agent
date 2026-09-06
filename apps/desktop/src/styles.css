@@ -1308,10 +1308,13 @@ code {
 }
 
 /* `[data-state='open']` keeps the trigger looking focused while its dropdown is
-   open — Radix moves focus into the list, so the trigger itself loses :focus. */
+   open — Radix moves focus into the list, so the trigger itself loses :focus.
+   `:has([data-state='open'])` is the same for an inset Field, whose chrome
+   lives on the wrapper rather than the trigger. */
 .desktop-input-chrome:focus,
 .desktop-input-chrome:focus-within,
-.desktop-input-chrome[data-state='open'] {
+.desktop-input-chrome[data-state='open'],
+.desktop-input-chrome:has([data-state='open']) {
   border-color: var(--dt-composer-ring);
   box-shadow: none;
   outline: none;

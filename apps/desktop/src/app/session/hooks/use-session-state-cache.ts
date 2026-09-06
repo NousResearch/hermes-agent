@@ -7,6 +7,7 @@ import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { persistInFlightTurnState } from '@/lib/inflight-turn-journal'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { isDetachedSession } from '@/store/detached-sessions'
 import {
   $activeSessionId,
   $messages,
@@ -95,6 +96,9 @@ export function useSessionStateCache({
       isReferenced: (runtimeId, state) =>
         runtimeId === activeSessionIdRef.current ||
         state.storedSessionId === selectedStoredSessionIdRef.current ||
+        // A chat mounted inside another surface (the Workflows canvas) is none
+        // of the above and would otherwise be evicted while still on screen.
+        isDetachedSession(runtimeId, state.storedSessionId) ||
         $sessionTiles
           .get()
           .some(

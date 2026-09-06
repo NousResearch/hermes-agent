@@ -4,6 +4,7 @@ import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals'
 import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
+import { isDetachedSession } from '@/store/detached-sessions'
 import { $gateway } from '@/store/gateway'
 import { applyDesktopLayoutPreset, revealDesktopPane } from '@/store/pane-focus'
 import { recordAgentReaction } from '@/store/reactions-local'
@@ -45,7 +46,7 @@ const loadPreviewEngine = () => {
  *  (terminal/preview/window), agent terminal streaming, pane reveal, and
  *  message reactions. */
 export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
-  const { event, payload, isActiveEvent } = ctx
+  const { event, payload, isActiveEvent, sessionId } = ctx
 
   if (event.type === 'terminal.read.request') {
     // read_terminal tool: serialize the renderer's xterm buffer and answer
@@ -173,9 +174,13 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
     // tour tool: run one guided-tour action (highlight/step/discover) via
     // driver.js — on the app's own DOM or inside the preview pane's guest
     // page — and answer with the outcome. Dynamic import keeps driver.js
-    // and the preview injection payload off the boot path. Active session
-    // only: a background turn must never paint overlays on the user's
-    // screen (desktop AGENTS.md: offer, don't hijack).
+    // and the preview injection payload off the boot path. On-screen
+    // sessions only: a background turn must never paint overlays on the
+    // user's screen (desktop AGENTS.md: offer, don't hijack). "On screen"
+    // means the active session OR a detached chat (the Workflows canvas) —
+    // a detached session's claim exists exactly while its surface is
+    // mounted in front of the user, and its whole reason for touring is to
+    // walk them around the page it lives on.
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
 
     if (requestId) {
@@ -190,7 +195,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
         // walkthrough it isn't getting, and a no-op would leave it narrating
         // a spotlight the user can't see.
         void answer({ error: 'The user has turned guided tours off.', success: false })
-      } else if (isActiveEvent) {
+      } else if (isActiveEvent || isDetachedSession(sessionId ?? '')) {
         void import('@/lib/tour')
           .then(({ runTour }) =>
             runTour(

@@ -226,6 +226,7 @@ export const CenteredThreadSpinner: FC = () => {
     <div
       aria-label={t.assistant.thread.loadingSession}
       className="pointer-events-none absolute inset-0 z-1 grid place-items-center"
+      data-slot="thread-session-loading"
       role="status"
     >
       <Loader

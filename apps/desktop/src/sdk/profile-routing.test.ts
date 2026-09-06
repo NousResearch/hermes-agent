@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type * as GatewayStore from '@/store/gateway'
+import type * as SessionStore from '@/store/session'
 import type { ProfileInfo } from '@/types/hermes'
 
 vi.mock('@/app/chat/session-view', async () => {
@@ -17,12 +19,17 @@ vi.mock('@/contrib/events', () => ({ onGatewayEvent: vi.fn() }))
 vi.mock('@/hermes', () => ({ deleteProfile: vi.fn(), getLogs: vi.fn(), getStatus: vi.fn(), hermesApi: vi.fn() }))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
 vi.mock('@/store/system-actions', () => ({ runGatewayRestart: vi.fn() }))
-vi.mock('@/store/session', async () => {
+// Spread the real module rather than listing its exports: this suite only
+// cares about a handful of atoms, but anything the SDK pulls in transitively
+// still has to resolve, and an enumerated mock breaks the moment an unrelated
+// module reads a store key nobody thought to add here.
+vi.mock('@/store/session', async importOriginal => {
   const { atom } = await import('nanostores')
 
   type LineageRow = { _lineage_root_id?: null | string; id: string }
 
   return {
+    ...(await importOriginal<typeof SessionStore>()),
     $activeSessionId: atom(null),
     $connection: atom(null),
     $cronSessions: atom([]),
@@ -94,10 +101,11 @@ vi.mock('@/store/profile', async () => {
     setShowAllProfiles: vi.fn()
   }
 })
-vi.mock('@/store/gateway', async () => {
+vi.mock('@/store/gateway', async importOriginal => {
   const { atom } = await import('nanostores')
 
   return {
+    ...(await importOriginal<typeof GatewayStore>()),
     $gateway: atom(null),
     activeGateway: vi.fn(() => null),
     activeGatewayConnectionId: vi.fn(() => 'local'),

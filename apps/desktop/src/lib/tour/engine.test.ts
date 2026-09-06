@@ -7,9 +7,11 @@ import { runTourEngine, type TourDriver, type TourHolder } from './engine'
 function makeFactory(calls: string[]) {
   return (config?: object) => {
     const cfg = (config ?? {}) as {
+      allowClose?: boolean
       onDestroyed?: () => void
       onNextClick?: () => void
       onPrevClick?: () => void
+      overlayClickBehavior?: 'close' | 'nextStep' | (() => void)
       steps?: { onHighlightStarted?: () => void; waitForElement?: number }[]
     }
 
@@ -22,11 +24,30 @@ function makeFactory(calls: string[]) {
       steps[at]?.onHighlightStarted?.()
     }
 
-    const instance: TourDriver & { clickNext: () => void; clickPrev: () => void } = {
+    const instance: TourDriver & {
+      clickNext: () => void
+      clickOverlay: () => void
+      clickPrev: () => void
+      pressEscape: () => void
+    } = {
       // Stands in for the popover's own Next/Prev buttons. driver.js runs a
       // configured handler if one exists, otherwise its built-in advance —
       // both end up entering the step, which is what must trigger the move.
       clickNext: () => (cfg.onNextClick ? cfg.onNextClick() : instance.moveNext()),
+      // driver.js's backdrop rule, in its own order: `close` destroys, but only
+      // while allowClose is on; a function short-circuits before `nextStep` is
+      // ever considered, which is what makes a hook an inert backdrop.
+      clickOverlay: () => {
+        const behavior = cfg.overlayClickBehavior ?? 'close'
+
+        if ((cfg.allowClose ?? true) && behavior === 'close') {
+          instance.destroy()
+        } else if (typeof behavior === 'function') {
+          behavior()
+        } else if (behavior === 'nextStep') {
+          instance.moveNext()
+        }
+      },
       clickPrev: () => (cfg.onPrevClick ? cfg.onPrevClick() : instance.movePrevious()),
       destroy() {
         calls.push('destroy')
@@ -53,7 +74,8 @@ function makeFactory(calls: string[]) {
       movePrevious() {
         calls.push('prev')
         enter(index - 1)
-      }
+      },
+      pressEscape: () => void ((cfg.allowClose ?? true) && instance.destroy())
     }
 
     return instance
@@ -160,6 +182,13 @@ describe('runTourEngine', () => {
     expect(good.success).toBe(true)
     expect(calls.some(c => c.startsWith('highlight:'))).toBe(true)
     expect(holder.driver).toBeDefined()
+
+    // A lone highlight has no next and no previous, and driver.js drops the ✕
+    // along with the footer it can't fill — a popover nothing dismisses. It
+    // only keeps the close button when a step names it.
+    const shown = JSON.parse(calls.find(c => c.startsWith('highlight:'))!.slice('highlight:'.length))
+
+    expect(shown.popover.showButtons).toContain('close')
   })
 
   it('start → next pages through and cleans up after the last step', () => {
@@ -193,6 +222,34 @@ describe('runTourEngine', () => {
       done: true,
       success: true
     })
+    expect(holder.driver).toBeUndefined()
+  })
+
+  it('survives a backdrop click, and still exits on Esc', () => {
+    seedDom()
+    const calls: string[] = []
+    const holder: TourHolder = {}
+    const factory = makeFactory(calls)
+
+    runTourEngine(
+      factory,
+      holder,
+      { kind: 'start', steps: [{ selector: '#send-btn', title: 'Send' }] },
+      collectTourTargets,
+      document
+    )
+
+    const driver = holder.driver as ReturnType<typeof factory>
+
+    // Panning a canvas under the tour means clicking the backdrop; that must
+    // not be a dismissal, or the first drag toward the highlighted thing ends
+    // the tour.
+    driver.clickOverlay()
+    expect(calls).not.toContain('destroy')
+    expect(holder.driver).toBeDefined()
+
+    driver.pressEscape()
+    expect(calls).toContain('destroy')
     expect(holder.driver).toBeUndefined()
   })
 
@@ -483,5 +540,78 @@ describe('tours that move the app', () => {
 
     // No re-drive attempts once it's over.
     expect(calls.length).toBe(after)
+  })
+
+  /** A target of its own. Tours left running by earlier tests keep re-driving
+   *  onto `#send-btn`, and their reveals would land in the counts below. */
+  const seedRevealTarget = () => {
+    seedDom()
+
+    const target = document.createElement('div')
+
+    target.id = 'off-screen-card'
+    document.body.append(target)
+
+    return target
+  }
+
+  /** Start a one-step tour on that target, and hand back the way to end it —
+   *  a tour left running keeps its keep-alive watching, and it would re-drive
+   *  onto the NEXT test's target and reveal it again. */
+  const runRevealTour = (calls: string[]) => {
+    const holder: TourHolder = {}
+    const args = [collectTourTargets, document, undefined, makeHost().host] as const
+
+    runTourEngine(
+      makeFactory(calls),
+      holder,
+      { kind: 'start', steps: [{ selector: '#off-screen-card', title: 'Card' }] },
+      ...args
+    )
+
+    return () => void runTourEngine(makeFactory([]), holder, { kind: 'stop' }, ...args)
+  }
+
+  it('asks the surface to reveal the target, and leaves it alone when nobody answers', () => {
+    const target = seedRevealTarget()
+    const calls: string[] = []
+    const seen: string[] = []
+
+    // Listening on an ANCESTOR: the event is dispatched on the target and
+    // bubbles, which is how a canvas that owns the camera hears about a card
+    // without the engine knowing that canvas exists.
+    document.body.addEventListener('hermes:tour-reveal', event => void seen.push((event.target as HTMLElement).id))
+
+    const stop = runRevealTour(calls)
+
+    expect(seen).toContain(target.id)
+    // Unanswered means a surface that scrolls normally, which driver.js already
+    // handles — re-measuring it would be a step spent on nothing.
+    expect(calls.filter(c => c.startsWith('drive:')).length).toBe(1)
+
+    stop()
+  })
+
+  it('re-measures once when an animated reveal lands, without asking again', async () => {
+    const target = seedRevealTarget()
+    const calls: string[] = []
+    let asked = 0
+
+    target.addEventListener('hermes:tour-reveal', event => {
+      asked += 1
+      // What a canvas hands back: the camera's arrival.
+      ;(event as CustomEvent<{ settled?: PromiseLike<unknown> }>).detail.settled = Promise.resolve(true)
+    })
+
+    const stop = runRevealTour(calls)
+
+    await new Promise(resolve => setTimeout(resolve, 20))
+    stop()
+
+    // One re-drive, because re-driving is the only thing that re-measures a
+    // target that has moved under driver.js. And one ask: the re-drive fires
+    // the same hook, so an unguarded reveal would restart the pan it just
+    // waited for, for ever.
+    expect({ asked, drives: calls.filter(c => c.startsWith('drive:')).length }).toEqual({ asked: 1, drives: 2 })
   })
 })

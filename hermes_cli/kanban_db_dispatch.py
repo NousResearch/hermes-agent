@@ -1154,7 +1154,10 @@ def check_respawn_guard(
     latest_run = conn.execute(
         "SELECT outcome, ended_at FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY ended_at DESC LIMIT 1",
+        # id breaks the tie when two runs end within the same second (a
+        # review handoff + reviewer verdict routinely do) — without it the
+        # older run can shadow the newer verdict.
+        "ORDER BY ended_at DESC, id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
     if latest_run is not None and latest_run["outcome"] == "rate_limited":
@@ -1204,6 +1207,15 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    Exception: the latest run ended in ``changes_requested`` — the reviewer
+    #    sent the task back to the SAME implementer for rework on that PR. The
+    #    guard's rationale (duplicate PR) is inverted there: the rework MUST
+    #    touch the existing PR, and without this bypass the card sits deferred
+    #    until the 24h window elapses (#91614). ``latest_run`` is the newest
+    #    ended run; a later crash/completion supersedes the verdict, so a plain
+    #    re-queue with no fresh review verdict keeps the guard.
+    if latest_run is not None and latest_run["outcome"] == "changes_requested":
+        return None
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",

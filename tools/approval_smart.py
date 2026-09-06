@@ -142,4 +142,10 @@ def _smart_verdict(command: str, description: str, pattern_key: str,
     verdict = _smart_approve(command, description)
     if payload is not None and verdict in {"approve", "deny"}:
         _ctx._fire_approval_hook("post_approval_response", **payload, choice=f"smart_{verdict}", decided_by="aux_llm")
+    if payload is None and verdict in {"approve", "deny"}:
+        # The core sink hashes content itself; a failed plugin redactor must not lose the receipt.
+        _ctx._fire_approval_hook(
+            "post_approval_response", _audit_only=True, command=command, description=description,
+            pattern_key=pattern_key, session_key=session_key, surface="smart",
+            choice=f"smart_{verdict}", decided_by="aux_llm")
     return verdict

@@ -10,6 +10,7 @@ import logging
 import os
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled, is_truthy_value
+from tools.approval_audit import record_decision
 
 logger = logging.getLogger("tools.approval")
 
@@ -50,22 +51,28 @@ def _is_interactive_cli() -> bool:
     return is_truthy_value(ctx_val) if ctx_val is not None else env_var_enabled("HERMES_INTERACTIVE")
 
 
-def _fire_approval_hook(hook_name: str, **kwargs) -> None:
+def _fire_approval_hook(hook_name: str, *, _audit_only: bool = False, **kwargs) -> None:
     """Invoke a plugin lifecycle hook (pre_approval_request / post_approval_response).
 
     Lazy-imports the plugin manager (approval.py is imported long before plugins
     are discovered). Never raises: approval flow is safety-critical, plugin
     observability is not.
     """
+    kwargs.setdefault("turn_id", _approval_turn_id.get())
+    kwargs.setdefault("tool_call_id", _approval_tool_call_id.get())
+    if _approval_session_id.get():
+        kwargs.setdefault("session_id", _approval_session_id.get())
+    if hook_name == "post_approval_response":
+        kwargs.setdefault("decided_by", "timeout" if kwargs.get("choice") == "timeout" else
+                          ("user" if kwargs.get("surface") == "cli" else "gateway"))
+        record_decision(kwargs)
+    if _audit_only:
+        return
     try:
         from hermes_cli.lifecycle import invoke_hook
     except Exception:
         return  # plugin system unavailable (bare tool-only imports, minimal tests)
     try:
-        kwargs.setdefault("turn_id", _approval_turn_id.get())
-        kwargs.setdefault("tool_call_id", _approval_tool_call_id.get())
-        if _approval_session_id.get():
-            kwargs.setdefault("session_id", _approval_session_id.get())
         invoke_hook(hook_name, **kwargs)
     except Exception as exc:
         # invoke_hook() swallows per-callback errors; this is the dispatch layer itself failing.

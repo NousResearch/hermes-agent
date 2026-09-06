@@ -2801,6 +2801,8 @@ export interface Translations {
   }
 
   freeTier: {
+    /** Settings › Providers row title while the Nous identity is the free tier. */
+    providerRowTitle: string
     // First-launch introduction (ready screen + composer strip).
     readyTitle: string
     readyCaption: string

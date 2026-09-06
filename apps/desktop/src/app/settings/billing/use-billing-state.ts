@@ -108,6 +108,9 @@ export type BillingPlanCardView = {
       link?: undefined
     }
   | { action?: undefined; link: { label: string; url: string } }
+  // The free-tier card is the "what you get" text alone: the page's one Sign in lives on the
+  // notice above it, so the card carries neither an action nor a link.
+  | { action?: undefined; link?: undefined }
 )
 
 interface BillingPlanTierBase {
@@ -333,7 +336,6 @@ function freeTierView(billing: BillingStateResponse): BillingView {
       tone: 'info'
     },
     plan: {
-      action: { label: 'Sign in', onSelect: openFreeTierSignIn },
       caption:
         'Runs on nous/welcome with connectors included. Signing in keeps your connectors and adds the tools that need an account and every other model.',
       tierName: 'Nous · free tier'

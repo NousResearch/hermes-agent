@@ -187,7 +187,8 @@ describe('deriveBillingView', () => {
       { label: 'Model', value: 'nous/welcome' },
       { label: 'Connectors', tone: 'primary', value: 'Included' }
     ])
-    expect(view.plan).toMatchObject({ action: { label: 'Sign in' }, tierName: 'Nous · free tier' })
+    expect(view.plan).toMatchObject({ tierName: 'Nous · free tier' })
+    expect(view.plan?.action).toBeUndefined()
     expect(view.planFootnote).toContain('no balance and nothing to pay')
     expect(view.paymentRow).toBeUndefined()
     expect(view.topupRow).toBeUndefined()

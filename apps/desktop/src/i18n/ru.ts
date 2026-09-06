@@ -25,7 +25,6 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 
 export const ru = defineLocale({
   sessionImport: {
-    refresh: 'Обновить сессии',
     title: 'Продолжить из другого приложения',
     subtitle: 'Перенесите разговор в Hermes и продолжите с того места, где остановились.',
     action: 'Импортировать сессию',
@@ -35,7 +34,6 @@ export const ru = defineLocale({
     all: 'Все',
     search: 'Поиск по загруженным сессиям',
     scanning: 'Поиск разговоров',
-    retry: 'Повторить',
     scanError: 'Не удалось найти сессии',
     scanHelp: 'Проверьте подключение к серверу и повторите попытку. Старому серверу может требоваться обновление.',
     empty: 'Разговоров пока нет',
@@ -47,7 +45,6 @@ export const ru = defineLocale({
     messages: 'сообщений',
     choose: 'Разговор, который стоит продолжить',
     chooseHelp: 'Выберите сессию, чтобы прочитать историю перед импортом в Hermes.',
-    back: 'Назад к сессиям',
     previewLoading: 'Открываем просмотр',
     previewError: 'Просмотр недоступен',
     previewHelp: 'Исходный файл мог переместиться или измениться. Обновите список и повторите попытку.',
@@ -2396,7 +2393,8 @@ export const ru = defineLocale({
       skills: 'Возможности',
       messaging: 'Сообщения',
       artifacts: 'Артефакты',
-      cron: 'Запланированные задачи'
+      cron: 'Запланированные задачи',
+      'session-import': 'Импортировать сессию'
     },
     searchAria: 'Поиск сеансов',
     searchPlaceholder: 'Поиск сеансов…',

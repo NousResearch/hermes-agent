@@ -8,7 +8,7 @@ method = _registry.method
 
 @method("session.foreign.list")
 def _foreign_list(rid, params):
-    from hermes_cli.foreign_session_browser import list_foreign_sessions
+    from hermes_cli.foreign_sessions_browser import list_foreign_sessions
     try:
         return _ok(rid, list_foreign_sessions(params.get("source"), params.get("offset", 0), params.get("limit", 25)))
     except ValueError as exc:
@@ -18,7 +18,7 @@ def _foreign_list(rid, params):
 
 
 def _foreign_history_request(rid, params, importing):
-    from hermes_cli.foreign_session_browser import import_browser_session, preview_foreign_session
+    from hermes_cli.foreign_sessions_browser import import_browser_session, preview_foreign_session
     try:
         with _profile_db(params) as db:
             if db is None:

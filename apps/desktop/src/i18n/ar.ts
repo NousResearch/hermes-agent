@@ -2,7 +2,6 @@ import { defineLocale } from './define-locale'
 
 export const ar = defineLocale({
   sessionImport: {
-    refresh: 'تحديث الجلسات',
     title: 'المتابعة من تطبيق آخر',
     subtitle: 'انقل محادثة إلى Hermes وتابع من حيث توقفت.',
     action: 'استيراد جلسة',
@@ -12,7 +11,6 @@ export const ar = defineLocale({
     all: 'الكل',
     search: 'البحث في الجلسات المحملة',
     scanning: 'جارٍ البحث عن المحادثات',
-    retry: 'حاول مرة أخرى',
     scanError: 'تعذر العثور على الجلسات',
     scanHelp: 'تحقق من اتصال الخادم ثم أعد المحاولة. قد تحتاج الخوادم القديمة إلى تحديث.',
     empty: 'لا توجد محادثات',
@@ -24,7 +22,6 @@ export const ar = defineLocale({
     messages: 'رسائل',
     choose: 'محادثة تستحق المتابعة',
     chooseHelp: 'اختر جلسة لقراءة سجلها قبل نقلها إلى Hermes.',
-    back: 'العودة إلى الجلسات',
     previewLoading: 'جارٍ فتح المعاينة',
     previewError: 'المعاينة غير متاحة',
     previewHelp: 'ربما تم نقل الملف الأصلي أو تغييره. حدّث القائمة وحاول مرة أخرى.',
@@ -1734,7 +1731,8 @@ export const ar = defineLocale({
       chat: 'المحادثة',
       settings: 'الإعدادات',
       cron: 'المهام المجدولة',
-      agents: 'الوكلاء'
+      agents: 'الوكلاء',
+      'session-import': 'استيراد جلسة'
     },
     searchAria: 'البحث في الجلسات',
     searchPlaceholder: 'البحث في الجلسات...',

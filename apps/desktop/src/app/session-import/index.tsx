@@ -116,7 +116,7 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
       rootClassName="bg-(--ui-bg-elevated)"
       titlebarActions={
         <Button
-          aria-label={copy.refresh}
+          aria-label={t.common.refresh}
           disabled={sessions.isFetching}
           onClick={() => {
             void sessions.refetch()
@@ -183,7 +183,7 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
               {sessions.isError && (
                 <ErrorState className="p-5" description={copy.scanHelp} title={copy.scanError}>
                   <Button onClick={() => void sessions.refetch()} variant="secondary">
-                    {copy.retry}
+                    {t.common.retry}
                   </Button>
                 </ErrorState>
               )}
@@ -261,7 +261,7 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
                 <div className="px-8 pb-5 pt-6">
                   <div className="mb-4 hidden max-[760px]:block">
                     <Button onClick={() => setSelected(null)} variant="text">
-                      {copy.back}
+                      {t.common.back}
                     </Button>
                   </div>
                   <h2 className="text-xl font-medium leading-7 tracking-tight">{current.title}</h2>
@@ -274,7 +274,7 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
                   {preview.isError && (
                     <ErrorState description={copy.previewHelp} title={copy.previewError}>
                       <Button onClick={() => void preview.refetch()} variant="secondary">
-                        {copy.retry}
+                        {t.common.retry}
                       </Button>
                     </ErrorState>
                   )}

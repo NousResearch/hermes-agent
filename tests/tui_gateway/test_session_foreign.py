@@ -60,7 +60,7 @@ def test_foreign_rpc_preview_import_and_profile_isolation(tmp_path, monkeypatch)
 
 
 def test_foreign_pages_confine_handles_and_failed_import_rolls_back(tmp_path, monkeypatch):
-    from hermes_cli import foreign_session_browser as browser
+    from hermes_cli import foreign_sessions_browser as browser
     from hermes_state import SessionDB
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)

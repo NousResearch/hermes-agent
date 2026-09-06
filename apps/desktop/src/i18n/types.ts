@@ -52,7 +52,6 @@ interface AuxTaskCopy {
 
 export interface Translations {
   sessionImport: {
-    refresh: string
     title: string
     subtitle: string
     action: string
@@ -62,7 +61,6 @@ export interface Translations {
     all: string
     search: string
     scanning: string
-    retry: string
     scanError: string
     scanHelp: string
     empty: string
@@ -74,7 +72,6 @@ export interface Translations {
     messages: string
     choose: string
     chooseHelp: string
-    back: string
     previewLoading: string
     previewError: string
     previewHelp: string

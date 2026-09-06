@@ -4,7 +4,6 @@ import type { Translations } from './types'
 
 export const en: Translations = {
   sessionImport: {
-    refresh: 'Refresh sessions',
     title: 'Continue from another app',
     subtitle: 'Bring a conversation into Hermes and pick up where you left off.',
     action: 'Import session',
@@ -14,7 +13,6 @@ export const en: Translations = {
     all: 'All',
     search: 'Search loaded sessions',
     scanning: 'Finding conversations',
-    retry: 'Try again',
     scanError: 'Could not find sessions',
     scanHelp: 'Check your backend connection, then try again. Older backends may need an update.',
     empty: 'No conversations found',
@@ -26,7 +24,6 @@ export const en: Translations = {
     messages: 'messages',
     choose: 'A conversation worth continuing',
     chooseHelp: 'Choose a session to read its history before bringing it into Hermes.',
-    back: 'Back to sessions',
     previewLoading: 'Opening preview',
     previewError: 'Preview unavailable',
     previewHelp: 'The source may have moved or changed. Refresh the list and try again.',
@@ -2360,7 +2357,8 @@ export const en: Translations = {
       skills: 'Capabilities',
       messaging: 'Messaging',
       artifacts: 'Artifacts',
-      cron: 'Scheduled jobs'
+      cron: 'Scheduled jobs',
+      'session-import': 'Import session'
     },
     searchAria: 'Search sessions',
     searchPlaceholder: 'Search sessions…',

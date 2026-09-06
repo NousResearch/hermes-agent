@@ -4,7 +4,6 @@ import { defineLocale } from './define-locale'
 
 export const zhHant = defineLocale({
   sessionImport: {
-    refresh: '重新整理工作階段',
     title: '從其他應用程式繼續',
     subtitle: '將對話匯入 Hermes，接著上次的進度繼續。',
     action: '匯入工作階段',
@@ -14,7 +13,6 @@ export const zhHant = defineLocale({
     all: '全部',
     search: '搜尋已載入的工作階段',
     scanning: '正在尋找對話',
-    retry: '重試',
     scanError: '無法尋找工作階段',
     scanHelp: '請檢查後端連線並重試。舊版後端可能需要更新。',
     empty: '找不到對話',
@@ -26,7 +24,6 @@ export const zhHant = defineLocale({
     messages: '則訊息',
     choose: '繼續一段對話',
     chooseHelp: '選擇工作階段，在匯入 Hermes 前查看歷程記錄。',
-    back: '返回工作階段',
     previewLoading: '正在開啟預覽',
     previewError: '無法預覽',
     previewHelp: '來源檔案可能已移動或變更。請重新整理清單後重試。',
@@ -1959,7 +1956,8 @@ export const zhHant = defineLocale({
       skills: '技能與工具',
       messaging: '訊息平台',
       artifacts: '成品',
-      cron: '排程工作'
+      cron: '排程工作',
+      'session-import': '匯入工作階段'
     },
     searchAria: '搜尋工作階段',
     searchPlaceholder: '搜尋工作階段…',

@@ -4,7 +4,6 @@ import type { Translations } from './types'
 
 export const zh: Translations = {
   sessionImport: {
-    refresh: '刷新会话',
     title: '从其他应用继续',
     subtitle: '将对话导入 Hermes，接着上次的进度继续。',
     action: '导入会话',
@@ -14,7 +13,6 @@ export const zh: Translations = {
     all: '全部',
     search: '搜索已加载的会话',
     scanning: '正在查找对话',
-    retry: '重试',
     scanError: '无法查找会话',
     scanHelp: '请检查后端连接并重试。旧版后端可能需要更新。',
     empty: '未找到对话',
@@ -26,7 +24,6 @@ export const zh: Translations = {
     messages: '条消息',
     choose: '继续一段对话',
     chooseHelp: '选择会话，在导入 Hermes 前查看历史记录。',
-    back: '返回会话列表',
     previewLoading: '正在打开预览',
     previewError: '预览不可用',
     previewHelp: '源文件可能已移动或更改。请刷新列表后重试。',
@@ -2526,7 +2523,8 @@ export const zh: Translations = {
       skills: '技能与工具',
       messaging: '消息平台',
       artifacts: '产物',
-      cron: '定时任务'
+      cron: '定时任务',
+      'session-import': '导入会话'
     },
     searchAria: '搜索会话',
     searchPlaceholder: '搜索会话…',

@@ -4,7 +4,6 @@ import { defineLocale } from './define-locale'
 
 export const ja = defineLocale({
   sessionImport: {
-    refresh: '一覧を更新',
     title: '別のアプリから続ける',
     subtitle: '会話をHermesに取り込み、続きを始めましょう。',
     action: 'セッションを取り込む',
@@ -14,7 +13,6 @@ export const ja = defineLocale({
     all: 'すべて',
     search: '読み込み済みのセッションを検索',
     scanning: '会話を検索中',
-    retry: '再試行',
     scanError: 'セッションを取得できません',
     scanHelp: 'バックエンドの接続を確認して再試行してください。古いバックエンドは更新が必要な場合があります。',
     empty: '会話が見つかりません',
@@ -26,7 +24,6 @@ export const ja = defineLocale({
     messages: 'メッセージ',
     choose: '会話の続きを始めましょう',
     chooseHelp: 'セッションを選び、取り込む前に履歴を確認できます。',
-    back: 'セッションに戻る',
     previewLoading: 'プレビューを開いています',
     previewError: 'プレビューできません',
     previewHelp: '元のファイルが移動または変更された可能性があります。一覧を更新してください。',
@@ -2034,7 +2031,8 @@ export const ja = defineLocale({
       skills: 'スキルとツール',
       messaging: 'メッセージング',
       artifacts: 'アーティファクト',
-      cron: 'スケジュール済みジョブ'
+      cron: 'スケジュール済みジョブ',
+      'session-import': 'セッションを取り込む'
     },
     searchAria: 'セッションを検索',
     searchPlaceholder: 'セッションを検索…',

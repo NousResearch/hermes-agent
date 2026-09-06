@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.foreign_session_browser import list_foreign_sessions
+from hermes_cli.foreign_sessions_browser import list_foreign_sessions
 
 
 @pytest.mark.parametrize("operation", ["resolve", "stat"])

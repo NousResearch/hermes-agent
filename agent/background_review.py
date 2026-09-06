@@ -610,6 +610,36 @@ def _prior_tool_keys(prior_snapshot: List[Dict]) -> Tuple[set, set]:
     return ids, contents
 
 
+_SKILL_BATCH_ACTION_PARTICIPLES = {
+    "create": "created",
+    "edit": "rewritten",
+    "patch": "patched",
+    "write_file": "written",
+    "remove_file": "removed",
+}
+
+
+def _skill_batch_action_lines(detail: Dict) -> List[str]:
+    """Non-verbose line(s) for a successful batch ``skill_manage`` result. The batch
+    response carries ``operations_applied``/``results`` instead of a ``message``, so
+    without these lines a fully-applied write surfaces nothing in ``on`` mode."""
+    ops = detail.get("operations") or []
+    names = {str(op["name"]) for op in ops if isinstance(op, dict) and op.get("name")}
+    parts = [
+        f"Skill '{op.get('name')}' {participle}"
+        + (f" ({op.get('file_path')})" if op.get("file_path") else "")
+        for op in ops
+        if isinstance(op, dict)
+        and (participle := _SKILL_BATCH_ACTION_PARTICIPLES.get(op.get("action", "")))
+        and op.get("name")
+    ]
+    if not parts:
+        if names:
+            return [f"Skill {'/'.join(sorted(names))} updated"]
+        return ["Skill updated"]
+    return parts
+
+
 def _action_lines(data: Dict, detail: Dict, verbose: bool) -> List[str]:
     """Summary line(s) for one successful notify-tool result (``[]`` when nothing to report)."""
     message = data.get("message", "")
@@ -623,6 +653,12 @@ def _action_lines(data: Dict, detail: Dict, verbose: bool) -> List[str]:
     label = "Skill" if is_skill else {"memory": "Memory", "user": "User profile"}.get(target, target)
     if verbose:
         return [_verbose_skill_line(data, detail, message)] if is_skill else _verbose_memory_lines(label, detail)
+    if is_skill and not message:
+        # Batch results (the only advertised call shape) return success without a
+        # message; derive the line from the call's own operations so the write is
+        # still surfaced. Staged responses say so in their message and stay on the
+        # keyword path above, so a pending write never counts as an applied action.
+        return _skill_batch_action_lines(detail)
     hit = any(k in lower for k in ("added", "replaced", "removed", "applied")) or (target and "add" in lower)
     return [f"{label} updated"] if hit else []
 

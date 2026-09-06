@@ -143,6 +143,36 @@ class TestIndentationPreservation:
         assert lines[2] == "    b = 99"
 
 
+
+
+    def test_continuation_lines_not_misindented(self):
+        content = "def make():\n    total = (\n        parts[0] +\n        parts[1]\n        )\n    return total\n"
+        old = "def make():\n  total = (\n      parts[0] +\n      parts[1]\n      )\n  return total"
+        new = ("def make():\n  total = (\n      parts[0] +\n"
+               "      parts[1] +\n      parts[2]\n       )\n  return total")
+        out, count, strategy, err = fuzzy_find_and_replace(content, old, new)
+        assert err is None and count == 1
+        assert strategy != "exact"
+        indent = {ln.lstrip(" "): len(ln) - len(ln.lstrip(" "))
+                  for ln in out.split("\n") if ln.strip()}
+        assert indent.get("return total") == 4, indent
+        assert indent.get("parts[0] +") == 8, indent
+        assert indent.get("parts[1] +") == 8, indent
+        assert indent.get("parts[2]") == 8, indent
+        import ast
+        ast.parse(out)
+
+    def test_tab_indented_file_preserved(self):
+        content = "def hello():\n\tpass\n"
+        old = "def hello():\n\tpass\n"
+        new = "def hello():\n\treturn 1\n"
+        out, count, _, err = fuzzy_find_and_replace(content, old, new)
+        assert err is None and count == 1
+        assert "\treturn 1" in out
+        assert " return" not in out
+
+
+
 class TestReplaceAll:
     def test_multiple_matches_without_flag_errors(self):
         content = "aaa bbb aaa"

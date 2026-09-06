@@ -41,6 +41,8 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
+    # KENSEI CUSTOM (restored): fork's per-tick spawn cap (Gate 1 port).
+    max_spawn_per_tick: Optional[int] = None
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:

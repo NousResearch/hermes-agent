@@ -2046,3 +2046,186 @@ def test_force_ascii_normalization_precedes_final_dispatch_gate(
 
     assert dispatched["messages"][0]["content"] == "***"
     assert source == original
+
+
+def test_moa_reference_and_synthesis_requests_mask_exact_values(
+    applied_secret_home, monkeypatch
+):
+    """MoA copies are clean while replayable modern/legacy arguments stay exact."""
+    from agent.moa_loop import aggregate_moa_context
+
+    _home, secret = applied_secret_home
+    arguments = json.dumps({"command": f"printf {secret}"})
+    api_messages = [
+        {"role": "user", "content": "inspect the latest result"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_moa_77487",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": arguments},
+                }
+            ],
+            "function_call": {"name": "terminal", "arguments": arguments},
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_moa_77487",
+            "content": f"external tool returned {secret}",
+        },
+    ]
+    original = copy.deepcopy(api_messages)
+    calls: list[dict] = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(copy.deepcopy(kwargs))
+        if kwargs["task"] == "moa_reference":
+            return _response(f"advisor repeated {secret}")
+        return _response("synthesized guidance")
+
+    monkeypatch.setattr(
+        "agent.moa_loop._slot_runtime",
+        lambda slot: {
+            "provider": slot.get("provider"),
+            "model": slot.get("model"),
+            "base_url": "https://example.invalid/v1",
+            "api_key": "fixture-runtime-key",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    aggregate_moa_context(
+        user_prompt=f"separate synthesis prompt contains {secret}",
+        api_messages=api_messages,
+        reference_models=[{"provider": "fixture", "model": "advisor"}],
+        aggregator={"provider": "fixture", "model": "aggregator"},
+    )
+
+    reference_call = next(call for call in calls if call["task"] == "moa_reference")
+    synthesis_call = next(call for call in calls if call["task"] == "moa_aggregator")
+    assert secret not in json.dumps(reference_call["messages"])
+    assert secret not in json.dumps(synthesis_call["messages"])
+    assert api_messages == original
+    assert api_messages[1]["tool_calls"][0]["function"]["arguments"] == arguments
+    assert api_messages[1]["function_call"]["arguments"] == arguments
+
+
+def test_moa_reference_masks_json_encoded_arguments_without_mutating_source(
+    json_special_secret_home,
+):
+    """Rendered advisory arguments mask decoded values after JSON escaping."""
+    from agent.moa_loop import _redacted_reference_messages
+
+    _home, secret = json_special_secret_home
+    arguments = json.dumps({"command": f"printf {secret}"})
+    messages = [
+        {"role": "user", "content": "inspect"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-moa-json-77487",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": arguments},
+                }
+            ],
+            "function_call": {"name": "terminal", "arguments": arguments},
+        },
+    ]
+    original = copy.deepcopy(messages)
+
+    advisory = _redacted_reference_messages(messages)
+
+    rendered = "\n".join(str(message.get("content", "")) for message in advisory)
+    assert json.dumps(secret)[1:-1] not in rendered
+    assert secret not in rendered
+    assert messages == original
+    assert messages[1]["tool_calls"][0]["function"]["arguments"] == arguments
+    assert messages[1]["function_call"]["arguments"] == arguments
+
+
+@pytest.mark.parametrize("alternate_spelling", ALTERNATE_JSON_SPELLINGS)
+def test_moa_reference_masks_alternate_json_escapes_without_mutating_source(
+    monkeypatch, alternate_spelling
+):
+    """Disposable advisory rendering decodes equivalent JSON spellings."""
+    from agent.moa_loop import _redacted_reference_messages
+    from hermes_cli import env_loader
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home()
+    monkeypatch.setitem(
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME,
+        str(home.resolve()),
+        {"ALTERNATE_JSON_SECRET": ALTERNATE_JSON_SECRET},
+    )
+    arguments = _json_with_alternate_secret("command", alternate_spelling)
+    messages = [
+        {"role": "user", "content": "inspect"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-moa-alternate-json-77487",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": arguments},
+                }
+            ],
+            "function_call": {"name": "terminal", "arguments": arguments},
+        },
+    ]
+    original = copy.deepcopy(messages)
+
+    advisory = _redacted_reference_messages(messages)
+
+    rendered = "\n".join(str(message.get("content", "")) for message in advisory)
+    assert ALTERNATE_JSON_SECRET not in rendered
+    assert ALTERNATE_JSON_SPELLING not in rendered
+    assert alternate_spelling not in rendered
+    assert messages == original
+
+
+@pytest.mark.parametrize("fragment_kind", MALFORMED_JSON_FRAGMENT_KINDS)
+def test_moa_reference_masks_malformed_alternate_json_fragments_without_mutation(
+    monkeypatch, fragment_kind
+):
+    """Disposable MoA rendering masks incomplete and invalid quoted fragments."""
+    from agent.moa_loop import _redacted_reference_messages
+    from hermes_cli import env_loader
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home()
+    monkeypatch.setitem(
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME,
+        str(home.resolve()),
+        {"MALFORMED_MOA_JSON_SECRET": ALTERNATE_JSON_SECRET},
+    )
+    arguments = _malformed_json_with_alternate_secret("command", fragment_kind)
+    messages = [
+        {"role": "user", "content": "inspect"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-moa-malformed-json-77487",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": arguments},
+                }
+            ],
+        },
+    ]
+    original = copy.deepcopy(messages)
+
+    advisory = _redacted_reference_messages(messages)
+
+    rendered = "\n".join(str(message.get("content", "")) for message in advisory)
+    assert "***" in rendered
+    assert ALTERNATE_JSON_SECRET not in rendered
+    assert ALTERNATE_JSON_SPELLING not in rendered
+    assert messages == original

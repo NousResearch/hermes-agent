@@ -697,6 +697,31 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rendered
 
 
+def _redacted_reference_messages(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build an exact-redacted disposable advisory view.
+
+    Provider-copy masking first removes values from tool results and other
+    visible content without mutating history. The second text-only pass masks
+    values after tool-call arguments are rendered for advisors, so modern and
+    legacy structured argument fields remain exact for replay.
+    """
+    from agent.provider_redaction import redact_known_secret_values, redact_provider_message_values
+
+    provider_copy = redact_provider_message_values(messages)
+    rendered = _reference_messages(provider_copy)
+    return [
+        {
+            **message,
+            "content": redact_known_secret_values(message.get("content", "")),
+        }
+        if isinstance(message, dict) and isinstance(message.get("content"), str)
+        else message
+        for message in rendered
+    ]
+
+
 def _extract_text(response: Any) -> str:
     """Assistant text of a completed response: transport-normalized, else ``choices[0]``."""
     with contextlib.suppress(Exception):
@@ -799,7 +824,7 @@ def aggregate_moa_context(
     """
     reference_models = [slot for slot in reference_models if slot.get("enabled", True)]
     reference_outputs = _run_references_parallel(
-        reference_models, _reference_messages(api_messages), temperature=temperature,
+        reference_models, _redacted_reference_messages(api_messages), temperature=temperature,
         max_tokens=reference_max_tokens, reference_timeout=reference_timeout, agent=agent,
     )
     privacy_full = False
@@ -829,6 +854,9 @@ def aggregate_moa_context(
         f"Original user prompt:\n{user_prompt}\n\n"
         f"Reference responses:\n{joined}"
     )
+
+    from agent.provider_redaction import redact_known_secret_values
+    synth_prompt = redact_known_secret_values(synth_prompt)
 
     agg_label = _slot_label(aggregator)
     agg_runtime = _slot_runtime(aggregator)
@@ -1088,6 +1116,8 @@ class MoAChatCompletions:
         agg_messages, tools = self._plan_aggregator_cache(
             prepared["messages"], api_kwargs.get("tools"), prepared.get("guidance"), agg_runtime
         )
+        from agent.provider_redaction import redact_provider_message_values
+        agg_messages = redact_provider_message_values(agg_messages)
         trace = self._pending_trace
         if trace is not None:
             # Trace the exact aggregator INPUT (persisted copy redacted; live input raw).
@@ -1305,7 +1335,7 @@ class MoAChatCompletions:
         if aggregator_temperature is None and api_kwargs.get("temperature") is not None:
             aggregator_temperature = api_kwargs.get("temperature")
 
-        ref_messages = _reference_messages(messages)
+        ref_messages = _redacted_reference_messages(messages)
         cache_key = self._fanout_cache_key(preset, ref_messages, reference_models)
         if cache_key == self._ref_cache_key and self._ref_cache_outputs:
             # HIT: already ran and accounted. Do NOT zero pending totals (a late

@@ -81,25 +81,19 @@ class TestIsTimeoutError:
 # ---------------------------------------------------------------------------
 
 class TestIsRateLimitedError:
-    def test_none_is_not_rate_limited(self):
-        assert not _StubAdapter._is_rate_limited_error(None)
-
-    def test_empty_is_not_rate_limited(self):
-        assert not _StubAdapter._is_rate_limited_error("")
-
-    def test_flood_is_rate_limited(self):
-        assert _StubAdapter._is_rate_limited_error("flood control exceeded, retry in 60 seconds")
-
-    def test_too_many_requests_is_rate_limited(self):
-        assert _StubAdapter._is_rate_limited_error("Too Many Requests: rate limit reached")
-
-    def test_weixin_rate_limit_text_is_rate_limited(self):
-        assert _StubAdapter._is_rate_limited_error(
-            "iLink sendmessage rate limited; cooldown active for 42.0s"
-        )
-
-    def test_formatting_error_not_rate_limited(self):
-        assert not _StubAdapter._is_rate_limited_error("Bad Request: can't parse entities")
+    @pytest.mark.parametrize(
+        ("error", "rate_limited"),
+        [
+            (None, False),
+            ("", False),
+            ("Bad Request: can't parse entities", False),
+            ("flood control exceeded, retry in 60 seconds", True),
+            # Platforms without a retry_after field (Weixin) surface a bare text.
+            ("iLink sendmessage rate limited; cooldown active for 42.0s", True),
+        ],
+    )
+    def test_rate_limited_follows_the_shared_classifier(self, error, rate_limited):
+        assert _StubAdapter._is_rate_limited_error(error) is rate_limited
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +254,21 @@ class TestSendWithRetryRateLimited:
         assert len(adapter._send_calls) == 2
         # No plain-text fallback content on either call
         assert all("plain text" not in c[1].lower() for c in adapter._send_calls)
+
+    @pytest.mark.asyncio
+    async def test_long_server_retry_after_returns_typed_failure_without_sleeping(self):
+        """A retry_after past the inline cap must not pin the coroutine (#91969): the
+        typed failure goes back to the delivery ledger, no sleep, no fallback, no notice."""
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(success=False, error="flood_control:5820", retry_after=5820.0),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("c", "hello")
+        assert result.success is False
+        assert result.retry_after == 5820.0
+        mock_sleep.assert_not_called()
+        assert len(adapter._send_calls) == 1  # the original send only
 
     @pytest.mark.asyncio
     async def test_rate_limited_exhausted_returns_typed_failure_not_fallback(self):

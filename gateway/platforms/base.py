@@ -1660,6 +1660,11 @@ class SendResult:
     error_kind: Optional[str] = None
 
 
+# Longest server ``retry_after`` ``_send_with_retry`` will sleep inline. Longer penalties return the
+# typed failure so the delivery ledger owns the wait (#91969: a 97-minute FloodWait slept verbatim
+# pinned the send coroutine and froze inbound on every platform).
+_SEND_RETRY_INLINE_WAIT_CAP_SECS = 60.0
+
 # Platform-neutral send-failure kinds for ``SendResult.error_kind``: too_long (size cap),
 # bad_format (markup rejected; plain-text retry fixes), forbidden (the bot CANNOT reach the user),
 # not_found (chat/thread/message gone), rate_limited, transient (connection-level, retry-safe),
@@ -3254,6 +3259,16 @@ class BasePlatformAdapter(ABC):
                 backoff = server_retry_after
                 if backoff is None:
                     backoff = base_delay * (2 ** (attempt - 1))
+                elif backoff > _SEND_RETRY_INLINE_WAIT_CAP_SECS:
+                    # Never hold this coroutine open for a long server penalty: a 97-minute
+                    # FloodWait slept verbatim once froze inbound on every platform (#91969).
+                    # Return the typed failure; the delivery ledger redelivers after the cooldown.
+                    logger.error(
+                        "[%s] Server asked to retry after %.0fs (> %.0fs inline cap); returning "
+                        "typed failure for redelivery instead of sleeping: %s",
+                        self.name, backoff, _SEND_RETRY_INLINE_WAIT_CAP_SECS, error_str,
+                    )
+                    return result
                 delay = backoff + random.uniform(0, 1)
                 server_retry_after = None
                 logger.warning("[%s] Send failed (attempt %d/%d, retrying in %.1fs): %s", self.name,

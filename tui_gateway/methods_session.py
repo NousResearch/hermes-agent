@@ -529,9 +529,9 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
         live["last_active"] = time.time()
         if (transport := current_transport()) is not None:
             with live.setdefault("history_lock", threading.Lock()):
-                live["transport"] = transport
-                live.setdefault("viewers", {})[transport] = time.time()
-        _cancel_ws_orphan_reap(live_sid)
+                _rebind_live_transport(live_sid, live, transport)
+        else:
+            _cancel_ws_orphan_reap(live_sid)
     history = live.get("history") or []
     return _ok(ctx.rid, _attach_todo_state({
         "session_id": live_sid, "stored_session_id": str(live.get("session_key") or ""),

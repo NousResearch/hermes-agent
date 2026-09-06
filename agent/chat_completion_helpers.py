@@ -1223,12 +1223,8 @@ class _NonStreamRequest:
 
     def _codex_watchdog_snapshot(self):
         state = self.codex_watchdog_state
-        if state is None:
-            return (
-                getattr(self.agent, "_codex_stream_last_event_ts", None),
-                getattr(self.agent, "_codex_stream_last_progress_ts", None),
-                None,
-            )
+        if state is None:  # non-codex request: no watchdog reads these
+            return (None, None, None)
         with state.lock:
             return state.last_event_ts, state.last_progress_ts, state.retry_started_ts
 
@@ -1325,8 +1321,6 @@ class _NonStreamRequest:
         if wd.codex:
             # Reset before the worker starts so a marker left over from a previous
             # call on this agent can't be misread as the first event for this one.
-            agent._codex_stream_last_event_ts = None
-            agent._codex_stream_last_progress_ts = None
             with self.codex_watchdog_state.lock:
                 self.codex_watchdog_state.last_event_ts = None
                 self.codex_watchdog_state.last_progress_ts = None

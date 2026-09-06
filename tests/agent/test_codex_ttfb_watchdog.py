@@ -8,7 +8,7 @@ retry loop can reconnect promptly. Once any stream event arrives, the TTFB
 watchdog is satisfied and a separate idle watchdog handles streams that stop
 emitting SSE events.
 
-Parsed-event activity is recorded in ``agent._codex_stream_last_event_ts``;
+Parsed-event activity is recorded on the request-local watchdog state;
 substantive model progress is recorded separately. For the implicit official
 OpenAI Codex policy on large contexts, lifecycle frames satisfy TTFB without
 arming the short post-progress idle budget. Small requests, explicit overrides,
@@ -260,7 +260,6 @@ def test_ttfb_does_not_kill_when_events_flow(tmp_path, monkeypatch):
         state = _codex_watchdog_state_var.get()
         with state.lock:
             state.last_event_ts = now
-        agent._codex_stream_last_event_ts = now
         if on_first_delta:
             on_first_delta()
         time.sleep(0.9)

@@ -249,7 +249,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             force_document_attachments = "[[as_document]]" in response
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
             media_files, cleaned = adapter.extract_media(response)
-            media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            media_files = BasePlatformAdapter.filter_media_delivery_paths(
+                media_files, session_key=self._session_key_for_source(event.source) if event.source else "",
+                profile=getattr(event.source, "profile", None),
+            )
             from gateway.platforms.docker_media_paths import hand_back_unreadable_media
             await hand_back_unreadable_media([p for p, _ in media_files])
             # Strip image URLs (parity with the non-streaming chain); no extract_local_files here.

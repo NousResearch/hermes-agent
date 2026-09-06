@@ -271,7 +271,7 @@ class TestLiveDeliveryIsAFinalNotification:
 
         with patch("cron.scheduler_delivery._send_media_via_adapter", side_effect=fake_send_media), \
              patch("gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
-                   side_effect=lambda files: files):
+                   side_effect=lambda files, **_kw: files):
             error, router_calls, _ = _run(
                 _job(), f"Nightly report.\nMEDIA:{media}", _SendResult(message_id=1),
             )
@@ -312,7 +312,7 @@ class TestNotifyIsConfigurable:
 
         with patch("cron.scheduler_delivery._send_media_via_adapter", side_effect=fake_send_media), \
              patch("gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
-                   side_effect=lambda files: files):
+                   side_effect=lambda files, **_kw: files):
             _run(
                 _job(), f"Nightly report.\nMEDIA:{media}", _SendResult(message_id=1),
                 cron_cfg={"delivery": {"notify": False}},

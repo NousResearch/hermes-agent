@@ -1791,7 +1791,7 @@ def _deliver_result(
     # failing curl with an API key, summarised a config file) sent it verbatim to the chat.
     cleaned_delivery_content = _redact_cron_payload(cleaned_delivery_content, "delivery content")
     requested_media = len(media_files)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files, session_key=str(job.get("id") or ""))
     # Policy-dropped attachments will never be sent on ANY lane — record them in run status.
     _policy_dropped = requested_media - len(media_files)
     policy_drop_errors = [

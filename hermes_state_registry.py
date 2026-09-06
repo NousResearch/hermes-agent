@@ -58,10 +58,11 @@ _opening: Dict[Path, threading.Event] = {}
 
 
 def _open_session_db(path: Path) -> "SessionDB":
-    """Construct the SessionDB for *path* (call-time import avoids cycles; tests patch this)."""
-    from hermes_state import SessionDB
+    """Construct the session-store provider for *path* through the sessiondb.provider
+    factory (call-time import avoids cycles; tests patch this seam)."""
+    from hermes_state_provider import get_session_db_provider
 
-    return SessionDB(db_path=path)
+    return get_session_db_provider(db_path=path)
 
 
 def _teardown(db: "SessionDB") -> None:

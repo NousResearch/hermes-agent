@@ -58,7 +58,7 @@ class _Batch:
 def _announce_batch(parent_agent, n_tasks: int, live_deleg_id: Optional[str]) -> None:
     """Announce the batch tag once so interleaved ``[tag n/N]`` lines are attributable."""
     if n_tasks > 1 and live_deleg_id:
-        _hdr = f"  🔀 [{format_batch_tag(live_deleg_id)}] delegating {n_tasks} tasks"
+        _hdr = f"  🔀 [{format_batch_tag(live_deleg_id, parent_agent)}] delegating {n_tasks} tasks"
         _print_completion_line(parent_agent, getattr(parent_agent, "_delegate_spinner", None), _hdr, console_line=_hdr)
 
 def _capture_origin() -> tuple[str, str, Any, Any]:
@@ -100,7 +100,7 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
     parent_agent, n_tasks = batch.parent_agent, len(batch.task_list)
     task_labels = [t["goal"][:40] for t in batch.task_list]
     spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
-    _tag = format_batch_tag(batch.live_deleg_id)
+    _tag = format_batch_tag(batch.live_deleg_id, parent_agent)
     # Fabricated entries for still-pending / raised futures carry the correct _delegate_role.
     _child_by_index = {i: child for (i, _, child) in batch.children}
 

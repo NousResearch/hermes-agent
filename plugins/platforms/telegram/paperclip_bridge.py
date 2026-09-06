@@ -10,9 +10,15 @@ from urllib import error, request
 from urllib.parse import urlsplit
 
 CALLBACK_PREFIX = "pcb:"
-BRIDGE_COMMANDS = {"log"}
+BRIDGE_COMMANDS = {"log", "paperclip_plan"}
 MAX_CALLBACK_BYTES = 64
-SAFE_CALLBACK_TARGET = re.compile(r"^[A-Za-z0-9_.-]{1,48}$")
+MAX_BRIDGE_RESPONSE_BYTES = 262144
+SAFE_BRIDGE_TARGET = re.compile(r"^(?:ghplan_[0-9a-f]{24}|ghlog_[0-9a-f]{20})$")
+SAFE_PLAN_TOKEN = re.compile(r"^ghplan_[0-9a-f]{24}$")
+NATURAL_PLAN_PATTERN = re.compile(
+    r"^\s*review\s+paperclip\s+plan\s+(?P<token>ghplan_[A-Za-z0-9_.-]+)\s*$",
+    re.IGNORECASE,
+)
 NATURAL_JOB_PATTERN = re.compile(
     r"^\s*(?:(?:please|can you|could you|would you)\s+)?"
     r"(?:log (?:a )?(?:job|task) to|create (?:a )?(?:job|task) for)\s+"
@@ -58,11 +64,27 @@ def is_enabled(adapter) -> bool:
     )
 
 
-def build_headers(body: bytes, *, token: str, signing_secret: str, idempotency_key: str) -> dict[str, str]:
+def build_headers(
+    body: bytes,
+    *,
+    method: str,
+    path: str,
+    token: str,
+    signing_secret: str,
+    idempotency_key: str,
+) -> dict[str, str]:
     timestamp = str(int(time.time()))
+    canonical_method = method.upper()
     signature = "sha256=" + hmac.new(
         signing_secret.encode("utf-8"),
-        timestamp.encode("utf-8") + b"." + body,
+        b".".join(
+            (
+                timestamp.encode("utf-8"),
+                canonical_method.encode("ascii"),
+                path.encode("utf-8"),
+                body,
+            )
+        ),
         hashlib.sha256,
     ).hexdigest()
     return {
@@ -85,7 +107,27 @@ def post_json(url: str, body: dict[str, Any], headers: dict[str, str], timeout: 
     opener = request.build_opener(_NoRedirect)
     try:
         with opener.open(req, timeout=timeout) as response:
-            data = response.read().decode("utf-8")
+            raw_response = response.read(MAX_BRIDGE_RESPONSE_BYTES + 1)
+            if len(raw_response) > MAX_BRIDGE_RESPONSE_BYTES:
+                raise ValueError("Bridge response exceeds size limit")
+            data = raw_response.decode("utf-8")
+            payload = json.loads(data) if data else {}
+            if not isinstance(payload, dict):
+                raise ValueError("Bridge response must be a JSON object")
+            return response.status, payload
+    except error.HTTPError as exc:
+        return exc.code, {"error": "Bridge request failed."}
+
+
+def get_json(url: str, headers: dict[str, str], timeout: int = 15) -> tuple[int, dict[str, Any]]:
+    req = request.Request(url, data=b"", headers=headers, method="GET")
+    opener = request.build_opener(_NoRedirect)
+    try:
+        with opener.open(req, timeout=timeout) as response:
+            raw_response = response.read(MAX_BRIDGE_RESPONSE_BYTES + 1)
+            if len(raw_response) > MAX_BRIDGE_RESPONSE_BYTES:
+                raise ValueError("Bridge response exceeds size limit")
+            data = raw_response.decode("utf-8")
             payload = json.loads(data) if data else {}
             if not isinstance(payload, dict):
                 raise ValueError("Bridge response must be a JSON object")
@@ -97,6 +139,9 @@ def post_json(url: str, body: dict[str, Any], headers: dict[str, str], timeout: 
 def _normalize_command(event) -> tuple[str | None, str]:
     text = str(getattr(event, "text", "") or "")
     if not text.lstrip().startswith("/"):
+        natural_plan = NATURAL_PLAN_PATTERN.match(text)
+        if natural_plan:
+            return "paperclip_plan", natural_plan.group("token")
         for pattern in (NATURAL_JOB_PATTERN, NATURAL_LOG_PATTERN):
             natural_log = pattern.match(text)
             if natural_log:
@@ -109,7 +154,10 @@ def _normalize_command(event) -> tuple[str | None, str]:
 
 
 def _button_callback(action: str, target: str) -> str | None:
-    if action not in {"approve", "reject"} or not SAFE_CALLBACK_TARGET.fullmatch(target):
+    if (
+        action not in {"approve", "reject"}
+        or not SAFE_BRIDGE_TARGET.fullmatch(target)
+    ):
         return None
     callback_data = f"{CALLBACK_PREFIX}{action}:{target}"
     if len(callback_data.encode("utf-8")) > MAX_CALLBACK_BYTES:
@@ -217,12 +265,71 @@ def _valid_reply_payload(payload: Any) -> bool:
     return True
 
 
+def _plan_reply_payload(payload: Any, token: str) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("token") != token:
+        return None
+    status = payload.get("status")
+    reply = payload.get("reply")
+    if not isinstance(status, str) or not isinstance(reply, dict):
+        return None
+    text = reply.get("text")
+    buttons = reply.get("buttons", [])
+    if not isinstance(text, str) or not text.strip() or not isinstance(buttons, list):
+        return None
+    if status == "pending_approval":
+        expected = [
+            {"text": "Approve", "action": "approve", "target": token},
+            {"text": "Reject", "action": "reject", "target": token},
+        ]
+        if buttons != expected:
+            return None
+    elif buttons:
+        return None
+    return {"reply": {"text": text, "buttons": buttons}}
+
+
+async def _handle_plan_request(adapter, event, token: str) -> None:
+    if not SAFE_PLAN_TOKEN.fullmatch(token):
+        await _deliver_bridge_reply(adapter, event, {"reply": {"text": "Invalid Paperclip plan token."}})
+        return
+    path = f"/plans/{token}"
+    headers = build_headers(
+        b"",
+        method="GET",
+        path=path,
+        token=_extra(adapter, "paperclip_bridge_bearer_token"),
+        signing_secret=_extra(adapter, "paperclip_bridge_signing_secret"),
+        idempotency_key=f"telegram:plan:{token}",
+    )
+    try:
+        status, payload = await asyncio.to_thread(
+            get_json,
+            _validated_bridge_base_url(adapter) + path,
+            headers,
+        )
+        reply_payload = _plan_reply_payload(payload, token)
+        if not 200 <= status < 300 or reply_payload is None:
+            raise ValueError("Bridge returned an invalid plan response")
+        await _deliver_bridge_reply(adapter, event, reply_payload)
+    except Exception:
+        await _deliver_bridge_reply(
+            adapter,
+            event,
+            {"reply": {"text": "I could not retrieve that Paperclip plan. Please retry."}},
+        )
+
+
 async def maybe_handle_command(adapter, event) -> bool:
     if not is_enabled(adapter):
         return False
     command, args = _normalize_command(event)
     if command not in BRIDGE_COMMANDS:
         return False
+    if command == "paperclip_plan":
+        await _handle_plan_request(adapter, event, args)
+        return True
     if not args:
         await _deliver_bridge_reply(adapter, event, {"reply": {"text": "Tell me what you want logged after the colon."}})
         return True
@@ -231,6 +338,8 @@ async def maybe_handle_command(adapter, event) -> bool:
     raw = json.dumps(body, separators=(",", ":")).encode("utf-8")
     headers = build_headers(
         raw,
+        method="POST",
+        path="/log",
         token=_extra(adapter, "paperclip_bridge_bearer_token"),
         signing_secret=_extra(adapter, "paperclip_bridge_signing_secret"),
         idempotency_key=f"telegram:{event.source.chat_id}:{event.message_id}:/{command}",
@@ -273,7 +382,11 @@ async def maybe_handle_callback(adapter, query, data: str, *, query_chat_id: Any
         return True
     rest = data[len(CALLBACK_PREFIX):]
     action, separator, target = rest.partition(":")
-    if separator != ":" or action not in {"approve", "reject"} or not SAFE_CALLBACK_TARGET.fullmatch(target):
+    if (
+        separator != ":"
+        or action not in {"approve", "reject"}
+        or not SAFE_BRIDGE_TARGET.fullmatch(target)
+    ):
         await query.answer(text="Invalid Paperclip action.")
         return True
 
@@ -290,6 +403,8 @@ async def maybe_handle_callback(adapter, query, data: str, *, query_chat_id: Any
     origin_message_id = str(getattr(getattr(query, "message", None), "message_id", "") or "")
     headers = build_headers(
         raw,
+        method="POST",
+        path="/approve",
         token=_extra(adapter, "paperclip_bridge_bearer_token"),
         signing_secret=_extra(adapter, "paperclip_bridge_signing_secret"),
         idempotency_key=f"telegram:{query_chat_id}:{origin_message_id}:/approve:{decision}:{target}",

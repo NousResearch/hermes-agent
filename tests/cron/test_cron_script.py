@@ -751,6 +751,10 @@ class TestScriptTimeoutTreeKill:
             "psutil",
             reason="kill_process_tree needs psutil to reach own-session descendants",
         )
+        try:
+            psutil.pids()
+        except (OSError, psutil.Error) as exc:
+            pytest.skip(f"process-table enumeration unavailable in this runner: {exc}")
 
         from cron import scheduler as sched
         from cron import scheduler_script as sched_script

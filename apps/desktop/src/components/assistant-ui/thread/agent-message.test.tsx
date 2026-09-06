@@ -24,7 +24,7 @@ describe('agent message detection', () => {
   })
 
   it('recognizes a connection-qualified relay handle without changing the avatar handle', () => {
-    const m = AGENT_MESSAGE_RE.exec('Message from 🤖 hermes (@hermes@cloud-1): status?')
+    const m = AGENT_MESSAGE_RE.exec('Message from 🤖 hermes (@hermes@Cloud-1): status?')
 
     expect(m?.[1]?.trim()).toBe('hermes')
     expect(m?.[2]).toBe('hermes')

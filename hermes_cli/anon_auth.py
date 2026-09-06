@@ -233,34 +233,36 @@ def apply_exchange_to_state(state: Dict[str, Any], exchanged: Dict[str, Any]) ->
     state.pop("refresh_token", None)
 
 
-def anon_state_from_exchange(minted: Dict[str, Any], exchanged: Dict[str, Any], *, portal_base_url: str) -> Dict[str, Any]:
-    """The ``providers.nous`` shape for a guest. No ``refresh_token``: the ``anon_`` credential is it."""
-    state: Dict[str, Any] = {
-        "auth_method": ANON_AUTH_METHOD, "account_tier": ANON_ACCOUNT_TIER,
-        "anon_token": minted["token"], "client_id": ANON_CLIENT_ID,
-        "portal_base_url": portal_base_url.rstrip("/"),
-        "user_id": minted.get("user_id"), "org_id": minted.get("org_id"),
-        "idle_ttl_days": minted.get("idle_ttl_days"),
-    }
-    apply_exchange_to_state(state, exchanged)
-    return state
-
-
 def _portal_base_url() -> str:
     from hermes_cli.auth_nous import _nous_portal_env_override
     return (_nous_portal_env_override() or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
 
 
-def _mint_and_persist(*, timeout_seconds: float) -> Dict[str, Any]:
-    from hermes_cli.auth_nous import _nous_http_client, persist_nous_credentials
-    from hermes_cli.auth import _resolve_verify
-    portal = _portal_base_url()
-    verify = _resolve_verify(insecure=None, ca_bundle=None, auth_state=None)
-    with _nous_http_client(timeout_seconds, verify) as client:
-        minted = mint_guest(client, portal)
-        exchanged = exchange_anon_jwt(client, portal, minted["token"])
-    state = anon_state_from_exchange(minted, exchanged, portal_base_url=portal)
-    persist_nous_credentials(state)
+def _shared_identity_key(state: Any) -> Optional[str]:
+    """Stable identity of a Nous credential: the anon_ token for a guest, the refresh token for an
+    account. Used to decide whether two stores hold the SAME identity."""
+    if not isinstance(state, dict):
+        return None
+    return state.get("anon_token") if is_guest_state(state) else state.get("refresh_token")
+
+
+def _mint_locked(client: httpx.Client, portal: str, auth_store: Dict[str, Any]) -> Dict[str, Any]:
+    """Mint under the caller's locks. The identity is persisted as soon as ``create`` succeeds, BEFORE
+    the exchange: a 429 or timeout on the exchange must not lose a credential NAS still honours (the
+    next attempt exchanges the stored one instead of minting again)."""
+    from hermes_cli.auth import _save_provider_state, _save_auth_store
+    from hermes_cli.auth_nous import _write_shared_nous_state
+    minted = mint_guest(client, portal)
+    state: Dict[str, Any] = {
+        "auth_method": ANON_AUTH_METHOD, "account_tier": ANON_ACCOUNT_TIER,
+        "anon_token": minted["token"], "client_id": ANON_CLIENT_ID,
+        "portal_base_url": portal.rstrip("/"),
+        "user_id": minted.get("user_id"), "org_id": minted.get("org_id"),
+        "idle_ttl_days": minted.get("idle_ttl_days"),
+    }
+    _save_provider_state(auth_store, "nous", state)
+    _save_auth_store(auth_store)
+    _write_shared_nous_state(state)
     logger.info("Nous free tier ready (identity minted)")
     return state
 
@@ -275,44 +277,64 @@ _mint_failed = False
 _forced_new_done = False
 
 
+def _reconcile_and_provision(*, force: str, timeout_seconds: float) -> Dict[str, Any]:
+    """The lifecycle body, run under profile lock THEN shared lock (the documented order).
+
+    1. The shared store is the identity of record for this Hermes root. If it holds an identity
+       that differs from the profile's, the profile adopts it (a stale guest never outlives a
+       sibling profile's sign-in, and never overwrites it).
+    2. Otherwise the profile's own identity stands.
+    3. Nothing anywhere: mint, persisting the credential before exchanging it.
+    ``force == "new"`` skips 1 and 2.
+    """
+    from hermes_cli.auth import (
+        _auth_store_lock, _load_auth_store, _load_provider_state, _save_auth_store,
+        _save_provider_state, _resolve_verify)
+    from hermes_cli.auth_nous import (
+        _nous_http_client, _nous_shared_store_lock, _read_shared_nous_state, _write_shared_nous_state)
+    portal = _portal_base_url()
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        profile_state = _load_provider_state(auth_store, "nous")
+        with _nous_shared_store_lock(timeout_seconds=max(timeout_seconds, 5.0)):
+            if force != "new":
+                shared = _read_shared_nous_state()
+                if shared and _shared_identity_key(shared) != _shared_identity_key(profile_state):
+                    state = dict(shared)
+                    _save_provider_state(auth_store, "nous", state)
+                    _save_auth_store(auth_store)
+                    logger.debug("Nous identity adopted from the shared store")
+                    return state
+                if profile_state:
+                    if not shared:
+                        _write_shared_nous_state(profile_state)
+                    return profile_state
+            verify = _resolve_verify(insecure=None, ca_bundle=None, auth_state=None)
+            with _nous_http_client(timeout_seconds, verify) as client:
+                return _mint_locked(client, portal, auth_store)
+
+
 def ensure_portal_identity(*, blocking: bool = True, timeout_seconds: float = GUEST_MINT_TIMEOUT_SECONDS) -> Optional[Dict[str, Any]]:
     """Make sure this profile has a Nous identity (guest or account); mint a guest only if the shared
     store has none. Returns the ``providers.nous`` state, or None (disabled / non-blocking / failed).
 
-    Order: ``nous.guest`` gate -> profile state -> shared store (adopt) -> mint. The mint runs under
-    the shared-store lock so two profiles booting together produce one identity, not two.
-    Non-blocking mode runs the mint on a daemon thread and returns None immediately; a failure there
-    is logged at DEBUG (the guest is a fallback; a fallback failing is not an error).
+    Order: ``nous.guest`` gate -> reconcile with the shared store -> mint. Locks are taken profile
+    first, then shared, matching every other Nous path. Non-blocking mode runs on a daemon thread
+    and returns None immediately; a failure there is logged at DEBUG (the guest is a fallback; a
+    fallback failing is not an error).
     """
     global _mint_failed, _forced_new_done
     if not guest_enabled():
         return None
-    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _load_provider_state
-    from hermes_cli.auth_nous import (
-        _nous_shared_store_lock, _read_shared_nous_state, persist_nous_credentials)
     force = force_guest_mode()
     if force == "new" and _forced_new_done:
         force = "1"
-    with _auth_store_lock():
-        state = _load_provider_state(_load_auth_store(), "nous")
-    if state and force != "new":
-        return state
-    if not state and _mint_failed:
+    if _mint_failed and force != "new" and not current_nous_state():
         return None  # this process already tried and failed; do not hammer the portal
-
-    def _adopt_or_mint() -> Dict[str, Any]:
-        with _nous_shared_store_lock(timeout_seconds=max(timeout_seconds + 5.0, 30.0)):
-            if force != "new":
-                shared = _read_shared_nous_state()
-                if shared:
-                    persist_nous_credentials(dict(shared))
-                    logger.debug("Nous identity adopted from the shared store")
-                    return dict(shared)
-            return _mint_and_persist(timeout_seconds=timeout_seconds)
 
     if blocking:
         try:
-            result = _adopt_or_mint()
+            result = _reconcile_and_provision(force=force, timeout_seconds=timeout_seconds)
         except Exception:
             _mint_failed = True
             raise
@@ -329,7 +351,7 @@ def ensure_portal_identity(*, blocking: bool = True, timeout_seconds: float = GU
     def _run() -> None:
         global _background_started
         try:
-            _adopt_or_mint()
+            _reconcile_and_provision(force=force, timeout_seconds=timeout_seconds)
         except Exception as exc:
             logger.debug("Nous free tier background setup skipped: %s", exc)
             # A transient failure must not consume the process's only attempt: release the latch
@@ -349,30 +371,45 @@ def ensure_portal_identity(*, blocking: bool = True, timeout_seconds: float = GU
 def refresh_guest_state(state: Dict[str, Any], client: httpx.Client) -> None:
     """Token-acquisition seam for a guest: re-exchange the ``anon_`` credential in place.
 
+    The portal URL is the resolver's canonical one (env override, else the validated stored URL,
+    else the default), never a raw stored value on its own.
     Raises :class:`AnonCredentialDead` when NAS no longer knows the credential; the caller owns
-    re-minting (:func:`ensure_portal_identity` after clearing the dead state).
+    re-minting (:func:`ensure_portal_identity` after :func:`clear_dead_guest`).
     """
     anon_token = state.get("anon_token")
     if not isinstance(anon_token, str) or not anon_token:
         raise AnonCredentialDead("Nous free-tier credential is missing.", code="anon_credential_dead")
-    portal = (state.get("portal_base_url") or _portal_base_url()).rstrip("/")
-    apply_exchange_to_state(state, exchange_anon_jwt(client, portal, anon_token))
+    from hermes_cli.auth import _nous_portal_base_url
+    apply_exchange_to_state(state, exchange_anon_jwt(client, _nous_portal_base_url(state), anon_token))
 
 
-def clear_dead_guest(reason: str) -> None:
-    """Drop a dead guest from the profile store and the shared store so the next need re-mints."""
-    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _load_provider_state, _save_auth_store, _store_section
-    from hermes_cli.auth_nous import _clear_shared_nous_state
+def clear_dead_guest(reason: str, *, dead_token: Optional[str] = None) -> None:
+    """Drop a dead guest so the next need re-mints.
+
+    Only the identity that actually failed is removed: a stale profile whose credential NAS rejected
+    must not erase a sibling profile's newer sign-in or replacement guest from the shared store. When
+    *dead_token* is None the profile's current guest is treated as the failed one.
+    """
+    from hermes_cli.auth import (
+        _auth_store_lock, _load_auth_store, _load_provider_state, _save_auth_store, _store_section)
+    from hermes_cli.auth_nous import _clear_shared_nous_state, _nous_shared_store_lock, _read_shared_nous_state
     with _auth_store_lock():
         auth_store = _load_auth_store()
         state = _load_provider_state(auth_store, "nous")
         if is_guest_state(state):
-            _store_section(auth_store, "providers").pop("nous", None)
-            _store_section(auth_store, "credential_pool").pop("nous", None)
-            if auth_store.get("active_provider") == "nous":
-                auth_store["active_provider"] = None
-            _save_auth_store(auth_store)
-    _clear_shared_nous_state(reason)
+            token = dead_token or state.get("anon_token")
+            if state.get("anon_token") == token:
+                _store_section(auth_store, "providers").pop("nous", None)
+                _store_section(auth_store, "credential_pool").pop("nous", None)
+                if auth_store.get("active_provider") == "nous":
+                    auth_store["active_provider"] = None
+                _save_auth_store(auth_store)
+        else:
+            token = dead_token
+        with _nous_shared_store_lock():
+            shared = _read_shared_nous_state()
+            if token and is_guest_state(shared) and shared.get("anon_token") == token:
+                _clear_shared_nous_state(reason)
     global _mint_failed
     _mint_failed = False
     logger.info("Nous free-tier identity retired (%s); a new one is set up on next use", reason)

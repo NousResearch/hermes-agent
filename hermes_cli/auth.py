@@ -1641,6 +1641,21 @@ def resolve_nous_access_token(
 
         lock_timeout = max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)
         with _nous_shared_store_lock(timeout_seconds=lock_timeout):
+            from hermes_cli.anon_auth import is_guest_state, refresh_guest_state
+            if is_guest_state(state):
+                # Guest seam: the anon_ credential is the identity; a first use has no access token
+                # yet and an expired one is re-exchanged. No refresh token, no quarantine.
+                access_token = state.get("access_token")
+                if isinstance(access_token, str) and access_token and not _is_expiring(
+                        state.get("expires_at"), refresh_skew_seconds):
+                    return _memo(access_token)
+                with httpx.Client(timeout=httpx.Timeout(timeout_seconds or 15.0),
+                                  headers={"Accept": "application/json"}, verify=verify) as client:
+                    refresh_guest_state(state, client)
+                persist()
+                _write_shared_nous_state(state)
+                return _memo(state["access_token"])
+
             merged_shared = _merge_shared_nous_oauth_state(state)
             access_token = state.get("access_token")
             refresh_token = state.get("refresh_token")
@@ -1654,16 +1669,6 @@ def resolve_nous_access_token(
                 # cross-process file locks to get here. The token has >= refresh_skew_seconds (>=
                 # 120s) of life, so a 5s memo can never serve an expired token.
                 return _memo(access_token)
-
-            from hermes_cli.anon_auth import is_guest_state, refresh_guest_state
-            if is_guest_state(state):
-                # Guest seam: re-exchange the anon_ credential; no refresh token exists.
-                with httpx.Client(timeout=httpx.Timeout(timeout_seconds or 15.0),
-                                  headers={"Accept": "application/json"}, verify=verify) as client:
-                    refresh_guest_state(state, client)
-                persist()
-                _write_shared_nous_state(state)
-                return _memo(state["access_token"])
 
             if not isinstance(refresh_token, str) or not refresh_token:
                 raise _nous_err("Session expired and no refresh token is available.", relogin=True)

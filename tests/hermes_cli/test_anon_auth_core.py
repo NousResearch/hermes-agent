@@ -325,3 +325,59 @@ class TestSwapCoversEveryWireMode:
         monkeypatch.setattr(anon_auth.threading, "Thread", Boom)
         assert anon_auth.ensure_portal_identity(blocking=False) is None
         assert anon_auth._background_started is False
+
+
+class TestIdentityOfRecordIsTheSharedStore:
+    def test_stale_profile_guest_adopts_a_newer_shared_account(self, portal, tmp_path):
+        anon_auth.ensure_portal_identity(blocking=True)
+        # A sibling profile signed in: the shared store now holds a real account.
+        from hermes_cli.auth_nous import _write_shared_nous_state
+        _write_shared_nous_state({"access_token": _jwt(client_id="hermes-cli", account_tier="free"),
+                                  "refresh_token": "rt-sibling", "expires_at": "2030-01-01T00:00:00+00:00",
+                                  "auth_method": "oauth_device_code"})
+        state = anon_auth.ensure_portal_identity(blocking=True)
+        assert not anon_auth.is_guest_state(state)
+        assert state["refresh_token"] == "rt-sibling"
+        assert _load_auth_store()["providers"]["nous"]["refresh_token"] == "rt-sibling"
+        assert _shared_store(tmp_path)["refresh_token"] == "rt-sibling", "the profile must never overwrite the shared account"
+
+    def test_mint_persists_before_any_exchange_and_first_use_exchanges_once(self, portal):
+        first = anon_auth.ensure_portal_identity(blocking=True)
+        assert anon_auth.is_guest_state(first) and "access_token" not in first
+        assert [p for _, p in portal.calls] == ["/api/anonymous/create"], "mint alone; exchange is lazy"
+        from hermes_cli.auth_nous import resolve_nous_runtime_credentials
+        creds = resolve_nous_runtime_credentials()
+        assert creds["api_key"]
+        assert portal.minted == 1, "a stored credential is exchanged, never re-minted"
+        assert [p for _, p in portal.calls].count("/api/anonymous/token") == 1
+
+    def test_clearing_a_dead_guest_leaves_a_sibling_identity_alone(self, portal, tmp_path):
+        anon_auth.ensure_portal_identity(blocking=True)
+        from hermes_cli.auth_nous import _write_shared_nous_state
+        _write_shared_nous_state({"access_token": _jwt(client_id="hermes-cli"), "refresh_token": "rt-sibling",
+                                  "expires_at": "2030-01-01T00:00:00+00:00", "auth_method": "oauth_device_code"})
+        anon_auth.clear_dead_guest("test")
+        assert "nous" not in _load_auth_store().get("providers", {})
+        assert _shared_store(tmp_path)["refresh_token"] == "rt-sibling"
+
+    def test_lock_order_is_profile_then_shared(self, portal, monkeypatch):
+        order = []
+        from hermes_cli import auth as auth_mod, auth_nous
+        real_profile, real_shared = auth_mod._auth_store_lock, auth_nous._nous_shared_store_lock
+        from contextlib import contextmanager
+
+        @contextmanager
+        def profile(*a, **k):
+            order.append("profile")
+            with real_profile(*a, **k):
+                yield
+
+        @contextmanager
+        def shared(*a, **k):
+            order.append("shared")
+            with real_shared(*a, **k):
+                yield
+        monkeypatch.setattr(auth_mod, "_auth_store_lock", profile)
+        monkeypatch.setattr(auth_nous, "_nous_shared_store_lock", shared)
+        anon_auth.ensure_portal_identity(blocking=True)
+        assert order[:2] == ["profile", "shared"]

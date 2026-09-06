@@ -377,11 +377,10 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
     """
     from hermes_cli.auth import _nonempty_str, _write_private_file_atomic
     refresh_token = state.get("refresh_token")
-    # Nothing worth sharing without refresh material: an OAuth refresh_token, or a guest's anon_
-    # credential (which is its own refresh material).
-    if not _nonempty_str(state.get("access_token")):
-        return
-    if not (_nonempty_str(refresh_token) or _nonempty_str(state.get("anon_token"))):
+    # Nothing worth sharing without refresh material: an OAuth refresh_token (with its access token),
+    # or a guest's anon_ credential, which is the whole identity and may not have been exchanged yet.
+    is_guest = _nonempty_str(state.get("anon_token"))
+    if not is_guest and not (_nonempty_str(refresh_token) and _nonempty_str(state.get("access_token"))):
         return
     shared = {
         "_schema": 1, **_nous_shared_shape(state),
@@ -417,8 +416,8 @@ def _read_shared_nous_state() -> Optional[Dict[str, Any]]:
         return None
     if not isinstance(payload, dict):
         return None
-    has_tokens = _nonempty_str(payload.get("access_token")) and (
-        _nonempty_str(payload.get("refresh_token")) or _nonempty_str(payload.get("anon_token")))
+    has_tokens = _nonempty_str(payload.get("anon_token")) or (
+        _nonempty_str(payload.get("access_token")) and _nonempty_str(payload.get("refresh_token")))
     return payload if has_tokens else None
 
 

@@ -5053,12 +5053,30 @@ class SlackAdapter(BasePlatformAdapter):
                 body = body[:budget] + "..."
             # Slack caps an actions block at 5 elements; clarify caps choices at 4 (+ Other) but
             # chunk anyway so larger lists degrade gracefully instead of 400ing.
+            #
+            # Slack also hard-caps button text at 75 chars. Truncating a label to
+            # label[:75] silently drops the tail mid-word, so a long option reads as
+            # gibberish on the button. Instead, when ANY label overflows, list every
+            # full label as a numbered line in the section body (which allows 3000
+            # chars) and label the buttons with just their number. Short-label
+            # prompts keep the original chip look (full text on the button).
+            labels = [str(choice).strip() or f"Option {idx + 1}"
+                      for idx, choice in enumerate(choices)]
+            BTN_MAX = 75
+            use_numbered = any(len(lbl) > BTN_MAX for lbl in labels)
+            if use_numbered:
+                numbered = "\n".join(f"*{i + 1}.* {lbl}" for i, lbl in enumerate(labels))
+                extra = f"\n\n{numbered}"
+                room = 3000 - len(body) - len("\n\n...")
+                if len(extra) > room:
+                    extra = extra[:room] + "..."
+                body += extra
             elements = []
-            for idx, choice in enumerate(choices):
-                label = str(choice).strip() or f"Option {idx + 1}"
+            for idx, label in enumerate(labels):
+                btn_text = f"{idx + 1}" if use_numbered else label[:BTN_MAX]
                 elements.append(
                     self._button(
-                        label[:75], f"hermes_clarify_choice_{idx}",
+                        btn_text, f"hermes_clarify_choice_{idx}",
                         f"{clarify_id}|{idx}", emoji=True))
             elements.append(
                 self._button("✏️ Other…", "hermes_clarify_other", f"{clarify_id}|other", emoji=True)

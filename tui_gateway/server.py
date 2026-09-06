@@ -2575,8 +2575,26 @@ def _session_pending_kind(sid: str) -> str:
                  for rid, (owner_sid, _ev) in list(_pending.items()) if owner_sid == sid), "")
 
 
+def _session_awaiting_approval(session: dict) -> bool:
+    """Whether the session's agent thread is parked on a dangerous-command
+    approval. Approvals queue in ``tools.approval`` keyed by session key, not
+    in ``_pending`` like clarify/sudo/secret, so a status that only consults
+    ``_pending`` reports a blocked session as ``working`` — and the desktop's
+    liveness poll then clears its needs-input state a beat after the
+    ``approval.request`` event set it."""
+    key = str(session.get("session_key") or "")
+    if not key:
+        return False
+    try:
+        from tools.approval import has_blocking_approval
+
+        return has_blocking_approval(key)
+    except Exception:
+        return False
+
+
 def _session_live_status(sid: str, session: dict) -> str:
-    if _session_pending_kind(sid):
+    if _session_pending_kind(sid) or _session_awaiting_approval(session):
         return "waiting"
     ready = session.get("agent_ready")
     # Unset + build never started = a lazy watch session idling, not one stuck mid-construction.

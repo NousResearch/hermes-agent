@@ -2733,7 +2733,7 @@ class TestAuxiliaryAuthRefreshRetry:
 
 
 
-    def test_refresh_provider_credentials_force_refreshes_anthropic_oauth_and_evicts_cache(self, monkeypatch):
+    def test_refresh_provider_credentials_does_not_rotate_keychain_token(self, monkeypatch):
         stale_client = MagicMock()
         cache_key = ("anthropic", False, None, None, None)
 
@@ -2743,28 +2743,24 @@ class TestAuxiliaryAuthRefreshRetry:
 
         with (
             patch("agent.auxiliary_client._client_cache", {cache_key: (stale_client, "claude-haiku-4-5-20251001", None)}),
-            # Anthropic credential sourcing lives in agent/anthropic_credentials.py;
-            # patch it at that definition site so both the direct call here and
-            # the re-read inside ``_refresh_oauth_token`` see the same stub.
             patch("agent.anthropic_credentials.read_claude_code_credentials", return_value={
                 "accessToken": "expired-token",
                 "refreshToken": "refresh-token",
-                "expiresAt": 0,
+                "expiresAt": 1,
+                "source": "macos_keychain",
             }),
-            patch("agent.anthropic_credentials.refresh_anthropic_oauth_pure", return_value={
-                "access_token": "fresh-token",
-                "refresh_token": "refresh-token-2",
-                "expires_at_ms": 9999999999999,
-            }) as mock_refresh_oauth,
+            patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=None) as mock_resolve,
+            patch("agent.anthropic_credentials.refresh_anthropic_oauth_pure") as mock_refresh_oauth,
             patch("agent.anthropic_credentials._write_claude_code_credentials") as mock_write,
         ):
             from agent.auxiliary_client import _refresh_provider_credentials
 
-            assert _refresh_provider_credentials("anthropic") is True
+            assert _refresh_provider_credentials("anthropic") is False
 
-        mock_refresh_oauth.assert_called_once_with("refresh-token", use_json=False)
-        mock_write.assert_called_once_with("fresh-token", "refresh-token-2", 9999999999999)
-        stale_client.close.assert_called_once()
+        mock_resolve.assert_called_once_with()
+        mock_refresh_oauth.assert_not_called()
+        mock_write.assert_not_called()
+        stale_client.close.assert_not_called()
 
     def test_refresh_provider_credentials_remints_vertex_token_and_evicts_cache(self):
         """Vertex tokens live ~1h; on a long-running gateway the cached

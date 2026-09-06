@@ -23,6 +23,11 @@ DEFAULT_CONFIG = {
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
+    "anthropic": {
+        # Borrow Claude Code credentials when Anthropic is explicitly selected. Keychain-sourced
+        # credentials are read-only; false prevents even reading Claude's file/Keychain.
+        "claude_code_credentials": True,
+    },
     "toolsets": ["hermes-cli"],
     # journal_mode: SQLite journal mode for every Hermes DB. "wal" default; use "delete" on
     # weak-fsync/shared filesystems where WAL is not crash-safe (macOS virtiofs, NFS, SMB).

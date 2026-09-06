@@ -3,9 +3,9 @@
 ``resolve_anthropic_token()`` order: ``ANTHROPIC_TOKEN`` / ``CLAUDE_CODE_OAUTH_TOKEN``,
 ``ANTHROPIC_API_KEY``, ``~/.claude/.credentials.json`` / macOS Keychain, then the
 ``auth.json`` credential pool. ``~/.hermes/.anthropic_oauth.json`` (Hermes PKCE) and
-the Claude Code file are *singletons*: ``credential_pool._seed_from_singletons()``
-re-reads them on every ``load_pool()``, so a failed write here is a failed refresh
-(``CredentialPersistError``), not a cache miss.
+the Claude Code stores are *singletons*: ``credential_pool._seed_from_singletons()``
+re-reads them on every ``load_pool()``. Hermes may refresh the JSON file in place,
+but treats Keychain-sourced credentials as read-only.
 """
 
 import base64
@@ -260,6 +260,22 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     return kc_creds if (kc_creds.get("expiresAt", 0) or 0) >= (file_creds.get("expiresAt", 0) or 0) else file_creds
 
 
+def claude_code_credentials_enabled() -> bool:
+    """Whether ambient Claude Code credential discovery is allowed for this profile."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        anthropic = load_config_readonly().get("anthropic", {})
+        return (
+            not isinstance(anthropic, dict)
+            or anthropic.get("claude_code_credentials", True) is not False
+        )
+    except Exception:
+        # Preserve the historical default if config loading itself is unavailable; malformed YAML is
+        # handled by the config loader's last-known-good/default policy and surfaced separately.
+        return True
+
+
 def is_claude_code_token_valid(creds: Dict[str, Any]) -> bool:
     """Non-expired access token (60s buffer); no expiresAt means managed key → valid if present."""
     expires_at = creds.get("expiresAt", 0)
@@ -317,6 +333,9 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
     Claude Code refreshes on its own schedule, so we first re-read the live sources and adopt an already-rotated
     token instead of racing it into ``invalid_grant``. Read, decision, POST and write-back share the pool's
     path-keyed cross-process lock (else two profiles can spend one refresh token)."""
+    if creds.get("source") == "macos_keychain":
+        logger.debug("Refusing to refresh Claude Code credentials read from the macOS Keychain")
+        return None
     try:
         from hermes_cli.auth import AUTH_LOCK_TIMEOUT_SECONDS, _auth_store_lock, env_float
         refresh_timeout_seconds = env_float("HERMES_ANTHROPIC_REFRESH_TIMEOUT_SECONDS", 20)
@@ -394,7 +413,7 @@ def _write_claude_code_credentials(
 
 
 def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] = None) -> Optional[str]:
-    """Resolve a token from Claude Code credential files, refreshing if needed."""
+    """Resolve Claude Code credentials, refreshing only when the JSON file is authoritative."""
     creds = creds or read_claude_code_credentials()
     if not creds:
         return None
@@ -405,23 +424,11 @@ def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] 
     if is_claude_code_token_valid(creds):
         logger.debug("Using Claude Code credentials (auto-detected)")
         return creds["accessToken"]
-    logger.debug("Claude Code credentials expired — attempting refresh")
+    logger.debug("Claude Code credentials expired — attempting same-store refresh")
     refreshed = _refresh_oauth_token(creds)
     if not refreshed:
-        logger.debug("Token refresh failed — re-run 'claude setup-token' to reauthenticate")
+        logger.debug("Token refresh unavailable — re-run 'claude setup-token' to reauthenticate")
     return refreshed or None
-
-
-def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[str, Any]]) -> Optional[str]:
-    """Prefer refreshable Claude Code creds over a static env OAuth token: Hermes historically persisted setup tokens
-    into ANTHROPIC_TOKEN, and that static token would otherwise win before the refreshable file is inspected."""
-    if not (env_token and _is_oauth_token(env_token) and isinstance(creds, dict) and creds.get("refreshToken")):
-        return None
-    resolved = _resolve_claude_code_token_from_credentials(creds)
-    if resolved and resolved != env_token:
-        logger.debug("Preferring Claude Code credential file over static env OAuth token so refresh can proceed")
-        return resolved
-    return None
 
 
 def _resolve_anthropic_pool_token() -> Optional[str]:
@@ -457,11 +464,15 @@ def resolve_anthropic_token() -> Optional[str]:
     _read_creds = functools.cache(read_claude_code_credentials)  # read the file at most once per resolve
     token = _first_env("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
     if token:
-        return _prefer_refreshable_claude_code_token(token, _read_creds()) or token
+        return token
     api_key = _first_env("ANTHROPIC_API_KEY")  # an explicit API key must not be shadowed by discovered OAuth creds
     if api_key:
         return api_key
-    return _resolve_claude_code_token_from_credentials(_read_creds()) or _resolve_anthropic_pool_token()
+    if claude_code_credentials_enabled():
+        resolved = _resolve_claude_code_token_from_credentials(_read_creds())
+        if resolved:
+            return resolved
+    return _resolve_anthropic_pool_token()
 
 
 def run_oauth_setup_token() -> Optional[str]:

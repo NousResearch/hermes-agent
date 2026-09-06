@@ -129,11 +129,11 @@ When provider resolution selects `anthropic`, Hermes uses:
 - the native Anthropic Messages API
 - `agent/anthropic_adapter.py` for translation
 
-Credential resolution for native Anthropic now prefers refreshable Claude Code credentials over copied env tokens when both are present. In practice that means:
+Credential resolution for native Anthropic treats explicit Hermes credentials as authoritative and can borrow a currently valid Claude Code access token as a fallback. In practice that means:
 
-- Claude Code credential files are treated as the preferred source when they include refreshable auth
-- manual `ANTHROPIC_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` values still work as explicit overrides
-- Hermes preflights Anthropic credential refresh before native Messages API calls
+- manual `ANTHROPIC_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` values remain authoritative
+- Hermes may read Claude Code's credential file or macOS Keychain only when `anthropic.claude_code_credentials` is enabled (the default)
+- Hermes refreshes file-sourced Claude Code credentials back into the same JSON file, but treats macOS Keychain credentials as read-only because it cannot commit the rotated pair to that store
 - Hermes still retries once on a 401 after rebuilding the Anthropic client, as a fallback path
 
 ## OpenAI Codex path

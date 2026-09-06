@@ -40,6 +40,12 @@ runtime:
 # =============================================================================
 # Model Configuration
 # =============================================================================
+# Borrow Claude Code credentials. Hermes refreshes file-sourced tokens in place, but never
+# rotates Keychain-sourced tokens because it cannot commit the replacement to that store.
+# Set false to prevent reads from ~/.claude/.credentials.json and the macOS Keychain.
+anthropic:
+  claude_code_credentials: true
+
 model:
   # Default model to use (can be overridden with --model flag)
   # Both "default" and "model" work as the key name here.

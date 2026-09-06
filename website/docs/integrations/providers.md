@@ -164,11 +164,18 @@ hermes model
 export ANTHROPIC_TOKEN=***  # setup-token or manual OAuth token
 hermes chat --provider anthropic
 
-# Auto-detect Claude Code credentials (if you already use Claude Code)
+# Auto-detect a valid Claude Code access token (if you already use Claude Code)
 hermes chat --provider anthropic  # reads Claude Code credential files automatically
 ```
 
-When you choose Anthropic OAuth through `hermes model`, Hermes prefers Claude Code's own credential store over copying the token into `~/.hermes/.env`. That keeps refreshable Claude credentials refreshable.
+When you choose Anthropic OAuth through `hermes model`, Hermes can borrow credentials from Claude Code's store instead of copying a setup token into `~/.hermes/.env`. File-sourced credentials can be refreshed back into the same JSON file. Keychain-sourced credentials are read-only because refresh tokens are single-use and Hermes cannot commit the rotated pair back to that store; Claude Code remains responsible for those refreshes, which Hermes adopts on the next credential resolution.
+
+Disable all Claude Code credential discovery (including Keychain and `~/.claude/.credentials.json` reads) while keeping other Anthropic auth sources available:
+
+```yaml
+anthropic:
+  claude_code_credentials: false
+```
 
 Or set it permanently:
 ```yaml

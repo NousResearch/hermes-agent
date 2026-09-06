@@ -1,6 +1,7 @@
 """Tests for agent/anthropic_adapter.py — Anthropic Messages API adapter."""
 
 import json
+import os
 import sys
 import time
 from types import SimpleNamespace
@@ -246,6 +247,28 @@ class TestResolveAnthropicToken:
 
         assert resolve_anthropic_token() == "sk-ant...ykey"
 
+    def test_config_opt_out_does_not_read_claude_code_credentials(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "anthropic:\n  claude_code_credentials: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr(
+            "agent.anthropic_credentials.read_claude_code_credentials",
+            self._assert_not_called,
+        )
+        monkeypatch.setattr(
+            "agent.anthropic_credentials._resolve_anthropic_pool_token",
+            lambda: None,
+        )
+
+        assert resolve_anthropic_token() is None
+
     def test_falls_back_to_claude_code_credentials(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
@@ -363,7 +386,7 @@ class TestResolveAnthropicToken:
         assert resolve_anthropic_token() == "pool-oauth-token"
         assert captured == {"clear_expired": False, "refresh": False}
 
-    def test_prefers_refreshable_claude_code_credentials_over_static_anthropic_token(self, monkeypatch, tmp_path):
+    def test_explicit_anthropic_token_wins_over_borrowed_claude_code_credentials(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-static-token")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
@@ -378,7 +401,7 @@ class TestResolveAnthropicToken:
         }))
         monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
 
-        assert resolve_anthropic_token() == "cc-auto-token"
+        assert resolve_anthropic_token() == os.environ["ANTHROPIC_TOKEN"]
 
 
 
@@ -487,31 +510,28 @@ class TestWriteClaudeCodeCredentials:
 
 
 class TestResolveWithRefresh:
-    def test_auto_refresh_on_expired_creds(self, monkeypatch, tmp_path):
-        """When cred file has expired token + refresh token, auto-refresh is attempted."""
+    def test_expired_keychain_creds_are_not_refreshed(self, monkeypatch):
+        """Hermes cannot safely rotate a token it cannot commit back to Keychain."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        creds = {
+            "accessToken": "expired-tok",
+            "refreshToken": "valid-refresh",
+            "expiresAt": int(time.time() * 1000) - 3600_000,
+            "source": "macos_keychain",
+        }
 
-        # Set up expired creds with a refresh token
-        cred_file = tmp_path / ".claude" / ".credentials.json"
-        cred_file.parent.mkdir(parents=True)
-        cred_file.write_text(json.dumps({
-            "claudeAiOauth": {
-                "accessToken": "expired-tok",
-                "refreshToken": "valid-refresh",
-                "expiresAt": int(time.time() * 1000) - 3600_000,
-            }
-        }))
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
-
-        # Mock refresh to succeed
-        with patch("agent.anthropic_credentials._refresh_oauth_token", return_value="refreshed-token"):
+        with (
+            patch("agent.anthropic_credentials.read_claude_code_credentials", return_value=creds),
+            patch("agent.anthropic_credentials.refresh_anthropic_oauth_pure") as mock_refresh,
+        ):
             result = resolve_anthropic_token()
 
-        assert result == "refreshed-token"
+        assert result is None
+        mock_refresh.assert_not_called()
 
-    def test_static_env_oauth_token_does_not_block_refreshable_claude_creds(self, monkeypatch, tmp_path):
+    def test_static_env_oauth_token_is_not_replaced_by_borrowed_creds(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-expired-env-token")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
@@ -527,10 +547,11 @@ class TestResolveWithRefresh:
         }))
         monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
 
-        with patch("agent.anthropic_credentials._refresh_oauth_token", return_value="refreshed-token"):
+        with patch("agent.anthropic_credentials._refresh_oauth_token") as mock_refresh:
             result = resolve_anthropic_token()
 
-        assert result == "refreshed-token"
+        assert result == os.environ["ANTHROPIC_TOKEN"]
+        mock_refresh.assert_not_called()
 
 
 class TestRunOauthSetupToken:

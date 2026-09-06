@@ -24,6 +24,33 @@ def _jwt_with_claims(claims: dict) -> str:
     return f"{_part({'alg': 'none', 'typ': 'JWT'})}.{_part(claims)}.sig"
 
 
+def test_claude_code_pool_entry_never_refreshes_borrowed_token(monkeypatch):
+    from agent import anthropic_credentials
+    from agent.credential_pool import AUTH_TYPE_OAUTH, CredentialPool, PooledCredential
+
+    entry = PooledCredential(
+        provider="anthropic",
+        id="claude-code",
+        label="claude_code",
+        auth_type=AUTH_TYPE_OAUTH,
+        priority=0,
+        source="claude_code",
+        access_token="expired-access",
+        refresh_token="borrowed-refresh",
+        expires_at_ms=1,
+        extra={"credential_store": "macos_keychain"},
+    )
+    refresh_calls = []
+    monkeypatch.setattr(
+        anthropic_credentials,
+        "refresh_anthropic_oauth_pure",
+        lambda *_args, **_kwargs: refresh_calls.append(True),
+    )
+
+    assert CredentialPool("anthropic", [entry])._refresh_entry(entry, force=True) is None
+    assert refresh_calls == []
+
+
 
 
 

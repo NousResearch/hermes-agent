@@ -162,7 +162,7 @@ CUSTOM_POOL_PREFIX = "custom:"
 
 # Fields only round-tripped through JSON — never used for logic as attributes.
 _EXTRA_KEYS = frozenset({
-    "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
+    "token_type", "scope", "client_id", "portal_base_url", "obtained_at", "credential_store",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
     "agent_key_obtained_at", "tls", "secret_source", "secret_fingerprint",
     # Classified failure semantics for the last exhaustion (agent/error_classifier.py).
@@ -1377,6 +1377,20 @@ class CredentialPool:
             if force:
                 self._mark_exhausted(entry, None)
             return None
+        if (
+            self.provider == "anthropic"
+            and entry.source == "claude_code"
+            and entry.credential_store == "macos_keychain"
+        ):
+            # Hermes cannot commit a rotated pair back to Claude Code's Keychain. Only adopt a
+            # fresh token that Claude writes out-of-band; spending this refresh token would leave
+            # the stale Keychain copy authoritative and log the CLI out.
+            synced = self._sync_anthropic_entry_from_credentials_file(entry)
+            if synced.access_token != entry.access_token or synced.refresh_token != entry.refresh_token:
+                return synced
+            if force:
+                self._mark_exhausted(entry, None)
+            return None
         if self.provider not in _SINGLE_USE_REFRESH_PROVIDERS:
             return self._refresh_entry_impl(entry, force=force)
 
@@ -2395,20 +2409,25 @@ def _seed_anthropic_singletons(seed: _Seeder) -> None:
         return
 
     from agent.anthropic_credentials import (
+        claude_code_credentials_enabled,
         read_claude_code_credentials,
         read_hermes_oauth_credentials,
     )
 
-    for source_name, creds in (
-        ("hermes_pkce", read_hermes_oauth_credentials()),
-        ("claude_code", read_claude_code_credentials()),
-    ):
+    sources = [("hermes_pkce", read_hermes_oauth_credentials())]
+    if claude_code_credentials_enabled():
+        sources.append(("claude_code", read_claude_code_credentials()))
+    else:
+        seed.changed |= _retain_sources_not_in(seed.entries, {"claude_code"})
+
+    for source_name, creds in sources:
         if creds and creds.get("accessToken"):
             seed.upsert(source_name, {
                 "auth_type": AUTH_TYPE_OAUTH,
                 "access_token": creds.get("accessToken", ""),
                 "refresh_token": creds.get("refreshToken"),
                 "expires_at_ms": creds.get("expiresAt"),
+                "credential_store": creds.get("source") if source_name == "claude_code" else None,
                 "label": label_from_token(creds.get("accessToken", ""), source_name),
             })
 

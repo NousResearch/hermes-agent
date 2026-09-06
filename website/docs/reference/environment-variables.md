@@ -134,7 +134,7 @@ Hermes reads environment variables from the process environment and, for user-ma
 
 ## Provider Auth (OAuth)
 
-For native Anthropic auth, Hermes prefers Claude Code's own credential files when they exist because those credentials can refresh automatically. **OAuth against Anthropic requires a Claude Max plan with purchased extra usage credits** — Hermes routes as Claude Code, which only draws from the Max plan's extra/overage credits, not the base Max allowance, and does not work on Claude Pro. Without Max + extra credits, use an API key instead. Environment variables such as `ANTHROPIC_TOKEN` remain useful as manual overrides, but they are no longer the preferred path for Claude Max login.
+For native Anthropic auth, Hermes can borrow Claude Code credentials. File-sourced credentials are refreshed back into the same JSON file; macOS Keychain credentials are read-only because Hermes cannot commit a rotated pair back to that store. Set `anthropic.claude_code_credentials: false` in `config.yaml` to prevent all reads from both stores. **OAuth against Anthropic requires a Claude Max plan with purchased extra usage credits** — Hermes routes as Claude Code, which only draws from the Max plan's extra/overage credits, not the base Max allowance, and does not work on Claude Pro. Without Max + extra credits, use an API key instead. Environment variables such as `ANTHROPIC_TOKEN` remain explicit overrides and take precedence over borrowed Claude Code credentials.
 
 | Variable | Description |
 |----------|-------------|

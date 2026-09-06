@@ -125,3 +125,29 @@ def test_completion_policy_failure_does_not_mark_done(tmp_path, monkeypatch, fai
             assert kb.get_task(connection, tid).status != "done"
     finally:
         release.set()
+
+
+def test_review_completion_policy_receives_redacted_summary(tmp_path, monkeypatch):
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_CONTROL_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    with kbc.connect() as connection:
+        tid = kb.create_task(connection, title="Review worker", assignee="worker")
+        kb.claim_task(connection, tid)
+
+    seen = []
+    manager = registered_manager(monkeypatch, home)
+    manager._hooks["pre_kanban_complete"] = [
+        lambda **kwargs: seen.append(kwargs["summary"]) or {"action": "allow"},
+    ]
+    secret = "ghp_" + "A" * 40
+    with kbc.connect() as connection:
+        assert kb.request_review(connection, tid, summary=f"review token: {secret}", force=True) is True
+
+    assert seen
+    assert secret not in seen[0]

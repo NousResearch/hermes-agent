@@ -3427,6 +3427,8 @@ def request_review(
     task = get_task(conn, task_id)
     if task is None:
         return _ret(False, "task not found")
+    summary = redact_review_value(summary)
+    metadata = redact_review_value(metadata)
     try:
         enforce_completion_policies(
             task_id=task_id, board=_lifecycle_board(conn, None), assignee=task.assignee,
@@ -3435,8 +3437,6 @@ def request_review(
     except CompletionPolicyError as exc:
         return _ret(False, str(exc))
 
-    summary = redact_review_value(summary)
-    metadata = redact_review_value(metadata)
     with write_txn(conn):
         if not _parents_satisfied(conn, task_id):
             return _ret(False, "parent dependencies are not satisfied")

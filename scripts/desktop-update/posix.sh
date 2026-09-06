@@ -774,6 +774,17 @@ if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
     FINAL_MSG="Update skipped: the git checkout is on a branch that isn't fully merged into $BRANCH. Switch to the target branch and update again (see the terminal output for the exact commands)."
     exit 8
   fi
+  # A gateway that was already down (or died during the restart) fails the
+  # post-update fleet version check with a nonzero exit, but a full retry
+  # re-runs the same pull + 13-profile restart for nothing -- it cannot
+  # revive a process this run never started, and doubles every restart the
+  # user sees for a problem the retry does not address.
+  if printf '%s' "$OUT" | grep -q "Down gateways stopped serving messaging entirely"; then
+    log "hermes update: fleet version check found a down gateway; not retrying the whole update for it (see hermes gateway restart)"
+    FINAL_CODE=0
+    DONE_NOTE="Update complete, but at least one gateway profile did not come back online. Run 'hermes gateway restart' for the affected profile from a terminal."
+    exit 0
+  fi
   log "retrying once (freshly pulled fix loads on the second run)"
   publish_stage "Retrying update"
   OUT="$("${UPDATE_INVOKE[@]}" update --yes --gateway $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?

@@ -281,7 +281,7 @@ def test_admission_receipt_rejects_audit_to_launch_mutation(
 def test_ox_broker_receives_only_explicit_staging_credential(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from tools.mcp_tool import _build_safe_env, _interpolate_env_vars
+    from tools.mcp_tool_config import _build_safe_env, _interpolate_env_vars
 
     config = render_ox_profile(
         tmp_path,

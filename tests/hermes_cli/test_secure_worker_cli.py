@@ -175,3 +175,18 @@ def test_profile_render_refuses_existing_destination(tmp_path: Path) -> None:
     )
     assert secure_worker_cli.cmd_profile_render(args) == 1
     assert output.read_text() == "owned by user\n"
+
+
+def test_secure_worker_is_reachable_through_real_main(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    env = dict(os.environ, HERMES_HOME=str(tmp_path / "hermes"))
+    result = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "secure-worker", "--help"],
+        capture_output=True, text=True, env=env, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "secure-worker" in result.stdout
+    assert "profile-render" in result.stdout

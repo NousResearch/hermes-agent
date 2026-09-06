@@ -58,6 +58,28 @@ def test_chat_content_rejects_video_instead_of_sending_text_only():
         _chat_messages_to_responses_input([{"role": "user", "content": content}])
 
 
+def test_chat_content_rejects_video_type_instead_of_sending_text_only():
+    """``video`` type (without _url suffix) must also fail closed."""
+    content = [
+        {"type": "video", "video": {"url": "data:video/mp4;base64,AAAA"}},
+        {"type": "text", "text": "Describe the video"},
+    ]
+
+    with pytest.raises(ValueError, match="does not support video input"):
+        _chat_messages_to_responses_input([{"role": "user", "content": content}])
+
+
+def test_chat_content_rejects_input_video_type_instead_of_sending_text_only():
+    """``input_video`` type (Responses API native) must also fail closed."""
+    content = [
+        {"type": "input_video", "input_video": {"url": "data:video/mp4;base64,AAAA"}},
+        {"type": "text", "text": "Describe the video"},
+    ]
+
+    with pytest.raises(ValueError, match="does not support input_video input"):
+        _chat_messages_to_responses_input([{"role": "user", "content": content}])
+
+
 def test_preflight_rewrites_raw_assistant_images_to_text_markers():
     raw = [{
         "role": "assistant",

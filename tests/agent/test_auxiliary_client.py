@@ -4193,6 +4193,48 @@ class TestAuxUnhealthyCache:
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
 
+    def test_custom_billing_failure_keeps_distinct_endpoint_eligible(self):
+        """A hosted custom endpoint's billing state must not quarantine a local custom endpoint."""
+        from agent.auxiliary_client import call_llm, _is_provider_unhealthy
+
+        hosted_url = "https://hosted.example/v1"
+        local_url = "http://127.0.0.1:8080/v1"
+        payment_error = Exception("Payment Required: weekly usage limit")
+        payment_error.status_code = 402
+
+        hosted_client = MagicMock(base_url=hosted_url)
+        hosted_client.chat.completions.create.side_effect = payment_error
+        local_client = MagicMock(base_url=local_url)
+        local_client.chat.completions.create.return_value = _DummyResponse("local-ok")
+        fallback_entry = {
+            "provider": "custom", "model": "local-model", "base_url": local_url,
+            "api_key": "local",
+        }
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("custom", "hosted-model", hosted_url, "hosted", None),
+        ), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(hosted_client, "hosted-model"),
+        ), patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value={"fallback_chain": [fallback_entry]},
+        ), patch(
+            "agent.auxiliary_client._resolve_fallback_entry",
+            return_value=(local_client, "local-model"),
+        ):
+            response = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        assert response.choices[0].message.content == "local-ok"
+        assert _is_provider_unhealthy("custom", hosted_url) is True
+        assert _is_provider_unhealthy("custom", local_url) is False
+        assert hosted_client.chat.completions.create.call_count == 1
+        assert local_client.chat.completions.create.call_count == 1
+
 
 # ── auxiliary_max_tokens_param ──────────────────────────────────────────────
 

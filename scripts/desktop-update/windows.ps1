@@ -308,7 +308,6 @@ function Publish-UiEvent([string]$Status, [string]$Message) {
         $deliveryWait = [System.Diagnostics.Stopwatch]::StartNew()
         while ($script:UiState.acknowledged_receipt -cne $receipt -and $deliveryWait.Elapsed.TotalSeconds -lt 10) {
             Start-Sleep -Milliseconds 50
-            if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
         }
         if ($script:UiState.acknowledged_receipt -ceq $receipt) {
             Write-HandoffLog "shim: terminal state '$Status' acknowledged by the window"

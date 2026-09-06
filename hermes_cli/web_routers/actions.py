@@ -338,6 +338,27 @@ def _completed_exit_code(
     return None
 
 
+_preflight_durable_action = late("_preflight_durable_action", "hermes_cli.web_server")
+_reconcile_action_status = late("_reconcile_action_status", "hermes_cli.web_server")
+_DURABLE_ACTIONS = LateState("_DURABLE_ACTIONS", "hermes_cli.web_server")
+_TERMINAL_ACTION_STATUSES = LateState("_TERMINAL_ACTION_STATUSES", "hermes_cli.web_server")
+
+
+@status_router.get("/api/actions/{name}/preflight")
+async def get_action_preflight(name: str):
+    """Read-only precheck of a durable action's likely outcome.
+
+    Same 404-if-unknown convention as GET /api/actions/{name}/status, scoped to
+    _DURABLE_ACTIONS since _preflight_durable_action only knows how to reason
+    about update-shaped actions (lock/staging/pending/install-method) -- there's
+    nothing analogous to preflight for the simpler spawn-and-tail actions
+    (doctor, backup, ...).
+    """
+    if name not in _DURABLE_ACTIONS:
+        raise HTTPException(status_code=404, detail=f"Unknown action: {name}")
+    return _preflight_durable_action(name)
+
+
 @status_router.get("/api/actions/{name}/status")
 async def get_action_status(name: str, lines: int = 200):
     """Tail an action log and report whether the process is still running."""
@@ -363,6 +384,29 @@ async def get_action_status(name: str, lines: int = 200):
         # the outcome instead of inferring it from liveness probes.
         # See #81193, #87359, #91277.
         update_receipt_summary = _latest_update_receipt_summary()
+
+    if name in _DURABLE_ACTIONS:
+        # Durable actions (e.g. hermes-update) survive a dashboard restart: reconcile against
+        # the wrapper's independent exit-code file, not just this process's in-memory Popen.
+        record = _reconcile_action_status(name)
+        status = record.get("status")
+        running = status not in _TERMINAL_ACTION_STATUSES and status != "unknown"
+        exit_code = record.get("exit_code")
+        if exit_code is None and not running:
+            # Reconciliation has no on-disk exit-code evidence (e.g. the wrapper's exit-code
+            # file itself was lost/rotated) -- fall back to the log-marker/receipt evidence the
+            # non-durable path already derives, so a dashboard restart still recovers a result.
+            exit_code = _completed_exit_code(
+                _ACTION_RESULTS.get(name), durable_update_action_id, update_receipt_summary)
+        response = {
+            "name": name, "running": running, "exit_code": exit_code,
+            "pid": record.get("pid"), "lines": tail, "status": status,
+        }
+        if durable_update_action_id:
+            response["action_id"] = durable_update_action_id
+        if update_receipt_summary is not None:
+            response["receipt"] = update_receipt_summary
+        return response
 
     proc = _ACTION_PROCS.get(name)
     if proc is None:

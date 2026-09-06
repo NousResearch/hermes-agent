@@ -61,17 +61,13 @@ def load_on_disk_store() -> "MemoryStore":
     return store
 
 
-def _apply_write_gate(action: str, target: str, content: Optional[str],
-                      old_text: Optional[str]) -> Optional[str]:
-    """Evaluate the memory write gate. Returns a JSON tool-result string when
-    the write should NOT proceed normally (blocked or staged), or None when the
-    caller should perform the real write.
 
-    Only the mutating actions (add/replace/remove) are gated.
+
+def _gate_or_stage(summary: str, detail: str, payload: Dict[str, Any]) -> Optional[str]:
+    """JSON tool-result string when the write must NOT proceed (blocked or staged
+    for approval), None to proceed. Fails open (with an operator-visible error) if
+    the gate module can't load.
     """
-    if action not in {"add", "replace", "remove"}:
-        return None
-
     try:
         from tools import write_approval as wa
     except Exception:
@@ -79,47 +75,21 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
             "Memory write refused: the approval gate could not be loaded.",
             success=False,
         )
-
-    # Build a small inline summary/detail for the foreground approval prompt.
-    label = "user profile" if target == "user" else "memory"
-    if action == "add":
-        summary = f"add to {label}"
-        detail = content or ""
-    elif action == "replace":
-        summary = f"replace in {label}"
-        detail = f"old: {old_text}\nnew: {content}"
-    else:  # remove
-        summary = f"remove from {label}"
-        detail = old_text or ""
-
     decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
-
     if decision.allow:
-        # Covers both "gate off" and "inline prompt approved" — GateDecision
+        # Covers both "gate off" and "inline prompt approved" -- GateDecision
         # doesn't distinguish the two, so this uses a neutral outcome rather
         # than mislabeling an inline approval as a bare bypass.
         import uuid
         wa.emit_gate_event(wa.MEMORY, "allowed", uuid.uuid4().hex[:8], summary)
         return None
-
     if decision.blocked:
         import uuid
         wa.emit_gate_event(wa.MEMORY, "blocked", uuid.uuid4().hex[:8], summary)
         return tool_error(decision.message, success=False)
-
-    # stage
-    payload = {
-        "action": action,
-        "target": target,
-        "content": content,
-        "old_text": old_text,
-    }
     try:
         record = wa.stage_write(
-            wa.MEMORY, payload,
-            summary=f"{summary}: {detail[:120]}",
-            origin=wa.current_origin(),
-        )
+            wa.MEMORY, payload, summary=f"{summary}: {detail[:120]}", origin=wa.current_origin())
     except Exception:
         return tool_error(
             "Memory write refused: the pending approval could not be persisted.",
@@ -127,68 +97,7 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
         )
     wa.emit_gate_event(wa.MEMORY, "staged", record["id"], summary)
     return json.dumps(
-        {"success": True, "staged": True, "pending_id": record["id"],
-         "message": decision.message},
-        ensure_ascii=False,
-    )
-
-
-def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Optional[str]:
-    """Evaluate the write gate for a batch of memory operations.
-
-    Returns a JSON tool-result string when the batch should NOT proceed
-    (blocked or staged), or None when the caller should perform the real
-    batch write. The whole batch is gated as a single unit.
-    """
-    try:
-        from tools import write_approval as wa
-    except Exception:
-        return tool_error(
-            "Memory batch refused: the approval gate could not be loaded.",
-            success=False,
-        )
-
-    label = "user profile" if target == "user" else "memory"
-    summary = f"apply {len(operations)} op(s) to {label}"
-    detail_lines = []
-    for op in operations:
-        op = op or {}
-        act = op.get("action", "?")
-        _op_content = op.get("content") or op.get("new_text") or ""
-        if act == "remove":
-            detail_lines.append(f"- remove: {op.get('old_text', '')}")
-        elif act == "replace":
-            detail_lines.append(f"- replace: {op.get('old_text', '')} -> {_op_content}")
-        else:
-            detail_lines.append(f"- {act}: {_op_content}")
-    detail = "\n".join(detail_lines)
-
-    decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
-    if decision.allow:
-        import uuid
-        wa.emit_gate_event(wa.MEMORY, "allowed", uuid.uuid4().hex[:8], summary)
-        return None
-    if decision.blocked:
-        import uuid
-        wa.emit_gate_event(wa.MEMORY, "blocked", uuid.uuid4().hex[:8], summary)
-        return tool_error(decision.message, success=False)
-
-    payload = {"action": "batch", "target": target, "operations": operations}
-    try:
-        record = wa.stage_write(
-            wa.MEMORY, payload,
-            summary=f"{summary}: {detail[:120]}",
-            origin=wa.current_origin(),
-        )
-    except Exception:
-        return tool_error(
-            "Memory batch refused: the pending approval could not be persisted.",
-            success=False,
-        )
-    wa.emit_gate_event(wa.MEMORY, "staged", record["id"], summary)
-    return json.dumps(
-        {"success": True, "staged": True, "pending_id": record["id"],
-         "message": decision.message},
+        {"success": True, "staged": True, "pending_id": record["id"], "message": decision.message},
         ensure_ascii=False,
     )
 

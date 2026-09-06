@@ -4043,6 +4043,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         self._release_active_session()
 
 
+def _worktree_is_dirty(cwd: str) -> bool:
+    """Best-effort, informational-only check: does cwd have uncommitted changes?
+
+    False (not dirty) on any git failure -- this never blocks anything, it only
+    annotates a preflight report, so an unverifiable checkout should not read as
+    a false-positive block.
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=cwd, capture_output=True, text=True, timeout=5,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
 def _int_or(value, default: int) -> int:
     """``int(value)``, or ``default`` when it does not parse."""
     try:

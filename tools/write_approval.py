@@ -126,12 +126,16 @@ def emit_gate_event(subsystem: str, outcome: str, action_id: str, detail: str) -
 
 # --- Pending store (file-backed) ---
 
+def _pending_dir(subsystem: str) -> Path:
+    return get_hermes_home() / "pending" / subsystem
+
+
 def _pending_path(subsystem: str, pending_id: str) -> Path:
-    return get_hermes_home() / "pending" / subsystem / f"{pending_id}.json"
+    return _pending_dir(subsystem) / f"{pending_id}.json"
 
 
 def _pending_files(subsystem: str) -> list:
-    d = _pending_path(subsystem, "").parent
+    d = _pending_dir(subsystem)
     return list(d.glob("*.json")) if d.exists() else []
 
 

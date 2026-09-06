@@ -2024,27 +2024,12 @@ def select_provider_and_model(args=None):
 # invocation ~50-100ms, so they resolve on first read. Nothing else may be
 # added here — internal import paths are not a stable API.
 _FROZEN_UPDATER_SURFACE: dict[str, tuple[str, ...]] = {
-    "hermes_cli.update_cmd": (
-        "_abort_dependency_sync_if_self_locked", "_assess_parked_branch_switch",
-        "_capture_active_lazy_features", "_capture_active_tool_dependencies",
-        "_cold_start_windows_gateway_after_update", "_defer_update_for_self_lock",
-        "_dependency_sync_would_rewrite", "_detect_self_loaded_native_modules",
-        "_detect_venv_python_processes", "_discard_stashed_changes",
-        "_filter_non_gateway_concurrent_instances", "_fleet_probe_expected_runtimes",
-        "_get_origin_url", "_handoff_reapable_backend_pids", "_ledger_manual_serve_holders",
-        "_ledger_reapable_backend_pids", "_leftover_pausable_gateway_pids", "_npm_lockfile_changed",
-        "_orphaned_desktop_backend_pids", "_park_stashed_changes",
-        "_pause_windows_gateways_for_update", "_print_parked_branch_kept_notice",
-        "_print_parked_branch_skip_warning", "_purge_stale_hermes_modules",
-        "_refresh_active_lazy_features", "_refresh_active_memory_provider_dependencies",
-        "_refresh_bootstrap_cache_scripts", "_refresh_windows_gateway_launchers",
-        "_relaunch_stopped_serves", "_reload_updated_runtime_modules",
-        "_restore_active_tool_dependencies", "_restore_stashed_changes",
-        "_resume_windows_gateways_after_update", "_run_logged_subprocess", "_run_pre_update_backup",
-        "_stash_local_changes_if_needed", "_stop_process_trees", "_sync_with_upstream_if_needed",
-        "_upgrade_pip_before_lazy_refresh", "_venv_launcher_ancestors",
-        "_wait_for_windows_update_gateway_exit", "_warn_orphaned_update_autostashes",
-        "_write_update_incomplete_marker",
+    "hermes_cli.main_web_build": (
+        "_build_web_ui", "_nixos_build_env", "_record_bytecode_fingerprint",
+        "_run_npm_install_deterministic",
+    ),
+    "hermes_cli.main_desktop": (
+        "_desktop_build_needed", "_desktop_dist_exists", "_desktop_packaged_executable",
     ),
     "hermes_cli.dashboard_procs": (
         "_detect_concurrent_hermes_instances",
@@ -2053,6 +2038,7 @@ _FROZEN_UPDATER_SURFACE: dict[str, tuple[str, ...]] = {
         "_scan_dashboard_processes",
     ),
     "hermes_cli.update_cmd": (
+        "_warn_orphaned_update_autostashes",
         "_abort_dependency_sync_if_self_locked",
         "_abort_update_if_worktree_dirty",
         "_add_upstream_remote",

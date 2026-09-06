@@ -578,10 +578,41 @@ _skill_gate_bypass: "_ctxvars.ContextVar[bool]" = _ctxvars.ContextVar(
     "skill_gate_bypass", default=False)
 
 
+def _run_write_gate(build_staging):
+    """Shared write gate: None to proceed, else a JSON tool result (blocked/staged).
+    build_staging(wa) -> (payload, gist) runs only when staging. Fails open (with an
+    operator-visible error) if write_approval cannot be imported.
+    """
+    try:
+        from tools import write_approval as wa
+    except Exception:
+        return tool_error(
+            "Skill write refused: the approval gate could not be loaded.",
+            success=False,
+        )
+    decision = wa.evaluate_gate(wa.SKILLS)
+    if decision.allow:
+        return None
+    if decision.blocked:
+        return tool_error(decision.message, success=False)
+    payload, gist = build_staging(wa)
+    try:
+        record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
+    except Exception:
+        return tool_error(
+            "Skill write refused: the pending approval could not be persisted.",
+            success=False,
+        )
+    return json.dumps(
+        {"success": True, "staged": True, "pending_id": record["id"],
+         "gist": gist, "message": decision.message},
+        ensure_ascii=False,
+    )
+
+
 def _apply_skill_write_gate(action, name, **payload_kwargs):
-    """Evaluate the skill write gate. Returns a JSON tool-result string when the
-    write should NOT proceed (blocked or staged), or None to perform the real
-    write. Bypassed during approved-pending replay.
+    """Flat-shape gate: stage the full kwargs so approval can replay them; bypassed during
+    replay. Wraps _run_write_gate with action/name-scoped gate-event telemetry.
     """
     if action not in {"create", "edit", "patch", "delete", "write_file", "remove_file"}:
         return None
@@ -591,46 +622,50 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
     try:
         from tools import write_approval as wa
     except Exception:
-        return tool_error(
-            "Skill write refused: the approval gate could not be loaded.",
-            success=False,
-        )
-
-    decision = wa.evaluate_gate(wa.SKILLS)
-    if decision.allow:
+        wa = None
+    if wa is not None:
         import uuid
-        wa.emit_gate_event(wa.SKILLS, "allowed", uuid.uuid4().hex[:8], f"{action} {name}")
-        return None
-    if decision.blocked:
-        import uuid
-        wa.emit_gate_event(wa.SKILLS, "blocked", uuid.uuid4().hex[:8], f"{action} {name}")
-        return tool_error(decision.message, success=False)
+        _decision = wa.evaluate_gate(wa.SKILLS)
+        if _decision.allow:
+            wa.emit_gate_event(wa.SKILLS, "allowed", uuid.uuid4().hex[:8], f"{action} {name}")
+        elif _decision.blocked:
+            wa.emit_gate_event(wa.SKILLS, "blocked", uuid.uuid4().hex[:8], f"{action} {name}")
 
-    # stage — record the full skill_manage kwargs so approval can replay it.
-    payload = {"action": action, "name": name}
-    payload.update({k: v for k, v in payload_kwargs.items() if v is not None})
-    gist = wa.skill_gist(
-        action, name,
-        content=payload_kwargs.get("content") or "",
-        file_path=payload_kwargs.get("file_path") or "",
-        old_string=payload_kwargs.get("old_string") or "",
-        new_string=payload_kwargs.get("new_string") or "",
-    )
-    try:
-        record = wa.stage_write(
-            wa.SKILLS, payload, summary=gist, origin=wa.current_origin()
+    def _staging(wa):
+        payload = {"action": action, "name": name}
+        payload.update({k: v for k, v in payload_kwargs.items() if v is not None})
+        gist = wa.skill_gist(
+            action, name,
+            content=payload_kwargs.get("content") or "",
+            file_path=payload_kwargs.get("file_path") or "",
+            old_string=payload_kwargs.get("old_string") or "",
+            new_string=payload_kwargs.get("new_string") or "",
         )
-    except Exception:
-        return tool_error(
-            "Skill write refused: the pending approval could not be persisted.",
-            success=False,
-        )
-    wa.emit_gate_event(wa.SKILLS, "staged", record["id"], f"{action} {name}")
-    return json.dumps(
-        {"success": True, "staged": True, "pending_id": record["id"],
-         "gist": gist, "message": decision.message},
-        ensure_ascii=False,
-    )
+        return payload, gist
+
+    result = _run_write_gate(_staging)
+    if result is not None and wa is not None:
+        try:
+            import json as _json
+            _parsed = _json.loads(result)
+            _pending_id = _parsed.get("pending_id")
+            if _pending_id:
+                wa.emit_gate_event(wa.SKILLS, "staged", _pending_id, f"{action} {name}")
+        except Exception:
+            pass
+    return result
+
+
+_FLAT_OP_KEYS = ("content", "category", "file_path", "file_content", "old_string", "new_string",
+                 "absorbed_into", "operations")
+
+
+def _skill_manage_from(payload: Dict[str, Any], **extra) -> str:
+    """Call skill_manage with the flat-shape fields (and absorbed_into/operations) of payload."""
+    return skill_manage(
+        action=payload.get("action", ""), name=payload.get("name", ""),
+        replace_all=payload.get("replace_all", False),
+        **{k: payload.get(k) for k in _FLAT_OP_KEYS}, **extra)
 
 
 def apply_skill_pending(payload: Dict[str, Any]) -> str:

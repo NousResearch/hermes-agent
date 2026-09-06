@@ -789,7 +789,9 @@ async def _dashboard_selftest_loop() -> None:
 # there, so this module reads them through the module too (one patch seam).
 from hermes_cli import web_server_gateway as _gateway_mod  # noqa: E402
 from hermes_cli.web_server_gateway import (  # noqa: E402
-    _ACTION_LOG_FILES, _ACTION_PROCS, _ACTION_COMMANDS, _terminate_desktop_managed_gateway)
+    _ACTION_LOG_DIR, _ACTION_LOG_FILES, _ACTION_PROCS, _ACTION_COMMANDS, _ACTION_IDS,
+    _terminate_desktop_managed_gateway)
+from hermes_cli.web_server_files import _dashboard_local_update_managed_externally  # noqa: E402
 from hermes_cli.web_server_sessions import _auto_archive_ticker_loop  # noqa: E402
 from hermes_cli.web_server_chat import PTY_REGISTRY  # noqa: E402
 from hermes_cli.web_server_dashboard import (  # noqa: E402
@@ -1535,18 +1537,6 @@ def _voice_list_error_logged_once(signature: Optional[str]) -> bool:
     return True
 
 
-async def get_action_preflight(name: str):
-    """Read-only precheck of a durable action's likely outcome.
-
-    Same 404-if-unknown convention as ``GET /api/actions/{name}/status``,
-    scoped to ``_DURABLE_ACTIONS`` since ``_preflight_durable_action`` only
-    knows how to reason about update-shaped actions (lock/staging/pending/
-    install-method) -- there's nothing analogous to preflight for the
-    simpler spawn-and-tail actions (doctor, backup, ...).
-    """
-    if name not in _DURABLE_ACTIONS:
-        raise HTTPException(status_code=404, detail=f"Unknown action: {name}")
-    return _preflight_durable_action(name)
 
 
 # Per-row fields that no session LIST consumer reads but that dominate the

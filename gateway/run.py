@@ -2183,7 +2183,8 @@ if not _configured_cwd or _configured_cwd in CWD_PLACEHOLDERS:
 from gateway.config import (
     ChannelOverride, Platform, GatewayConfig, PlatformConfig, _getenv, load_gateway_config)
 from gateway.session import (
-    AsyncSessionStore, SessionStore, SessionSource, SessionContext, SessionEntry, build_session_key)
+    AsyncSessionStore, SessionStore, SessionSource, SessionContext, SessionEntry, build_session_key,
+    is_shared_multi_user_session)
 # Telegram topic routing (#22773, regression fixed #52060): a
 # ``telegram:<positive_chat_id>:<numeric_thread_id>`` cron target is ambiguous — a forum-style topic in a
 # private chat and a genuine Bot API channel Direct-Messages topic share the same shape and need OPPOSITE
@@ -2192,7 +2193,7 @@ from gateway.session import (
 # DeliveryRouter's private-chat reply-anchor requirement. Compute the routed metadata ONCE so both the text
 # send (via DeliveryRouter) and the media send agree.
 from gateway.delivery import DeliveryRouter
-from gateway.turn_lease import SessionTurnLeaseRegistry
+from gateway.turn_lease import SessionTurnLeaseRegistry, TurnLeaseTimeoutError
 from gateway.session_state import SessionState, legacy_dict_property, legacy_lease_token_property
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
@@ -2212,9 +2213,11 @@ from gateway.run_goals import GatewayGoalsMixin
 from gateway.run_agent_cache import GatewayAgentCacheMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    EphemeralReply,
     MessageEvent,
     MessageType,
     _reply_anchor_for_event,
+    merge_pending_message_event,
 )
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,

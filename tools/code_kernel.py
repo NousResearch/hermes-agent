@@ -251,7 +251,7 @@ class CellAuthority:
             self._callback_setters = (set_approval,)
         except Exception:
             # Fail-closed like propagate_context_to_thread: no callbacks → dangerous approvals deny.
-            self._api = None
+            pass
 
     def retire(self) -> None:
         self.active = False
@@ -267,8 +267,7 @@ class CellAuthority:
     def _invoke(self, tool_name: str, tool_args: dict) -> str:
         from model_tools import handle_function_call
         previous = None
-        if self._api is not None:
-            get_approval, get_sudo, set_approval, set_sudo = self._api
+        if self._approval_cb is not None:
             try:
                 from tools.thread_context import _callback_api
 

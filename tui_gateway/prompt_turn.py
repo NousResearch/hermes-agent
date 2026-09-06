@@ -81,10 +81,15 @@ def _plan_goal_compression_recovery(
 
 def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
-    queued_prompt_generation: int | None) -> tuple[list[str], Any] | None:
+    queued_prompt_generation: int | None, attempt: tuple | None = None
+) -> tuple[list[str], Any] | None:
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
-    bypass that once let a second backend run a duplicate turn."""
+    bypass that once let a second backend run a duplicate turn.
+
+    This is also the last point before a model sees the prompt: a cancellation latched for
+    ``attempt`` refuses admission here, and the interrupt it latched is never cleared. A refusal
+    only ever touches state still belonging to ``attempt``."""
     # When the session already holds its lease this is a cheap dict check. See #94778.
     if (ownership_refusal := _ensure_active_session_slot(sid, session)) is not None:
         logger.info(
@@ -92,13 +97,39 @@ def _admit_prompt_turn(
             session.get("session_key") or sid,
             getattr(ownership_refusal, "reason", None) or "refused")
         with session["history_lock"]:
-            session["running"] = False
+            if _turn_attempt_is_current(session, attempt):
+                session["running"] = False
         _emit("error", sid, {"message": str(ownership_refusal)})
         return None
+    if not _await_foreign_attempt_interrupts(session, attempt):
+        # Waited on with no lock held (a hard interrupt can be parked on a compression commit),
+        # then failed CLOSED: admitting now would clear an interrupt raised for another attempt and
+        # hand the model a turn that stop is still about to cancel.
+        logger.info(
+            "Refusing turn for session %s: an earlier attempt's stop is still landing",
+            session.get("session_key") or sid)
+        with session["history_lock"]:
+            if _turn_attempt_is_current(session, attempt):
+                session["running"] = False
+                _clear_inflight_turn(session)
+        return None
     with session["history_lock"]:
-        if session.get("_closing") or (
-            queued_prompt_generation is not None
-            and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation):
+        if not _turn_attempt_is_current(session, attempt):
+            return None  # a later turn owns this record; leave its state alone
+        if _turn_cancel_latched(session, attempt):
+            # Stop reached this attempt before the model did: refuse without clearing the
+            # interrupt that is holding it.
+            session["running"] = False
+            _clear_inflight_turn(session)
+            return None
+        if session.get("_closing"):
+            # The session is going away: leave no live in-flight frame behind for this attempt.
+            session["running"] = False
+            _clear_inflight_turn(session)
+            return None
+        if (queued_prompt_generation is not None
+                and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation):
+            # A newer queued prompt owns the record's in-flight snapshot; only stop this turn.
             session["running"] = False
             return None
         images = list(session.get("attached_images", []) if image_paths is None else image_paths)
@@ -750,13 +781,29 @@ def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
     _clear_session_context(scopes.session_tokens)
 
 
+def _report_refused_attempt(session: dict, attempt: tuple | None, callback) -> None:
+    """One terminal receipt for an accepted turn that admission or the handoff refused."""
+    with session["history_lock"]:
+        cancelled = _attempt_was_cancelled(session, attempt)
+        _settle_attempt(session, attempt)  # this attempt is over whether or not it reports
+    if callback is None:
+        return
+    with contextlib.suppress(Exception):
+        callback(
+            {"status": "cancelled", "text": ""} if cancelled else
+            {"status": "failed", "text": "", "error": "the turn was refused before it started"})
+
+
 def _run_prompt_submit(
     rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
-    terminal_callback: Callable[[dict[str, Any]], None] | None = None) -> bool:
-    admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation)
+    terminal_callback: Callable[[dict[str, Any]], None] | None = None,
+    attempt: tuple | None = None) -> bool:
+    admitted = _admit_prompt_turn(
+        sid, session, text, image_paths, queued_prompt_generation, attempt)
     if admitted is None:
+        _report_refused_attempt(session, attempt, terminal_callback)
         return False
     images, agent = admitted
     # The ONE INFO record proving a prompt was accepted by THIS process; ties ui sid,
@@ -809,10 +856,16 @@ def _run_prompt_submit(
             # A stale interim closure must not fire during a later turn.
             st.agent.interim_assistant_callback = None
             with session["history_lock"]:
-                session["running"] = False
-                session["last_active"] = time.time()
-                if not st.error_retained:
-                    _clear_inflight_turn(session)
+                # Only this attempt's own state: by now the record may already carry the next one.
+                finishing_own_turn = _turn_attempt_is_current(session, attempt)
+                # Released here, not at thread exit: this run is over, so a Stop arriving during
+                # the rest of this cleanup must be free to settle the record.
+                _settle_attempt(session, attempt)
+                if finishing_own_turn:
+                    session["running"] = False
+                    session["last_active"] = time.time()
+                    if not st.error_retained:
+                        _clear_inflight_turn(session)
             # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
             # agent.session_id is re-read because compression may have rotated it (an
             # accepted/finished pair whose id changed IS a rotation trace).
@@ -826,14 +879,16 @@ def _run_prompt_submit(
                 sid, session.get("session_key") or "", getattr(st.agent, "session_id", "") or "",
                 status, st.error_retained, time.monotonic() - _turn_started_monotonic,
                 st.error_detail)
-            # Backstop for turns that never reached a terminal frame.
+            # Backstop for turns that never reached a terminal frame. The marker deletion clears
+            # this session's durable key, which a later attempt reuses, so it is serialized
+            # against admission and skipped once a successor owns the record.
             if st.receipt_committed:
-                _retire_turn_marker(session, st.marker_key)
+                _retire_attempt_turn_marker(session, attempt, st.marker_key)
                 with session["history_lock"]:
-                    if session.get("_active_turn_marker_key") == st.marker_key:
-                        session.pop("_active_turn_marker_key", None)
-                    session.pop("_hosted_room_task", None)
-            session.pop("_auto_continue_scheduled", None)
+                    if _turn_attempt_is_current(session, attempt):
+                        session.pop("_hosted_room_task", None)
+            if finishing_own_turn:
+                session.pop("_auto_continue_scheduled", None)
             _emit_settled_session_info(sid, session, st.agent)
         _run_post_turn_followups(rid, sid, session, st.result, goal_followup)
     run_thread = threading.Thread(target=run, daemon=True)
@@ -841,11 +896,20 @@ def _run_prompt_submit(
         registered = _sessions.get(sid)
         can_start = not session.get("_closing") and (registered is None or registered is session)
         if can_start:
-            session["_run_thread"] = run_thread
+            # Attempt-qualified, and the claim it publishes is what keeps this turn observably
+            # alive across the waiter's exit: the waiter dies right after this line, so a Stop that
+            # only looked at threads would read the handoff as cessation. Lock order here is
+            # `_sessions_lock` then `history_lock`; nothing takes them the other way round.
+            can_start = _publish_attempt_run_thread(session, attempt, run_thread)
+        if can_start:
             run_thread.start()
     if not can_start:
+        # Accepted at submit, refused at the handoff: still owes this attempt one receipt.
         with session["history_lock"]:
-            session["running"] = False
+            if _turn_attempt_is_current(session, attempt):
+                session["running"] = False
+                _clear_inflight_turn(session)
+        _report_refused_attempt(session, attempt, terminal_callback)
     return can_start
 
 

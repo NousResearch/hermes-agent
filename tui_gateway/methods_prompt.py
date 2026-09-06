@@ -441,61 +441,135 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
 
 def _persist_session_row_for_submit(rid, session):
     """Lazily persist the DB row now that the user sent a message (a branch becomes real
-    here); the error reply is the only user-visible signal (desktop maps it to a toast)."""
+    here); the error reply is the only user-visible signal (desktop maps it to a toast).
+
+    Returns ``(err, release_turn)``.  The turn release is the CALLER's, because only it holds the
+    attempt this submit was accepted for: this call is a real blocking point in the submit window,
+    so a Stop can retire the turn and a successor be genuinely admitted while it runs, and an
+    unqualified release here would clear the successor's running state.  No terminal receipt is
+    owed on this path — the error envelope is what the room sees, and
+    ``HostedRoomServerRPC.submit`` marks it not-admitted and requeues."""
     try:
         if _ensure_session_db_row(session) is False:
             return _err(
                 rid, 5072,
                 "session storage unavailable: "
                 f"{_db_error or 'state.db could not be opened'} — the message "
-                "was not saved; repair state.db and try again")
+                "was not saved; repair state.db and try again"), False
         _persist_branch_seed(session)
     except Exception as exc:
         from hermes_state_errors import is_disk_full_error
-        with session["history_lock"]:
-            session["running"] = False
-            session["last_active"] = time.time()
-            _clear_inflight_turn(session)
         if is_disk_full_error(exc):
             return _err(
                 rid, 5070,
-                "disk full: session storage could not be written — free some disk space and try again")
+                "disk full: session storage could not be written — free some disk space and try again"), True
         logger.warning("prompt.submit: session persist failed: %s", exc, exc_info=True)
-        return _err(rid, 5071, f"session storage could not be written: {exc}")
-    return None
+        return _err(rid, 5071, f"session storage could not be written: {exc}"), True
+    return None, False
 
 
-def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback):
+def _hosted_terminal_once(callback):
+    """Wrap a hosted terminal callback so exactly one exit reports the accepted attempt.
+
+    Every path after ``prompt.submit`` returns ``streaming`` owes the room one terminal receipt:
+    the turn's own settlement, or the exit that stopped it reaching a model. Wrapping once at
+    submit means whichever gets there first is the only one that commits."""
+    if callback is None:
+        return None
+    state = {"fired": False}
+    lock = threading.Lock()
+
+    def once(receipt):
+        with lock:
+            if state["fired"]:
+                return None
+            state["fired"] = True
+        return callback(receipt)
+    return once
+
+
+def _report_unstarted_attempt(sid, session, callback, attempt, *, status: str, message: str):
+    """Terminal receipt for an accepted submit that never reached the model, plus its UI frame.
+
+    Reporting is attempt-scoped: a submit that was retired mid-flight still owes its room exactly
+    one receipt, but by then the record may belong to a successor whose state and UI are not this
+    attempt's to touch."""
+    with session["history_lock"]:
+        current = _turn_attempt_is_current(session, attempt)
+        _settle_attempt(session, attempt)
+        if current:
+            session["running"] = False
+            session["last_active"] = time.time()
+            _clear_inflight_turn(session)
+    if callback is not None:
+        with contextlib.suppress(Exception):
+            callback(
+                {"status": status, "text": ""}
+                if status == "cancelled" else {"status": status, "text": "", "error": message})
+    if current:
+        # Without this emit the turn vanishes silently after {"status": "streaming"} — but a live
+        # successor's UI must not be told that a turn it never saw failed.
+        _emit("error", sid, {"message": message})
+
+
+def _report_superseded_submit(sid, session, callback, attempt):
+    """One receipt for an accepted submit that a Stop retired before it ever started a turn.
+
+    ``cancelled`` and ``failed`` are not interchangeable to the room — one is the user's decision,
+    the other is retryable — so the outcome is read from the attempt's own cancellation record,
+    which survives the successor that replaced it."""
+    with session["history_lock"]:
+        cancelled = _attempt_was_cancelled(session, attempt)
+    _report_unstarted_attempt(
+        sid, session, callback, attempt,
+        status="cancelled" if cancelled else "failed",
+        message="The turn was replaced before it started")
+
+
+def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback, attempt=None):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
-    accepted in-flight message), then run."""
+    accepted in-flight message), then run.
+
+    ``attempt`` is the immutable coordinate of the turn this thread was started for: every exit
+    reports and cleans up that turn only, never whichever attempt now owns the record."""
     # The wait delivers the prompt when the still-running build completes, honors a cancel promptly, notices
     # the user once past the slow threshold, and only errors when the build itself fails or the bounded cap
     # expires. See #63078.
     err = _wait_agent_for_prompt(session, rid, sid)
     if err:
+        message = (err.get("error") or {}).get("message", "agent initialization failed")
         # Terminal frame + retained snapshot (not a bare "error" event): the snapshot is
         # the only way resume shows this to a disconnected client.
         _emit_terminal_turn_error(
-            sid, session, (err.get("error") or {}).get("message", "agent initialization failed"),
+            sid, session, message,
             error_surface={"layer": "runtime", "code": "agent_init_failed", "retryable": True})
         with session["history_lock"]:
-            session["running"] = False
-            session["last_active"] = time.time()
+            _settle_attempt(session, attempt)
+            if _turn_attempt_is_current(session, attempt):
+                session["running"] = False
+                session["last_active"] = time.time()
+        if hosted_terminal_callback is not None:
+            with contextlib.suppress(Exception):
+                hosted_terminal_callback({"status": "failed", "text": "", "error": message})
         _emit("session.info", sid, _session_info(session.get("agent"), session))
         return
     with session["history_lock"]:
-        if session.get("_turn_cancel_requested") or not session.get("running"):
-            session["running"] = False
-            _clear_inflight_turn(session)
-            # Without this emit the turn vanishes silently after {"status": "streaming"}.
-            _emit("error", sid, {"message": (
-                "Turn cancelled before the agent was ready"
-                if session.get("_turn_cancel_requested")
-                else "Session no longer running before the agent was ready")})
-            return
+        cancelled = _attempt_was_cancelled(session, attempt)
+        stale = not _turn_attempt_is_current(session, attempt)
+        gone = not session.get("running")
+    if cancelled or stale or gone:
+        # A stale turn is over, but it is still an accepted submit and owes its room one receipt;
+        # `_report_unstarted_attempt` touches no state the successor now owns.
+        _report_unstarted_attempt(
+            sid, session, hosted_terminal_callback, attempt,
+            status="cancelled" if cancelled else "failed",
+            message=("Turn cancelled before the agent was ready" if cancelled
+                     else "The turn was replaced before the agent was ready" if stale
+                     else "Session no longer running before the agent was ready"))
+        return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind,
-        terminal_callback=hosted_terminal_callback)
+        terminal_callback=hosted_terminal_callback, attempt=attempt)
 
 
 _TRUNCATION_PARAMS = (
@@ -505,30 +579,33 @@ _TRUNCATION_PARAMS = (
 def _lock_in_submit_turn(
     rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task):
     """Under ``history_lock``: refuse watch-child races / malformed truncation, apply the
-    cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
-    fields = {}
+    cut, mark the turn running + in flight.  Returns ``(err, survivor_fields, attempt)``, where
+    ``attempt`` is the immutable coordinate every later stage of this turn is fenced on."""
+    fields, attempt = {}, None
     with session["history_lock"]:
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
-            return _err(rid, 4009, "subagent still running — wait for it to finish"), fields
+            return _err(rid, 4009, "subagent still running — wait for it to finish"), fields, attempt
         if is_truthy_value(params.get("confirm_truncate")) and not has_truncation:
             return _err(
                 rid, 4004,
                 "confirm_truncate requires truncate_before_user_ordinal, truncate_before_message_id, or truncate_before_row_id",
-            ), fields
+            ), fields, attempt
         if has_truncation:
             err, fields = _truncate_history_for_submit(
                 rid, sid, session, params, requested_rebind_ids)
             if err is not None:
-                return err, {}
+                return err, {}, attempt
         session["running"] = True
-        session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
         if hosted_task is not None:
             session["_hosted_room_task"] = dict(hosted_task)
+        # Minted with the turn itself (it also clears any prior cancel latch), so every later
+        # stage can prove it is still acting on the attempt it was started for.
+        attempt = _new_turn_attempt(session, hosted_task)
         _start_inflight_turn(session, text)
-    return None, fields
+    return None, fields, attempt
 
 
 @method("prompt.submit")
@@ -596,16 +673,23 @@ def _(rid, params: dict) -> dict:
     requested_rebind_ids = (
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
         if isinstance(raw_rebind_ids, list) else None)
-    err, survivor_fields = _lock_in_submit_turn(
+    err, survivor_fields, attempt = _lock_in_submit_turn(
         rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task)
     if err is not None:
         return err
+    # One receipt per accepted submit, whichever exit gets there first.
+    hosted_terminal_callback = _hosted_terminal_once(hosted_terminal_callback)
     if turn_isolation:
         isolated_response = _submit_prompt_to_compute_host(
             rid, sid, session, text, display_kind=display_kind)
         if not isolated_response.get("error"):
             # The truncation already happened inline above (memory + DB).
             isolated_response["result"].update(survivor_fields)
+            # The host owns this turn's lifecycle and its own control channel, so nothing here will
+            # report it: retire the pending entry now rather than leave it behind. (`session.interrupt`
+            # routes compute-host sessions to the supervisor and never consults the run claim.)
+            with session["history_lock"]:
+                _settle_attempt(session, attempt)
             return isolated_response
         # An ordinal/id alone is not consent. A client that carries a leftover ordinal into an ORDINARY
         # submit sends a request that is indistinguishable, field by field, from a real rewind — same
@@ -618,17 +702,42 @@ def _(rid, params: dict) -> dict:
         logger.warning(
             "compute-host dispatch failed for session %s; falling back inline: %s", sid,
             isolated_response["error"].get("message", "unknown error"))
-    if (err := _persist_session_row_for_submit(rid, session)) is not None:
+    err, release_turn = _persist_session_row_for_submit(rid, session)
+    if err is not None:
+        # This submit was refused, so it owes no terminal receipt (the room sees the error envelope
+        # and `HostedRoomServerRPC.submit` marks it not-admitted) — but its pending entry is still
+        # this exit's to retire.  The state release is attempt-qualified on top: a Stop may have
+        # retired this submit and a successor been admitted while the persist ran, and the failed
+        # turn is not theirs to clear.
+        with session["history_lock"]:
+            if release_turn and _turn_attempt_is_current(session, attempt):
+                session["running"] = False
+                session["last_active"] = time.time()
+                _clear_inflight_turn(session)
+            _settle_attempt(session, attempt)
         return err
+    # Everything below writes shared record state (the agent build, the runner handle), and the
+    # persist above is a real blocking point: a Stop can retire this submit while it runs and a
+    # successor can then be genuinely admitted on this same record.  An obsolete submit must
+    # neither rebuild the agent under the live turn nor replace its runner handle.
+    with session["history_lock"]:
+        superseded = not _turn_attempt_is_current(session, attempt)
+    if superseded:
+        _report_superseded_submit(sid, session, hosted_terminal_callback, attempt)
+        return _ok(rid, {"status": "streaming", **survivor_fields})
     # A completed FAILED build must not wedge the session: rebuild, don't replay it.
     if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, hosted_terminal_callback),
+            rid, sid, session, text, display_kind, hosted_terminal_callback, attempt),
         daemon=True)
-    # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
-    session["_run_thread"] = run_thread
+    # Handle lets session.interrupt tell a live turn from a stuck `running` flag, and the claim
+    # published with it survives this waiter's own exit at the runner handoff.  Publication is
+    # attempt-qualified and atomic with that check: the same window as above closes again here.
+    if not _publish_attempt_run_thread(session, attempt, run_thread):
+        _report_superseded_submit(sid, session, hosted_terminal_callback, attempt)
+        return _ok(rid, {"status": "streaming", **survivor_fields})
     run_thread.start()
     return _ok(rid, {"status": "streaming", **survivor_fields})
 

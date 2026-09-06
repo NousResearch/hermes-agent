@@ -161,14 +161,62 @@ def test_peer_transport_dispatches_full_fenced_coordinates_and_exact_stop():
         )
         is None
     )
+    # Task ids repeat across generations: a stop naming another generation of the SAME task must
+    # not reach this run, and must not leave the transport before it is refused.
+    assert (
+        transport.interrupt(
+            profile="reviewer",
+            session_id="group-session",
+            source=ROOM_SESSION_SOURCE,
+            expected_task_id="task-1",
+            expected_execution_generation=2,
+        )
+        is None
+    )
+    assert [call for call in client.calls if call[0] == "stop"] == []
     stopped = transport.interrupt(
         profile="reviewer",
         session_id="group-session",
         source=ROOM_SESSION_SOURCE,
         expected_task_id="task-1",
+        expected_execution_generation=3,
     )
     assert stopped["status"] == "cancelled"
     assert len([call for call in client.calls if call[0] == "stop"]) == 1
+    # An unqualified legacy stop still works.
+    assert transport.interrupt(
+        profile="reviewer", session_id="group-session", source=ROOM_SESSION_SOURCE,
+        expected_task_id="task-1")["status"] == "cancelled"
+
+
+class _ReceiptOnlyPeerClient(FakePeerClient):
+    """A peer offering only the durable stop-receipt route (no live dispatch on this transport)."""
+
+    def stop_receipt(self, *, task_id: str, execution_generation: int, grant: str):
+        self.calls.append(("stop_receipt", {
+            "task_id": task_id, "execution_generation": execution_generation}))
+        return {"status": "cancelled"}
+
+
+def test_receipt_only_stop_refuses_another_generation_of_the_same_task():
+    """The recovery route carries a stored generation: a stop for a different one never leaves."""
+    client = _ReceiptOnlyPeerClient()
+    transport = PeerHostedRoomTransport(
+        binding=BINDING, route=ROUTE, client=client, task_id="task-1", execution_generation=7)
+    coordinates = dict(
+        profile="reviewer", session_id="group-session", source=ROOM_SESSION_SOURCE,
+        expected_task_id="task-1")
+
+    assert transport.interrupt(**coordinates, expected_execution_generation=6) is None
+    assert [call for call in client.calls if call[0] == "stop_receipt"] == []
+
+    stopped = transport.interrupt(**coordinates, expected_execution_generation=7)
+    legacy = transport.interrupt(**coordinates)
+
+    assert stopped["status"] == "cancelled" and legacy["status"] == "cancelled"
+    assert [
+        call[1]["execution_generation"] for call in client.calls if call[0] == "stop_receipt"
+    ] == [7, 7]
 
 
 def test_peer_transport_carries_each_turns_real_source_event_sequence():

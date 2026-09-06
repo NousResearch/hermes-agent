@@ -13,13 +13,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from gateway import hosted_room_discussion as discussion
 from gateway import hosted_rooms
 from gateway.hosted_rooms_common import DbPath, compact_json, fenced_update
 
 
 MAX_ACTIVE_POLICY_EVENTS = 64
 MAX_THREAD_TRANSCRIPT_EVENTS = 24
-_TRANSCRIPT_SCHEMA_VERSION = 1
+# Versions every derived projection in this module (transcript + manual holds). Bumping it
+# replays the durable room log once per room, up to the cursor the room already reached, so a
+# checkpoint written by an older build gains the new projection without losing its history.
+_PROJECTION_SCHEMA_VERSION = 2
 _TERMINAL_KINDS = frozenset({"turn.settled", "turn.failed", "turn.cancelled", "turn.deferred"})
 
 _SCHEMA_DDL = (
@@ -51,6 +55,13 @@ _SCHEMA_DDL = (
         kind TEXT NOT NULL, settled_seq INTEGER, PRIMARY KEY(room_id, thread_id, seq))""",
     """CREATE TABLE IF NOT EXISTS hosted_room_policy_transcript_state (
         room_id TEXT PRIMARY KEY, schema_version INTEGER NOT NULL)""",
+    # Manual member holds are room-scoped: one row per member the user paused, holding the log
+    # position of the hold still in force (0 once released). The delta a held member skips is
+    # consumed in the thread-scoped watermark table, exactly like an executed turn, so a pause in
+    # one thread never eats another thread's unread context.
+    """CREATE TABLE IF NOT EXISTS hosted_room_policy_holds (
+        room_id TEXT NOT NULL, member_id TEXT NOT NULL, held_at_seq INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(room_id, member_id))""",
 )
 
 _ROOM_EVENT_COLUMNS = hosted_rooms._EVENT_COLUMNS
@@ -67,12 +78,28 @@ _TRANSCRIPT_EVENTS_SQL = f"""WITH transcript_events(seq) AS (
 
 
 @dataclass(frozen=True)
+class MemberHold:
+    """One member's durable manual-hold state in a room (``held_at_seq`` 0 means released)."""
+    member_id: str
+    held_at_seq: int
+
+    @property
+    def held(self) -> bool:
+        return self.held_at_seq > 0
+
+
+@dataclass(frozen=True)
 class PolicySnapshot:
     """Bounded active policy input at one durable room-log cursor."""
     through_seq: int
     stopped_through_seq: int
     events: tuple[dict[str, Any], ...]
     watermarks: Mapping[tuple[str, str], int]
+    holds: tuple[MemberHold, ...] = ()
+
+    @property
+    def held_member_ids(self) -> tuple[str, ...]:
+        return tuple(hold.member_id for hold in self.holds if hold.held)
 
 
 _event_from_room_row = hosted_rooms._event_from_row
@@ -87,14 +114,58 @@ def _require_room(conn: sqlite3.Connection, room_id: str) -> None:
         raise hosted_rooms.RoomNotFoundError("hosted room not found")
 
 
+def _canonical_event(
+    conn: sqlite3.Connection, room_id: str, *, seq: int | None = None, event_id: str | None = None
+) -> dict[str, Any] | None:
+    """Point-read one event from the durable room log by its primary or unique key.
+
+    The room log is the source of truth and is never trimmed while the room lives, so an event
+    the bounded projection has already compacted is still readable by exact coordinates. This is
+    an indexed single-row lookup (``PRIMARY KEY(room_id, seq)`` / ``UNIQUE(room_id, event_id)``),
+    never a scan of the room.
+    """
+    column, value = ("seq", seq) if event_id is None else ("event_id", event_id)
+    row = conn.execute(
+        f"SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=? AND {column}=?",
+        (room_id, value)).fetchone()
+    return None if row is None else _event_from_room_row(row)
+
+
+def _room_members(conn: sqlite3.Connection, room_id: str) -> tuple[discussion.DiscussionMember, ...]:
+    """Return the durable roster as policy members (ids and handles only).
+
+    Holds are keyed by durable member id, so a malformed row without one is skipped rather than
+    failing the whole projection; full roster validation stays with the planner.
+    """
+    row = conn.execute("SELECT members_json FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone()
+    if row is None:
+        return ()
+    members = json.loads(row["members_json"])
+    return tuple(
+        discussion.DiscussionMember(
+            member_id=str(member["member_id"]), profile=_text(member, "profile"),
+            handle=_text(member, "handle"))
+        for member in (members if isinstance(members, list) else [])
+        if isinstance(member, Mapping) and member.get("member_id"))
+
+
 def _settled_message(
     conn: sqlite3.Connection, room_id: str, discussion_event_id: str, message_event_id: Any) -> dict[str, Any] | None:
-    """Return the indexed member message a ``turn.settled`` event committed, if it is in the projection."""
+    """Return the member message a ``turn.settled`` event committed.
+
+    Normally it is already in the active projection. A turn that settles after its discussion was
+    completed and compacted (a late exact receipt) has no projection left, so the committed
+    message is read from the durable log by its exact event id.
+    """
     rows = conn.execute(
         "SELECT seq, event_json FROM hosted_room_policy_events WHERE room_id=? AND discussion_event_id=?",
         (room_id, discussion_event_id)).fetchall()
-    return next(
+    indexed = next(
         (m for m in (json.loads(row["event_json"]) for row in rows) if m.get("event_id") == message_event_id), None)
+    if indexed is not None or not isinstance(message_event_id, str) or not message_event_id:
+        return indexed
+    committed = _canonical_event(conn, room_id, event_id=message_event_id)
+    return committed if committed is not None and committed.get("kind") == "message.member" else None
 
 
 class HostedRoomPolicyCheckpoint:
@@ -162,6 +233,33 @@ class HostedRoomPolicyCheckpoint:
                     conn, event=event, thread_id=thread_id, settled_seq=settled_seq_by_message.get(str(row["event_id"]))
                 )
 
+    def _backfill_holds(self, conn: sqlite3.Connection, *, room_id: str, through_seq: int) -> None:
+        """Rebuild manual holds for a checkpoint written before this projection existed.
+
+        The room log is the source of truth, so the holds a room already carries are replayed from
+        it in sequence order -- exactly the live path -- rather than starting an existing room with
+        no holds and silently resuming members the user had paused.
+        """
+        if through_seq <= 0:
+            return
+        members = _room_members(conn, room_id)
+        for row in conn.execute(
+            """SELECT seq, kind, payload_json FROM hosted_room_events
+               WHERE room_id=? AND seq<=? ORDER BY seq""", (room_id, through_seq)):
+            seq, kind = int(row["seq"]), str(row["kind"])
+            payload = json.loads(row["payload_json"])
+            payload = payload if isinstance(payload, Mapping) else {}
+            if kind == "message.user":
+                self._apply_holds(
+                    conn, room_id,
+                    directive=discussion.resolve_hold_directive(payload.get("text"), members), seq=seq)
+            elif kind == "room.stop_requested":
+                self._apply_holds(
+                    conn, room_id,
+                    directive=discussion.HoldDirective(hold=tuple(m.member_id for m in members)), seq=seq)
+            self._consume_held_delta(
+                conn, room_id=room_id, thread_id=_text(payload, "thread_id"), seq=seq)
+
     def _discussion_events(
         self, conn: sqlite3.Connection, *, room_id: str, thread_id: str, discussion_event_id: str, bound_error: str
     ) -> list[dict[str, Any]]:
@@ -194,17 +292,30 @@ class HostedRoomPolicyCheckpoint:
             (room_id, thread_id, event_id, int(event["seq"])))
         self._store_active_event(conn, event=event, thread_id=thread_id, discussion_event_id=event_id)
         self._store_transcript_event(conn, event=event, thread_id=thread_id)
+        # User text is the only input that changes manual holds (see resolve_hold_directive).
+        self._apply_holds(
+            conn, room_id,
+            directive=discussion.resolve_hold_directive(
+                payload.get("text"), _room_members(conn, room_id)),
+            seq=int(event["seq"]))
 
     def _apply_discussion_event(
         self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
-        """Index member messages and terminal turn outcomes of a known discussion."""
+        """Index member messages and terminal turn outcomes of a discussion.
+
+        A turn can still publish after its discussion completed and was compacted (a late exact
+        receipt for deferred or uncertain work). The active projection is deliberately not
+        re-inflated for such a discussion, but its exactly-once publication marker, watermark and
+        bounded transcript entry are still recorded -- those are what later preparations read to
+        know the outcome is already in the room.
+        """
         room_id, seq, kind = str(event["room_id"]), int(event["seq"]), _text(event, "kind")
         thread_id, discussion_event_id = _text(payload, "thread_id"), _text(payload, "discussion_event_id")
-        if conn.execute(
+        tracked = conn.execute(
             "SELECT 1 FROM hosted_room_policy_events WHERE room_id=? AND discussion_event_id=? LIMIT 1",
-            (room_id, discussion_event_id)).fetchone() is None:
-            return
-        self._store_active_event(conn, event=event, thread_id=thread_id, discussion_event_id=discussion_event_id)
+            (room_id, discussion_event_id)).fetchone() is not None
+        if tracked:
+            self._store_active_event(conn, event=event, thread_id=thread_id, discussion_event_id=discussion_event_id)
         if kind not in _TERMINAL_KINDS:
             return
         task_id = _text(payload, "task_id")
@@ -237,9 +348,55 @@ class HostedRoomPolicyCheckpoint:
 
     def _apply_stop_requested(
         self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
+        room_id, seq = str(event["room_id"]), int(event["seq"])
         conn.execute("""UPDATE hosted_room_policy_cursors
-               SET stopped_through_seq=MAX(stopped_through_seq, ?) WHERE room_id=?""",
-            (int(event["seq"]), str(event["room_id"])))
+               SET stopped_through_seq=MAX(stopped_through_seq, ?) WHERE room_id=?""", (seq, room_id))
+        # A room Stop is the native UI Stop: it fences earlier turns AND holds every roster member
+        # at room scope until the user releases them, so reopening a frontend or sending an
+        # unaddressed message does not silently restart the work that was stopped.
+        self._apply_holds(
+            conn, room_id,
+            directive=discussion.HoldDirective(
+                hold=tuple(member.member_id for member in _room_members(conn, room_id))),
+            seq=seq)
+
+    def _apply_holds(
+        self, conn: sqlite3.Connection, room_id: str, *, directive: discussion.HoldDirective,
+        seq: int) -> None:
+        """Hold and release exactly the members one control event names."""
+        for member_id in directive.hold:
+            # An already held member keeps its original hold position (native keeps the stamp).
+            conn.execute("""INSERT INTO hosted_room_policy_holds(room_id, member_id, held_at_seq)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(room_id, member_id) DO UPDATE SET held_at_seq=CASE
+                       WHEN hosted_room_policy_holds.held_at_seq > 0
+                       THEN hosted_room_policy_holds.held_at_seq ELSE excluded.held_at_seq END""",
+                (room_id, member_id, seq))
+        for member_id in directive.release:
+            conn.execute(
+                "UPDATE hosted_room_policy_holds SET held_at_seq=0 WHERE room_id=? AND member_id=?",
+                (room_id, member_id))
+
+    @staticmethod
+    def _consume_held_delta(
+        conn: sqlite3.Connection, *, room_id: str, thread_id: str, seq: int) -> None:
+        """Consume one thread event for every member still held after that event was applied.
+
+        The durable equivalent of the native held skip (``group-rounds.ts``): the member's
+        watermark for THIS thread advances past the entry it may not answer, so the skip cannot
+        re-trigger and no session or model work is dispatched. Thread-scoped like every other
+        watermark: a pause taken in one thread never consumes another thread's unread delta.
+        """
+        if not thread_id:
+            return
+        conn.execute("""INSERT INTO hosted_room_policy_watermarks(
+                   room_id, thread_id, member_id, seen_through_seq)
+               SELECT room_id, ?, member_id, ? FROM hosted_room_policy_holds
+                   WHERE room_id=? AND held_at_seq>0
+               ON CONFLICT(room_id, thread_id, member_id) DO UPDATE SET
+                   seen_through_seq=MAX(hosted_room_policy_watermarks.seen_through_seq,
+                                        excluded.seen_through_seq)""",
+            (thread_id, seq, room_id))
 
     _APPLY_BY_KIND: dict[str, Callable[..., None]] = {
         "message.user": _apply_user_message, "message.member": _apply_discussion_event,
@@ -247,13 +404,19 @@ class HostedRoomPolicyCheckpoint:
         "room.stop_requested": _apply_stop_requested}
 
     def _apply_event(self, conn: sqlite3.Connection, event: Mapping[str, Any]) -> None:
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, Mapping) else {}
         handler = self._APPLY_BY_KIND.get(_text(event, "kind"))
         if handler is not None:
-            payload = event.get("payload")
-            handler(self, conn, event, payload if isinstance(payload, Mapping) else {})
+            handler(self, conn, event, payload)
+        # After the handler, so the message that holds a member also consumes itself for that
+        # member, while the message that releases one stays in its delta.
+        self._consume_held_delta(
+            conn, room_id=str(event["room_id"]), thread_id=_text(payload, "thread_id"),
+            seq=int(event["seq"]))
 
-    def _ensure_cursor_and_transcript(self, conn: sqlite3.Connection, room_id: str) -> int:
-        """Create the room cursor if absent, backfill the transcript once, return through_seq."""
+    def _ensure_cursor_and_projections(self, conn: sqlite3.Connection, room_id: str) -> int:
+        """Create the room cursor if absent, backfill derived projections once, return through_seq."""
         _require_room(conn, room_id)
         conn.execute("""INSERT OR IGNORE INTO hosted_room_policy_cursors(
                    room_id, through_seq, stopped_through_seq, updated_at
@@ -261,21 +424,24 @@ class HostedRoomPolicyCheckpoint:
         cursor = int(
             conn.execute("SELECT through_seq FROM hosted_room_policy_cursors WHERE room_id=?", (room_id,)).fetchone()[
                 "through_seq"])
-        transcript_state = conn.execute(
+        projection_state = conn.execute(
             "SELECT schema_version FROM hosted_room_policy_transcript_state WHERE room_id=?", (room_id,)).fetchone()
-        if transcript_state is None or int(transcript_state["schema_version"]) < _TRANSCRIPT_SCHEMA_VERSION:
+        if projection_state is None or int(projection_state["schema_version"]) < _PROJECTION_SCHEMA_VERSION:
+            # Both backfills are idempotent (monotonic upserts), so re-running the transcript one
+            # for a room already at an older version reproduces the state it already had.
             self._backfill_transcript(conn, room_id=room_id, through_seq=cursor)
+            self._backfill_holds(conn, room_id=room_id, through_seq=cursor)
             conn.execute("""INSERT INTO hosted_room_policy_transcript_state(room_id, schema_version)
                    VALUES (?, ?)
                    ON CONFLICT(room_id) DO UPDATE SET schema_version=excluded.schema_version""",
-                (room_id, _TRANSCRIPT_SCHEMA_VERSION))
+                (room_id, _PROJECTION_SCHEMA_VERSION))
         return cursor
 
     def sync(self, *, room_id: str, latest_seq: int) -> int:
         """Materialize each unseen event exactly once by durable cursor."""
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            cursor = self._ensure_cursor_and_transcript(conn, room_id)
+            cursor = self._ensure_cursor_and_projections(conn, room_id)
         if cursor > latest_seq:
             raise RuntimeError("room policy cursor is ahead of the durable log")
         while cursor < latest_seq:
@@ -297,19 +463,35 @@ class HostedRoomPolicyCheckpoint:
             cursor = next_cursor
         return cursor
 
+    @staticmethod
+    def _holds(conn: sqlite3.Connection, room_id: str) -> tuple[MemberHold, ...]:
+        return tuple(
+            MemberHold(str(row["member_id"]), int(row["held_at_seq"]))
+            for row in conn.execute("""SELECT member_id, held_at_seq
+                   FROM hosted_room_policy_holds WHERE room_id=? ORDER BY member_id""", (room_id,)))
+
+    def member_holds(self, *, room_id: str, latest_seq: int | None = None) -> tuple[MemberHold, ...]:
+        """Return durable hold state; ``latest_seq`` first materializes the log up to it."""
+        if latest_seq is not None:
+            self.sync(room_id=room_id, latest_seq=latest_seq)
+        with self._connect() as conn:
+            return self._holds(conn, room_id)
+
     def snapshot(self, *, room_id: str, latest_seq: int) -> PolicySnapshot:
-        """Return only the oldest active discussion and its watermark set."""
+        """Return only the oldest active discussion, its watermark set and manual holds."""
         through_seq = self.sync(room_id=room_id, latest_seq=latest_seq)
         with self._connect() as conn:
             cursor = conn.execute(
                 "SELECT stopped_through_seq FROM hosted_room_policy_cursors WHERE room_id=?", (room_id,)).fetchone()
             stopped_through_seq = int(cursor["stopped_through_seq"])
+            holds = self._holds(conn, room_id)
             thread = conn.execute("""SELECT thread_id, discussion_event_id FROM hosted_room_policy_threads
                    WHERE room_id=? AND completed=0 AND latest_user_seq>?
                    ORDER BY latest_user_seq, thread_id LIMIT 1""", (room_id, stopped_through_seq)).fetchone()
             if thread is None:
                 return PolicySnapshot(
-                    through_seq=through_seq, stopped_through_seq=stopped_through_seq, events=(), watermarks={})
+                    through_seq=through_seq, stopped_through_seq=stopped_through_seq, events=(), watermarks={},
+                    holds=holds)
             thread_id = str(thread["thread_id"])
             events = self._discussion_events(
                 conn, room_id=room_id, thread_id=thread_id, discussion_event_id=str(thread["discussion_event_id"]),
@@ -318,7 +500,10 @@ class HostedRoomPolicyCheckpoint:
                    WHERE room_id=? AND thread_id=?""", (room_id, thread_id)).fetchall()
         return PolicySnapshot(
             through_seq=through_seq, stopped_through_seq=stopped_through_seq, events=tuple(events),
-            watermarks={(thread_id, str(row["member_id"])): int(row["seen_through_seq"]) for row in watermark_rows})
+            watermarks={
+                (thread_id, str(row["member_id"])): int(row["seen_through_seq"])
+                for row in watermark_rows},
+            holds=holds)
 
     def publication_exists(self, *, room_id: str, task_id: str, status: str, execution_generation: int) -> bool:
         """Return whether one exact driver outcome is already in the room log."""
@@ -334,15 +519,37 @@ class HostedRoomPolicyCheckpoint:
             return conn.execute(sql, params).fetchone() is not None
 
     def events_for_task(self, *, room_id: str, source_event_seq: int) -> list[dict[str, Any]]:
-        """Load one bounded discussion projection for terminal reconstruction."""
+        """Load one bounded discussion projection for terminal reconstruction.
+
+        A turn can outlive its discussion: deferred and uncertain work is not live work, so the
+        discussion may settle and be compacted while that task is still unpublished. Its source
+        message is nevertheless still in the durable log at this exact sequence, so it is read back
+        by key and merged with the bounded thread transcript. Nothing is fabricated and nothing
+        unbounded is retained: an outcome whose source event no longer exists still returns
+        nothing, and reconstruction still refuses it.
+        """
         with self._connect() as conn:
             source = conn.execute(
                 "SELECT discussion_event_id, thread_id FROM hosted_room_policy_events WHERE room_id=? AND seq=?",
                 (room_id, source_event_seq)).fetchone()
-            return [] if source is None else self._discussion_events(
-                conn, room_id=room_id, thread_id=str(source["thread_id"]),
-                discussion_event_id=str(source["discussion_event_id"]),
+            if source is not None:
+                return self._discussion_events(
+                    conn, room_id=room_id, thread_id=str(source["thread_id"]),
+                    discussion_event_id=str(source["discussion_event_id"]),
+                    bound_error="task policy projection exceeded its bound")
+            committed = _canonical_event(conn, room_id, seq=source_event_seq)
+            if committed is None or committed.get("kind") != "message.user":
+                return []
+            thread_id = _text(committed["payload"], "thread_id")
+            if not thread_id:
+                return []
+            events = self._discussion_events(
+                conn, room_id=room_id, thread_id=thread_id, discussion_event_id=str(committed["event_id"]),
                 bound_error="task policy projection exceeded its bound")
+            # The transcript window may have rolled past the source message; the task still needs
+            # exactly that event to reconstruct its own coordinates.
+            by_seq = {int(event["seq"]): event for event in (*events, committed)}
+            return [by_seq[seq] for seq in sorted(by_seq)]
 
     def compact_completed(self, *, room_id: str) -> None:
         """Drop any completed projections left by an interrupted sync."""

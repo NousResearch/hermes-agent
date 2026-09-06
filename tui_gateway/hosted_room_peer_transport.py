@@ -219,15 +219,24 @@ class PeerHostedRoomTransport(InternalSessionRPC):
         return self.client.status(**self._scoped(profile=profile, session_id=session_id))
 
     def interrupt(
-        self, *, profile: str, session_id: str, source: str, expected_task_id: str
+        self, *, profile: str, session_id: str, source: str, expected_task_id: str,
+        expected_execution_generation: int | None = None
     ) -> Mapping[str, Any] | None:
         self._validate_coordinates(profile=profile, source=source)
+
+        def wrong_generation(current: Any) -> bool:
+            # Optional for legacy callers; when supplied it must match the run this transport
+            # actually holds, so a stop for an old generation cannot reach a newer one whose
+            # task id repeats. Compared before any peer call.
+            return (expected_execution_generation is not None
+                    and int(current or 0) != int(expected_execution_generation))
         dispatch = self._dispatch
         if dispatch is not None:
-            if dispatch.task_id != expected_task_id:
+            if dispatch.task_id != expected_task_id or wrong_generation(dispatch.execution_generation):
                 return None
             return self.client.stop(dispatch=dispatch.as_mapping(), grant=self.route.grant)
         if (self.task_id != expected_task_id or not self.execution_generation
+                or wrong_generation(self.execution_generation)
                 or not hasattr(self.client, "stop_receipt")):
             return None
         return self.client.stop_receipt(

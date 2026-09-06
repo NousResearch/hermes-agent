@@ -35,6 +35,10 @@ DecisionStatus = Literal["idle", "task", "settled", "bounded"]
 TerminalKind = Literal["settled", "failed", "cancelled", "deferred"]
 
 _MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._:-]*)", re.IGNORECASE)
+# ASCII word boundaries and case-insensitivity mirror the native JavaScript regexes exactly, so
+# the same user text holds and releases the same members from either frontend.
+_HOLD_RE = re.compile(r"\b(stop|halt|pause)\b", re.IGNORECASE | re.ASCII)
+_RELEASE_RE = re.compile(r"\b(resume|continue|go|proceed)\b", re.IGNORECASE | re.ASCII)
 _TURN_ID_RE = re.compile(
     r"^d(?P<source>[1-9][0-9]*)\.r(?P<round>[0-2])\."
     r"p(?P<position>[0-5])\.s(?P<seen>[1-9][0-9]*)\."
@@ -288,10 +292,13 @@ def is_pass_text(value: Any) -> bool:
     return not text or re.fullmatch(r"\(?\s*pass\s*\)?\.?", text, re.IGNORECASE) is not None
 
 
-def resolve_mentions(
-    texts: Iterable[str], members: Sequence[DiscussionMember], *, default_all: bool = True
-) -> tuple[DiscussionMember, ...]:
-    """Resolve member handles deterministically against the frozen roster."""
+def _mentioned_handles(
+    texts: Iterable[str], members: Sequence[DiscussionMember]) -> tuple[set[str], bool]:
+    """Return (casefolded roster handles addressed, ``@all``/``@everyone`` seen).
+
+    The two are separate on purpose: ``@all hello`` addresses the room without addressing any
+    member, which is exactly the distinction manual holds turn on.
+    """
     by_handle = {member.handle.casefold(): member for member in members}
     mentioned: set[str] = set()
     everyone = False
@@ -302,9 +309,49 @@ def resolve_mentions(
                 everyone = True
             elif handle in by_handle:
                 mentioned.add(handle)
+    return mentioned, everyone
+
+
+def resolve_mentions(
+    texts: Iterable[str], members: Sequence[DiscussionMember], *, default_all: bool = True
+) -> tuple[DiscussionMember, ...]:
+    """Resolve member handles deterministically against the frozen roster."""
+    mentioned, everyone = _mentioned_handles(texts, members)
     if everyone or (default_all and not mentioned):
         return tuple(members)
     return tuple(member for member in members if member.handle.casefold() in mentioned)
+
+
+@dataclass(frozen=True)
+class HoldDirective:
+    """Members one user message holds and releases, already expanded over the frozen roster."""
+    hold: tuple[str, ...] = ()
+    release: tuple[str, ...] = ()
+
+
+def resolve_hold_directive(text: Any, members: Sequence[DiscussionMember]) -> HoldDirective:
+    """Classify one ``message.user`` text's effect on manual member holds.
+
+    Native contract (``classifyGroupHoldDirective`` in the Desktop coordinator): a standalone
+    stop/halt/pause wins over resume/continue/go/proceed and holds every addressed member, with
+    ``@all``/``@everyone`` covering the whole roster. Otherwise any direct mention releases exactly
+    the members it addresses -- ``@all`` alone addresses nobody so it releases nobody, while
+    ``@all resume`` releases everyone -- and unaddressed prose changes nothing. Conservative by
+    design: "don't stop @x" still holds @x, because a wrongly held member is one mention away from
+    running again while a wrongly running one keeps doing work it was told to stop.
+
+    Only user messages are classified. Member prose, its mentions and late turn results can never
+    mutate a hold, so a Bot cannot talk itself (or a peer) out of a pause.
+    """
+    value = str(text or "")
+    handles, everyone = _mentioned_handles((value,), members)
+    everyone_ids = tuple(member.member_id for member in members)
+    addressed = tuple(m.member_id for m in members if m.handle.casefold() in handles)
+    if _HOLD_RE.search(value):
+        return HoldDirective(hold=everyone_ids if everyone else addressed)
+    if _RELEASE_RE.search(value):
+        return HoldDirective(release=everyone_ids if everyone else addressed)
+    return HoldDirective(release=addressed)
 
 
 def _unaddressed_member_mentions(
@@ -604,9 +651,17 @@ def _effective_watermarks(
 
 def plan_next_task(
     room_value: Any, events: Sequence[Mapping[str, Any]], *, local_profiles: Iterable[str],
-    initial_watermarks: Mapping[tuple[str, str], int] | None = None) -> DiscussionDecision:
-    """Replay the complete room log and return at most one next member task."""
+    initial_watermarks: Mapping[tuple[str, str], int] | None = None,
+    held_member_ids: Iterable[str] | None = None) -> DiscussionDecision:
+    """Replay the complete room log and return at most one next member task.
+
+    ``held_member_ids`` are the manually held members of this room (room scope, durable, supplied
+    by the caller's projection because a hold outlives the bounded active-discussion window). A
+    held member is never selected, so no session or model work is dispatched for it, and the
+    Discussion settles instead of spinning on a turn nobody may take.
+    """
     room = validate_room(room_value, local_profiles=local_profiles)
+    held = frozenset(str(member_id) for member_id in (held_member_ids or ()))
     validated = _validated_events(events, room=room)
     if (discussion := _pending_discussion(validated)) is None:
         return DiscussionDecision(status="idle", reason="no_pending_user_event")
@@ -628,9 +683,10 @@ def plan_next_task(
         # Bot and not heard from afterward gets another turn. Every member's
         # watermark remains intact, so a peer cited later still receives the
         # complete bounded transcript delta without consuming turns meanwhile.
-        responders = (
+        selected = (
             resolve_mentions((str(discussion.payload["text"]),), room.members) if round_index == 0
             else _unaddressed_member_mentions(discussion_messages, room))
+        responders = tuple(member for member in selected if member.member_id not in held)
         for member_index, member in enumerate(_rotate(responders, round_index)):
             if (round_index, member.member_id) in terminals:
                 continue
@@ -644,7 +700,9 @@ def plan_next_task(
                 room=room, discussion_event=discussion, member=member, member_index=member_index,
                 round_index=round_index, seen_through_seq=seen_through_seq, prompt=prompt))
         if not any(int(event.payload["round_index"]) == round_index for event in member_messages):
-            return decide("settled", "silent_round")
+            # A round that only went quiet because every responder is held is reported as such:
+            # the room settles (no spin, no dispatch) and the reason names the manual pause.
+            return decide("settled", "members_held" if selected and not responders else "silent_round")
         if round_index == MAX_DISCUSSION_ROUNDS - 1:
             return decide("bounded", "max_rounds")
     raise AssertionError("bounded Discussion loop exhausted unexpectedly")

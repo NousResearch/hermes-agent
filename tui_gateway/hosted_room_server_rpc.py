@@ -7,10 +7,12 @@ from __future__ import annotations
 import itertools
 import threading
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable
 
 from gateway import hosted_room_driver as state
+from gateway.hosted_room_owner_probe import capture_local_domain
 
 _LockType = type(threading.Lock())
 
@@ -96,6 +98,59 @@ class HostedRoomServerRPC:
             return next((c for c in self.server._sessions.values()
                          if str(c.get("session_key") or "") == session_id), None)
 
+    def execution_identity(self, *, profile: str, session_id: str) -> Mapping[str, Any] | None:
+        """This process's owner descriptor for one exact local room session, or ``None``.
+
+        Discovered by the driver at its one call site, not declared on ``InternalSessionRPC``: peer
+        transports must keep satisfying that contract without implementing this.
+
+        Two outcomes that must not be confused:
+
+        * ``None`` -- the capability is unavailable (not Linux, no readable boot id / pid
+          namespace, no psutil start time). No descriptor is stored, the attempt is admitted and
+          dispatched exactly as before, and it simply gains no death-recovery eligibility.
+        * raise -- the *target* is invalid: no record for this exact ``session_id``, or a record
+          belonging to a different profile, or a profile that does not resolve on this host. The
+          caller is before its admission fence, so nothing is dispatched.
+
+        No partial map is ever returned; a missing field yields ``None``.
+        """
+        record = self.server._sessions.get(session_id)
+        if record is None:
+            raise HostedRoomSessionError(
+                "execution_identity", 4041, "no live session matches this exact session id")
+        home = self._validated_profile_home(profile, record)
+        domain = capture_local_domain()
+        if domain is None:
+            return None
+        return {
+            **domain, "home": str(home), "profile": profile,
+            "runtime_session_id": str(session_id),
+            "stored_session_key": str(record.get("session_key") or "")}
+
+    def _validated_profile_home(self, profile: str, record: Mapping[str, Any]):
+        """The execution home for ``profile``, proven to be this record's own. Raises otherwise.
+
+        ``_profile_home`` returns ``None`` for BOTH "this is the launch profile" and "no such
+        profile", so it is not validation: the launch profile is established by name here, and any
+        other name must resolve to a real home. A wrong or unknown profile fails rather than
+        silently aliasing the launch profile.
+        """
+        name = (profile or "").strip()
+        resolved = self.server._profile_home(name) if name else None
+        if resolved is None:
+            if not name or name != self.server._current_profile_name():
+                raise HostedRoomSessionError(
+                    "execution_identity", 4042,
+                    f"profile {profile!r} does not resolve to a home on this host")
+            resolved = Path(self.server._hermes_home)
+        home = self.server._session_home(record)
+        if Path(home).resolve() != Path(resolved).resolve():
+            raise HostedRoomSessionError(
+                "execution_identity", 4043,
+                "this session does not belong to the requested profile")
+        return home
+
     def info(self, *, profile: str, session_id: str, source: str) -> Mapping[str, Any]:
         del profile, source
         record = self._session_record(session_id)
@@ -120,9 +175,14 @@ class HostedRoomServerRPC:
             "session_id": session_id, "request_id": request_id, "choice": choice, "all": False})
 
     def interrupt(
-        self, *, profile: str, session_id: str, source: str, expected_task_id: str
-    ) -> Mapping[str, Any] | None:
+        self, *, profile: str, session_id: str, source: str, expected_task_id: str,
+        expected_execution_generation: int | None = None) -> Mapping[str, Any] | None:
+        """Stop one exact hosted attempt: task ids repeat across generations, so the generation
+        travels with the request and the handler refuses a stale one."""
         del source
-        return self._call("session.interrupt", {
+        params: dict[str, Any] = {
             "profile": profile, "session_id": session_id,
-            "expected_hosted_task_id": expected_task_id})
+            "expected_hosted_task_id": expected_task_id}
+        if expected_execution_generation is not None:
+            params["expected_hosted_execution_generation"] = int(expected_execution_generation)
+        return self._call("session.interrupt", params)

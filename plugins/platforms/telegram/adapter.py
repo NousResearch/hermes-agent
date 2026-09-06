@@ -2841,6 +2841,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     old_app = self._app
                     self._app = builder.build()
                     self._bot = self._app.bot
+                    # Same order as connect(): plugin handlers BEFORE core, or a rebuilt app keeps
+                    # only core handlers and every plugin-owned route silently disappears for the
+                    # rest of the process.
+                    self._wire_plugin_handlers(self._app)
                     self._register_handlers(self._app)  # keep core and observer handlers in lockstep
                     with contextlib.suppress(Exception):
                         await _shutdown_abandoned_app(old_app)

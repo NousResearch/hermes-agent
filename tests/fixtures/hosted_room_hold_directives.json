@@ -1,0 +1,47 @@
+{
+  "comment": [
+    "Shared manual-hold directive vectors. The native Desktop coordinator",
+    "(apps/desktop/src/plugins/hermes-bots/group-rounds.ts) and the hosted-room policy",
+    "(gateway/hosted_room_discussion.py) are both run against these exact cases, so the two",
+    "frontends cannot drift on what a user message does to a hold. Handles equal member names so",
+    "both mention resolvers address the same members; native's extra mention forms (titles,",
+    "renamed friendly names) are outside this contract.",
+    "'hold'/'release' are the member ids each text holds and releases."
+  ],
+  "members": [
+    {"member_id": "member-impl", "handle": "impl"},
+    {"member_id": "member-research", "handle": "research"},
+    {"member_id": "member-review", "handle": "review"}
+  ],
+  "cases": [
+    {"name": "direct stop holds the addressed member", "text": "stop @impl", "hold": ["member-impl"], "release": []},
+    {"name": "halt is a stop word", "text": "@impl halt", "hold": ["member-impl"], "release": []},
+    {"name": "pause is a stop word", "text": "@research pause please", "hold": ["member-research"], "release": []},
+    {"name": "stop holds every addressed member", "text": "stop @impl @review", "hold": ["member-impl", "member-review"], "release": []},
+    {"name": "@all stop holds the whole roster", "text": "@all stop", "hold": ["member-impl", "member-research", "member-review"], "release": []},
+    {"name": "@everyone stop holds the whole roster", "text": "@everyone please stop", "hold": ["member-impl", "member-research", "member-review"], "release": []},
+    {"name": "bare stop addresses nobody", "text": "stop", "hold": [], "release": []},
+    {"name": "stop wins over resume", "text": "@impl stop, do not resume", "hold": ["member-impl"], "release": []},
+    {"name": "one stop word holds every member the message addresses", "text": "@impl resume but @research stop", "hold": ["member-impl", "member-research"], "release": []},
+    {"name": "negated stop still holds (documented conservative choice)", "text": "don't stop @impl", "hold": ["member-impl"], "release": []},
+    {"name": "stop inside a longer word is not a stop", "text": "@impl unstoppable work ahead", "hold": [], "release": ["member-impl"]},
+    {"name": "stopped is not a stop word", "text": "@impl stopped by the airport", "hold": [], "release": ["member-impl"]},
+    {"name": "ascii word boundary treats a non-ascii suffix as a break", "text": "@impl stopé", "hold": ["member-impl"], "release": []},
+    {"name": "uppercase stop still holds", "text": "@review STOP", "hold": ["member-review"], "release": []},
+    {"name": "direct mention releases the addressed member", "text": "@impl what do you think?", "hold": [], "release": ["member-impl"]},
+    {"name": "direct resume releases the addressed member", "text": "@impl resume", "hold": [], "release": ["member-impl"]},
+    {"name": "continue releases the addressed member", "text": "@research continue", "hold": [], "release": ["member-research"]},
+    {"name": "go releases the addressed member", "text": "@review go", "hold": [], "release": ["member-review"]},
+    {"name": "proceed releases the addressed member", "text": "@review proceed", "hold": [], "release": ["member-review"]},
+    {"name": "@all resume releases everyone", "text": "@all resume", "hold": [], "release": ["member-impl", "member-research", "member-review"]},
+    {"name": "@everyone continue releases everyone", "text": "@everyone continue", "hold": [], "release": ["member-impl", "member-research", "member-review"]},
+    {"name": "plain @all releases nobody", "text": "@all hello", "hold": [], "release": []},
+    {"name": "plain @everyone releases nobody", "text": "@everyone standup in five", "hold": [], "release": []},
+    {"name": "bare resume releases nobody", "text": "resume", "hold": [], "release": []},
+    {"name": "unaddressed prose releases nobody", "text": "receipt round complete", "hold": [], "release": []},
+    {"name": "unknown handles address nobody", "text": "@nobody resume", "hold": [], "release": []},
+    {"name": "@all plus a direct mention releases everyone on resume", "text": "@all @impl resume", "hold": [], "release": ["member-impl", "member-research", "member-review"]},
+    {"name": "going is not a release word", "text": "@impl going once", "hold": [], "release": ["member-impl"]},
+    {"name": "empty text changes nothing", "text": "", "hold": [], "release": []}
+  ]
+}

@@ -12,10 +12,11 @@ import hashlib
 import json
 import math
 import sqlite3
+import contextlib
 from contextlib import closing
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Callable, Literal, get_args
+from typing import Any, Callable, Literal, Mapping, get_args
 
 from gateway.hosted_rooms_common import (
     DbPath, bounded_int, canonical_json, compact_json, connect, fenced_update, identifier, table_columns, text,
@@ -43,7 +44,7 @@ _TASK_COLUMN_ORDER = (
     "room_id", "task_id", "thread_id", "turn_id", "source_event_seq", "payload_json", "payload_digest", "status",
     "execution_generation", "cancel_generation", "run_gateway_id", "run_process_generation", "run_lease_generation",
     "cancel_id", "settlement_id", "settlement_status", "result_json", "created_at", "updated_at", "started_at",
-    "terminal_at", "indeterminate_at")
+    "terminal_at", "indeterminate_at", "admitted_at", "owner_descriptor")
 _TASK_COLUMNS = frozenset(_TASK_COLUMN_ORDER)
 _TASK_ORDER = "ORDER BY source_event_seq, created_at, task_id"
 _SELECT_LEASE = "SELECT * FROM hosted_room_driver_leases WHERE room_id=?"
@@ -57,7 +58,9 @@ _TASK_INDEX_SQL = """CREATE INDEX {if_not_exists}idx_hosted_room_driver_tasks_st
 _GENERATION_FENCE = "execution_generation=? AND cancel_generation=?"
 _RUN_FENCE = "run_gateway_id=? AND run_process_generation=? AND run_lease_generation=?"
 _SETTLE_SET = "status=?, settlement_id=?, settlement_status=?, result_json=?, terminal_at=?, updated_at=?"
-_REQUEUE_SET = "status='queued', run_gateway_id=NULL, run_process_generation=NULL, run_lease_generation=NULL"
+_REQUEUE_SET = (
+    "status='queued', run_gateway_id=NULL, run_process_generation=NULL, run_lease_generation=NULL, "
+    "admitted_at=NULL, owner_descriptor=NULL")
 _CANCEL_SET = "status='cancelled', cancel_generation=?, cancel_id=?, terminal_at=?, updated_at=?"
 
 
@@ -74,10 +77,13 @@ _SETTLE_RUNNING_SQL = _generation_update(_SETTLE_SET, "running") + f" AND {_RUN_
 _SETTLE_STOPPING_SQL = _generation_update(_SETTLE_SET, "stopping")
 _REQUEUE_RUNNING_SQL = _task_update(
     f"{_REQUEUE_SET}, started_at=NULL, updated_at=?", f"status='running' AND {_GENERATION_FENCE} AND {_RUN_FENCE}")
-_CANCEL_QUEUED_SQL = _task_update(_CANCEL_SET, "status IN ('queued', 'deferred') AND cancel_generation=?")
+# ``admitted_at IS NULL`` is part of the fence, not only of the guard: direct cancellation is for
+# work no transport ever accepted, and a stale routing read must not be able to commit it.
+_CANCEL_QUEUED_SQL = _task_update(
+    _CANCEL_SET, "status IN ('queued', 'deferred') AND cancel_generation=? AND admitted_at IS NULL")
 _BEGIN_STOP_SQL = _task_update(
     "status='stopping', cancel_generation=?, cancel_id=?, updated_at=?",
-    "status IN ('running', 'indeterminate') AND cancel_generation=?")
+    "status IN ('running', 'indeterminate', 'deferred') AND cancel_generation=?")
 _COMPLETE_STOP_SQL = _task_update(
     "status='cancelled', terminal_at=?, updated_at=?", "status='stopping' AND cancel_id=? AND cancel_generation=?")
 
@@ -98,7 +104,25 @@ _GENERATION_TRANSITIONS = {
     "requeue_deferred": (
         "deferred",
         f"{_REQUEUE_SET}, result_json=NULL, started_at=NULL, terminal_at=NULL, indeterminate_at=NULL, updated_at=?",
-        "deferred task generation changed", "deferred task changed during requeue")}
+        "deferred task generation changed", "deferred task changed during requeue"),
+    # A deferred attempt is uncertain work too: an exact terminal receipt (or a proven remote
+    # cancellation) resolves it on the same fenced path, never by replaying the turn.
+    "resolve_deferred": (
+        "deferred", _SETTLE_SET, "deferred task generation changed",
+        "deferred task changed during reconciliation"),
+    "resolve_deferred_cancel": (
+        "deferred", _CANCEL_SET, "deferred cancellation proof is stale",
+        "deferred cancellation proof lost its fence"),
+    "stop_uncertain": (
+        "stopping", "status='indeterminate', indeterminate_at=?, updated_at=?",
+        "stopping task generation changed", "stopping task changed during uncertainty")}
+
+
+# Which ``_GENERATION_TRANSITIONS`` entry resolves each uncertain status; the two states differ
+# only in the row they are fenced against, never in what counts as proof.
+_UNCERTAIN_RESOLUTIONS = {
+    "indeterminate": {"settle": "resolve", "cancel": "resolve_cancel"},
+    "deferred": {"settle": "resolve_deferred", "cancel": "resolve_deferred_cancel"}}
 
 
 class DriverStateError(ValueError): """Base class for invalid or conflicting driver-state operations."""
@@ -209,6 +233,15 @@ def _create_task_table(conn: sqlite3.Connection, table: str = "hosted_room_drive
             run_gateway_id TEXT, run_process_generation TEXT, run_lease_generation INTEGER, cancel_id TEXT,
             settlement_id TEXT, settlement_status TEXT, result_json TEXT, created_at REAL NOT NULL,
             updated_at REAL NOT NULL, started_at REAL, terminal_at REAL, indeterminate_at REAL,
+            -- When this attempt's generation passed its final admission fence (see
+            -- fence_task_admission): the durable, cross-process boundary between "no prompt was
+            -- handed to a transport" and "an execution may be live".
+            admitted_at REAL,
+            -- The owner incarnation this generation was admitted on (JSON, see
+            -- hosted_room_owner_probe). NULL for legacy rows, peers and unsupported platforms,
+            -- which therefore gain no death-recovery eligibility. Cleared by start and by every
+            -- requeue so a new generation never inherits the old owner's identity.
+            owner_descriptor TEXT,
             PRIMARY KEY (room_id, task_id), UNIQUE (room_id, thread_id, turn_id),
             FOREIGN KEY (room_id) REFERENCES hosted_rooms(room_id))""")
 
@@ -249,10 +282,15 @@ def _schema_objects_exist(conn: sqlite3.Connection) -> bool:
 
 
 def _migrate_task_status_constraint(conn: sqlite3.Connection) -> None:
-    """Expand the unpublished task-state CHECK without losing durable work."""
+    """Rebuild the unpublished task table without losing durable work.
+
+    Copies only the columns the stored table already has, so a table written before a column was
+    added migrates into the current shape with that column at its default.
+    """
     conn.execute("DROP INDEX IF EXISTS idx_hosted_room_driver_tasks_status")
     _create_task_table(conn, "hosted_room_driver_tasks_next")
-    columns = ", ".join(_TASK_COLUMN_ORDER)
+    stored = table_columns(conn, "hosted_room_driver_tasks")
+    columns = ", ".join(column for column in _TASK_COLUMN_ORDER if column in stored)
     conn.execute(
         f"INSERT INTO hosted_room_driver_tasks_next ({columns}) SELECT {columns} FROM hosted_room_driver_tasks")
     conn.execute("DROP TABLE hosted_room_driver_tasks")
@@ -271,7 +309,9 @@ def _connect(db_path: DbPath) -> sqlite3.Connection:
         row = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='hosted_room_driver_tasks'").fetchone()
         sql = str(row[0] or "").lower() if row else ""
-        return "'stopping'" in sql and "'deferred'" in sql  # task-status CHECK already covers the current states
+        # The status CHECK covers the current states AND both admission columns exist.
+        return all(
+            token in sql for token in ("'stopping'", "'deferred'", "admitted_at", "owner_descriptor"))
     conn = connect(
         db_path, db_label="state.db (hosted_room_driver)", ready=ready,
         initialize=lambda conn: (_migrate_task_status_constraint if existing[0] else _initialize_schema)(conn))
@@ -309,7 +349,24 @@ def _optional(cast: Callable[[Any], Any]) -> Callable[[Any], Any]:
 _TASK_VIEW_CASTS: dict[str, Callable[[Any], Any]] = {
     "execution_generation": int, "cancel_generation": int, "run_lease_generation": _optional(int),
     "result_json": _optional(json.loads), "created_at": float, "updated_at": float, "started_at": _optional(float),
-    "terminal_at": _optional(float), "indeterminate_at": _optional(float)}
+    "terminal_at": _optional(float), "indeterminate_at": _optional(float), "admitted_at": _optional(float),
+    "owner_descriptor": lambda value: _descriptor_view(value)}
+
+
+def _descriptor_view(value: Any) -> dict[str, Any] | None:
+    """Decode a stored owner descriptor for the task view, or ``None`` if it is not one.
+
+    Tolerant on purpose: a corrupt value must not make every read of the row raise. It costs only
+    death-recovery eligibility, and the authoritative refusal happens on the RAW column inside the
+    transaction, where a non-NULL unreadable descriptor is rejected rather than treated as legacy.
+    """
+    if value is None:
+        return None
+    try:
+        decoded = json.loads(value)
+    except (TypeError, ValueError):
+        return None
+    return decoded if isinstance(decoded, dict) else None
 
 
 def _task_from_row(row: sqlite3.Row, *, idempotent: bool = False) -> dict[str, Any]:
@@ -470,15 +527,66 @@ def _transition(
         return _task_from_row(_load_task(conn, identity))
 
 
+def _requeue_ownership(
+    row: sqlite3.Row, lease: DriverLease, identity: TaskIdentity,
+    proof: "OwnerDeathProof | None") -> None:
+    """Who may return an admitted attempt to the queue, in three cases.
+
+    Requeueing clears the admission stamp and the run owner, which is what makes a later Stop take
+    the direct route, so it may only happen on evidence that the original execution is over.
+
+    1. Never admitted: nothing was handed to a transport, so anyone may requeue it.
+    2. No owner descriptor (legacy rows, peers, unsupported platforms): unchanged behaviour --
+       only the process that ran it. Those rows gain no new foreign-owner privilege.
+    3. Descriptor present: the attempt-bound ``ended`` proof is required **even when the process
+       generations are equal**. A restart can reuse a generation value, and equality was never
+       evidence; ``_unadmitted_attempts`` is not a cessation witness either.
+    """
+    if row["admitted_at"] is None:
+        return
+    if row["owner_descriptor"] is None:
+        # Legacy/peer/unsupported rows only: the branch is decided on the RAW column, never on the
+        # decoder, which also answers ``None`` for a corrupt or non-object value. Deciding on the
+        # decode would hand exactly those rows back the equal-generation bypass.
+        if row["run_process_generation"] in (None, lease.process_generation):
+            return
+        raise InvalidTaskTransitionError(
+            "cannot requeue an attempt another process admitted; its execution has not been proven over")
+    if _complete_descriptor(row) is None:
+        # Unreadable OR incomplete OR wrongly typed: a parseable JSON object is not a descriptor,
+        # and a partial one must not be able to authorize a replay just because the process domain
+        # inside it still probes as ended.
+        raise InvalidTaskTransitionError(
+            "cannot requeue an admitted attempt whose stored owner descriptor is incomplete")
+    if proof is None:
+        raise InvalidTaskTransitionError(
+            "cannot requeue an admitted attempt without proof its owner incarnation ended")
+    _require_owner_death_proof(row, identity, proof, stop_intent=False)
+
+
 def _generation_transition(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, name: str, execution_generation: int,
     cancel_generation: int, *, now: float, set_params: tuple[Any, ...],
-    replay: Callable[[sqlite3.Row], Any] | None = None) -> dict[str, Any]:
-    """Lease-first transition from ``_GENERATION_TRANSITIONS`` fenced on status + both generations."""
+    replay: Callable[[sqlite3.Row], Any] | None = None,
+    owner_death_proof: "OwnerDeathProof | None" = None,
+    death_stop_intent: bool = False, death_cancel_id: str | None = None) -> dict[str, Any]:
+    """Lease-first transition from ``_GENERATION_TRANSITIONS`` fenced on status + both generations.
+
+    ``owner_death_proof`` is ``None`` for every ordinary caller, whose behaviour is unchanged. When
+    supplied it authorizes a death-based route and MUST validate here, in the same transaction as
+    the fence; it is never an alternative to the fence.
+    """
     status, set_clause, generation_stale, stale = _GENERATION_TRANSITIONS[name]
+    death_guard = _owner_death_guard(
+        identity, owner_death_proof, stop_intent=death_stop_intent,
+        expected_cancel_id=death_cancel_id)
     def guard(row: sqlite3.Row) -> None:
         if not _generations_match(row, status, execution_generation, cancel_generation):
             raise StaleTaskError(generation_stale)
+        if name.startswith("requeue"):
+            _requeue_ownership(row, lease, identity, owner_death_proof)
+        elif death_guard is not None:
+            death_guard(row)
     return _transition(
         db_path, identity, lease=lease, now=now, replay=replay, guard=guard, sql=_generation_update(set_clause, status),
         set_params=set_params, fence_params=(execution_generation, cancel_generation), stale=stale)
@@ -630,7 +738,7 @@ def start_task(
         execution_generation = int(row["execution_generation"]) + 1
         fenced_update(conn, """UPDATE hosted_room_driver_tasks
                SET status='running', execution_generation=?, run_gateway_id=?, run_process_generation=?,
-                   run_lease_generation=?, started_at=?, updated_at=?
+                   run_lease_generation=?, started_at=?, updated_at=?, admitted_at=NULL, owner_descriptor=NULL
                WHERE room_id=? AND task_id=? AND status='queued' AND cancel_generation=?""",
             (
                 execution_generation, *_run_fence(lease), now, now, identity.room_id, identity.task_id,
@@ -638,6 +746,302 @@ def start_task(
         return TaskAttempt(
             identity=identity, lease=lease, execution_generation=execution_generation,
             cancel_generation=expected_cancel_generation)
+
+
+def _owner_descriptor_json(
+    attempt: TaskAttempt, native: Mapping[str, Any] | None) -> str | None:
+    """The complete owner descriptor for one attempt, or ``None`` when capture is unavailable.
+
+    The admission coordinates come from THIS ``TaskAttempt`` and its lease -- never reconstructed
+    from mutable session state, and never taken from the adapter, which cannot see them. ``native``
+    supplies only what the running process can observe about itself (its incarnation, home, profile
+    and the two session identifiers). A missing native half means no descriptor at all, not a
+    partial one.
+    """
+    from gateway.hosted_room_owner_probe import validate_native_descriptor
+
+    if (validated := validate_native_descriptor(native)) is None:
+        return None
+    gateway_id, process_generation, lease_generation = _run_fence(attempt.lease)
+    return _canonical_json({
+        **validated,
+        "room_id": attempt.identity.room_id, "task_id": attempt.identity.task_id,
+        "thread_id": attempt.identity.thread_id, "turn_id": attempt.identity.turn_id,
+        "execution_generation": int(attempt.execution_generation),
+        "cancel_generation_at_admission": int(attempt.cancel_generation),
+        "run_gateway_id": gateway_id, "run_process_generation": process_generation,
+        "run_lease_generation": int(lease_generation)})
+
+
+def fence_task_admission(
+    db_path: DbPath, attempt: TaskAttempt, *, clock: Clock,
+    owner_descriptor: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Stamp ``admitted_at`` for one running attempt at its final admission boundary, or raise.
+
+    The caller runs this immediately before handing the prompt to a transport, so the row records
+    the boundary every other process can read:
+
+    * ``admitted_at IS NULL`` for the current generation means no prompt was handed to any
+      transport. A cancellation that commits first makes this raise ``StaleTaskError`` (the fence
+      names ``status='running'`` plus both generations and the run fence), so the attempt aborts
+      without submitting -- a durable barrier, not a re-read.
+    * ``admitted_at`` set means an execution may be live. An idle or absent session is then no
+      longer proof that it stopped; only the process owning the run (or, once that owner's lease
+      expires, its successor) may commit cancellation.
+
+    The stamp cannot be atomic with the transport call itself, so a Stop landing between them is
+    reported as provisional rather than acknowledged and is resolved by interrupting the execution
+    that did start.
+    """
+    now = _timestamp(clock)
+    return _run_fence_transition(
+        db_path, attempt, guard_stale="task attempt is stale or cancelled", now=now,
+        sql=_task_update(
+            "admitted_at=?, owner_descriptor=?, updated_at=?",
+            f"status='running' AND {_GENERATION_FENCE} AND {_RUN_FENCE}"),
+        set_params=(now, _owner_descriptor_json(attempt, owner_descriptor), now),
+        stale="task changed during admission")
+
+
+# --- owner-death recovery ----------------------------------------------------
+# Process death is an ADDITIONAL cessation authority. It never replaces the exact terminal receipt
+# or the acknowledged native cancellation, both of which stay valid while the owner's backend is
+# alive; and it never chooses the outcome, which stays whatever the recorded stop identity says.
+# Every death-authorized transition takes ``owner_death_proof``: ``None`` on every ordinary path
+# (exactly today's behaviour), and when supplied the proof MUST validate inside the transaction or
+# the transition raises. There is no boolean and no public proof surface -- ``groups.retry``
+# forwards only room and task ids.
+_PROOF_STALE = "owner-death proof does not bind this attempt"
+
+
+@dataclass(frozen=True)
+class OwnerDeathProof:
+    """A successor's own evidence that one exact admitted attempt's owner incarnation ended."""
+
+    identity: TaskIdentity
+    execution_generation: int
+    cancel_generation_at_admission: int
+    run: tuple[str, str, int]
+    admitted_at: float
+    descriptor: dict[str, Any]
+    verdict: str
+
+
+def owner_death_proof(task: Mapping[str, Any], verdict: str) -> OwnerDeathProof | None:
+    """Build the proof for one loaded task view, or ``None`` when it cannot be made.
+
+    The successor constructs this from the row it just read plus its own probe verdict, so a
+    caller cannot hand-roll a partial one: anything short of a complete descriptor and an ``ended``
+    verdict yields ``None``, and a ``None`` proof simply means the death route is not taken.
+    """
+    # Exactly the rule the transactional guard applies -- one definition, not a second copy -- so
+    # the builder cannot mint a proof the guard would then have to reject. There is no default for
+    # a missing coordinate: an absent `cancel_generation_at_admission` once became -1, which made
+    # incomplete evidence look complete.
+    descriptor = _validated_descriptor(task.get("owner_descriptor"))
+    if verdict != "ended" or descriptor is None or task.get("admitted_at") is None:
+        return None
+    run = (task.get("run_gateway_id"), task.get("run_process_generation"), task.get("run_lease_generation"))
+    if not isinstance(run[0], str) or not isinstance(run[1], str) or not _exact_int(run[2]):
+        return None
+    if not _exact_int(task.get("execution_generation")) or not isinstance(
+            task.get("admitted_at"), float):
+        return None
+    return OwnerDeathProof(
+        identity=task["identity"], execution_generation=task["execution_generation"],
+        cancel_generation_at_admission=descriptor["cancel_generation_at_admission"],
+        run=(run[0], run[1], run[2]), admitted_at=task["admitted_at"],
+        descriptor=dict(descriptor), verdict=verdict)
+
+
+# The admission half of a descriptor, with the exact type each coordinate must have. A parseable
+# JSON object is NOT a valid descriptor: incomplete evidence must never be made to look complete by
+# coercion (`int("3")`, `str(None)`, `True == 1`) or by a default.
+_DESCRIPTOR_IDENTITY_FIELDS = ("room_id", "task_id", "thread_id", "turn_id")
+_DESCRIPTOR_TEXT_FIELDS = (*_DESCRIPTOR_IDENTITY_FIELDS, "run_gateway_id", "run_process_generation")
+_DESCRIPTOR_INT_FIELDS = (
+    "execution_generation", "cancel_generation_at_admission", "run_lease_generation")
+
+
+def _exact_int(value: Any) -> bool:
+    """A real ``int``. ``bool`` is excluded: ``True == 1`` would otherwise impersonate a coordinate."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _stored_descriptor(row: sqlite3.Row) -> dict[str, Any] | None:
+    """Decode the raw column to a JSON object, with no completeness claim. Internal use only."""
+    with contextlib.suppress(TypeError, ValueError, json.JSONDecodeError):
+        stored = json.loads(row["owner_descriptor"]) if row["owner_descriptor"] is not None else None
+        return stored if isinstance(stored, dict) else None
+    return None
+
+
+def _validated_descriptor(candidate: Any) -> dict[str, Any] | None:
+    """The ONE completeness/type rule for a descriptor, wherever it came from.
+
+    Both halves are required: the native process/domain/target half (validated by the probe module
+    that wrote it) and the admission half below. A descriptor missing ``home``, ``profile``, either
+    session identifier, an identity field or any admission coordinate is not evidence of anything,
+    even though the process domain in it could still probe as ``ended``.
+
+    Ranges, not just types: an admitted attempt has a positive execution generation and a positive
+    run-lease generation, and its admission-cancel coordinate is a real count. Negative coordinates
+    are as invalid as missing ones. The row-relative upper bound lives in the guard, which is the
+    only place that can see the row.
+    """
+    from gateway.hosted_room_owner_probe import validate_native_descriptor
+
+    if not isinstance(candidate, Mapping) or validate_native_descriptor(candidate) is None:
+        return None
+    for field in _DESCRIPTOR_TEXT_FIELDS:
+        value = candidate.get(field)
+        if not isinstance(value, str) or not value.strip():
+            return None
+    if any(not _exact_int(candidate.get(field)) for field in _DESCRIPTOR_INT_FIELDS):
+        return None
+    if candidate["execution_generation"] < 1 or candidate["run_lease_generation"] < 1:
+        return None
+    if candidate["cancel_generation_at_admission"] < 0:
+        return None
+    return dict(candidate)
+
+
+def _complete_descriptor(row: sqlite3.Row) -> dict[str, Any] | None:
+    """The stored descriptor, or ``None`` unless it is complete and strictly typed."""
+    return _validated_descriptor(_stored_descriptor(row))
+
+
+def _same_descriptor(stored: Mapping[str, Any], supplied: Mapping[str, Any]) -> bool:
+    """Type-aware equality. ``{"pid": 1} == {"pid": True}`` is True in Python, so ``==`` alone
+    would let a bool or float impersonate an integer coordinate inside an otherwise equal map."""
+    if set(stored) != set(supplied):
+        return False
+    return all(
+        type(stored[key]) is type(supplied[key]) and stored[key] == supplied[key]
+        for key in stored)
+
+
+def _descriptor_binds_row(stored: Mapping[str, Any], row: sqlite3.Row, identity: TaskIdentity) -> bool:
+    """Whether the descriptor's OWN duplicated coordinates agree with the row it is stored on.
+
+    The descriptor repeats the identity, the attempt and the original run owner. Those copies are
+    redundant by design, so a descriptor whose nested values contradict its row is corrupt, not
+    merely stale -- and comparing the proof to the stored object alone would never notice.
+    """
+    if tuple(stored[field] for field in _DESCRIPTOR_IDENTITY_FIELDS) != (
+            identity.room_id, identity.task_id, identity.thread_id, identity.turn_id):
+        return False
+    if stored["execution_generation"] != int(row["execution_generation"]):
+        return False
+    return (
+        stored["run_gateway_id"], stored["run_process_generation"], stored["run_lease_generation"]
+    ) == (row["run_gateway_id"], row["run_process_generation"], row["run_lease_generation"])
+
+
+def _require_owner_death_proof(
+    row: sqlite3.Row, identity: TaskIdentity, proof: OwnerDeathProof, *, stop_intent: bool,
+    expected_cancel_id: str | None = None) -> None:
+    """Validate one death proof against the row just loaded, inside its own transaction.
+
+    This is the authoritative check: it re-derives everything rather than trusting the builder, so
+    a hand-constructed or substituted ``OwnerDeathProof`` is refused here too.
+
+    Bound together: the COMPLETE, strictly typed stored descriptor; the descriptor's own duplicated
+    identity/attempt/run coordinates against the row; the full task identity; the exact attempt; the
+    ORIGINAL run owner (a different fence from the successor's active lease, which
+    ``_require_active_lease`` keeps checking separately); the exact admission stamp; the proof's
+    admission-cancel coordinate against the descriptor; and the descriptor field-for-field.
+
+    ``stop_intent`` additionally requires that THIS attempt was really asked to stop: a recorded
+    cancel id plus a current cancel generation advanced beyond the one recorded at admission -- a
+    nonzero generation on its own can be inherited. ``expected_cancel_id`` binds a caller-supplied
+    stop identity to the recorded one, so a death route cannot rewrite what was stopped.
+    """
+    stored = _complete_descriptor(row)
+    if stored is None or proof.verdict != "ended":
+        raise StaleTaskError(_PROOF_STALE)
+    if not _descriptor_binds_row(stored, row, identity):
+        raise StaleTaskError(_PROOF_STALE)
+    if proof.identity != identity or _task_identity_from_row(row) != identity:
+        raise StaleTaskError(_PROOF_STALE)
+    if not _exact_int(proof.execution_generation) or (
+            int(row["execution_generation"]) != proof.execution_generation):
+        raise StaleTaskError(_PROOF_STALE)
+    if row["admitted_at"] is None or not isinstance(proof.admitted_at, float) or (
+            not math.isfinite(proof.admitted_at) or float(row["admitted_at"]) != proof.admitted_at):
+        raise StaleTaskError(_PROOF_STALE)
+    if not isinstance(proof.run, tuple) or len(proof.run) != 3 or not _exact_int(proof.run[2]):
+        raise StaleTaskError(_PROOF_STALE)
+    if (row["run_gateway_id"], row["run_process_generation"], row["run_lease_generation"]) != (
+            proof.run[0], proof.run[1], proof.run[2]):
+        raise StaleTaskError(_PROOF_STALE)
+    # The proof carries this coordinate explicitly, so it is checked explicitly: shallow equality
+    # with the stored object would pass a proof that simply copied a wrong value along with it.
+    if not _exact_int(proof.cancel_generation_at_admission) or (
+            proof.cancel_generation_at_admission != stored["cancel_generation_at_admission"]):
+        raise StaleTaskError(_PROOF_STALE)
+    # The admission-cancel coordinate cannot claim a stop the row never reached.
+    if stored["cancel_generation_at_admission"] > int(row["cancel_generation"]):
+        raise StaleTaskError(_PROOF_STALE)
+    # The SUPPLIED descriptor is validated too, not merely compared: a hand-built proof could
+    # otherwise carry bool/float impersonations that dict equality accepts.
+    if _validated_descriptor(proof.descriptor) is None or not _same_descriptor(
+            stored, proof.descriptor):
+        raise StaleTaskError(_PROOF_STALE)
+    if not stop_intent:
+        return
+    recorded_cancel_id = str(row["cancel_id"] or "")
+    if not recorded_cancel_id:
+        raise StaleTaskError("owner-death cancellation needs this attempt's own stop intent")
+    if int(row["cancel_generation"]) <= stored["cancel_generation_at_admission"]:
+        raise StaleTaskError("owner-death cancellation needs this attempt's own stop intent")
+    if expected_cancel_id is not None and expected_cancel_id != recorded_cancel_id:
+        raise StaleTaskError(
+            "owner-death cancellation cannot replace this attempt's recorded stop identity")
+
+
+def _require_death_route(proof: OwnerDeathProof | None, death_authorized: bool) -> None:
+    """A caller whose only evidence is owner death must carry the proof, or nothing happens.
+
+    This is what stops a death-authorized terminal route from silently degrading into the ordinary
+    one: a missing or unbuildable proof raises here, before any transaction opens, rather than
+    committing an unguarded cancellation. The inverse is refused too -- a proof handed to a caller
+    that did not declare the death route would never be validated.
+    """
+    if death_authorized and proof is None:
+        raise DriverValidationError(
+            "owner-death authorization requires a complete owner-death proof")
+    if proof is not None and not death_authorized:
+        raise DriverValidationError(
+            "an owner-death proof is only accepted on an explicitly death-authorized route")
+
+
+def _owner_death_guard(
+    identity: TaskIdentity, proof: OwnerDeathProof | None, *, stop_intent: bool,
+    expected_cancel_id: str | None = None) -> Callable[[sqlite3.Row], None] | None:
+    """The in-transaction guard for a death-authorized transition, or ``None`` for ordinary ones."""
+    if proof is None:
+        return None
+    return lambda row: _require_owner_death_proof(
+        row, identity, proof, stop_intent=stop_intent, expected_cancel_id=expected_cancel_id)
+
+
+def mark_stop_uncertain(
+    db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
+    expected_cancel_generation: int, clock: Clock) -> dict[str, Any]:
+    """Record that a requested stop could not be proven: uncertain, never cancelled.
+
+    Cancellation is a claim that the execution is over. When the exact attempt was admitted by a
+    process this one does not run, an absent or idle session proves nothing about it -- the former
+    owner may still be between its admission fence and its dispatch. This keeps the durable answer
+    honest by moving the attempt into the existing uncertain state, which never auto-resubmits and
+    requires explicit user recovery.
+    """
+    _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
+    now = _timestamp(clock)
+    return _generation_transition(
+        db_path, identity, lease, "stop_uncertain", expected_execution_generation, expected_cancel_generation,
+        now=now, set_params=(now, now))
 
 
 def settle_task(
@@ -652,52 +1056,92 @@ def settle_task(
 
 def settle_stopping_task(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
-    expected_cancel_generation: int, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock
+    expected_cancel_generation: int, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock,
+    death_authorized: bool = False, owner_death_proof: "OwnerDeathProof | None" = None
 ) -> dict[str, Any]:
-    """Commit a completion that won the race with an unacknowledged Stop."""
+    """Commit a completion that won the race with an unacknowledged Stop.
+
+    ``death_authorized`` is for the one caller whose evidence is owner death (a deadline stop whose
+    owner is proven gone): the outcome and its reason still come from the recorded stop identity,
+    never from the cessation evidence."""
     _terminal_settlement_id(settlement_id, status)  # settlement errors take precedence over generation errors
     if expected_execution_generation < 1 or expected_cancel_generation < 1:
         raise DriverValidationError("stopping settlement generations are invalid")
+    _require_death_route(owner_death_proof, death_authorized)
     now, replay, set_params = _settlement(settlement_id, status, result, clock)
     return _transition(
         db_path, identity, lease=lease, lease_first=False, now=now, replay=replay, sql=_SETTLE_STOPPING_SQL,
         set_params=set_params, fence_params=(expected_execution_generation, expected_cancel_generation),
+        guard=_owner_death_guard(identity, owner_death_proof, stop_intent=True),
         stale="task completion lost the stop race")
+
+
+def _uncertain_transition(from_status: Any, kind: str) -> str:
+    """Name the resolution transition for one uncertain status (``indeterminate``/``deferred``)."""
+    if from_status not in _UNCERTAIN_RESOLUTIONS:
+        raise DriverValidationError("from_status must be 'indeterminate' or 'deferred'")
+    return _UNCERTAIN_RESOLUTIONS[from_status][kind]
 
 
 def resolve_indeterminate_task(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
-    expected_cancel_generation: int, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock
-) -> dict[str, Any]:
-    """Commit a verified historical receipt under the current room lease."""
+    expected_cancel_generation: int, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock,
+    from_status: str = "indeterminate", death_authorized: bool = False,
+    owner_death_proof: "OwnerDeathProof | None" = None) -> dict[str, Any]:
+    """Commit a verified historical receipt under the current room lease.
+
+    ``from_status`` names which uncertain state the receipt resolves: a deferred attempt carries
+    the same execution generation and the same admission evidence as an indeterminate one, so an
+    exact receipt closes it on the identical fenced path instead of replaying its turn.
+    """
     _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
+    _require_death_route(owner_death_proof, death_authorized)
     now, replay, set_params = _settlement(settlement_id, status, result, clock)
     return _generation_transition(
-        db_path, identity, lease, "resolve", expected_execution_generation, expected_cancel_generation, now=now,
-        replay=replay, set_params=set_params)
+        db_path, identity, lease, _uncertain_transition(from_status, "settle"), expected_execution_generation,
+        expected_cancel_generation, now=now, replay=replay, set_params=set_params,
+        owner_death_proof=owner_death_proof, death_stop_intent=True)
 
 
 def resolve_indeterminate_cancellation(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
-    expected_cancel_generation: int, cancel_id: Any, clock: Clock) -> dict[str, Any]:
-    """Commit a verified terminal cancellation for an uncertain attempt."""
+    expected_cancel_generation: int, cancel_id: Any, clock: Clock,
+    from_status: str = "indeterminate", death_authorized: bool = False,
+    owner_death_proof: "OwnerDeathProof | None" = None) -> dict[str, Any]:
+    """Commit a verified terminal cancellation for an uncertain attempt.
+
+    ``death_authorized`` states that the CALLER's only cessation evidence is owner death; the proof
+    is then mandatory and validated in-transaction. Without that flag this is the ordinary route a
+    transport-reported cancellation uses, which stays valid while the owner's backend is alive."""
     _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
     cancel_id = _identifier(cancel_id, label="cancel_id")
+    _require_death_route(owner_death_proof, death_authorized)
     now = _timestamp(clock)
     return _generation_transition(
-        db_path, identity, lease, "resolve_cancel", expected_execution_generation, expected_cancel_generation, now=now,
-        replay=_cancel_replay(cancel_id), set_params=(expected_cancel_generation + 1, cancel_id, now, now))
+        db_path, identity, lease, _uncertain_transition(from_status, "cancel"), expected_execution_generation,
+        expected_cancel_generation, now=now, replay=_cancel_replay(cancel_id),
+        set_params=(expected_cancel_generation + 1, cancel_id, now, now),
+        owner_death_proof=owner_death_proof, death_stop_intent=True,
+        # The written id is the caller's, so on the death route it must equal the recorded one --
+        # checked in this same transaction. `complete_task_cancel` already fences that equality;
+        # this route wrote whatever it was handed.
+        death_cancel_id=cancel_id)
 
 
 def requeue_indeterminate_task(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
-    expected_cancel_generation: int, clock: Clock) -> dict[str, Any]:
-    """Explicitly retry uncertain work after an operator accepts at-least-once risk."""
+    expected_cancel_generation: int, clock: Clock,
+    owner_death_proof: "OwnerDeathProof | None" = None) -> dict[str, Any]:
+    """Explicitly retry uncertain work after an operator accepts at-least-once risk.
+
+    No ``death_authorized`` flag is needed here: ``_requeue_ownership`` refuses outright when the
+    row carries a descriptor and no proof accompanies it, so this route cannot degrade into an
+    unguarded requeue."""
     _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
     now = _timestamp(clock)
     return _generation_transition(
         db_path, identity, lease, "requeue", expected_execution_generation, expected_cancel_generation, now=now,
-        set_params=(now,))
+        set_params=(now,), owner_death_proof=owner_death_proof)
 
 
 def defer_indeterminate_task(
@@ -718,13 +1162,18 @@ def defer_indeterminate_task(
 
 def requeue_deferred_task(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
-    expected_cancel_generation: int, clock: Clock) -> dict[str, Any]:
-    """Explicitly retry a fenced deferred turn under a new generation."""
+    expected_cancel_generation: int, clock: Clock,
+    owner_death_proof: "OwnerDeathProof | None" = None) -> dict[str, Any]:
+    """Explicitly retry a fenced deferred turn under a new generation.
+
+    No ``death_authorized`` flag is needed here: ``_requeue_ownership`` refuses outright when the
+    row carries a descriptor and no proof accompanies it, so this route cannot degrade into an
+    unguarded requeue."""
     _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
     now = _timestamp(clock)
     return _generation_transition(
         db_path, identity, lease, "requeue_deferred", expected_execution_generation, expected_cancel_generation,
-        now=now, set_params=(now,))
+        now=now, set_params=(now,), owner_death_proof=owner_death_proof)
 
 
 def requeue_not_admitted_task(db_path: DbPath, attempt: TaskAttempt, *, clock: Clock) -> dict[str, Any]:
@@ -751,7 +1200,9 @@ def cancel_task(
     def guard(row: sqlite3.Row) -> None:
         if row["status"] in TERMINAL_STATUSES:
             raise InvalidTaskTransitionError(f"cannot cancel task in state '{row['status']}'")
-        if row["status"] not in {"queued", "deferred"}:
+        if row["status"] not in {"queued", "deferred"} or row["admitted_at"] is not None:
+            # A deferred attempt that passed its admission fence may still be executing wherever
+            # it was admitted; only an attempt no transport accepted can be cancelled outright.
             raise InvalidTaskTransitionError("running work requires acknowledged two-phase cancellation")
         _require_cancel_generation(row, expected_cancel_generation)
     return _transition(
@@ -763,7 +1214,11 @@ def cancel_task(
 def begin_task_cancel(
     db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock
 ) -> dict[str, Any]:
-    """Persist a stop intent without claiming the remote run has stopped."""
+    """Persist a stop intent without claiming the remote run has stopped.
+
+    Accepts a deferred attempt too: a deferral only fences publication, so an attempt that already
+    passed its admission fence still needs an acknowledged stop rather than a direct cancellation.
+    """
     cancel_id = _identifier(cancel_id, label="cancel_id")
     _cancel_generation(expected_cancel_generation)
     now = _timestamp(clock)
@@ -778,15 +1233,24 @@ def begin_task_cancel(
 
 
 def complete_task_cancel(
-    db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock
+    db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock,
+    death_authorized: bool = False, owner_death_proof: "OwnerDeathProof | None" = None
 ) -> dict[str, Any]:
-    """Commit cancellation only after the transport acknowledges exact Stop."""
+    """Commit cancellation after the transport acknowledges exact Stop, or the owner is proven gone.
+
+    The recorded stop identity is untouched by either route: ``cancel_id`` is the row's own, and the
+    current cancel generation is still the fence. ``death_authorized`` only adds a second source of
+    cessation evidence, validated in this same transaction; it never rewrites what was stopped."""
     cancel_id = _identifier(cancel_id, label="cancel_id")
+    _require_death_route(owner_death_proof, death_authorized)
+    death_guard = _owner_death_guard(identity, owner_death_proof, stop_intent=True)
     now = _timestamp(clock)
     def guard(row: sqlite3.Row) -> None:
         if (row["status"], row["cancel_id"], int(row["cancel_generation"])) != (
             "stopping", cancel_id, expected_cancel_generation):
             raise StaleTaskError("task stop acknowledgement is stale")
+        if death_guard is not None:
+            death_guard(row)
     return _transition(
         db_path, identity, now=now, replay=_cancel_replay(cancel_id), guard=guard, sql=_COMPLETE_STOP_SQL,
         set_params=(now, now), fence_params=(cancel_id, expected_cancel_generation),

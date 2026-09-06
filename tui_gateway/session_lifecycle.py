@@ -363,37 +363,282 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
     return bool(_ws_session_is_detached(session) and not session.get("running"))
 
 
-def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None = None) -> bool:
+# -- immutable per-turn coordinates -------------------------------------------
+# One accepted turn is identified by a monotonic per-session sequence plus, for a hosted room
+# turn, the exact task and execution generation it was accepted for. The value is a plain tuple
+# so it can be compared by value and carried across threads without any of it being reconstructed
+# from the session record, which by then may belong to a later attempt.
+
+
+def _new_turn_attempt(session: dict, hosted_task: dict | None = None) -> tuple:
+    """Mint and publish this session's next turn coordinate. Call under ``history_lock``."""
+    seq = int(session.get("_turn_seq", 0)) + 1
+    session["_turn_seq"] = seq
+    task = hosted_task if isinstance(hosted_task, dict) else {}
+    attempt = (seq, str(task.get("task_id") or ""), int(task.get("execution_generation") or 0))
+    session["_turn_attempt"] = attempt
+    # This submit is now accepted and owes its room exactly one terminal receipt, so it gets its
+    # own pending entry to carry the outcome (see `_pending_attempt_outcomes`).
+    _pending_attempt_outcomes(session)[attempt] = None
+    session["_turn_cancel_requested"] = False
+    session["_turn_cancel_attempt"] = None
+    return attempt
+
+
+def _pending_attempt_outcomes(session: dict) -> dict:
+    """This record's accepted-but-not-yet-terminal attempts, each mapped to its retired outcome.
+
+    One entry per accepted submit still owing a receipt: `_new_turn_attempt` registers it, a Stop
+    that retires it writes the outcome on THAT attempt's own entry, and the attempt's own terminal
+    handling reads the outcome and then removes the entry (`_settle_attempt`).  It is a live
+    pending set, not a history and not a single slot: any number of retired submits can be in
+    flight at once, and the map is empty again once each of them has reported."""
+    outcomes = session.get("_pending_attempt_outcomes")
+    if not isinstance(outcomes, dict):
+        outcomes = session["_pending_attempt_outcomes"] = {}
+    return outcomes
+
+
+def _current_turn_attempt(session: dict) -> tuple | None:
+    return session.get("_turn_attempt")
+
+
+def _turn_attempt_is_current(session: dict, attempt: tuple | None) -> bool:
+    """Whether ``attempt`` is still the session's accepted turn (``None`` means "whatever runs")."""
+    return attempt is None or session.get("_turn_attempt") == attempt
+
+
+def _hosted_attempt_matches(session: dict, task_id: str, execution_generation: Any) -> tuple | None:
+    """The running attempt when it is exactly this hosted task/generation, else ``None``.
+
+    Task ids repeat across generations, so a stale generation must not stop the next turn.
+    Call under ``history_lock``.
+    """
+    task = session.get("_hosted_room_task")
+    if not session.get("running") or not isinstance(task, dict) or task.get("task_id") != task_id:
+        return None
+    if execution_generation is not None and int(
+            task.get("execution_generation") or 0) != int(execution_generation):
+        return None
+    return session.get("_turn_attempt")
+
+
+def _retire_attempt_turn_marker(session: dict, attempt: tuple | None, *keys: str) -> bool:
+    """Clear one attempt's crash marker, serialized against a successor being admitted.
+
+    ``_retire_turn_marker`` always also clears the record's *current* ``session_key``, and a later
+    turn on the same session reuses that durable key, so the deletion itself -- not just the
+    bookkeeping pop -- has to happen under the lock that admission takes. Returns whether the
+    marker was retired."""
+    with session["history_lock"]:
+        if not _turn_attempt_is_current(session, attempt):
+            return False  # a successor owns this record: its marker is not ours to delete
+        active = str(session.pop("_active_turn_marker_key", "") or "")
+        _retire_turn_marker(session, *(key for key in (*keys, active) if key))
+        return True
+
+
+def _latch_turn_cancel(session: dict, attempt: tuple | None = None) -> None:
+    """Latch cancellation for one exact attempt. Call under ``history_lock``."""
+    session["_turn_cancel_requested"] = True
+    target = attempt if attempt is not None else session.get("_turn_attempt")
+    session["_turn_cancel_attempt"] = target
+    # The flag and its single slot are reset by the next mint — their unqualified readers
+    # (auto-continue, queue drain, the compute-host bridge) all take them to mean "the CURRENT turn
+    # was cancelled" — so the outcome is also written on this attempt's OWN pending entry, which no
+    # later attempt can overwrite.  A retired submit still in flight has to report `cancelled`, not
+    # the retryable `failed`.  A stop for an attempt that already reported has nothing to retain.
+    outcomes = _pending_attempt_outcomes(session)
+    if target in outcomes:
+        outcomes[target] = "cancelled"
+
+
+def _turn_cancel_latched(session: dict, attempt: tuple | None) -> bool:
+    """Whether a cancellation is latched for ``attempt`` (an unqualified latch covers any turn)."""
+    if not session.get("_turn_cancel_requested"):
+        return False
+    latched = session.get("_turn_cancel_attempt")
+    return latched is None or attempt is None or latched == attempt
+
+
+def _attempt_was_cancelled(session: dict, attempt: tuple | None) -> bool:
+    """Whether ``attempt`` was stopped — still true once a successor replaced it on the record.
+
+    A submit retired mid-flight learns its outcome here: ``failed`` and ``cancelled`` are not
+    interchangeable to the room (one is retryable, the other is the user's decision)."""
+    return _turn_cancel_latched(session, attempt) or (
+        _pending_attempt_outcomes(session).get(attempt) == "cancelled")
+
+
+# -- run ownership -------------------------------------------------------------
+# An accepted turn runs across two threads: the readiness waiter `prompt.submit` starts, and the
+# runner `_run_prompt_submit` publishes and starts before that waiter exits. So "the thread I saw
+# is dead" is NOT proof the turn stopped, and "no thread is alive" is not either during the
+# handoff. The claim below is published with the runner handle, in the same critical section, and
+# is released only by the attempt's own terminal handling.
+
+
+def _publish_attempt_run_thread(session: dict, attempt: tuple | None, thread) -> bool:
+    """Publish ``thread`` as the record's runner for ``attempt``; returns whether it may start.
+
+    The currency check and the write are one critical section: between minting an attempt and
+    starting its thread, a Stop can retire it and a successor can be genuinely admitted on the
+    same record, and the obsolete submit must never replace the successor's live handle."""
+    with session["history_lock"]:
+        if not _turn_attempt_is_current(session, attempt):
+            return False  # a successor owns this record: its runner is not ours to replace
+        session["_run_thread"] = thread
+        if attempt is not None:
+            session["_turn_attempt_live"] = attempt
+        return True
+
+
+def _attempt_run_is_live(session: dict, attempt: tuple | None) -> bool:
+    """Whether ``attempt``'s accepted run still has an owner. Call under ``history_lock``.
+
+    The claim is authoritative — it spans the waiter→runner handoff, including the instant after a
+    handle is published and before that thread is started. A still-alive published thread is the
+    fallback for synthesized turns (auto-continue, wake-ups) that never mint an attempt."""
+    live = session.get("_turn_attempt_live")
+    if live is not None and (attempt is None or live == attempt):
+        return True
+    thread = session.get("_run_thread")
+    return bool(thread is not None and thread.is_alive())
+
+
+def _settle_attempt(session: dict, attempt: tuple | None) -> None:
+    """Release ``attempt``'s run claim and pending entry: it is over and owes nothing more.
+
+    Call under ``history_lock``, and only AFTER the terminal handling has read the outcome — this
+    is the single cleanup point that keeps `_pending_attempt_outcomes` from growing.  Idempotent,
+    and it never touches a successor's claim or entry."""
+    if attempt is None:
+        return
+    if session.get("_turn_attempt_live") == attempt:
+        session["_turn_attempt_live"] = None
+    _pending_attempt_outcomes(session).pop(attempt, None)
+
+
+# -- interrupt exclusion -------------------------------------------------------
+# A hard interrupt is NOT non-blocking: the real agent waits on the compression commit fence,
+# which an in-flight commit holds with no timeout. It therefore runs outside every session lock,
+# and the exclusion admission needs — a successor must not clear the interrupt or reuse the agent
+# while an earlier attempt's stop is still landing on it — is carried by this claim, which is
+# waited on with no lock held.
+_INTERRUPT_HANDOFF_WAIT = 30.0
+
+
+def _claim_attempt_interrupt(session: dict, attempt: tuple | None) -> tuple:
+    """Register a hard interrupt in flight for ``attempt``. Call under ``history_lock``."""
+    claims = session.get("_turn_interrupt_claims")
+    if not isinstance(claims, list):
+        claims = session["_turn_interrupt_claims"] = []
+    claim = (attempt, threading.Event())
+    claims.append(claim)
+    return claim
+
+
+def _release_attempt_interrupt(session: dict, claim: tuple | None) -> None:
+    """Retire an interrupt claim and wake whatever is waiting on it."""
+    if claim is None:
+        return
+    with session["history_lock"]:
+        claims = session.get("_turn_interrupt_claims")
+        if isinstance(claims, list) and claim in claims:
+            claims.remove(claim)
+    claim[1].set()
+
+
+def _await_foreign_attempt_interrupts(
+    session: dict, attempt: tuple | None, timeout: float = _INTERRUPT_HANDOFF_WAIT) -> bool:
+    """Block — holding NO lock — until no interrupt for a different attempt is still landing.
+
+    ``False`` when one is still in flight at the deadline; the caller must then refuse rather than
+    admit a turn onto an agent another attempt's stop is about to interrupt."""
+    deadline = time.monotonic() + timeout
+    while True:
+        with session["history_lock"]:
+            pending = [
+                claim for claim in session.get("_turn_interrupt_claims") or []
+                if claim[0] != attempt]
+        if not pending:
+            return True
+        if (remaining := deadline - time.monotonic()) <= 0:
+            return False
+        for _stopped_attempt, done in pending:
+            done.wait(max(0.0, remaining))
+            remaining = deadline - time.monotonic()
+
+
+def _interrupt_session_turn(
+    sid: str, session: dict, *, request_id: str | None = None, attempt: tuple | None = None) -> bool:
     """Apply the shared ``session.interrupt`` contract to one claimed session; returns whether the compute-host control
-    channel was used. The WS orphan reaper reuses this so a dead client gets the same partial-history/queue semantics."""
+    channel was used. The WS orphan reaper reuses this so a dead client gets the same partial-history/queue semantics.
+
+    ``attempt`` names the exact turn this stop was raised for. Observation and the state it acts on are taken
+    together under the history lock, so a stop whose turn already finished cannot interrupt, dequeue or deny
+    approvals for the attempt that replaced it."""
     use_compute_host = _session_uses_compute_host(session)
-    should_interrupt = bool(session.get("running"))
-    run_thread_alive = False
+    with session["history_lock"]:
+        if not _turn_attempt_is_current(session, attempt):
+            return use_compute_host  # the observed turn is gone; its successor is not ours to touch
+        target = attempt if attempt is not None else session.get("_turn_attempt")
+        should_interrupt = bool(session.get("running"))
+        # Captured with the attempt: the record's agent may be replaced after this block.
+        agent = session.get("agent")
+        session_key = str(session.get("session_key") or "")
+        _latch_turn_cancel(session, target)
+        session["queued_prompt"] = None
+        session.pop("queued_prompts", None)
+        session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
+        # Claimed while this attempt is still proven current and held across the blocking interrupt
+        # below: it is what excludes a successor from clearing the interrupt or reusing this same
+        # agent while our stop is still landing on it. The lock cannot do that job — see below.
+        claim = None if use_compute_host else _claim_attempt_interrupt(session, target)
     if use_compute_host:
         # The host owns the live turn (parent `running` can lag a blocked tool), so let it decide. Gate on
         # `_compute_host_active`: HostSupervisor.interrupt() calls start(), so a lazy session would spawn a child to interrupt.
         if should_interrupt or session.get("_compute_host_active"):
             _get_compute_host_supervisor().interrupt(sid, request_id=request_id)
     else:
-        run_thread_alive = (rt := session.get("_run_thread")) is not None and rt.is_alive()
-    with session["history_lock"]:
-        session["_turn_cancel_requested"] = True
-        session["queued_prompt"] = None
-        session.pop("queued_prompts", None)
-        session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
-    if not use_compute_host:
-        if should_interrupt:
-            from agent.interrupt_compat import request_hard_interrupt
-            request_hard_interrupt(session.get("agent"))
-        if not run_thread_alive:
+        from agent.interrupt_compat import request_hard_interrupt
+        try:
+            if should_interrupt:
+                # OUTSIDE every session lock. The real agent's hard interrupt waits on
+                # `CompressionCommitFence.cancel_before_commit`, which an in-flight commit holds
+                # with no timeout, so running it under `history_lock` would block this session's
+                # readers, its finalizer and its admission for the whole commit. The claim taken
+                # above keeps the stop exclusive instead; this is not a check-unlock-act window.
+                request_hard_interrupt(agent)
+            # Read outside the lock, and re-read from the RECORD rather than from a handle captured
+            # before the interrupt: an accepted turn hands off from its readiness waiter to its
+            # real runner, so an earlier capture can be dead while the model turn runs.
+            published = session.get("_run_thread")
+            run_thread_alive = published is not None and published.is_alive()
+            # The effects this stop authorizes are applied under the same lock a successor must
+            # take to be admitted, so no attempt can slip in between the check and them. Each is
+            # non-blocking and never re-enters this lock: `_clear_pending` takes only
+            # `_prompt_lock` (whose holders never wait on a session) and approval resolution takes
+            # only the approval registry lock and signals events.
             with session["history_lock"]:
-                if session.get("running"):
-                    session["running"] = False
-                    _clear_inflight_turn(session)
+                if _turn_attempt_is_current(session, target):
+                    if (not run_thread_alive and not _attempt_run_is_live(session, target)
+                            and session.get("running")):
+                        session["running"] = False
+                        _clear_inflight_turn(session)
+                    _clear_pending(sid)
+                    with contextlib.suppress(Exception):
+                        from tools.approval import resolve_gateway_approval
+                        resolve_gateway_approval(session_key, "deny", resolve_all=True)
+        finally:
+            _release_attempt_interrupt(session, claim)
+        return use_compute_host
+    # Compute-host turns keep their out-of-band control channel (a child-process RPC, so never
+    # under the lock); hosted room attempts are refused on that transport upstream.
     _clear_pending(sid)
     with contextlib.suppress(Exception):
         from tools.approval import resolve_gateway_approval
-        resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
+        resolve_gateway_approval(session_key, "deny", resolve_all=True)
     return use_compute_host
 
 

@@ -95,6 +95,9 @@ import {
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify } from './group-turns'
+import { $hostedRooms, sendHostedInput } from './hosted-room-client'
+import { HostedRoomStatus } from './hosted-room-controls'
+import { hostedMembers, hostedTranscript, isHostedRoomKey } from './hosted-room-protocol'
 import { botsText, useBots } from './i18n'
 import { displayName, slugify, stripPreviewMarkdown } from './labels'
 import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
@@ -463,17 +466,23 @@ interface GroupChatWorkspaceProps {
   visible?: boolean
 }
 
-export function GroupChatWorkspace({ group, members, onBack, visible = true }: GroupChatWorkspaceProps) {
+export function GroupChatWorkspace({ group, members: legacyMembers, onBack, visible = true }: GroupChatWorkspaceProps) {
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
 
-  const room: GroupChatRoom = rooms[group] || {
-    log: [],
-    running: false
-  }
+  const hosted = useValue($hostedRooms)[group]
+  const isHosted = isHostedRoomKey(group)
+  const groupName = hosted?.name || group
+  const members = isHosted && hosted?.room ? hostedMembers(hosted.room) : legacyMembers
+  const projection = useMemo(() => hosted ? hostedTranscript(hosted) : null, [hosted])
 
-  const composerKey = groupComposerDraftKey(group, room)
+  const room: GroupChatRoom = isHosted
+    ? projection || { log: [], watermarks: {} }
+    : rooms[group] || { log: [], watermarks: {}, running: false }
+
+  const hostedDisabled = isHosted && (!hosted?.room || hosted.busy || Boolean(hosted.pending) || Boolean(hosted.error) || !hosted.capabilities?.driver)
+  const composerKey = isHosted ? group : groupComposerDraftKey(group, room)
   const composerKeyRef = useRef(composerKey)
   const [composerDraft, setComposerDraft] = useState(() => groupComposerDraftSnapshot(composerKey))
 
@@ -590,7 +599,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   const imagesFor = (thread: null | string) => pendingImages[thread ?? 'main'] || []
 
   const addImages = (thread: null | string, picked: Attachment[]) => {
-    if (!picked.length) {
+    if (isHosted || !picked.length) {
       return
     }
 
@@ -618,7 +627,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     }
 
     event.preventDefault()
-    void filesToGroupAttachments(files).then(picked => addImages(thread, picked))
+
+    if (!isHosted) {void filesToGroupAttachments(files).then(picked => addImages(thread, picked))}
   }
 
   // Drag & drop anywhere on the room drops into the ACTIVE composer — the
@@ -635,7 +645,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     }
 
     event.preventDefault()
-    void filesToGroupAttachments(files).then(picked => addImages(replyThread, picked))
+
+    if (!isHosted) {void filesToGroupAttachments(files).then(picked => addImages(replyThread, picked))}
   }
 
   // Collapsible Activity view: collapsed by default — opening it is always an
@@ -673,7 +684,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           <Codicon name="organization" />
         </span>
       )}
-      <div className="min-w-0 flex-1 truncate text-sm font-semibold">{group}</div>
+      <div className="min-w-0 flex-1 truncate text-sm font-semibold">{groupName}</div>
       <Tip label={memberNames}>
         <span
           aria-label={availabilityLabel}
@@ -687,7 +698,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             : b.group.memberCount(members.length)}
         </span>
       </Tip>
-      <Tip label={b.group.settingsHint(group)}>
+      {!isHosted ? <><Tip label={b.group.settingsHint(group)}>
         <Button
           aria-label={b.group.settingsLabel(group)}
           className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
@@ -708,7 +719,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         >
           <Codicon name="trash" />
         </Button>
-      </Tip>
+      </Tip></> : null}
     </div>
   )
 
@@ -802,7 +813,35 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     </div>
   )
 
+  const submitHosted = async (thread: string | null) => {
+    if (hostedDisabled) {return}
+    const key = composerKeyRef.current
+    const before = groupComposerDraftSnapshot(key)
+    const text = (thread ? before.replies[thread] : before.main)?.trim()
+
+    if (!text) {return}
+    const sent = await sendHostedInput(group, text, thread)
+
+    // Once durably queued, the pending-input panel owns retry. Do not leave
+    // the same text in the composer as a second, accidentally fresh send.
+    if ((sent || $hostedRooms.get()[group]?.pending?.text === text) && groupComposerDraftSnapshot(key).revision === before.revision) {
+      const next = updateGroupComposerDraft(key, current => ({
+        ...current,
+        main: thread ? current.main : '',
+        replies: thread ? { ...current.replies, [thread]: '' } : current.replies
+      }))
+
+      if (composerKeyRef.current === key) {setComposerDraft(next)}
+    }
+  }
+
   const submit = () => {
+    if (isHosted) {
+      void submitHosted(null)
+
+      return
+    }
+
     const text = draft.trim()
     const images = imagesFor(null)
 
@@ -841,6 +880,12 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   }
 
   const submitReply = (thread: string) => {
+    if (isHosted) {
+      void submitHosted(thread)
+
+      return
+    }
+
     const text = (replyDrafts[thread] || '').trim()
     const images = imagesFor(thread)
 
@@ -886,7 +931,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   const attachmentRow = (thread: null | string) => {
     const images = imagesFor(thread)
 
-    if (!images.length) {
+    if (isHosted || !images.length) {
       return null
     }
 
@@ -922,7 +967,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     )
   }
 
-  const attachButton = (thread: null | string) => (
+  const attachButton = (thread: null | string) => isHosted ? null : (
     <Button
       className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
       onClick={() => void pickGroupAttachments().then(picked => addImages(thread, picked))}
@@ -938,7 +983,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // One log entry, rendered exactly as before conversation folding existed.
   const renderEntry = (entry: GroupMessage, index: number) => {
     const isUser = entry.from.kind === 'user'
-    const meta = isUser || entry.from.source ? null : allMeta[entry.from.name]
+    const meta = isHosted || isUser || entry.from.source ? null : allMeta[entry.from.name]
 
     // Match this speaker back to its member descriptor so display
     // names and disambiguating handles come from the roster (the
@@ -961,7 +1006,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           meta
         )
 
-    const entryKey = `${entry.at}:${index}`
+    const entryKey = entry.id || `${entry.at}:${index}`
     const revealed = !isUser && revealedSpeaker === entryKey
 
     // Clicked: append the gateway name so same-named agents on
@@ -1182,7 +1227,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
               value={replyDrafts[id] || ''}
             />
             {attachButton(id)}
-            <Button disabled={!(replyDrafts[id] || '').trim() && !imagesFor(id).length} size="sm" type="submit">
+            <Button disabled={hostedDisabled || (!(replyDrafts[id] || '').trim() && !imagesFor(id).length)} size="sm" type="submit">
               {b.group.reply}
             </Button>
           </div>
@@ -1218,7 +1263,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         }
       }}
       onDragOver={event => {
-        if ([...(event.dataTransfer?.types || [])].includes('Files')) {
+        if (!isHosted && [...(event.dataTransfer?.types || [])].includes('Files')) {
           event.preventDefault()
           setDragOver(true)
         }
@@ -1234,12 +1279,12 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         </div>
       ) : null}
       {header}
-      <GroupHoldStatus
+      {!isHosted ? <GroupHoldStatus
         holds={room.holds}
         memberLabel={member => displayName(member, botRosterMeta(member, allMeta))}
         members={members}
-      />
-      {activityPanel}
+      /> : null}
+      {isHosted ? <HostedRoomStatus roomKey={group} visible={visible} /> : activityPanel}
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         <div className="grid gap-1.5 px-2.5 pb-2">
           {room.log.length
@@ -1249,7 +1294,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
                   {b.group.composerPlaceholder}
                 </div>
               ]}
-          {roomClarifies.map(entry => (
+          {!isHosted && roomClarifies.map(entry => (
             <GroupClarifyCard entry={entry} key={`clarify:${entry.memberKey}:${entry.requestId}`} members={members} />
           ))}
           {room.running ? (
@@ -1278,22 +1323,22 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           {attachmentRow(null)}
           <div className="flex items-center gap-1.5">
             <GroupMentionInput
-              aria-label={b.group.messageRoom(group)}
+              aria-label={b.group.messageRoom(groupName)}
               members={members}
               onChange={setDraft}
               onPaste={event => pasteImages(null, event)}
               onSubmitDraft={submit}
-              placeholder={b.group.newThreadPlaceholder(group)}
+              placeholder={b.group.newThreadPlaceholder(groupName)}
               value={draft}
             />
             {attachButton(null)}
-            <Button disabled={!draft.trim() && !imagesFor(null).length} size="sm" type="submit">
+            <Button disabled={hostedDisabled || (!draft.trim() && !imagesFor(null).length)} size="sm" type="submit">
               {b.group.newThread}
             </Button>
           </div>
         </form>
       </div>
-      <GroupChatSettingsDialog
+      {!isHosted ? <><GroupChatSettingsDialog
         group={group}
         members={members}
         onClose={() => setSettingsOpen(false)}
@@ -1326,7 +1371,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         }}
         open={confirmDisband}
         title={b.group.disbandTitle}
-      />
+      /></> : null}
     </div>
   )
 }
@@ -1353,7 +1398,7 @@ function GroupChatMainView({ group }: GroupChatMainViewProps) {
   const $visible = useMemo(
     () =>
       typeof host.paneVisibility === 'function'
-        ? host.paneVisibility(`plugin-workspace:${ID}:group:${slugify(group)}`)
+        ? host.paneVisibility(`plugin-workspace:${ID}:group:${isHostedRoomKey(group) ? encodeURIComponent(group) : slugify(group)}`)
         : atom(true),
     [group]
   )
@@ -1389,8 +1434,8 @@ export function openGroupChat(group: string): void {
 
   if (typeof host.openWorkspace === 'function') {
     try {
-      const close = host.openWorkspace(`${ID}:group:${slugify(group)}`, {
-        title: group,
+      const close = host.openWorkspace(`${ID}:group:${isHostedRoomKey(group) ? encodeURIComponent(group) : slugify(group)}`, {
+        title: $hostedRooms.get()[group]?.name || group,
         minWidth: '24rem',
         render: () => <GroupChatMainView group={group} />,
         onClose: () => {

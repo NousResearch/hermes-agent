@@ -61,14 +61,23 @@ def _authority(room: Mapping[str, Any]) -> tuple[str, int]:
     return str(room["authority_gateway_id"]), int(room["authority_epoch"])
 
 
+def _task_member_id(task: Mapping[str, Any]) -> str:
+    """The roster member one driver task belongs to (driver payload fallback order)."""
+    payload = task.get("payload") or {}
+    return str(payload.get("target_member_id") or payload.get("target_profile") or "")
+
+
 class HostedRoomService:
     """Own the hosted Discussion policy and its transport-free worker."""
 
     def __init__(
         self, server: ModuleType, *, db_path: Path | str | None = None,
+        profiles_root: Path | None = None,
         peer_routes: Mapping[tuple[str, str], PeerMemberRoute] | None = None,
         peer_clients: Mapping[Any, HostedRoomPeerClient] | None = None) -> None:
         self.server, self.db_path = server, Path(db_path or hosted_rooms.default_db_path())
+        # Room storage may live separately; discovery and native turn locks must agree.
+        self.profiles_root = Path(profiles_root) if profiles_root is not None else self.root
         hosted_rooms.prune_disbanded_rooms(self.db_path)
         self._policy_lock = threading.RLock()
         self._pending_actions: dict[tuple[str, str], dict[str, Any]] = {}
@@ -124,7 +133,7 @@ class HostedRoomService:
         return self.db_path.parent
 
     def local_profiles(self) -> tuple[str, ...]:
-        profiles, profiles_dir = {"default"}, self.root / "profiles"
+        profiles, profiles_dir = {"default"}, self.profiles_root / "profiles"
         if profiles_dir.is_dir():
             profiles.update(path.name for path in profiles_dir.iterdir() if path.is_dir())
         return tuple(sorted(profiles))
@@ -149,7 +158,7 @@ class HostedRoomService:
 
     def _turn_lock(self, profile: str) -> contextlib.AbstractContextManager[Path]:
         from tools.bot_relay import acquire_turn_lock
-        return acquire_turn_lock(self.root, profile)
+        return acquire_turn_lock(self.profiles_root, profile)
 
     def start(self) -> None:
         self.runtime.start()
@@ -398,6 +407,34 @@ class HostedRoomService:
                 "discussion_event_id": decision.discussion_event_id},
             authority_gateway_id=gateway_id, authority_epoch=epoch)
 
+    def _enforce_control_intent(self, snapshot: PolicySnapshot, room_id: str) -> bool:
+        """Cancel every surviving task the durable control log already forbids.
+
+        Run before the live-task early return, so a Stop that committed its room event and then
+        lost its process (crash, restart, or a cancellation that never reached the driver) is
+        replayed against the tasks it never got to cancel. Later user input is untouched: only
+        tasks behind the stop fence, or belonging to a member the user is holding, are cancelled.
+        Returns whether any task was asked to stop.
+        """
+        held = frozenset(snapshot.held_member_ids)
+        fence = snapshot.stopped_through_seq
+        requested = False
+        for task in list(self._list_tasks(room_id, _STOPPABLE_STATUSES)):
+            member_id = _task_member_id(task)
+            if int(task["payload"].get("source_event_seq") or 0) < fence:
+                cancel_id = f"stop-fence:{fence}"
+            elif member_id in held:
+                cancel_id = f"member-hold:{member_id}"
+            else:
+                continue
+            # A task the worker transitioned concurrently (settled, or already owned by another
+            # stop) raises here; its own terminal path stays authoritative and the next
+            # preparation re-reads whatever survived.
+            with contextlib.suppress(driver.DriverStateError):
+                self.runtime.cancel(task["identity"], cancel_id=cancel_id)
+                requested = True
+        return requested
+
     def prepare_room(self, binding: HostedRoomBinding) -> None:
         with self._policy_lock:
             room = self._room(binding.room_id)
@@ -408,20 +445,26 @@ class HostedRoomService:
             self.policy_checkpoint.compact_completed(room_id=binding.room_id)
             driver.prune_published_terminal_tasks(
                 self.db_path, room_id=binding.room_id, clock=self.runtime.clock)
+            # Enforcing control intent can terminalize tasks; publishing them here keeps their
+            # outcomes inside the discussion projection this pass may go on to complete.
+            if self._enforce_control_intent(snapshot, binding.room_id):
+                if self._publish_terminal_tasks(room):
+                    room = self._room(binding.room_id)
+                snapshot = self._policy_snapshot(room)
             if next(iter(self._list_tasks(binding.room_id, _LIVE_STATUSES)), None) is not None:
                 return
             decision = discussion.plan_next_task(
                 room, list(snapshot.events), local_profiles=self.local_profiles(),
-                initial_watermarks=snapshot.watermarks)
+                initial_watermarks=snapshot.watermarks,
+                held_member_ids=snapshot.held_member_ids)
             if decision.status == "task" and decision.task is not None:
                 driver.admit_task(
                     self.db_path, decision.task.identity, payload=decision.task.payload,
                     clock=time.time)
-                # A stop can race the policy read from another process: re-read after admission
-                # and cancel a task whose source event is now behind the room stop fence.
-                fence = self._policy_snapshot(self._room(binding.room_id)).stopped_through_seq
-                if decision.source_event_seq is not None and decision.source_event_seq < fence:
-                    self.runtime.cancel(decision.task.identity, cancel_id=f"stop-fence:{fence}")
+                # A stop or a hold can race the policy read from another process: re-read after
+                # admission and cancel a task the control log now forbids.
+                self._enforce_control_intent(
+                    self._policy_snapshot(self._room(binding.room_id)), binding.room_id)
             elif decision.status in {"settled", "bounded"}:
                 self._append_room_status(room, decision)
 
@@ -443,12 +486,18 @@ class HostedRoomService:
         self.runtime.wakeup()
         return room
 
-    def send(self, *, room_id: str, event_id: str, payload: Any) -> dict[str, Any]:
+    def send(
+        self, *, room_id: str, event_id: str, payload: Any, actor_id: str = "desktop"
+    ) -> dict[str, Any]:
+        """Accept a trusted caller's actor, never a public RPC-supplied identity."""
+        if (not isinstance(actor_id, str) or not actor_id.strip()
+                or len(actor_id) > hosted_rooms.MAX_ACTOR_ID_CHARS or actor_id != actor_id.strip()):
+            raise hosted_rooms.HostedRoomError("invalid actor_id")
         normalized = discussion.validate_user_payload(payload)
         gateway_id, epoch = self._owned_authority(room_id)
         event = hosted_rooms.append_event(
             self.db_path, room_id=room_id, event_id=event_id, kind="message.user",
-            actor={"kind": "user", "id": "desktop"}, payload=normalized,
+            actor={"kind": "user", "id": actor_id}, payload=normalized,
             authority_gateway_id=gateway_id, authority_epoch=epoch)
         binding = next((b for b in self.bindings() if b.room_id == room_id), None)
         if binding is None:
@@ -472,12 +521,38 @@ class HostedRoomService:
                 own_cancel_id = (
                     task.get("status") == "stopping" and str(task.get("cancel_id") or ""))
                 result = self.runtime.cancel(task["identity"], cancel_id=own_cancel_id or cancel_id)
-                if result["status"] == "stopping":
+                # "indeterminate" is a stop the driver could not prove: like "stopping" it must
+                # not read as work that finished.
+                if result["status"] in {"stopping", "indeterminate"}:
                     pending += 1
         if require_acknowledged and pending:
             raise RuntimeError("room work is still stopping; retry deletion after Stop completes")
         self.runtime.wakeup()
         return len(tasks)
+
+    def _member_holds(self, room_id: str):
+        """Durable manual holds, materialized through the room's current log position."""
+        room = self._room(room_id)
+        return self.policy_checkpoint.member_holds(
+            room_id=room_id, latest_seq=int(room["latest_seq"]))
+
+    def _hold_status(self, room_id: str) -> list[dict[str, Any]]:
+        """Held members for one room's status, labelled from the durable roster."""
+        try:
+            room = self._room(room_id)
+            holds = self._member_holds(room_id)
+        except hosted_rooms.HostedRoomError:
+            return []  # a room that no longer exists holds nobody
+        by_member = {
+            str(member.get("member_id") or ""): member
+            for member in (room.get("members") or []) if isinstance(member, Mapping)}
+        return [
+            {
+                "member_id": hold.member_id,
+                "handle": str(by_member.get(hold.member_id, {}).get("handle") or hold.member_id),
+                "display_name": str(by_member.get(hold.member_id, {}).get("display_name") or ""),
+                "held_at_seq": hold.held_at_seq}
+            for hold in holds if hold.held]
 
     def retry_room_task(self, room_id: str, *, task_id: str) -> dict[str, Any]:
         """Retry one uncertain or deferred task only after explicit user action."""
@@ -485,6 +560,12 @@ class HostedRoomService:
         task = next((c for c in candidates if c["identity"].task_id == task_id), None)
         if task is None:
             raise driver.InvalidTaskTransitionError("no retryable room task matches task_id")
+        # Retry is recovery of uncertain work, never a hold release: a held member's turn stays
+        # unscheduled until the user releases it with a message.
+        held = {hold.member_id for hold in self._member_holds(room_id) if hold.held}
+        if _task_member_id(task) in held:
+            raise driver.InvalidTaskTransitionError(
+                "this Group Chat member is paused; release it in the room before retrying")
         return self.runtime.retry_indeterminate(task["identity"])
 
     def approve_room_task(
@@ -545,6 +626,7 @@ class HostedRoomService:
             "blocked": room_id in runtime["blocked_rooms"]
             or bool(counts.get("indeterminate") or counts.get("stopping")),
             "counts": dict(counts), "pending_actions": pending_actions,
+            "holds": self._hold_status(room_id),
             "peer_routes": self._route_statuses(room_id)}
 
 

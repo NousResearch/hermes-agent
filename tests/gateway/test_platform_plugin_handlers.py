@@ -14,6 +14,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -42,6 +43,18 @@ def _make_ctx(name: str = "test_plugin") -> tuple[PluginManager, PluginContext]:
     manifest = PluginManifest(name=name, version="0.1.0", description="test")
     ctx = PluginContext(manifest=manifest, manager=mgr)
     return mgr, ctx
+
+
+def _async_noop():
+    async def _noop(*args, **kwargs):
+        return None
+    return _noop
+
+
+def _async_raise(exc: BaseException):
+    async def _raise(*args, **kwargs):
+        raise exc
+    return _raise
 
 
 def _make_adapter() -> TelegramAdapter:
@@ -220,6 +233,62 @@ class TestAdapterPluginWiring:
         with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
             adapter._wire_plugin_handlers(None)
         assert seen == [None]
+
+
+# ===========================================================================
+# A connect retry rebuilds the Application — plugin handlers must survive it
+# ===========================================================================
+
+class TestInitializeRetryRebuildRewiresPlugins:
+    """A failed connect attempt rebuilds the PTB Application from the same builder.
+
+    The rebuild has to re-wire plugin handlers exactly as ``connect`` does, and in the same order
+    (plugins BEFORE core, since PTB dispatches the first matching handler per group). Without it a
+    single transient connect failure silently drops every plugin-owned route — the platform stays
+    up and looks healthy while plugin-owned traffic never reaches its handler again.
+    """
+
+    @staticmethod
+    def _adapter_with_failing_first_attempt():
+        adapter = _make_adapter()
+        # OSError is the type the retry ladder always retries (`adapter.py:2821-2824`); a plain
+        # RuntimeError is reraised, which would never reach the rebuild under test.
+        adapter._app.initialize = _async_raise(OSError("transient init failure"))
+        return adapter
+
+    def test_rebuild_rewires_plugin_handlers_before_core(self):
+        adapter = self._adapter_with_failing_first_attempt()
+        rebuilt = MagicMock()
+        rebuilt.initialize = _async_noop()
+        builder = MagicMock()
+        builder.build.return_value = rebuilt
+        order: list[str] = []
+
+        with patch.object(
+            type(adapter), "_wire_plugin_handlers",
+            side_effect=lambda native: order.append("plugins"),
+        ), patch.object(
+            type(adapter), "_register_handlers",
+            side_effect=lambda native: order.append("core"),
+        ), patch("asyncio.sleep", _async_noop()):
+            asyncio.run(adapter._initialize_app_with_retries(builder))
+
+        assert adapter._app is rebuilt and adapter._bot is rebuilt.bot
+        assert order == ["plugins", "core"], (
+            "a rebuilt Application must re-wire plugin handlers, before core handlers")
+
+    def test_a_successful_first_attempt_does_not_rebuild(self):
+        adapter = _make_adapter()
+        adapter._app.initialize = _async_noop()
+        original = adapter._app
+        builder = MagicMock()
+
+        with patch.object(type(adapter), "_wire_plugin_handlers") as wire:
+            asyncio.run(adapter._initialize_app_with_retries(builder))
+
+        builder.build.assert_not_called()
+        wire.assert_not_called()
+        assert adapter._app is original
 
 
 # ===========================================================================

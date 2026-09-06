@@ -156,6 +156,22 @@ _SKILL = (
 # Gate unavailable — fail closed
 # ---------------------------------------------------------------------------
 
+_SKILL_MUTATIONS = (
+    ("create", {"content": _SKILL}),
+    ("edit", {"content": _SKILL}),
+    ("patch", {"old_string": "body", "new_string": "other"}),
+    ("delete", {}),
+    ("write_file", {"file_path": "references/a.md", "file_content": "x"}),
+    ("remove_file", {"file_path": "references/a.md"}),
+)
+
+_MEMORY_MUTATIONS = (
+    ("add", {"content": "should not be written", "old_text": None}),
+    ("replace", {"content": "new", "old_text": "old"}),
+    ("remove", {"content": None, "old_text": "old"}),
+)
+
+
 def _break_write_approval_import(monkeypatch):
     """Force ``from tools import write_approval`` to raise ImportError.
 
@@ -176,91 +192,127 @@ def _break_write_approval_import(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", fail_write_approval_import)
 
 
-def test_skill_gate_import_failure_fails_closed(hermes_home, tmp_path, monkeypatch):
-    """A missing write_approval module must refuse skill_manage, not write SKILL.md."""
-    from tools.skill_manager_tool import skill_manage
-
-    monkeypatch.setattr("tools.skill_manager_tool.SKILLS_DIR", tmp_path)
-    monkeypatch.setattr("agent.skill_utils.get_all_skills_dirs", lambda: [tmp_path])
-    _break_write_approval_import(monkeypatch)
-
-    result = json.loads(skill_manage(action="create", name="test-skill", content=_SKILL))
-
-    assert result["success"] is False
-    assert "approval gate is unavailable" in result["error"].lower()
-    assert not (tmp_path / "test-skill").exists()
-
-
-def test_skill_gate_evaluation_failure_fails_closed(hermes_home, tmp_path, monkeypatch):
-    """An exploding evaluator must return a tool error and leave the skill unwritten."""
-    from tools.skill_manager_tool import skill_manage
-
-    monkeypatch.setattr("tools.skill_manager_tool.SKILLS_DIR", tmp_path)
-    monkeypatch.setattr("agent.skill_utils.get_all_skills_dirs", lambda: [tmp_path])
-
+def _break_gate(monkeypatch, failure):
+    if failure == "import":
+        _break_write_approval_import(monkeypatch)
+        return
     def _boom(*_args, **_kwargs):
         raise RuntimeError("boom")
-
     monkeypatch.setattr("tools.write_approval.evaluate_gate", _boom)
 
-    result = json.loads(skill_manage(action="create", name="test-skill", content=_SKILL))
 
+def _assert_gate_unavailable(result):
     assert result["success"] is False
     assert "approval gate is unavailable" in result["error"].lower()
+
+
+def _patch_skill_dirs(monkeypatch, tmp_path):
+    monkeypatch.setattr("tools.skill_manager_tool.SKILLS_DIR", tmp_path)
+    monkeypatch.setattr("agent.skill_utils.get_all_skills_dirs", lambda: [tmp_path])
+
+
+@pytest.mark.parametrize("action,kwargs", _SKILL_MUTATIONS)
+@pytest.mark.parametrize("failure", ("import", "evaluate"))
+def test_skill_gate_unavailable_fails_closed(
+    hermes_home, tmp_path, monkeypatch, action, kwargs, failure,
+):
+    """Every skill mutation must refuse and write nothing when the gate is down."""
+    from tools import write_approval as wa
+    from tools.skill_manager_tool import skill_manage
+
+    _patch_skill_dirs(monkeypatch, tmp_path)
+    _break_gate(monkeypatch, failure)
+
+    result = json.loads(skill_manage(action=action, name="test-skill", **kwargs))
+
+    _assert_gate_unavailable(result)
     assert not (tmp_path / "test-skill").exists()
+    assert wa.pending_count("skills") == 0
 
 
-def test_memory_gate_import_failure_fails_closed(hermes_home, monkeypatch):
-    """A missing write_approval module must refuse a memory write, not persist it."""
+@pytest.mark.parametrize("failure", ("import", "evaluate"))
+def test_skill_batch_gate_unavailable_fails_closed(hermes_home, tmp_path, monkeypatch, failure):
+    """skill_manage(operations=...) calls _run_write_gate directly and must fail closed."""
+    from tools import write_approval as wa
+    from tools.skill_manager_tool import skill_manage
+
+    _patch_skill_dirs(monkeypatch, tmp_path)
+    _break_gate(monkeypatch, failure)
+
+    result = json.loads(skill_manage(
+        action="",
+        name="",
+        operations=[{"action": "create", "name": "test-skill", "content": _SKILL}],
+    ))
+
+    _assert_gate_unavailable(result)
+    assert not (tmp_path / "test-skill").exists()
+    assert wa.pending_count("skills") == 0
+
+
+def test_skill_approved_replay_still_writes_when_gate_import_fails(
+    hermes_home, tmp_path, monkeypatch,
+):
+    """``/skills approve`` bypasses the gate on purpose; a broken module must not
+    block an already-reviewed replay."""
+    from tools.skill_manager_tool import apply_skill_pending
+
+    _patch_skill_dirs(monkeypatch, tmp_path)
+    _break_write_approval_import(monkeypatch)
+
+    result = json.loads(apply_skill_pending({
+        "action": "create", "name": "test-skill", "content": _SKILL,
+    }))
+
+    assert result["success"] is True, result
+    assert (tmp_path / "test-skill" / "SKILL.md").is_file()
+
+
+@pytest.mark.parametrize("action,kwargs", _MEMORY_MUTATIONS)
+@pytest.mark.parametrize("target", ("user", "memory"))
+@pytest.mark.parametrize("failure", ("import", "evaluate"))
+def test_memory_gate_unavailable_fails_closed(
+    hermes_home, monkeypatch, action, kwargs, target, failure,
+):
+    """Every memory mutation, on both stores, must refuse and persist nothing."""
+    from tools import write_approval as wa
     from tools.memory_tool import MemoryStore, memory_tool
 
-    _break_write_approval_import(monkeypatch)
+    _break_gate(monkeypatch, failure)
     store = MemoryStore()
     store.load_from_disk()
 
-    result = json.loads(memory_tool("add", "user", "should not be written", store=store))
+    result = json.loads(memory_tool(action, target, store=store, **kwargs))
 
-    assert result["success"] is False
-    assert "approval gate is unavailable" in result["error"].lower()
+    _assert_gate_unavailable(result)
     assert store.user_entries == []
+    assert store.memory_entries == []
+    assert wa.pending_count("memory") == 0
 
 
-def test_memory_batch_gate_import_failure_fails_closed(hermes_home, monkeypatch):
+@pytest.mark.parametrize("target", ("user", "memory"))
+@pytest.mark.parametrize("failure", ("import", "evaluate"))
+def test_memory_batch_gate_unavailable_fails_closed(
+    hermes_home, monkeypatch, target, failure,
+):
     """Batch memory writes share _gate_or_stage and must fail closed the same way."""
+    from tools import write_approval as wa
     from tools.memory_tool import MemoryStore, memory_tool
 
-    _break_write_approval_import(monkeypatch)
+    _break_gate(monkeypatch, failure)
     store = MemoryStore()
     store.load_from_disk()
 
     result = json.loads(memory_tool(
-        target="user",
+        target=target,
         operations=[{"action": "add", "content": "should not be written"}],
         store=store,
     ))
 
-    assert result["success"] is False
-    assert "approval gate is unavailable" in result["error"].lower()
+    _assert_gate_unavailable(result)
     assert store.user_entries == []
-
-
-def test_memory_gate_evaluation_failure_fails_closed(hermes_home, monkeypatch):
-    """An exploding evaluator must refuse the memory write and leave the store empty."""
-    from tools.memory_tool import MemoryStore, memory_tool
-
-    def _boom(*_args, **_kwargs):
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr("tools.write_approval.evaluate_gate", _boom)
-    store = MemoryStore()
-    store.load_from_disk()
-
-    result = json.loads(memory_tool("add", "user", "should not be written", store=store))
-
-    assert result["success"] is False
-    assert "approval gate is unavailable" in result["error"].lower()
-    assert store.user_entries == []
-
+    assert store.memory_entries == []
+    assert wa.pending_count("memory") == 0
 
 # ---------------------------------------------------------------------------
 # Pending store CRUD

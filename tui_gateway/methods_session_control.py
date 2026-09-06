@@ -209,6 +209,25 @@ def _goal_blocks_loop_tick(session_key: str) -> bool:
     return goal_blocks_loop_tick(session_key)
 
 
+# Slash commands whose success changes the snapshot; ``command.dispatch`` (/goal, /loop built-ins) and the
+# slash worker (/heartbeat, /subgoal) both publish after these so the Desktop card never waits for a turn.
+_SESSION_CONTROL_SLASHES = frozenset({"goal", "heartbeat", "loop", "subgoal"})
+
+
+def _publish_session_control_snapshot(sid: str, session: dict | None) -> None:
+    """Best-effort ``session.control.update`` for one live session. Also called after the post-turn hooks,
+    because the goal judge and loop tick evaluation mutate persisted state AFTER ``message.complete`` — a
+    client refresh keyed on that event reads the pre-judge turn count."""
+    if not session or not (session_key := str(session.get("session_key") or "")):
+        return
+    try:
+        with _session_profile_runtime_scope(session):
+            control = _snapshot_control(session_key)
+        _emit("session.control.update", sid, {"control": control})
+    except Exception:
+        logger.debug("session.control.update publish failed for %s", sid, exc_info=True)
+
+
 @method("session.control.read")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
@@ -273,10 +292,12 @@ def _(rid, params: dict) -> dict:
         logger.debug("session.control snapshot after %s failed: %s", action, exc, exc_info=True)
         return _err(rid, 5031, f"session.control snapshot failed: {exc}")
 
-    try:
-        _emit("session.control.update", params.get("session_id") or "", {"control": control})
-    except Exception as exc:
-        logger.debug("session.control.update emit failed (best-effort): %s", exc, exc_info=True)
+    # command.dispatch already published the update for goal/loop actions; manager actions publish here.
+    if action not in _ACTION_COMMAND_MAP:
+        try:
+            _emit("session.control.update", params.get("session_id") or "", {"control": control})
+        except Exception as exc:
+            logger.debug("session.control.update emit failed (best-effort): %s", exc, exc_info=True)
     return _ok(rid, {"control": control, "dispatch": _dispatch_envelope(action_result)})
 
 

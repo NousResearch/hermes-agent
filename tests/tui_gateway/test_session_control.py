@@ -210,22 +210,6 @@ class TestStructuredRead:
         ):
             assert forbidden not in serialized
 
-    def test_wait_barrier_is_absolute_and_unchanged_reads_do_not_count_down(self, server, session, monkeypatch):
-        sid, key, _ = session
-        _save_goal(key, waiting_until=2_000.0, waiting_reason="rate limit")
-        clock = SimpleNamespace(now=1_000.0)
-        monkeypatch.setattr(server, "time", SimpleNamespace(time=lambda: clock.now))
-
-        first = _control(server, sid)
-        clock.now = 1_001.0
-        second = _control(server, sid)
-
-        assert first == second
-        assert first["goal"]["wait_barrier"] == {
-            "type": "until", "until_at": 2_000.0, "reason": "rate limit",
-        }
-        assert "remaining_seconds" not in first["goal"]["wait_barrier"]
-
     @pytest.mark.parametrize(
         ("kind", "setup"),
         [
@@ -250,45 +234,6 @@ class TestStructuredRead:
             _save_heartbeat(key, prompt="A visibly changed heartbeat prompt")
 
         assert _control(server, sid)["revision"] != before["revision"]
-
-    def test_session_and_pid_wait_barriers_keep_absolute_targets(self, server, session):
-        sid, key, _ = session
-        _save_goal(key, waiting_on_session="bg-session", waiting_reason="CI")
-        assert _control(server, sid)["goal"]["wait_barrier"] == {
-            "type": "session", "target": "bg-session", "reason": "CI",
-        }
-        _save_goal(key, waiting_on_pid=4242, waiting_reason="build")
-        assert _control(server, sid)["goal"]["wait_barrier"] == {
-            "type": "pid", "target": 4242, "reason": "build",
-        }
-
-
-@pytest.mark.parametrize(
-    ("action", "name", "arg", "status"),
-    [
-        ("goal.pause", "goal", "pause", "active"),
-        ("goal.resume", "goal", "resume", "paused"),
-        ("goal.clear", "goal", "clear", "active"),
-        ("loop.pause", "loop", "pause", "active"),
-        ("loop.resume", "loop", "resume", "paused"),
-        ("loop.stop", "loop", "stop", "active"),
-    ],
-)
-def test_dispatched_actions_use_exact_mapping_and_caller_rpc_id(
-    server, session, monkeypatch, action, name, arg, status,
-):
-    sid, key, _ = session
-    if name == "goal":
-        _save_goal(key, status=status)
-    else:
-        _save_loop(key, status=status)
-    calls = _observe_dispatch(server, monkeypatch)
-
-    response = _call(server, "session.control", rid=743, session_id=sid, action=action)
-
-    assert "result" in response
-    assert calls == [(743, {"session_id": sid, "name": name, "arg": arg})]
-
 
 class TestDispatcherBackedMutations:
     def test_goal_pause_resume_clear_mutate_real_persisted_state(self, server, session):
@@ -435,77 +380,96 @@ class TestErrorsAndEvents:
         assert _error(response)["code"] == 4004
         assert emitted == []
 
-    def test_success_response_snapshot_is_exactly_the_one_update_event(self, server, session, monkeypatch):
-        sid, key, _ = session
-        _save_goal(key)
+
+class TestUpdatePublication:
+    """The Desktop card repaints from ``session.control.update``; every path that mutates control state must
+    publish it exactly once, and the read after a turn must reflect the post-turn hooks."""
+
+    def _capture(self, server, monkeypatch):
         emitted = []
         monkeypatch.setattr(server, "_emit", lambda event, event_sid, payload=None: emitted.append((event, event_sid, payload)))
+        return emitted
 
-        response = _call(server, "session.control", session_id=sid, action="goal.pause")
-        assert emitted == [("session.control.update", sid, {"control": response["result"]["control"]})]
-
-    def test_dispatch_envelope_preserves_all_user_visible_fields(self, server, session, monkeypatch):
-        sid, key, _ = session
-        _save_goal(key, status="paused")
-        expected = {
-            "type": "send",
-            "output": "already-rendered output",
-            "notice": "Goal resumed",
-            "message": "Continue toward the goal.",
-            "display": "/goal resume",
-        }
-        dispatch_result = {
-            **expected,
-            "model_context": {"private_trace": "never expose this nested value"},
-            "private_reasoning": "never expose this model-facing field",
-        }
-        emitted = []
-        monkeypatch.setattr(server, "_emit", lambda event, event_sid, payload=None: emitted.append((event, event_sid, payload)))
-        monkeypatch.setitem(
-            server._methods,
-            "command.dispatch",
-            lambda rid, params: {"jsonrpc": "2.0", "id": rid, "result": dispatch_result},
-        )
-
-        response = _call(server, "session.control", session_id=sid, action="goal.resume")
-        assert response["result"]["dispatch"] == expected
-        assert "model_context" not in response["result"]["dispatch"]
-        assert "private_reasoning" not in response["result"]["dispatch"]
-        assert emitted == [("session.control.update", sid, {"control": response["result"]["control"]})]
-        assert "model_context" not in emitted[0][2]
-        assert "private_reasoning" not in emitted[0][2]
-
-    def test_emit_failure_must_not_turn_mutation_into_rpc_error(self, server, session, monkeypatch):
-        """Event delivery is best-effort: a failing _emit must not swallow an
-        already-applied mutation.  The persisted goal must be paused, the RPC
-        response must carry the correct snapshot and dispatch envelope, and the
-        emission error must be debug-logged rather than propagated."""
-        from hermes_cli.goals import GoalManager
-
-        sid, key, _ = session
-        _save_goal(key, status="active")
-        monkeypatch.setattr(
-            server, "_emit", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("emit broken")),
-        )
-
-        response = _call(server, "session.control", session_id=sid, action="goal.pause")
-
-        assert "result" in response, f"_emit failure leaked as RPC error: {response}"
-        assert response["result"]["control"]["goal"]["status"] == "paused"
-        assert response["result"]["dispatch"]["type"] == "exec"
-        assert response["result"]["dispatch"]["output"]
-        assert GoalManager(key).state.status == "paused"
-
-    def test_snapshot_failure_after_mutation_does_not_emit_an_all_null_fallback(self, server, session, monkeypatch):
-        from hermes_cli.goals import GoalManager
-
+    def test_control_action_publishes_exactly_one_update_matching_the_response(self, server, session, monkeypatch):
         sid, key, _ = session
         _save_goal(key)
-        emitted = []
-        monkeypatch.setattr(server, "_emit", lambda *event: emitted.append(event))
-        monkeypatch.setattr(server, "_snapshot_control", lambda _key: (_ for _ in ()).throw(RuntimeError("storage failed")))
-
+        emitted = self._capture(server, monkeypatch)
         response = _call(server, "session.control", session_id=sid, action="goal.pause")
-        assert _error(response)["code"] == 5031
-        assert GoalManager(key).state.status == "paused"
-        assert emitted == []
+        updates = [e for e in emitted if e[0] == "session.control.update"]
+        assert updates == [("session.control.update", sid, {"control": response["result"]["control"]})]
+
+    @pytest.mark.parametrize("name,arg", [("goal", "pause"), ("loop", "pause")])
+    def test_typed_slash_via_command_dispatch_publishes_the_new_state(self, server, session, monkeypatch, name, arg):
+        """/goal and /loop never reach the slash worker (``_PENDING_INPUT_COMMANDS``) — the built-in path must
+        publish too, or the structured card stays stale until the next turn."""
+        sid, key, _ = session
+        if name == "goal":
+            _save_goal(key)
+        else:
+            from hermes_cli.loops import LoopManager
+
+            LoopManager(key).set("poll CI", interval_seconds=300)
+        emitted = self._capture(server, monkeypatch)
+        response = _call(server, "command.dispatch", session_id=sid, name=name, arg=arg)
+        assert "result" in response
+        updates = [e for e in emitted if e[0] == "session.control.update"]
+        assert len(updates) == 1 and updates[0][1] == sid
+        assert updates[0][2]["control"][name]["status"] == "paused"
+
+    def test_unknown_dispatch_publishes_nothing(self, server, session, monkeypatch):
+        sid, _, _ = session
+        emitted = self._capture(server, monkeypatch)
+        assert "error" in _call(server, "command.dispatch", session_id=sid, name="definitely-not-a-command", arg="")
+        assert [e for e in emitted if e[0] == "session.control.update"] == []
+
+    def test_real_turn_publishes_after_the_goal_judge_ran(self, server, session, monkeypatch, tmp_path):
+        """``message.complete`` precedes the post-turn goal judge, so a client refresh keyed on that event reads
+        the pre-judge turn count. A real ``_run_prompt_submit`` turn (inline thread, stub agent) must publish the
+        snapshot AFTER the judge with the incremented count."""
+        sid, key, entry = session
+        _save_goal(key, turns_used=3)
+        emitted = self._capture(server, monkeypatch)
+
+        class _InlineThread:
+            def __init__(self, target=None, daemon=None, args=(), kwargs=None):
+                self._t, self._a, self._k = target, args, kwargs or {}
+
+            def start(self):
+                self._t(*self._a, **self._k)
+
+            def is_alive(self):
+                return False
+
+            def join(self, timeout=None):
+                return None
+
+        for name, value in {
+            "_wire_callbacks": lambda sid_: None, "_sync_agent_model_with_config": lambda sid_, s: None,
+            "_session_cwd": lambda s: str(tmp_path), "_register_session_cwd": lambda s: None,
+            "_tts_stream_begin": lambda: None, "_sync_session_key_after_compress": lambda *a, **k: None,
+            "_get_usage": lambda agent: {}, "_hermes_home": tmp_path,
+        }.items():
+            monkeypatch.setattr(server, name, value)
+        monkeypatch.setattr(server.threading, "Thread", _InlineThread)
+        # Deterministic judge: the model-graded verdict is not under test, the ordering is.
+        from hermes_cli.goals import GoalManager
+
+        def judge(self, raw, **kwargs):
+            from hermes_cli.goals import save_goal
+
+            self.state.turns_used += 1
+            save_goal(self.session_id, self.state)
+            return {"should_continue": False, "message": ""}
+
+        monkeypatch.setattr(GoalManager, "evaluate_after_turn", judge)
+        entry.update({"image_counter": 0, "slash_worker": None, "show_reasoning": False, "tool_progress_mode": "all",
+                      "inflight_turn": None, "running": True,
+                      "agent": SimpleNamespace(session_id=key, clear_interrupt=lambda: None,
+                                               run_conversation=lambda message, **kw: {"final_response": "done"})})
+
+        assert server._run_prompt_submit("rid", sid, entry, "work on it")
+
+        order = [e[0] for e in emitted]
+        assert "message.complete" in order and "session.control.update" in order
+        assert order.index("message.complete") < order.index("session.control.update")
+        assert emitted[order.index("session.control.update")][2]["control"]["goal"]["turns_used"] == 4

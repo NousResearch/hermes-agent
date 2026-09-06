@@ -513,6 +513,13 @@ def safe_url_for_log(url: str, max_len: int = 80) -> str:
     return "." * max_len if max_len <= 3 else f"{safe[:max_len - 3]}..."
 
 
+def sanitize_remote_image_url_for_plaintext(url: str) -> str:
+    """Mask credential-bearing URL fields only at a visible image fallback."""
+    from agent.redact import redact_sensitive_text
+
+    return redact_sensitive_text(url, force=True, redact_url_credentials=True)
+
+
 async def _ssrf_redirect_guard(response):
     """Re-validate each redirect target (a public URL 302-ing to http://169.254.169.254/ would
     bypass the pre-flight is_safe_url()). Async because httpx awaits response event hooks."""
@@ -1797,6 +1804,9 @@ _strip_media_directives = _strip_media_tag_directives
 class BasePlatformAdapter(ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
+    # Native image transports may consume signed URLs intact; their plaintext
+    # fallbacks must sanitize the URL before exposing it as message text.
+    supports_native_remote_images: bool = False
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare
     # fenced terminal command; plain-text platforms get the preview).
     supports_code_blocks: bool = False
@@ -2612,6 +2622,9 @@ class BasePlatformAdapter(ABC):
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
             try:
+                if (urlsplit(image_url).scheme.lower() in {"http", "https"}
+                        and self.supports_native_remote_images is not True):
+                    image_url = sanitize_remote_image_url_for_plaintext(image_url)
                 logger.info("[%s] Sending image: %s (alt=%s)", self.name,
                             safe_url_for_log(image_url), alt_text[:30] if alt_text else "")
                 if image_url.startswith("file://"):
@@ -2638,6 +2651,7 @@ class BasePlatformAdapter(ABC):
         self, chat_id: str, image_url: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an image natively; default falls back to sending the URL as text."""
+        image_url = sanitize_remote_image_url_for_plaintext(image_url)
         text = f"{caption}\n{image_url}" if caption else image_url
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 

@@ -718,6 +718,9 @@ class EmailAdapter(BasePlatformAdapter):
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an image URL as part of an email body (``metadata`` unused)."""
+        from gateway.platforms.base import sanitize_remote_image_url_for_plaintext
+
+        image_url = sanitize_remote_image_url_for_plaintext(image_url)
         return await self.send(chat_id, f"{caption or ''}\n\nImage: {image_url}".strip(), reply_to)
 
     async def send_multiple_images(self, chat_id: str, images: List[Tuple[str, str]],
@@ -731,7 +734,9 @@ class EmailAdapter(BasePlatformAdapter):
             if alt_text:
                 body_parts.append(alt_text)
             if not image_url.startswith("file://"):
-                body_parts.append(f"Image: {image_url}")  # parity with send_image
+                from gateway.platforms.base import sanitize_remote_image_url_for_plaintext
+
+                body_parts.append(f"Image: {sanitize_remote_image_url_for_plaintext(image_url)}")
             elif Path(local_path := _unquote(image_url[7:])).exists():
                 local_paths.append(local_path)
             else:

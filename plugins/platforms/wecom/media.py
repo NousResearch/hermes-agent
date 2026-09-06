@@ -325,6 +325,9 @@ class WeComMediaMixin:
         if result.success or not self._looks_like_url(image_url):
             return result
         logger.warning("[%s] Falling back to text send for image URL %s: %s", self.name, image_url, result.error)
+        from gateway.platforms.base import sanitize_remote_image_url_for_plaintext
+
+        image_url = sanitize_remote_image_url_for_plaintext(image_url)
         return await self.send(chat_id=chat_id, content=f"{caption}\n{image_url}" if caption else image_url, reply_to=reply_to)
 
     async def send_image_file(self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:

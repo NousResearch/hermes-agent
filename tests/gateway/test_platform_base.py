@@ -1619,3 +1619,80 @@ class TestPlatformLockTakeoverGovernance:
         assert adapter._acquire_platform_lock("discord-token", "tok", "Discord") is False
         assert len(takeover_calls) == 1
         assert adapter._platform_lock_takeover_attempted is True
+
+
+class _PlaintextImageFallbackAdapter(BasePlatformAdapter):
+    """Exercise BasePlatformAdapter.send_image's plaintext URL fallback."""
+
+    name = "plaintext-image-fallback"
+
+    def __init__(self):
+        self.sent = []
+
+    async def connect(self, *, is_reconnect: bool = False):
+        return True
+
+    async def disconnect(self):
+        return None
+
+    async def send(self, chat_id, content, reply_to=None, **kwargs):
+        self.sent.append(content)
+        return SendResult(success=True)
+
+    async def get_chat_info(self, chat_id):
+        return {}
+
+
+class _NativeImageAdapter(_PlaintextImageFallbackAdapter):
+    supports_native_remote_images = True
+
+    def __init__(self):
+        super().__init__()
+        self.sent_images = []
+
+    async def send_image(self, chat_id, image_url, caption=None, **kwargs):
+        self.sent_images.append((chat_id, image_url, caption))
+        return SendResult(success=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scheme", ["https", "HTTPS"])
+@pytest.mark.parametrize(
+    "query_key",
+    ["token", "to%6ben", "%74oken", "X-Amz-Signature"],
+)
+async def test_plaintext_image_fallback_sanitizes_signed_url(scheme, query_key):
+    adapter = _PlaintextImageFallbackAdapter()
+    signed_url = (
+        f"{scheme}://example.com/image.png"
+        f"?{query_key}=opaqueImageCredential123&width=1024"
+    )
+
+    await adapter.send_multiple_images("chat1", [(signed_url, "preview")])
+
+    assert len(adapter.sent) == 1
+    assert "opaqueImageCredential123" not in adapter.sent[0]
+    assert f"{query_key}=***" in adapter.sent[0]
+
+
+@pytest.mark.asyncio
+async def test_explicit_native_image_transport_preserves_signed_url():
+    adapter = _NativeImageAdapter()
+    signed_url = (
+        "https://example.com/image.png"
+        "?X-Amz-Signature=opaqueImageCredential123&width=1024"
+    )
+
+    await adapter.send_multiple_images("chat1", [(signed_url, "preview")])
+
+    assert adapter.sent_images == [("chat1", signed_url, "preview")]
+
+
+@pytest.mark.asyncio
+async def test_malformed_remote_image_does_not_abort_remaining_batch():
+    adapter = _PlaintextImageFallbackAdapter()
+    await adapter.send_multiple_images("chat1", [
+        ("https://[invalid/private.png?token=opaqueImageCredential", "bad"),
+        ("https://example.com/valid.png", "good"),
+    ])
+    assert adapter.sent == ["good\nhttps://example.com/valid.png"]

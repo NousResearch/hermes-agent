@@ -286,3 +286,20 @@ async def test_download_routes_auth_decision_through_is_relay_media_url(monkeypa
     assert await c.download("https://cdn.discordapp.com/attachments/1/2/i.png")
     assert asked[-1] == "https://cdn.discordapp.com/attachments/1/2/i.png"
     assert len(seen) == 1 and "Authorization" not in seen[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native", [True, False])
+async def test_batch_signed_url_preserves_only_native_transport(native):
+    ops = ("send", "edit", "typing", "get_chat_info") + (("send_media",) if native else ())
+    adapter, stub, _ = _adapter(supported_ops=ops)
+    url = "https://images.example/x.png?X-Amz-Signature=opaqueImageSecret"
+    await adapter.send_multiple_images("chat1", [(url, "preview")])
+    action = stub.sent[-1]
+    if native:
+        assert action["op"] == "send_media"
+        assert action["source_url"] == url
+    else:
+        assert action["op"] == "send"
+        assert "opaqueImageSecret" not in action["content"]
+        assert "X-Amz-Signature=***" in action["content"]

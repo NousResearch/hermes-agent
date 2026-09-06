@@ -163,6 +163,141 @@ class TestRunBackgroundTask:
         mock_agent_instance.close.assert_called_once()
 
 
+    @pytest.mark.asyncio
+    async def test_background_image_url_default_fallback_never_exposes_secret(
+        self, monkeypatch
+    ):
+        """Every image fallback receives a credential-free URL."""
+        from gateway.platforms.base import BasePlatformAdapter
+
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        runner = _make_runner()
+        secret = "opaqueBackgroundImageUrlCredential123"
+        image_url = f"https://example.test/image.png?token={secret}"
+        raw_response = f"![chart]({image_url})"
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock(
+            return_value=MagicMock(success=True, message_id="msg-1")
+        )
+
+        async def default_image_fallback(**kwargs):
+            return await BasePlatformAdapter.send_image(mock_adapter, **kwargs)
+
+        mock_adapter.send_image = AsyncMock(side_effect=default_image_fallback)
+        mock_adapter.extract_media = MagicMock(return_value=([], raw_response))
+        mock_adapter.extract_images = MagicMock(
+            return_value=([(image_url, "chart")], "")
+        )
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            return_value={"api_key": "test-key"},
+        ), patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.return_value = {
+                "final_response": raw_response,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("make image", source, "bg_test")
+
+        delivered_url = mock_adapter.send_image.call_args.kwargs["image_url"]
+        fallback_text = mock_adapter.send.call_args.kwargs["content"]
+        assert secret not in delivered_url
+        assert secret not in fallback_text
+        assert "token=***" in fallback_text
+
+
+    @pytest.mark.asyncio
+    async def test_background_clean_image_url_is_preserved(self):
+        """Credential-free image URLs keep native delivery behavior."""
+        runner = _make_runner()
+        image_url = "https://example.test/image.png?size=large"
+        raw_response = f"![chart]({image_url})"
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.send_image = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], raw_response))
+        mock_adapter.extract_images = MagicMock(
+            return_value=([(image_url, "chart")], "")
+        )
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            return_value={"api_key": "test-key"},
+        ), patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.return_value = {
+                "final_response": raw_response,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("make image", source, "bg_test")
+
+        assert mock_adapter.send_image.call_args.kwargs["image_url"] == image_url
+
+
+    @pytest.mark.asyncio
+    async def test_background_native_image_fetch_preserves_signed_url(self):
+        """Native fetch needs the raw signature; plaintext fallback does not."""
+        runner = _make_runner()
+        secret = "opaqueNativeImageSignature123"
+        image_url = f"https://example.test/image.png?token={secret}"
+        raw_response = f"![chart]({image_url})"
+        mock_adapter = AsyncMock()
+        mock_adapter.supports_native_remote_images = True
+        mock_adapter.send = AsyncMock()
+        mock_adapter.send_image = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], raw_response))
+        mock_adapter.extract_images = MagicMock(
+            return_value=([(image_url, "chart")], "")
+        )
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            return_value={"api_key": "test-key"},
+        ), patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.return_value = {
+                "final_response": raw_response,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("make image", source, "bg_test")
+
+        assert mock_adapter.send_image.call_args.kwargs["image_url"] == image_url
+
+
 # ---------------------------------------------------------------------------
 # /bg in help and known_commands
 # ---------------------------------------------------------------------------

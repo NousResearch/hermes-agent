@@ -97,6 +97,8 @@ def _event_ids(event) -> Tuple[Optional[str], Optional[str]]:
 class RelayAdapter(BasePlatformAdapter):
     """Generic relay adapter advertising a connector-negotiated capability profile."""
 
+    supports_native_remote_images = True
+
     def __init__(
         self,
         config: PlatformConfig,

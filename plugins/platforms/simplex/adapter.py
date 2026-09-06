@@ -94,6 +94,8 @@ async def _cancel_task(task: Optional[asyncio.Task]) -> None:
 class SimplexAdapter(BasePlatformAdapter):
     """SimpleX Chat adapter using the simplex-chat daemon WebSocket API."""
 
+    supports_native_remote_images = True
+
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
 
     def __init__(self, config: PlatformConfig, **kwargs):

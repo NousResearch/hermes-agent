@@ -856,6 +856,8 @@ class SlackAdapter(BasePlatformAdapter):
     Needs SLACK_BOT_TOKEN (xoxb-, API calls) and SLACK_APP_TOKEN (xapp-, Socket Mode). DMs +
     mention-gated channels, threads, attachments, slash commands, status text."""
 
+    supports_native_remote_images = True
+
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
     supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
     # Typing indicator is a text status line (assistant.threads.setStatus): fed live phrases.
@@ -3183,6 +3185,9 @@ class SlackAdapter(BasePlatformAdapter):
             logger.warning(
                 "[Slack] Failed to upload image from URL %s, falling back to text: %s",
                 safe_url_for_log(image_url), e, exc_info=True)
+            from gateway.platforms.base import sanitize_remote_image_url_for_plaintext
+
+            image_url = sanitize_remote_image_url_for_plaintext(image_url)
             # Fall back to sending the URL as text
             text = f"{caption}\n{image_url}" if caption else image_url
             return await self.send(

@@ -97,6 +97,8 @@ _AUDIO_URL_EXTENSIONS = {".silk", ".amr", ".mp3", ".wav", ".ogg", ".m4a", ".aac"
 class QQAdapter(BasePlatformAdapter):
     """QQ Bot adapter backed by the official QQ Bot WebSocket Gateway + REST API."""
 
+    supports_native_remote_images = True
+
     # QQ Bot API does not support editing sent messages.
     SUPPORTS_MESSAGE_EDITING = False
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
@@ -1525,6 +1527,9 @@ class QQAdapter(BasePlatformAdapter):
         if result.success or not self._is_url(image_url):
             return result
         logger.warning("[%s] Image send failed, falling back to text: %s", self._log_tag, result.error)
+        from gateway.platforms.base import sanitize_remote_image_url_for_plaintext
+
+        image_url = sanitize_remote_image_url_for_plaintext(image_url)
         fallback = f"{caption}\n{image_url}" if caption else image_url
         return await self.send(chat_id=chat_id, content=fallback, reply_to=reply_to)
 

@@ -38,6 +38,74 @@ logger = logging.getLogger(__name__)
 # Crash-recovery checkpoint (gateway only)
 CHECKPOINT_PATH = get_hermes_home() / "processes.json"
 
+# Durable "completion consumed" markers. ``_completion_consumed`` is a
+# per-process in-memory set, but Hermes runs several processes against the
+# same profile home (webui server, gateway, CLI, delegate_task subprocesses):
+# a completion consumed in one process (e.g. a subagent that called
+# ``process wait``) stayed invisible to the others, and a restart wiped the
+# set entirely — both observed producing duplicate wakeup deliveries hours
+# later. Each consumed completion therefore also drops a tiny marker file
+# here; ``is_completion_consumed`` falls back to the marker so the answer
+# survives restarts and crosses process boundaries. Markers are reaped after
+# CONSUMED_MARKER_TTL_SECONDS so the directory stays bounded.
+CONSUMED_MARKER_DIR = get_hermes_home() / "processes-consumed"
+CONSUMED_MARKER_TTL_SECONDS = 7 * 86400  # 7 days — must outlive any stale re-delivery window
+
+_CONSUMED_ID_ALLOWED = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"
+)
+
+
+def _consumed_marker_path(session_id):
+    """Return the durable consumed-marker path for *session_id* (None if unsafe)."""
+    sid = str(session_id or "")
+    if not sid or any(c not in _CONSUMED_ID_ALLOWED for c in sid):
+        return None
+    return CONSUMED_MARKER_DIR / (sid + ".consumed")
+
+
+def _consumed_marker_exists(session_id) -> bool:
+    """Whether a durable consumed marker exists for *session_id* (best-effort)."""
+    try:
+        path = _consumed_marker_path(session_id)
+        return bool(path is not None and path.exists())
+    except OSError:
+        return False
+
+
+def _write_consumed_marker(session_id) -> None:
+    """Best-effort durable record that *session_id*'s completion was consumed.
+
+    Fresh content on every call keeps the file mtime authoritative for the
+    TTL sweep. Never raises into registry hot paths.
+    """
+    try:
+        path = _consumed_marker_path(session_id)
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps({"session_id": str(session_id), "consumed_at": time.time()})
+        path.write_text(payload, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _sweep_consumed_markers(now=None) -> None:
+    """Best-effort TTL sweep of stale durable consumed markers."""
+    try:
+        if not CONSUMED_MARKER_DIR.is_dir():
+            return
+        cutoff = (now if now is not None else time.time()) - CONSUMED_MARKER_TTL_SECONDS
+        for path in CONSUMED_MARKER_DIR.glob("*.consumed"):
+            try:
+                if path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
+            except OSError:
+                continue
+    except OSError:
+        pass
+
+
 MAX_OUTPUT_CHARS = 200_000      # rolling output buffer
 FINISHED_TTL_SECONDS = 1800     # keep finished processes 30 minutes
 MAX_PROCESSES = 64              # max tracked processes (LRU pruning)
@@ -1202,9 +1270,26 @@ class ProcessRegistry:
 
     # ----- Query Methods -----
 
+    def _mark_completion_consumed(self, session_id: str) -> None:
+        """Record completion consumption in-memory AND durably (marker file).
+
+        The durable marker makes the answer visible to the other Hermes
+        processes sharing this profile home (webui server, gateway, CLI,
+        delegate_task subprocesses) and survives restarts.
+        """
+        self._completion_consumed.add(session_id)
+        _write_consumed_marker(session_id)
+
     def is_completion_consumed(self, session_id: str) -> bool:
-        """Check if a completion notification was already consumed via wait/log."""
-        return session_id in self._completion_consumed
+        """Check if a completion notification was already consumed via wait/log.
+
+        Falls back to the durable marker file so completions consumed by
+        another Hermes process (or before a restart) stay suppressed.
+        """
+        return (
+            session_id in self._completion_consumed
+            or _consumed_marker_exists(session_id)
+        )
 
     def is_session_waiting(self, session_id: str) -> bool:
         """Whether a goal loop (``hermes_cli.goals`` wait barrier) should stay parked on
@@ -1524,7 +1609,7 @@ class ProcessRegistry:
             **self._status_head(session), "output": "\n".join(selected),
             "total_lines": total_lines, "showing": f"{len(selected)} lines"}
         if session.exited and observed_completion_output:
-            self._completion_consumed.add(session_id)
+            self._mark_completion_consumed(session.id)
         return result
 
     def wait(self, session_id: str, timeout: int = None) -> dict:
@@ -1557,7 +1642,7 @@ class ProcessRegistry:
             self._reconcile_local_exit(session)  # orphaned-pipe reader guard
             result = None
             if session.exited:
-                self._completion_consumed.add(session_id)
+                self._mark_completion_consumed(session.id)
                 result = self._exit_snapshot(session, "exited")
             elif _is_interrupted():
                 result = {
@@ -1621,7 +1706,7 @@ class ProcessRegistry:
             # Only suppress the autonomous turn after its output is present in
             # the explicit kill result, matching wait/log consumption.
             if consume_output:
-                self._completion_consumed.add(session_id)
+                self._mark_completion_consumed(session.id)
             return result
         try:
             early = self._signal_kill(session, session_id, consume_output)
@@ -1636,7 +1721,7 @@ class ProcessRegistry:
             with session._lock:
                 output = _output_tail(session, 2000)
                 if consume_output:
-                    self._completion_consumed.add(session_id)
+                    self._mark_completion_consumed(session.id)
                 session.exited = True
                 session.exit_code = -15  # SIGTERM
                 session.completion_reason = "killed"
@@ -1680,7 +1765,7 @@ class ProcessRegistry:
                     session.exit_code = None
                     output = _output_tail(session, 2000)
                 if consume_output:
-                    self._completion_consumed.add(session_id)
+                    self._mark_completion_consumed(session.id)
                 self._move_to_finished(session)
                 return {"status": "already_exited", "exit_code": session.exit_code, "output": output}
             self._terminate_host_pid(session.pid, session.host_start_time)
@@ -1892,6 +1977,12 @@ class ProcessRegistry:
         self._completion_consumed &= tracked
         self._poll_observed &= tracked
 
+        # Durable consumed markers carry their own TTL: they must survive the
+        # 30-minute finished-session TTL above (their whole point is to keep
+        # suppressing stale re-deliveries after restarts), so they are reaped
+        # on their own schedule instead of with the session dicts.
+        _sweep_consumed_markers(now)
+
     # ----- Checkpoint (crash recovery) -----
 
     def _write_checkpoint(self, extra_entries: Optional[List[Dict[str, Any]]] = None):
@@ -1925,6 +2016,7 @@ class ProcessRegistry:
     def recover_from_checkpoint(self) -> int:
         """On gateway startup, probe PIDs from the checkpoint file; returns how many
         were recovered as detached sessions."""
+        _sweep_consumed_markers()
         if not CHECKPOINT_PATH.exists():
             return 0
         try:

@@ -133,11 +133,14 @@ THREAT_PATTERNS = [
      "read_secrets_file", "critical", "exfiltration", "reads known secrets file"),
     # ── Exfiltration: programmatic env access ──
     (r'printenv|env\s*\|', "dump_all_env", "high", "exfiltration", "dumps all environment variables"),
-    # Bare `os.environ` (dump/iteration) is suspicious; ANY `.get("<name>")` form is exempt — plain config
-    # reads, with secret-shaped names scored medium by python_environ_get_secret below (a blanket high here
-    # would swamp that). `^[^#\n]*` skips lines with a '#' anywhere before it (full-line or inline comment);
-    # scan_file()'s docstring pre-filter skips triple-quoted prose.
-    (r'^[^#\n]*os\.environ\b(?!\s*\.get\s*\()',
+    # Bare `os.environ` (dump/iteration) is suspicious; `.get("<literal-name>")` forms are exempt — plain
+    # config reads, with secret-shaped literal names scored medium by python_environ_get_secret below (a
+    # blanket high here would swamp that). The exemption requires a literal string immediately inside the
+    # parens (`["\']`); `.get(some_var)` with a *dynamic* key is NOT exempt — a variable key can point at
+    # any name at runtime (e.g. a loop harvesting every entry in a list of secret names), so it keeps
+    # scoring high here same as bare os.environ access. `^[^#\n]*` skips lines with a '#' anywhere before
+    # it (full-line or inline comment); scan_file()'s docstring pre-filter skips triple-quoted prose.
+    (r'^[^#\n]*os\.environ\b(?!\s*\.get\s*\(\s*["\'])',
      "python_os_environ", "high", "exfiltration", "accesses os.environ outside comments/docstrings (potential env dump)"),
     (r'os\.environ\s*\.get\s*\(\s*["\'][^"\']*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)',
      "python_environ_get_secret", "medium", "exfiltration", "reads secret via os.environ.get() (normal API-key access; informational)"),
@@ -380,7 +383,13 @@ def _unicode_char_name(char: str) -> str:
 def _compute_docstring_lines(lines: list) -> set:
     """1-indexed lines inside or on the boundary of triple-quoted strings (opening, interior, closing, and
     one-line docstrings), so ``os.environ`` in prose is not scored. Heuristic: a triple quote inside a string
-    literal is miscounted, but the common false-positive shapes are covered."""
+    literal is miscounted, but the common false-positive shapes are covered.
+
+    Callers must scope use of this result to ``_DOCSTRING_EXEMPT_PATTERN_IDS`` (currently just
+    ``python_os_environ``) rather than skipping every threat pattern inside a docstring — most patterns here
+    (destructive commands, exfiltration sinks, reverse shells, ...) are exactly the kind of payload an
+    attacker would wrap in a triple-quoted string specifically to evade detection, so a blanket skip would
+    defeat the scanner for those."""
     doc_lines: set = set()
     inside = False
     for i, line in enumerate(lines, start=1):
@@ -389,6 +398,14 @@ def _compute_docstring_lines(lines: list) -> set:
         if was_in or inside or any(counts):
             doc_lines.add(i)
     return doc_lines
+
+
+# Pattern IDs allowed to skip lines inside triple-quoted strings. Only python_os_environ was ever designed
+# around docstring/prose false positives (see its comment above and _compute_docstring_lines' docstring) —
+# every other pattern must keep firing inside a docstring, since wrapping a real payload (rm -rf, curl|sh, a
+# reverse shell, ...) in a triple-quoted string is itself a plausible detection-evasion technique, not a
+# false positive.
+_DOCSTRING_EXEMPT_PATTERN_IDS = frozenset({"python_os_environ"})
 
 
 def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
@@ -405,7 +422,9 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     docstring_lines = _compute_docstring_lines(lines)  # so code patterns don't fire on prose
     for pattern, pid, severity, category, description in _COMPILED_THREAT_PATTERNS:
         for i, line in enumerate(lines, start=1):
-            if i not in docstring_lines and pattern.search(line):
+            if pid in _DOCSTRING_EXEMPT_PATTERN_IDS and i in docstring_lines:
+                continue
+            if pattern.search(line):
                 text = line.strip()
                 findings.append(Finding(pid, severity, category, rel_path, i,
                                         text if len(text) <= 120 else text[:117] + "...", description))

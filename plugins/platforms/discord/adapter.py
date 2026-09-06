@@ -6218,6 +6218,16 @@ def _component_check_auth(
             return False
         if user_role_ids & role_set:
             return True
+    # DISCORD_ALLOWED_CHANNELS: a validated channel context alone can also authorize a click,
+    # mirroring the channel-scoped fallback in _is_allowed_user.
+    allowed_channels = {c.strip() for c in _scoped_gate_env("DISCORD_ALLOWED_CHANNELS").split(",") if c.strip()}
+    if allowed_channels:
+        channel_id = str(
+            getattr(interaction, "channel_id", None)
+            or getattr(getattr(interaction, "channel", None), "id", "")
+            or "")
+        if channel_id and ("*" in allowed_channels or channel_id in allowed_channels):
+            return True
     # Pairing store (mirrors ``authz_mixin._check_authorization``): paired users click without allowlist.
     if uid:
         try:

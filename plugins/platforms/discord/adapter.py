@@ -1328,6 +1328,13 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         # Threads the bot participated in (no @mention needed there); persisted across restarts.
         self._threads = ThreadParticipationTracker("discord")
         self._semantic_thread_renames = SemanticThreadRenames()
+        # Bot-to-bot loop guard: timestamps of accepted bot-authored messages per channel.
+        # Two agents that @mention each other can otherwise ping-pong forever; this caps
+        # the exchange rate per rolling window (DISCORD_BOT_EXCHANGE_LIMIT / _WINDOW).
+        self._bot_exchange_times: Dict[str, List[float]] = defaultdict(list)
+        # Set when Discord rejects the Server Members privileged intent so the next
+        # connect() attempt drops it instead of failing to come online at all.
+        self._members_intent_blocked: bool = False
         # Persistent typing loops per channel (DMs don't reliably show bot typing events).
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
@@ -1512,9 +1519,19 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             intents.message_content = True
             intents.dm_messages = True
             intents.guild_messages = True
-            intents.members = _needs_server_members_intent(
-                self._allowed_user_ids, self._allowed_role_ids,
+            intents.members = (
+                _needs_server_members_intent(
+                    self._allowed_user_ids, self._allowed_role_ids,
+                )
+                # Auto mention gating counts the bots sharing a room, which needs the
+                # member cache to be populated.
+                or self._discord_mention_mode() == "auto"
             )
+            if self._members_intent_blocked:
+                # A previous connect() was rejected because Server Members is not enabled in
+                # the Developer Portal. Coming online without the member cache beats not coming
+                # online at all; gating then falls back to always requiring a mention.
+                intents.members = False
             intents.voice_states = True
             # Resolve proxy (DISCORD_PROXY > generic env vars > macOS system proxy)
             from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_bot
@@ -1674,6 +1691,12 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             # Same zombie-client hazard: client.start() may already run when a later step raises.
             await self._cancel_bot_task()
             self._release_platform_lock()
+            # Auto mention gating requested the Server Members intent; if the Developer Portal
+            # has it switched off, Discord rejects the connection and the bot never comes online.
+            # Drop the intent and reconnect once so the bot still serves (gating then falls back
+            # to always requiring a mention). Must run before _set_fatal_error, which marks dead.
+            if self._retry_without_members_intent(e):
+                return await self.connect(is_reconnect=is_reconnect)
             # Classify by exception TYPE: auth/permission failures can't self-heal, so
             # retryable=False drops them from the reconnect queue and surfaces them as fatal.
             code, message, retryable = self._classify_connect_exception(e)
@@ -1713,6 +1736,34 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             return ("discord_intents_required", guidance, False)
         return ("discord_connect_error", f"Discord startup failed: {error}", True)
 
+    def _retry_without_members_intent(self, error: Exception) -> bool:
+        """Detect a rejected Server Members intent and arm a one-shot retry.
+
+        Auto mention gating asks for the Server Members privileged intent so it can count the
+        bots in a room. If that intent is not enabled in the Developer Portal, discord.py raises
+        ``PrivilegedIntentsRequired`` and the bot never comes online. Rather than stay offline,
+        drop the intent and reconnect once — gating then falls back to always requiring a mention.
+        Returns True when the caller should ``await self.connect()`` again (exactly once).
+        """
+        if self._members_intent_blocked:
+            return False  # already retried once; do not loop
+        privileged = getattr(discord, "PrivilegedIntentsRequired", None)
+        is_privileged_error = (
+            isinstance(error, privileged) if isinstance(privileged, type)
+            else "privileged" in str(error).lower()
+        )
+        if not is_privileged_error:
+            return False
+        logger.warning(
+            "[%s] Discord rejected the Server Members intent — reconnecting without it. "
+            "Enable 'Server Members Intent' in the Developer Portal to restore automatic "
+            "multi-bot mention gating.",
+            self.name,
+        )
+        self._members_intent_blocked = True
+        self._bot_task = None
+        return True
+
     def _discord_message_admission(self, message: Any, *, claim: bool) -> tuple[bool, bool]:
         """Return ``(admitted, role_authorized)`` for one Discord event."""
         message_id = str(getattr(message, "id", ""))
@@ -1742,6 +1793,16 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 and not self._self_is_raw_mentioned(message)
                 and not bot_tag_continuation
             ):
+                return False, False
+            # Break bot-to-bot reply loops: two agents that @mention each other would
+            # otherwise ping-pong without end. Live dispatch only (claim=True) — a recovery
+            # scan must not consume the room's exchange budget.
+            if claim and not self._discord_bot_exchange_allowed(str(message.channel.id)):
+                logger.warning(
+                    "[%s] Bot exchange rate limit reached in channel %s — ignoring message from %s",
+                    self.name, message.channel.id,
+                    getattr(message.author, "display_name", None) or message.author,
+                )
                 return False, False
         else:
             msg_guild = getattr(message, "guild", None)
@@ -2596,11 +2657,12 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
 
     def _in_bot_thread(self, message: Any) -> bool:
         """Thread the bot already joined skips the mention check — unless
-        thread_require_mention (multi-bot threads) gates threads like channels."""
+        thread_require_mention (multi-bot threads) gates threads like channels.
+        ``auto`` mode gates only threads shared with another bot."""
         return (
             isinstance(message.channel, discord.Thread)
             and str(message.channel.id) in self._threads
-            and not self._discord_thread_require_mention()
+            and not self._discord_thread_requires_mention_for(message.channel)
         )
 
     async def _dispatch_recovered_message(self, message: Any) -> bool:
@@ -3327,6 +3389,11 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             if self._is_forum_parent(channel):
                 result = await self._send_to_forum(channel, content)
                 return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
+            # In a room shared with another bot, open the reply with the addressee's @mention
+            # so Discord routes it explicitly; in a single-bot room the prefix is noise.
+            if metadata and metadata.get("discord_mention_user_id"):
+                if self._discord_should_prefix_mention(channel):
+                    content = f"<@{metadata['discord_mention_user_id']}> {content}"
             formatted = self.format_message(content)
             chunks = self._cap_split_chunks(
                 self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
@@ -4977,8 +5044,153 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         return text in {"true", "1", "yes", "on"} if truthy else text not in {"false", "0", "no", "off"}
 
     def _discord_require_mention(self) -> bool:
-        """Return whether Discord channel messages require a bot mention."""
-        return self._extra_or_env_flag("require_mention", "DISCORD_REQUIRE_MENTION", "true", truthy=False)
+        """Return whether Discord channel messages require a bot mention.
+
+        Room-agnostic view for callers that have no channel in hand; ``auto``
+        resolves conservatively to True. Prefer :meth:`_discord_room_requires_mention`
+        whenever a channel is available.
+        """
+        return self._discord_mention_mode() != "never"
+
+    def _discord_mention_mode(self) -> str:
+        """Mention gating mode: ``auto``, ``always`` or ``never``.
+
+        ``auto`` (recommended when several agents share a server) decides per room: a room
+        with two or more bots requires an explicit @mention, a room where this bot is the
+        only bot answers every message. ``always`` / ``never`` pin the old static behaviour.
+        """
+        extra = getattr(self.config, "extra", None)
+        configured = _extra_or_secret(
+            extra if isinstance(extra, dict) else None,
+            "require_mention", "DISCORD_REQUIRE_MENTION", None,
+        )
+        if configured is None:
+            configured = "true"
+        if isinstance(configured, str):
+            token = configured.strip().lower()
+            if token == "auto":
+                return "auto"
+            if token in {"false", "0", "no", "off"}:
+                return "never"
+            return "always"
+        return "always" if configured else "never"
+
+    def _discord_bot_count_for_channel(self, channel: Any) -> Optional[int]:
+        """How many bots can see this room, including this bot.
+
+        Threads inherit their parent channel's permissions, so the parent is used for the
+        visibility test when the channel itself cannot answer it. Returns ``None`` when the
+        member cache is unavailable (Server Members intent disabled) — callers treat that
+        as "cannot tell".
+        """
+        guild = getattr(channel, "guild", None)
+        members = getattr(guild, "members", None) if guild is not None else None
+        if not members:
+            return None
+        permission_source = channel
+        if not callable(getattr(permission_source, "permissions_for", None)):
+            permission_source = getattr(channel, "parent", None)
+        try:
+            count = 0
+            for member in members:
+                if not getattr(member, "bot", False):
+                    continue
+                permissions_for = getattr(permission_source, "permissions_for", None)
+                if callable(permissions_for):
+                    permissions = permissions_for(member)
+                    if not getattr(permissions, "view_channel", False):
+                        continue
+                count += 1
+            return count
+        except Exception as exc:
+            logger.debug("[%s] Could not count visible Discord bots: %s", self.name, exc)
+            return None
+
+    def _discord_room_requires_mention(self, channel: Any, *, is_free_channel: bool = False) -> bool:
+        """Decide whether this room needs an explicit @mention to answer."""
+        if is_free_channel:
+            return False
+        mode = self._discord_mention_mode()
+        if mode == "never":
+            return False
+        if mode == "always":
+            return True
+        bot_count = self._discord_bot_count_for_channel(channel)
+        if bot_count is None:
+            # Member cache unavailable — stay conservative and require a mention rather
+            # than risk two bots answering the same message.
+            return True
+        return bot_count >= 2
+
+    def _discord_room_etiquette(self, channel: Any) -> Optional[str]:
+        """Describe the addressing etiquette for the room this message came from.
+
+        The agent cannot see the member list, so it is told how many bots share the room and
+        what that implies: in a multi-bot room every reply must open with an @mention of
+        whoever is being answered, and messages aimed at another agent are none of its
+        business. In a single-bot room the mention prefix is noise and is dropped.
+        """
+        if self._discord_mention_mode() == "never":
+            return None
+        if getattr(channel, "guild", None) is None:
+            return None  # DMs have no addressing problem
+        bot_count = self._discord_bot_count_for_channel(channel)
+        if bot_count is None:
+            return None
+        if bot_count >= 2:
+            return (
+                f"Room etiquette: {bot_count} bots share this Discord room, so addressing "
+                "is explicit. You only answer when someone @mentions you. Open every reply "
+                "with the @mention of the person or bot you are answering (Discord routes on "
+                "mentions, not on reply order). If a message is addressed to another bot, "
+                "stay silent."
+            )
+        return (
+            "Room etiquette: you are the only bot in this Discord room, so every message "
+            "here is for you and no @mention is needed — neither to be addressed nor when "
+            "you reply. Do not prefix replies with a mention."
+        )
+
+    def _discord_should_prefix_mention(self, channel: Any) -> bool:
+        """Whether replies in this room should open with the target's @mention.
+
+        Only rooms shared with another bot need explicit addressing; in a room where this
+        bot is the only agent the prefix is pure noise.
+        """
+        if self._discord_mention_mode() == "never":
+            return False
+        if getattr(channel, "guild", None) is None:
+            return False  # DMs never need addressing
+        bot_count = self._discord_bot_count_for_channel(channel)
+        if bot_count is None:
+            return False
+        return bot_count >= 2
+
+    def _discord_bot_exchange_allowed(self, channel_id: str) -> bool:
+        """Rate-limit bot-authored messages per room to break reply loops.
+
+        Two agents that @mention each other would otherwise ping-pong without end. Limits
+        are ``DISCORD_BOT_EXCHANGE_LIMIT`` accepted bot messages per
+        ``DISCORD_BOT_EXCHANGE_WINDOW`` seconds, per channel.
+        """
+        try:
+            limit = int(_scoped_gate_env("DISCORD_BOT_EXCHANGE_LIMIT", "6"))
+        except (TypeError, ValueError):
+            limit = 6
+        try:
+            window = float(_scoped_gate_env("DISCORD_BOT_EXCHANGE_WINDOW", "120"))
+        except (TypeError, ValueError):
+            window = 120.0
+        if limit <= 0:
+            return False
+        now = time.monotonic()
+        recent = [ts for ts in self._bot_exchange_times[channel_id] if now - ts < window]
+        if len(recent) >= limit:
+            self._bot_exchange_times[channel_id] = recent
+            return False
+        recent.append(now)
+        self._bot_exchange_times[channel_id] = recent
+        return True
 
     def _discord_free_response_auto_thread(self) -> bool:
         """Free-response channels also auto-thread when opted in; default replies inline."""
@@ -5247,6 +5459,40 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         """Whether threads still require @mention after the bot has participated (default False).
         Set True when multiple bots share a thread to avoid bot-to-bot loops."""
         return self._extra_or_env_flag("thread_require_mention", "DISCORD_THREAD_REQUIRE_MENTION", "false", truthy=True)
+
+    def _discord_thread_mention_mode(self) -> str:
+        """Thread gating mode: ``auto``, ``always`` or ``never``."""
+        extra = getattr(self.config, "extra", None)
+        configured = _extra_or_secret(
+            extra if isinstance(extra, dict) else None,
+            "thread_require_mention", "DISCORD_THREAD_REQUIRE_MENTION", None,
+        )
+        if configured is None:
+            configured = "false"
+        if isinstance(configured, str):
+            token = configured.strip().lower()
+            if token == "auto":
+                return "auto"
+            if token in {"true", "1", "yes", "on"}:
+                return "always"
+            return "never"
+        return "always" if configured else "never"
+
+    def _discord_thread_requires_mention_for(self, channel: Any) -> bool:
+        """Whether follow-ups inside this thread still need an @mention.
+
+        ``auto`` keeps a one-on-one thread frictionless (no mention needed once the bot has
+        joined) while still gating threads shared with another bot.
+        """
+        mode = self._discord_thread_mention_mode()
+        if mode == "never":
+            return False
+        if mode == "always":
+            return True
+        bot_count = self._discord_bot_count_for_channel(channel)
+        if bot_count is None:
+            return True
+        return bot_count >= 2
 
     def _discord_history_backfill(self) -> bool:
         """Return whether history backfill is enabled for shared sessions."""
@@ -6191,7 +6437,6 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_keys)
                 return False
             free_channels = self._discord_free_response_channels()
-            require_mention = self._discord_require_mention()
             # Voice-linked text channel is free-response while voice is active (exact channel only).
             voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
             current_channel_id = str(message.channel.id)
@@ -6200,6 +6445,11 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 "*" in free_channels
                 or bool(channel_keys & free_channels)
                 or is_voice_linked_channel
+            )
+            # auto mode resolves per room: a room shared with another bot requires an
+            # @mention, a room where this is the only bot answers freely.
+            require_mention = self._discord_room_requires_mention(
+                message.channel, is_free_channel=is_free_channel,
             )
             in_bot_thread = self._in_bot_thread(message)
             if require_mention and not is_free_channel and not in_bot_thread:
@@ -6335,6 +6585,9 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         _chan_id = str(getattr(_chan, "id", ""))
         _skills = self._resolve_channel_skills(_chan_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(_chan_id, _parent_id or None)
+        _etiquette = self._discord_room_etiquette(_chan)
+        if _etiquette:
+            _channel_prompt = f"{_channel_prompt}\n\n{_etiquette}" if _channel_prompt else _etiquette
         reply_to_id = None
         reply_to_text = None
         if message.reference:

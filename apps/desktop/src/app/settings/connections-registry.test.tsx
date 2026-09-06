@@ -1,8 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopConnectionsRegistry } from '@/global'
+import * as hermes from '@/hermes'
 import { $connection } from '@/store/session'
+import { $updateEverything, $updateOverlayOpen, resetUpdateApplyState } from '@/store/updates'
+import { deferred } from '@/test/deferred'
 
 import {
   ConnectionsRegistrySection,
@@ -287,6 +290,58 @@ describe('ConnectionsRegistrySection', () => {
 
     fireEvent.change(search, { target: { value: '' } })
     expect(search.closest<HTMLElement>('.border-t')?.style.minHeight).toBe('')
+  })
+
+  it('waits for the remote update to finish before handing off the local client', async () => {
+    const remoteFinished = deferred<Awaited<ReturnType<typeof hermes.getActionStatus>>>()
+    vi.spyOn(hermes, 'updateHermes').mockResolvedValue({ ok: true, name: 'hermes-update', pid: 1 })
+    const actionStatus = vi.spyOn(hermes, 'getActionStatus').mockReturnValue(remoteFinished.promise)
+    vi.spyOn(hermes, 'checkHermesUpdate').mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.21.0',
+      behind: 0,
+      update_available: false,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
+    const applyClient = vi.fn().mockResolvedValue({ ok: true, handedOff: true })
+    const updateAll = vi.fn().mockResolvedValue({ ok: true, results: [] })
+    Object.assign(window.hermesDesktop!, {
+      updates: {
+        apply: applyClient,
+        check: vi.fn().mockResolvedValue({ supported: true, behind: 1, targetSha: 'next', fetchedAt: 0 })
+      }
+    })
+    window.hermesDesktop!.connections!.updateAll = updateAll
+
+    render(<ConnectionsRegistrySection />)
+    const updateButton = await screen.findByRole('button', { name: 'Update all instances' })
+    await act(async () => {
+      fireEvent.click(updateButton)
+    })
+
+    try {
+      await waitFor(() => expect(actionStatus).toHaveBeenCalled())
+      expect(applyClient).not.toHaveBeenCalled()
+      expect(updateAll).not.toHaveBeenCalled()
+      expect(screen.getByRole('button', { name: 'Updating all instances…' }).hasAttribute('disabled')).toBe(true)
+      expect($updateOverlayOpen.get()).toBe(true)
+    } finally {
+      await act(async () => {
+        remoteFinished.resolve({ name: 'hermes-update', running: false, exit_code: 0, pid: null, lines: [] })
+        await vi.waitFor(() => expect($updateEverything.get().running).toBe(false))
+      })
+      cleanup()
+      vi.restoreAllMocks()
+      act(() => {
+        resetUpdateApplyState()
+        $updateOverlayOpen.set(false)
+      })
+    }
+
+    expect(applyClient).toHaveBeenCalledTimes(1)
+    expect(updateAll).not.toHaveBeenCalled()
   })
 
   it('tests a connection through the bridge', async () => {

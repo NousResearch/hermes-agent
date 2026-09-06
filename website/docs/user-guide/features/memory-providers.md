@@ -672,7 +672,7 @@ hermes memory setup
 
 ### deja
 
-Memory from the coding sessions already on the machine. deja indexes the transcripts Hermes, Claude Code, Codex, Cursor and 18 other agents write to disk — including months from before it was installed — and recalls the relevant one before a turn. No model, no key, no server; one Go binary.
+Memory from the coding sessions already on the machine. deja indexes the transcripts Hermes, Claude Code, Codex, Cursor and 18 other agents — 22 in all — write to disk — including months from before it was installed — and recalls the relevant one before a turn. No model, no key, no server; one Go binary.
 
 | | |
 |---|---|

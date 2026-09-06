@@ -102,6 +102,15 @@ def _open_child_session_db(parent_agent) -> Any:
         return acquire(_parent_db_path) if _parent_db_path is not None else acquire()
     return None
 
+def _apply_child_cache_ttl(child) -> None:
+    """A delegated child never uses the 1h cache tier. The tier is priced for a person who steps
+    away between turns (2x write vs 1.25x for 5m, #14971); a subagent calls every few seconds for
+    minutes and is gone, so it pays the 2x on every tool result and never collects the retention.
+    Caching itself stays exactly as configured (disabled stays disabled)."""
+    if getattr(child, "_cache_ttl", None) == "1h":
+        child._cache_ttl = "5m"
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -195,6 +204,7 @@ def _build_child_agent(
                     release_or_close(child_session_db)
             raise
     child._print_fn = getattr(parent_agent, "_print_fn", None)
+    _apply_child_cache_ttl(child)
     if child_session_db is not None:
         child._owns_session_db = True  # released by the child's close(), never by the parent
     # Ownership transfer for the dedicated handle: the child's close() must release it (nothing else holds a
@@ -457,8 +467,9 @@ _DESCRIPTION_HEAD = (
     "Spawn subagents in isolated contexts; each gets its own conversation, terminal session, and toolset, and only its "
     "final summary returns to you. Pass every task in `tasks` — one entry spawns one subagent, several run in parallel "
     "(limit in the tasks description).\n\n"
-    "Runs in the background: dispatch returns immediately with live transcript paths, and the completed result (one "
-    "consolidated message, results in task order) re-enters the conversation on its own. Do NOT wait or poll; continue "
+    "Runs in the background: dispatch returns immediately with live transcript paths, and each completed unit "
+    "re-enters the conversation on its own — an ungrouped task as soon as IT finishes, tasks sharing a `group` "
+    "together once all of them finish. Handle each result as it lands. Do NOT wait or poll; continue "
     "other work. While children run, `action` (list/steer/stop) controls them live — steer when a transcript shows a "
     "child drifting.\n\n"
     "USE FOR: reasoning-heavy subtasks, work that would flood your context with intermediate data, or independent "
@@ -545,6 +556,13 @@ DELEGATE_TASK_SCHEMA = {
                             "child up front; parent validates with one bounded correction retry; result gains "
                             "schema_valid, plus schema_errors on failure). Keep it forgiving — require only "
                             "fields you will read.",
+                        ),
+                        "group": _p(
+                            "string",
+                            "Optional completion group. Tasks sharing a group wait for each other and return as ONE "
+                            "message (use when you must compare or merge their results); a task without a group "
+                            "returns on its own the moment it finishes. Independent work (separate PR reviews, "
+                            "unrelated fixes) should stay ungrouped so nothing waits for the slowest sibling.",
                         ),
                     },
                     "required": ["goal"],

@@ -27,6 +27,7 @@ import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
 import hermes_cli.update_cmd_fleet as update_cmd_fleet
 import hermes_cli.update_cmd_deps as update_cmd_deps
+from hermes_cli.update_receipt import COMMAND_BOUNDARY_STOP_REASON
 from hermes_constants import get_hermes_home
 
 
@@ -82,6 +83,12 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(hermes_main, "_resolve_update_branch", lambda args: "main")
     monkeypatch.setattr(hermes_main, "_is_windows", lambda: False)
     monkeypatch.setattr(main_install_repair, "_is_windows", lambda: False)
+    monkeypatch.setattr(
+        update_cmd, "_restart_macos_launchd_gateways", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        update_cmd_fleet, "_restart_macos_launchd_gateways", lambda *a, **k: None
+    )
     monkeypatch.setattr(
         hermes_main,
         "_get_origin_url",
@@ -252,6 +259,60 @@ def test_successful_receipt_with_pre_update_plan_shas_does_not_retrigger(
     )
 
     assert update_cmd._pending_fleet_restart_needed() is False
+
+
+def test_successful_command_boundary_receipt_without_fleet_does_not_retrigger(
+    monkeypatch,
+):
+    """A normal command-boundary stop is not an interrupted update."""
+    disk_sha = "n" * 40
+    old_sha = "o" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
+
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "exit_code": 0,
+                "outcome": "success",
+                "stop_reason": COMMAND_BOUNDARY_STOP_REASON,
+                "plan": {
+                    "expected_sha": old_sha,
+                    "runtimes": [
+                        {
+                            "kind": "gateway",
+                            "profile": "default",
+                            "pid": 1,
+                            "code_sha": old_sha,
+                        }
+                    ],
+                },
+                "fleet": [],
+                "gateway_restart": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert update_cmd._pending_fleet_restart_needed() is False
+
+
+@pytest.mark.parametrize(
+    ("receipt", "unfinished"),
+    [
+        pytest.param({"outcome": "success", "exit_code": 0, "stop_reason": "sys.exit(0)"}, False, id="success-sys-exit-0"),
+        pytest.param({"outcome": "success", "stop_reason": "KeyboardInterrupt: "}, False, id="success-no-exit-code"),
+        pytest.param({"exit_code": 0, "stop_reason": "sys.exit(0)"}, False, id="exit-0-no-outcome"),
+        # update_contract writes {"outcome": "refused", "stop_reason": <code>} with no exit_code;
+        # the stop_reason clause is what keeps that receipt unfinished.
+        pytest.param({"outcome": "refused", "stop_reason": "not_updatable_in_place"}, True, id="refused-stop-reason-only"),
+        pytest.param({"outcome": "failed", "exit_code": 1, "stop_reason": "KeyboardInterrupt: "}, True, id="failed-interrupt"),
+    ],
+)
+def test_stop_reason_only_marks_unfinished_when_nothing_vouches_for_success(receipt, unfinished):
+    assert update_cmd._receipt_looks_unfinished(receipt) is unfinished
 
 
 def test_stale_fleet_matrix_on_latest_receipt_is_pending(monkeypatch):

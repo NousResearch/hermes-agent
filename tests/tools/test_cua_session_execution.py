@@ -78,7 +78,7 @@ def test_private_standard_context_reaches_all_transports_and_restricts_targets(t
     from tools.computer_use.cua_backend import CuaDriverBackend
     from hermes_constants import get_hermes_home
     # Keep shell/driver setup entirely under the runner's temporary profile.
-    assert str(get_hermes_home()).startswith('/tmp/')
+    assert get_hermes_home().resolve() == (tmp_path / 'hermes_test').resolve()
     binary = tmp_path / 'protocol-driver'
     binary.write_text('#!' + sys.executable + '\n' + DRIVER)
     binary.chmod(0o700)

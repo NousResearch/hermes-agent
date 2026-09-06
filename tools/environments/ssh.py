@@ -55,18 +55,26 @@ class SSHEnvironment(BaseEnvironment):
     _profile_scoped_passthrough = True
 
     def __init__(self, host: str, user: str, cwd: str = "~",
-                 timeout: int = 60, port: int = 22, key_path: str = ""):
+                 timeout: int = 60, port: int = 22, key_path: str = "",
+                 probe_only: bool = False):
         super().__init__(cwd=cwd, timeout=timeout)
         self.host, self.user, self.port, self.key_path = host, user, port, key_path
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
         self.control_dir.mkdir(parents=True, exist_ok=True)
         # Short, deterministic socket name: the path must stay under macOS's 104-byte sun_path
         # limit (raw user@host:port + SSH's 16-byte suffix under a deep $TMPDIR exceeds it), and
-        # stability across reconnects keeps ControlMaster reuse working.
-        _socket_id = hashlib.sha256(f"{user}@{host}:{port}".encode()).hexdigest()[:16]
+        # stability across reconnects keeps ControlMaster reuse working. A probe gets its own
+        # per-instance socket so its cleanup() can never close the agent's shared master.
+        socket_key = f"{user}@{host}:{port}"
+        if probe_only:
+            socket_key = f"{socket_key}:probe:{self._session_id}"
+        _socket_id = hashlib.sha256(socket_key.encode()).hexdigest()[:16]
         self.control_socket = self.control_dir / f"{_socket_id}.sock"
         _ensure_ssh_available()
         self._establish_connection()
+        if probe_only:
+            self._sync_manager = None
+            return
         self._remote_home = self._detect_remote_home()
         self._ensure_remote_dirs()
         self._sync_manager = FileSyncManager(
@@ -247,7 +255,8 @@ class SSHEnvironment(BaseEnvironment):
                               f"Remote file cleanup on {self.host}")
 
     def _before_execute(self) -> None:
-        self._sync_manager.sync()  # rate-limited internally
+        if self._sync_manager is not None:
+            self._sync_manager.sync()  # rate-limited internally
 
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:

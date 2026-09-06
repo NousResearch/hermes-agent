@@ -82,6 +82,59 @@ def test_identity_is_published_for_two_new_lazy_sessions_before_rpc_returns(tmp_
         assert not receipts(home, "on_session_end"), "an unused draft has no turn to end"
 
 
+@pytest.mark.parametrize("persisted", [False, True], ids=["unpersisted", "persisted"])
+@pytest.mark.parametrize("settling", [False, True], ids=["reattach", "refused"])
+def test_live_resume_publishes_identity_only_after_reattach_is_accepted(tmp_path, monkeypatch, persisted, settling):
+    from tui_gateway import server
+    from hermes_state import SessionDB
+    from unittest.mock import Mock
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    ambient = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(ambient))
+    monkeypatch.setattr(server, "_sessions", {})
+    monkeypatch.setattr(server, "_pending_ws_reaps", {})
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    home = ambient / "profiles" / "owner"
+    install_probe(home)
+    created = server._methods["session.create"]("create", {"source": "desktop", "profile": "owner"})
+    assert "error" not in created, created
+    sid, key = created["result"]["session_id"], created["result"]["stored_session_id"]
+    record = server._sessions[sid]
+    if persisted:
+        with SessionDB(db_path=home / "state.db") as db:
+            db.create_session(key, source="desktop")
+    (home / "receipt.jsonl").write_text("")
+    transport = Mock()
+    timer = Mock()
+    record["transport"] = server._detached_ws_transport
+    record["_client_gone_interrupt_requested"] = settling
+    server._pending_ws_reaps[sid] = timer
+    monkeypatch.setattr(server, "current_transport", lambda: transport)
+
+    response = server._methods["session.resume"]("resume", {
+        "session_id": key, "profile": "owner", "omit_messages": True})
+    observed = receipts(home, "on_session_identity")
+    if settling:
+        assert response["error"]["code"] == 4009
+        assert not observed, "a refused reattach must not publish ownership"
+        assert record["transport"] is server._detached_ws_transport
+        assert server._pending_ws_reaps[sid] is timer
+        timer.cancel.assert_not_called()
+    else:
+        assert "error" not in response, response
+        assert response["result"]["session_id"] == sid
+        assert len(observed) == 1, "accepted live resume must publish before returning"
+        assert observed[0]["runtime_session_id"] == sid
+        assert observed[0]["stored_session_id"] == observed[0]["session_id"] == key
+        assert observed[0]["hermes_home"] == observed[0]["active_home"] == str(home)
+        assert record["transport"] is transport
+        assert transport in record["viewers"]
+        assert sid not in server._pending_ws_reaps
+        timer.cancel.assert_called()
+
+
 @pytest.mark.parametrize("resume_mode", [{"lazy": True}, {}, {"eager_build": True}])
 def test_resumed_sessions_keep_owner_through_tools_compression_and_finalization(tmp_path, monkeypatch, resume_mode):
     from tui_gateway import server

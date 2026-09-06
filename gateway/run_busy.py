@@ -15,6 +15,7 @@ import json
 import os
 import time
 from agent.i18n import t
+from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import SessionSource
@@ -556,7 +557,9 @@ class GatewayBusySessionMixin:
                     status_parts.append(f"{elapsed_min} min elapsed")
                 if summary.get("max_iterations", 0):
                     status_parts.append(
-                        f"iteration {summary.get('api_call_count', 0)}/{summary.get('max_iterations', 0)}"
+                        format_iteration_progress(
+                            summary.get("api_call_count", 0), summary.get("max_iterations", 0)
+                        )
                     )
                 if summary.get("current_tool"):
                     status_parts.append(f"running: {summary.get('current_tool')}")

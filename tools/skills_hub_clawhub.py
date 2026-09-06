@@ -131,7 +131,14 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         if parsed is None:
             return None
         slug, expected_owner = parsed
-        data = self._coerce_skill_payload(self._get_json(f"{self.BASE_URL}/skills/{slug}"))
+        # ClawHub answers a slug claimed by several owners with 409
+        # AMBIGUOUS_SKILL_SLUG; the ?owner= query picks ours (#104117).
+        data = self._coerce_skill_payload(
+            self._get_json(
+                f"{self.BASE_URL}/skills/{slug}",
+                params={"owner": expected_owner} if expected_owner else None,
+            )
+        )
         if not isinstance(data, dict) or not self._owner_matches(expected_owner, data):
             return None
         return slug, data
@@ -208,7 +215,11 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         if not raw:
             return None
         had_at = raw.startswith("@")
-        parts = [part for part in raw.removeprefix("@").removeprefix("clawhub/").split("/") if part]
+        stripped = raw.removeprefix("@").removeprefix("clawhub/")
+        if stripped.startswith("@"):  # clawhub/@owner/slug — @ surfaces after the prefix
+            had_at = True
+            stripped = stripped.removeprefix("@")
+        parts = [part for part in stripped.split("/") if part]
         if len(parts) == 1:
             owner, slug = None, parts[0]
         elif (len(parts) == 2 and had_at) or (len(parts) == 3 and parts[1].lower() == "skills"):

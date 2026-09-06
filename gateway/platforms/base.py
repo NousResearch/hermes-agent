@@ -999,6 +999,7 @@ def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str
 
 def _translate_docker_container_media_path(
     candidate: Path, session_key: str = "", workspace_key: str = "", *, quiet: bool = False, workspace_cwd: str = "",
+    profile: Optional[str] = None,
 ) -> Optional[Path]:
     """Container-absolute path -> host path via longest-prefix match over ``docker_volumes``, the
     auto-mounted cache dirs (``/root/.hermes/...``), persistent ``/workspace`` and ``/root``.
@@ -1023,14 +1024,13 @@ def _translate_docker_container_media_path(
     if "/workspace" not in mounted:
         mounts.extend(
             (root, Path("/workspace"))
-            for root in _default_docker_workspace_host_roots(session_key, workspace_key, workspace_cwd))
+            for root in _default_docker_workspace_host_roots(session_key, workspace_key, workspace_cwd, profile))
     # Synthetic /root mounts catch stray home writes (/root/out.png; cache mounts are longer
     # prefixes). /root/.hermes/* that missed a cache mount is the container's credential surface —
     # translating it via the home mount would dodge the host denylist.
     if "/root" not in mounted and not candidate.as_posix().startswith("/root/.hermes"):
-        mounts.extend(
-            (root, Path("/root"))
-            for root in _docker_persistent_sandbox_roots(session_key, "home", workspace_key))
+        mounts.extend((root, Path("/root"))
+                      for root in _docker_persistent_sandbox_roots(session_key, "home", workspace_key, profile))
     if not mounts:
         _warn_unresolved_docker_media(candidate, session_key, "no sandbox mounts resolved", quiet)
         return None
@@ -1051,7 +1051,7 @@ def _translate_docker_container_media_path(
     return None
 
 
-def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[str]:
+def validate_media_delivery_path(path: str, session_key: str = "", profile: Optional[str] = None) -> Optional[str]:
     """Safe absolute file path for native media delivery, else None. Default: any existing
     regular file outside the credential / system denylist (symmetric with inbound). Strict
     (``HERMES_MEDIA_DELIVERY_STRICT=1``, public bots where prompt injection must not exfiltrate
@@ -1068,7 +1068,7 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
     if not expanded.is_absolute():
         return None
     # Docker agents emit MEDIA:/workspace/... — map container paths to host paths first.
-    resolved = _translate_docker_container_media_path(expanded, session_key=session_key)
+    resolved = _translate_docker_container_media_path(expanded, session_key=session_key, profile=profile)
     if resolved is None:
         resolved = _resolve_path(expanded, strict=True)
     if resolved is None or not resolved.is_file():
@@ -1101,13 +1101,13 @@ def _log_safe_path(path: str) -> str:
 
 
 def _validated_delivery_path(raw_path, session_key: str, label: str,
-                             dropped: Optional[list[dict]] = None) -> Optional[str]:
+                             dropped: Optional[list[dict]] = None, profile: Optional[str] = None) -> Optional[str]:
     """``validate_media_delivery_path`` plus the shared "Skipping unsafe ..." warning. A path the
     host cannot see is retried against the active remote sandbox (ssh/modal/...; #466). When
     ``dropped`` is a list, a rejected path is appended as ``{"path", "reason"}`` so the caller can
     report the drop instead of booking a delivery that never happened (#115908)."""
     raw = str(raw_path)
-    safe_path = validate_media_delivery_path(raw, session_key=session_key)
+    safe_path = validate_media_delivery_path(raw, session_key=session_key, profile=profile)
     if not safe_path:
         from gateway.media_fetch import fetch_remote_media
         safe_path = fetch_remote_media(raw)
@@ -3137,22 +3137,22 @@ class BasePlatformAdapter(ABC):
             "send_image_file", "image", image_path, chat_id, caption, reply_to, metadata)
 
     @staticmethod
-    def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[str]:
+    def validate_media_delivery_path(path: str, session_key: str = "", profile: Optional[str] = None) -> Optional[str]:
         """Return a resolved path if it is safe for native attachment upload."""
-        return validate_media_delivery_path(path, session_key=session_key)
+        return validate_media_delivery_path(path, session_key=session_key, profile=profile)
 
     @staticmethod
-    def filter_media_delivery_paths(media_files, session_key: str = "",
-                                    dropped: Optional[list[dict]] = None) -> list[tuple[str, bool]]:
+    def filter_media_delivery_paths(media_files, session_key: str = "", dropped: Optional[list[dict]] = None,
+                                    profile: Optional[str] = None) -> list[tuple[str, bool]]:
         """Drop unsafe MEDIA paths and normalize accepted paths; ``dropped`` collects the rejects."""
         return [
             (safe_path, bool(is_voice)) for media_path, is_voice in media_files or []
-            if (safe_path := _validated_delivery_path(media_path, session_key, "MEDIA directive path", dropped))]
+            if (safe_path := _validated_delivery_path(media_path, session_key, "MEDIA directive path", dropped, profile))]
 
     @staticmethod
-    def filter_local_delivery_paths(file_paths, session_key: str = "") -> list[str]:
+    def filter_local_delivery_paths(file_paths, session_key: str = "", profile: Optional[str] = None) -> list[str]:
         """Drop unsafe bare local file paths and normalize accepted paths."""
-        safe_paths = (_validated_delivery_path(p, session_key, "local file path") for p in file_paths or [])
+        safe_paths = (_validated_delivery_path(p, session_key, "local file path", profile=profile) for p in file_paths or [])
         return [p for p in safe_paths if p]
 
     @staticmethod

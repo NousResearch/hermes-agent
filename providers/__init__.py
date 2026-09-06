@@ -159,10 +159,15 @@ def _declares_model_provider_kind(plugin_dir: Path) -> bool:
     return False
 
 
-def _import_plugin_dir(plugin_dir: Path, source: str) -> None:
+def _import_plugin_dir(plugin_dir: Path, source: str, *, namespace: str | None = None) -> None:
     """Import a single plugin directory so it self-registers.
 
     ``source`` is "bundled" or "user", used only for log messages.
+    ``namespace`` disambiguates discovery steps that share directory names:
+    step 2 (``model-providers/<name>/``) and step 2b (flat ``<name>/``) would
+    otherwise derive the identical module name, so the later step's import
+    early-returns as "already imported" and never re-registers — inverting
+    the documented later-steps-win order.
     """
     init_file = plugin_dir / "__init__.py"
     if not init_file.exists():
@@ -175,6 +180,8 @@ def _import_plugin_dir(plugin_dir: Path, source: str) -> None:
     safe_name = plugin_dir.name.replace("-", "_")
     if source == "bundled":
         module_name = f"plugins.model_providers.{safe_name}"
+    elif namespace:
+        module_name = f"_hermes_user_provider_{namespace}_{safe_name}"
     else:
         module_name = f"_hermes_user_provider_{safe_name}"
 
@@ -387,7 +394,7 @@ def _discover_providers() -> None:
                 continue  # handled by step 2
             if not _declares_model_provider_kind(child):
                 continue
-            _import_plugin_dir(child, "user")
+            _import_plugin_dir(child, "user", namespace="installed")
 
     # 3. Legacy single-file profiles at providers/<name>.py. Kept for
     #    back-compat — if someone drops a ``providers/foo.py`` into an

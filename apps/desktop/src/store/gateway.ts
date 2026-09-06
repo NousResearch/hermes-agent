@@ -20,25 +20,24 @@ import { setConnection, setGatewayState } from '@/store/session'
 
 const normKey = (profile: string | null | undefined): string => (profile ?? '').trim() || 'default'
 
+// Spawn-slot priority handed to Electron main with every backend dial. A
+// user-initiated open is 'foreground' and may take the pool's reserved slot;
+// roster hydration, hover prewarm and untagged dials are 'background' — main's
+// default, so background dials keep the pre-priority IPC payload shape.
 type SpawnPriority = 'foreground' | 'background'
 
-function isBackgroundSlotWaitTimeout(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false
-  }
-
-  const extra = error as Error & { priority?: string; silent?: boolean }
-
-  return (
-    extra.name === 'LocalBackendSlotWaitTimeoutError' ||
-    extra.silent === true ||
-    extra.priority === 'background' ||
-    (error.message.includes('timed out while waiting for a free slot') && error.message.includes('(background)'))
-  )
+function dialPriority(spawnPriority: SpawnPriority): { priority: 'foreground' } | Record<never, never> {
+  return spawnPriority === 'foreground' ? { priority: 'foreground' } : {}
 }
 
-function connectionPriorityOpts(priority: SpawnPriority): { priority: 'foreground' } | undefined {
-  return priority === 'foreground' ? { priority: 'foreground' } : undefined
+function dialProfile(
+  desktop: NonNullable<typeof window.hermesDesktop>,
+  profile: string,
+  spawnPriority: SpawnPriority
+): Promise<HermesConnection> {
+  return spawnPriority === 'foreground'
+    ? desktop.getConnection(profile, { priority: 'foreground' })
+    : desktop.getConnection(profile)
 }
 
 // Read connection state through a call so TS control-flow analysis doesn't
@@ -323,7 +322,11 @@ function isPrimaryRegistryRoute(connectionId: null | string, profile: string): b
  *  dials a second WebSocket at the same Tailscale URL, which accept/closes in
  *  ~30ms (`messages=1`) and never runs `session.create` (#96493). Isolated
  *  SSH/pooled backends (`sharedRemote: false`) still get their own secondary. */
-async function isAttachedSharedRemote(connectionId: null | string, profile: string): Promise<boolean> {
+async function isAttachedSharedRemote(
+  connectionId: null | string,
+  profile: string,
+  spawnPriority: SpawnPriority = 'background'
+): Promise<boolean> {
   const id = String(connectionId ?? '').trim()
   const key = normKey(profile)
 
@@ -343,7 +346,7 @@ async function isAttachedSharedRemote(connectionId: null | string, profile: stri
 
   try {
     const conn = await withTimeout(
-      desktop.getConnectionFor({ connectionId: id, profile: key }),
+      desktop.getConnectionFor({ connectionId: id, profile: key, ...dialPriority(spawnPriority) }),
       RECONNECT_ATTEMPT_TIMEOUT_MS,
       `Timed out resolving shared-remote route for "${key}"`
     )
@@ -575,33 +578,22 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
     // this secondary (SSH terminal, messaging DELETE, session send, …) never
     // settles either. Bound the same way use-gateway-boot.ts bounds the
     // primary's equivalent awaits.
-    const conn = await (async () => {
-      try {
-        return entry.connectionId && desktop.getConnectionFor
-          ? await withTimeout(
-              desktop.getConnectionFor({
-                connectionId: entry.connectionId,
-                profile: entry.profile,
-                ...(connectionPriorityOpts(spawnPriority) ?? {})
-              }),
-              RECONNECT_ATTEMPT_TIMEOUT_MS,
-              `Timed out connecting to profile "${entry.profile}"`
-            )
-          : await withTimeout(
-              spawnPriority === 'foreground'
-                ? desktop.getConnection(entry.profile, { priority: 'foreground' })
-                : desktop.getConnection(entry.profile),
-              RECONNECT_ATTEMPT_TIMEOUT_MS,
-              `Timed out connecting to profile "${entry.profile}"`
-            )
-      } catch (error) {
-        if (spawnPriority !== 'foreground' && isBackgroundSlotWaitTimeout(error)) {
-          throw error
-        }
-
-        throw error
-      }
-    })()
+    const conn =
+      entry.connectionId && desktop.getConnectionFor
+        ? await withTimeout(
+            desktop.getConnectionFor({
+              connectionId: entry.connectionId,
+              profile: entry.profile,
+              ...dialPriority(spawnPriority)
+            }),
+            RECONNECT_ATTEMPT_TIMEOUT_MS,
+            `Timed out connecting to profile "${entry.profile}"`
+          )
+        : await withTimeout(
+            dialProfile(desktop, entry.profile, spawnPriority),
+            RECONNECT_ATTEMPT_TIMEOUT_MS,
+            `Timed out connecting to profile "${entry.profile}"`
+          )
 
     entry.connection = conn
 
@@ -802,7 +794,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
 // the second dial fails (tunnel/token are per-backend) and the closed socket
 // poisons the active gateway with "not connected" even though the primary is
 // open right next to it.
-async function sharedPrimaryRoute(profile: string): Promise<boolean> {
+async function sharedPrimaryRoute(profile: string, spawnPriority: SpawnPriority = 'background'): Promise<boolean> {
   const desktop = window.hermesDesktop
 
   if (!desktop) {
@@ -814,8 +806,11 @@ async function sharedPrimaryRoute(profile: string): Promise<boolean> {
     // like any other failure, not hang the route decision forever, since
     // every caller (gatewayForProfile → requestGatewayForProfile/Agent) awaits
     // this before it can fall back to dialing a secondary.
+    // This is the FIRST dial main sees for a user open, so it must already
+    // carry the foreground priority — otherwise the spawn it starts queues as
+    // background and the click waits out this probe before being promoted.
     const conn = await withTimeout(
-      desktop.getConnection(profile),
+      dialProfile(desktop, profile, spawnPriority),
       RECONNECT_ATTEMPT_TIMEOUT_MS,
       `Timed out resolving the shared-primary route for profile "${profile}"`
     )
@@ -841,7 +836,7 @@ async function gatewayForProfile(
     return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: false }
   }
 
-  if (await sharedPrimaryRoute(key)) {
+  if (await sharedPrimaryRoute(key, spawnPriority)) {
     return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: true }
   }
 
@@ -1386,7 +1381,7 @@ export async function openGatewayForAgent(
     return openGatewayForProfile(profile, { spawnPriority })
   }
 
-  if (await isAttachedSharedRemote(connectionId, profile)) {
+  if (await isAttachedSharedRemote(connectionId, profile, spawnPriority)) {
     if (!isOpen(g.primaryGateway)) {
       throw new Error('Hermes gateway unavailable')
     }
@@ -1440,7 +1435,7 @@ export async function ensureGatewayForAgent(
     return !signal?.aborted
   }
 
-  if (await isAttachedSharedRemote(connectionId, profile)) {
+  if (await isAttachedSharedRemote(connectionId, profile, 'foreground')) {
     return Boolean(isOpen(g.primaryGateway) && !signal?.aborted)
   }
 
@@ -1522,7 +1517,7 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
   // primary instead of dialing a doomed duplicate socket at the same
   // descriptor — $activeGatewayProfile still moves to `key`, so request
   // scoping and profile-aware surfaces behave identically.
-  if (await sharedPrimaryRoute(key)) {
+  if (await sharedPrimaryRoute(key, 'foreground')) {
     applyActive(g.primaryProfile, activationEpoch)
 
     return

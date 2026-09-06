@@ -397,10 +397,16 @@ async def test_relay_audio_localization_preserves_source_policy(allowed):
     runner._reply_anchor_for_event = lambda event: None
 
     await relay_adapter._localize_inbound_media(event)
-    with patch(
-        "tools.transcription_tools.transcribe_audio",
-        return_value={"success": True, "transcript": "relay transcript"},
-    ) as transcribe:
+    with (
+        patch(
+            "tools.transcription_tools.transcribe_audio",
+            return_value={"success": True, "transcript": "relay transcript"},
+        ) as transcribe,
+        patch(
+            "tools.transcription_tools.transcribe_audio_local_fallback",
+            return_value={"success": False, "error": "unused"},
+        ) as fallback,
+    ):
         pending_text, transcripts = await runner._transcribe_pending_audio_event_once(
             event, event.text
         )
@@ -418,7 +424,8 @@ async def test_relay_audio_localization_preserves_source_policy(allowed):
         assert prepared == '"relay transcript"'
         transcribe.assert_called_once_with(localized_path, None, "gateway")
     else:
+        transcribe.assert_not_called()
         assert pending_text == ""
         assert transcripts == []
         assert "audio file attachment" in prepared
-        transcribe.assert_not_called()
+    fallback.assert_not_called()

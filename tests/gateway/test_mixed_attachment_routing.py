@@ -18,7 +18,7 @@ populate media_types.
 """
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -29,7 +29,6 @@ from gateway.run import (
     _build_media_placeholder,
     _event_media_is_audio,
     _event_media_is_image,
-    _event_media_is_stt_input,
     _event_media_is_video,
 )
 from gateway.session import SessionSource
@@ -133,19 +132,62 @@ def test_pending_media_merge_preserves_per_attachment_inline_contract():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("message_type", "media_urls", "media_types", "allowed", "expected_route"),
+    (
+        "message_type",
+        "media_urls",
+        "media_types",
+        "allowed",
+        "expected_route",
+        "expected_stt_paths",
+    ),
     [
-        (MessageType.VOICE, ["/cache/voice.ogg"], ["audio/ogg"], False, "stt"),
-        (MessageType.AUDIO, ["/cache/audio.m4a"], ["audio/mp4"], True, "stt"),
-        (MessageType.AUDIO, ["/cache/audio.mp3"], ["audio/mpeg"], False, "file"),
-        (MessageType.DOCUMENT, ["/cache/audio.mp3"], ["audio/mpeg"], True, "stt"),
-        (MessageType.AUDIO, ["/cache/video.mp4"], ["video/mp4"], True, "video"),
+        (
+            MessageType.VOICE,
+            ["/cache/voice.ogg"],
+            ["audio/ogg"],
+            False,
+            "stt",
+            ["/cache/voice.ogg"],
+        ),
+        (
+            MessageType.AUDIO,
+            ["/cache/audio.m4a"],
+            ["audio/mp4"],
+            True,
+            "stt",
+            ["/cache/audio.m4a"],
+        ),
+        (
+            MessageType.AUDIO,
+            ["/cache/audio.mp3"],
+            ["audio/mpeg"],
+            False,
+            "file",
+            [],
+        ),
+        (
+            MessageType.DOCUMENT,
+            ["/cache/audio.mp3"],
+            ["audio/mpeg"],
+            True,
+            "stt",
+            ["/cache/audio.mp3"],
+        ),
+        (
+            MessageType.AUDIO,
+            ["/cache/video.mp4"],
+            ["video/mp4"],
+            True,
+            "video",
+            [],
+        ),
         (
             MessageType.DOCUMENT,
             ["/cache/application.mp4"],
             ["application/mp4"],
             True,
             "document",
+            [],
         ),
         (
             MessageType.PHOTO,
@@ -153,12 +195,18 @@ def test_pending_media_merge_preserves_per_attachment_inline_contract():
             ["image/png", "audio/mpeg", "application/pdf"],
             True,
             "mixed",
+            ["/cache/audio.mp3"],
         ),
     ],
     ids=["voice", "audio-mp4", "denied", "document-audio", "video", "application", "mixed"],
 )
 async def test_audio_stt_routing_uses_source_policy_and_attachment_mime(
-    message_type, media_urls, media_types, allowed, expected_route
+    message_type,
+    media_urls,
+    media_types,
+    allowed,
+    expected_route,
+    expected_stt_paths,
 ):
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -201,12 +249,9 @@ async def test_audio_stt_routing_uses_source_policy_and_attachment_mime(
             event=event, source=source, history=[]
         )
 
-    expected_stt_paths = [
-        path
-        for index, path in enumerate(media_urls)
-        if _event_media_is_stt_input(event, index, allowed)
+    assert transcribe.call_args_list == [
+        call(path, None, "gateway") for path in expected_stt_paths
     ]
-    assert transcribe.call_count == len(expected_stt_paths)
     fallback.assert_not_called()
     if expected_route in {"stt", "mixed"}:
         assert '"audio transcript"' in prepared

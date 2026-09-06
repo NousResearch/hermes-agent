@@ -103,8 +103,8 @@ class _PendingVoiceAgent:
         }
 
 
-@pytest.mark.asyncio
-async def test_pending_audio_cache_preserves_concurrency_and_snapshot_ownership():
+def _pending_audio_runner():
+    """Build an opted in pending audio runner."""
     runner = _runner()
     runner.config = GatewayConfig(
         stt_enabled=True,
@@ -114,6 +114,91 @@ async def test_pending_audio_cache_preserves_concurrency_and_snapshot_ownership(
             )
         },
     )
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_pending_audio_waiters_share_task_after_one_waiter_is_cancelled():
+    runner = _pending_audio_runner()
+    source = _source()
+    event = MessageEvent(
+        text="current caption",
+        message_type=MessageType.AUDIO,
+        source=source,
+        media_urls=["/tmp/shared.mp3"],
+        media_types=["audio/mpeg"],
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def transcribe(path, model, context):
+        """Hold one shared transcription task."""
+        calls.append((path, model, context))
+        entered.set()
+        assert release.wait(timeout=5.0)
+        return {"success": True, "transcript": "shared"}
+
+    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+        first_waiter = asyncio.create_task(
+            runner._transcribe_pending_audio_event_once(event, "first caller")
+        )
+        assert await asyncio.to_thread(entered.wait, 5.0)
+        cancelled_waiter = asyncio.create_task(
+            runner._transcribe_pending_audio_event_once(event, "cancelled caller")
+        )
+        await asyncio.sleep(0)
+        cancelled_waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled_waiter
+
+        shared_waiter = asyncio.create_task(
+            runner._transcribe_pending_audio_event_once(event, "shared caller")
+        )
+        await asyncio.sleep(0)
+        assert calls == [("/tmp/shared.mp3", None, "gateway")]
+        release.set()
+        first_result, shared_result = await asyncio.gather(first_waiter, shared_waiter)
+        cached_result = await runner._transcribe_pending_audio_event_once(
+            event, "cached caller"
+        )
+        prepared = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[]
+        )
+
+    prefix = '"shared"'
+    assert first_result[0] == f"{prefix}\n\nfirst caller"
+    assert shared_result[0] == f"{prefix}\n\nshared caller"
+    assert cached_result[0] == f"{prefix}\n\ncached caller"
+    assert event._gateway_pending_stt_text == prefix
+    assert prepared == f"{prefix}\n\ncurrent caption"
+    assert "audio file attachment" not in prepared
+    assert calls == [("/tmp/shared.mp3", None, "gateway")]
+
+
+@pytest.mark.asyncio
+async def test_pending_audio_empty_cached_prefix_preserves_caller_text():
+    runner = _pending_audio_runner()
+    event = MessageEvent(
+        text="event caption",
+        message_type=MessageType.AUDIO,
+        source=_source(),
+        media_urls=["/tmp/empty-prefix.mp3"],
+        media_types=["audio/mpeg"],
+    )
+    event._gateway_pending_stt_text = ""
+    event._gateway_pending_stt_transcripts = []
+
+    result = await runner._transcribe_pending_audio_event_once(
+        event, "caller text"
+    )
+
+    assert result == ("caller text", [])
+
+
+@pytest.mark.asyncio
+async def test_pending_audio_replacement_task_keeps_cleanup_ownership():
+    runner = _pending_audio_runner()
     source = _source()
     event = MessageEvent(
         text="current caption",
@@ -145,17 +230,9 @@ async def test_pending_audio_cache_preserves_concurrency_and_snapshot_ownership(
 
     with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
         old_waiter = asyncio.create_task(
-            runner._transcribe_pending_audio_event_once(event, "first caller")
+            runner._transcribe_pending_audio_event_once(event, "old caller")
         )
         assert await asyncio.to_thread(old_entered.wait, 5.0)
-        cancelled_waiter = asyncio.create_task(
-            runner._transcribe_pending_audio_event_once(event, "cancelled caller")
-        )
-        await asyncio.sleep(0)
-        cancelled_waiter.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await cancelled_waiter
-
         event.media_urls.append("/tmp/new.mp3")
         event.media_types.append("audio/mpeg")
         replacement_waiter = asyncio.create_task(
@@ -165,52 +242,31 @@ async def test_pending_audio_cache_preserves_concurrency_and_snapshot_ownership(
         replacement_task = event._gateway_pending_stt_task
         old_release.set()
         old_result = await old_waiter
-        assert event._gateway_pending_stt_task is replacement_task
 
-        shared_waiter = asyncio.create_task(
-            runner._transcribe_pending_audio_event_once(event, "shared caller")
-        )
-        await asyncio.sleep(0)
-        assert len(calls) == 2
+        assert event._gateway_pending_stt_task is replacement_task
         replacement_release.set()
-        replacement_result, shared_result = await asyncio.gather(
-            replacement_waiter, shared_waiter
-        )
-        prepared = await runner._prepare_inbound_message_text(
-            event=event, source=source, history=[]
-        )
+        replacement_result = await replacement_waiter
 
     prefix = '"new old"\n\n"new attachment"'
-    assert old_result[0] == '"old"\n\nfirst caller'
+    assert old_result[0] == '"old"\n\nold caller'
     assert replacement_result[0] == f"{prefix}\n\nreplacement caller"
-    assert shared_result[0] == f"{prefix}\n\nshared caller"
     assert event._gateway_pending_stt_text == prefix
-    assert prepared == f"{prefix}\n\ncurrent caption"
-    assert "audio file attachment" not in prepared
+    assert not hasattr(event, "_gateway_pending_stt_task")
+    assert not hasattr(event, "_gateway_pending_stt_task_paths")
     assert calls == [
         ("/tmp/old.mp3", None, "gateway"),
         ("/tmp/old.mp3", None, "gateway"),
         ("/tmp/new.mp3", None, "gateway"),
     ]
 
-    empty_prefix_event = MessageEvent(
-        text="event caption",
-        message_type=MessageType.AUDIO,
-        source=source,
-        media_urls=["/tmp/empty-prefix.mp3"],
-        media_types=["audio/mpeg"],
-    )
-    empty_prefix_event._gateway_pending_stt_text = ""
-    empty_prefix_event._gateway_pending_stt_transcripts = []
-    empty_prefix_result = await runner._transcribe_pending_audio_event_once(
-        empty_prefix_event, "caller text"
-    )
-    assert empty_prefix_result == ("caller text", [])
 
-    stale_event = MessageEvent(
+@pytest.mark.asyncio
+async def test_pending_audio_stale_snapshot_is_not_published_and_retries():
+    runner = _pending_audio_runner()
+    event = MessageEvent(
         text="stale caption",
         message_type=MessageType.AUDIO,
-        source=source,
+        source=_source(),
         media_urls=["/tmp/stale.mp3"],
         media_types=["audio/mpeg"],
     )
@@ -230,16 +286,16 @@ async def test_pending_audio_cache_preserves_concurrency_and_snapshot_ownership(
         "tools.transcription_tools.transcribe_audio", side_effect=transcribe_stale
     ):
         stale_waiter = asyncio.create_task(
-            runner._transcribe_pending_audio_event_once(stale_event, "stale caller")
+            runner._transcribe_pending_audio_event_once(event, "stale caller")
         )
         assert await asyncio.to_thread(stale_entered.wait, 5.0)
-        stale_event.media_urls.append("/tmp/fresh.mp3")
-        stale_event.media_types.append("audio/mpeg")
+        event.media_urls.append("/tmp/fresh.mp3")
+        event.media_types.append("audio/mpeg")
         stale_release.set()
         stale_result = await stale_waiter
-        assert not hasattr(stale_event, "_gateway_pending_stt_text")
+        assert not hasattr(event, "_gateway_pending_stt_text")
         retry_result = await runner._transcribe_pending_audio_event_once(
-            stale_event, "retry caller"
+            event, "retry caller"
         )
 
     assert stale_result[0] == '"/tmp/stale.mp3"\n\nstale caller'

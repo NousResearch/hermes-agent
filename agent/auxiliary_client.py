@@ -112,6 +112,7 @@ from agent.model_metadata import (
     strip_codex_context_variant_suffix as _strip_codex_ctx_variant,
 )
 from hermes_cli.config import get_hermes_home
+from hermes_cli.route_identity import normalize_route_base_url
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
@@ -2903,7 +2904,7 @@ def _normalize_chain_label(provider: str) -> str:
 def _unhealthy_cache_key(provider: str, base_url: Optional[str] = None) -> Any:
     """Provider-wide key, or endpoint-specific key for an explicit custom endpoint."""
     label = _normalize_chain_label(provider)
-    endpoint = _custom_health_base_url(provider, base_url).lower().rstrip("/")
+    endpoint = normalize_route_base_url(_custom_health_base_url(provider, base_url))
     if endpoint:
         return "custom-endpoint", endpoint
     return label

@@ -4156,6 +4156,19 @@ class TestAuxUnhealthyCache:
         or_try.assert_not_called()
         custom_try.assert_not_called()
 
+    def test_custom_health_url_identity_preserves_path_and_query_case(self):
+        from agent.auxiliary_client import _is_provider_unhealthy, _mark_provider_unhealthy
+
+        _mark_provider_unhealthy("custom", base_url="https://Example.test/API/v1/")
+
+        assert _is_provider_unhealthy("custom", "https://example.TEST/API/v1") is True
+        assert _is_provider_unhealthy("custom", "https://example.test/api/v1") is False
+
+        _mark_provider_unhealthy("custom", base_url="https://example.test/API/v1?token=AbC")
+        assert _is_provider_unhealthy(
+            "custom", "https://example.test/API/v1?token=abc",
+        ) is False
+
     def test_call_llm_marks_provider_unhealthy_on_402(self, monkeypatch):
         """A 402 from call_llm causes the provider to be marked unhealthy
         so the next call skips it instead of re-trying the same depleted

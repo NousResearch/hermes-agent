@@ -27,6 +27,35 @@ def test_configured_daemon_socket_is_appended(monkeypatch):
     assert args == ["mcp", "--socket", endpoint]
 
 
+def test_configured_daemon_socket_is_used_by_cli_fallback(monkeypatch):
+    from tools.computer_use import cua_backend, cua_backend_driver, cua_backend_session
+
+    endpoint = r"\\.\pipe\cua-driver"
+    monkeypatch.setattr(cua_backend, "_computer_use_cfg", lambda: {"daemon_socket": endpoint})
+    monkeypatch.setattr(cua_backend_driver, "resolve_cua_driver_cmd", lambda: "/resolved/cua-driver")
+
+    captured = {}
+
+    def fake_cli_run_json(cmd, env, name, timeout):
+        captured["cmd"] = cmd
+        return {"tree_markdown": "root"}
+
+    monkeypatch.setattr(cua_backend_session, "_cli_run_json", fake_cli_run_json)
+    session = object.__new__(cua_backend_session._CuaDriverSession)
+
+    result = session._call_tool_via_cli("list_windows", {}, timeout=5.0)
+
+    assert result["isError"] is False
+    assert captured["cmd"] == [
+        "/resolved/cua-driver",
+        "call",
+        "list_windows",
+        "{}",
+        "--socket",
+        endpoint,
+    ]
+
+
 def test_manifest_socket_is_not_overridden(monkeypatch):
     from tools.computer_use import cua_backend, cua_backend_driver
 

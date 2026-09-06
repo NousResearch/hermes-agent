@@ -457,6 +457,8 @@ class _CuaDriverSession:
         if daemon is not None:
             driver_command, child_env = daemon.proxy_invocation()[0], daemon.child_env()
             socket_args = ["--socket", daemon.socket_path]
+        elif configured_socket := _cb._cua_daemon_socket():
+            socket_args = ["--socket", configured_socket]
         cmd = [driver_command, "call", name, json.dumps(call_args), *socket_args]
         try:
             return _cli_result(_cli_run_json(cmd, _sanitize_subprocess_env(child_env), name, timeout), shot_file)

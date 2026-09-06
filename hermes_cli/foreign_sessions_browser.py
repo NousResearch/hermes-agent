@@ -4,9 +4,8 @@ import hashlib
 import re
 import socket
 from pathlib import Path
-from stat import S_ISREG
 
-from hermes_cli.foreign_sessions import _SOURCES, _SOURCE_LABELS, _SOURCE_DB_NAMES
+from hermes_cli.foreign_sessions import _SOURCE_DB_NAMES, _SOURCE_LABELS, _SOURCES, _walk
 
 MAX_LOG_BYTES = 32 * 1024 * 1024
 
@@ -21,27 +20,12 @@ def _display_title(parsed, source):
 
 
 def _candidates(source=None):
+    """``(mtime, handle, source, path, size)`` rows across sources, newest first. The handle is
+    the only identifier handed to the client; a request can never name a path."""
     if source is not None and source not in _SOURCES:
         raise ValueError("Unknown session source")
-    rows = []
-    for name, (parts, pattern, recursive, _) in _SOURCES.items():
-        if source and source != name:
-            continue
-        root = Path.home().joinpath(*parts).resolve()
-        if not root.is_dir():
-            continue
-        for path in root.rglob(pattern) if recursive else root.glob(pattern):
-            try:
-                resolved = path.resolve()
-                if not resolved.is_relative_to(root):
-                    continue
-                stat = resolved.stat()
-            except OSError:
-                continue  # One inaccessible or rotated log must not hide the rest.
-            if not S_ISREG(stat.st_mode):
-                continue
-            handle = hashlib.sha256(f"{name}:{resolved}".encode()).hexdigest()
-            rows.append((stat.st_mtime, handle, name, resolved, stat.st_size))
+    rows = [(st.st_mtime, hashlib.sha256(f"{name}:{path}".encode()).hexdigest(), name, path, st.st_size)
+            for name in _SOURCES if source in (None, name) for path, st in _walk(name)]
     return sorted(rows, key=lambda row: (row[0], row[1]), reverse=True)
 
 

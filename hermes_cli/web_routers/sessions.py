@@ -32,7 +32,10 @@ manage_router = APIRouter()
 
 _cron_default_profile = late("_cron_default_profile", "hermes_cli.web_server_cron")
 _cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
+_dashboard_requester_scope = late("_dashboard_requester_scope")
+_enforce_session_ownership = late("_enforce_session_ownership")
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
+_require_dashboard_admin = late("_require_dashboard_admin")
 
 _NOT_FOUND = "Session not found"
 
@@ -164,6 +167,7 @@ def _resolve_session_id(db, session_id: str) -> Optional[str]:
 # row (plus correlated-subquery preview work) out of SQLite in a single hit.
 @list_router.get("/api/sessions")
 def get_sessions(
+    request: Request,
     limit: int = Query(20, ge=0, le=100), offset: int = Query(0, ge=0), min_messages: int = 0,
     archived: str = "exclude", order: str = "created", source: str = None, sources: str = None,
     exclude_sources: str = None, cwd_prefix: str = None, full: bool = False,
@@ -173,13 +177,26 @@ def get_sessions(
     ``order=recent`` sorts by latest activity across the compression chain, so
     a long-running chat stays on page one after it auto-compresses onto a fresh
     id.  Rows omit ``system_prompt`` / ``model_config`` unless ``full=1``.
+
+    A Telegram Mini App bearer-token caller without ``dashboard:admin`` scope
+    is scoped to their own Telegram DM sessions only (spec §4) — see
+    ``_dashboard_requester_scope``. A cookie-authenticated (desktop) caller,
+    or a token-authed admin, is unaffected.
     """
     if archived not in ("exclude", "only", "include"):
         raise HTTPException(
             status_code=400, detail="archived must be one of: exclude, only, include")
     if order not in ("created", "recent"):
-        raise HTTPException(status_code=400, detail="order must be one of: created, recent")
-    profile_name = _cron_profile_home(profile)[0] if profile else None
+        raise HTTPException(
+            status_code=400,
+            detail="order must be one of: created, recent",
+        )
+    scope, requester_user_id = _dashboard_requester_scope(request)
+    if scope == "own" and not requester_user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    profile_name: Optional[str] = None
+    if profile:
+        profile_name, _ = _cron_profile_home(profile)
     try:
         # Auto-archive is the only write on this GET path: run it on its own
         # maintenance connection, then open the listing connection read-only.
@@ -193,7 +210,11 @@ def get_sessions(
             # the cron-jobs section (source=cron) into two independent lists.
             source_list = _csv(sources)
             exclude_list = _csv(exclude_sources)
-            scope = dict(
+            # Named ``filters`` (not ``scope``): a dashboard-requester ``scope``
+            # string ("own"/"admin"/None) is threaded through the same calls
+            # below and would collide with — and be shadowed by — a same-named
+            # local dict of SessionDB query filters.
+            filters = dict(
                 source=source or None, sources=source_list or None,
                 exclude_sources=exclude_list or None, cwd_prefix=(cwd_prefix or None),
                 min_message_count=min_message_count, include_archived=include_archived,
@@ -206,8 +227,14 @@ def get_sessions(
                 # _strip_session_list_rows below).
                 compact_rows=not full,
                 include_pinned=True,
-                **scope)
-            total = db.session_count(exclude_children=True, **scope)
+                requester_user_id=requester_user_id,
+                scope=scope,
+                **filters)
+            total = db.session_count(
+                exclude_children=True,
+                requester_user_id=requester_user_id,
+                scope=scope,
+                **filters)
             now = time.time()
             row_profile = profile_name or _cron_default_profile()
             for s in sessions:
@@ -253,15 +280,28 @@ def _is_compression_edge(child: dict, parent: dict) -> bool:
 
 @search_router.get("/api/sessions/search")
 async def search_sessions(
+    request: Request,
     q: str = "", limit: int = 20, profile: Optional[str] = None, source: str = None,
     sources: str = None, exclude_sources: str = None):
-    """Search sessions by ID (first) plus FTS5 message content.
+    """Search sessions by ID plus full-text message content using FTS5.
 
-    Results are deduped by compression lineage, not raw ``session_id``:
-    auto-compression rotates a chat onto a fresh id and leaves the old segment
-    in the FTS index.  Branches also use ``parent_session_id`` but are real
-    alternate conversations — they are NOT collapsed into the parent.
+    Direct session-id matches are surfaced first, then FTS message-content
+    matches. Results are deduped by compression lineage, not by raw
+    ``session_id``. Auto-compression rotates a conversation onto a fresh
+    session id (and leaves the old segment's messages in the FTS index), so one
+    logical chat can own many ``sessions`` rows that all match the same query.
+    Branches also use ``parent_session_id``, but they are real alternate
+    conversations; don't collapse branch-specific hits back into the parent.
+
+    Mini App token route (required=False), admin-tier only: unlike
+    GET /api/sessions, this is a raw global FTS search across every
+    session's message content with no DM-ownership scoping at all -- a
+    non-admin paired caller must never reach it, or they'd search (and see
+    snippets of) every other user's conversations. The Mini App's Sessions
+    screen only ever shows the search box to admins for exactly this
+    reason; this is the server-side backstop for that.
     """
+    _require_dashboard_admin(request)
     if not q or not q.strip():
         return {"results": []}
     with http_failure("GET /api/sessions/search failed", 500, detail="Search failed"):
@@ -474,12 +514,13 @@ async def get_session_stats(profile: Optional[str] = None):
 
 
 @manage_router.get("/api/sessions/{session_id}")
-async def get_session_detail(session_id: str, profile: Optional[str] = None):
+async def get_session_detail(request: Request, session_id: str, profile: Optional[str] = None):
     def _detail(db):
         sid = _resolve_session_id(db, session_id)
         session = db.get_session(sid) if sid else None
         if not session:
             raise HTTPException(status_code=404, detail=_NOT_FOUND)
+        _enforce_session_ownership(request, session)
         # Always stamp the owner: unowned default-profile rows made multi-profile
         # clients resolve them to whichever gateway happened to be active.
         session["profile"] = _serving_profile(profile)
@@ -527,9 +568,9 @@ def _project_for_display(messages: list) -> list:
 
 @manage_router.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(
-    session_id: str, profile: Optional[str] = None, limit: Optional[int] = Query(None, ge=0),
-    offset: int = Query(0, ge=0), order: Optional[str] = Query(None),
-    include_compacted: bool = Query(False)):
+    request: Request, session_id: str, profile: Optional[str] = None,
+    limit: Optional[int] = Query(None, ge=0), offset: int = Query(0, ge=0),
+    order: Optional[str] = Query(None), include_compacted: bool = Query(False)):
     if order not in (None, "oldest", "latest"):
         raise HTTPException(status_code=400, detail="order must be one of: oldest, latest")
 
@@ -537,7 +578,15 @@ async def get_session_messages(
         sid = _resolve_session_id(db, session_id)
         if not sid:
             return None
+        # Ownership is checked on the RESOLVED id (the compression-tip
+        # descendant whose rows are actually returned below), not the
+        # originally-requested id — resolve_resume_session_id can redirect
+        # to a different row and that's the one whose ownership matters.
         sid = db.resolve_resume_session_id(sid)
+        session = db.get_session(sid)
+        if not session:
+            return None
+        _enforce_session_ownership(request, session)
         # Always page (an omitted limit used to load whole transcripts). Explicit
         # pagination anchors at the start; the default view is the latest page.
         default_page = limit is None
@@ -564,8 +613,103 @@ async def get_session_messages(
             "returned": len(projected_messages)}}
 
 
+@manage_router.post("/api/sessions/{session_id}/resume")
+async def resume_session_endpoint(request: Request, session_id: str, profile: Optional[str] = None):
+    """Make ``session_id`` the active session for its own Telegram chat.
+
+    Mini App token route (required=False), admin-tier only — this switches
+    what a LIVE chat continues in, not a per-caller preference, so it's
+    scoped the same as the other instance-wide mutating actions
+    (_require_dashboard_admin), not the per-row ownership check GET/DELETE
+    use.
+
+    The dashboard process cannot safely mutate a running gateway's
+    SessionStore directly (see gateway/resume_control.py's module docstring:
+    its routing table loads once at gateway startup and a live save() would
+    silently clobber a direct external write). Instead this writes a marker
+    (gateway/resume_control.py) that the gateway's own
+    _resume_control_watcher observes and applies in-process, reusing the
+    exact switch mechanics ``/resume`` uses.
+
+    Only ``source == "telegram"`` sessions are resumable this way — the
+    Mini App only ever runs inside Telegram, and "the active session for
+    this chat" is meaningless for a session with no live inbound chat behind
+    it (e.g. a cron run).
+    """
+    _require_dashboard_admin(request)
+    db = _open_session_db_for_profile(profile, read_only=True)
+    try:
+        sid = db.resolve_session_id(session_id)
+        session = db.get_session(sid) if sid else None
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        if session.get("source") != "telegram":
+            raise HTTPException(
+                status_code=400,
+                detail="Only Telegram sessions can be resumed this way",
+            )
+        chat_id = session.get("chat_id")
+        if not chat_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Session has no chat_id to resume into",
+            )
+        target_id = db.resolve_resume_session_id(sid)
+    finally:
+        db.close()
+
+    from gateway.config import Platform, load_gateway_config
+    from gateway.resume_control import write_resume_request
+    from gateway.session import SessionSource, build_session_key
+
+    gw_config = load_gateway_config()
+    # Mirrors GatewayRunner._session_key_for_source's fallback path exactly
+    # (used here unconditionally: the dashboard has no live session_store to
+    # prefer over it) -- None unless multiplexing is on, then the active
+    # profile, so a non-multiplexing install produces the identical key a
+    # live gateway would.
+    key_profile = None
+    if getattr(gw_config, "multiplex_profiles", False):
+        key_profile = profile or session.get("profile")
+        if not key_profile:
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+                key_profile = get_active_profile_name() or "default"
+            except Exception:
+                key_profile = None
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id=chat_id,
+        chat_type=session.get("chat_type") or "dm",
+        user_id=session.get("user_id"),
+        thread_id=session.get("thread_id"),
+        profile=key_profile,
+    )
+    session_key = build_session_key(
+        source,
+        group_sessions_per_user=gw_config.group_sessions_per_user,
+        thread_sessions_per_user=gw_config.thread_sessions_per_user,
+        profile=key_profile,
+    )
+    principal = "dashboard"
+    token_principal = getattr(request.state, "token_principal", None)
+    if token_principal is not None:
+        principal = f"miniapp:{getattr(token_principal, 'principal', 'admin')}"
+    write_resume_request(session_key, target_id, principal=principal)
+    return {"ok": True, "session_key": session_key, "target_session_id": target_id}
+
+
 @manage_router.delete("/api/sessions/{session_id}")
-async def delete_session_endpoint(session_id: str, profile: Optional[str] = None):
+async def delete_session_endpoint(request: Request, session_id: str, profile: Optional[str] = None):
+    # Mini App token route (required=False), admin-tier only: a non-admin
+    # paired caller must never delete ANY session, including their own --
+    # the Mini App spec's paired/"member" tier is read-only, full stop.
+    # Admin gets unrestricted access here (same as the desktop operator),
+    # matching admin's "full access" definition elsewhere in this feature --
+    # no additional per-row ownership check needed on top of the flat gate.
+    _require_dashboard_admin(request)
+
     def _delete(db):
         # Already-absent is an idempotent success: the desktop optimistically
         # removes the row and RESTORES it on any error, so a 404 resurrected
@@ -619,9 +763,15 @@ _RENAME_FLAG_SETTERS = (
 
 
 @manage_router.patch("/api/sessions/{session_id}")
-async def rename_session_endpoint(session_id: str, body: SessionRename):
+async def rename_session_endpoint(request: Request, session_id: str, body: SessionRename):
     """Update ``title`` (empty clears) and/or the flags; ``pinned`` exempts from
-    the auto-archive sweep, ``unread=False`` marks read up to now."""
+    the auto-archive sweep, ``unread=False`` marks read up to now.
+
+    Mini App token route (required=False), admin-tier only: the spec's
+    paired/"member" tier never archives or renames, even its own sessions --
+    matches the desktop's Archive button being admin-only in the Mini App UI.
+    """
+    _require_dashboard_admin(request)
     flags = [flag for flag, _ in _RENAME_FLAG_SETTERS]
 
     def _update(db):

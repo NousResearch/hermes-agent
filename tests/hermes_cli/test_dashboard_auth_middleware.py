@@ -134,6 +134,64 @@ def test_other_public_api_paths_are_public_under_gate(gated_app, path):
         )
 
 
+def test_gated_html_redirects_to_login(gated_app):
+    r = gated_app.get("/", follow_redirects=False)
+    assert r.status_code == 302
+    # Phase 1 (cloud-auto-discovery): with a single interactive provider, an
+    # unauthenticated HTML load auto-initiates the OAuth redirect to
+    # /auth/login rather than rendering the /login interstitial. The /login
+    # page remains the fallback (multiple/zero providers, or loop-guard trip).
+    assert r.headers["location"].startswith("/auth/login?provider=stub")
+
+
+def test_gated_auth_providers_is_public(gated_app):
+    r = gated_app.get("/api/auth/providers")
+    assert r.status_code == 200
+    body = r.json()
+    assert any(p["name"] == "stub" for p in body["providers"])
+    assert body["providers"][0]["display_name"] == "Stub IdP (test only)"
+
+
+def test_gated_login_html_is_public_and_lists_providers(gated_app):
+    r = gated_app.get("/login")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    assert "Stub IdP" in r.text
+    assert 'href="/auth/login?provider=stub"' in r.text
+
+
+def test_gated_static_asset_path_is_public(gated_app):
+    """``/assets/*`` is allowlisted so the SPA's CSS/JS loads pre-login."""
+    r = gated_app.get("/assets/_nonexistent.css")
+    # 404 not 401 — proves middleware let the request through to the
+    # static-files mount, which then 404'd because the file isn't there.
+    assert r.status_code == 404
+
+
+def test_gated_miniapp_page_shell_is_public(gated_app):
+    """The Telegram Mini App's page shell (/miniapp) must never redirect to
+    /login under the OAuth gate -- unlike every other SPA route (/, /sessions,
+    etc.), which correctly DOES redirect (see test_gated_html_redirects_to_login).
+    A real Telegram user's very first visit has no dashboard cookie and never
+    will; the Mini App proves identity via a bearer initData token on its own
+    API calls, not via this page load. Gating the shell itself would make the
+    feature permanently unreachable for the exact audience it exists for.
+
+    Accept either outcome that proves the request passed the auth gate:
+    200 (WEB_DIST built in this test environment) or the "frontend not built"
+    404 JSON mount_spa() falls back to when it isn't -- but never a 401, and
+    never a redirect to /login, which is what this test actually guards
+    against (the real bug, found against a live auth_required=True deployment,
+    not a theoretical one).
+    """
+    r = gated_app.get("/miniapp", follow_redirects=False)
+    assert r.status_code != 401
+    assert r.status_code != 302, (
+        f"/miniapp redirected (location={r.headers.get('location')!r}) -- "
+        "the Mini App's page shell must load without a cookie"
+    )
+
+
 # ---------------------------------------------------------------------------
 # OAuth round trip
 # ---------------------------------------------------------------------------

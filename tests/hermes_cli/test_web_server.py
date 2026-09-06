@@ -14,6 +14,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 import yaml
+from fastapi import Request
 
 from hermes_cli.config import (
     reload_env,
@@ -381,7 +382,8 @@ class TestWebServerEndpoints:
 
         async def _run():
             event_loop_thread = threading.get_ident()
-            await _rt_status.get_status()
+            request = Request(scope={"type": "http", "headers": []})
+            await _rt_status.get_status(request)
             return event_loop_thread
 
         event_loop_thread = asyncio.run(_run())

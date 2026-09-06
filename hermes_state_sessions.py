@@ -71,6 +71,54 @@ def _workspace_key_clause(key: str) -> Tuple[str, List[str]]:
     )
 
 
+# Valid ``scope=`` values for list_sessions_rich/session_count.
+_SESSION_LIST_SCOPES = ("own", "admin")
+
+
+def _dm_own_scope_clause(requester_user_id: str) -> Tuple[str, List[str]]:
+    """WHERE clause restricting rows to *requester_user_id*'s own Telegram DMs.
+
+    Used by the Telegram Mini App dashboard's non-admin tier (``scope="own"``
+    on ``list_sessions_rich``/``session_count``) so a paired-but-non-admin
+    caller only ever sees their own DM sessions, never another user's or a
+    group/channel session. A Telegram DM's ``chat_id`` equals the
+    participant's own user id, so matching ``chat_id`` doubles as a
+    same-owner check without needing ``user_id`` at all. A row with a
+    NULL/blank ``chat_id`` (legacy rows predating chat/thread capture) cannot
+    prove ownership and is excluded — fails closed rather than guessing via
+    ``user_id`` alone.
+    """
+    return (
+        "s.source = 'telegram' AND s.chat_type = 'dm' "
+        "AND s.chat_id IS NOT NULL AND s.chat_id != '' AND s.chat_id = ?",
+        [str(requester_user_id)],
+    )
+
+
+def session_row_is_own_dm(session: Dict[str, Any], requester_user_id: str) -> bool:
+    """Row-match counterpart to :func:`_dm_own_scope_clause`.
+
+    Same rule (``source == 'telegram'``, ``chat_type == 'dm'``, non-blank
+    ``chat_id`` equal to ``requester_user_id``), evaluated against a single
+    already-fetched session dict (e.g. ``SessionDB.get_session()``'s return
+    value) instead of as a SQL WHERE filter. Used by the dashboard's
+    single-session ownership check (``GET /api/sessions/{id}`` and
+    ``.../messages``) where the caller already has the row in hand and a
+    second query isn't needed — kept as a standalone function rather than
+    inlined at the call site so the "what counts as ownership" rule has
+    exactly one definition each for its two shapes (query-filter vs.
+    row-match), not two independently-maintained copies that can drift.
+    """
+    if not requester_user_id:
+        return False
+    if session.get("source") != "telegram" or session.get("chat_type") != "dm":
+        return False
+    chat_id = session.get("chat_id")
+    if not chat_id:
+        return False
+    return str(chat_id) == str(requester_user_id)
+
+
 # First user message of a session, shaped by _shape_preview() in Python.
 # The indentation is part of the list_sessions_rich SQL text.
 _PREVIEW_COL_SQL = f"""COALESCE(
@@ -1190,16 +1238,36 @@ class SessionSessionsMixin:
         order_by_last_active: bool = False, include_archived: bool = False, archived_only: bool = False,
         id_query: str = None, search_query: str = None, compact_rows: bool = False,
         include_pinned: bool = False, session_key: str = None, include_hidden: bool = False,
+        requester_user_id: str = None, scope: str = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
-        ``include_pinned`` back-fills pins the page missed, still obeying the other filters."""
+        ``include_pinned`` back-fills pins the page missed, still obeying the other filters.
+
+        ``scope="own"`` (paired with ``requester_user_id``) restricts results to that user's own
+        Telegram DM sessions — see ``_dm_own_scope_clause``. This is the Telegram Mini App dashboard's
+        non-admin scoping: a paired-but-non-admin caller must never see another user's sessions or any
+        group/channel session. Any other caller (desktop dashboard, admin callers) passes
+        ``scope=None``/``"admin"`` and sees the existing unfiltered behaviour unchanged. ``scope="own"``
+        without a ``requester_user_id`` is a programming error, not a data-dependent case, so it raises
+        rather than silently returning nothing.
+        """
+        if scope is not None and scope not in _SESSION_LIST_SCOPES:
+            raise ValueError(f"list_sessions_rich: invalid scope {scope!r}")
         self.flush_token_counts()  # rows carry token/cost totals
         where_clauses, params = _session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived,
         )
+        if scope == "own":
+            if not requester_user_id:
+                raise ValueError(
+                    "list_sessions_rich: scope='own' requires a non-empty requester_user_id"
+                )
+            own_clause, own_params = _dm_own_scope_clause(requester_user_id)
+            where_clauses.append(own_clause)
+            params.extend(own_params)
         if not include_hidden:
             where_clauses.append("s.hidden = 0")
         where_sql = _where_sql(where_clauses)
@@ -1385,13 +1453,29 @@ class SessionSessionsMixin:
         self, source: str = None, sources: List[str] = None, cwd_prefix: str = None,
         min_message_count: int = 0, include_archived: bool = False, archived_only: bool = False,
         exclude_children: bool = False, exclude_sources: List[str] = None,
+        requester_user_id: str = None, scope: str = None,
     ) -> int:
-        """Count sessions with list_sessions_rich's filters so a paired "load more" total matches."""
+        """Count sessions with list_sessions_rich's filters so a paired "load more" total matches.
+
+        ``scope="own"``/``requester_user_id`` mirrors ``list_sessions_rich``'s DM-ownership scoping so a
+        paired-but-non-admin Telegram Mini App caller's session count matches what they can actually
+        list — see ``_dm_own_scope_clause``.
+        """
+        if scope is not None and scope not in _SESSION_LIST_SCOPES:
+            raise ValueError(f"session_count: invalid scope {scope!r}")
         where_clauses, params = _session_filter_where(
             exclude_children=exclude_children, source=source, sources=sources,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived,
         )
+        if scope == "own":
+            if not requester_user_id:
+                raise ValueError(
+                    "session_count: scope='own' requires a non-empty requester_user_id"
+                )
+            own_clause, own_params = _dm_own_scope_clause(requester_user_id)
+            where_clauses.append(own_clause)
+            params.extend(own_params)
         return self._read_one(f"SELECT COUNT(*) FROM sessions s{_where_sql(where_clauses, ' ')}", params)[0]
 
     def session_count_ge(self, n: int = 1) -> bool:

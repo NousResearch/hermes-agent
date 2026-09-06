@@ -35,7 +35,9 @@ logs_router = APIRouter()
 _collect_profile_gateway_topology_cached = late("_collect_profile_gateway_topology_cached", "hermes_cli.web_server_gateway")
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 _dashboard_local_update_managed_externally = late("_dashboard_local_update_managed_externally", "hermes_cli.web_server_files")
+_dashboard_requester_scope = late("_dashboard_requester_scope")
 _load_configured_gateway_platforms = late("_load_configured_gateway_platforms", "hermes_cli.web_server_gateway")
+_machine_env_mtime = late("_machine_env_mtime")
 _probe_gateway_health = late("_probe_gateway_health", "hermes_cli.web_server_gateway")
 _require_token = late("_require_token")
 _resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profiles")
@@ -375,7 +377,7 @@ async def _advisory_pressure(status: Dict[str, Any], home: Path) -> None:
 
 
 @router.get("/api/status")
-async def get_status(profile: Optional[str] = None):
+async def get_status(request: Request, profile: Optional[str] = None):
     """Public machine-level liveness probe (``PUBLIC_API_PATHS``): version, gateway state,
     active session count and the auth-gate shape — no bodies, no session content, no secrets.
 
@@ -459,6 +461,23 @@ async def get_status(profile: Optional[str] = None):
                 "hermes_home": str(get_hermes_home()), "config_path": str(get_config_path()),
                 "env_path": str(get_env_path()), "gateway_pid": gateway["gateway_pid"],
                 "gateway_health_url": _GATEWAY_HEALTH_URL, "gateways": topology["gateways"]})
+
+        # gateway_start_time / telegram_allowlist_updated_at drive the Mini App admin view's
+        # "env change pending restart" banner (needs_restart = env_mtime > gateway_start_time).
+        # Gated on requester_scope == "admin" (NOT `not auth_required`, unlike gateway_pid
+        # above): /api/status is in PUBLIC_API_PATHS so gated_auth_middleware never verifies a
+        # session cookie for this path, meaning `requester_scope is None` here is
+        # indistinguishable between a cookie-authenticated desktop operator and a fully
+        # anonymous caller — only a verified admin-tier token principal is a reliable signal.
+        # These two fields are admin-only end-to-end; the desktop dashboard never reads either.
+        runtime = gateway["runtime"]
+        requester_scope, _ = _dashboard_requester_scope(request)
+        if requester_scope == "admin":
+            # start_epoch (real Unix epoch), NOT start_time (a boot-relative clock-tick
+            # fingerprint) -- both consumers here (uptime display, restart-needed banner)
+            # compare against wall-clock time.
+            status["gateway_start_time"] = runtime.get("start_epoch") if runtime else None
+            status["telegram_allowlist_updated_at"] = _machine_env_mtime()
 
         return status
     finally:

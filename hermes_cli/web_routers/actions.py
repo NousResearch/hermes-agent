@@ -30,6 +30,7 @@ status_router = APIRouter()
 _dashboard_local_update_managed_externally = late("_dashboard_local_update_managed_externally", "hermes_cli.web_server_files")
 _spawn_gateway_restart = late("_spawn_gateway_restart")
 _spawn_hermes_action = late("_spawn_hermes_action", "hermes_cli.web_server_gateway")
+_require_dashboard_admin = late("_require_dashboard_admin")
 detect_install_method = late("detect_install_method", "hermes_cli.config")
 get_hermes_home = late("get_hermes_home", "hermes_cli.config")
 _ACTION_COMMANDS = LateState("_ACTION_COMMANDS", "hermes_cli.web_server_gateway")
@@ -136,8 +137,12 @@ def _durable_completed_update_action_id(lines: List[str]) -> Optional[str]:
 
 
 @router.post("/api/gateway/restart")
-async def restart_gateway(profile: Optional[str] = None):
-    """Kick off a ``hermes gateway restart`` in the background."""
+async def restart_gateway(request: Request, profile: Optional[str] = None):
+    """Kick off a ``hermes gateway restart`` in the background.
+
+    Mini App token route (required=False), admin-tier only.
+    """
+    _require_dashboard_admin(request)
     with http_failure("Failed to spawn gateway restart", 500, "Failed to restart gateway"):
         proc, _reused = _spawn_gateway_restart(profile)
     return {"ok": True, "pid": proc.pid, "name": "gateway-restart"}
@@ -198,8 +203,12 @@ def _update_refused(error: str, message: str, update_command: str) -> Dict[str, 
 
 
 @router.post("/api/hermes/update")
-async def update_hermes():
-    """Kick off ``hermes update`` in the background."""
+async def update_hermes(request: Request):
+    """Kick off ``hermes update`` in the background.
+
+    Mini App token route (required=False), admin-tier only.
+    """
+    _require_dashboard_admin(request)
     if _dashboard_local_update_managed_externally():
         message = _MANAGED_EXTERNALLY_MESSAGE + " The built-in local updater is disabled here."
         return _update_refused("dashboard_update_managed_externally", message, "managed outside dashboard")

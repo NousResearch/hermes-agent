@@ -242,3 +242,15 @@ class TestLogout:
         logout_command(SimpleNamespace(provider="nous"))
         assert _shared_store(tmp_path) == {}
         assert "nous" not in _load_auth_store().get("providers", {})
+
+
+class TestModelSwitchCopy:
+    def test_switching_away_from_welcome_names_the_account_path_not_another_provider(self, portal, monkeypatch):
+        anon_auth.ensure_portal_identity(blocking=True)
+        from hermes_cli import model_switch
+        monkeypatch.setattr(model_switch, "list_provider_models", lambda *a, **k: [], raising=False)
+        result = model_switch.switch_model("gpt-5", "nous", anon_auth.GUEST_MODEL, WELCOME)
+        assert not result.success
+        msg = (result.error_message or "").lower()
+        assert "hermes auth upgrade" in msg
+        assert "openrouter" not in msg and "switching" not in msg

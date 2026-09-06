@@ -13,6 +13,15 @@ delegates to subagents, runs scheduled jobs, and drives a real terminal and
 browser. It is extended primarily through **plugins and skills**, not by
 growing the core.
 
+## Context rail inputs
+
+- product: Hermes Agent
+- flow: none
+- checks: cd ui-tui && npm run typecheck && npm test
+- evidence: ui-tui/src/__tests__/devContextRail.test.tsx
+- decisions:
+  - 2026-09-06: keep the rail single-project and honest about missing Flow data
+
 Two properties shape almost every design decision and are the lens for
 reviewing any change:
 

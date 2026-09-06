@@ -22,6 +22,7 @@ def load_hermes_env_vars() -> dict[str, str]:
 
 def resolve_passthrough_env(explicit_forward: Iterable[str] = (),
                             hermes_env_loader: Callable[[], dict[str, str]] = load_hermes_env_vars,
+                            blocked_implicit: Iterable[str] = (),
                             ) -> tuple[dict[str, str], set[str]]:
     """Values to forward into a remote shell plus the scoped names that must be unset there.
 
@@ -44,7 +45,9 @@ def resolve_passthrough_env(explicit_forward: Iterable[str] = (),
     except Exception:
         pass
     implicit_forward = {k for k in passthrough_keys if not _is_hermes_internal_secret(k)}
-    forward_keys = set(explicit_forward) | (implicit_forward - _HERMES_PROVIDER_ENV_BLOCKLIST)
+    forward_keys = set(explicit_forward) | (
+        implicit_forward - _HERMES_PROVIDER_ENV_BLOCKLIST - set(blocked_implicit)
+    )
     hermes_env = hermes_env_loader() if forward_keys else {}
     exec_env: dict[str, str] = {}
     unset_names: set[str] = set()

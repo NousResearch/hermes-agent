@@ -144,13 +144,13 @@ class GroupApprovalPermissions:
             time.monotonic() + PAGE_TIMEOUT_SECONDS, _confirm_digest(selected), self.stamp,
         )
         bot = _label(approvals.approval_member_label(room, selected["member_id"]))
-        title = (f"**Always allow this command here?**\n{bot} · {_label(room['name'])}\n"
+        title = (f"**Always allow this command in this chat?**\n{bot} · {_label(room['name'])}\n"
                  f"{_label(selected['approval'].get('remember_context'), 384)}\n\n"
                  f"{_label(selected['approval']['command'], 512)}\n\n"
                  "This Bot may run this command again in this Group Chat without asking. "
                  "It can affect changing files and data. You can remove this permission later.")
         return ChoicePage(title, [
-            {"label": "Always allow here", "value": f"confirm:{reference}:{_confirm_digest(selected)}"},
+            {"label": "Always allow in this chat", "value": f"confirm:{reference}:{_confirm_digest(selected)}"},
             {"label": "Go back", "value": f"request:{reference}"},
         ])
 
@@ -173,7 +173,7 @@ class GroupApprovalPermissions:
         choices = [{"label": "Allow once", "value": "once:" + reference},
                    {"label": "Deny", "value": "deny:" + reference}]
         if "remember" in selected["approval"].get("choices", []):
-            choices.append({"label": "Always allow here…", "value": "remember:" + reference, "full_width": True})
+            choices.append({"label": "Always allow in this chat", "value": "remember:" + reference, "full_width": True})
         choices.extend([{"label": "View remembered approvals", "value": "permissions:0"},
                         {"label": "‹ Back to Group Chat", "value": "group"}])
         description, command = approvals._approval_display_parts(selected["approval"])
@@ -211,7 +211,7 @@ class GroupApprovalPermissions:
             entry = self.confirmations().pop(self.confirmation_key(reference), None)
             if (not confirmed or entry is None or entry[1] != _confirm_digest(selected) or entry[2] != self.stamp
                     or (expected_digest and expected_digest != entry[1])):
-                raise approvals.MessagingApprovalError("That confirmation expired. Choose Always allow here again.")
+                raise approvals.MessagingApprovalError("That confirmation expired. Choose Always allow in this chat again.")
         denial = self.runner._group_chat_rate_limit_denial(self.event, action="deny" if choice == "deny" else "approve")
         if denial:
             return denial
@@ -278,7 +278,7 @@ class GroupApprovalPermissions:
     async def _choose_confirm(self, argument):
         reference, _, fingerprint = argument.partition(":")
         if len(fingerprint) != 64 or any(char not in "0123456789abcdef" for char in fingerprint):
-            raise approvals.MessagingApprovalError("That confirmation expired. Choose Always allow here again.")
+            raise approvals.MessagingApprovalError("That confirmation expired. Choose Always allow in this chat again.")
         return await self.apply("remember", reference, confirmed=True, expected_digest=fingerprint)
 
     async def _choose_rule(self, argument, *, forget=False):

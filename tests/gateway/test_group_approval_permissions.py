@@ -64,9 +64,11 @@ async def test_native_confirm_remembers_only_once_on_wire_and_can_forget(owner):
     assert await command(owner, "/group 1 approvals") is None
     opening = owner.adapter.calls[-1]
     assert "Allow once" in [item["label"] for item in opening["choices"]]
-    remember = next(item["value"] for item in opening["choices"] if item["value"].startswith("remember:"))
-    warning = await click(owner, remember)
+    remember = next(item for item in opening["choices"] if item["value"].startswith("remember:"))
+    assert "this chat" in remember["label"] and not remember["label"].endswith(("...", "…"))
+    warning = await click(owner, remember["value"])
     assert "without asking" in warning.title and "changing files" in warning.title
+    assert next(item["label"] for item in warning.choices if item["value"].startswith("confirm:")) == remember["label"]
     assert owner.calls == []
     result = await click(owner, choice(warning, "confirm:"))
     assert isinstance(result, ChoicePage) and "remembered for writer in group-a" in result.title
@@ -164,6 +166,23 @@ async def test_source_back_navigation_and_no_pending_state_remain_usable(owner):
     owner.service.room_status["pending_actions"] = []
     assert await command(owner, "/group 1 approvals") is None
     assert "No pending approvals" in owner.adapter.calls[-1]["title"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["remember", "confirm", "once", "deny"])
+async def test_request_expiring_after_menu_open_reports_expiry_without_applying(owner, action):
+    assert await command(owner, "/group 1 approvals") is None
+    reference = approvals.approval_reference(owner.request)
+    value = action + ":" + reference
+    if action == "confirm":
+        warning = await click(owner, "remember:" + reference)
+        value = choice(warning, "confirm:")
+    owner.service.room_status["pending_actions"] = []
+    result = await click(owner, value)
+    assert isinstance(result, str) and "no longer waiting for approval" in result
+    assert "approval code" not in result and owner.calls == []
+    with transaction(owner.service.db_path) as conn:
+        assert menus.rules.list_rules(conn, owner.room["room_id"]) == []
 
 
 @pytest.mark.asyncio

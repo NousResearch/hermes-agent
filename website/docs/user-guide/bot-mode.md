@@ -118,7 +118,7 @@ Group Chat controls require an authorized account. If Hermes asks you to choose 
 
 #### Remember an approval
 
-For supported terminal commands, **Always allow here** lets one Bot repeat that exact command in this Group Chat without asking again. Hermes asks you to confirm first. The permission applies only to the same working directory and connection; other Bots, groups, and conversations keep their own approval rules. A repeated command can still affect files or data that have changed, so remember only commands you trust to run again.
+For supported terminal commands, **Always allow in this chat** lets one Bot repeat that exact command in this Group Chat without asking again. Hermes asks you to confirm first. The permission applies only to the same working directory and connection; other Bots, groups, and conversations keep their own approval rules. A repeated command can still affect files or data that have changed, so remember only commands you trust to run again.
 
 Open `/group 7 permissions` to inspect or **Forget this permission**. Requests that have not started being approved will ask again; a command already approved may still finish. Use **Stop** separately to stop current work. A permission waiting for its first approval is shown as inactive and can also be removed.
 

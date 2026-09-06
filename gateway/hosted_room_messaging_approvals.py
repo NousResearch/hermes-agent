@@ -1082,6 +1082,10 @@ def select_pending_approval(
     pending: list[dict[str, Any]],
     selection: str = "",
 ) -> tuple[int, dict[str, Any]]:
+    if not pending:
+        raise MessagingApprovalError(
+            "This request is no longer waiting for approval. Open the Group Chat to see the latest result."
+        )
     raw = str(selection or "").strip()
     matches = [
         (index, action)
@@ -1232,7 +1236,7 @@ def format_pending_approvals(
         f"Deny: `{room_command} {room_reference} deny <approval code>`",
     ])
     if any("remember" in action["approval"].get("choices", []) for action in pending):
-        lines.append(f"Always allow here (asks for confirmation): `{room_command} {room_reference} remember <approval code>`")
+        lines.append(f"Always allow in this chat (asks for confirmation): `{room_command} {room_reference} remember <approval code>`")
     return "\n".join(lines)
 
 

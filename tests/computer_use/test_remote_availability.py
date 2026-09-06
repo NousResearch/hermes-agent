@@ -143,7 +143,7 @@ class TestBridgeSubcommand:
             self._parse(["computer-use", "bridge"])
 
     def test_dispatch_passes_only_current_run_host_bridge_kwargs(self, monkeypatch):
-        # Signature-drift guard: new bridge options default host-side, the CLI forwards four.
+        # Signature-drift guard: new bridge options default host-side, the CLI forwards five.
         captured = {}
 
         def _fake_bridge(**kw):
@@ -151,7 +151,7 @@ class TestBridgeSubcommand:
 
         monkeypatch.setattr("tools.computer_use.host_bridge_cli.run_host_bridge", _fake_bridge)
         args = argparse.Namespace(allowed_hosts="a.com,b.com", allowed_origins="",
-                                  port=9000, bind="0.0.0.0")
+                                  port=9000, bind="0.0.0.0", session_idle_timeout=1800)
         assert cu_cli._cu_bridge(args) == 0
         assert captured == {"allowed_hosts": ["a.com", "b.com"], "allowed_origins": [],
-                            "port": 9000, "bind": "0.0.0.0"}
+                            "port": 9000, "bind": "0.0.0.0", "session_idle_timeout": 1800}

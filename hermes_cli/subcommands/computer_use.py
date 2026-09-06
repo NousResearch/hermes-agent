@@ -115,10 +115,10 @@ def _cu_perms_grant(args) -> None:
 
 def _cu_bridge(args) -> int:
     from tools.computer_use.host_bridge_cli import run_host_bridge
-    # Only the kwargs run_host_bridge defines today; new bridge options default host-side.
-    run_host_bridge(allowed_hosts=args.allowed_hosts.split(","),
-                    allowed_origins=(args.allowed_origins.split(",") if args.allowed_origins else []),
-                    port=args.port, bind=args.bind)
+    run_host_bridge(allowed_hosts=[h.strip() for h in args.allowed_hosts.split(",") if h.strip()],
+                    allowed_origins=[o.strip() for o in args.allowed_origins.split(",") if o.strip()] if args.allowed_origins else [],
+                    port=args.port, bind=args.bind,
+                    session_idle_timeout=getattr(args, "session_idle_timeout", 1800) or 1800)
     return 0
 
 

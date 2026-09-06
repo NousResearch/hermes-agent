@@ -150,6 +150,7 @@ def run_host_bridge(
     allowed_origins: Sequence[str],
     port: int,
     bind: str = "127.0.0.1",
+    session_idle_timeout: int = _DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS,
 ) -> None:
     """Run the authenticated CUA host bridge on the local machine.
 
@@ -183,6 +184,6 @@ def run_host_bridge(
         bearer_token=token,
         allowed_hosts=hosts,
         allowed_origins=origins,
-        session_idle_timeout=_DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS,
+        session_idle_timeout=session_idle_timeout,
     )
     _serve_app(app, bind, int(port))

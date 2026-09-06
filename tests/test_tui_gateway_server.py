@@ -19345,6 +19345,60 @@ def test_session_create_rejects_model_incoherent_with_profile_provider(
     assert server._sessions == {}
 
 
+def test_session_create_resolves_implicit_provider_from_secondary_profile_env(
+    monkeypatch, tmp_path
+):
+    from agent import secret_scope
+
+    profile_home = tmp_path / "coder"
+    profile_home.mkdir()
+    (profile_home / ".env").write_text(
+        "HERMES_INFERENCE_PROVIDER=xai-oauth\n",
+        encoding="utf-8",
+    )
+    events = []
+    monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openai-codex")
+    monkeypatch.setattr(
+        server,
+        "_profile_home",
+        lambda profile: profile_home if profile == "coder" else None,
+    )
+    monkeypatch.setattr(
+        server, "_enable_gateway_prompts", lambda: events.append("prompts")
+    )
+    monkeypatch.setattr(server.uuid, "uuid4", lambda: events.append("uuid"))
+    monkeypatch.setattr(server, "_new_session_key", lambda: events.append("key"))
+    monkeypatch.setattr(
+        server, "_schedule_agent_build", lambda sid: events.append("build")
+    )
+    monkeypatch.setattr(
+        server,
+        "_schedule_session_cap_enforcement",
+        lambda: events.append("cap"),
+    )
+    server._sessions.clear()
+
+    secret_scope.set_multiplex_active(True)
+    try:
+        response = server._methods["session.create"](
+            "r1",
+            {
+                "model": "gpt-5.5",
+                "profile": "coder",
+            },
+        )
+    finally:
+        secret_scope.set_multiplex_active(False)
+
+    assert response["error"]["code"] == -32602
+    assert "gpt-5.5" in response["error"]["message"]
+    assert "xai-oauth" in response["error"]["message"]
+    assert response["error"]["data"]["provider"] == "xai-oauth"
+    assert response["error"]["data"]["suggestions"]
+    assert events == []
+    assert server._sessions == {}
+
+
 def test_session_create_rejects_model_incoherent_with_env_provider(
     monkeypatch, tmp_path
 ):

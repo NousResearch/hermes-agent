@@ -296,15 +296,23 @@ def _create_overrides(params: dict) -> tuple:
 @method("session.create")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
+    # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
+    profile_home = _profile_home(
+        profile := (params.get("profile") or "").strip() or None
+    )
     create_model = _str_param(params, "model")
     explicit_provider = _str_param(params, "provider")
     if create_model:
         from hermes_cli.models_validate import validate_static_model_provider_pair
         from hermes_cli.runtime_provider import resolve_requested_provider
 
+        if explicit_provider:
+            requested_provider = resolve_requested_provider(explicit_provider)
+        else:
+            with _profile_build_scope(profile_home):
+                requested_provider = resolve_requested_provider()
         validation = validate_static_model_provider_pair(
-            create_model,
-            resolve_requested_provider(explicit_provider or None),
+            create_model, requested_provider
         )
         if not validation["accepted"]:
             return _err(
@@ -328,8 +336,6 @@ def _(rid, params: dict) -> dict:
     with contextlib.suppress(Exception):
         explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
     _enable_gateway_prompts()
-    # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
-    profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
     session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
     now = time.time()
     with _sessions_lock:

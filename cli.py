@@ -846,9 +846,19 @@ def _should_emit_cleanup_session_finalize(session_id: str | None) -> bool:
 
 
 def _notify_session_finalize(*, session_id: str | None, platform: str = "cli", reason: str = "shutdown") -> None:
-    with suppress(Exception):
-        from hermes_cli.lifecycle import finalize_session
-        finalize_session(session_id=session_id, platform=platform, reason=reason)
+    # KENSEI CUSTOM (restored): fire the on_session_finalize plugin hook only —
+    # finalization is owned by the gateway/run_agent path; the CLI exit path must not
+    # call lifecycle.finalize_session directly (test_handoff_cleanup_race contract).
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _invoke_hook(
+            "on_session_finalize",
+            session_id=session_id,
+            platform=platform,
+            reason=reason,
+        )
+    except Exception:
+        pass
 
 
 def _oneshot_agent_and_session(cli):

@@ -78,13 +78,16 @@ def test_provider_rows_match_model_setup_order_and_active_focus_markers():
     entries = profile_wizard._provider_entries()
 
     assert entries[0].tui_desc == "Nous Portal (Everything your agent needs, 300+ models with bundled tool use)"
-    assert entries[1].tui_desc == "OpenRouter (Pay-per-use API aggregator)"
-    assert entries[3].tui_desc == "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"
-    assert entries[6].slug == "openai-codex"
+    # KENSEI CUSTOM: upstream added a `fireworks` wizard entry at index 1 without
+    # bumping this test's fixed indices — resolve dynamically instead of snapshotting.
+    by_slug = {e.slug: e for e in entries}
+    assert by_slug["openrouter"].tui_desc == "OpenRouter (Pay-per-use API aggregator)"
+    assert by_slug["novita"].tui_desc == "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"
+    codex = by_slug["openai-codex"]
     assert entries[-1].tui_desc == "Ollama Cloud (Cloud-hosted open models, ollama.com)"
 
-    row = profile_wizard._format_provider_row(entries[6], focused=True, active=True)
-    unfocused = profile_wizard._format_provider_row(entries[3], focused=False, active=False)
+    row = profile_wizard._format_provider_row(codex, focused=True, active=True)
+    unfocused = profile_wizard._format_provider_row(by_slug["novita"], focused=False, active=False)
 
     # The row is composed from the entry's real display copy (tui_desc), which
     # is product copy and may change. Assert on the row's *structure* — the
@@ -92,9 +95,9 @@ def test_provider_rows_match_model_setup_order_and_active_focus_markers():
     # embedded — rather than freezing a specific marketing label.
     assert row.startswith(" → (●) ")
     assert row.endswith("← currently active")
-    assert entries[6].tui_desc in row
+    assert codex.tui_desc in row
     assert unfocused.startswith("   (○) ")
-    assert entries[3].tui_desc in unfocused
+    assert by_slug['novita'].tui_desc in unfocused
 
 
 def test_profile_ideas_include_ootb_examples_leads_and_workers():

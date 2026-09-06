@@ -334,8 +334,16 @@ def resolve_proxy_url(
     target_hosts: str | list[str] | tuple[str, ...] | set[str] | None = None) -> str | None:
     """Proxy URL: *platform_env_var* (e.g. ``DISCORD_PROXY``) first, then HTTPS_PROXY /
     HTTP_PROXY / ALL_PROXY (any case), then the macOS system proxy — the latter two only when
-    ``gateway.trust_env`` is true. None when nothing is found or NO_PROXY matches a target."""
-    value = (os.environ.get(platform_env_var) or "").strip() if platform_env_var else ""
+    ``gateway.trust_env`` is true. None when nothing is found or NO_PROXY matches a target.
+
+    *platform_env_var* is a per-adapter, per-profile-configurable setting (each proxy URL can
+    embed credentials, e.g. ``http://user:pass@host``) so it is read scope-aware: under a
+    secondary multiplex profile it comes from that profile's own ``.env``, not the shared
+    process env another profile's ``TELEGRAM_PROXY``/``DISCORD_PROXY``/etc. may hold. The
+    generic ``HTTPS_PROXY``/``HTTP_PROXY``/``ALL_PROXY`` fallback stays a raw process-env read —
+    those are OS/system-level network settings, not a per-profile Hermes concept."""
+    from gateway.platforms._shared import get_scoped_secret as _get_scoped_proxy_var
+    value = (_get_scoped_proxy_var(platform_env_var, "") or "").strip() if platform_env_var else ""
     if not value:
         if not gateway_trust_env():  # only the explicit per-platform var is honored
             return None

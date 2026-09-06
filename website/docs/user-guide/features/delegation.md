@@ -133,6 +133,8 @@ When a top-level agent provides a `tasks` array, Hermes returns one background h
 
 The dispatch handle lists each unit (`units[].delegation_id`, `group`, `task_indexes`); unit ids are the call's id suffixed `-1`, `-2`, …, and every unit of one call shares a single slot of `delegation.max_concurrent_children`, so grouping never changes capacity accounting. An orchestrator subagent waits for its whole batch in the current turn so it can synthesize the results.
 
+Set `result_delivery: "inject"` for a review or dependency whose result can still change the parent’s current turn. A unit that is already complete may be attached to the final **new, not-yet-persisted** tool result of a complete tool-call batch before the next model request. Hermes never waits for a child, creates an extra request, rewrites an older tool result, or crosses into a later turn; a result that misses the boundary remains on the ordinary fresh-turn delivery rail. The default is `result_delivery: "after_turn"`.
+
 - **Maximum concurrency:** 3 tasks by default (configurable via `delegation.max_concurrent_children` or the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var; floor of 1, no hard ceiling). Batches larger than the limit return a tool error rather than being silently truncated.
 - **Thread pool:** Uses `ThreadPoolExecutor` with the configured concurrency limit as max workers
 - **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback

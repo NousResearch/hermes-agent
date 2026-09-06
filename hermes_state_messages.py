@@ -293,11 +293,14 @@ class SessionMessagesMixin:
     def append_messages_batch(
         self, session_id: str, messages: List[Dict[str, Any]], compression_lock_holder: Optional[str] = None,
         turn_lease_holder: Optional[str] = None, chunk_rows: Optional[int] = None,
-        turn_lease_ttl_seconds: float = 300.0) -> int:
+        turn_lease_ttl_seconds: float = 300.0,
+        delivery_claims: Optional[Dict[str, str]] = None) -> int:
         """Append *messages* in ONE write txn (all rows land or none, guards run once); returns the inserted
         count. ``chunk_rows`` bounds txn size for LARGE copies (branch seeds; FTS triggers run per row)."""
         if not messages:
             return 0
+        if delivery_claims and chunk_rows is not None and len(messages) > chunk_rows:
+            raise ValueError("delivery claims require one atomic transcript batch")
         if chunk_rows is not None and len(messages) > chunk_rows:
             return sum(self.append_messages_batch(session_id, messages[start:start + chunk_rows],
                     compression_lock_holder=compression_lock_holder, turn_lease_holder=turn_lease_holder,
@@ -311,6 +314,34 @@ class SessionMessagesMixin:
                 encode_content_fn=self._encode_content, decode_content_fn=self._decode_content)
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
             self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
+            if delivery_claims:
+                validated: list[tuple[str, str]] = []
+                for delegation_id, claim_id in delivery_claims.items():
+                    row = conn.execute(
+                        "SELECT delivery_state, delivery_claim, event_json "
+                        "FROM async_delegations WHERE delegation_id=?",
+                        (delegation_id,),
+                    ).fetchone()
+                    if row is None or row[0] != "pending" or row[1] != claim_id:
+                        raise RuntimeError(f"delegation delivery claim lost for {delegation_id}")
+                    try:
+                        event = json.loads(row[2] or "{}")
+                    except (TypeError, ValueError) as exc:
+                        raise RuntimeError(f"invalid delegation event for {delegation_id}") from exc
+                    if (not isinstance(event, dict) or event.get("result_delivery") != "inject"
+                            or str(event.get("parent_session_id") or "") != str(session_id)):
+                        raise RuntimeError(f"delegation delivery target mismatch for {delegation_id}")
+                    validated.append((str(delegation_id), str(claim_id)))
+                now = time.time()
+                for delegation_id, claim_id in validated:
+                    cur = conn.execute(
+                        """UPDATE async_delegations SET delivery_state='delivered', delivered_at=?,
+                                  updated_at=?, delivery_claim=NULL, delivery_claimed_at=NULL
+                           WHERE delegation_id=? AND delivery_state='pending' AND delivery_claim=?""",
+                        (now, now, delegation_id, claim_id),
+                    )
+                    if cur.rowcount != 1:
+                        raise RuntimeError(f"delegation delivery claim lost for {delegation_id}")
             return inserted
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 

@@ -379,6 +379,7 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
     """Run the claimed (running=True) agent turn for one notification event."""
     from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
     if (claim := claim_event_delivery(evt, "tui-poller")) is None:
+        _notif_release_turn(session)
         return
     kwargs = ({"display_kind": "async_delegation_complete", "display_metadata": _async_delegation_display_metadata(evt)}
               if evt.get("type") == "async_delegation" else {})

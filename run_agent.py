@@ -1306,6 +1306,7 @@ class AIAgent(
             max_iterations=function_args.get("max_iterations"), role=function_args.get("role"),
             background=not (getattr(self, "_delegate_depth", 0) > 0), action=function_args.get("action"),
             subagent_id=function_args.get("subagent_id"), message=function_args.get("message"), parent_agent=self,
+            result_delivery=function_args.get("result_delivery"),
         )
 
     _invoke_tool = _forward("agent.agent_runtime_helpers", "invoke_tool")

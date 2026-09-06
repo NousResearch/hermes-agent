@@ -170,11 +170,26 @@ def _resolve_concurrent_tool_timeout() -> float | None:
     )
 
 
-def _flush_session_db_after_tool_progress(agent, messages: list, *, stage: str) -> bool:
-    """Flush tool-call progress to the session DB before projecting it to any UI: tool side
-    effects can kill/restart the process before turn-end persistence runs."""
+def _flush_session_db_after_tool_progress(
+    agent, messages: list, *, stage: str, storage_env=None,
+    budget_config: BudgetConfig | None = None,
+) -> bool:
+    """Flush tool progress before UI projection, carrying eligible delegation evidence.
+
+    A carrier is prepared only at a complete, still-uncommitted tool batch. Its
+    durable claim settles around this exact transcript write, while the existing
+    persistence-failure classification remains authoritative.
+    """
+    from agent.delegation_inject import tool_result_carrier
+
     try:
-        persisted = agent._flush_messages_to_session_db(messages) is not False
+        with tool_result_carrier(
+            agent,
+            messages,
+            storage_env=storage_env,
+            budget_config=budget_config or _budget_for_agent(agent),
+        ):
+            persisted = agent._flush_messages_to_session_db(messages) is not False
         if not persisted:
             agent._incremental_persistence_failed = True
             # The flush recorded any classified cause; default to 'unknown' only if nothing more specific exists.
@@ -1011,7 +1026,13 @@ def _commit_tool_result(
     _tool_content = agent._tool_result_content_for_active_model(function_name, persisted_result)
     tool_message = make_tool_result_message(function_name, _tool_content, tool_call_id, effect_disposition=effect_disposition)
     messages.append(tool_message)
-    if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
+    if not _flush_session_db_after_tool_progress(
+        agent,
+        messages,
+        stage=f"tool result {function_name}",
+        storage_env=get_active_env(effective_task_id),
+        budget_config=budget,
+    ):
         return None
 
     if not blocked:

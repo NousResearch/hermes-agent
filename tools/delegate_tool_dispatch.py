@@ -44,6 +44,7 @@ class _Batch:
     origin_owner_transport: Any
     origin_owner_session_record: Any
     overall_start: float
+    result_delivery: str = "after_turn"
     # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
     group: Optional[str] = None
     unit_id: Optional[str] = None  # the async registry id this unit runs under (``<call_id>-k`` for split calls)
@@ -293,6 +294,12 @@ def _dispatched_payload(batch: _Batch, units: List[tuple[_Batch, str]]) -> dict:
         "delegation_id": batch.live_deleg_id or units[0][1], "goals": goals,
         "note": _BACKGROUND_NOTES["one"] if n == 1 else _BACKGROUND_NOTES["many"].format(n=n, k=len(units)),
     }
+    payload["result_delivery"] = batch.result_delivery
+    if batch.result_delivery == "inject":
+        payload["note"] = (
+            "Subagents run asynchronously. Keep working: ready results may ride the final new tool-result "
+            "boundary in this turn. Missed boundaries use normal after-turn delivery. Never wait or poll."
+        )
     if len(units) > 1:
         payload["units"] = [
             {"delegation_id": uid, "group": unit.group, "task_indexes": [i for (i, _, _) in unit.children]}
@@ -358,6 +365,8 @@ def _dispatch_background(batch: _Batch) -> str:
     routing = dict(
         session_key=session_key, origin_ui_session_id=origin_ui_session_id, origin_session_id=wake_sid,
         parent_session_id=getattr(parent_agent, "session_id", None), max_async_children=_get_max_async_children(),
+        parent_turn_id=str(getattr(parent_agent, "_active_turn_id", "") or ""),
+        result_delivery=batch.result_delivery,
     )
 
     units = _units_of(batch)

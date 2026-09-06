@@ -40,6 +40,7 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
 _IMAGE_PART_TYPES = {"image", "image_url", "input_image"}
 # Reasoning/codex fields are role-gated (assistant-only) inside _insert_message_rows.
 _ROW_REASONING_KEYS = ("reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items", "codex_message_items")
+_DELEGATION_CLAIMS_MARKER = "_delegation_delivery_claims"
 
 
 def _is_ephemeral_scaffolding(msg: Any) -> bool:
@@ -201,15 +202,40 @@ def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optiona
     return batch_rows, batch_msgs
 
 
+def _db_flush_delivery_claims(batch_msgs: List[Dict]) -> Dict[str, str]:
+    """Collect private carrier tokens without ever projecting them into message rows."""
+    claims: Dict[str, str] = {}
+    for msg in batch_msgs:
+        raw = msg.get(_DELEGATION_CLAIMS_MARKER)
+        if raw is None:
+            continue
+        if not isinstance(raw, dict):
+            raise TypeError("delegation delivery claims must be a mapping")
+        for delegation_id, claim_id in raw.items():
+            delegation_id, claim_id = str(delegation_id or ""), str(claim_id or "")
+            if not delegation_id or not claim_id:
+                raise ValueError("delegation delivery claim identities must be non-empty")
+            previous = claims.get(delegation_id)
+            if previous is not None and previous != claim_id:
+                raise ValueError(f"conflicting delivery claims for {delegation_id}")
+            claims[delegation_id] = claim_id
+    return claims
+
+
 def _db_flush_write(agent, batch_rows: List[Dict[str, Any]], batch_msgs: List[Dict]) -> None:
     """One transaction for the turn's new rows: on failure nothing lands and no markers are stamped."""
     if not batch_rows:
         return
+    append_kwargs = {
+        "compression_lock_holder": getattr(agent, "_active_compression_lock_holder", None),
+        "turn_lease_holder": getattr(agent, "_active_session_turn_lease_holder", None),
+        "turn_lease_ttl_seconds": getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0,
+    }
+    delivery_claims = _db_flush_delivery_claims(batch_msgs)
+    if delivery_claims:
+        append_kwargs["delivery_claims"] = delivery_claims
     agent._session_db.append_messages_batch(
-        session_id=agent.session_id, messages=batch_rows,
-        compression_lock_holder=getattr(agent, "_active_compression_lock_holder", None),
-        turn_lease_holder=getattr(agent, "_active_session_turn_lease_holder", None),
-        turn_lease_ttl_seconds=getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0,
+        session_id=agent.session_id, messages=batch_rows, **append_kwargs,
     )
     sync_flushed_message_markers(batch_msgs, batch_rows)
 

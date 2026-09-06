@@ -402,6 +402,8 @@ def _run_post_turn_followups(
                 claim_event_delivery, complete_event_delivery, release_event_delivery)
             _claim = claim_event_delivery(_evt, "tui-post-turn")
             if _claim is None:
+                with session["history_lock"]:
+                    session["running"] = False
                 continue
             _dispatch_followup_turn(
                 rid, sid, session, synth, "completion notification dispatch",

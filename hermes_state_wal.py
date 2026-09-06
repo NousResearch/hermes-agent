@@ -32,6 +32,11 @@ _WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024  # 64 MiB
 # line would repeat per connection). Tests clear these via ``hermes_state_wal.<name>``.
 _wal_fallback_warned_paths: set[str] = set()
 _wal_fallback_warned_lock = threading.Lock()
+
+# Dedup WARNING for the #104596 probe-unknown guard (WAL path touching nothing
+# while ownership is not provably exclusive).
+_wal_probe_unknown_paths: set[str] = set()
+_wal_probe_unknown_lock = threading.Lock()
 _wal_reset_bug_warned_paths: set[str] = set()
 _wal_reset_bug_warned_lock = threading.Lock()
 _delete_overridden_warned_paths: set[str] = set()
@@ -214,6 +219,19 @@ def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.
             # Probe failed (locked/busy): ownership not provably exclusive. Fail loudly.
             raise sqlite3.OperationalError(_CANNOT_VERIFY_DELETE_MSG)
         return _verify_configured_delete(_set_journal_mode_no_wait(conn, "DELETE"))
+    if current_mode is None:
+        # #104596: the probe failed (locked/busy under load) and the on-disk mode is unknown. A fresh 0-page
+        # DB probes "delete" cleanly, so None here means the probe could not read a real file — most often
+        # because a sibling connection (same process or another) holds it, in WAL, with live -wal/-shm sidecars.
+        # Emitting the set-pragma inside _enable_wal would re-run WAL-init and UNLINK those sidecars under the
+        # holder: two -shm generations that cannot see each other's locks -> split-brain corruption
+        # (btreeInitPage error 11). Ownership is not provably exclusive, so touch nothing: an already-WAL DB
+        # keeps working (this connection inherits the mode from the on-disk header, exactly like the early
+        # return above), the rare true-DELETE file degrades to DELETE with the warning below, and a new DB
+        # reaches _enable_wal on its next open. Mirrors the vulnerable-gate path's indeterminate handling.
+        _log_once("wal_probe_unknown", db_label)
+        _apply_wal_companions(conn)
+        return "wal"
     return _enable_wal(conn, db_label, require_wal, current_mode)
 
 
@@ -389,6 +407,17 @@ _ONCE_LOGS = {
         "downgrade under open connections can corrupt the DB). To apply journal_mode=DELETE, stop all connections to "
         "this DB and run a one-time offline 'PRAGMA journal_mode=DELETE' on the file. This message fires once per "
         "process per database."),
+    "wal_probe_unknown": (_wal_probe_unknown_lock, "_wal_probe_unknown_paths", logging.WARNING,
+        # #104596: the read-only probe failed (locked/busy under load). A fresh 0-page DB probes "delete" cleanly,
+        # so None means the probe could not read a real file — most often because a sibling connection holds it, in
+        # WAL, with live -wal/-shm sidecars. Emitting the set-pragma here re-runs WAL-init and unlinks those
+        # sidecars under the holder: two -shm generations that cannot see each other's locks -> split-brain
+        # corruption. Keep the WARNING (not ERROR): the connection still inherits WAL from the on-disk header, so
+        # the common case is harmless — only the rare true-DELETE file degrades (silently, to DELETE).
+        "%s: could not verify the on-disk journal mode (database is locked / busy under load); refusing to issue a "
+        "journal-mode set-pragma while ownership is not provably exclusive (it could unlink the -wal/-shm sidecars "
+        "a sibling connection still holds open — split-brain corruption, #104596). Assuming the configured "
+        "journal_mode=wal and leaving the file untouched. This message fires once per process per database."),
 }
 
 

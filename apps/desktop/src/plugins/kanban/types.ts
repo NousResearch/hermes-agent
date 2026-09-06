@@ -117,7 +117,8 @@ export interface KanbanTaskDetail {
   task: KanbanTaskFull
   comments: KanbanComment[]
   events: KanbanEvent[]
-  attachments: KanbanAttachment[]
+  /** Older backend plugins omit this collection and have no attachment endpoints. */
+  attachments?: KanbanAttachment[] | null
   links: { parents: string[]; children: string[] }
   runs: KanbanRun[]
 }

@@ -2999,11 +2999,15 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     old_norm = (old_provider or "").strip().lower()
     new_norm = (new_provider or "").strip().lower()
     fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
+    # Only prune entries for *concrete* providers (those with a colon, e.g. "custom:foo");
+    # a bare category name like "custom" would match every custom variant and wipe the chain.
     if old_norm and new_norm and old_norm != new_norm:
-        fallback_chain = [
-            entry for entry in fallback_chain
-            if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
-        ]
+        exclude = {p for p in (old_norm, new_norm) if ":" in p}
+        if exclude:
+            fallback_chain = [
+                entry for entry in fallback_chain
+                if (entry.get("provider") or "").strip().lower() not in exclude
+            ]
     agent._fallback_chain = fallback_chain
     agent._fallback_model = fallback_chain[0] if fallback_chain else None
 

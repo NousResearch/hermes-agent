@@ -1,0 +1,140 @@
+# North-Forge Error & Anomaly Register
+
+Append-only. One row per incident: build break, failed test batch, bad merge, upstream
+regression, secret exposure, unexpected repo state, anything that needed attention.
+Never delete a row — close it by moving status to `RESOLVED` (or `WONTFIX` /
+`ACCEPTED-RISK`) with a resolution note and the resolving `CHG-` id.
+
+`ERR-` id scheme and severities are defined in [`README.md`](../README.md).
+Severity: **CRITICAL** · **HIGH** · **MEDIUM** · **LOW** · **INFO**.
+
+---
+
+## Open
+
+### ERR-2026-09-06-001 — HIGH — Secret hygiene
+
+- **Opened:** 2026-09-06 · **Base:** hermes@820106d4a5 (2 behind upstream/main)
+- **Source:** `AUDIT-2026-09-06-001` F-05
+- **What:** `.env` in the repo root contains a real, non-placeholder `ANTHROPIC_API_KEY`
+  (108-char value, line 545) plus 11 benign upstream debug/timeout toggles copied from
+  `.env.example`.
+- **Exposure:** `.env` is matched by `.gitignore` (`.env` + `.env.*`); it is **not tracked**
+  and `git log --all -- .env` is empty (re-verified `AUDIT-2026-09-06-002`). No leak path
+  found in this checkout. Risk is local (disk, shoulder-surf, accidental paste into an
+  issue/PR/screenshot/log).
+- **Update 2026-09-06 (`AUDIT-2026-09-06-002`):** the same key value also sits at
+  **`D:\.env`** (portable-drive root, outside every git repo) — same rotation applies
+  there. The in-repo mitigation (`.gitignore` broadening + `.githooks/`) is now
+  **committed** to local `main` (`CHG-2026-09-06-010`), not just working-tree state.
+- **Status:** **OPEN** — exposure structurally mitigated and committed; user action still required on the key.
+- **Mitigation shipped 2026-09-06** (the "never push `.env`" rule):
+  - `CHG-2026-09-06-007` — `.gitignore` broadened to `.env` + `.env.*` + `.op.env`
+    (`!*.example` / `!*.sample`). Previously `.env.production`, `.env.staging`, etc.
+    were **not** ignored — see `ERR-2026-09-06-003`.
+  - `CHG-2026-09-06-008` — `.githooks/pre-commit` + `.githooks/pre-push` refuse to
+    commit or push any real `.env`; `core.hooksPath = .githooks` set in this checkout.
+  - History re-verified: `git log --all -- .env` is empty — `.env` has never been
+    committed on any ref.
+- **Required action (still open):**
+  1. Confirm this key is meant to live on this machine.
+  2. If its provenance or exposure history is at all uncertain, **rotate it** at
+     `console.anthropic.com` and update `.env`.
+  3. Never paste `.env` contents into commits, PRs, screenshots, or chat.
+  4. On a fresh clone, run `sh .githooks/install` to re-arm the guard.
+- **Do NOT** run `git clean -x`/`-X` in this repo — it would delete `.env`.
+
+### ERR-2026-09-06-002 — MEDIUM — Fork identity / version drift
+
+- **Opened:** 2026-09-06 · **Base:** hermes@820106d4a5 (2 behind upstream/main)
+- **Source:** `AUDIT-2026-09-06-001` F-06, F-08
+- **What:** `origin/main` is 0 ahead / 2 behind `upstream/main` — a pristine mirror with
+  zero north-forge commits. `README*.md`, `SOUL.md`, `LICENSE`, and package metadata are
+  still fully upstream-branded ("Hermes Agent" / "Nous Research"). The only north-forge
+  customization anywhere is the GitHub repo name and its description.
+- **Status:** **OPEN** — *version-drift half RESOLVED; identity decision still pending.*
+- **Update 2026-09-06 (`AUDIT-2026-09-06-002`):** `upstream/main` advanced to
+  `693641aa8b`; the first-ever fork commits (`NF-v0.1.0` + `NF-v0.1.1` — ledger and
+  secret-guard, `CHG-2026-09-06-010`) landed on local `main`. Hygiene, not identity.
+- **Update 2026-09-06 (later, "sync only" chosen):** `git rebase upstream/main`
+  replayed the ledger commit onto `693641aa8b` (no conflicts) and
+  `git push origin main` fast-forwarded `origin/main` `820106d4a5` → `d…` (the 2
+  upstream commits + the ledger commit). Fork is now **0 behind `upstream/main`**.
+  Resolving change for the drift: `CHG-2026-09-06-014`. The **identity** decision
+  (rebrand vs thin-downstream, first identity commit, `NF-v0.2.0`) was explicitly
+  deferred, so this incident stays OPEN, narrowed to identity only.
+- **Required action (remaining):**
+  1. Decide: **rebrand** (north-forge as its own product) vs **thin downstream**
+     (kept rebased on upstream). See `AUDIT-2026-09-06-001` §6 (README review).
+  2. Land the first identity commit; cut `NF-v0.2.0` in the changelog.
+  3. Keep rebasing on `upstream/main` periodically (now that the baseline is 0 behind).
+
+---
+
+## Resolved
+
+### ERR-2026-09-06-003 — MEDIUM — Secret hygiene (`.gitignore` gap)
+
+- **Opened:** 2026-09-06 · **Base:** hermes@820106d4a5 (2 behind upstream/main)
+- **Source:** manual check while implementing the "never push `.env`" rule
+- **What:** `.gitignore` enumerated `.env`, `.env.local`, `.env.*.local`,
+  `.env.development`, `.env.test`, `.op.env` — but **not** `.env.production`,
+  `.env.staging`, `.env.ci`, or any other `.env.<name>`. Such a file would not have
+  been ignored and a plain `git add .` would have staged it.
+- **Exposure:** none realised — no such file exists in the working tree or history.
+- **Resolved:** 2026-09-06 — `.gitignore` now uses `.env` + `.env.*` + `.op.env`
+  with `!*.example` / `!*.sample`. Verified with `git check-ignore` across
+  `.env.production` / `.env.staging` / `deep/nested/.env` / `app/.env.prod`.
+  Resolving change: `CHG-2026-09-06-007`.
+- **Status:** RESOLVED
+
+### ERR-2026-09-06-004 — LOW — Stray Windows cache tree in repo root
+
+- **Opened:** 2026-09-06 · **Base:** hermes@820106d4a5 (2 behind upstream/main)
+- **Source:** `git status` after hook setup showed `?? %SystemDrive%/`
+- **What:** a literal directory `%SystemDrive%/ProgramData/Microsoft/Windows/Caches/`
+  containing Windows icon-cache DB files (`cversions.2.db`, `*.ver0x*.db`) appeared
+  in the repo root (birth 2026-09-06 17:55). Created by some Windows process running
+  with cwd = the repo and an **unexpanded** `%SystemDrive%` env var. Not produced by
+  git — not reproducible from `git add` / `git commit`.
+- **Exposure:** none — untracked; deleted before any commit.
+- **Resolved:** 2026-09-06 — directory removed; `.gitignore` guards added
+  (`/%SystemDrive%/`, `Thumbs.db`, `ehthumbs.db`, `[Dd]esktop.ini`, `$RECYCLE.BIN/`).
+  Resolving change: `CHG-2026-09-06-009`.
+- **Recurred 2026-09-06 (`AUDIT-2026-09-06-002` F-03):** the tree reappeared
+  (birth 18:01, ~6 min after the first deletion). Deleted again (`CHG-2026-09-06-012`).
+  The `/%SystemDrive%/` guard held — it never became git-visible. Stays RESOLVED;
+  chasing the offending process is open-item #6 on `AUDIT-2026-09-06-002`.
+- **Status:** RESOLVED (recurrence is expected and harmless while the guard stands).
+
+### ERR-2026-09-06-005 — LOW — pytest / mock artifacts in the working tree
+
+- **Opened:** 2026-09-06 · **Base:** hermes@820106d4a5 (2 behind upstream/main)
+- **Source:** `AUDIT-2026-09-06-002` F-02 (`git status` after a test run)
+- **What:** untracked, non-ignored paths written into the `north-forge-agent` repo
+  root by test runs on this Windows checkout:
+  - `MagicMock/mock._session_db.db_path/{3165824711312,3165827767312}` (+ `.fts_rebuild.lock`
+    / `.quarantine.lock`) — a test left `_session_db.db_path` as a `MagicMock` and
+    code opened `str(mock)` as a real path.
+  - `C:UserskwalkAppDataLocalTemphermes-pytest-tmproot-2oumyv71…` / `…root-iyod624l…`
+    (4 files, 0 B) — pytest tmp paths materialised as literal filenames in cwd.
+  - `logs.zip` (462 KB) — a zipped copy of `logs/` dropped in the root.
+- **Exposure / impact:** none realised — all untracked, deleted before any commit.
+  Risk was a `git add -A` sweep and name-shadowing of real Windows paths.
+- **Resolved:** 2026-09-06 — deleted (`CHG-2026-09-06-012`); `.gitignore` guards
+  added — `MagicMock/`, `*hermes-pytest-tmp*`, `*pytest-tmproot*`, `*pytest-of-*`,
+  `/logs.zip` (`CHG-2026-09-06-011`). Verified `git status` clean afterward.
+- **Status:** RESOLVED (may recur; guards make recurrence harmless. Root-causing the
+  test/tool is `AUDIT-2026-09-06-002` open-item #6).
+
+---
+
+## Register (quick scan)
+
+| ID | Date | Sev | Area | Summary | Status | Resolved by |
+| --- | --- | --- | --- | --- | --- | --- |
+| ERR-2026-09-06-001 | 2026-09-06 | HIGH | Secret hygiene | Live `ANTHROPIC_API_KEY` in `.env` (also `D:\.env`); mitigation committed, key decision pending | OPEN | mitig. CHG-007/008/009/010 |
+| ERR-2026-09-06-002 | 2026-09-06 | MEDIUM | Fork identity | Drift closed (synced to upstream `693641aa8b`, NF-v0.1.x pushed, CHG-014); identity decision (rebrand vs thin-downstream, NF-v0.2.0) still deferred | OPEN | drift: CHG-2026-09-06-014 |
+| ERR-2026-09-06-003 | 2026-09-06 | MEDIUM | Secret hygiene | `.gitignore` missed `.env.production` / `.env.<name>` | RESOLVED | CHG-2026-09-06-007 |
+| ERR-2026-09-06-004 | 2026-09-06 | LOW | Repo hygiene | Stray `%SystemDrive%` Windows cache tree in root (recurred; guard held) | RESOLVED | CHG-2026-09-06-009 / -012 |
+| ERR-2026-09-06-005 | 2026-09-06 | LOW | Repo hygiene | pytest/mock artifacts (`MagicMock/`, `C:Users…`, `logs.zip`) in working tree | RESOLVED | CHG-2026-09-06-011 / -012 |

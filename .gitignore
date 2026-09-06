@@ -12,14 +12,15 @@ act/
 .venv/
 .venv
 .vscode/
+# Secrets: ignore every .env / .env.<anything> at any depth. Only *.example and
+# *.sample are allowed in git. Enforced on commit + push by .githooks/ .
 .env
+.env.*
 .op.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-.env.development
-.env.test
+!.env.example
+!.env.*.example
+!.env.sample
+!.env.*.sample
 .hermes-docker/
 .notebooklm-home/
 .notebooklm-cli-venv/
@@ -30,7 +31,35 @@ compose.hermes.local.yml
 export*
 __pycache__/model_tools.cpython-310.pyc
 __pycache__/web_tools.cpython-310.pyc
-logs/
+# Runtime logs stay ignored, but the north-forge project ledger under
+# logs/ledger/ (audits, changelog, error register) is version-controlled.
+logs/*
+!logs/ledger/
+# Guard against a repo being cloned inside this checkout again (see
+# logs/ledger/audits/AUDIT-2026-09-06-001).
+/north-forge-agent/
+# Misplaced Windows icon/shell cache — a process with an unexpanded %SystemDrive%
+# env var writes this tree into the cwd (AUDIT-2026-09-06-001 F-09 / ERR-2026-09-06-004).
+/%SystemDrive%/
+# Windows Explorer junk
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+# Test/mock artifacts some Windows test runs materialise into the working tree
+# (AUDIT-2026-09-06-002 F-02 / ERR-2026-09-06-005):
+#   MagicMock/         - unittest.mock leak: code that str()s a MagicMock into a path
+#   *pytest-tmp*, etc. - pytest tmp-path leak: a literal "C:Users...hermes-pytest-tmp..."
+#                        file dropped in cwd (the ":" survives as a name char under Git-Bash)
+#   logs.zip           - a zipped copy of logs/ left in the root by a helper
+MagicMock/
+*hermes-pytest-tmp*
+*pytest-tmproot*
+*pytest-of-*
+/logs.zip
+# Unrelated stray file that has reappeared in the root twice; the canonical
+# copy is kept in D:\north-forge-agent-attic\ (AUDIT-2026-09-06-001 F-02).
+/marguerite-and-penny-suno.txt
 data/
 # Bundled community plugin index seed (shipped as package data) — the bare
 # `data/` pattern above would otherwise swallow it.

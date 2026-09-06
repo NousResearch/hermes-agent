@@ -1,0 +1,34 @@
+#!/bin/sh
+# THE RULE: never push a real .env (or .env.<anything> / .op.env) to the repo.
+# For every ref being pushed, scan the tree at its tip AND the newly added
+# commits; abort the whole push if a forbidden file is found.
+# See .githooks/secret-guard.  Bypass (defeats the rule): git push --no-verify
+set -u
+dir=$(dirname "$0")
+guard="$dir/secret-guard"
+remote=${1:-origin}
+zero=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')   # 0000... of correct length
+status=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    # deleting a remote ref — nothing to inspect
+    [ "$local_sha" = "$zero" ] && continue
+
+    # 1) hard check: does the tip being pushed CONTAIN a forbidden file?
+    "$guard" --tree "$local_sha" || status=1
+
+    # 2) belt-and-suspenders: files touched by the commits new to the remote
+    if [ "$remote_sha" = "$zero" ]; then
+        new_commits=$(git rev-list "$local_sha" --not --remotes="$remote" 2>/dev/null)
+    else
+        new_commits=$(git rev-list "$remote_sha..$local_sha" 2>/dev/null)
+    fi
+    if [ -n "${new_commits:-}" ]; then
+        first=$(printf '%s\n' "$new_commits" | tail -1)
+        parent=$(git rev-parse "$first^" 2>/dev/null || echo "$first")
+        "$guard" --range "$parent..$local_sha" || status=1
+    fi
+done
+
+[ "$status" -eq 0 ] || printf '\n\033[31mpush aborted by .githooks/pre-push\033[0m\n' >&2
+exit "$status"

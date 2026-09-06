@@ -1,0 +1,9 @@
+#!/bin/sh
+# Point this checkout's git at the tracked hooks. Run once per fresh clone:
+#   sh .githooks/install
+set -e
+cd "$(git rev-parse --show-toplevel)"
+chmod +x .githooks/pre-commit .githooks/pre-push .githooks/secret-guard .githooks/install 2>/dev/null || true
+git config core.hooksPath .githooks
+printf 'core.hooksPath -> %s\n' "$(git config core.hooksPath)"
+printf 'secret-guard active for commit + push. Self-test: sh .githooks/secret-guard --worktree\n'

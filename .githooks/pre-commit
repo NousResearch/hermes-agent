@@ -1,0 +1,5 @@
+#!/bin/sh
+# Blocks a commit that stages a real .env / secret file. See .githooks/secret-guard.
+# Bypass (defeats the rule): git commit --no-verify
+dir=$(dirname "$0")
+exec "$dir/secret-guard" --staged

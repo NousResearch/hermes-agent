@@ -1396,6 +1396,72 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
     return total
 
 
+def count_live_host_local_workers_all_boards() -> int:
+    """Total running Kanban tasks across all non-archived boards on this host."""
+    try:
+        boards = _kb.list_boards(include_archived=False)
+    except Exception:
+        return 0
+    total = 0
+    for meta in boards:
+        slug = meta.get("slug") or _kb.DEFAULT_BOARD
+        try:
+            path = _kb.kanban_db_path(board=slug).expanduser()
+            if not path.exists():
+                continue
+            other = _kbc.connect(board=slug)
+            try:
+                total += count_running_tasks(other)
+            finally:
+                with contextlib.suppress(Exception):
+                    other.close()
+        except Exception:
+            continue
+    return total
+
+
+def interrupt_host_local_workers(reason: str) -> int:
+    """Durably block all live host-local workers with `reason` and SIGTERM them."""
+    import signal
+    from hermes_cli._subprocess_compat import kill
+    try:
+        boards = _kb.list_boards(include_archived=False)
+    except Exception:
+        return 0
+    interrupted = 0
+    for meta in boards:
+        slug = meta.get("slug") or _kb.DEFAULT_BOARD
+        try:
+            path = _kb.kanban_db_path(board=slug).expanduser()
+            if not path.exists():
+                continue
+            other = _kbc.connect(board=slug)
+            try:
+                tasks = other.execute("SELECT id, current_run_id, worker_pid FROM tasks WHERE status = 'running'").fetchall()
+                for task in tasks:
+                    task_id = task["id"]
+                    run_id = task["current_run_id"]
+                    pid = task["worker_pid"]
+                    if not pid:
+                        continue
+                    if _kb.block_task(
+                        other, task_id, reason=reason,
+                        expected_run_id=run_id
+                    ):
+                        if _pid_alive(pid):
+                            try:
+                                kill(int(pid), getattr(signal, "SIGTERM", signal.SIGTERM))
+                            except Exception:
+                                pass
+                        interrupted += 1
+            finally:
+                with contextlib.suppress(Exception):
+                    other.close()
+        except Exception:
+            continue
+    return interrupted
+
+
 def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
     """Classify system memory pressure: ok/elevated/critical/unknown.
 

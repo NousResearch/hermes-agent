@@ -677,11 +677,20 @@ class GatewayShutdownMixin:
 
     # Drain / interrupt
     def _drain_work_counts(self) -> tuple:
-        """``(agents, cron, api, deferred)`` — the four sources the drain waits on."""
+        """``(agents, cron, api, deferred, kanban)`` — the five sources the drain waits on."""
         return (
             self._running_agent_count(), self._active_cron_job_count(),
             self._active_api_run_count(), self._active_deferred_agent_worker_count(),
+            self._active_kanban_worker_count(),
         )
+
+    def _active_kanban_worker_count(self) -> int:
+        """Total running host-local Kanban tasks across all non-archived boards."""
+        try:
+            from hermes_cli import kanban_db_dispatch as _kbd
+            return _kbd.count_live_host_local_workers_all_boards()
+        except Exception:
+            return 0
 
     async def _drain_active_agents(
         self, timeout: float, cron_timeout: Optional[float] = None
@@ -1498,9 +1507,20 @@ class GatewayShutdownMixin:
                 lambda: _interrupt_async(reason=f"gateway shutdown ({phase})"),
             )
 
+        def _stop_interrupt_kanban_workers() -> None:
+            try:
+                from hermes_cli import kanban_db_dispatch as _kbd
+                _count_step(
+                    "Shutdown (%s): durably blocked and SIGTERM'd %d kanban worker(s)",
+                    lambda: _kbd.interrupt_host_local_workers(reason="gateway restart"),
+                )
+            except Exception as _e:
+                logger.debug("Failed to interrupt kanban workers: %s", _e)
+
         _step("process_registry.kill_all", _kill_processes)
         _marked_cron_jobs = _step("mark_running_jobs_interrupted", _mark_cron_interrupted) or []
         _step("async interrupt_all", _interrupt_delegations)
+        _step("interrupt kanban workers", _stop_interrupt_kanban_workers)
         def _cleanup_environments() -> None:
             from tools.terminal_tool_lifecycle import cleanup_all_environments
             cleanup_all_environments()

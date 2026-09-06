@@ -271,7 +271,8 @@ class GatewayKanbanWatchersMixin:
             try:
                 # Emergency stop (`hermes pause`): no auto-decompose or
                 # dispatch while paused; running workers finish naturally.
-                if not _kanban_dispatch_allowed():
+                # Also pause during gateway drain.
+                if getattr(self, "_draining", False) or not _kanban_dispatch_allowed():
                     bad_ticks = 0
                 else:
                     # Re-read the auto-decompose toggle live so disabling it

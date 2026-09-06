@@ -423,6 +423,9 @@ export const zh: Translations = {
         sources: { bundled: '内置', user: '用户', git: 'git', project: '项目', entrypoint: 'pip' }
       },
       installModal: {
+        installFromGit: '从 Git 安装',
+        reviewRepository: '检查仓库',
+        repoPlaceholder: 'https://github.com/owner/repo',
         title: '安装插件',
         description: '在安装前查看此仓库包含哪些组件。',
         repoLabel: '仓库',

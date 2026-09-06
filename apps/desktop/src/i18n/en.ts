@@ -435,6 +435,9 @@ export const en: Translations = {
         sources: { bundled: 'bundled', user: 'user', git: 'git', project: 'project', entrypoint: 'pip' }
       },
       installModal: {
+        installFromGit: 'Install from Git',
+        reviewRepository: 'Review repository',
+        repoPlaceholder: 'https://github.com/owner/repo',
         title: 'Install plugin',
         description: 'Review what this repository contains before installing anything.',
         repoLabel: 'Repository',

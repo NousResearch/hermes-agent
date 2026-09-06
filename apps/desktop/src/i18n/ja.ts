@@ -266,6 +266,13 @@ export const ja = defineLocale({
   },
 
   settings: {
+    plugins: {
+      installModal: {
+        installFromGit: 'Git からインストール',
+        reviewRepository: 'リポジトリを確認',
+        repoPlaceholder: 'https://github.com/owner/repo'
+      }
+    },
     closeSettings: '設定を閉じる',
     exportConfig: '設定を書き出す',
     importConfig: '設定を読み込む',

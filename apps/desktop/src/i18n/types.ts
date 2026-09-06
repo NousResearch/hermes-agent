@@ -377,6 +377,9 @@ export interface Translations {
         sources: Record<string, string>
       }
       installModal: {
+        installFromGit: string
+        reviewRepository: string
+        repoPlaceholder: string
         title: string
         description: string
         repoLabel: string

@@ -257,6 +257,13 @@ export const zhHant = defineLocale({
   },
 
   settings: {
+    plugins: {
+      installModal: {
+        installFromGit: '從 Git 安裝',
+        reviewRepository: '檢查儲存庫',
+        repoPlaceholder: 'https://github.com/owner/repo'
+      }
+    },
     closeSettings: '關閉設定',
     exportConfig: '匯出設定',
     importConfig: '匯入設定',

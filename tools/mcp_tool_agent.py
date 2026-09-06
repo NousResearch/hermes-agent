@@ -5,6 +5,7 @@ and re-injecting post-build tools."""
 import logging
 import json
 import threading
+from contextlib import nullcontext
 from typing import Optional
 from tools.mcp_tool_common import _core
 
@@ -49,7 +50,8 @@ def _tool_defs_content_changed(agent, new_defs: list) -> bool:
 
 def _publish_tool_snapshot(
     agent, new_defs: list, new_names: set, *, snapshot_generation: int,
-    staged_engine_names: set, content_aware: bool, prefix_registered: Optional[set]) -> Optional[set]:
+    staged_engine_names: set, content_aware: bool, prefix_registered: Optional[set],
+    staged_classic_enabled: Optional[bool] = None) -> Optional[set]:
     """Single atomic read-diff-publish under ``_agent_tools_lock`` so ``added`` matches what
     was published and a stale (older-generation) rebuild can't overwrite a newer one. Returns
     the added names, or None when nothing was published (unchanged, or a newer snapshot won)."""
@@ -65,6 +67,8 @@ def _publish_tool_snapshot(
             new_defs, new_names = _merge_preserving_prefix(current_defs, new_defs, prefix_registered)
         # Record the generation even when unchanged so an in-flight older caller can't clobber.
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
+        if staged_classic_enabled is not None:
+            agent._classic_export_enabled = staged_classic_enabled
         # Same NAME set: no change for MCP-reload callers. Content-aware callers
         # (compaction boundary) also diff serialized bytes.
         if new_names == current and not (content_aware and _tool_defs_content_changed(agent, new_defs)):
@@ -95,10 +99,23 @@ def refresh_agent_mcp_tools(
     slot (schemas still refresh), a still-registered tool whose ``check_fn`` merely flapped is
     carried forward (``check_fn`` gates exposure, never invocation), a deregistered tool is
     dropped, new tools append at the tail. The caller owns the prompt-cache contract."""
+    scope = nullcontext()
+    if home := getattr(agent, "_classic_export_profile_home", None):
+        from tui_gateway import server
+        scope = server._session_profile_runtime_scope({"profile_home": home})
+    with scope:
+        return _refresh_agent_tool_snapshot(
+            agent, enabled_override=enabled_override, disabled_override=disabled_override,
+            quiet_mode=quiet_mode, content_aware=content_aware, preserve_prefix=preserve_prefix)
+
+
+def _refresh_agent_tool_snapshot(
+    agent, *, enabled_override, disabled_override, quiet_mode, content_aware, preserve_prefix) -> set:
     from model_tools import get_tool_definitions
     from tools.registry import registry
     previous_enabled = getattr(agent, "enabled_toolsets", None)
     enabled, disabled = _resolve_refresh_toolsets(agent, enabled_override, disabled_override)
+    staged_classic_enabled = getattr(agent, "_classic_export_enabled", None)
     # Generation captured BEFORE the slow get_tool_definitions call (a slower caller holding an
     # OLDER set must not clobber a newer one); definitions computed OUTSIDE the lock.
     snapshot_generation = registry._generation
@@ -106,13 +123,14 @@ def refresh_agent_mcp_tools(
     new_names = {_def_name(t) for t in new_defs}
     # Narrowing a selection can revoke the classic session's post-build grant;
     # an unchanged/additive MCP reload is not a removal of that session capability.
-    if enabled_override is not None and getattr(agent, "_classic_export_enabled", False) is True:
+    if enabled_override is not None and staged_classic_enabled is True:
         narrowed = (not enabled_override or previous_enabled is None
                     or not set(previous_enabled).issubset(enabled_override))
         if narrowed and "share_group_file" not in new_names:
-            agent._classic_export_enabled = False
+            staged_classic_enabled = False
     # Post-build families re-appended on LOCALS only; live attributes untouched until publish.
-    staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
+    staged_engine_names = _reinject_post_build_tools(
+        agent, new_defs, new_names, classic_export_enabled=staged_classic_enabled)
     # Registry membership is read OUTSIDE ``_agent_tools_lock``: taking ``registry._lock``
     # under the tools lock would be the first nesting of the two.
     prefix_registered: Optional[set] = None
@@ -125,7 +143,8 @@ def refresh_agent_mcp_tools(
             pass  # fail open to the plain rebuild
     added = _publish_tool_snapshot(
         agent, new_defs, new_names, snapshot_generation=snapshot_generation,
-        staged_engine_names=staged_engine_names, content_aware=content_aware, prefix_registered=prefix_registered)
+        staged_engine_names=staged_engine_names, content_aware=content_aware, prefix_registered=prefix_registered,
+        staged_classic_enabled=staged_classic_enabled)
     if added is None:
         return set()
     persist_agent_tool_names(agent)  # re-pin so a rebuild after agent-cache eviction restores this order
@@ -202,7 +221,8 @@ def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_name
     return merged, {_def_name(t) for t in merged}
 
 
-def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
+def _reinject_post_build_tools(
+    agent, tools_list: list, name_set: set, *, classic_export_enabled: Optional[bool] = None) -> set:
     """Append classic-export, memory-provider and context-engine tools onto the staged ``tools_list``
     / ``name_set`` (never the live agent attributes), mirroring ``agent_init``'s post-build
     injection. Idempotent and fail-soft. Returns the context-engine routing names THIS rebuild
@@ -220,7 +240,7 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
         return getter if callable(getter) else None
 
     enabled = getattr(agent, "enabled_toolsets", None)
-    if getattr(agent, "_classic_export_enabled", False) is True:
+    if classic_export_enabled is True:
         from tui_gateway.classic_exports import tool_schema
         # Reuse classic admission's disabled-toolset, deregistration and deferral gates.
         # The grant is only for this tool, never an inheritable bot_room selection.

@@ -42,7 +42,7 @@ def build(monkeypatch, tmp_path):
 
     def construct(**session_fields):
         agent = server._make_agent("runtime", "writer", platform_override="desktop")
-        session = {"agent": agent, "session_key": "writer", **session_fields}
+        session = {"agent": agent, "session_key": "writer", "profile_home": str(get_hermes_home()), **session_fields}
         return agent, session
 
     construct.config = cfg

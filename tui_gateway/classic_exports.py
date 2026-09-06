@@ -68,9 +68,15 @@ def install_schema(session):
         eligible = False  # Missing metadata disables export, not ordinary chat construction.
     if eligible:
         from tools.hosted_room_artifact import ensure_share_group_file_tool
-        if tool_schema(agent) is None:
-            return
-        agent._classic_export_enabled = ensure_share_group_file_tool(agent, force=True)
+        from tui_gateway import server
+
+        # Late-discovery threads have no caller ContextVars. Keep the owning profile,
+        # not a config snapshot: later policy changes must still take effect.
+        agent._classic_export_profile_home = str(server._session_home(session))
+        with server._session_profile_runtime_scope({"profile_home": agent._classic_export_profile_home}):
+            if tool_schema(agent) is None:
+                return
+            agent._classic_export_enabled = ensure_share_group_file_tool(agent, force=True)
 
 
 def owned(session_id):

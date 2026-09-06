@@ -16,7 +16,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-from agent.memory_manager import sanitize_context
+from agent.memory_manager import sanitize_context, sanitize_context_for_transcript
 from agent.memory_provider import MemoryProvider, is_trivial_prompt
 from agent.turn_author import a2a_key
 from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path, spawn_context_thread
@@ -655,7 +655,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             return
 
         msg_limit = self._config.message_max_chars if self._config else 25000
-        clean_user_content = sanitize_context(user_content or "").strip()
+        clean_user_content = sanitize_context_for_transcript(user_content or "").strip()
         clean_assistant_content = sanitize_context(assistant_content or "").strip()
         # Skip only when the whole turn is empty: an interrupted or tool-only turn can have
         # an empty assistant side, and the user's message must still be persisted.

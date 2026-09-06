@@ -624,7 +624,7 @@ def _gateway_provider_error_reply(text: str) -> str:
 # Provider/API failure envelope preambles (not ordinary assistant prose), anchored at line start.
 _PROVIDER_ERROR_MARKERS = (
     r"api\s+(?:call\s+)?failed", r"provider\s+authentication\s+failed", r"non-retryable\s+error",
-    r"rate\s+limited\s+after\s+\d+\s+retries", r"error\s+code\s*:", r"http\s*\d{3}\b",
+    r"rate\s+limited\s+after\s+\d+\s+retries", r"error\s+code\s*:",
     r"incorrect\s+api\s+key", r"invalid\s+api\s+key")
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     r"^\s*(\W*\s*)?("
@@ -632,8 +632,16 @@ _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     + ")",
     re.IGNORECASE)
 
+_GATEWAY_BARE_HTTP_PROVIDER_ERROR_RE = re.compile(r"^\s*(\W*\s*)?http\s*\d{3}\b", re.IGNORECASE)
+_GATEWAY_WRAPPED_HTTP_PROVIDER_ERROR_RE = re.compile(r"^\s*(\W*\s*)?http\s*\d{3}\s*:", re.IGNORECASE)
+_GATEWAY_WRAPPED_HTTP_EXPLANATION_RE = re.compile(
+    r"^\s*(\W*\s*)?http\s*\d{3}\s+(?:means|is|indicates|refers\s+to)\b", re.IGNORECASE)
+_GATEWAY_PROVIDER_MACHINE_METADATA_RE = re.compile(
+    r"\b(?:request|trace|correlation|error)[\s_-]?id\s*[:=]\s*\S+"
+    r"|\berror[\s_-]?code\s*[:=]\s*\S+", re.IGNORECASE)
 
-def _looks_like_gateway_provider_error(text: str) -> bool:
+
+def _looks_like_gateway_provider_error(text: str, *, wrapped_success_content: bool = False) -> bool:
     """True when text is a provider failure envelope, not normal content.
 
     Must be short (envelopes are 1-3 lines) AND start with the marker, so prose citing a status code misses."""
@@ -642,7 +650,34 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     body = str(text).strip()
     if len(body) > 400 or body.count("\n") > 4:
         return False
-    return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
+    if _GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body):
+        return True
+    if not wrapped_success_content:
+        return bool(_GATEWAY_BARE_HTTP_PROVIDER_ERROR_RE.search(body))
+    if _GATEWAY_WRAPPED_HTTP_PROVIDER_ERROR_RE.search(body):
+        return True
+    if _GATEWAY_WRAPPED_HTTP_EXPLANATION_RE.search(body):
+        return False
+    return bool(_GATEWAY_BARE_HTTP_PROVIDER_ERROR_RE.search(body)
+                and _GATEWAY_PROVIDER_MACHINE_METADATA_RE.search(body))
+
+
+def _gateway_provider_error_candidates(text: str):
+    """Inspect diagnostics behind the gateway's reasoning and background-task presentation."""
+    yield text, False
+    if text.startswith(("💭 **Reasoning:**\n", "-# 💭 Reasoning\n", "> 💭 **Reasoning:**\n",
+                        "✅ Background task complete\n")):
+        body = text.rstrip()
+        for boundary in re.finditer(r"\n\n\s*", body):
+            # The classifier rejects longer envelopes. Avoid repeatedly copying a long answer.
+            if len(body) - boundary.end() <= 400:
+                yield body[boundary.end():], True
+    if text.startswith("Sorry, I encountered an error ("):
+        lines = text.splitlines()
+        if len(lines) >= 2:
+            yield lines[1], False
+    if text.startswith("❌ Background task ") and " failed: " in text:
+        yield text.split(" failed: ", 1)[1], False
 
 
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
@@ -668,8 +703,9 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
         return ""
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
-    if _looks_like_gateway_provider_error(redacted):
-        return _gateway_provider_error_reply(redacted)
+    for candidate, wrapped_success_content in _gateway_provider_error_candidates(redacted):
+        if _looks_like_gateway_provider_error(candidate, wrapped_success_content=wrapped_success_content):
+            return _gateway_provider_error_reply(candidate)
     return redacted
 
 

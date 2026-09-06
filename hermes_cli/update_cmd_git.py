@@ -547,6 +547,8 @@ def _classify_update_ref(git_cmd, cwd, ref: str) -> tuple[str, str] | None:
 
 def _fetch_update_ref(git_cmd, cwd, ref: str) -> subprocess.CompletedProcess:
     """Fetch a tag or commit once. Shallow clones use ``--depth 1``."""
+    from hermes_cli.update_cmd import _no_prompt_git_kwargs
+
     depth_args = ["--depth", "1"] if _git_is_shallow(git_cmd, cwd) else []
     if _looks_like_commit_sha(ref):
         fetch_spec = [ref]
@@ -557,6 +559,7 @@ def _fetch_update_ref(git_cmd, cwd, ref: str) -> subprocess.CompletedProcess:
         cwd=cwd,
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
+        **_no_prompt_git_kwargs(),
     )
 
 

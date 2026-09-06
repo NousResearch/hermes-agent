@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlparse
 
+from agent.runtime_bundle import ResolvedRuntime
+
 logger = logging.getLogger(__name__)
 
 from hermes_cli import auth as auth_mod
@@ -810,8 +812,8 @@ def _opencode_free_runtime(provider, requested_provider, model_cfg, target_model
     return _tag(_models.opencode_zen_free_runtime(provider, model), requested_provider)
 
 
-def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_key: Optional[str] = None,
-                             explicit_base_url: Optional[str] = None, target_model: Optional[str] = None) -> Dict[str, Any]:
+def _resolve_runtime_provider_mapping(*, requested: Optional[str] = None, explicit_api_key: Optional[str] = None,
+                                      explicit_base_url: Optional[str] = None, target_model: Optional[str] = None) -> Dict[str, Any]:
     """Resolve runtime provider credentials for agent execution. Ladder (order is behavior — each
     rung returns or raises, else falls to the next):
       1. disabled-provider guard (``providers.<name>.enabled: false``)
@@ -828,6 +830,24 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     requested_provider = resolve_requested_provider(requested)
     _raise_if_provider_disabled(requested_provider)
     return next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
+
+
+def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_key: Optional[str] = None,
+                             explicit_base_url: Optional[str] = None, target_model: Optional[str] = None) -> ResolvedRuntime:
+    """Resolve provider configuration into an immutable runtime value.
+
+    The internal ladder remains mutable while it enriches a result.  The
+    public boundary freezes the complete credential, endpoint, header, and
+    transport contract before another subsystem can consume it.
+    """
+    return ResolvedRuntime.from_mapping(
+        _resolve_runtime_provider_mapping(
+            requested=requested,
+            explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+            target_model=target_model,
+        )
+    )
 
 
 def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model):

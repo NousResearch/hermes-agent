@@ -155,6 +155,58 @@ class ClientLifecycleMixin:
         except Exception as exc:
             logger.debug("Shared OpenAI client retire failed (%s) %s error=%s", reason, self._client_log_context(), exc)
 
+    def install_runtime(self, bundle, *, reason: str = "runtime_install"):
+        """Commit a fully built runtime and client pair as one lifecycle change.
+
+        Builders run before this method is called.  The lock therefore covers
+        only the identity/client swap, so a concurrent request observes either
+        the complete old route or the complete new route, never credentials
+        from one route paired with a client from another.
+        """
+        from agent.runtime_bundle import ClientBundle
+
+        if not isinstance(bundle, ClientBundle):
+            raise TypeError("install_runtime requires a ClientBundle")
+        if bundle.client is not None and bundle.anthropic_client is not None:
+            raise ValueError("ClientBundle cannot contain both wire clients")
+
+        runtime = bundle.runtime
+        client_kwargs = dict(bundle.client_kwargs)
+        is_anthropic = bundle.anthropic_client is not None
+        model = runtime.model or getattr(self, "model", "")
+        provider = runtime.provider or getattr(self, "provider", "")
+        requested_provider = runtime.requested_provider or provider
+        api_mode = runtime.api_mode or "chat_completions"
+        api_key = bundle.anthropic_api_key if is_anthropic else client_kwargs.get("api_key", runtime.api_key)
+        base_url = bundle.anthropic_base_url if is_anthropic else client_kwargs.get("base_url", runtime.base_url)
+
+        with self._openai_client_lock():
+            old_clients = (getattr(self, "client", None), getattr(self, "_anthropic_client", None))
+            self.model = model
+            self.provider = provider
+            self.requested_provider = requested_provider
+            self.base_url = base_url or ""
+            self.api_mode = api_mode
+            self.api_key = api_key
+            self.client = bundle.client
+            self._anthropic_client = bundle.anthropic_client
+            self._client_kwargs = client_kwargs
+            self._anthropic_api_key = bundle.anthropic_api_key if is_anthropic else ""
+            self._anthropic_base_url = bundle.anthropic_base_url if is_anthropic else ""
+            self._is_anthropic_oauth = bundle.is_anthropic_oauth if is_anthropic else False
+            self._resolved_runtime = runtime
+            if hasattr(self, "_transport_cache"):
+                self._transport_cache.clear()
+
+        active_ids = {id(client) for client in (bundle.client, bundle.anthropic_client) if client is not None}
+        retired_ids = set()
+        for old_client in old_clients:
+            if old_client is None or id(old_client) in active_ids or id(old_client) in retired_ids:
+                continue
+            retired_ids.add(id(old_client))
+            self._retire_shared_openai_client(old_client, reason=f"install:{reason}")
+        return runtime
+
     def _drain_transports_after_abandonment(self, *, reason: str) -> int:
         """FD-safe transport drain for an abandoned (timed-out) worker; returns sockets shut down.
 

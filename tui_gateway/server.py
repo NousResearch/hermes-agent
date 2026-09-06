@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable: split modules)
@@ -2166,7 +2167,7 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
 
 
 class _RuntimeFallbackResolution(NamedTuple):
-    runtime: dict
+    runtime: Mapping[str, Any]
     selected_model: str | None
     used_fallback: bool
 
@@ -2230,9 +2231,10 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
     if resolution.used_fallback:
         if not resolution.selected_model:
             raise RuntimeError("Auth fallback resolved without a model")
-        return resolution.selected_model, resolution.runtime
-    resolution.runtime.update({k: v for k, v in overrides.items() if v})
-    return model, resolution.runtime
+        return resolution.selected_model, dict(resolution.runtime)
+    runtime = dict(resolution.runtime)
+    runtime.update({k: v for k, v in overrides.items() if v})
+    return model, runtime
 
 
 def _startup_system_prompt(cfg: dict, task_id: str) -> str:

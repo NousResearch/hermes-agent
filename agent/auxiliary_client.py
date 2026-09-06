@@ -20,6 +20,7 @@ import re
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
@@ -1701,6 +1702,7 @@ class AnthropicAuxiliaryClient:
         self.chat = _ChatShim(_AnthropicCompletionsAdapter(real_client, model, is_oauth=is_oauth, base_url=base_url))
         self.api_key = api_key
         self.base_url = base_url
+        self.is_oauth = is_oauth
 
     def close(self):
         close_fn = getattr(self._real_client, "close", None)
@@ -2523,7 +2525,7 @@ def _runtime_main_value(field: str) -> Any:
     runtime = _RUNTIME_MAIN_CONTEXT.get()
     if runtime is None:
         runtime = _compat_runtime_main()
-    return (runtime.get(field) or "") if isinstance(runtime, dict) else ""
+    return (runtime.get(field) or "") if isinstance(runtime, Mapping) else ""
 
 
 def set_runtime_main(
@@ -2593,7 +2595,7 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
     except Exception as exc:
         logger.debug("Auxiliary client: custom runtime resolution failed: %s", exc)
         runtime = None
-    if not isinstance(runtime, dict):
+    if not isinstance(runtime, Mapping):
         openai_base = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
         if not openai_base:
             return None, None, None
@@ -2657,7 +2659,7 @@ def _validate_base_url(base_url: str) -> None:
         ) from exc
 
 
-def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
+def _try_custom_endpoint(*, timeout: Optional[float] = None) -> Tuple[Optional[Any], Optional[str]]:
     runtime = _resolve_custom_runtime()
     custom_base, custom_key, custom_mode = (*runtime, None) if len(runtime) == 2 else runtime
     if not custom_base or not custom_key:
@@ -2670,26 +2672,43 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     _extra = {"default_query": _dq} if _dq else {}
     # User model.default_headers override SDK fingerprint headers (as on the main client) for strict gateways/WAFs.
     _custom_headers = _apply_user_default_headers(None)
+    _custom_headers = {**(_custom_headers or {}), **_custom_provider_extra_headers(custom_base)}
     if _custom_headers:
         _extra["default_headers"] = _custom_headers
+    if timeout is not None:
+        _extra["timeout"] = timeout
     if custom_mode == "codex_responses":
         real_client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
+        with contextlib.suppress(Exception):
+            real_client._hermes_runtime_extra_headers = dict(_custom_headers or {})
         return CodexAuxiliaryClient(real_client, model), model
     if custom_mode == "anthropic_messages":
         # Third-party Anthropic-compatible gateway — never OAuth (that's api.anthropic.com only).
         try:
             from agent.anthropic_adapter import build_anthropic_client
-            real_client = build_anthropic_client(custom_key, custom_base)
+            real_client = build_anthropic_client(
+                custom_key,
+                custom_base,
+                timeout=timeout,
+                default_headers=_custom_headers or None,
+            )
         except ImportError:
             logger.warning(
                 "Custom endpoint declares api_mode=anthropic_messages but the "
                 "anthropic SDK is not installed — falling back to OpenAI-wire."
             )
             return _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra), model
-        return AnthropicAuxiliaryClient(real_client, model, custom_key, custom_base, is_oauth=False), model
+        wrapper = AnthropicAuxiliaryClient(real_client, model, custom_key, custom_base, is_oauth=False)
+        wrapper._hermes_runtime_extra_headers = dict(_custom_headers or {})
+        return wrapper, model
     # URL-based anthropic detection for custom endpoints without explicit api_mode.
     _fallback_client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
-    return _maybe_wrap_anthropic(_fallback_client, model, custom_key, custom_base, custom_mode), model
+    with contextlib.suppress(Exception):
+        _fallback_client._hermes_runtime_extra_headers = dict(_custom_headers or {})
+    wrapped = _maybe_wrap_anthropic(_fallback_client, model, custom_key, custom_base, custom_mode)
+    with contextlib.suppress(Exception):
+        wrapped._hermes_runtime_extra_headers = dict(_custom_headers or {})
+    return wrapped, model
 
 
 def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
@@ -2800,7 +2819,9 @@ def _try_azure_foundry(
     return client, final_model
 
 
-def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optional[str]]:
+def _try_anthropic(
+    explicit_api_key: str = None, *, timeout: Optional[float] = None,
+) -> Tuple[Optional[Any], Optional[str]]:
     try:
         from agent.anthropic_adapter import build_anthropic_client
         from agent.anthropic_credentials import resolve_anthropic_token
@@ -2836,7 +2857,8 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
         return _AuxProbeClientStub(api_key="", base_url=base_url), model
     logger.debug("Auxiliary client: Anthropic native (%s) at %s (oauth=%s)", model, base_url, is_oauth)
     try:
-        real_client = build_anthropic_client(token, base_url)
+        build_kwargs = {"timeout": timeout} if timeout is not None else {}
+        real_client = build_anthropic_client(token, base_url, **build_kwargs)
     except ImportError:
         return None, None  # Adapter imports fine but the anthropic SDK itself is missing.
     return AnthropicAuxiliaryClient(real_client, model, token, base_url, is_oauth=is_oauth), model
@@ -2857,7 +2879,7 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
         main_runtime = _RUNTIME_MAIN_CONTEXT.get()
         if main_runtime is None:
             main_runtime = _compat_runtime_main()
-    if not isinstance(main_runtime, dict):
+    if not isinstance(main_runtime, Mapping):
         return {}
     normalized: Dict[str, Any] = {}
     for field in _MAIN_RUNTIME_CONTEXT_FIELDS:
@@ -3912,7 +3934,9 @@ def _try_configured_fallback_chain(
         fb_model = fb_model_raw or None
         label = f"fallback_chain[{i}]({fb_provider})"
         try:
-            fb_client, resolved_model = _resolve_fallback_entry(entry)
+            fb_client, resolved_model = _resolve_fallback_entry(
+                entry, timeout=_coerce_positive_timeout(entry.get("timeout")),
+            )
         except Exception:
             fb_client, resolved_model = None, None
         if fb_client is not None:
@@ -3948,7 +3972,9 @@ def _fallback_entry_api_key(entry: Dict[str, Any]) -> Optional[str]:
     return resolve_entry_api_key(entry)
 
 
-def _resolve_fallback_entry(entry: Dict[str, Any]) -> Tuple[Optional[Any], Optional[str]]:
+def _resolve_fallback_entry(
+    entry: Dict[str, Any], *, timeout: Optional[float] = None,
+) -> Tuple[Optional[Any], Optional[str]]:
     """Resolve one fallback entry through the central provider router."""
     provider = str(entry.get("provider") or "").strip()
     model = str(entry.get("model") or "").strip() or None
@@ -3958,6 +3984,7 @@ def _resolve_fallback_entry(entry: Dict[str, Any]) -> Tuple[Optional[Any], Optio
         provider, model=model, explicit_base_url=str(entry.get("base_url") or "").strip() or None,
         explicit_api_key=_fallback_entry_api_key(entry),
         api_mode=str(entry.get("api_mode") or entry.get("transport") or "").strip() or None,
+        timeout=timeout,
     )
     if client is not None:
         with contextlib.suppress(Exception):
@@ -4000,7 +4027,9 @@ def _try_main_fallback_chain(
             tried.append(f"{label} (unhealthy)")
             continue
         try:
-            fb_client, resolved_model = _resolve_fallback_entry(entry)
+            fb_client, resolved_model = _resolve_fallback_entry(
+                entry, timeout=_coerce_positive_timeout(entry.get("timeout")),
+            )
         except Exception as exc:
             logger.debug("Auxiliary %s: main fallback %s failed to resolve: %s", task or "call", label, exc)
             fb_client, resolved_model = None, None
@@ -4347,6 +4376,7 @@ class _ResolveRequest(NamedTuple):
     main_runtime: Optional[Dict[str, Any]]
     is_vision: bool
     task: Optional[str]
+    timeout: Optional[float]
 
 
 _ResolveResult = Tuple[Optional[Any], Optional[str]]
@@ -4513,16 +4543,23 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
         _clean_base, _dq = _extract_url_query_params(custom_base)
         if _dq:
             extra["default_query"] = _dq
-        _custom_headers = _endpoint_default_headers(custom_base, provider, is_vision=req.is_vision)
+        _custom_headers = _endpoint_default_headers(custom_base, provider, is_vision=req.is_vision) or {}
+        _custom_headers.update(_custom_provider_extra_headers(custom_base))
         if _custom_headers:
             extra["default_headers"] = _custom_headers
+        if req.timeout is not None:
+            extra["timeout"] = req.timeout
         client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **extra)
+        with contextlib.suppress(Exception):
+            client._hermes_runtime_extra_headers = dict(_custom_headers or {})
         client = _wrap_transport(req, client, final_model, wrap_base or custom_base, custom_key)
         return _route_client(req, client, final_model)
     # Try custom first, then API-key providers (Codex excluded here:
     # falling through to Codex with no model is a stale-constant trap).
     for try_fn in (_try_custom_endpoint, _resolve_api_key_provider):
-        client, default = try_fn()
+        client, default = (
+            try_fn(timeout=req.timeout) if try_fn is _try_custom_endpoint else try_fn()
+        )
         if client is not None:
             final_model = _normalize_resolved_model(model or default, provider)
             # ``client.api_key`` may be a callable (Azure Entra bearer provider);
@@ -4535,14 +4572,37 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     return None, None
 
 
-def _named_custom_openai_wire_client(custom_base: str, custom_key: Any):
+def _custom_provider_extra_headers(base_url: str) -> Dict[str, str]:
+    """Return the route-specific header layer without exposing its values to logs."""
+    with contextlib.suppress(Exception):
+        from hermes_cli.config import (
+            get_compatible_custom_providers,
+            get_custom_provider_extra_headers,
+            load_config_readonly,
+        )
+        config = load_config_readonly()
+        return get_custom_provider_extra_headers(
+            base_url, get_compatible_custom_providers(config), config=config,
+        )
+    return {}
+
+
+def _named_custom_openai_wire_client(
+    custom_base: str, custom_key: Any, *, timeout: Optional[float] = None,
+):
     """Plain OpenAI client on the /v1 equivalent of a named custom entry's base URL."""
     _clean_base, _dq = _extract_url_query_params(_to_openai_base_url(custom_base))
     _extra = {"default_query": _dq} if _dq else {}
     _headers = _apply_user_default_headers(None)
+    _headers = {**(_headers or {}), **_custom_provider_extra_headers(custom_base)}
     if _headers:
         _extra["default_headers"] = _headers
-    return _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
+    if timeout is not None:
+        _extra["timeout"] = timeout
+    client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
+    with contextlib.suppress(Exception):
+        client._hermes_runtime_extra_headers = dict(_headers or {})
+    return client
 
 
 def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResult]:
@@ -4586,14 +4646,23 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     if entry_api_mode == "anthropic_messages":
         try:
             from agent.anthropic_adapter import build_anthropic_client
-            real_client = build_anthropic_client(custom_key, custom_base)
+            real_client = build_anthropic_client(
+                custom_key,
+                custom_base,
+                timeout=req.timeout,
+                default_headers=_custom_provider_extra_headers(custom_base) or None,
+            )
         except ImportError:
             logger.warning("Named custom provider %r declares api_mode=anthropic_messages but the anthropic SDK "
                            "is not installed — falling back to OpenAI-wire.", provider)
-            return _route_client(req, _named_custom_openai_wire_client(custom_base, custom_key), final_model)
+            return _route_client(
+                req,
+                _named_custom_openai_wire_client(custom_base, custom_key, timeout=req.timeout),
+                final_model,
+            )
         return _route_client(
             req, AnthropicAuxiliaryClient(real_client, final_model, custom_key, custom_base, is_oauth=False), final_model)
-    client = _named_custom_openai_wire_client(custom_base, custom_key)
+    client = _named_custom_openai_wire_client(custom_base, custom_key, timeout=req.timeout)
     # codex_responses, or auto-detect via _wrap_transport (which reads the task-level api_mode).
     if entry_api_mode == "codex_responses":
         client = CodexAuxiliaryClient(client, final_model)
@@ -4616,7 +4685,9 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     """PROVIDER_REGISTRY ``api_key`` providers (Anthropic via its own resolver), honouring explicit overrides."""
     provider = req.provider
     if provider == "anthropic":
-        client, default_model = _try_anthropic(explicit_api_key=req.explicit_api_key)
+        client, default_model = _try_anthropic(
+            explicit_api_key=req.explicit_api_key, timeout=req.timeout,
+        )
         return _route_or_warn(req, client, default_model,
                               "resolve_provider_client: anthropic requested but no Anthropic credentials found")
     creds = resolve_creds(provider)
@@ -4663,7 +4734,10 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
             logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
             return _route_client(req, client, final_model)
     headers = _endpoint_default_headers(base_url, provider, is_vision=req.is_vision, xai=True)
-    client = _create_openai_client(api_key=api_key, base_url=base_url, **({"default_headers": headers} if headers else {}))
+    client_kwargs = {"default_headers": headers} if headers else {}
+    if req.timeout is not None:
+        client_kwargs["timeout"] = req.timeout
+    client = _create_openai_client(api_key=api_key, base_url=base_url, **client_kwargs)
     # Copilot GPT-5+ models (except gpt-5-mini) are only reachable via the Responses API;
     # wrap so call_llm() transparently routes through responses.stream().
     if provider == "copilot" and final_model and not req.raw_codex:
@@ -4777,6 +4851,7 @@ def resolve_provider_client(
     explicit_base_url: str = None, explicit_api_key: str = None, api_mode: str = None,
     main_runtime: Optional[Dict[str, Any]] = None, is_vision: bool = False,
     task: Optional[str] = None,
+    timeout: Optional[float] = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Central router: return a configured client (auth, base URL, API format) for a provider + optional model.
     The client always exposes ``.chat.completions.create()``; Codex/Responses providers get an adapter.
@@ -4833,6 +4908,7 @@ def resolve_provider_client(
     req = _ResolveRequest(
         provider, original_provider, model, async_mode, raw_codex,
         explicit_base_url, explicit_api_key, api_mode, main_runtime, is_vision, task,
+        timeout,
     )
     branch = _EXPLICIT_PROVIDER_BRANCHES.get(provider)
     if branch is not None:

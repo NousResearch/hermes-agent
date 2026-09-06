@@ -1930,31 +1930,67 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
 
 
 def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb_base_url: str, fb_api_mode: str) -> None:
-    """Install the fallback client(s) in place, honoring request_timeout_seconds (None = SDK default)."""
-    timeout = get_provider_request_timeout(fb_provider, fb_model)
+    """Install a resolver-built fallback as one complete runtime transaction."""
+    from agent.auxiliary_client import AnthropicAuxiliaryClient
+    from agent.runtime_bundle import ClientBundle, ResolvedRuntime, build_client_bundle
+
+    is_anthropic = isinstance(fb_client, AnthropicAuxiliaryClient)
     if fb_api_mode == "anthropic_messages":
-        from agent.anthropic_adapter import build_anthropic_client
-        from agent.anthropic_credentials import resolve_anthropic_token, _is_oauth_token
-        is_anthropic = fb_provider == "anthropic"
-        effective_key = fb_client.api_key or (resolve_anthropic_token() if is_anthropic else None) or ""
-        agent.api_key = agent._anthropic_api_key = effective_key
-        agent._anthropic_base_url = fb_base_url
-        agent._anthropic_client = build_anthropic_client(effective_key, fb_base_url, timeout=timeout)
-        agent._is_anthropic_oauth = _is_oauth_token(effective_key) if is_anthropic else False
-        agent.client, agent._client_kwargs = None, {}
-        return
-    agent.api_key = fb_client.api_key
-    agent.client = fb_client
-    # Keep provider headers resolve_provider_client() baked into fb_client (SDK: _custom_headers), else
-    # later request-client rebuilds drop them and User-Agent-sentinel providers (Kimi Coding) 403.
-    fb_headers = getattr(fb_client, "_custom_headers", None) or getattr(fb_client, "default_headers", None)
-    agent._client_kwargs = {"api_key": fb_client.api_key, "base_url": fb_base_url}
-    if fb_headers:
-        agent._client_kwargs["default_headers"] = dict(fb_headers)
-    if timeout is not None:
-        agent._client_kwargs["timeout"] = timeout
-        # Rebuild now so the timeout applies to the very next request, not only after a rotation rebuild.
-        agent._replace_primary_openai_client(reason="fallback_timeout_apply")
+        timeout = get_provider_request_timeout(fb_provider, fb_model)
+        effective_key = getattr(fb_client, "api_key", "") or ""
+        effective_base = str(getattr(fb_client, "base_url", "") or fb_base_url)
+        runtime = ResolvedRuntime.from_mapping({
+            "provider": fb_provider,
+            "model": fb_model,
+            "requested_provider": fb_provider,
+            "api_mode": fb_api_mode,
+            "api_key": effective_key,
+            "base_url": effective_base,
+            "extra_headers": getattr(fb_client, "_hermes_runtime_extra_headers", {}) or {},
+        })
+        if is_anthropic:
+            # New resolver paths already return the exact Messages client.  Keep
+            # it intact, including any adapter-local auth state.
+            bundle = ClientBundle(
+                runtime=runtime,
+                anthropic_client=fb_client._real_client,
+                anthropic_api_key=effective_key,
+                anthropic_base_url=effective_base,
+                is_anthropic_oauth=bool(fb_client.is_oauth and fb_provider == "anthropic"),
+            )
+        else:
+            # Compatibility for plugins/tests that still return a plain wire
+            # client while explicitly selecting Anthropic Messages.  Rebuild
+            # it through the same bundle factory instead of mutating live state.
+            bundle = build_client_bundle(runtime, timeout=timeout)
+    else:
+        # Keep the exact resolver-built OpenAI client.  The kwargs snapshot is
+        # only for a later request-local rebuild; it retains headers and the
+        # resolved timeout alongside the same runtime identity.
+        fb_headers = (
+            getattr(fb_client, "_hermes_runtime_extra_headers", None)
+            or getattr(fb_client, "_custom_headers", None)
+            or getattr(fb_client, "default_headers", None)
+        )
+        client_kwargs = {
+            "api_key": getattr(fb_client, "api_key", ""),
+            "base_url": fb_base_url,
+        }
+        if fb_headers:
+            client_kwargs["default_headers"] = dict(fb_headers)
+        timeout = get_provider_request_timeout(fb_provider, fb_model)
+        if timeout is not None:
+            client_kwargs["timeout"] = timeout
+        runtime = ResolvedRuntime.from_mapping({
+            "provider": fb_provider,
+            "model": fb_model,
+            "requested_provider": fb_provider,
+            "api_mode": fb_api_mode,
+            **client_kwargs,
+        })
+        bundle = ClientBundle(runtime=runtime, client=fb_client, client_kwargs=client_kwargs)
+
+    agent.install_runtime(bundle, reason="fallback")
 
 
 def _update_fallback_context_compressor(agent) -> None:
@@ -2071,6 +2107,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             logger.warning("Could not normalize fallback model %r for provider %r: %s", fb_model, fb_provider, _norm_err)
 
         fb_base_url = str(fb_client.base_url)
+        from agent.auxiliary_client import AnthropicAuxiliaryClient
+        if not fb_api_mode_explicit and isinstance(fb_client, AnthropicAuxiliaryClient):
+            # The resolved client is authoritative when a named provider's
+            # configuration declares the Messages wire on a generic URL.
+            fb_api_mode = "anthropic_messages"
         if not fb_api_mode_explicit and fb_api_mode == "chat_completions":
             fb_api_mode = _fallback_api_mode_resolved(agent, fb_provider, fb_model, fb_base_url)
 
@@ -2080,16 +2121,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # window is resolved instead of the previous model's stale value.
         # See #22387.
         agent._config_context_length = None
-        agent.model, agent.provider, agent.requested_provider = fb_model, fb_provider, fb_provider
-        agent.base_url, agent.api_mode = fb_base_url, fb_api_mode
-        # reasoning_content echo opt-in travels with the active provider; restore_primary_runtime reverts it.
-        agent._reasoning_echo_flag = bool(fb.get("reasoning_echo", False))
-        if hasattr(agent, "_transport_cache"):
-            agent._transport_cache.clear()
-        agent._fallback_activated = True
-
         _rebind_fallback_credential_pool(agent, fb_provider, fb_model)
         _swap_fallback_clients(agent, fb_client, fb_provider, fb_model, fb_base_url, fb_api_mode)
+
+        # ``install_runtime`` commits identity + wire atomically.  Fallback
+        # policy and context-engine bookkeeping remain outside that boundary.
+        agent._reasoning_echo_flag = bool(fb.get("reasoning_echo", False))
+        agent._fallback_activated = True
 
         from agent.agent_runtime_helpers import sync_credential_pool_entry_id
         sync_credential_pool_entry_id(agent)

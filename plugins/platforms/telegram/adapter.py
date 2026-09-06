@@ -2488,6 +2488,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     icon_custom_emoji_id=topic_conf.get("icon_custom_emoji_id"))
                 if not thread_id:
                     continue
+
+                # Keep the shared runtime PlatformConfig in sync with the
+                # persisted thread_id so reconnect adapters do not recreate
+                # this DM topic before the gateway process is restarted.
+                topic_conf["thread_id"] = thread_id
                 self._dm_topics[cache_key] = thread_id
                 logger.info("[%s] DM topic cached: %s -> thread_id=%s", self.name, cache_key, thread_id)
                 self._persist_dm_topic_thread_id(int(chat_id), topic_name, thread_id)

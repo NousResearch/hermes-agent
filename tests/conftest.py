@@ -1509,13 +1509,19 @@ def _live_system_guard(request, monkeypatch):
     real_kill = _os.kill
 
     def _guarded_kill(pid, sig, *args, **kwargs):
-        # Signal 0 is a pure liveness probe — it cannot terminate anything.
-        # psutil.pid_exists() uses os.kill(pid, 0) on POSIX, and probing a
+        # Signal 0 is a pure liveness probe on POSIX, but Windows interprets it
+        # as CTRL_C_EVENT process control. psutil uses this path only on POSIX,
+        # and probing a
         # just-killed grandchild that was reparented to init (zombie with a
         # foreign parent chain) must not trip the guard. Flaked in CI on
         # test_entire_tree_is_sigkilled_not_just_parent.
-        if int(sig) == 0:
+        if int(sig) == 0 and _os.name != "nt":
             return real_kill(pid, sig, *args, **kwargs)
+        if int(sig) == 0:
+            raise RuntimeError(
+                "tests/conftest.py live-system guard: blocked signal 0 "
+                "because Windows treats it as process control"
+            )
         if _is_own_subtree(int(pid)):
             return real_kill(pid, sig, *args, **kwargs)
         raise RuntimeError(
@@ -1548,7 +1554,7 @@ def _live_system_guard(request, monkeypatch):
                 return real_killpg(pgid, sig, *args, **kwargs)
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
-                f"os.killpg({pgid}, {sig}) — PGID is outside the test "
+                f"process-group signal ({pgid}, {sig}) — PGID is outside the test "
                 "process group. See _live_system_guard for the why."
             )
 

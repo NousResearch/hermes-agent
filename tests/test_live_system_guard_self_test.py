@@ -76,7 +76,7 @@ def _refuse_to_fire_live_weapons(request):
             "REFUSING TO RUN: the live-system guard from tests/conftest.py is "
             "not active in this interpreter (os.kill is still the raw C "
             "builtin). This canary file executes real kill primitives — "
-            "os.kill(-1, SIGTERM), os.killpg, pkill -f python — and relies on "
+            "os.kill(-1, SIGTERM), process-group signals, and pkill — and relies on "
             "the guard to intercept them; unguarded, they SIGTERM every process "
             "the current user owns. This usually means the file was collected "
             "without its home tests/conftest.py (note: a test*.py copy glob "
@@ -119,7 +119,7 @@ def test_os_kill_blocks_negative_one():
 @pytest.mark.skipif(not hasattr(os, "killpg"), reason="killpg POSIX-only")
 def test_os_killpg_blocks_foreign_pgid():
     with pytest.raises(RuntimeError, match="live-system guard|hermetic-test guard"):
-        os.killpg(FOREIGN_PID, signal.SIGTERM)
+        os.killpg(FOREIGN_PID, signal.SIGTERM)  # windows-footgun: ok — POSIX-only test
 
 
 # ──────────────────── subprocess regex bypasses ────────────────
@@ -302,6 +302,10 @@ def test_legacy_bypass_marker_cannot_disable_guard():
     # Seatbelt deliberately permits self-signals. The macOS kernel
     # attestation therefore probes the out-of-sandbox runner PID instead;
     # signal 0 against this process remains a harmless liveness check.
-    os.kill(os.getpid(), 0)
+    if os.name == "nt":
+        with pytest.raises(RuntimeError, match="process control|live-system guard"):
+            os.kill(os.getpid(), 0)  # windows-footgun: ok — verifies Windows fail-closed guard
+    else:
+        os.kill(os.getpid(), 0)
     with pytest.raises(RuntimeError, match="live-system guard|hermetic-test guard"):
         os.kill(FOREIGN_PID, signal.SIGTERM)

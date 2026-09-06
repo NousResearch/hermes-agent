@@ -296,7 +296,7 @@ def _is_serve_orphaned(
         return False
 
 
-def _start_parent_death_watchdog() -> None:
+def _start_parent_death_watchdog(*, orphan_probe: Any = None) -> None:
     """Exit when the exact desktop parent that spawned this backend dies.
 
     Desktop passes its PID and, in newer versions, a start marker (defeats PID
@@ -334,8 +334,10 @@ def _start_parent_death_watchdog() -> None:
     except (TypeError, ValueError):
         poll = 2.0
 
+    probe = orphan_probe or _is_serve_orphaned
+
     def _loop() -> None:
-        while not _is_serve_orphaned(desktop_pid, start_marker):
+        while not probe(desktop_pid, start_marker):
             time.sleep(poll)
         try:
             _log.warning(

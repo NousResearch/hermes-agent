@@ -16,8 +16,14 @@ def test_argv_arguments_are_not_treated_as_executables(tmp_path):
     """A file argument whose basename is a killer name must not trip the
     guard (the path contains "hermes" via the pytest tmp root)."""
     target = tmp_path / "skill"
-    target.write_text("just a filename\n")
-    result = subprocess.run(["cat", str(target)], capture_output=True, text=True)
+    target.write_text("just a filename\n", encoding="utf-8")
+    result = subprocess.run(
+        ["cat", str(target)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     assert result.returncode == 0
     assert "just a filename" in result.stdout
 

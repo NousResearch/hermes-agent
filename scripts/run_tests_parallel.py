@@ -124,7 +124,7 @@ def _resolve_real_home(environment: dict[str, str]) -> Path:
         raise RuntimeError("account-home attestation is implemented only for POSIX")
     import pwd
 
-    account_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+    account_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()  # windows-footgun: ok — POSIX-only branch above
     declared_real_raw = environment.get("HERMES_TEST_REAL_HOME", "").strip()
     if declared_real_raw:
         declared_real = Path(declared_real_raw).expanduser().resolve()

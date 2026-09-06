@@ -1068,8 +1068,10 @@ def _install_process_guards() -> None:
     def guarded_kill(pid, sig, *args, **kwargs):
         numeric_pid = int(pid)
         numeric_sig = int(sig)
-        if numeric_sig == 0:
+        if numeric_sig == 0 and os.name != "nt":
             return real_kill(pid, sig, *args, **kwargs)
+        if numeric_sig == 0:
+            raise _violation("os.kill signal 0 is process control on Windows", (pid, sig))
         if (
             os.environ.get("HERMES_TEST_OS_SANDBOX") == "linux-bwrap"
             and numeric_pid > 1
@@ -1091,7 +1093,7 @@ def _install_process_guards() -> None:
 
     os.kill = guarded_kill
     if hasattr(os, "killpg"):
-        real_killpg = os.killpg
+        real_killpg = os.killpg  # windows-footgun: ok — guarded by hasattr(os, "killpg")
 
         def guarded_killpg(pgid, sig, *args, **kwargs):
             numeric_pgid = abs(int(pgid))
@@ -1110,9 +1112,9 @@ def _install_process_guards() -> None:
                 or _is_test_process(numeric_pgid)
             ):
                 return real_killpg(pgid, sig, *args, **kwargs)
-            raise _violation("os.killpg outside test process group", (pgid, sig))
+            raise _violation("process-group signal outside test process group", (pgid, sig))
 
-        os.killpg = guarded_killpg
+        os.killpg = guarded_killpg  # windows-footgun: ok — guarded by hasattr(os, "killpg")
 
     real_popen = subprocess.Popen
 

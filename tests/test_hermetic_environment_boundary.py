@@ -68,7 +68,13 @@ def test_shell_wrapped_forbidden_operation_is_blocked():
         ["xargs", "git", "fetch"],
     ):
         with pytest.raises(RuntimeError, match="guard"):
-            subprocess.run(command, input="https://example.invalid/live.git\n", text=True)
+            subprocess.run(
+                command,
+                input="https://example.invalid/live.git\n",
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
 
 
 def test_git_local_fixture_operations_are_allowed_but_remote_alias_is_blocked(
@@ -88,18 +94,19 @@ def test_git_local_fixture_operations_are_allowed_but_remote_alias_is_blocked(
     git(origin, "init", "-q")
     git(origin, "config", "user.email", "test@example.invalid")
     git(origin, "config", "user.name", "Hermetic Test")
-    (origin / "tracked.txt").write_text("one\n")
+    (origin / "tracked.txt").write_text("one\n", encoding="utf-8")
     git(origin, "add", "tracked.txt")
     git(origin, "commit", "-qm", "initial")
     git(tmp_path, "clone", "-q", str(origin), str(clone))
-    (clone / "tracked.txt").write_text("two\n")
+    (clone / "tracked.txt").write_text("two\n", encoding="utf-8")
     git(clone, "stash", "push", "-m", "local-only")
     git(clone, "fetch", "-q", "origin")
     subprocess.run(["git", "push", "-u", "origin", "HEAD"], cwd=clone, check=False)
     with pytest.raises(RuntimeError, match="git remote network operation"):
         subprocess.run(["git", "fetch"], cwd=clone, check=False)
     (clone / ".gitmodules").write_text(
-        '[submodule "live"]\n\tpath = live\n\turl = https://example.invalid/live.git\n'
+        '[submodule "live"]\n\tpath = live\n\turl = https://example.invalid/live.git\n',
+        encoding="utf-8",
     )
     with pytest.raises(RuntimeError, match="git remote network operation"):
         subprocess.run(["git", "fetch", "origin"], cwd=clone, check=False)
@@ -482,22 +489,25 @@ def test_macos_kernel_blocks_signal_syscall_and_launchctl_copy(tmp_path):
 def test_macos_kernel_blocks_native_keychain_broker():
     import ctypes
 
-    security = ctypes.CDLL(
-        "/System/Library/Frameworks/Security.framework/Security"
-    )
-    security.SecKeychainCopyDefault.argtypes = [
-        ctypes.POINTER(ctypes.c_void_p)
+    libc = ctypes.CDLL(None)
+    bootstrap_port = ctypes.c_uint32.in_dll(libc, "bootstrap_port").value
+    libc.bootstrap_look_up.argtypes = [
+        ctypes.c_uint32,
+        ctypes.c_char_p,
+        ctypes.POINTER(ctypes.c_uint32),
     ]
-    security.SecKeychainCopyDefault.restype = ctypes.c_int32
-    keychain = ctypes.c_void_p()
-    status = security.SecKeychainCopyDefault(ctypes.byref(keychain))
-    # Security.framework maps a denied securityd lookup to
-    # errSecNotAvailable on some macOS releases and
-    # errSecInteractionNotAllowed on others. Outside the Seatbelt profile the
-    # same host call succeeds; either denial code proves no keychain broker
-    # capability reached this test process.
-    assert status in {-25291, -25307}
-    assert not keychain.value
+    libc.bootstrap_look_up.restype = ctypes.c_int
+    service_port = ctypes.c_uint32()
+    status = libc.bootstrap_look_up(
+        bootstrap_port,
+        b"com.apple.SecurityServer",
+        ctypes.byref(service_port),
+    )
+    # This service resolves outside the test Seatbelt on supported macOS
+    # runners. The profile's deny mach-lookup rule must stop the broker at the
+    # kernel boundary, independently of keychain availability or UI state.
+    assert status != 0
+    assert service_port.value == 0
 
 
 def test_test_owned_loopback_listener_is_allowed():

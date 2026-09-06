@@ -4094,3 +4094,25 @@ def test_read_file_wire_result_fails_closed_without_exact_metadata(
         )
 
     assert "untrusted_provenance" in exc_info.value.decision.reason_codes
+
+
+@pytest.mark.parametrize("action,payload", [
+    ("inspect-pr", {"state": "CLOSED", "head_sha": "a" * 40}),
+    ("retire-feedback", {"status": "retired", "pr_state": "CLOSED", "task_id": "t_12345678"}),
+])
+def test_protected_feedback_replay_preserves_retirement_state(tmp_path, monkeypatch, action, payload):
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    kwargs = {"model": agent.model, "input": [
+        {"type": "function_call", "name": "terminal", "call_id": "call_retire",
+         "arguments": json.dumps({"command": f"hermes github-pr-feedback {action} --repository acme/widgets --pr-number 17"})},
+        {"type": "function_call_output", "call_id": "call_retire",
+         "output": json.dumps({"exit_code": 0, "output": json.dumps(payload)})},
+    ]}
+    authorized, receipt = authorize_agent_sdk_kwargs(agent, kwargs)
+    assert receipt.allowed
+    rendered = json.loads(authorized["input"][1]["output"])
+    assert all(rendered["json"].get(key) == value for key, value in payload.items())

@@ -742,6 +742,12 @@ def setup_cli(_ctx: Any, parser: argparse.ArgumentParser) -> None:
         "--repository-path", required=True, type=Path
     )
     resolve_superseded_feedback.add_argument("--test-evidence", required=True)
+    retired = subcommands.add_parser("retire-feedback", help="Retire an exact feedback dispatch after PR closure")
+    retired.add_argument("--repository", required=True)
+    retired.add_argument("--pr-number", required=True, type=int)
+    retired.add_argument("--feedback-kind", required=True)
+    retired.add_argument("--feedback-id", required=True)
+    retired.add_argument("--receipt-head-sha", required=True)
     completed = subcommands.add_parser(
         "complete-feedback",
         help="Acknowledge one dispatched feedback action after push and reply",
@@ -814,6 +820,9 @@ def handle_cli_with_context(ctx: Any, args: argparse.Namespace) -> int:
         return _close_superseded(ctx, args)
     if action == "resolve-superseded-feedback":
         return _resolve_superseded_feedback(ctx, args)
+    if action == "retire-feedback":
+        from .feedback_retirement import run_retirement
+        return run_retirement(ctx, args)
     if action == "complete-feedback":
         return _complete_feedback(ctx, args)
     if action == "complete-maintenance":

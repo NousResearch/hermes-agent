@@ -124,6 +124,7 @@ _GITHUB_PR_FEEDBACK_TERMINAL_SUBCOMMANDS = frozenset(
     {
         "inspect-pr",
         "complete-feedback",
+        "retire-feedback",
         "submit-review",
         "status",
     }
@@ -149,6 +150,8 @@ _GITHUB_PR_FEEDBACK_TERMINAL_RESULT_KEYS = frozenset(
         "observed_head_sha",
         "pr_number",
         "pr_state",
+        "state",
+        "task_id",
         "reason",
         "repository",
         "resolved_head_sha",

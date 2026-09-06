@@ -548,3 +548,10 @@ The scheduled scan reconciles these rules after critical work. Run
 `hermes github-pr-feedback label-scan --repository OWNER/REPO` to reconcile only
 labels for configured, admitted open PRs. Writes revalidate the exact head and
 verify label readback; incomplete file listings are rejected.
+
+
+Closed or merged feedback PRs use the exact `retire-feedback` command supplied by
+the card before `kanban_complete`. Retirement verifies canonical closure twice
+and marks that dispatch superseded in the feedback ledger. It neither posts a
+completion comment nor claims passing CI. Open, changed-head, and raced PRs keep
+their pending gate. Protected terminal replay preserves the lifecycle result.

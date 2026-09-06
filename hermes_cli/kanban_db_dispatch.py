@@ -1122,6 +1122,23 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+def _is_implementation_dispatch_lane(assignee: Optional[str]) -> bool:
+    """Return whether *assignee* must retain implementation protection.
+
+    ``active_pr`` protects implementation retries from opening a duplicate
+    pull request.  Integration, validation, QA, review, and release workers
+    consume that pull request instead, so applying the guard to those lanes
+    strands downstream work.  The board has no separate role column, so only
+    the established downstream lanes are exempted.  Unknown assignees remain
+    protected (fail closed) rather than creating a duplicate-work bypass.
+    """
+    if not isinstance(assignee, str):
+        return True
+    return assignee.strip().lower() not in {
+        "integration", "validation", "qa", "review", "release",
+    }
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -1140,7 +1157,7 @@ def check_respawn_guard(
     dead claim locks are NOT a guard reason — the reclaim passes own those.
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT assignee, last_failure_error FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
@@ -1205,12 +1222,13 @@ def check_respawn_guard(
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
-    ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+    if _is_implementation_dispatch_lane(row["assignee"]):
+        for c in conn.execute(
+            "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+            (task_id, pr_cutoff),
+        ).fetchall():
+            if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+                return "active_pr"
 
     return None
 

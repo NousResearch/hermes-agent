@@ -2105,14 +2105,14 @@ DEFAULT_CONFIG = {
     # write_file/patch. Runs only when the cwd or edited file is inside a git worktree; otherwise
     # dormant and the in-process syntax check is the only tier.
     "lsp": {
-        "enabled": True,  # False disables the whole subsystem: no servers, no event loop, no cost.
+        "enabled": False,  # Opt-in: no servers or background event loop until enabled.
         # document = wait up to wait_timeout seconds for the current file's diagnostics; full = also
         # request workspace-wide diagnostics (slower).
         "wait_mode": "document",
         "wait_timeout": 5.0,
         # Missing server binaries: auto = install via npm/go/pip into <HERMES_HOME>/lsp/bin/ on
-        # first use; manual = only binaries on PATH; off = alias for manual.
-        "install_strategy": "auto",
+        # first use; manual = existing binaries on PATH or in <HERMES_HOME>/lsp/bin/; off = manual.
+        "install_strategy": "manual",
         # Idle seconds before a server is shut down (respawned on demand), so long- running
         # processes don't accumulate stale children (hundreds of MB + pipe FDs each) across
         # worktrees. 0 = keep servers for process lifetime.

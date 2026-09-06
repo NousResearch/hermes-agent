@@ -153,10 +153,10 @@ class LSPService:
         servers_cfg = lsp_cfg.get("servers") or {}
         servers = {n: c for n, c in servers_cfg.items() if isinstance(c, dict)} if isinstance(servers_cfg, dict) else {}
         return cls(
-            enabled=bool(lsp_cfg.get("enabled", True)),
+            enabled=bool(lsp_cfg.get("enabled", False)),
             wait_mode=lsp_cfg.get("wait_mode", "document"),
             wait_timeout=float(lsp_cfg.get("wait_timeout", DIAGNOSTICS_DOCUMENT_WAIT)),
-            install_strategy=lsp_cfg.get("install_strategy", "auto"),
+            install_strategy=lsp_cfg.get("install_strategy", "manual"),
             binary_overrides={n: c["command"] for n, c in servers.items()
                               if isinstance(c.get("command"), list) and c["command"]},
             env_overrides={n: {k: str(v) for k, v in c["env"].items()} for n, c in servers.items()

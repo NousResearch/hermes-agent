@@ -5,6 +5,7 @@ from __future__ import annotations
 from .ci_contract import manifest_path as ci_manifest_path
 
 import argparse
+import os
 import fcntl
 import hashlib
 import json
@@ -265,7 +266,13 @@ class DoctorProbe:
             "board": self._board_exists(policy.board or ""),
             "assignee": all(self._assignee_exists(name) for name in configured_assignees(policy)),
             "worker_completion_policy": all(
-                worker_contract_enabled(self._hermes_root, name)
+                worker_contract_enabled(
+                    self._hermes_root,
+                    name,
+                    project_root=Path(
+                        os.environ.get("HERMES_KANBAN_WORKSPACE", ".")
+                    ),
+                )
                 for name in configured_assignees(policy)
             ),
             "ledger_access": self._ledger_access(ledger_path),

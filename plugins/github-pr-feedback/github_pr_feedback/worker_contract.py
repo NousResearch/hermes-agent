@@ -43,14 +43,17 @@ def _declared_hooks(plugin_dir: Path) -> set[str] | None:
     return None
 
 
-def _resolved_declared_hooks(home: Path) -> set[str] | None:
+def _resolved_declared_hooks(home: Path, project_root: Path | None = None) -> set[str] | None:
     """Resolve the worker plugin contract from manifests only.
 
     A profile-local manifest wins over the trusted bundled manifest, matching the
     plugin discovery precedence without executing profile-owned code.
     """
     user_plugins = home / "plugins"
-    candidates = [user_plugins / _PLUGIN_NAME]
+    candidates = []
+    if project_root is not None:
+        candidates.append(Path(project_root) / ".hermes" / "plugins" / _PLUGIN_NAME)
+    candidates.append(user_plugins / _PLUGIN_NAME)
     try:
         categories = tuple(path for path in user_plugins.iterdir() if path.is_dir())
     except OSError:
@@ -62,7 +65,9 @@ def _resolved_declared_hooks(home: Path) -> set[str] | None:
     return _declared_hooks(Path(__file__).resolve().parents[1])
 
 
-def worker_contract_enabled(root: Path, assignee: str) -> bool:
+def worker_contract_enabled(
+    root: Path, assignee: str, *, project_root: Path | None = None
+) -> bool:
     if not assignee or assignee in {".", ".."} or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_." for c in assignee):
         return False
     home = root if assignee == "default" else root / "profiles" / assignee
@@ -84,5 +89,5 @@ def worker_contract_enabled(root: Path, assignee: str) -> bool:
             or _PLUGIN_NAME in disabled):
         return False
 
-    hooks = _resolved_declared_hooks(home)
+    hooks = _resolved_declared_hooks(home, project_root)
     return hooks is not None and _REQUIRED_HOOKS <= hooks

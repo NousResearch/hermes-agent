@@ -48,6 +48,11 @@ _DEGENERATE_STALL_PHRASES = (
     "let me reconsider",
     "here is a summary of what we",
 )
+# A reply longer than this is not a thin stall — it carries real content, so
+# it must NOT be flagged on a phrase match alone (over-fire guard). It is still
+# caught as degenerate if it echoes the prior turn, which is checked separately
+# and WITHOUT a length cap.
+_DEGENERATE_STALL_PHRASE_MAX_LEN = 160
 
 
 def _is_degenerate_continuation(agent: Any, final_response: str, prior_text: str) -> bool:
@@ -57,17 +62,22 @@ def _is_degenerate_continuation(agent: Any, final_response: str, prior_text: str
     signal: it echoes the immediately-prior assistant prose, or it is a
     short stall/refusal/placeholder that produces no forward progress.
     Fails OPEN: an empty or clearly substantial reply is never flagged.
+
+    Detection ORDER matters:
+      * Echo is checked FIRST and WITHOUT a length cap, so a model re-emitting
+        its own long-form prose (the classic degenerate loop) is caught even
+        when verbose — a length cutoff before the echo check would exempt it.
+      * The phrase heuristic applies only to a short, single-line, non-fenced
+        reply, so a normal answer that merely CONTAINS a stall word (e.g.
+        "I'm sorry — here's the fix: <newline> ... <code>") is not miscounted.
     """
     text = (agent._strip_think_blocks(final_response) or "").strip()
     if not text:
         return False
-    # Substantial replies are not degenerate (require real content).
-    if len(text) > 600:
-        return False
     low = text.lower()
-    if any(phrase in low for phrase in _DEGENERATE_STALL_PHRASES):
-        return True
     # Echo of the prior assistant turn: normalize whitespace and compare.
+    # No length cap here: long-form repetition is a real no-progress loop and
+    # must not be exempted just because it is verbose.
     if prior_text:
         prior_norm = re.sub(r"\s+", " ", prior_text.lower()).strip()
         cur_norm = re.sub(r"\s+", " ", low).strip()
@@ -76,6 +86,17 @@ def _is_degenerate_continuation(agent: Any, final_response: str, prior_text: str
             return True
         if prior_norm and len(prior_norm) >= 0.7 * len(cur_norm) and prior_norm in cur_norm:
             return True
+    # Stall-phrase heuristic: only for a short, single-line reply with no code
+    # fence. A multi-line or fenced reply carries a deliverable, not a stall —
+    # this is the over-fire guard against a real answer that merely contains
+    # "i am sorry" / "i cannot" somewhere.
+    if (
+        len(text) <= _DEGENERATE_STALL_PHRASE_MAX_LEN
+        and "\n" not in text
+        and "```" not in text
+        and any(phrase in low for phrase in _DEGENERATE_STALL_PHRASES)
+    ):
+        return True
     return False
 
 
@@ -125,9 +146,10 @@ def _inject_compacted_handoff(
             snippet = content.strip().replace("\n", " ")[:240]
             tail_lines.append(f"[{role}] {snippet}")
     handoff = (
-        "HANDOFF — previous model stalled mid-task (degenerate/no-progress "
-        "continuations). Continue the ORIGINAL task below with fresh effort. "
-        "Do not repeat prior stalling; produce the deliverable.\n"
+        "HANDOFF — previous model delivered no progress (degenerate/no-progress "
+        "continuations). Resume the ORIGINAL task below. If it can be completed, "
+        "deliver it; if the prior model's answer was a genuine refusal or the task "
+        "truly cannot be done, say so plainly instead of repeating it.\n"
         f"ORIGINAL GOAL: {goal}\n"
         "RECENT ACTIVITY (compacted):\n"
         + ("\n".join(tail_lines) if tail_lines else "(no prior activity)")

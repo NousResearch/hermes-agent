@@ -1,0 +1,40 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: helena
+description: >-
+  AI marketing agent for connected ad, analytics, social, email, and
+  publishing channels.
+source: https://agent.enrichlabs.ai/docs/claude-connector
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint); Hermes's MCP client + mcp_oauth_manager handle
+# discovery, PKCE, token exchange, and refresh.
+transport:
+  type: http
+  url: https://agent.enrichlabs.ai/api/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - helena
+    - enrich labs
+  hosts:
+    - enrichlabs.ai
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Enrich Labs (or run `hermes mcp login helena`). Select a brand,
+  approve access, then restart the session so the tool loads.
+
+  Hosted MCP access requires an Enrich Labs Pro, Pro Plus, or
+  Enterprise plan and completed Helena onboarding. Helena can take
+  real-world write actions such as publishing content or changing ad
+  campaigns when asked; review destinations, dates, and budgets in
+  requests that authorize those actions.

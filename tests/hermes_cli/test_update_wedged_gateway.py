@@ -32,16 +32,16 @@ from gateway.shutdown_watchdog import (
 )
 
 # Native Windows exposes neither ``socket.AF_UNIX`` nor an asyncio UNIX
-# server, so the witness cases that create real socket nodes
+# server. macOS Hermes tests run under a Seatbelt profile that deliberately
+# denies every network/socket syscall; allowing loopback would also allow a
+# test to contact a real gateway. The witness cases that create real nodes
 # (``_silent_socket_node``) or run the real producer
-# (``loop_heartbeat_forever``) cannot execute there. Only those cases are
-# skipped: the witness-absent contracts (mocked probes, file-only
-# heartbeats) are platform-independent and keep running on Windows, per
-# the Windows behavior pinned alongside the product-side guarantee.
+# (``loop_heartbeat_forever``) therefore execute only inside Linux's private
+# network namespace. Only those cases are skipped elsewhere; the
+# witness-absent contracts remain platform-independent.
 _NEEDS_UNIX_SOCKETS = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="requires real UNIX-domain sockets "
-    "(socket.AF_UNIX / asyncio.start_unix_server), unavailable on native Windows",
+    sys.platform in {"darwin", "win32"},
+    reason="requires real UNIX-domain sockets inside a private network namespace",
 )
 
 
@@ -990,6 +990,11 @@ class TestLoopTickTcpWitness:
     """Non-POSIX arm: the producer publishes ``loop_tick_tcp_port`` and the
     consumer probes 127.0.0.1:<port> instead of the AF_UNIX node. The
     two-witness contract must hold identically over TCP."""
+
+    pytestmark = pytest.mark.skipif(
+        sys.platform == "darwin",
+        reason="macOS hermetic Seatbelt denies loopback to protect the live gateway",
+    )
 
     @staticmethod
     def _tcp_answerer():

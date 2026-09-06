@@ -402,6 +402,28 @@ class TestEntryLookup:
         reg = ToolRegistry()
         assert reg.get_entry("missing") is None
 
+    def test_entry_snapshot_binds_generation_and_identity(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="alpha",
+            toolset="core",
+            schema=_make_schema("alpha"),
+            handler=_dummy_handler,
+        )
+        generation, entries = reg.snapshot_entries_with_generation()
+        original = entries["alpha"]
+
+        reg.register(
+            name="alpha",
+            toolset="core",
+            schema=_make_schema("alpha"),
+            handler=lambda _args, **_kwargs: "replacement",
+        )
+
+        assert not reg.generation_is_current(generation)
+        assert not reg.entry_is_current("alpha", original)
+        assert entries["alpha"] is original
+
 
 class TestSecretCaptureResultContract:
     def test_secret_request_result_does_not_include_secret_value(self):

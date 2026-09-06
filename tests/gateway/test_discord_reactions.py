@@ -716,3 +716,133 @@ async def test_inbound_reaction_duplicate_suppressed(adapter):
     await adapter._handle_inbound_reaction(payload, "added")  # duplicate
 
     assert adapter.handle_message.await_count == 1
+
+
+def _guild_channel_for_reactor(adapter, reactor, *, guild_id: int = 999):
+    """Wire a guild channel whose get_member resolves to ``reactor`` (None to leave it unresolved)."""
+    guild = SimpleNamespace(
+        id=guild_id, name="TestGuild", get_member=MagicMock(return_value=reactor),
+    )
+    channel = _make_mock_channel(adapter._client.user, guild=guild)
+    adapter._client.get_channel = MagicMock(return_value=channel)
+    return channel
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_bot_reactor_denied_by_default(adapter, monkeypatch):
+    """A bot reactor is denied when DISCORD_ALLOW_BOTS is unset, exactly as on the message path.
+
+    Regression: the reaction path used to gate bots on the user/role allowlists instead, which
+    ADMITTED a bot whenever no allowlist was configured -- a config that denies a human.
+    """
+    monkeypatch.delenv("DISCORD_ALLOW_BOTS", raising=False)
+    adapter.handle_message = AsyncMock()
+    adapter._allowed_user_ids = set()
+    adapter._allowed_role_ids = set()
+    bot_reactor = SimpleNamespace(display_name="OtherBot", bot=True, roles=[])
+    channel = _guild_channel_for_reactor(adapter, bot_reactor)
+
+    payload = _make_reaction_payload(user_id=555, member=bot_reactor, guild_id=999)
+    await adapter._handle_inbound_reaction(payload, "added")
+
+    channel.fetch_message.assert_not_awaited()
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_bot_reactor_allowed_when_allow_bots_all(adapter, monkeypatch):
+    """DISCORD_ALLOW_BOTS=all admits a bot reactor, and the user allowlist does not gate it.
+
+    Mirrors _discord_message_admission, where an allowed bot bypasses the user allowlist.
+    """
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.handle_message = AsyncMock()
+    adapter._allowed_user_ids = {"42"}  # bot id 555 is deliberately absent
+    adapter._allowed_role_ids = set()
+    bot_reactor = SimpleNamespace(display_name="OtherBot", bot=True, roles=[])
+    _guild_channel_for_reactor(adapter, bot_reactor)
+
+    payload = _make_reaction_payload(user_id=555, member=bot_reactor, guild_id=999)
+    await adapter._handle_inbound_reaction(payload, "added")
+
+    adapter.handle_message.assert_awaited_once()
+    source = adapter.handle_message.await_args.args[0].source
+    assert source.is_bot is True
+    # Bots never carry role auth on the message path either.
+    assert source.role_authorized is False
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_bot_reactor_denied_in_mentions_mode(adapter, monkeypatch):
+    """DISCORD_ALLOW_BOTS=mentions fails closed: a reaction has no text, so it can never mention us."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    adapter.handle_message = AsyncMock()
+    adapter._allowed_user_ids = set()
+    adapter._allowed_role_ids = set()
+    bot_reactor = SimpleNamespace(display_name="OtherBot", bot=True, roles=[])
+    _guild_channel_for_reactor(adapter, bot_reactor)
+
+    payload = _make_reaction_payload(user_id=555, member=bot_reactor, guild_id=999)
+    await adapter._handle_inbound_reaction(payload, "added")
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_bot_reactor_denied_when_inline_mention_required(adapter, monkeypatch):
+    """bots_require_inline_mention fails closed for reactions -- the two-bot ping-pong guard."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    monkeypatch.setenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION", "true")
+    adapter.handle_message = AsyncMock()
+    adapter._allowed_user_ids = set()
+    adapter._allowed_role_ids = set()
+    bot_reactor = SimpleNamespace(display_name="OtherBot", bot=True, roles=[])
+    _guild_channel_for_reactor(adapter, bot_reactor)
+
+    payload = _make_reaction_payload(user_id=555, member=bot_reactor, guild_id=999)
+    await adapter._handle_inbound_reaction(payload, "added")
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_removal_resolves_bot_via_client_cache(adapter, monkeypatch):
+    """A removal payload carries no member; the client cache must still expose the reactor as a bot.
+
+    Regression: with the Server Members intent off, guild.get_member() misses uncached users, so an
+    unresolved bot reactor read as a human (bot=False) and slipped past the bot gate entirely.
+    """
+    monkeypatch.delenv("DISCORD_ALLOW_BOTS", raising=False)
+    adapter.handle_message = AsyncMock()
+    adapter._allowed_user_ids = {"555"}  # would admit it as a human
+    adapter._allowed_role_ids = set()
+    _guild_channel_for_reactor(adapter, None)  # guild lookup misses
+    adapter._client.get_user = MagicMock(
+        return_value=SimpleNamespace(display_name="OtherBot", bot=True)
+    )
+
+    payload = _make_reaction_payload(user_id=555, member=None, guild_id=999)
+    await adapter._handle_inbound_reaction(payload, "removed")
+
+    adapter._client.get_user.assert_called_once_with(555)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_removal_human_from_client_cache_still_routes(adapter):
+    """The client-cache fallback must not over-restrict: an allowed human removal still routes."""
+    adapter.handle_message = AsyncMock()
+    adapter._allowed_user_ids = {"42"}
+    adapter._allowed_role_ids = set()
+    _guild_channel_for_reactor(adapter, None)  # guild lookup misses
+    adapter._client.get_user = MagicMock(
+        return_value=SimpleNamespace(display_name="Jezza", bot=False)
+    )
+
+    payload = _make_reaction_payload(user_id=42, member=None, guild_id=999)
+    await adapter._handle_inbound_reaction(payload, "removed")
+
+    adapter.handle_message.assert_awaited_once()
+    source = adapter.handle_message.await_args.args[0].source
+    assert source.is_bot is False
+    assert source.user_name == "Jezza"

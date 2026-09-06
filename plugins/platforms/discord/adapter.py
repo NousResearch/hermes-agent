@@ -2837,15 +2837,23 @@ class DiscordAdapter(BasePlatformAdapter):
                 get_member = getattr(guild, "get_member", None)
                 if callable(get_member):
                     reactor = get_member(payload.user_id)
-            allowed_users = getattr(self, "_allowed_user_ids", set())
+            if reactor is None:
+                # Removal payloads carry no member, and with the Server Members intent off
+                # guild.get_member() misses uncached users. Without this the reactor reads as a
+                # human (bot=False) and slips past the bot gate below; User objects carry .bot.
+                get_user = getattr(self._client, "get_user", None)
+                if callable(get_user):
+                    reactor = get_user(payload.user_id)
             allowed_roles = getattr(self, "_allowed_role_ids", set())
             if getattr(reactor, "bot", False):
-                # Preserve the reaction surface's existing ID-only behavior for
-                # bot reactors. A configured role allowlist never admits a bot.
-                if allowed_users:
-                    if str(payload.user_id) not in allowed_users:
-                        return
-                elif allowed_roles:
+                # Bot reactors gate on DISCORD_ALLOW_BOTS, matching _discord_message_admission --
+                # the user/role allowlists never admit a bot on the message path either. A
+                # reaction carries no text, so the mention-conditioned modes ("mentions" and
+                # bots_require_inline_mention) can never be satisfied and fail closed; that is
+                # the same two-bot ping-pong guard _self_is_raw_mentioned gives the message path.
+                if self._get_allow_bots() != "all":
+                    return
+                if self._discord_bots_require_inline_mention():
                     return
                 role_authorized = False
             else:

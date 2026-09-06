@@ -2079,6 +2079,18 @@ def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:
     return count * cost_per_image
 
 
+def strip_opaque_replay_items(items: Any) -> Any:
+    """``codex_reasoning_items`` with ``encrypted_content`` blanked for local token estimation.
+    The ciphertext is priced by the provider's own count, never by its bytes (a compaction
+    checkpoint alone can be 5M chars, #100611); only real usage prices it."""
+    if not isinstance(items, list):
+        return items
+    return [
+        {k: ("" if k == "encrypted_content" else v) for k, v in item.items()} if isinstance(item, dict) else item
+        for item in items
+    ]
+
+
 def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
     """Shadow of a message holding only what the provider actually receives.
     * ``api_content`` SUBSTITUTES ``content`` (mirrors ``turn_context.substitute_api_content`` exactly):
@@ -2086,7 +2098,11 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
       other shape would UNDERcount — the dangerous direction.
     * Base64 images become a placeholder; ``_count_image_tokens`` charges them flat.
     * ``reasoning`` never ships as-is (request builds pop it after optionally promoting it into
-      ``reasoning_content``); counting both inflated estimates up to +53%."""
+      ``reasoning_content``); counting both inflated estimates up to +53%.
+    * Opaque provider blobs (``encrypted_content`` on codex reasoning / compaction items) are
+      ciphertext the provider prices by its OWN token count, never by bytes; a native compaction
+      checkpoint alone can be 5M chars (#100611). They contribute 0 here: only real usage ever
+      prices them, and the usage anchor carries that price forward."""
     sidecar = msg.get("api_content")
     sidecar_wins = isinstance(sidecar, str) and bool(sidecar) and msg.get("role") in ("user", "assistant")
     _rc = msg.get("reasoning_content")
@@ -2108,6 +2124,10 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
             ]
         elif k == "content" and isinstance(v, dict) and v.get("_multimodal"):
             shadow[k] = v.get("text_summary", "")
+        elif k == "codex_reasoning_items":
+            shadow[k] = strip_opaque_replay_items(v)
+        elif k == "encrypted_content":  # a Responses reasoning/compaction item passed as a row
+            shadow[k] = ""
         else:
             shadow[k] = v
     return shadow

@@ -37,6 +37,29 @@ from agent.usage_anchor import set_usage_anchor
 logger = logging.getLogger(__name__)
 
 
+def _shallow_copy_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Shallow-copy a message list: a new list of new per-message dicts sharing
+    the same (mostly immutable) values.
+
+    ``copy.deepcopy`` on a message list walks every value, but message dicts
+    hold almost entirely immutable scalars (role/content/name as strings, token
+    counts as ints), so deepcopying them just reallocates identical strings.
+    Shallow copy is O(n) instead of O(n x avg_message_size), which matters on
+    large transcripts where the pre-compression snapshot and each rollback path
+    would otherwise deep-copy megabytes of string payloads.
+
+    Safety: this still produces NEW top-level dicts per row, so it preserves the
+    identity semantics #92231 relies on ("replacing every dict breaks
+    _db_flush_scan_prefix identity") and carries each row's
+    ``_DB_PERSISTED_MARKER`` through unchanged. It is correct ONLY because the
+    compression path replaces top-level keys (e.g. ``msg["content"] = ...``) or
+    appends new messages and never mutates nested mutable values (``tool_calls``
+    lists, ``display_metadata`` dicts) in place — so sharing those between the
+    snapshot and the live list cannot alias-corrupt either side.
+    """
+    return [dict(msg) for msg in messages]
+
+
 @contextlib.contextmanager
 def _swallow(message: str, *, exc_info: bool = False):
     """Run a best-effort block; on Exception log ``message`` at DEBUG and continue."""
@@ -3165,7 +3188,7 @@ def _candidate_rejected(
         _strip_marker_for_comparison(compressed) == _strip_marker_for_comparison(messages_before_compression)
     ):
         if messages != messages_before_compression:
-            messages[:] = copy.deepcopy(messages_before_compression)
+            messages[:] = _shallow_copy_messages(messages_before_compression)
         logger.info(
             "Compression made no progress (session=%s) — skipping boundary rewrite.", agent.session_id or "none"
         )
@@ -3328,7 +3351,7 @@ def _commit_compaction(
                 # transcript is correctly skipped by the flush, and replacing every dict breaks
                 # _db_flush_scan_prefix identity (same reasoning as the rotation branch — no explicit clear
                 # needed).
-                messages[:] = copy.deepcopy(messages_before_compression)
+                messages[:] = _shallow_copy_messages(messages_before_compression)
                 compressed = messages
                 made_progress = False
                 _restore_prune_rearm_tokens(agent.context_compressor, attempt.snapshot)
@@ -3404,7 +3427,7 @@ def _run_summary_phase(
             agent, approx_tokens=approx_tokens, focus_topic=focus_topic, force=force, memory_context=memory_context,
             bypass_cooldown=bypass_cooldown,
         )
-        messages_before_compression = copy.deepcopy(messages)
+        messages_before_compression = _shallow_copy_messages(messages)
         _activity_heartbeat = _CompressionActivityHeartbeat(
             agent, commit_fence=commit_fence, emit_client_status=lease.status_emitted,
         ).start()

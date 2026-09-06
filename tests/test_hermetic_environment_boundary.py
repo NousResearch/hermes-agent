@@ -39,7 +39,7 @@ def test_os_sandbox_launcher_ignores_ambient_path(monkeypatch):
     fake = Path(os.environ["HOME"]) / "bin" / "sandbox-exec"
     monkeypatch.setattr(shutil, "which", lambda *_args, **_kwargs: str(fake))
     if sys.platform.startswith("linux"):
-        resolved = _trusted_linux_bubblewrap(dict(os.environ))
+        resolved = _trusted_linux_bubblewrap()
     elif sys.platform == "darwin":
         resolved = _trusted_sandbox_executable(
             Path("/usr/bin/sandbox-exec"), "sandbox-exec"
@@ -47,6 +47,17 @@ def test_os_sandbox_launcher_ignores_ambient_path(monkeypatch):
     else:
         pytest.skip("fixed launcher attestation is POSIX-only")
     assert Path(resolved).is_absolute()
+    assert Path(resolved) != fake
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux-only")
+def test_linux_sandbox_launcher_ignores_user_built_nix_store_path(monkeypatch):
+    fake = Path("/nix/store/caller-controlled-bubblewrap/bin/bwrap")
+    monkeypatch.setenv("PATH", f"{fake.parent}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(shutil, "which", lambda *_args, **_kwargs: str(fake))
+
+    resolved = _trusted_linux_bubblewrap()
+
     assert Path(resolved) != fake
 
 

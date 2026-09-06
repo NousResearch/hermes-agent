@@ -118,24 +118,42 @@ def _trusted_sandbox_executable(path: Path, label: str) -> str:
     return str(resolved)
 
 
-def _trusted_linux_bubblewrap(env: dict[str, str]) -> str:
-    candidates = [Path("/usr/bin/bwrap")]
-    discovered = shutil.which("bwrap", path=env.get("PATH", ""))
-    if discovered:
-        candidates.append(Path(discovered))
-    for candidate in candidates:
+def _trusted_linux_bubblewrap() -> str:
+    # Do not discover this through PATH. In particular, a multi-user Nix daemon
+    # can materialize caller-controlled derivations as root-owned, immutable
+    # files in /nix/store, so store metadata alone is not provenance. The NixOS
+    # system profile is a fixed, root-controlled launcher contract.
+    candidates = (
+        (Path("/usr/bin/bwrap"), None),
+        (Path("/run/current-system/sw/bin/bwrap"), Path("/nix/store")),
+    )
+    root_uid = Path("/").stat().st_uid
+    for candidate, required_resolved_root in candidates:
         try:
+            launcher_metadata = candidate.lstat()
             resolved = candidate.resolve(strict=True)
         except OSError:
             continue
-        if resolved != Path("/usr/bin/bwrap") and not resolved.is_relative_to(
-            Path("/nix/store")
+        if launcher_metadata.st_uid != root_uid:
+            continue
+        if not (
+            stat.S_ISREG(launcher_metadata.st_mode)
+            or stat.S_ISLNK(launcher_metadata.st_mode)
+        ):
+            continue
+        if (
+            stat.S_ISREG(launcher_metadata.st_mode)
+            and launcher_metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        ):
+            continue
+        if required_resolved_root is not None and not resolved.is_relative_to(
+            required_resolved_root
         ):
             continue
         return _trusted_sandbox_executable(resolved, "bubblewrap")
     raise RuntimeError(
-        "Hermes tests require root-owned bubblewrap from /usr/bin or /nix/store; "
-        "refusing an unsandboxed process"
+        "Hermes tests require attested bubblewrap from /usr/bin or the NixOS "
+        "system profile; refusing an unsandboxed process"
     )
 
 # Per-file wall-clock cap. Override
@@ -300,7 +318,7 @@ def _sandboxed_test_command(
     """Wrap one pytest file in the host's fail-closed OS sandbox."""
     directories, files = _sensitive_host_paths(real_home, repo_root)
     if sys.platform.startswith("linux"):
-        bwrap = _trusted_linux_bubblewrap(env)
+        bwrap = _trusted_linux_bubblewrap()
         env["HERMES_TEST_OS_SANDBOX"] = "linux-bwrap"
         live_hermes = real_home / ".hermes"
         if repo_root == live_hermes or repo_root.is_relative_to(live_hermes):

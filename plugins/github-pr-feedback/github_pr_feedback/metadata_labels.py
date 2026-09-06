@@ -23,8 +23,8 @@ class MetadataLabelRule:
 
 
 def parse_metadata_rules(raw):
-    if not isinstance(raw, list) or len(raw) > 50:
-        raise ValueError("metadata_rules must be a list of at most 50 rules")
+    if not isinstance(raw, list) or len(raw) > 128:
+        raise ValueError("metadata_rules must be a list of at most 128 rules")
     result = []
     for rule in raw:
         if not isinstance(rule, dict) or set(rule) != {

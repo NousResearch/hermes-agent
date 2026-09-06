@@ -566,8 +566,8 @@ describe('stranded harvest', () => {
     const room = await loadRoom()
 
     room.chat.updateGroupChat('Late', current => {
-      current.sessions = { research: 'sid-research' }
-      current.stranded = { research: 0 }
+      current.sessions = { 'home::research': 'sid-research' }
+      current.stranded = { 'home::research': 0 }
 
       return current
     })
@@ -577,12 +577,26 @@ describe('stranded harvest', () => {
       ['assistant', 'Here is the full research result, delivered late.']
     ])
 
-    await room.turns.harvestStrandedGroupReply('Late', { name: 'research', title: '' })
+    await room.turns.harvestStrandedGroupReply('Late', {
+      connectionId: 'home',
+      connectionLabel: 'Home',
+      display_name: 'Rowan',
+      name: 'research',
+      remoteSource: false,
+      sourceScoped: true,
+      title: ''
+    })
 
     expect(log(room, 'Late')).toHaveLength(1)
-    expect(log(room, 'Late')[0].from.name).toBe('research')
+    expect(log(room, 'Late')[0].from).toMatchObject({
+      kind: 'member',
+      name: 'research',
+      source: 'Home',
+      sourceId: 'home',
+      title: 'Rowan'
+    })
     expect(log(room, 'Late')[0].text).toMatch(/delivered late/)
-    expect(room.chat.$groupChats.get().Late.stranded?.research).toBeUndefined()
+    expect(room.chat.$groupChats.get().Late.stranded?.['home::research']).toBeUndefined()
   })
 
   it('prefers the substantive answer over a trailing synthetic (pass)', async () => {

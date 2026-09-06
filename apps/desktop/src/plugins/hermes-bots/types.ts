@@ -137,8 +137,12 @@ export interface Attachment {
 export interface GroupMessageAuthor {
   kind: 'member' | 'user'
   name: string
+  /** Friendly identity captured from the source-qualified room member. */
+  title?: string
   /** Connection label, present when the speaker lives on another machine. */
   source?: string
+  /** Stable connection id used to match the speaker after a connection rename. */
+  sourceId?: string
 }
 
 export interface GroupMessage {

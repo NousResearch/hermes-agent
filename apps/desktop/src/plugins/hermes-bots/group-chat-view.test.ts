@@ -60,6 +60,35 @@ beforeEach(() => {
   runTimersInline()
 })
 
+describe('entry identity', () => {
+  it('uses a captured title when the exact current member has no friendly identity', async () => {
+    const room = await loadRoom()
+
+    const entry = {
+      at: 1,
+      from: { kind: 'member' as const, name: 'default', source: 'Home', sourceId: 'home', title: 'Rowan' },
+      text: 'hello'
+    }
+
+    const members = [{ connectionId: 'home', name: 'default', sourceScoped: true, title: '' }]
+
+    expect(room.view.resolveGroupChatEntryIdentity(entry, members, {}).display).toBe('Rowan')
+
+    const titledRemote = [
+      {
+        connectionId: 'home',
+        connectionLabel: 'Home',
+        name: 'default',
+        remoteSource: true,
+        sourceScoped: true,
+        title: 'Current Rowan'
+      }
+    ]
+
+    expect(room.view.resolveGroupChatEntryIdentity(entry, titledRemote, {}).display).toBe('Current Rowan')
+  })
+})
+
 describe('opening a room', () => {
   it('follows the main-window tab open and close', async () => {
     const room = await loadRoom()

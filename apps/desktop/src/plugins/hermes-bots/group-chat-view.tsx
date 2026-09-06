@@ -93,7 +93,7 @@ import {
   updateGroupComposerDraft
 } from './group-panes'
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
-import { sendToGroupChat, stopGroupThread } from './group-rounds'
+import { groupMessageFallbackLabel, resolveGroupMessageMember, sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
 import { displayName, slugify, stripPreviewMarkdown } from './labels'
@@ -461,6 +461,26 @@ interface GroupChatWorkspaceProps {
   members: GroupMember[]
   onBack?: () => void
   visible?: boolean
+}
+
+/** Resolve the visible speaker through the same source-safe path as model
+ * transcripts, then use current exact-source metadata only when it actually
+ * supplies a friendly identity. Otherwise the captured entry title wins. */
+export function resolveGroupChatEntryIdentity(
+  entry: GroupMessage,
+  members: GroupMember[],
+  allMeta: Record<string, BotMeta>
+) {
+  if (entry.from.kind === 'user') {
+    return { display: 'You', member: null, meta: null }
+  }
+
+  const member = resolveGroupMessageMember(entry, members)
+  const meta = member ? botRosterMeta(member, allMeta) || null : null
+  const currentFriendly = String(member?.title || member?.display_name || meta?.title || '').trim()
+  const display = currentFriendly || groupMessageFallbackLabel(entry)
+
+  return { display, member, meta }
 }
 
 export function GroupChatWorkspace({ group, members, onBack, visible = true }: GroupChatWorkspaceProps) {
@@ -938,38 +958,19 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // One log entry, rendered exactly as before conversation folding existed.
   const renderEntry = (entry: GroupMessage, index: number) => {
     const isUser = entry.from.kind === 'user'
-    const meta = isUser || entry.from.source ? null : allMeta[entry.from.name]
-
-    // Match this speaker back to its member descriptor so display
-    // names and disambiguating handles come from the roster (the
-    // primary "default" profile renders as Hermes, remote dupes
-    // carry their @name-device handle) instead of raw profile ids.
-    const member = isUser
-      ? null
-      : members.find(
-          b =>
-            b.name === entry.from.name &&
-            (entry.from.source ? (b.connectionLabel || b.connectionId) === entry.from.source : !b.remoteSource)
-        ) || null
-
-    const display = isUser
-      ? 'You'
-      : displayName(
-          member || {
-            name: entry.from.name
-          },
-          meta
-        )
+    const { display, member, meta } = resolveGroupChatEntryIdentity(entry, members, allMeta)
 
     const entryKey = `${entry.at}:${index}`
     const revealed = !isUser && revealedSpeaker === entryKey
 
     // Clicked: append the gateway name so same-named agents on
     // two connections are tellable apart on demand.
+    const sourceLabel = member?.connectionLabel || entry.from.source
+
     const label = isUser
       ? 'You'
       : revealed
-        ? `${display}${entry.from.source ? `-${entry.from.source}` : ''} (@${botHandle(entry.from.name, member || undefined)})`
+        ? `${display}${sourceLabel ? `-${sourceLabel}` : ''} (@${botHandle(entry.from.name, member || undefined)})`
         : display
 
     // Speaker avatar: same appearance pipeline as the roster

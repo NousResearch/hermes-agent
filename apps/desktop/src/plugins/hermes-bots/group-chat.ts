@@ -223,9 +223,19 @@ export function groupChatSyncSnapshot(
       from: {
         kind: entry?.from?.kind === 'member' ? 'member' : 'user',
         name: String(entry?.from?.name || (entry?.from?.kind === 'member' ? 'Bot' : 'You')).slice(0, 128),
+        ...(entry?.from?.title
+          ? {
+              title: String(entry.from.title).slice(0, 128)
+            }
+          : {}),
         ...(entry?.from?.source
           ? {
               source: String(entry.from.source).slice(0, 128)
+            }
+          : {}),
+        ...(entry?.from?.sourceId
+          ? {
+              sourceId: String(entry.from.sourceId).slice(0, 128)
             }
           : {})
       },
@@ -249,6 +259,16 @@ export function groupChatSyncSnapshot(
       revision: Math.max(0, Number(room?.syncRevision ?? room?.revision ?? 0)),
       members: (Array.isArray(room.members) ? room.members : []).slice(0, GROUP_CHAT_MAX_MEMBERS).map(member => ({
         name: String(member?.name || '').slice(0, 128),
+        ...(member?.title
+          ? {
+              title: String(member.title).slice(0, 128)
+            }
+          : {}),
+        ...(member?.display_name
+          ? {
+              display_name: String(member.display_name).slice(0, 128)
+            }
+          : {}),
         ...(member?.handle
           ? {
               handle: String(member.handle).slice(0, 128)
@@ -310,7 +330,7 @@ function groupChatSyncEntryKey(entry: GroupMessage) {
     Number(entry?.at || 0),
     String(entry?.from?.kind || ''),
     String(entry?.from?.name || ''),
-    String(entry?.from?.source || ''),
+    String(entry?.from?.sourceId || entry?.from?.source || ''),
     // Threadless entries (pre-thread rooms, older Desktop builds) get
     // SYNTHETIC `legacy-N` ids from assignLegacyThreads. Those ids are
     // position-derived — not stable across a gateway round-trip (the
@@ -1515,7 +1535,8 @@ export function shouldCommitMemberTurn(epochAtDispatch: number, currentEpoch: nu
 
 /** #93127 insurance: byte-identical member echo detection. TRUE only when
  *  the immediately-preceding log entry has the same author (kind + name +
- *  source), same thread, and identical text, within a short recency window —
+ *  stable sourceId (or legacy source label), same thread, and identical text,
+ *  within a short recency window —
  *  a residual double-append fires back-to-back; two legitimately identical
  *  replies hours apart (or with anything in between) are never dropped. */
 const GROUP_DUPLICATE_APPEND_WINDOW_MS = 10 * 60 * 1000
@@ -1535,7 +1556,14 @@ function isDuplicateGroupAppend(
     return false
   }
 
-  if (String(lastEntry.from?.source || '') !== String(from.source || '')) {
+  const lastSourceId = String(lastEntry.from?.sourceId || '')
+  const sourceId = String(from.sourceId || '')
+
+  if (lastSourceId || sourceId) {
+    if (!lastSourceId || !sourceId || lastSourceId !== sourceId) {
+      return false
+    }
+  } else if (String(lastEntry.from?.source || '') !== String(from.source || '')) {
     return false
   }
 

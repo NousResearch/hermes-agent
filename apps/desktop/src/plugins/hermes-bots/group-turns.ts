@@ -868,9 +868,15 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
       {
         kind: 'member',
         name: member.name,
-        ...(member.remoteSource
+        ...(member.title || member.display_name
           ? {
-              source: member.connectionLabel || member.connectionId
+              title: String(member.title || member.display_name)
+            }
+          : {}),
+        ...(member.sourceScoped || member.remoteSource
+          ? {
+              source: member.connectionLabel || member.connectionId,
+              sourceId: member.connectionId
             }
           : {})
       },

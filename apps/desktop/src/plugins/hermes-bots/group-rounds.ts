@@ -154,9 +154,62 @@ export function rotateGroupSpeakers(members: GroupMember[], round: number) {
   return [...members.slice(shift), ...members.slice(0, shift)]
 }
 
+/** Resolve a logged speaker without borrowing another source's metadata.
+ * Stable ids are authoritative; mutable labels only support legacy entries. */
+export function resolveGroupMessageMember(entry: GroupMessage, members: GroupMember[]): GroupMember | null {
+  if (entry.from.kind === 'user') {
+    return null
+  }
+
+  const candidates = members.filter(member => member.name === entry.from.name)
+  const sourceCandidates = candidates.filter(member => member.remoteSource || member.sourceScoped)
+  const localCandidates = candidates.filter(member => !member.remoteSource && !member.sourceScoped)
+
+  const labelCandidates = entry.from.source
+    ? sourceCandidates.filter(
+        member => member.connectionLabel === entry.from.source || member.connectionId === entry.from.source
+      )
+    : []
+
+  return (
+    (entry.from.sourceId
+      ? sourceCandidates.find(member => member.connectionId === entry.from.sourceId)
+      : entry.from.source
+        ? labelCandidates.length === 1
+          ? labelCandidates[0]
+          : undefined
+        : localCandidates.length === 1
+          ? localCandidates[0]
+          : undefined) || null
+  )
+}
+
+/** Captured identity is the only safe fallback for an unresolved source.
+ * Pre-sourceId legacy entries may lack it, so use the raw profile identity
+ * rather than unrelated same-named local metadata. */
+export function groupMessageFallbackLabel(entry: GroupMessage): string {
+  const captured = String(entry.from.title || '').trim()
+
+  if (captured) {
+    return captured
+  }
+
+  if (entry.from.source || entry.from.sourceId) {
+    const name = String(entry.from.name || '').trim()
+
+    return name === 'default' ? 'Hermes' : name || 'Bot'
+  }
+
+  return groupSpeakerLabel(entry.from.name)
+}
+
 /** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
  *  `Name (you): …`. */
-export function formatGroupChatLine(entry: GroupMessage, viewerName: string) {
+export function formatGroupChatLine(
+  entry: GroupMessage,
+  viewer: string | GroupMember,
+  members: GroupMember[] = []
+) {
   // Attachments are staged into each member's session as real payloads; the
   // transcript line names them so the delta text and the bytes line up.
   const attached =
@@ -174,12 +227,24 @@ export function formatGroupChatLine(entry: GroupMessage, viewerName: string) {
     return `${entry.from.name || 'User'} (user): ${entry.text}${attached}`
   }
 
-  const suffix = entry.from.name === viewerName ? ' (you)' : ''
   // Cross-connection speakers carry their device so same-named agents on
   // two machines stay tellable apart in every member's transcript.
-  const source = entry.from.source ? ` [${entry.from.source}]` : ''
+  const sourceMember = resolveGroupMessageMember(entry, members)
 
-  return `${groupSpeakerLabel(entry.from.name)}${suffix}${source}: ${entry.text}${attached}`
+  const title = String(sourceMember?.title || sourceMember?.display_name || '').trim() || groupMessageFallbackLabel(entry)
+  const sourceLabel = sourceMember?.connectionLabel || entry.from.source
+  const source = sourceLabel ? ` [${sourceLabel}]` : ''
+
+  const viewerIsSpeaker =
+    typeof viewer === 'string'
+      ? !entry.from.source && !entry.from.sourceId && entry.from.name === viewer
+      : sourceMember
+        ? groupMemberKey(sourceMember) === groupMemberKey(viewer)
+        : !entry.from.source && !entry.from.sourceId && members.length === 0 && entry.from.name === viewer.name
+
+  const suffix = viewerIsSpeaker ? ' (you)' : ''
+
+  return `${title}${suffix}${source}: ${entry.text}${attached}`
 }
 
 interface GroupChatTurnPromptInput {
@@ -620,7 +685,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
           viewer: member,
           deltaLines: delta
             .slice(-GROUP_CHAT_HISTORY_LIMIT)
-            .map((e: GroupMessage) => formatGroupChatLine(e, member.name))
+            .map((e: GroupMessage) => formatGroupChatLine(e, member, members))
         })
 
         // Images riding this delta (user attachments — member entries don't
@@ -714,9 +779,15 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
             {
               kind: 'member',
               name: member.name,
-              ...(member.remoteSource
+              ...(member.title || member.display_name
                 ? {
-                    source: member.connectionLabel || member.connectionId
+                    title: String(member.title || member.display_name)
+                  }
+                : {}),
+              ...(member.sourceScoped || member.remoteSource
+                ? {
+                    source: member.connectionLabel || member.connectionId,
+                    sourceId: member.connectionId
                   }
                 : {})
             },
@@ -796,7 +867,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
                 // that cites it.
                 deltaLines: delta
                   .slice(-GROUP_CHAT_HISTORY_LIMIT)
-                  .map((e: GroupMessage) => formatGroupChatLine(e, member.name))
+                  .map((e: GroupMessage) => formatGroupChatLine(e, member, members))
               })
 
               updateGroupChat(group, (r: GroupChatRoom) => {
@@ -838,9 +909,15 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
                   {
                     kind: 'member',
                     name: member.name,
-                    ...(member.remoteSource
+                    ...(member.title || member.display_name
                       ? {
-                          source: member.connectionLabel || member.connectionId
+                          title: String(member.title || member.display_name)
+                        }
+                      : {}),
+                    ...(member.sourceScoped || member.remoteSource
+                      ? {
+                          source: member.connectionLabel || member.connectionId,
+                          sourceId: member.connectionId
                         }
                       : {})
                   },

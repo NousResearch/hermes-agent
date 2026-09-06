@@ -199,10 +199,17 @@ describe('duplicate append guard (#93127)', () => {
     chat.$groupChats.set({ Room: { log: [entry], watermarks: {} } })
   }
 
-  const lastEntry = (name: string, text: string, thread = 't1', at = Date.now(), source?: string): GroupMessage =>
+  const lastEntry = (
+    name: string,
+    text: string,
+    thread = 't1',
+    at = Date.now(),
+    source?: string,
+    sourceId?: string
+  ): GroupMessage =>
     ({
       at,
-      from: { kind: 'member', name, ...(source ? { source } : {}) },
+      from: { kind: 'member', name, ...(source ? { source } : {}), ...(sourceId ? { sourceId } : {}) },
       id: 'x',
       text,
       thread
@@ -233,6 +240,28 @@ describe('duplicate append guard (#93127)', () => {
     chat.appendGroupChatEntry('Room', { kind: 'member', name: 'impl' }, 'Confirmed.', 't1')
 
     expect(chat.$groupChats.get().Room.log).toHaveLength(2)
+  })
+
+  it('uses stable source ids instead of mutable or duplicate labels', async () => {
+    const { chat } = await loadRoom()
+
+    seed(chat, lastEntry('impl', 'Confirmed.', 't1', Date.now(), 'Shared', 'connection-a'))
+    chat.appendGroupChatEntry(
+      'Room',
+      { kind: 'member', name: 'impl', source: 'Shared', sourceId: 'connection-b' },
+      'Confirmed.',
+      't1'
+    )
+    expect(chat.$groupChats.get().Room.log).toHaveLength(2)
+
+    seed(chat, lastEntry('impl', 'Confirmed.', 't1', Date.now(), 'Old Label', 'connection-a'))
+    chat.appendGroupChatEntry(
+      'Room',
+      { kind: 'member', name: 'impl', source: 'New Label', sourceId: 'connection-a' },
+      'Confirmed.',
+      't1'
+    )
+    expect(chat.$groupChats.get().Room.log).toHaveLength(1)
   })
 
   it('keeps the same text after an intervening entry — only the LAST entry is checked', async () => {
@@ -393,6 +422,127 @@ describe('gateway mirror', () => {
     expect((rooms[key!].log as GroupMessage[])[0].text).toBe('What changed?')
     expect((rooms[key!].members as { name: string }[]).map(member => member.name)).toEqual(['research', 'builder'])
     expect(room.chat.groupChatGatewayJsonSize(envelope)).toBeLessThanOrEqual(48000)
+  })
+
+  it('preserves source-qualified friendly identity in the gateway projection', async () => {
+    const { chat, rounds } = await loadRoom()
+    const data = await import('./data')
+
+    data.$botMeta.set({ default: { title: 'Nova' } })
+
+    const snapshot = chat.groupChatSyncSnapshot({
+      Identity: {
+        log: [
+          {
+            at: 1,
+            from: { kind: 'member', name: 'default', title: 'Rowan' },
+            text: 'current reply'
+          },
+          {
+            at: 2,
+            from: { kind: 'member', name: 'default', source: 'Home', sourceId: 'home' },
+            text: 'legacy reply'
+          },
+          {
+            at: 3,
+            from: {
+              kind: 'member',
+              name: 'default',
+              source: 'Removed Gateway',
+              sourceId: 'removed',
+              title: 'Captured Rowan'
+            },
+            text: 'orphaned reply'
+          },
+          {
+            at: 4,
+            from: { kind: 'member', name: 'default' },
+            text: 'local legacy reply'
+          }
+        ],
+        members: [
+          {
+            connectionId: 'home',
+            connectionLabel: 'Renamed Home',
+            name: 'default',
+            remoteSource: true,
+            sourceScoped: true,
+            display_name: 'Rowan'
+          },
+          { name: 'default', title: 'Local Default' }
+        ],
+        watermarks: {}
+      }
+    })
+
+    const room = snapshot.rooms['name:Identity']
+
+    expect(room.log[0].from.title).toBe('Rowan')
+    expect(room.log[1].from.sourceId).toBe('home')
+    expect(room.members![0].display_name).toBe('Rowan')
+    expect(rounds.formatGroupChatLine(room.log[1], 'default', room.members)).toBe(
+      'Rowan [Renamed Home]: legacy reply'
+    )
+    expect(rounds.formatGroupChatLine(room.log[1], room.members![0], room.members)).toBe(
+      'Rowan (you) [Renamed Home]: legacy reply'
+    )
+    expect(rounds.formatGroupChatLine(room.log[1], room.members![1], room.members)).toBe(
+      'Rowan [Renamed Home]: legacy reply'
+    )
+    expect(rounds.formatGroupChatLine(room.log[2], room.members![0], room.members)).toBe(
+      'Captured Rowan [Removed Gateway]: orphaned reply'
+    )
+    expect(
+      rounds.formatGroupChatLine(
+        {
+          at: 3.5,
+          from: { kind: 'member', name: 'default', source: 'Old Gateway', title: 'Captured Legacy Rowan' },
+          text: 'removed legacy source'
+        },
+        room.members![0],
+        [room.members![0]]
+      )
+    ).toBe('Captured Legacy Rowan [Old Gateway]: removed legacy source')
+    expect(rounds.formatGroupChatLine(room.log[3], room.members![1], room.members)).toBe(
+      'Local Default (you): local legacy reply'
+    )
+
+    const duplicateLabelMembers = [
+      {
+        connectionId: 'gateway-a',
+        connectionLabel: 'Shared',
+        name: 'default',
+        sourceScoped: true,
+        title: 'Wrong A'
+      },
+      {
+        connectionId: 'gateway-b',
+        connectionLabel: 'Shared',
+        name: 'default',
+        sourceScoped: true,
+        title: 'Wrong B'
+      }
+    ]
+
+    const ambiguousLegacyEntry = {
+      at: 5,
+      from: { kind: 'member' as const, name: 'default', source: 'Shared', title: 'Captured Rowan' },
+      text: 'ambiguous legacy reply'
+    }
+
+    expect(rounds.formatGroupChatLine(ambiguousLegacyEntry, duplicateLabelMembers[0], duplicateLabelMembers)).toBe(
+      'Captured Rowan [Shared]: ambiguous legacy reply'
+    )
+    expect(rounds.formatGroupChatLine(ambiguousLegacyEntry, duplicateLabelMembers[1], duplicateLabelMembers)).toBe(
+      'Captured Rowan [Shared]: ambiguous legacy reply'
+    )
+    expect(
+      rounds.formatGroupChatLine(
+        { ...ambiguousLegacyEntry, from: { kind: 'member', name: 'default', source: 'Shared' } },
+        duplicateLabelMembers[0],
+        duplicateLabelMembers
+      )
+    ).toBe('Hermes [Shared]: ambiguous legacy reply')
   })
 
   it('is size bounded and favors recent messages', async () => {

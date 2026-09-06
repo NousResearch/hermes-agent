@@ -116,6 +116,22 @@ describe('routing', () => {
     expect(parsed.mentioned.size).toBe(1)
   })
 
+  it('captures the source-qualified title on a member reply', async () => {
+    const room = await loadRoom({ turn: () => 'hello room' })
+
+    const members: GroupMember[] = [
+      { display_name: 'Rowan', name: 'default', title: '' },
+      { name: 'astra', title: 'Astra' }
+    ]
+
+    room.rounds.sendToGroupChat('Identity', members, '@rowan say hello')
+    await settle(room, 'Identity')
+
+    const reply = log(room, 'Identity').find(entry => entry.from.kind === 'member')
+
+    expect(reply?.from).toMatchObject({ kind: 'member', name: 'default', title: 'Rowan' })
+  })
+
   it('rotates the lead speaker each round', async () => {
     const { rounds } = await loadRoom()
 

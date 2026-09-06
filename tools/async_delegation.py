@@ -957,7 +957,11 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
         logger.error(f"Async delegation{label} %s: durable completion write failed; delivering in-memory "
                      "only (a restart may report this unit as unknown): %s", record.get("delegation_id"), exc)
     try:
-        process_registry.completion_queue.put(evt)
+        # Publication participates in the same reservation as every dequeue.
+        # Thus "ready before the boundary" has one linearization point instead
+        # of racing the active drain's qsize snapshot.
+        with process_registry.completion_routing_lock:
+            process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
         logger.error(f"Async delegation{label} %s: failed to enqueue completion event; "
                      "result lost: %s", record.get("delegation_id"), exc)

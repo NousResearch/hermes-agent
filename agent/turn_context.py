@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agent.conversation_compression import recover_rotated_compression_session
 from agent.iteration_budget import IterationBudget
-from agent.memory_manager import build_memory_context_block
+from agent.memory_manager import build_memory_context_block, sanitize_context
 from agent.memory_provider import is_trivial_prompt
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.model_metadata import (
@@ -184,6 +184,7 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
             ),
             main_runtime=main_runtime,
             title_callback=getattr(agent, "_on_session_title", None),
+            provider_text_sanitizer=sanitize_context,
             runtime_validator=lambda: (
                 getattr(agent, "model", None) == main_runtime["model"]
                 and getattr(agent, "provider", None) == main_runtime["provider"]

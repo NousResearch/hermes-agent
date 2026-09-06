@@ -27,6 +27,7 @@ TitleCallback = Callable[[str, str], None]
 # the request would reload one the runtime already evicted).
 # Validation callback: () -> bool. See #19027.
 RuntimeValidator = Callable[[], bool]
+ProviderTextSanitizer = Callable[[str], str]
 
 # Text budget handed to the model (Claude Code / OpenClaw converged on 1000).
 MAX_TITLE_INPUT_CHARS = 1000
@@ -229,12 +230,29 @@ def _notify_title(title_callback: Optional[TitleCallback], title: str, source: s
     _safe_callback(title_callback, (title, source), "%s callback failed", label)
 
 
+def _sanitize_provider_title_text(
+    text: str,
+    sanitizer: Optional[ProviderTextSanitizer],
+) -> str:
+    """Apply a caller-owned provider-output fence, failing closed on errors."""
+    raw_text = str(text or "")
+    if sanitizer is None:
+        return raw_text
+    try:
+        return str(sanitizer(raw_text) or "")
+    except Exception:
+        logger.warning("Title provider-text sanitizer failed; skipping unsafe text")
+        logger.debug("Title provider-text sanitizer traceback", exc_info=True)
+        return ""
+
+
 def generate_title(
     user_message: str,
     timeout: Optional[float] = None,
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
     runtime_validator: Optional[RuntimeValidator] = None,
+    provider_text_sanitizer: Optional[ProviderTextSanitizer] = None,
 ) -> Optional[str]:
     """Title from the opening message alone (waiting for the assistant made this slow and bought
     nothing). ``runtime_validator`` runs right before the request; False skips silently.
@@ -268,7 +286,8 @@ def generate_title(
             max_tokens=64, temperature=0.3, timeout=timeout, main_runtime=main_runtime,
             extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
         )
-        title = _clean_title(_extract_title_text(response.choices[0].message.content or ""))
+        safe_content = _sanitize_provider_title_text(response.choices[0].message.content, provider_text_sanitizer)
+        title = _clean_title(_extract_title_text(safe_content))
         # Answer-shaped output guard: titling is a 3-7 word task, so a title with many words is a model that
         # ignored the task and answered the user's message instead ("I don't have context on X — that's not
         # something I recognize..."). Truncating would store half an assistant blob as the session title,
@@ -356,6 +375,7 @@ def auto_title_session(
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
+    provider_text_sanitizer: Optional[ProviderTextSanitizer] = None,
 ) -> None:
     """Generate and store the model title (daemon-thread target); skips sessions already carrying an
     ``llm``/``user`` title (a ``derived`` one is expected — upgrading it is the point). Never lets an
@@ -376,8 +396,10 @@ def auto_title_session(
         # (task='title_generation', #23270).
         set_accounting_context(session_db, session_id)
         title, source = generate_title(
-            user_message, failure_callback=failure_callback, main_runtime=main_runtime, runtime_validator=runtime_validator,
+            user_message, failure_callback=failure_callback, main_runtime=main_runtime, runtime_validator=runtime_validator, provider_text_sanitizer=provider_text_sanitizer,
         ), "llm"
+        if title:
+            title = _clean_title(_sanitize_provider_title_text(title, provider_text_sanitizer))
         if not title:  # the inline attempt declined collisions; off the critical path the lineage scan is affordable
             title, source = derive_title(user_message), "derived"
         if not title:
@@ -424,6 +446,7 @@ def maybe_auto_title(
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
+    provider_text_sanitizer: Optional[ProviderTextSanitizer] = None,
 ) -> None:
     """Instant inline title, then a daemon-thread upgrade. Call at the START of a turn, before the model."""
     if not session_db or not session_id or not user_message:
@@ -440,7 +463,7 @@ def maybe_auto_title(
     threading.Thread(
         target=auto_title_session,
         args=(session_db, session_id, user_message),
-        kwargs=dict(failure_callback=failure_callback, main_runtime=main_runtime, title_callback=title_callback, runtime_validator=runtime_validator),
+        kwargs=dict(failure_callback=failure_callback, main_runtime=main_runtime, title_callback=title_callback, runtime_validator=runtime_validator, provider_text_sanitizer=provider_text_sanitizer),
         daemon=True,
         name="auto-title",
     ).start()

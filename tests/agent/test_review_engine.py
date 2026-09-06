@@ -119,16 +119,18 @@ def test_build_review_task_without_prompt_has_no_instruction_block():
 # auxiliary.review credential resolution
 # ---------------------------------------------------------------------------
 
-def test_load_review_credentials_cfg_reads_config(monkeypatch):
+def test_load_review_config_keeps_reasoning_separate_from_credentials(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.load_config_readonly",
         lambda: {"auxiliary": {"review": {
             "provider": "openrouter",
             "model": "anthropic/claude-opus-4.6",
+            "reasoning_effort": "medium",
         }}},
     )
-    cfg = re_mod._load_review_credentials_cfg()
-    assert cfg == {
+    review = re_mod._load_review_config()
+    assert review["reasoning_effort"] == "medium"
+    assert re_mod._review_credentials_cfg(review) == {
         "provider": "openrouter",
         "model": "anthropic/claude-opus-4.6",
         "base_url": "",
@@ -137,19 +139,36 @@ def test_load_review_credentials_cfg_reads_config(monkeypatch):
     }
 
 
-def test_load_review_credentials_cfg_auto_means_inherit(monkeypatch):
+def test_review_credentials_cfg_auto_means_inherit(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.load_config_readonly",
         lambda: {"auxiliary": {"review": {"provider": "auto", "model": ""}}},
     )
-    assert re_mod._load_review_credentials_cfg() is None
+    assert re_mod._review_credentials_cfg(re_mod._load_review_config()) is None
 
 
-def test_load_review_credentials_cfg_missing_section(monkeypatch):
+def test_load_review_config_missing_section(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.load_config_readonly", lambda: {"auxiliary": {}}
     )
-    assert re_mod._load_review_credentials_cfg() is None
+    assert re_mod._load_review_config() == {}
+    assert re_mod._review_credentials_cfg({}) is None
+
+
+def test_load_review_config_from_profile_home(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "auxiliary:\n  review:\n    provider: openai-codex\n"
+        "    model: gpt-review\n    reasoning_effort: medium\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    review = re_mod._load_review_config()
+
+    assert review["model"] == "gpt-review"
+    assert review["reasoning_effort"] == "medium"
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +256,10 @@ def test_start_review_dispatches_background_and_completes(monkeypatch):
     monkeypatch.setattr(dt, "_build_child_agent", fake_build)
     monkeypatch.setattr(dt, "_run_single_child", fake_run_single_child)
     monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
-    monkeypatch.setattr(re_mod, "_load_review_credentials_cfg", lambda: None)
+    monkeypatch.setattr(
+        re_mod, "_load_review_config",
+        lambda: {"provider": "auto", "model": "", "reasoning_effort": "medium"},
+    )
 
     msgs = [
         {"role": "user", "content": "open a PR for the fix"},
@@ -251,6 +273,7 @@ def test_start_review_dispatches_background_and_completes(monkeypatch):
     assert "check the tests" in built["context"]
     assert built["goal"].startswith("Review: ")
     assert re_mod._REVIEW_GOAL in built["context"]
+    assert built["override_reasoning_effort"] == "medium"
 
     # The completion re-enters via the shared queue like any subagent.
     deadline = time.monotonic() + 5.0
@@ -373,7 +396,7 @@ def test_start_review_threads_loaded_skills_into_context(monkeypatch):
             "exit_reason": "completed",
         },
     )
-    monkeypatch.setattr(re_mod, "_load_review_credentials_cfg", lambda: None)
+    monkeypatch.setattr(re_mod, "_load_review_config", lambda: {})
 
     parent = _fake_parent()
     parent.ephemeral_system_prompt = (
@@ -467,7 +490,7 @@ def test_review_child_gets_workspace_context_via_dispatch(monkeypatch, tmp_path)
             "exit_reason": "completed",
         },
     )
-    monkeypatch.setattr(re_mod, "_load_review_credentials_cfg", lambda: None)
+    monkeypatch.setattr(re_mod, "_load_review_config", lambda: {})
 
     result = start_review(_fake_parent(), [
         {"role": "user", "content": "open a PR"},

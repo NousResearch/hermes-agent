@@ -439,6 +439,7 @@ def _resolve_child_runtime(
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
     override_acp_command: Optional[str], override_acp_args: Optional[List[str]],
     routing_cfg: Optional[Dict[str, Any]] = None,
+    override_reasoning_effort: Any = None,
 ) -> Dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
     are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's
@@ -491,9 +492,10 @@ def _resolve_child_runtime(
         # Forced ACP transport requires provider copilot-acp for run_agent to init the client.
         effective_provider, effective_api_mode = "copilot-acp", "chat_completions"
 
-    # Reasoning: delegation.reasoning_effort > parent. Keep the raw value — a
-    # YAML ``false`` must disable thinking, not coerce to "" and inherit.
+    # Reasoning precedence: per-call review override > delegation > parent.
+    # Keep raw values because YAML ``false`` explicitly disables thinking.
     child_reasoning = getattr(parent_agent, "reasoning_config", None)
+    explicit_reasoning = None
     try:
         delegation_effort = delegation_cfg.get("reasoning_effort")
         if delegation_effort or delegation_effort is False:
@@ -503,8 +505,21 @@ def _resolve_child_runtime(
                 logger.warning("Unknown delegation.reasoning_effort '%s', inheriting parent level", delegation_effort)
             else:
                 child_reasoning = parsed
+                explicit_reasoning = parsed
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
+
+    if override_reasoning_effort is not None and str(override_reasoning_effort).strip():
+        from hermes_constants import parse_reasoning_effort
+        parsed = parse_reasoning_effort(override_reasoning_effort)
+        if parsed is None:
+            logger.warning(
+                "Unknown auxiliary.review.reasoning_effort '%s', retaining delegation or parent level",
+                override_reasoning_effort,
+            )
+        else:
+            child_reasoning = parsed
+            explicit_reasoning = parsed
 
     kwargs: Dict[str, Any] = {
         "base_url": effective_base_url, "api_key": override_api_key or parent_api_key, "model": effective_model,
@@ -512,6 +527,7 @@ def _resolve_child_runtime(
         "capabilities": _inherit_parent_capabilities(parent_agent, override_provider, override_base_url),
         "api_mode": effective_api_mode, "acp_command": effective_acp_command, "acp_args": effective_acp_args,
         "reasoning_config": child_reasoning,
+        "_delegation_reasoning_override": explicit_reasoning,
         # Resolve routing and recovery policy from the same configuration owner. A pinned provider, endpoint, or
         # model never borrows the parent's chain; an explicitly declared child chain still remains available.
         "fallback_model": _resolve_child_fallback_chain(

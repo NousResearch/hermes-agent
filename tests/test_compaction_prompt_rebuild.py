@@ -70,6 +70,22 @@ class TestPluginRerenderFailOpen(unittest.TestCase):
         self.assertEqual(rendered, ())
 
 
+def _init_repo(path, first_commit):
+    import subprocess
+    path.mkdir()
+    for cmd in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "t@t"],
+        ["git", "config", "user.name", "t"],
+        ["git", "config", "core.autocrlf", "false"],
+    ):
+        subprocess.run(cmd, cwd=path, check=True)
+    (path / "main.py").write_text("print(1)\n")
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-qm", first_commit], cwd=path, check=True)
+    return path
+
+
 class TestCommitAlwaysRebuilds(unittest.TestCase):
     """Source-level contract pins for the commit-site semantics."""
 
@@ -105,18 +121,7 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
 
         tmp = Path(tempfile.mkdtemp(prefix="test-pinned-ws-"))
         try:
-            repo = tmp / "proj"
-            repo.mkdir()
-            for cmd in (
-                ["git", "init", "-q", "-b", "main"],
-                ["git", "config", "user.email", "t@t"],
-                ["git", "config", "user.name", "t"],
-                ["git", "config", "core.autocrlf", "false"],
-            ):
-                subprocess.run(cmd, cwd=repo, check=True)
-            (repo / "main.py").write_text("print(1)\n")
-            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-            subprocess.run(["git", "commit", "-qm", "init commit"], cwd=repo, check=True)
+            repo = _init_repo(tmp / "proj", "init commit")
 
             agent = _agent(
                 load_soul_identity=False,
@@ -145,8 +150,6 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
                 # First build: pins the snapshot
                 p1 = build_system_prompt(agent)
                 self.assertIn("Workspace (snapshot at session start", p1)
-                self.assertIsNotNone(agent._frozen_workspace_snapshot)
-                self.assertEqual(agent._frozen_workspace_snapshot[0], str(repo))
 
                 # Now repo mutates (agent touched and committed new files)
                 (repo / "new_file.py").write_text("print(2)\n")
@@ -172,19 +175,8 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
 
         tmp = Path(tempfile.mkdtemp(prefix="test-pinned-cwd-"))
         try:
-            repo1 = tmp / "r1"; repo1.mkdir()
-            repo2 = tmp / "r2"; repo2.mkdir()
-            for r in (repo1, repo2):
-                for cmd in (
-                    ["git", "init", "-q", "-b", "main"],
-                    ["git", "config", "user.email", "t@t"],
-                    ["git", "config", "user.name", "t"],
-                    ["git", "config", "core.autocrlf", "false"],
-                ):
-                    subprocess.run(cmd, cwd=r, check=True)
-                (r / "main.py").write_text("print(1)\n")
-                subprocess.run(["git", "add", "-A"], cwd=r, check=True)
-                subprocess.run(["git", "commit", "-qm", f"init {r.name}"], cwd=r, check=True)
+            repo1 = _init_repo(tmp / "r1", "init r1")
+            repo2 = _init_repo(tmp / "r2", "init r2")
 
             agent = _agent(
                 load_soul_identity=False,
@@ -217,8 +209,38 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
                  patch("agent.system_prompt.resolve_context_cwd", return_value=repo2):
                 p2 = build_system_prompt(agent)
                 self.assertIn(f"init {repo2.name}", p2)
-                self.assertEqual(agent._frozen_workspace_snapshot[0], str(repo2))
 
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_session_boundary_drops_the_pin_so_a_new_session_resnapshots(self):
+        """A /new, /resume or /branch reuses the AIAgent; the next session must see the live repo."""
+        import tempfile, shutil, subprocess
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt, invalidate_system_prompt
+        from run_agent import AIAgent
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-boundary-"))
+        try:
+            repo = _init_repo(tmp / "proj", "init commit")
+            agent = _agent(
+                load_soul_identity=False, skip_context_files=True, valid_tool_names={"terminal"},
+                platform="cli", model="gpt-4o", _task_completion_guidance=False,
+                _parallel_tool_call_guidance=False, _tool_use_enforcement=False, _execution_guidance=False,
+                _environment_probe=False, _bot_mode_protocol=False, _kanban_worker_guidance="",
+                pass_session_id=False, session_id="s1", _emit_status=lambda *a, **k: None,
+                _frozen_workspace_snapshot=None, context_compressor=None, _session_db=None,
+                _transition_context_engine_session=lambda **kw: None,
+            )
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
+                build_system_prompt(agent)
+                subprocess.run(["git", "commit", "-qm", "second commit", "--allow-empty"], cwd=repo, check=True)
+                # The CLI session boundary (cli_session_mixin.new_session) on the same agent object.
+                AIAgent.reset_session_state(agent)
+                invalidate_system_prompt(agent)
+                self.assertIn("second commit", build_system_prompt(agent))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

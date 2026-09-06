@@ -540,17 +540,11 @@ def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
     """``(prefix, workspace, trailing)`` coding-posture blocks; all empty
     without tools or when probing fails (it must never block prompt build).
 
-    The workspace block is a LIVE ``git status``/``git log`` probe and it leads the
-    context tier — ahead of the entire volatile band.  Since #98426 the builder runs
-    again at every compaction boundary, so re-probing here re-emits different bytes on
-    any session whose repo moved (a commit, one edited or untracked file), pushing the
-    prefix-cache divergence point in front of skills, memory and the timestamp line and
-    making #98426's byte-equality keep-prompt fast path unreachable in a coding session.
-    It also contradicts the block's own "snapshot at session start" wording and the
-    freeze ``coding_context`` documents.  So the first build pins the bytes on the agent,
-    keyed by the resolved cwd (one gateway serves many cwds, and the per-turn terminal
-    scope can move it), and later rebuilds replay them instead of shelling out again.
-    A resumed process has no pin and legitimately re-snapshots at its own session start.
+    The workspace block is a live git probe that leads the context tier, ahead of the whole
+    volatile band; re-probing at the compaction rebuild re-emits different bytes for any
+    repo that moved and defeats the keep-prompt fast path.  So the bytes are pinned per
+    session on the agent, keyed by the resolved cwd (a gateway serves many cwds), and
+    replayed on rebuilds; ``reset_session_state`` drops the pin at a session boundary.
     """
     try:
         from agent.coding_context import coding_system_prompt_parts
@@ -560,7 +554,7 @@ def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
         cwd_key = str(cwd) if cwd is not None else ""
         pinned = getattr(agent, "_frozen_workspace_snapshot", None)
         # "" is a real pinned value (no workspace here) — only a cwd mismatch re-probes.
-        replay = pinned[1] if isinstance(pinned, tuple) and len(pinned) == 2 and pinned[0] == cwd_key else None
+        replay = pinned[1] if pinned is not None and pinned[0] == cwd_key else None
         parts = coding_system_prompt_parts(platform=agent.platform, cwd=cwd, model=agent.model,
                                            valid_tool_names=agent.valid_tool_names, workspace_block=replay)
         if replay is None:

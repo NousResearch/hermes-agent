@@ -632,6 +632,238 @@ function Resolve-NpmCmd {
     return $npmExe
 }
 
+# Native work belongs to the installer until every descendant has exited.
+# Assign the suspended launcher to a job before it can create children. Closing
+# this private job is a final kill-on-close safeguard, never a process-name kill.
+function Initialize-InstallerNativeProcess {
+    if ('HermesInstaller.NativeCommand' -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+namespace HermesInstaller {
+    public sealed class NativeCommand : IDisposable {
+        [StructLayout(LayoutKind.Sequential)] struct Security {
+            public int Length; public IntPtr Descriptor; public int Inherit;
+        }
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct Startup {
+            public int Size; public string Reserved, Desktop, Title;
+            public int X, Y, XSize, YSize, XChars, YChars, Fill, Flags;
+            public short Show, ReservedSize; public IntPtr ReservedBytes, Input, Output, Error;
+        }
+        [StructLayout(LayoutKind.Sequential)] struct ProcessInfo {
+            public IntPtr Process, Thread; public int ProcessId, ThreadId;
+        }
+        [StructLayout(LayoutKind.Sequential)] struct BasicLimits {
+            public long ProcessTime, JobTime; public uint Flags;
+            public UIntPtr MinimumWorkingSet, MaximumWorkingSet;
+            public uint ActiveProcessLimit; public UIntPtr Affinity;
+            public uint PriorityClass, SchedulingClass;
+        }
+        [StructLayout(LayoutKind.Sequential)] struct IoCounters {
+            public ulong ReadOperations, WriteOperations, OtherOperations, ReadBytes, WriteBytes, OtherBytes;
+        }
+        [StructLayout(LayoutKind.Sequential)] struct ExtendedLimits {
+            public BasicLimits Basic; public IoCounters Io;
+            public UIntPtr ProcessMemory, JobMemory, PeakProcessMemory, PeakJobMemory;
+        }
+        [StructLayout(LayoutKind.Sequential)] struct Accounting {
+            public long UserTime, KernelTime, PeriodUserTime, PeriodKernelTime;
+            public uint PageFaults, TotalProcesses, ActiveProcesses, TerminatedProcesses;
+        }
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern IntPtr CreateJobObject(IntPtr attributes, string name);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool SetInformationJobObject(IntPtr job, int kind, ref ExtendedLimits value, uint length);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool QueryInformationJobObject(IntPtr job, int kind, out Accounting value, uint length, IntPtr returned);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool TerminateJobObject(IntPtr job, uint code);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool TerminateProcess(IntPtr process, uint code);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern uint ResumeThread(IntPtr thread);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool GetExitCodeProcess(IntPtr process, out uint code);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool CloseHandle(IntPtr handle);
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern IntPtr CreateFile(string name, uint access, uint share, ref Security security, uint creation, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern bool CreateProcess(string application, StringBuilder command, IntPtr processSecurity, IntPtr threadSecurity,
+            bool inherit, uint flags, IntPtr environment, string directory, ref Startup startup, out ProcessInfo process);
+
+        IntPtr job, process;
+        public int ProcessId { get; private set; }
+        static Exception Error(string action) { return new Win32Exception(Marshal.GetLastWin32Error(), action); }
+        static bool Valid(IntPtr handle) { return handle != IntPtr.Zero && handle != new IntPtr(-1); }
+        public static string Quote(string value) {
+            // CommandLineToArgvW/CRT quoting, including empty args and trailing backslashes.
+            var result = new StringBuilder("\""); int slashes = 0;
+            foreach (char c in value) {
+                if (c == '\\') { slashes++; continue; }
+                if (c == '"') { result.Append('\\', slashes * 2 + 1); result.Append(c); }
+                else { result.Append('\\', slashes); result.Append(c); }
+                slashes = 0;
+            }
+            result.Append('\\', slashes * 2); return result.Append('"').ToString();
+        }
+        public static NativeCommand Start(string executable, string[] arguments, string directory, string output, string error) {
+            var owner = new NativeCommand();
+            IntPtr input = IntPtr.Zero, stdout = IntPtr.Zero, stderr = IntPtr.Zero;
+            ProcessInfo info = new ProcessInfo();
+            try {
+                owner.job = CreateJobObject(IntPtr.Zero, null);
+                if (!Valid(owner.job)) throw Error("create installer process job");
+                var limits = new ExtendedLimits(); limits.Basic.Flags = 0x2000; // KILL_ON_JOB_CLOSE
+                if (!SetInformationJobObject(owner.job, 9, ref limits, (uint)Marshal.SizeOf(limits))) throw Error("configure installer process job");
+                var security = new Security { Length = Marshal.SizeOf(typeof(Security)), Inherit = 1 };
+                input = CreateFile("NUL", 0x80000000, 3, ref security, 3, 0, IntPtr.Zero);
+                stdout = CreateFile(output, 0x40000000, 7, ref security, 2, 0, IntPtr.Zero);
+                stderr = CreateFile(error, 0x40000000, 7, ref security, 2, 0, IntPtr.Zero);
+                if (!Valid(input) || !Valid(stdout) || !Valid(stderr)) throw Error("open installer process streams");
+                var startup = new Startup { Size = Marshal.SizeOf(typeof(Startup)), Flags = 0x100, Input = input, Output = stdout, Error = stderr };
+                var command = new StringBuilder(Quote(executable));
+                foreach (string argument in arguments) command.Append(' ').Append(Quote(argument));
+                // CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT.
+                if (!CreateProcess(executable, command, IntPtr.Zero, IntPtr.Zero, true, 0x08000404, IntPtr.Zero, directory, ref startup, out info)) throw Error("launch installer command");
+                owner.process = info.Process; owner.ProcessId = info.ProcessId;
+                if (!AssignProcessToJobObject(owner.job, owner.process)) throw Error("own installer command before execution");
+                if (ResumeThread(info.Thread) == UInt32.MaxValue) throw Error("resume installer command");
+                return owner;
+            } catch {
+                // An unassigned process is still suspended and has no descendants.
+                if (Valid(owner.process)) TerminateProcess(owner.process, 125);
+                owner.Dispose(); throw;
+            } finally {
+                if (Valid(info.Thread)) CloseHandle(info.Thread);
+                if (Valid(input)) CloseHandle(input);
+                if (Valid(stdout)) CloseHandle(stdout);
+                if (Valid(stderr)) CloseHandle(stderr);
+            }
+        }
+        public uint ActiveProcesses {
+            get {
+                Accounting value;
+                if (!QueryInformationJobObject(job, 1, out value, (uint)Marshal.SizeOf(typeof(Accounting)), IntPtr.Zero)) throw Error("observe installer process ownership");
+                return value.ActiveProcesses;
+            }
+        }
+        public int ExitCode {
+            get { uint value; if (!GetExitCodeProcess(process, out value)) throw Error("read installer exit code"); return unchecked((int)value); }
+        }
+        public void Terminate() { if (!TerminateJobObject(job, 124)) throw Error("terminate installer process job"); }
+        public void Dispose() {
+            if (Valid(job)) { CloseHandle(job); job = IntPtr.Zero; }
+            if (Valid(process)) { CloseHandle(process); process = IntPtr.Zero; }
+        }
+    }
+}
+'@
+}
+
+# A build gets a generous hard limit, not an output-idle limit: healthy compiler
+# and antivirus work can legitimately be quiet for minutes. Tests replace this
+# table in their isolated stage process; it is not a new user configuration API.
+$script:InstallerCommandTimeouts = @{
+    Desktop = 3600; Electron = 600; Packages = 600; NodeDeps = 600; ComputerUse = 660
+}
+
+function Invoke-ProcessWithWallClockTimeout {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [Parameter(Mandatory = $true)][ValidateRange(1, 86400)][int]$TimeoutSec,
+        [string]$RedirectStandardOutput,
+        [string]$RedirectStandardError,
+        [string]$WorkingDirectory = (Get-Location).Path,
+        [string]$Label = 'Installer command'
+    )
+    if ($script:InstallerNativeCleanupFailure) { throw $script:InstallerNativeCleanupFailure }
+    Initialize-InstallerNativeProcess
+    $temporary = @()
+    $owner = $null
+    $readers = @()
+    $output = [Text.StringBuilder]::new()
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $timedOut = $false
+    $lastProgress = 0.0
+    $cleanupError = $null
+    try {
+        if (-not $RedirectStandardOutput) { $RedirectStandardOutput = [IO.Path]::GetTempFileName(); $temporary += $RedirectStandardOutput }
+        if (-not $RedirectStandardError) { $RedirectStandardError = [IO.Path]::GetTempFileName(); $temporary += $RedirectStandardError }
+        if ([IO.Path]::GetFullPath($RedirectStandardOutput) -eq [IO.Path]::GetFullPath($RedirectStandardError)) { throw 'Native stdout and stderr paths must be distinct' }
+        $command = Get-Command $FilePath -CommandType Application, ExternalScript -ErrorAction Stop | Select-Object -First 1
+        $executable = $command.Source
+        if ([IO.Path]::GetExtension($executable) -in @('.ps1', '.cmd', '.bat')) {
+            # Passing an encoded script preserves paths/arguments without constructing
+            # a cmd.exe command string. The script host and native grandchildren all
+            # stay in the same job, even when a batch shim exits first.
+            $literalArgs = @($executable) + $ArgumentList | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }
+            $invocation = '$ProgressPreference = ''SilentlyContinue''; [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $global:LASTEXITCODE = 0; try { & ' + ($literalArgs -join ' ') + '; exit $global:LASTEXITCODE } catch { [Console]::Error.WriteLine([string]$_); exit 1 }'
+            $executable = Join-Path $PSHOME $(if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' })
+            $ArgumentList = @('-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-EncodedCommand', [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($invocation)))
+        }
+        $owner = [HermesInstaller.NativeCommand]::Start($executable, $ArgumentList, $WorkingDirectory, $RedirectStandardOutput, $RedirectStandardError)
+        foreach ($file in @($RedirectStandardOutput, $RedirectStandardError)) {
+            $stream = [IO.File]::Open($file, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+            $readers += [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
+        }
+        do {
+            foreach ($reader in $readers) {
+                $chunk = $reader.ReadToEnd()
+                if ($chunk) { [void]$output.Append($chunk); Write-Host -NoNewline $chunk }
+            }
+            $active = $owner.ActiveProcesses
+            if ($active -eq 0) { break }
+            if ($clock.Elapsed.TotalSeconds -ge $TimeoutSec) {
+                $timedOut = $true
+                $owner.Terminate()
+                $cleanup = [Diagnostics.Stopwatch]::StartNew()
+                while ($owner.ActiveProcesses -ne 0 -and $cleanup.Elapsed.TotalSeconds -lt 10) { Start-Sleep -Milliseconds 50 }
+                if ($owner.ActiveProcesses -ne 0) { throw 'Installer process job did not become empty after termination' }
+                Write-Warn "$Label timed out after ${TimeoutSec}s; its process tree has exited."
+                break
+            }
+            if ($clock.Elapsed.TotalSeconds - $lastProgress -ge 15) {
+                Write-Info "$Label is still running ($([int]$clock.Elapsed.TotalSeconds)s elapsed; ${TimeoutSec}s limit)."
+                $lastProgress = $clock.Elapsed.TotalSeconds
+            }
+            Start-Sleep -Milliseconds 100
+        } while ($true)
+        foreach ($reader in $readers) {
+            $chunk = $reader.ReadToEnd()
+            if ($chunk) { [void]$output.Append($chunk); Write-Host -NoNewline $chunk }
+        }
+        $code = if ($timedOut) { 124 } else { $owner.ExitCode }
+        $global:LASTEXITCODE = $code
+        return @{ TimedOut = $timedOut; ExitCode = $code; ProcessId = $owner.ProcessId; Output = $output.ToString(); CleanupComplete = $true }
+    } finally {
+        if ($owner) {
+            try {
+                if ($owner.ActiveProcesses -ne 0) {
+                    $owner.Terminate()
+                    $cleanup = [Diagnostics.Stopwatch]::StartNew()
+                    while ($owner.ActiveProcesses -ne 0 -and $cleanup.Elapsed.TotalSeconds -lt 10) { Start-Sleep -Milliseconds 50 }
+                    if ($owner.ActiveProcesses -ne 0) { throw 'Installer native process teardown could not be verified' }
+                }
+            } catch {
+                # Optional callers may catch an exception. No subsequent native
+                # attempt may start after cleanup failed, even in a fallback.
+                $script:InstallerNativeCleanupFailure = $_
+                $cleanupError = $_
+            } finally { $owner.Dispose() }
+        }
+        foreach ($reader in $readers) { $reader.Dispose() }
+        foreach ($file in $temporary) { Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue }
+        if ($cleanupError) { throw $cleanupError }
+    }
+}
+$script:InstallerNativeCleanupFailure = $null
 function Find-SystemBrowser {
     # Honor ONLY an explicit, user-set AGENT_BROWSER_EXECUTABLE_PATH override.
     #
@@ -1908,7 +2140,8 @@ function Test-Node {
             if ((Get-WindowsArch) -eq 'arm64') {
                 $wingetArgs += @('--architecture','arm64')
             }
-            winget @wingetArgs 2>&1 | Out-Null
+            $null = Invoke-ProcessWithWallClockTimeout -FilePath 'winget' -ArgumentList $wingetArgs `
+                -TimeoutSec $script:InstallerCommandTimeouts.Packages -Label 'Node.js winget install'
             $ErrorActionPreference = $prevEAP
             # Refresh PATH
             $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
@@ -1961,80 +2194,6 @@ function Update-ProcessPathForPackages {
         }
     }
     $env:Path = [string]::Join(';', $ordered)
-}
-
-function Invoke-ProcessWithWallClockTimeout {
-    # Launch $FilePath as a genuine child process (NOT wrapped in a
-    # PowerShell background job) and enforce a hard wall-clock timeout,
-    # killing the whole process tree if it doesn't finish in time. Mirrors
-    # the bash installer's run_with_timeout so a stalled installer step
-    # (e.g. winget waiting on a source update, a stuck download, or a UAC
-    # prompt that never gets answered when invoked non-interactively via
-    # `irm | iex`) can't hang the installer indefinitely (see #78085).
-    #
-    # This intentionally does NOT use Start-Job/Wait-Job/Stop-Job: a
-    # background job's Stop-Job only tears down the job's own runspace, it
-    # does not recursively kill native child processes the script block
-    # spawned (verified directly -- a process started inside a job via
-    # Start-Process is still alive after Stop-Job + Remove-Job -Force).
-    # For winget specifically that would leave the real winget.exe (and
-    # anything IT spawns, e.g. an elevated installer or msiexec) orphaned
-    # and running in the background instead of actually terminated, and
-    # able to collide with the next package's winget invocation via
-    # winget's own single-instance lock. Launching the real process
-    # ourselves gives us its PID so we can kill the whole tree on timeout.
-    #
-    # Returns a hashtable:
-    #   TimedOut -- $true if the timeout fired before the process exited
-    #   ExitCode -- the process's exit code, or $null if it timed out
-    param(
-        [Parameter(Mandatory=$true)] [string]$FilePath,
-        [string[]]$ArgumentList = @(),
-        [Parameter(Mandatory=$true)] [int]$TimeoutSec,
-        [string]$RedirectStandardOutput,
-        [string]$RedirectStandardError
-    )
-    $startArgs = @{
-        FilePath     = $FilePath
-        ArgumentList = $ArgumentList
-        PassThru     = $true
-        NoNewWindow  = $true
-    }
-    if ($RedirectStandardOutput) { $startArgs.RedirectStandardOutput = $RedirectStandardOutput }
-    if ($RedirectStandardError) { $startArgs.RedirectStandardError = $RedirectStandardError }
-    $proc = Start-Process @startArgs
-    # Force the process handle to be opened IMMEDIATELY. On Windows
-    # PowerShell 5.1 (and pwsh 7.4.0 on Windows; fixed upstream in 7.4.1),
-    # Start-Process -NoNewWindow -PassThru returns a Process object whose
-    # handle was never acquired, so WaitForExit()/ExitCode silently read as
-    # $null (PowerShell issues #20400 / #5421). Touching .Handle forces the
-    # underlying handle open, which is what WaitForExit() and .ExitCode
-    # need to work. Harmless no-op on hosts without the bug.
-    try { $null = $proc.Handle } catch { }
-    $exited = $proc.WaitForExit($TimeoutSec * 1000)
-    if (-not $exited) {
-        # Kill the whole tree rooted at $proc, not just $proc itself.
-        # Process.Kill(bool) with recursive-tree support needs .NET Core 3+
-        # (pwsh 6+); Windows PowerShell 5.1 runs on .NET Framework and lacks
-        # that overload, so fall back to `taskkill /T` there -- both paths
-        # are Windows-only anyway (WinPS 5.1 never runs elsewhere).
-        if ($PSVersionTable.PSVersion.Major -ge 6) {
-            try { $proc.Kill($true) } catch { }
-        } else {
-            & taskkill /PID $proc.Id /T /F 2>&1 | Out-Null
-        }
-        # Give the OS a bounded window to finish tearing down the tree so
-        # file handles and winget's single-instance lock are released before
-        # the caller reads the redirect files or launches the next package.
-        try { $null = $proc.WaitForExit(5000) } catch { }
-        return @{ TimedOut = $true; ExitCode = $null; ProcessId = $proc.Id }
-    }
-    # WaitForExit(ms) returning $true only means the process exited; with
-    # redirected output the background stream readers may still be flushing
-    # the files. The parameterless overload waits for those too, so the
-    # caller's Get-Content sees complete output.
-    try { $proc.WaitForExit() } catch { }
-    return @{ TimedOut = $false; ExitCode = $proc.ExitCode; ProcessId = $proc.Id }
 }
 
 function Install-SystemPackages {
@@ -2120,7 +2279,7 @@ function Install-SystemPackages {
             $agreementArgs = @("--accept-package-agreements", "--accept-source-agreements")
             try {
                 $wingetResult = Invoke-ProcessWithWallClockTimeout -FilePath "winget" `
-                    -ArgumentList ($commonArgs + $agreementArgs) -TimeoutSec 600 `
+                    -ArgumentList ($commonArgs + $agreementArgs) -TimeoutSec $script:InstallerCommandTimeouts.Packages `
                     -RedirectStandardOutput $stdOutPath -RedirectStandardError $stdErrPath
                 Get-Content -Path $stdOutPath, $stdErrPath -ErrorAction SilentlyContinue |
                     Out-File -FilePath $log -Encoding utf8
@@ -2141,7 +2300,7 @@ function Install-SystemPackages {
                     if ($code -eq -1978335189) {
                         "-> already-installed/no-upgrade; retrying with --force" | Out-File -FilePath $log -Encoding utf8 -Append
                         $forceResult = Invoke-ProcessWithWallClockTimeout -FilePath "winget" `
-                            -ArgumentList ($commonArgs + @("--force") + $agreementArgs) -TimeoutSec 600 `
+                            -ArgumentList ($commonArgs + @("--force") + $agreementArgs) -TimeoutSec $script:InstallerCommandTimeouts.Packages `
                             -RedirectStandardOutput $stdOutPath -RedirectStandardError $stdErrPath
                         Get-Content -Path $stdOutPath, $stdErrPath -ErrorAction SilentlyContinue |
                             Out-File -FilePath $log -Encoding utf8 -Append
@@ -2187,7 +2346,7 @@ function Install-SystemPackages {
     if ($hasChoco -and ($needRipgrep -or $needFfmpeg)) {
         Write-Info "Trying Chocolatey..."
         foreach ($pkg in $chocoPkgs) {
-            try { choco install $pkg -y 2>&1 | Out-Null } catch { }
+            try { $null = Invoke-ProcessWithWallClockTimeout -FilePath 'choco' -ArgumentList @('install', $pkg, '-y') -TimeoutSec $script:InstallerCommandTimeouts.Packages -Label "Chocolatey $pkg" } catch { }
         }
         Update-ProcessPathForPackages
         if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
@@ -2206,7 +2365,7 @@ function Install-SystemPackages {
     if ($hasScoop -and ($needRipgrep -or $needFfmpeg)) {
         Write-Info "Trying Scoop..."
         foreach ($pkg in $scoopPkgs) {
-            try { scoop install $pkg 2>&1 | Out-Null } catch { }
+            try { $null = Invoke-ProcessWithWallClockTimeout -FilePath 'scoop' -ArgumentList @('install', $pkg) -TimeoutSec $script:InstallerCommandTimeouts.Packages -Label "Scoop $pkg" } catch { }
         }
         Update-ProcessPathForPackages
         if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
@@ -3662,56 +3821,10 @@ function Install-NodeDeps {
     # Chromium extraction (#76222, #84614) froze the installer forever -- one
     # user left it running 12+ hours overnight.  Same env override as bash
     # for very slow links.
-    $nodeDepsTimeoutSec = 600
-    if ($env:NODE_DEPS_TIMEOUT -match '^\d+$') {
-        $nodeDepsTimeoutSec = [int]$env:NODE_DEPS_TIMEOUT
-    }
-
-    # Helper: run a native command with a hard wall-clock timeout while
-    # still streaming its output live.  Returns the exit code, or 124 on
-    # timeout (the same convention as coreutils ``timeout`` and bash's
-    # run_with_timeout).
-    #
-    # Launcher notes: ``Start-Process -FilePath npm.cmd`` fails with
-    # ``%1 is not a valid Win32 application`` on some PowerShell versions
-    # because Start-Process bypasses cmd.exe / PATHEXT and expects a real
-    # PE file -- so route through cmd.exe, which IS a real PE, honours .cmd
-    # batch shims, and performs the stdout+stderr merge into the log file
-    # natively.  The parent then tails the log into the console each poll
-    # tick, preserving the live progress that makes a 3-minute download
-    # distinguishable from a hang (the whole reason _Run-NpmInstall streams
-    # output in the first place).  ``Wait-Job -Timeout`` was rejected: jobs
-    # swallow live output, and Stop-Job leaves the npm child running.
-    # taskkill /T kills the real process tree.  Works on Windows PowerShell
-    # 5.1 -- no pwsh-only primitives.
-    function _Invoke-NativeWithTimeout(
-        [string]$exePath, [string]$argLine, [string]$workDir,
-        [string]$logPath, [int]$timeoutSec
-    ) {
-        $cmdLine = "/d /s /c "" ""$exePath"" $argLine > ""$logPath"" 2>&1 """
-        $proc = Start-Process -FilePath $env:ComSpec -ArgumentList $cmdLine `
-            -WorkingDirectory $workDir -NoNewWindow -PassThru
-        $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSec)
-        $shown = 0
-        function _Drain-NewLines([string]$path, [ref]$count) {
-            $lines = @(Get-Content $path -ErrorAction SilentlyContinue)
-            if ($lines.Count -gt $count.Value) {
-                $lines[$count.Value..($lines.Count - 1)] | ForEach-Object {
-                    Write-Host "    $_" -ForegroundColor DarkGray
-                }
-                $count.Value = $lines.Count
-            }
-        }
-        while (-not $proc.HasExited) {
-            if ([DateTime]::UtcNow -gt $deadline) {
-                & taskkill /T /F /PID $proc.Id 2>&1 | Out-Null
-                return 124
-            }
-            Start-Sleep -Milliseconds 750
-            _Drain-NewLines $logPath ([ref]$shown)
-        }
-        _Drain-NewLines $logPath ([ref]$shown)
-        return $proc.ExitCode
+    $nodeDepsTimeoutSec = $script:InstallerCommandTimeouts.NodeDeps
+    $configuredTimeout = 0
+    if ([int]::TryParse($env:NODE_DEPS_TIMEOUT, [ref]$configuredTimeout) -and $configuredTimeout -ge 1 -and $configuredTimeout -le 86400) {
+        $nodeDepsTimeoutSec = $configuredTimeout
     }
 
     # Helper: run "npm install" in a given directory and surface the real
@@ -3737,8 +3850,10 @@ function Install-NodeDeps {
             # via the returned exit code, which is reliable regardless of
             # stderr noise.
             $ErrorActionPreference = "Continue"
-            $code = _Invoke-NativeWithTimeout $npmPath "install --silent" `
-                $installDir $logPath $nodeDepsTimeoutSec
+            $result = Invoke-ProcessWithWallClockTimeout -FilePath $npmPath -ArgumentList @('install', '--silent') `
+                -WorkingDirectory $installDir -TimeoutSec $nodeDepsTimeoutSec -Label "$label npm install"
+            [IO.File]::WriteAllText($logPath, $result.Output)
+            $code = $result.ExitCode
             $ErrorActionPreference = $prevEAP
             if ($code -eq 0) {
                 Write-Success "$label dependencies installed"
@@ -3845,8 +3960,10 @@ function Install-NodeDeps {
                     # the same 600s guard via run_playwright_install since
                     # #39219.
                     $ErrorActionPreference = "Continue"
-                    $pwCode = _Invoke-NativeWithTimeout $npxExe "--yes playwright install chromium" `
-                        $InstallDir $pwLog $nodeDepsTimeoutSec
+                    $result = Invoke-ProcessWithWallClockTimeout -FilePath $npxExe -ArgumentList @('--yes', 'playwright', 'install', 'chromium') `
+                        -WorkingDirectory $InstallDir -TimeoutSec $nodeDepsTimeoutSec -Label 'Playwright Chromium install'
+                    [IO.File]::WriteAllText($pwLog, $result.Output)
+                    $pwCode = $result.ExitCode
                     $ErrorActionPreference = $prevEAP
                     if ($pwCode -eq 0) {
                         Write-Success "Playwright Chromium installed (browser tools ready)"
@@ -4016,16 +4133,14 @@ function Install-CuaDriver {
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        # Same upstream installer `hermes computer-use install` runs. Bounded
-        # via a background job: the upstream installer serializes with its own
-        # lock (600s stale window), so the ceiling sits above that -- matching
-        # Hermes' _CUA_INSTALLER_TIMEOUT (660s).
-        $job = Start-Job -ScriptBlock {
-            Invoke-RestMethod -UseBasicParsing "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1" | Invoke-Expression
-        }
-        if (Wait-Job $job -Timeout 660) {
-            Receive-Job $job -ErrorAction SilentlyContinue | Out-Null
-            Remove-Job $job -Force -ErrorAction SilentlyContinue
+        # Keep the downloader and every installer descendant under the same
+        # native ownership/deadline contract as other optional dependencies.
+        $command = "`$ProgressPreference = 'SilentlyContinue'; Invoke-RestMethod -UseBasicParsing 'https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1' | Invoke-Expression"
+        $hostExe = Join-Path $PSHOME $(if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' })
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        $result = Invoke-ProcessWithWallClockTimeout -FilePath $hostExe -ArgumentList @('-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-EncodedCommand', $encoded) `
+            -TimeoutSec $script:InstallerCommandTimeouts.ComputerUse -Label 'Computer Use driver install'
+        if (-not $result.TimedOut -and $result.ExitCode -eq 0) {
             $installedCuaDriver = Get-Command cua-driver -ErrorAction SilentlyContinue
             if ($installedCuaDriver -and (Test-CuaDriverRuntimeContract -DriverPath $installedCuaDriver.Source)) {
                 Write-Success "Computer Use driver installed (enable via 'hermes tools' -> Computer Use)"
@@ -4034,9 +4149,8 @@ function Install-CuaDriver {
                 Write-Info "Install later with: hermes computer-use install"
             }
         } else {
-            Stop-Job $job -ErrorAction SilentlyContinue
-            Remove-Job $job -Force -ErrorAction SilentlyContinue
-            Write-Warn "Computer Use driver install timed out -- it will install on demand when you enable the tool."
+            $reason = if ($result.TimedOut) { 'timed out' } else { "failed (exit $($result.ExitCode))" }
+            Write-Warn "Computer Use driver install $reason -- it will install on demand when you enable the tool."
             Write-Info "Install later with: hermes computer-use install"
         }
     } catch {
@@ -4046,7 +4160,6 @@ function Install-CuaDriver {
         $ErrorActionPreference = $prevEAP
     }
 }
-
 # Clear the cached Electron download + any half-written unpacked output so the
 # next `npm run pack` re-downloads and re-stages from scratch. A corrupt zip in
 # the per-user Electron download cache - most often a partial download resumed
@@ -4136,27 +4249,9 @@ function Restore-ElectronDist {
     $prevMirror = $env:ELECTRON_MIRROR
     if ($Mirror) { $env:ELECTRON_MIRROR = $Mirror }
     try {
-        # Run install.js with a hard wall-clock timeout.
-        # On networks with poor GitHub connectivity (e.g. mainland China) the
-        # Electron binary download can stall silently for 20+ minutes (#98049).
-        # Use the same run_with_timeout pattern as the node-deps stage (600s
-        # default, overridable via ELECTRON_DOWNLOAD_TIMEOUT env var).
-        $electronDlTimeoutSec = 600
-        if ($env:ELECTRON_DOWNLOAD_TIMEOUT -match '^\d+$') {
-            $electronDlTimeoutSec = [int]$env:ELECTRON_DOWNLOAD_TIMEOUT
-        }
-        $job = Start-Job -ScriptBlock {
-            param($nodeSrc, $inst)
-            & $nodeSrc $inst 2>&1
-        } -ArgumentList $node.Source, $installer
-        $finished = Wait-Job -Job $job -Timeout $electronDlTimeoutSec
-        if ($finished) {
-            Receive-Job -Job $job | ForEach-Object { "$_" } | Out-Host
-        } else {
-            Stop-Job -Job $job
-            Write-Warn "Electron download timed out after ${electronDlTimeoutSec}s — will retry with mirror."
-        }
-        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+        $result = Invoke-ProcessWithWallClockTimeout -FilePath $node.Source -ArgumentList @($installer) `
+            -TimeoutSec $script:InstallerCommandTimeouts.Electron -WorkingDirectory $InstallDir -Label 'Electron download'
+        if ($result.TimedOut) { return $false }
     } catch {
     } finally {
         $env:ELECTRON_MIRROR = $prevMirror
@@ -4295,12 +4390,16 @@ function Install-Desktop {
         # is the artifact), but on failure we scan $npmOut for the TLS-trust
         # signature so corporate-proxy users get the NODE_EXTRA_CA_CERTS hint
         # instead of an opaque "exit 1" (issue #38016).
-        & $npmExe ci 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
-        $code = $LASTEXITCODE
+        $result = Invoke-ProcessWithWallClockTimeout -FilePath $npmExe -ArgumentList @('ci') `
+            -TimeoutSec $script:InstallerCommandTimeouts.Desktop -WorkingDirectory $InstallDir -Label 'Desktop npm ci'
+        $npmOut = $result.Output
+        $code = $result.ExitCode
         if ($code -ne 0) {
             Write-Info "  npm ci failed (exit $code) -- retrying with npm install..."
-            & $npmExe install 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
-            $code = $LASTEXITCODE
+            $result = Invoke-ProcessWithWallClockTimeout -FilePath $npmExe -ArgumentList @('install') `
+                -TimeoutSec $script:InstallerCommandTimeouts.Desktop -WorkingDirectory $InstallDir -Label 'Desktop npm install'
+            $npmOut = $result.Output
+            $code = $result.ExitCode
         }
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {
@@ -4392,8 +4491,10 @@ function Install-Desktop {
         $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
         $env:WIN_CSC_LINK = ""
         $env:WIN_CSC_KEY_PASSWORD = ""
-        & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
-        $code = $LASTEXITCODE
+        $result = Invoke-ProcessWithWallClockTimeout -FilePath $npmExe -ArgumentList @('run', 'pack') `
+            -TimeoutSec $script:InstallerCommandTimeouts.Desktop -WorkingDirectory $desktopDir -Label 'Desktop packaging'
+        [IO.File]::WriteAllText($buildLog, $result.Output)
+        $code = $result.ExitCode
         if ($code -ne 0) {
             $purged = @()
             $restored = $false
@@ -4404,8 +4505,10 @@ function Install-Desktop {
             if ($restored) {
                 Write-Warn "Desktop build failed - refreshed the Electron download, retrying once:"
                 foreach ($p in $purged) { Write-Info "  - $p" }
-                & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
-                $code = $LASTEXITCODE
+                $result = Invoke-ProcessWithWallClockTimeout -FilePath $npmExe -ArgumentList @('run', 'pack') `
+                    -TimeoutSec $script:InstallerCommandTimeouts.Desktop -WorkingDirectory $desktopDir -Label 'Desktop packaging'
+                [IO.File]::WriteAllText($buildLog, $result.Output)
+                $code = $result.ExitCode
             }
         }
         if ($code -ne 0 -and -not $env:ELECTRON_MIRROR) {
@@ -4419,8 +4522,10 @@ function Install-Desktop {
             $prevMirror = $env:ELECTRON_MIRROR
             $env:ELECTRON_MIRROR = $mirror
             try {
-                & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
-                $code = $LASTEXITCODE
+                $result = Invoke-ProcessWithWallClockTimeout -FilePath $npmExe -ArgumentList @('run', 'pack') `
+                    -TimeoutSec $script:InstallerCommandTimeouts.Desktop -WorkingDirectory $desktopDir -Label 'Desktop packaging'
+                [IO.File]::WriteAllText($buildLog, $result.Output)
+                $code = $result.ExitCode
             } finally {
                 $env:ELECTRON_MIRROR = $prevMirror
             }
@@ -5050,6 +5155,7 @@ function Invoke-Stage {
 
     try {
         & $StageDef.Worker
+        if ($script:InstallerNativeCleanupFailure) { throw $script:InstallerNativeCleanupFailure }
         $result.ok = $true
         if ($script:_StageSkippedReason) {
             $result.skipped = $true

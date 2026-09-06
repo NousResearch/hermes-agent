@@ -632,6 +632,7 @@ function Resolve-NpmCmd {
     return $npmExe
 }
 
+# @include native-process.ps1
 # @include browser-ensure.ps1
 # @include runtime-policy.ps1
 # @include host-prerequisites.ps1
@@ -846,6 +847,7 @@ function Invoke-Stage {
 
     try {
         & $StageDef.Worker
+        if ($script:InstallerNativeCleanupFailure) { throw $script:InstallerNativeCleanupFailure }
         $result.ok = $true
         if ($script:_StageSkippedReason) {
             $result.skipped = $true

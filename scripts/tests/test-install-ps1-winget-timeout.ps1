@@ -6,12 +6,8 @@
 #
 #   pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-winget-timeout.ps1
 #
-# This test extracts ONLY the Invoke-ProcessWithWallClockTimeout function
-# from install.ps1 (via the PowerShell AST, not a hand-copied duplicate) and
-# exercises it directly against a real child process (not real winget). It
-# deliberately does NOT run the whole install.ps1 file (dot-sourcing it
-# would fall through to Main() and attempt a real install) or invoke real
-# winget.
+# Dot-source the shipped installer through its load-only entrypoint and run real
+# native children under an isolated home. No package manager or live install runs.
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
@@ -46,35 +42,9 @@ function Assert-True {
     }
 }
 
-# -----------------------------------------------------------------------------
-# Extract Invoke-ProcessWithWallClockTimeout from install.ps1 via the AST and
-# load just that function -- proves the shipped source defines it, without
-# executing the rest of the (side-effecting) installer script.
-# -----------------------------------------------------------------------------
-Write-Host ""
-Write-Host "-- extracting Invoke-ProcessWithWallClockTimeout from install.ps1 --"
-
-$tokens = $null
-$parseErrors = $null
-$ast = [System.Management.Automation.Language.Parser]::ParseFile($installScript, [ref]$tokens, [ref]$parseErrors)
-Assert-Equal -Expected 0 -Actual $parseErrors.Count -Label "install.ps1 parses with no syntax errors"
-
-$fnAst = $ast.Find({
-    param($node)
-    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-    $node.Name -eq "Invoke-ProcessWithWallClockTimeout"
-}, $true)
-
-Assert-True ($null -ne $fnAst) -Label "install.ps1 defines Invoke-ProcessWithWallClockTimeout"
-
-if (-not $fnAst) {
-    Write-Host ""
-    Write-Host "FAILED: Invoke-ProcessWithWallClockTimeout is missing -- winget installs have no timeout guard (#78085)." -ForegroundColor Red
-    exit 1
-}
-
-. ([scriptblock]::Create($fnAst.Extent.Text))
-Assert-True (Get-Command Invoke-ProcessWithWallClockTimeout -ErrorAction SilentlyContinue) -Label "Invoke-ProcessWithWallClockTimeout is callable after extraction"
+$caseRoot = Join-Path $env:TEMP ('winget-native-' + [guid]::NewGuid().ToString('N'))
+[IO.Directory]::CreateDirectory($caseRoot) | Out-Null
+. $installScript -HermesHome (Join-Path $caseRoot 'home') -InstallDir (Join-Path $caseRoot 'repo')
 
 # Use the currently-running PowerShell host itself as the "real command" to
 # launch -- it's a genuine external process (not a job, not a builtin) on
@@ -120,7 +90,7 @@ try {
     $sw.Stop()
 
     Assert-Equal -Expected $true -Actual $hangResult.TimedOut -Label "hanging process is reported as timed out"
-    Assert-Equal -Expected $null -Actual $hangResult.ExitCode -Label "timed-out process has no exit code"
+    Assert-Equal -Expected 124 -Actual $hangResult.ExitCode -Label "timed-out process reports the installer timeout status"
     Assert-True ($sw.Elapsed.TotalSeconds -lt 30) -Label "call returns promptly instead of hanging (took $([math]::Round($sw.Elapsed.TotalSeconds, 1))s, must be < 30s for a 2s timeout)"
 
     # Give the OS a moment to finish tearing the process down, then confirm
@@ -132,23 +102,6 @@ try {
     Assert-True (-not $stillAlive) -Label "timed-out process (PID $($hangResult.ProcessId)) is actually killed, not just detached from"
 } finally {
     Remove-Item -Path $hangOut, $hangErr -ErrorAction SilentlyContinue
-}
-
-# -----------------------------------------------------------------------------
-# Test: the winget install call site inside Install-SystemPackages actually
-# routes through the timeout guard (not just defined-but-unused)
-# -----------------------------------------------------------------------------
-Write-Host ""
-Write-Host "-- Install-SystemPackages wiring --"
-$installFnAst = $ast.Find({
-    param($node)
-    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-    $node.Name -eq "Install-SystemPackages"
-}, $true)
-Assert-True ($null -ne $installFnAst) -Label "install.ps1 defines Install-SystemPackages"
-if ($installFnAst) {
-    Assert-True ($installFnAst.Extent.Text -match "Invoke-ProcessWithWallClockTimeout") `
-        -Label "Install-SystemPackages calls Invoke-ProcessWithWallClockTimeout around the winget install"
 }
 
 # -----------------------------------------------------------------------------

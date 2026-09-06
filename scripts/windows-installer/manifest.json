@@ -3,6 +3,7 @@
   "entry": "install.ps1",
   "files": [
     "install.ps1",
+    "native-process.ps1",
     "browser-ensure.ps1",
     "runtime-policy.ps1",
     "host-prerequisites.ps1",

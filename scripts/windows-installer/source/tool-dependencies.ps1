@@ -52,56 +52,10 @@ function Install-NodeDeps {
     # Chromium extraction (#76222, #84614) froze the installer forever -- one
     # user left it running 12+ hours overnight.  Same env override as bash
     # for very slow links.
-    $nodeDepsTimeoutSec = 600
-    if ($env:NODE_DEPS_TIMEOUT -match '^\d+$') {
-        $nodeDepsTimeoutSec = [int]$env:NODE_DEPS_TIMEOUT
-    }
-
-    # Helper: run a native command with a hard wall-clock timeout while
-    # still streaming its output live.  Returns the exit code, or 124 on
-    # timeout (the same convention as coreutils ``timeout`` and bash's
-    # run_with_timeout).
-    #
-    # Launcher notes: ``Start-Process -FilePath npm.cmd`` fails with
-    # ``%1 is not a valid Win32 application`` on some PowerShell versions
-    # because Start-Process bypasses cmd.exe / PATHEXT and expects a real
-    # PE file -- so route through cmd.exe, which IS a real PE, honours .cmd
-    # batch shims, and performs the stdout+stderr merge into the log file
-    # natively.  The parent then tails the log into the console each poll
-    # tick, preserving the live progress that makes a 3-minute download
-    # distinguishable from a hang (the whole reason _Run-NpmInstall streams
-    # output in the first place).  ``Wait-Job -Timeout`` was rejected: jobs
-    # swallow live output, and Stop-Job leaves the npm child running.
-    # taskkill /T kills the real process tree.  Works on Windows PowerShell
-    # 5.1 -- no pwsh-only primitives.
-    function _Invoke-NativeWithTimeout(
-        [string]$exePath, [string]$argLine, [string]$workDir,
-        [string]$logPath, [int]$timeoutSec
-    ) {
-        $cmdLine = "/d /s /c "" ""$exePath"" $argLine > ""$logPath"" 2>&1 """
-        $proc = Start-Process -FilePath $env:ComSpec -ArgumentList $cmdLine `
-            -WorkingDirectory $workDir -NoNewWindow -PassThru
-        $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSec)
-        $shown = 0
-        function _Drain-NewLines([string]$path, [ref]$count) {
-            $lines = @(Get-Content $path -ErrorAction SilentlyContinue)
-            if ($lines.Count -gt $count.Value) {
-                $lines[$count.Value..($lines.Count - 1)] | ForEach-Object {
-                    Write-Host "    $_" -ForegroundColor DarkGray
-                }
-                $count.Value = $lines.Count
-            }
-        }
-        while (-not $proc.HasExited) {
-            if ([DateTime]::UtcNow -gt $deadline) {
-                & taskkill /T /F /PID $proc.Id 2>&1 | Out-Null
-                return 124
-            }
-            Start-Sleep -Milliseconds 750
-            _Drain-NewLines $logPath ([ref]$shown)
-        }
-        _Drain-NewLines $logPath ([ref]$shown)
-        return $proc.ExitCode
+    $nodeDepsTimeoutSec = $script:InstallerCommandTimeouts.NodeDeps
+    $configuredTimeout = 0
+    if ([int]::TryParse($env:NODE_DEPS_TIMEOUT, [ref]$configuredTimeout) -and $configuredTimeout -ge 1 -and $configuredTimeout -le 86400) {
+        $nodeDepsTimeoutSec = $configuredTimeout
     }
 
     # Helper: run "npm install" in a given directory and surface the real
@@ -127,8 +81,10 @@ function Install-NodeDeps {
             # via the returned exit code, which is reliable regardless of
             # stderr noise.
             $ErrorActionPreference = "Continue"
-            $code = _Invoke-NativeWithTimeout $npmPath "install --silent" `
-                $installDir $logPath $nodeDepsTimeoutSec
+            $result = Invoke-ProcessWithWallClockTimeout -FilePath $npmPath -ArgumentList @('install', '--silent') `
+                -WorkingDirectory $installDir -TimeoutSec $nodeDepsTimeoutSec -Label "$label npm install"
+            [IO.File]::WriteAllText($logPath, $result.Output)
+            $code = $result.ExitCode
             $ErrorActionPreference = $prevEAP
             if ($code -eq 0) {
                 Write-Success "$label dependencies installed"
@@ -235,8 +191,10 @@ function Install-NodeDeps {
                     # the same 600s guard via run_playwright_install since
                     # #39219.
                     $ErrorActionPreference = "Continue"
-                    $pwCode = _Invoke-NativeWithTimeout $npxExe "--yes playwright install chromium" `
-                        $InstallDir $pwLog $nodeDepsTimeoutSec
+                    $result = Invoke-ProcessWithWallClockTimeout -FilePath $npxExe -ArgumentList @('--yes', 'playwright', 'install', 'chromium') `
+                        -WorkingDirectory $InstallDir -TimeoutSec $nodeDepsTimeoutSec -Label 'Playwright Chromium install'
+                    [IO.File]::WriteAllText($pwLog, $result.Output)
+                    $pwCode = $result.ExitCode
                     $ErrorActionPreference = $prevEAP
                     if ($pwCode -eq 0) {
                         Write-Success "Playwright Chromium installed (browser tools ready)"
@@ -406,16 +364,14 @@ function Install-CuaDriver {
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        # Same upstream installer `hermes computer-use install` runs. Bounded
-        # via a background job: the upstream installer serializes with its own
-        # lock (600s stale window), so the ceiling sits above that -- matching
-        # Hermes' _CUA_INSTALLER_TIMEOUT (660s).
-        $job = Start-Job -ScriptBlock {
-            Invoke-RestMethod -UseBasicParsing "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1" | Invoke-Expression
-        }
-        if (Wait-Job $job -Timeout 660) {
-            Receive-Job $job -ErrorAction SilentlyContinue | Out-Null
-            Remove-Job $job -Force -ErrorAction SilentlyContinue
+        # Keep the downloader and every installer descendant under the same
+        # native ownership/deadline contract as other optional dependencies.
+        $command = "`$ProgressPreference = 'SilentlyContinue'; Invoke-RestMethod -UseBasicParsing 'https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1' | Invoke-Expression"
+        $hostExe = Join-Path $PSHOME $(if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' })
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        $result = Invoke-ProcessWithWallClockTimeout -FilePath $hostExe -ArgumentList @('-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-EncodedCommand', $encoded) `
+            -TimeoutSec $script:InstallerCommandTimeouts.ComputerUse -Label 'Computer Use driver install'
+        if (-not $result.TimedOut -and $result.ExitCode -eq 0) {
             $installedCuaDriver = Get-Command cua-driver -ErrorAction SilentlyContinue
             if ($installedCuaDriver -and (Test-CuaDriverRuntimeContract -DriverPath $installedCuaDriver.Source)) {
                 Write-Success "Computer Use driver installed (enable via 'hermes tools' -> Computer Use)"
@@ -424,9 +380,8 @@ function Install-CuaDriver {
                 Write-Info "Install later with: hermes computer-use install"
             }
         } else {
-            Stop-Job $job -ErrorAction SilentlyContinue
-            Remove-Job $job -Force -ErrorAction SilentlyContinue
-            Write-Warn "Computer Use driver install timed out -- it will install on demand when you enable the tool."
+            $reason = if ($result.TimedOut) { 'timed out' } else { "failed (exit $($result.ExitCode))" }
+            Write-Warn "Computer Use driver install $reason -- it will install on demand when you enable the tool."
             Write-Info "Install later with: hermes computer-use install"
         }
     } catch {
@@ -436,4 +391,3 @@ function Install-CuaDriver {
         $ErrorActionPreference = $prevEAP
     }
 }
-

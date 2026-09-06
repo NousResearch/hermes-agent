@@ -578,7 +578,8 @@ function Test-Node {
             if ((Get-WindowsArch) -eq 'arm64') {
                 $wingetArgs += @('--architecture','arm64')
             }
-            winget @wingetArgs 2>&1 | Out-Null
+            $null = Invoke-ProcessWithWallClockTimeout -FilePath 'winget' -ArgumentList $wingetArgs `
+                -TimeoutSec $script:InstallerCommandTimeouts.Packages -Label 'Node.js winget install'
             $ErrorActionPreference = $prevEAP
             # Refresh PATH
             $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
@@ -631,80 +632,6 @@ function Update-ProcessPathForPackages {
         }
     }
     $env:Path = [string]::Join(';', $ordered)
-}
-
-function Invoke-ProcessWithWallClockTimeout {
-    # Launch $FilePath as a genuine child process (NOT wrapped in a
-    # PowerShell background job) and enforce a hard wall-clock timeout,
-    # killing the whole process tree if it doesn't finish in time. Mirrors
-    # the bash installer's run_with_timeout so a stalled installer step
-    # (e.g. winget waiting on a source update, a stuck download, or a UAC
-    # prompt that never gets answered when invoked non-interactively via
-    # `irm | iex`) can't hang the installer indefinitely (see #78085).
-    #
-    # This intentionally does NOT use Start-Job/Wait-Job/Stop-Job: a
-    # background job's Stop-Job only tears down the job's own runspace, it
-    # does not recursively kill native child processes the script block
-    # spawned (verified directly -- a process started inside a job via
-    # Start-Process is still alive after Stop-Job + Remove-Job -Force).
-    # For winget specifically that would leave the real winget.exe (and
-    # anything IT spawns, e.g. an elevated installer or msiexec) orphaned
-    # and running in the background instead of actually terminated, and
-    # able to collide with the next package's winget invocation via
-    # winget's own single-instance lock. Launching the real process
-    # ourselves gives us its PID so we can kill the whole tree on timeout.
-    #
-    # Returns a hashtable:
-    #   TimedOut -- $true if the timeout fired before the process exited
-    #   ExitCode -- the process's exit code, or $null if it timed out
-    param(
-        [Parameter(Mandatory=$true)] [string]$FilePath,
-        [string[]]$ArgumentList = @(),
-        [Parameter(Mandatory=$true)] [int]$TimeoutSec,
-        [string]$RedirectStandardOutput,
-        [string]$RedirectStandardError
-    )
-    $startArgs = @{
-        FilePath     = $FilePath
-        ArgumentList = $ArgumentList
-        PassThru     = $true
-        NoNewWindow  = $true
-    }
-    if ($RedirectStandardOutput) { $startArgs.RedirectStandardOutput = $RedirectStandardOutput }
-    if ($RedirectStandardError) { $startArgs.RedirectStandardError = $RedirectStandardError }
-    $proc = Start-Process @startArgs
-    # Force the process handle to be opened IMMEDIATELY. On Windows
-    # PowerShell 5.1 (and pwsh 7.4.0 on Windows; fixed upstream in 7.4.1),
-    # Start-Process -NoNewWindow -PassThru returns a Process object whose
-    # handle was never acquired, so WaitForExit()/ExitCode silently read as
-    # $null (PowerShell issues #20400 / #5421). Touching .Handle forces the
-    # underlying handle open, which is what WaitForExit() and .ExitCode
-    # need to work. Harmless no-op on hosts without the bug.
-    try { $null = $proc.Handle } catch { }
-    $exited = $proc.WaitForExit($TimeoutSec * 1000)
-    if (-not $exited) {
-        # Kill the whole tree rooted at $proc, not just $proc itself.
-        # Process.Kill(bool) with recursive-tree support needs .NET Core 3+
-        # (pwsh 6+); Windows PowerShell 5.1 runs on .NET Framework and lacks
-        # that overload, so fall back to `taskkill /T` there -- both paths
-        # are Windows-only anyway (WinPS 5.1 never runs elsewhere).
-        if ($PSVersionTable.PSVersion.Major -ge 6) {
-            try { $proc.Kill($true) } catch { }
-        } else {
-            & taskkill /PID $proc.Id /T /F 2>&1 | Out-Null
-        }
-        # Give the OS a bounded window to finish tearing down the tree so
-        # file handles and winget's single-instance lock are released before
-        # the caller reads the redirect files or launches the next package.
-        try { $null = $proc.WaitForExit(5000) } catch { }
-        return @{ TimedOut = $true; ExitCode = $null; ProcessId = $proc.Id }
-    }
-    # WaitForExit(ms) returning $true only means the process exited; with
-    # redirected output the background stream readers may still be flushing
-    # the files. The parameterless overload waits for those too, so the
-    # caller's Get-Content sees complete output.
-    try { $proc.WaitForExit() } catch { }
-    return @{ TimedOut = $false; ExitCode = $proc.ExitCode; ProcessId = $proc.Id }
 }
 
 function Install-SystemPackages {
@@ -790,7 +717,7 @@ function Install-SystemPackages {
             $agreementArgs = @("--accept-package-agreements", "--accept-source-agreements")
             try {
                 $wingetResult = Invoke-ProcessWithWallClockTimeout -FilePath "winget" `
-                    -ArgumentList ($commonArgs + $agreementArgs) -TimeoutSec 600 `
+                    -ArgumentList ($commonArgs + $agreementArgs) -TimeoutSec $script:InstallerCommandTimeouts.Packages `
                     -RedirectStandardOutput $stdOutPath -RedirectStandardError $stdErrPath
                 Get-Content -Path $stdOutPath, $stdErrPath -ErrorAction SilentlyContinue |
                     Out-File -FilePath $log -Encoding utf8
@@ -811,7 +738,7 @@ function Install-SystemPackages {
                     if ($code -eq -1978335189) {
                         "-> already-installed/no-upgrade; retrying with --force" | Out-File -FilePath $log -Encoding utf8 -Append
                         $forceResult = Invoke-ProcessWithWallClockTimeout -FilePath "winget" `
-                            -ArgumentList ($commonArgs + @("--force") + $agreementArgs) -TimeoutSec 600 `
+                            -ArgumentList ($commonArgs + @("--force") + $agreementArgs) -TimeoutSec $script:InstallerCommandTimeouts.Packages `
                             -RedirectStandardOutput $stdOutPath -RedirectStandardError $stdErrPath
                         Get-Content -Path $stdOutPath, $stdErrPath -ErrorAction SilentlyContinue |
                             Out-File -FilePath $log -Encoding utf8 -Append
@@ -857,7 +784,7 @@ function Install-SystemPackages {
     if ($hasChoco -and ($needRipgrep -or $needFfmpeg)) {
         Write-Info "Trying Chocolatey..."
         foreach ($pkg in $chocoPkgs) {
-            try { choco install $pkg -y 2>&1 | Out-Null } catch { }
+            try { $null = Invoke-ProcessWithWallClockTimeout -FilePath 'choco' -ArgumentList @('install', $pkg, '-y') -TimeoutSec $script:InstallerCommandTimeouts.Packages -Label "Chocolatey $pkg" } catch { }
         }
         Update-ProcessPathForPackages
         if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
@@ -876,7 +803,7 @@ function Install-SystemPackages {
     if ($hasScoop -and ($needRipgrep -or $needFfmpeg)) {
         Write-Info "Trying Scoop..."
         foreach ($pkg in $scoopPkgs) {
-            try { scoop install $pkg 2>&1 | Out-Null } catch { }
+            try { $null = Invoke-ProcessWithWallClockTimeout -FilePath 'scoop' -ArgumentList @('install', $pkg) -TimeoutSec $script:InstallerCommandTimeouts.Packages -Label "Scoop $pkg" } catch { }
         }
         Update-ProcessPathForPackages
         if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {

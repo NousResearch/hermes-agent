@@ -87,27 +87,9 @@ function Restore-ElectronDist {
     $prevMirror = $env:ELECTRON_MIRROR
     if ($Mirror) { $env:ELECTRON_MIRROR = $Mirror }
     try {
-        # Run install.js with a hard wall-clock timeout.
-        # On networks with poor GitHub connectivity (e.g. mainland China) the
-        # Electron binary download can stall silently for 20+ minutes (#98049).
-        # Use the same run_with_timeout pattern as the node-deps stage (600s
-        # default, overridable via ELECTRON_DOWNLOAD_TIMEOUT env var).
-        $electronDlTimeoutSec = 600
-        if ($env:ELECTRON_DOWNLOAD_TIMEOUT -match '^\d+$') {
-            $electronDlTimeoutSec = [int]$env:ELECTRON_DOWNLOAD_TIMEOUT
-        }
-        $job = Start-Job -ScriptBlock {
-            param($nodeSrc, $inst)
-            & $nodeSrc $inst 2>&1
-        } -ArgumentList $node.Source, $installer
-        $finished = Wait-Job -Job $job -Timeout $electronDlTimeoutSec
-        if ($finished) {
-            Receive-Job -Job $job | ForEach-Object { "$_" } | Out-Host
-        } else {
-            Stop-Job -Job $job
-            Write-Warn "Electron download timed out after ${electronDlTimeoutSec}s — will retry with mirror."
-        }
-        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+        $result = Invoke-ProcessWithWallClockTimeout -FilePath $node.Source -ArgumentList @($installer) `
+            -TimeoutSec $script:InstallerCommandTimeouts.Electron -WorkingDirectory $InstallDir -Label 'Electron download'
+        if ($result.TimedOut) { return $false }
     } catch {
     } finally {
         $env:ELECTRON_MIRROR = $prevMirror
@@ -246,12 +228,16 @@ function Install-Desktop {
         # is the artifact), but on failure we scan $npmOut for the TLS-trust
         # signature so corporate-proxy users get the NODE_EXTRA_CA_CERTS hint
         # instead of an opaque "exit 1" (issue #38016).
-        & $npmExe ci 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
-        $code = $LASTEXITCODE
+        $result = Invoke-ProcessWithWallClockTimeout -FilePath $npmExe -ArgumentList @('ci') `
+            -TimeoutSec $script:InstallerCommandTimeouts.Desktop -WorkingDirectory $InstallDir -Label 'Desktop npm ci'
+        $npmOut = $result.Output
+        $code = $result.ExitCode
         if ($code -ne 0) {
             Write-Info "  npm ci failed (exit $code) -- retrying with npm install..."
-            & $npmExe install 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
-            $code = $LASTEXITCODE
+            $result = Invoke-ProcessWithWallClockTimeout -FilePath $npmExe -ArgumentList @('install') `
+                -TimeoutSec $script:InstallerCommandTimeouts.Desktop -WorkingDirectory $InstallDir -Label 'Desktop npm install'
+            $npmOut = $result.Output
+            $code = $result.ExitCode
         }
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {
@@ -343,8 +329,10 @@ function Install-Desktop {
         $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
         $env:WIN_CSC_LINK = ""
         $env:WIN_CSC_KEY_PASSWORD = ""
-        & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
-        $code = $LASTEXITCODE
+        $result = Invoke-ProcessWithWallClockTimeout -FilePath $npmExe -ArgumentList @('run', 'pack') `
+            -TimeoutSec $script:InstallerCommandTimeouts.Desktop -WorkingDirectory $desktopDir -Label 'Desktop packaging'
+        [IO.File]::WriteAllText($buildLog, $result.Output)
+        $code = $result.ExitCode
         if ($code -ne 0) {
             $purged = @()
             $restored = $false
@@ -355,8 +343,10 @@ function Install-Desktop {
             if ($restored) {
                 Write-Warn "Desktop build failed - refreshed the Electron download, retrying once:"
                 foreach ($p in $purged) { Write-Info "  - $p" }
-                & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
-                $code = $LASTEXITCODE
+                $result = Invoke-ProcessWithWallClockTimeout -FilePath $npmExe -ArgumentList @('run', 'pack') `
+                    -TimeoutSec $script:InstallerCommandTimeouts.Desktop -WorkingDirectory $desktopDir -Label 'Desktop packaging'
+                [IO.File]::WriteAllText($buildLog, $result.Output)
+                $code = $result.ExitCode
             }
         }
         if ($code -ne 0 -and -not $env:ELECTRON_MIRROR) {
@@ -370,8 +360,10 @@ function Install-Desktop {
             $prevMirror = $env:ELECTRON_MIRROR
             $env:ELECTRON_MIRROR = $mirror
             try {
-                & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
-                $code = $LASTEXITCODE
+                $result = Invoke-ProcessWithWallClockTimeout -FilePath $npmExe -ArgumentList @('run', 'pack') `
+                    -TimeoutSec $script:InstallerCommandTimeouts.Desktop -WorkingDirectory $desktopDir -Label 'Desktop packaging'
+                [IO.File]::WriteAllText($buildLog, $result.Output)
+                $code = $result.ExitCode
             } finally {
                 $env:ELECTRON_MIRROR = $prevMirror
             }

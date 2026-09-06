@@ -769,6 +769,7 @@ class HostedRoomService:
         execution_generation: int,
         choice: str,
         request_id: str | None = None,
+        command_id: str | None = None,
     ) -> Mapping[str, Any]:
         """Resolve one exact local or peer approval and wake room observation."""
         key = (room_id, member_id)
@@ -876,6 +877,7 @@ class HostedRoomService:
             pending={**action, "room_id": room_id, "member_id": member_id},
             choice=choice,
             apply=apply,
+            command_id=command_id,
         )
         if not isinstance(result, Mapping) or int(result.get("resolved") or 0) != 1:
             raise RuntimeError("room approval target did not resolve the exact request")
@@ -1029,6 +1031,16 @@ class HostedRoomService:
     ) -> None:
         from gateway import hosted_room_messaging_approvals as approvals
 
+        with self._policy_lock:
+            candidates = [(member_id, dict(action)) for (room_id, member_id), action in self._pending_actions.items()
+                          if room_id == binding.room_id and action.get("kind") == "approval"
+                          and (action.get("approval") or {}).get("remember_key")]
+        for member_id, action in candidates:
+            try:
+                approvals.queue_remembered_approval(
+                    self.db_path, room_id=binding.room_id, member_id=member_id, action=action)
+            except Exception:
+                logger.warning("Remembered Group Chat approval unavailable; request remains manual", exc_info=True)
         pending = approvals.list_pending_approval_commands(
             self.db_path,
             room_id=binding.room_id,
@@ -1088,6 +1100,7 @@ class HostedRoomService:
                     execution_generation=coordinates[4],
                     choice=str(command["choice"]),
                     request_id=coordinates[5],
+                    command_id=str(command["command_id"]),
                 )
                 result = (
                     "Approved once."

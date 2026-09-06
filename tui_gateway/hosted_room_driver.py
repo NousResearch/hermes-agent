@@ -484,13 +484,31 @@ class HostedRoomRuntime:
             "observer_lease_generation": observer_lease_generation,
         }
         if isinstance(approval, Mapping):
+            from tools.approval_operation import valid_operation_context, valid_operation_key
+
             safe_approval = dict(approval)
+            remember_key = safe_approval.get("remember_key")
+            offered_choices = safe_approval.get("choices")
+            offered_choices = offered_choices if isinstance(offered_choices, (list, tuple)) else ()
+            rememberable = (
+                valid_operation_key(remember_key)
+                and valid_operation_context(safe_approval.get("remember_context"))
+                and "always" in offered_choices
+                and safe_approval.get("allow_permanent") is True
+                and safe_approval.get("allow_session") is True
+                and not safe_approval.get("smart_denied")
+            )
             choices = [
                 choice
-                for choice in safe_approval.get("choices") or ()
+                for choice in offered_choices
                 if choice in {"once", "deny"}
             ]
             safe_approval["choices"] = choices or ["once", "deny"]
+            if rememberable:
+                safe_approval["choices"].append("remember")
+            else:
+                safe_approval.pop("remember_key", None)
+                safe_approval.pop("remember_context", None)
             action = {
                 "kind": "approval",
                 "authority_gateway_id": binding.gateway_id,

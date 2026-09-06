@@ -101,6 +101,8 @@ def _initialize(conn: sqlite3.Connection) -> None:
                observer_lease_generation INTEGER NOT NULL,
                description TEXT NOT NULL,
                command_text TEXT NOT NULL,
+               remember_key TEXT NOT NULL DEFAULT '',
+               remember_context TEXT NOT NULL DEFAULT '',
                updated_at REAL NOT NULL,
                PRIMARY KEY (room_id, member_id)
            )"""
@@ -109,7 +111,7 @@ def _initialize(conn: sqlite3.Connection) -> None:
         str(row[1])
         for row in conn.execute("PRAGMA table_info(hosted_room_pending_approvals)")
     }
-    if not {"observer_generation", "observer_lease_generation"} <= pending_columns:
+    if not {"observer_generation", "observer_lease_generation", "remember_key", "remember_context"} <= pending_columns:
         try:
             conn.execute("BEGIN IMMEDIATE")
             pending_columns = {
@@ -127,6 +129,14 @@ def _initialize(conn: sqlite3.Connection) -> None:
                 conn.execute(
                     """ALTER TABLE hosted_room_pending_approvals
                        ADD COLUMN observer_lease_generation INTEGER NOT NULL DEFAULT 0"""
+                )
+            if "remember_key" not in pending_columns:
+                conn.execute(
+                    "ALTER TABLE hosted_room_pending_approvals ADD COLUMN remember_key TEXT NOT NULL DEFAULT ''"
+                )
+            if "remember_context" not in pending_columns:
+                conn.execute(
+                    "ALTER TABLE hosted_room_pending_approvals ADD COLUMN remember_context TEXT NOT NULL DEFAULT ''"
                 )
             conn.commit()
         except Exception:
@@ -201,6 +211,9 @@ def _prune_locked(conn: sqlite3.Connection, *, now: float) -> None:
             now - COMMAND_RETENTION_SECONDS,
         ),
     )
+    from gateway.hosted_room_approval_rules import prune_rules
+
+    prune_rules(conn, now=now)
 
 
 def _require_observer_lease(
@@ -271,6 +284,12 @@ def normalize_pending_approval(
     authority_epoch = int(action.get("authority_epoch") or 0)
     if authority_epoch < 1:
         raise MessagingApprovalError("pending approval authority epoch is invalid")
+    from tools.approval_operation import valid_operation_context, valid_operation_key
+
+    remember_key = approval.get("remember_key")
+    remember_context = approval.get("remember_context")
+    rememberable = ("remember" in choices and valid_operation_key(remember_key)
+                   and valid_operation_context(remember_context))
     return {
         "kind": "approval",
         "room_id": _identifier(room_id, label="room_id"),
@@ -301,7 +320,8 @@ def normalize_pending_approval(
         "approval": {
             "description": _text(approval.get("description")),
             "command": _text(approval.get("command")),
-            "choices": ["once", "deny"],
+            "choices": ["once", "deny", *(["remember"] if rememberable else [])],
+            **({"remember_key": remember_key, "remember_context": remember_context} if rememberable else {}),
         },
     }
 
@@ -327,8 +347,8 @@ def persist_pending_approval(
                    member_id, task_id, execution_generation,
                    request_id, profile, session_id, description,
                    observer_generation, observer_lease_generation,
-                   command_text, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   command_text, remember_key, remember_context, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(room_id, member_id) DO UPDATE SET
                    authority_gateway_id=excluded.authority_gateway_id,
                    authority_epoch=excluded.authority_epoch,
@@ -341,6 +361,8 @@ def persist_pending_approval(
                    observer_lease_generation=excluded.observer_lease_generation,
                    description=excluded.description,
                    command_text=excluded.command_text,
+                    remember_key=excluded.remember_key,
+                    remember_context=excluded.remember_context,
                    updated_at=excluded.updated_at""",
             (
                 pending["room_id"],
@@ -356,6 +378,8 @@ def persist_pending_approval(
                 pending["observer_generation"],
                 pending["observer_lease_generation"],
                 approval["command"],
+                approval.get("remember_key", ""),
+                approval.get("remember_context", ""),
                 now,
             ),
         )
@@ -433,6 +457,11 @@ def clear_pending_approval(
 
 
 def _pending_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    from tools.approval_operation import valid_operation_context, valid_operation_key
+
+    remember_key = row["remember_key"]
+    remember_context = row["remember_context"]
+    rememberable = valid_operation_key(remember_key) and valid_operation_context(remember_context)
     return {
         "kind": "approval",
         "room_id": str(row["room_id"]),
@@ -449,7 +478,8 @@ def _pending_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "approval": {
             "description": str(row["description"]),
             "command": str(row["command_text"]),
-            "choices": ["once", "deny"],
+            "choices": ["once", "deny", *(["remember"] if rememberable else [])],
+            **({"remember_key": remember_key, "remember_context": remember_context} if rememberable else {}),
         },
     }
 
@@ -500,11 +530,21 @@ def begin_approval_command(
     command_id: Any,
     pending: Mapping[str, Any],
     choice: str,
+    rule_ref: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    from gateway import hosted_room_approval_rules as rules
+
     command = _identifier(command_id, label="command_id")
-    normalized_choice = str(choice or "").casefold()
-    if normalized_choice not in {"once", "deny"}:
-        raise MessagingApprovalError("approval choice must be once or deny")
+    requested_choice = str(choice or "").casefold()
+    if requested_choice not in {"once", "deny", "remember"}:
+        raise MessagingApprovalError("approval choice must be once, deny, or remember")
+    if rule_ref is not None and requested_choice != "once":
+        raise MessagingApprovalError("automatic permissions can approve only one request")
+    if command.startswith(rules.AUTO_COMMAND_PREFIX) and rule_ref is None:
+        raise MessagingApprovalError("automatic approval identities require a current remembered permission")
+    if rule_ref is not None and not command.startswith(rules.AUTO_COMMAND_PREFIX):
+        raise MessagingApprovalError("automatic approvals require a reserved command identity")
+    normalized_choice = "once" if requested_choice == "remember" else requested_choice
     authority_epoch = int(pending.get("authority_epoch") or 0)
     execution_generation = int(pending.get("execution_generation") or 0)
     coordinates = (
@@ -547,6 +587,8 @@ def begin_approval_command(
                 raise MessagingApprovalError(
                     "approval command ID was reused with different content"
                 )
+            if requested_choice == "remember" and not rules.is_remembered_grant(conn, command):
+                raise MessagingApprovalError("an existing one-time decision cannot become a remembered permission")
             conn.commit()
             return {
                 "command_id": command,
@@ -568,6 +610,8 @@ def begin_approval_command(
                 raise MessagingApprovalError(
                     "A different decision is already queued for this approval."
                 )
+            if requested_choice == "remember" and not rules.is_remembered_grant(conn, str(existing_scope["command_id"])):
+                raise MessagingApprovalError("an existing one-time decision cannot become a remembered permission")
             conn.commit()
             return {
                 "command_id": str(existing_scope["command_id"]),
@@ -602,6 +646,10 @@ def begin_approval_command(
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)""",
             (command, *coordinates, normalized_choice, now, now),
         )
+        if requested_choice == "remember":
+            rules.stage_rule(conn, pending, command)
+        elif rule_ref is not None:
+            rules.bind_rule_use(conn, pending, command, rule_ref)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -639,6 +687,33 @@ def list_pending_approval_commands(
     finally:
         conn.close()
     return [dict(row) for row in rows]
+
+
+def queue_remembered_approval(
+    db_path: Path | str, *, room_id: str, member_id: str, action: Mapping[str, Any],
+) -> bool:
+    """Reserve a matching standing permission through the existing exact-decision journal."""
+    from gateway import hosted_room_approval_rules as rules
+
+    pending = normalize_pending_approval(room_id, member_id, action)
+    if not pending["approval"].get("remember_key"):
+        return False
+    conn = _connect(db_path)
+    try:
+        rule = rules.matching_rule(conn, pending)
+    except (rules.ApprovalRuleError, MessagingApprovalObservationStale):
+        return False
+    finally:
+        conn.close()
+    if rule is None:
+        return False
+    identity = [rule["rule_id"], rule["generation"], *(pending[key] for key in _APPROVAL_SCOPE_FIELDS)]
+    command_id = rules.AUTO_COMMAND_PREFIX + hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
+    try:
+        begin_approval_command(db_path, command_id=command_id, pending=pending, choice="once", rule_ref=rule)
+    except (rules.ApprovalRuleError, MessagingApprovalObservationStale, MessagingApprovalError):
+        return False
+    return True
 
 
 def list_all_pending_approval_commands(
@@ -711,10 +786,14 @@ def apply_pending_decision(
     pending: Mapping[str, Any],
     choice: str,
     apply: Callable[[], Mapping[str, Any]],
+    command_id: str | None = None,
 ) -> Mapping[str, Any]:
     """Journal an exact decision before RPC without holding SQLite over I/O."""
+    choice = str(choice or "").casefold()
+    if choice not in {"once", "deny"}:
+        raise MessagingApprovalError("target approval choice must be once or deny")
     coordinates = "\0".join(str(pending[field]) for field in _APPROVAL_SCOPE_FIELDS)
-    plan = begin_approval_command(
+    plan = {"command_id": _identifier(command_id, label="command_id"), "choice": choice} if command_id else begin_approval_command(
         db_path,
         command_id="approval:" + hashlib.sha256(coordinates.encode()).hexdigest(),
         pending=pending,
@@ -724,7 +803,7 @@ def apply_pending_decision(
     try:
         conn.execute("BEGIN IMMEDIATE")
         command = conn.execute(
-            "SELECT state, result_text FROM hosted_room_messaging_approval_commands "
+            "SELECT * FROM hosted_room_messaging_approval_commands "
             "WHERE command_id=?",
             (plan["command_id"],),
         ).fetchone()
@@ -732,12 +811,24 @@ def apply_pending_decision(
             raise MessagingApprovalTerminalError(
                 "Approval receipt is no longer available."
             )
+        if (any(command[field] != pending[field] for field in _APPROVAL_SCOPE_FIELDS)
+                or command["choice"] != choice):
+            raise MessagingApprovalTerminalError("Approval receipt no longer matches the requested decision.")
         if command["state"] == "completed":
             conn.commit()
             if command["result_text"] in {"Approved once.", "Denied."}:
                 return {"resolved": 1}
             raise MessagingApprovalTerminalError(str(command["result_text"]))
         _require_observer_lease(conn, pending, now=time.time())
+        if command["application_started_at"] is None:
+            from gateway import hosted_room_approval_rules as rules
+
+            try:
+                rules.require_live_rule_use(conn, pending, plan["command_id"])
+            except rules.ApprovalRuleError as exc:
+                rules.discard_unstarted_use(conn, plan["command_id"])
+                conn.commit()
+                raise MessagingApprovalTerminalError(str(exc)) from exc
         if (
             conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' "
@@ -868,6 +959,9 @@ def complete_approval_command(
                 WHERE command_id=? AND state='pending'""",
             (safe_result, now, command),
         )
+        from gateway.hosted_room_approval_rules import complete_rule_decision
+
+        complete_rule_decision(conn, command, safe_result)
         conn.commit()
     finally:
         conn.close()
@@ -904,6 +998,7 @@ def submit_approval(
                 execution_generation=plan["execution_generation"],
                 choice=plan["choice"],
                 request_id=plan["request_id"],
+                command_id=plan["command_id"],
             )
         except MessagingApprovalTerminalError as exc:
             result = _text(exc) or "Approval is no longer available."
@@ -1136,6 +1231,8 @@ def format_pending_approvals(
         f"Approve once: `{room_command} {room_reference} approve <approval code>`",
         f"Deny: `{room_command} {room_reference} deny <approval code>`",
     ])
+    if any("remember" in action["approval"].get("choices", []) for action in pending):
+        lines.append(f"Always allow here (asks for confirmation): `{room_command} {room_reference} remember <approval code>`")
     return "\n".join(lines)
 
 

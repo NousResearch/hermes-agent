@@ -110,10 +110,19 @@ On gateways that support Group Chat controls, use `/group` in your authorized He
 - `/group 7 send @writer Hi!`: send a message to one Bot, using its handle from the list.
 - `/group 7 stop`: request a stop.
 - `/group 7 approvals`: check requests for your approval.
+- `/group 7 permissions`: view or remove remembered approvals.
 
 Use the group's number from your own list in place of `7`. These examples use `/`; in Slack and Matrix, type `!group`, `!sethome`, and `!whoami` instead, or follow the prefix shown by Hermes. `/group help` (or `!group help`) shows the available commands. Some actions depend on the gateway version and how the group runs. A Desktop-driven group still needs its Desktop connected to receive new work; a queued command is not confirmation that a Bot has started or stopped.
 
 Group Chat controls require an authorized account. If Hermes asks you to choose a Home chat, `/sethome` selects where scheduled updates and cross-chat messages arrive; it does not grant access by itself. A shared Home chat also asks you to confirm that its readers, including people added later, can see Group Chat activity posted there. Approve or deny Bot commands only from the owner's authorized main Hermes chat. Before using `Retry`, check the recent activity: an earlier attempt with an unknown outcome may already have acted, and retrying can repeat those actions.
+
+#### Remember an approval
+
+For supported terminal commands, **Always allow here** lets one Bot repeat that exact command in this Group Chat without asking again. Hermes asks you to confirm first. The permission applies only to the same working directory and connection; other Bots, groups, and conversations keep their own approval rules. A repeated command can still affect files or data that have changed, so remember only commands you trust to run again.
+
+Open `/group 7 permissions` to inspect or **Forget this permission**. Requests that have not started being approved will ask again; a command already approved may still finish. Use **Stop** separately to stop current work. A permission waiting for its first approval is shown as inactive and can also be removed.
+
+Without buttons, use `/group 7 remember <approval code>` and follow its confirmation command. Use `/group 7 permissions <page number>` to browse a longer list and `/group 7 forget <permission code>` to remove an entry. Older gateways and commands that cannot be safely identified keep one-time approval and denial. Remembered approvals never enable a gateway-wide bypass or override protected policy denials.
 
 ## Bot-to-bot messaging
 

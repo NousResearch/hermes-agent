@@ -15,7 +15,8 @@ class CorePicker(_PickerAdapter):
 
 
 @pytest.fixture
-def picker_home(home):
+def picker_home(home, monkeypatch):
+    monkeypatch.setattr("gateway.hosted_rooms.local_authority_gateway_id", lambda: "install:test-gateway")
     adapter = CorePicker(home.runner.config.platforms[home.event.source.platform])
     home.runner.adapters[home.event.source.platform] = adapter
     home.adapter = adapter

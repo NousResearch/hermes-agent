@@ -564,6 +564,9 @@ def _prune_disbanded_rooms_locked(
     placeholders = ",".join("?" for _ in candidates)
     room_ids = tuple(sorted(candidates))
     conn.execute(_RETIRE_FROM_ROOMS.format(where=f"room_id IN ({placeholders}) AND disbanded_at IS NOT NULL"), room_ids)
+    from gateway.hosted_room_approval_rules import purge_room_rules
+
+    purge_room_rules(conn, room_ids)
     for table in _DEPENDENT_TABLES:
         if table_exists(conn, table):
             conn.execute(f"DELETE FROM {table} WHERE room_id IN ({placeholders})", room_ids)

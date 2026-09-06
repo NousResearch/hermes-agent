@@ -1008,6 +1008,7 @@ def _run_foreground(
     command: str, env: Any, plan: _ExecPlan, *,
     task_id: Optional[str], session_id: Optional[str], session_key: str,
     workdir: Optional[str], approval_note: Optional[str], clear_interrupt: bool,
+    approved_operation: Any = None,
 ) -> str:
     """Execute in the foreground with retry on transient errors, then finalize."""
     max_retries = 3
@@ -1027,6 +1028,13 @@ def _run_foreground(
             command_cwd = _resolve_command_cwd(
                 workdir=workdir, default_cwd=plan.cwd, session_key=session_key, env_type=env_type,
             )
+            if approved_operation is not None and not approved_operation.matches(
+                environment=env, backend=env_type, cwd=command_cwd,
+            ):
+                return _error_json(
+                    "The working directory or connection changed while approval was pending. Run the command again.",
+                    status="blocked",
+                )
             # bounded_capture: model-facing output keeps a head/tail window
             # while streaming so a verbose command can't OOM the gateway;
             # internal env.execute() consumers stay unbounded.
@@ -1151,7 +1159,17 @@ def terminal_tool(
         _pre_exec_block(command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key)
         # Pre-exec security checks (tirith + dangerous command detection);
         # force=True means the user already confirmed.
-        verdict = _run_approval_guards(command, env_type, plan.config, force=force)
+        from tools.approval_operation import approval_environment_config, approval_operation
+
+        command_cwd = _resolve_command_cwd(
+            workdir=workdir, default_cwd=cwd, session_key=session_key, env_type=env_type,
+        )
+        approval_config = approval_environment_config(env, env_type)
+        with approval_operation(
+            cwd=command_cwd, backend=env_type, config=approval_config or {},
+            enabled=not background and approval_config is not None,
+        ) as operation:
+            verdict = _run_approval_guards(command, env_type, plan.config, force=force)
 
         pty_disabled = pty and _command_requires_pipe_stdin(command)
         if background:
@@ -1166,6 +1184,7 @@ def terminal_tool(
             command, env, plan,
             task_id=task_id, session_id=session_id, session_key=session_key,
             workdir=workdir, approval_note=verdict.note, clear_interrupt=verdict.approved_run,
+            **({"approved_operation": operation} if operation is not None and operation.requested else {}),
         )
     except _Rejected as r:
         return r.result_json

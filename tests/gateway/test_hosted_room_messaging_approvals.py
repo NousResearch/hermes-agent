@@ -319,6 +319,7 @@ def test_cross_process_command_waits_then_resolves_once(tmp_path):
                 "execution_generation": 2,
                 "choice": "deny",
                 "request_id": "request-1",
+                "command_id": "approval-command-1",
             },
         )
     ]

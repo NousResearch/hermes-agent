@@ -315,6 +315,7 @@ class GroupChatSlashCommandsMixin:
             f"`{command} 7 stop` - Stop the current work.",
             f"`{command} 7 retry` - Retry work that needs attention.",
             f"`{command} 7 approvals` - Check requests for your approval.",
+            f"`{command} 7 permissions` - Manage remembered approvals.",
             "",
             "Replace 7 with the Group Chat's number from the list.",
             "",
@@ -394,6 +395,18 @@ class GroupChatSlashCommandsMixin:
                 service,
                 profile=profile,
             )
+            if (len(words) >= 2 and words[0].isdecimal()
+                    and words[1].casefold() in {"approvals", "permissions", "remember", "forget"}):
+                from gateway.group_chat_approval_permissions import GroupApprovalPermissions, UNHANDLED
+
+                if self._can_approve_group_chats(event) is not True:
+                    return self._group_chat_approval_denial()
+                room = resolve_room(rooms, words[0])
+                menu = GroupApprovalPermissions(self, event, service, room, profile=profile,
+                                               command=rooms_command, stamp=disclosure_stamp)
+                result = await menu.handle_command(words[1:])
+                if result is not UNHANDLED:
+                    return result
             if (
                 len(words) == 2
                 and words[0].isdecimal()

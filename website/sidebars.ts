@@ -564,6 +564,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/research/research-research-paper-writing',
                     'user-guide/skills/optional/research/research-scrapling',
                     'user-guide/skills/optional/research/research-searxng-search',
+                    'user-guide/skills/optional/research/research-youtube-topic-scouting',
                   ],
                 },
                 {

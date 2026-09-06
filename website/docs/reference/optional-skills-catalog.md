@@ -230,6 +230,7 @@ hermes skills uninstall <skill-name>
 | [**research-paper-writing**](/docs/user-guide/skills/optional/research/research-research-paper-writing) | Write ML papers for NeurIPS/ICML/ICLR: design→submit. |
 | [**scrapling**](/docs/user-guide/skills/optional/research/research-scrapling) | Scrape sites with stealth browsing and Cloudflare bypass. |
 | [**searxng-search**](/docs/user-guide/skills/optional/research/research-searxng-search) | Free keyless meta-search aggregating 70+ engines. |
+| [**youtube-topic-scouting**](/docs/user-guide/skills/optional/research/research-youtube-topic-scouting) | Scout sourced AI/security video topics for approval. |
 
 ## security
 

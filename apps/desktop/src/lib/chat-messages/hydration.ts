@@ -19,28 +19,11 @@ const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
 
-// Painted for a persisted assistant row whose content, reasoning, tool
-// calls, and attachments are ALL empty (#68321) - see the zero-parts guard
-// in toChatMessages. It must read as a system fact about the row, never as
-// model output: it renders inside the normal assistant bubble, so the
-// phrasing is about the record, not a fabricated reply.
-const EMPTY_ASSISTANT_PLACEHOLDER = '_(assistant response not persisted)_'
-
-export const EMPTY_ASSISTANT_PLACEHOLDER_TEXT = EMPTY_ASSISTANT_PLACEHOLDER
-
 /**
- * Extract the user-visible assistant reply text from a Responses-API
- * `codex_message_items` sidecar (#68321).
- *
- * Some Responses-API turns persist with `content` empty while the text the
- * user saw lives only in the message-items sidecar (each item:
- * `{type:'message', role:'assistant', phase, content:[{type:'output_text', text}]}`).
- * The live stream renders that text; a transcript rehydrate that ignores the
- * sidecar blanks the bubble - and a blank assistant text at the same
- * role-ordinal then makes reconcileResumeMessages drop the cached row's
- * parts entirely (the "assistant messages vanish on switch-back" repro).
- * Only `phase !== 'commentary'` text is prose; commentary items are the
- * provider's narration stream.
+ * Reply text from a Responses-API `codex_message_items` sidecar (#68321), for rows
+ * whose `content` persisted empty. `commentary` / `analysis` items are mid-turn
+ * narration the backend routes to the reasoning channel
+ * (codex_responses_adapter `_OutputScan._message`); the remaining phases are the reply.
  */
 function codexMessageItemText(message: SessionMessage): string {
   const items = message.codex_message_items
@@ -62,7 +45,7 @@ function codexMessageItemText(message: SessionMessage): string {
       continue
     }
 
-    if (record.phase === 'commentary') {
+    if (record.phase === 'commentary' || record.phase === 'analysis') {
       continue
     }
 
@@ -319,40 +302,15 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       )
     }
 
-    // #68321 second producer: Responses-API turns can persist with `content`
-    // empty while the reply the user saw lives only in the codex_message_items
-    // sidecar. The live stream rendered it; without this fallback the
-    // rehydrated bubble blanks - and the empty chatMessageText at the same
-    // role-ordinal then makes reconcileResumeMessages strip the cached row's
-    // parts, so the reply disappears on every switch-back.
+    // #68321: Responses-API turns can persist with `content` empty while the reply the
+    // user saw lives only in codex_message_items; without this the rehydrated bubble
+    // blanks and reconcileResumeMessages then strips the cached row at that ordinal.
     if (message.role === 'assistant' && !displayContent && !parts.length) {
       const codexText = codexMessageItemText(message)
 
       if (codexText) {
         parts.push(assistantTextPart(codexText, message.timestamp))
       }
-    }
-
-    // #68321: a persisted assistant row that hydrates to zero parts is
-    // invisible in two compounding ways. Directly, it vanishes from the
-    // painted transcript ("all assistant messages gone; user messages
-    // remain; DB intact"). Indirectly - and this is the reproducible
-    // switch-back loss - its role-ordinal slot in reconcileResumeMessages
-    // carries empty text, so `sameText`/`isStrictAnswerTextExtension`/
-    // `isLiveTailRow` all fail against the cached structured row and the
-    // reconcile REPLACES that row's reasoning/tool parts with the empty
-    // shell. Both failures trace to one invariant violation: a persisted
-    // assistant row must never hydrate to nothing. Rows whose only text
-    // lives in reasoning already survive (the reasoning part keeps them);
-    // this guards the torn/empty tail - a wholly empty assistant row
-    // paints a placeholder instead of disappearing.
-    if (
-      message.role === 'assistant' &&
-      !parts.length &&
-      !extractedAttachmentRefs?.length &&
-      message.display_kind !== 'hidden'
-    ) {
-      parts.push(assistantTextPart(EMPTY_ASSISTANT_PLACEHOLDER, message.timestamp))
     }
 
     if (!parts.length && !extractedAttachmentRefs?.length) {

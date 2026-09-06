@@ -291,14 +291,37 @@ class ToolTimerMixin:
         if not self._use_native_streaming:
             return
         with self._timer_lock:
-            if tool_name not in self._tool_start_times:
+            is_new_tool = tool_name not in self._tool_start_times
+            if is_new_tool:
                 self._tool_start_times[tool_name] = time.monotonic()
             # Arm the periodic tick if not already running.
             # Use call_soon_threadsafe because this method is called from the
             # agent worker thread, not the event loop thread.
             need_arm = self._tool_timer_handle is None and self._tool_timer_loop is not None
+            loop_present = self._tool_timer_loop is not None
         if need_arm:
             self._tool_timer_loop.call_soon_threadsafe(self._arm_tool_timer)
+        elif loop_present and is_new_tool:
+            # A handle is already set (need_arm is False), so the normal arm path
+            # would be a no-op — _arm_tool_timer, the ONLY place the synchronous
+            # first tick fires, would be skipped and this NEW tool's first
+            # progress/timer frame would stall until the residual handle's next
+            # call_later(1.0) tick.  This is the tool-path sibling of the
+            # on_llm_thinking gap that ccd42de904 closed: the residual handle is
+            # either a zombie tool handle (on_tool_completed pops the finished
+            # tool's _tool_start_times entry but never cancels _tool_timer_handle)
+            # or a live tick loop for a still-running parallel tool.  Route
+            # through _rearm_after_tool (cancel the existing handle, then arm) so
+            # the new tool gets the same immediate first frame the first tool got.
+            #
+            # Gated on is_new_tool so a repeat _start_tool_timer for an
+            # already-tracked key (e.g. on_tool_progress re-firing for a tool
+            # already ticking) is a no-op and does NOT reset a healthy timer's
+            # cadence.  Safe against a live loop: both callbacks run on the
+            # event-loop thread, so _rearm_after_tool's cancel precedes the
+            # pending tick (no race), and it never touches _tool_start_times, so
+            # every live tool's elapsed count is preserved.
+            self._tool_timer_loop.call_soon_threadsafe(self._rearm_after_tool)
 
     def _arm_tool_timer(self) -> None:
         """Arm the periodic tick.  Must run on the event loop thread.

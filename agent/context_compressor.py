@@ -3071,6 +3071,27 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         summary = _reinject_pruned_skill_markers(summary, _pruned_names)
         return self._augment_summary_lean(summary, turns_to_summarize)
 
+    @staticmethod
+    def _current_assignment_summary(
+        messages: List[Dict[str, Any]], start: int, end: int,
+    ) -> Optional[str]:
+        """Return the newest current-task Kanban projection inside a soon-to-be-dropped window."""
+        from agent.context_compressor_kanban import newest_assignment_summary
+
+        call_id_to_tool = _tool_calls_by_id(messages)
+        for index in range(min(end, len(messages)) - 1, max(0, start) - 1, -1):
+            summary = newest_assignment_summary(messages, index, call_id_to_tool)
+            if summary is not None:
+                return summary
+        return None
+
+    @staticmethod
+    def _append_current_assignment_summary(summary: str, assignment_summary: str) -> str:
+        """Carry a bounded current-task projection in the deterministic handoff."""
+        if assignment_summary in summary:
+            return summary
+        return f"{summary.rstrip()}\n\n[CURRENT KANBAN ASSIGNMENT]\n{assignment_summary}"
+
     def _demote_stale_tail_tools(self, messages: List[Dict[str, Any]], tail_start: int) -> List[Dict[str, Any]]:
         """Lean mode: demote tail tool results older than the newest ``_LEAN_TAIL_KEEP_TOOL_ROUNDS`` rounds to
         recovery stubs; the newest current-task Kanban projection is also protected. Skill-marker rows are
@@ -4652,6 +4673,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Lean mode demotes stale tail tool results before summary generation so stubs exist even if it aborts.
         if getattr(self, "tail_mode", "lean") == "lean":
             messages = self._demote_stale_tail_tools(messages, compress_end)
+        current_assignment_summary = self._current_assignment_summary(messages, compress_start, compress_end)
         scan = self._scan_window_handoffs(messages, compress_start, compress_end, turns_to_summarize)
         turns_to_summarize = scan.turns_to_summarize
         self._record_compression_regions(
@@ -4686,6 +4708,9 @@ Write only the summary body. Do not include any preamble or prefix."""
             summary = self._fallback_summary_for_window(
                 telemetry, turns_to_summarize, compress_end - compress_start, feasibility_skip,
             )
+        if current_assignment_summary:
+            summary = self._append_current_assignment_summary(summary, current_assignment_summary)
+            self._previous_summary = self._strip_summary_prefix(summary)
         # Phase 4: Assemble compressed message list
         compressed = self._assemble_compressed(messages, compress_start, compress_end, scan, summary)
         return self._finalize_compressed(compressed, messages, n_messages)

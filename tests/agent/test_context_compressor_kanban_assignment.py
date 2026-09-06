@@ -95,3 +95,34 @@ def test_lean_tail_keeps_newest_current_assignment_projection(monkeypatch):
 
     assert json.loads(result[1]["content"])["task"]["body"] == assignment_body
     assert result[3]["content"] != messages[3]["content"]
+
+
+def test_full_compress_keeps_current_assignment_from_summarized_window(monkeypatch):
+    task_id = "t_12345678"
+    receipt = "--feedback-id 3943941351 --receipt-head-sha " + "a" * 40
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    assignment = json.dumps({
+        "task": {"id": task_id, "title": "Current card", "body": f"Finish repair: {receipt}"},
+    })
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "old request"},
+        {"role": "assistant", "tool_calls": [{"id": "assignment", "function": {
+            "name": "kanban_show", "arguments": json.dumps({"task_id": task_id}),
+        }}]},
+        {"role": "tool", "tool_call_id": "assignment", "content": assignment},
+        {"role": "assistant", "content": "tail context"},
+        {"role": "user", "content": "new request"},
+        {"role": "assistant", "content": "new response"},
+        {"role": "user", "content": "latest request"},
+        {"role": "assistant", "content": "latest response"},
+        {"role": "user", "content": "final request"},
+    ]
+    compressor = ContextCompressor("test-model", quiet_mode=True)
+    monkeypatch.setattr(compressor, "_compress_window", lambda _messages: (2, 6))
+    monkeypatch.setattr(compressor, "_generate_summary", lambda _messages, **_kwargs: "summary without receipt")
+
+    result = compressor.compress(messages, current_tokens=999_999, force=True)
+
+    assert len(result) < len(messages)
+    assert receipt in json.dumps(result)

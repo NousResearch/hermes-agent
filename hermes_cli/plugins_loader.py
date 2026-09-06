@@ -307,6 +307,11 @@ class PluginLoaderMixin:
                 register_fn(PluginContext(manifest, self))
                 self._attribute_registrations(loaded, plugin_key, registration_start)
                 loaded.enabled = True
+                source = getattr(module, "__file__", None)
+                if source:
+                    hook_source = (manifest.name, str(Path(source).resolve()))
+                    for handle in self._memory_hook_registrations.pop(hook_source, []):
+                        handle.dispose()
         except Exception as exc:
             owned = [r for r in self._registration_order if r.plugin_key == plugin_key]
             self._dispose_registrations(owned)

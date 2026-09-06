@@ -187,6 +187,7 @@ class _CuaDriverSession:
 
     def __init__(self, bridge: _AsyncBridge, embedded_daemon: Optional[Any] = None) -> None:
         self._bridge, self._embedded_daemon, self._session = bridge, embedded_daemon, None
+        self._transport_invocation: Optional[tuple[str, tuple[str, ...]]] = None
         self._transport_socket: Optional[str] = None
         self._lock, self._started = threading.Lock(), False
         # Per-tool capability-token sets from `tools/list` (read via supports_capability). Raw input schemas are
@@ -223,14 +224,21 @@ class _CuaDriverSession:
         # reports HOW FAR it got instead of an opaque "never reached ready".
         self._startup_phase = "binary-check"
         try:
-            driver_cmd = _driver.resolve_cua_driver_cmd()
-            if not driver_cmd:
-                raise RuntimeError(_driver.cua_driver_install_hint())
-            self._startup_phase = "manifest-discovery"
             daemon = self._embedded_daemon
-            (command, args), child_env = (
-                (daemon.proxy_invocation(), daemon.child_env()) if daemon is not None
-                else (_driver._resolve_mcp_invocation(driver_cmd), _cb.cua_driver_child_env()))
+            if self._transport_invocation is None:
+                driver_cmd = _driver.resolve_cua_driver_cmd()
+                if not driver_cmd:
+                    raise RuntimeError(_driver.cua_driver_install_hint())
+                self._startup_phase = "manifest-discovery"
+                command, args = (
+                    daemon.proxy_invocation()
+                    if daemon is not None
+                    else _driver._resolve_mcp_invocation(driver_cmd)
+                )
+                self._transport_invocation = (command, tuple(args))
+            command, frozen_args = self._transport_invocation
+            args = list(frozen_args)
+            child_env = daemon.child_env() if daemon is not None else _cb.cua_driver_child_env()
             self._transport_socket = _driver._mcp_socket_from_args(args)
             _t_manifest = _time.monotonic()
             # Telemetry policy first (default: disabled), then strip Hermes secrets.

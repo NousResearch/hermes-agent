@@ -99,6 +99,74 @@ def test_embedded_daemon_replaces_other_socket():
     assert args.count("--socket") == 1
 
 
+def test_transport_recovery_keeps_first_resolved_endpoint():
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from tools.computer_use import cua_backend_driver
+    from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
+
+    first = r"\\.\pipe\first"
+    second = r"\\.\pipe\second"
+    session = _CuaDriverSession(_AsyncBridge())
+    captured = []
+
+    def capture_params(**kwargs):
+        captured.append(kwargs)
+        return MagicMock()
+
+    async def drive_once():
+        session._shutdown_event = None
+
+        async def stop_when_ready():
+            while session._shutdown_event is None:
+                await asyncio.sleep(0)
+            session._shutdown_event.set()
+
+        stop_task = asyncio.create_task(stop_when_ready())
+        try:
+            await session._lifecycle_coro()
+        finally:
+            await stop_task
+
+    with patch.object(
+        cua_backend_driver,
+        "resolve_cua_driver_cmd",
+        return_value="/resolved/cua-driver",
+    ), patch.object(
+        cua_backend_driver,
+        "_resolve_mcp_invocation",
+        side_effect=[
+            ("/resolved/cua-driver", ["mcp", "--socket", first]),
+            ("/resolved/cua-driver", ["mcp", "--socket", second]),
+        ],
+    ) as resolve, patch(
+        "mcp.StdioServerParameters", side_effect=capture_params
+    ), patch(
+        "mcp.client.stdio.stdio_client"
+    ) as stdio_client, patch(
+        "mcp.ClientSession"
+    ) as client_session:
+        stdio_client.return_value.__aenter__ = AsyncMock(
+            return_value=(MagicMock(), MagicMock())
+        )
+        stdio_client.return_value.__aexit__ = AsyncMock(return_value=None)
+        live_session = MagicMock()
+        live_session.initialize = AsyncMock()
+        live_session.list_tools = AsyncMock(return_value=MagicMock(tools=[]))
+        client_session.return_value.__aenter__ = AsyncMock(return_value=live_session)
+        client_session.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        asyncio.run(drive_once())
+        asyncio.run(drive_once())
+
+    assert resolve.call_count == 1
+    assert [params["args"] for params in captured] == [
+        ["mcp", "--socket", first],
+        ["mcp", "--socket", first],
+    ]
+
+
 def test_invalid_daemon_socket_fails_to_disabled(monkeypatch):
     from tools.computer_use import cua_backend
 

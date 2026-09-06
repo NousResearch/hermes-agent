@@ -213,7 +213,7 @@ When you call `ctx.register_platform()`, the following integration points are ha
 
 | Integration point | How it works |
 |---|---|
-| Gateway adapter creation | Registry checked before built-in if/elif chain |
+| Gateway adapter creation | Registry checked before the built-in `_BUILTIN_ADAPTERS` table |
 | Config parsing | `Platform._missing_()` accepts any platform name |
 | Connected platform validation | Registry `validate_config()` called |
 | User authorization | `allowed_users_env` / `allow_all_env` checked |
@@ -633,21 +633,21 @@ Three touchpoints:
 2. **`load_gateway_config()`** — Add token env map entry: `Platform.NEWPLAT: "NEWPLAT_TOKEN"`
 3. **`_apply_env_overrides()`** — Map all `NEWPLAT_*` env vars to config
 
-### 4. Gateway Runner (`gateway/run.py`)
+### 4. Gateway Runner (`gateway/run.py` + `gateway/run_*.py` siblings)
 
 Six touchpoints:
 
-1. **`_instantiate_adapter()`** — Add an `elif platform == Platform.NEWPLAT:` branch. The `_create_adapter()` wrapper binds every successful adapter to its gateway runner.
+1. **`_BUILTIN_ADAPTERS` table** (`gateway/run.py`) — Add a `Platform.NEWPLAT: (module, class, check_fn, error_msg)` entry; `_instantiate_adapter()` (`gateway/run_adapters.py`) consults the plugin registry, then this table — there is no `elif` chain to extend. The `_create_adapter()` wrapper binds every successful adapter to its gateway runner.
 2. **`_is_user_authorized()` allowed_users map** — `Platform.NEWPLAT: "NEWPLAT_ALLOWED_USERS"`
 3. **`_is_user_authorized()` allow_all map** — `Platform.NEWPLAT: "NEWPLAT_ALLOW_ALL_USERS"`
-4. **Early env check `_any_allowlist` tuple** — Add `"NEWPLAT_ALLOWED_USERS"`
-5. **Early env check `_allow_all` tuple** — Add `"NEWPLAT_ALLOW_ALL_USERS"`
+4. **Startup access-policy check** (`gateway/run_startup.py`) — Add `"NEWPLAT"` to `_ALLOWLIST_ENV_PLATFORMS` (derives both `NEWPLAT_ALLOWED_USERS` and `NEWPLAT_ALLOW_ALL_USERS`)
+5. **Startup `_BUILTIN_ALLOW_ALL_VARS`** (`gateway/run_startup.py`) — derived from the same `_ALLOWLIST_ENV_PLATFORMS` tuple; nothing extra to add
 6. **`_UPDATE_ALLOWED_PLATFORMS` frozenset** — Add `Platform.NEWPLAT`
 
 ### 5. Cross-Platform Delivery
 
 1. **`gateway/platforms/webhook.py`** — Add `"newplat"` to the delivery type tuple
-2. **`cron/scheduler.py`** — Add to `_KNOWN_DELIVERY_PLATFORMS` frozenset and `_deliver_result()` platform map
+2. **`cron/scheduler_delivery.py`** — Add to `_KNOWN_DELIVERY_PLATFORMS` frozenset and `_deliver_result()` platform map
 
 ### 6. CLI Integration
 

@@ -12,6 +12,7 @@ import threading
 
 import hermes_cli.mcp_startup as mcp_startup
 import hermes_cli.web_server as web_server
+import hermes_cli.web_server_lifecycle as web_server_lifecycle
 from tests.hermes_cli.test_dashboard_auth_gate import _stub_uvicorn_run
 
 
@@ -30,6 +31,7 @@ def test_desktop_serve_arms_mcp_discovery_only_after_ready_sentinel(monkeypatch)
         lambda *, logger, thread_name: order.append("discovery:" + thread_name),
     )
     monkeypatch.setattr(web_server, "_write_machine_sentinel_line", lambda line: order.append("sentinel"))
+    monkeypatch.setattr(web_server_lifecycle, "_write_machine_sentinel_line", lambda line: order.append("sentinel"))
     _stub_uvicorn_run(monkeypatch)
 
     web_server.start_server(

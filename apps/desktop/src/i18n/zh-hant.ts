@@ -398,6 +398,8 @@ export const zhHant = defineLocale({
       },
       backdropTitle: '聊天背景',
       backdropDesc: '對話後方那張淡淡的雕像圖片。',
+      userBubbleTitle: '訊息氣泡',
+      userBubbleDesc: '你自己的訊息有多透明。0 為不透明，100 時只保留邊框。',
       introSplashTitle: '開場標識',
       introSplashDesc: '空白對話中顯示的字標和提示語。',
       reactionsTitle: '訊息回應',

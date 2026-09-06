@@ -259,7 +259,7 @@ class TestPushSigning:
     def test_sign_push_payload_deterministic(self, monkeypatch):
         monkeypatch.setenv("A2A_PUSH_SECRET", "test-secret-123")
         payload = {"statusUpdate": {"taskId": "task-1"}}
-        sig = security.sign_push_payload(payload)
+        sig = security.A2ASecurityContext.capture().sign_push_payload(payload)
         assert sig
         import hashlib
         import hmac as hmac_mod
@@ -273,12 +273,12 @@ class TestPushSigning:
     def test_no_secret_means_unsigned(self, monkeypatch):
         monkeypatch.delenv("A2A_PUSH_SECRET", raising=False)
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
-        assert security.sign_push_payload({"x": 1}) == ""
+        assert security.A2ASecurityContext.capture().sign_push_payload({"x": 1}) == ""
 
     def test_falls_back_to_bearer_token(self, monkeypatch):
         monkeypatch.delenv("A2A_PUSH_SECRET", raising=False)
         monkeypatch.setenv("A2A_BEARER_TOKEN", "bearer-as-push-secret")
-        assert security.sign_push_payload({"x": 1})
+        assert security.A2ASecurityContext.capture().sign_push_payload({"x": 1})
 
 
 # ═════════════════════════════════════════════════════════════════════════════

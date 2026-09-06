@@ -42,7 +42,8 @@ import {
   isPidOnlyStartMarker,
   pidOnlyStartMarker,
   probeStartMarker,
-  processStartMarker
+  processStartMarker,
+  REAP_PROBE_TIMEOUT_MS
 } from './backend-claim'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
@@ -157,7 +158,7 @@ import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
-import { resolveDesktopRemoteRoute } from './desktop-remote-route'
+import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -274,12 +275,22 @@ import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
+  pendingNotice as pendingPluginCompatNotice,
+  recordDismissed as recordPluginCompatDismissed
+} from './plugin-compat-notice'
+import {
   buildRegistryProfileRoutes,
   isLocalEnumerationFailure,
   localRouteFallbackProfiles,
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
 import { selectPoolEvictions } from './pool-eviction'
+import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS } from './pool-limits'
+import {
+  LocalBackendSpawnCoordinator,
+  type LocalBackendSpawnRequest,
+  releaseLocalBackendSlotAfterExit
+} from './pool-spawn-coordinator'
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
 import { createKeepAwake } from './power-save'
@@ -400,7 +411,12 @@ import { isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
-import { registrySshScopeForWindowRoute, WindowConnectionRouteRegistry } from './window-connection-route'
+import {
+  registrySshPoolScopeByConnectionId,
+  registrySshScopeForWindowRoute,
+  WindowConnectionRouteRegistry
+} from './window-connection-route'
+import { createWindowOpenHandler } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
 import {
@@ -1408,8 +1424,97 @@ const profileDeletionGate = new ProfileDeletionGate()
 // Keep the pool light: cap concurrent profile backends (LRU eviction) and reap
 // idle ones. A user idles at exactly the primary backend; pool backends only
 // exist while a non-primary profile is actively being chatted through.
-const POOL_MAX_BACKENDS = Math.max(1, Number(process.env.HERMES_DESKTOP_POOL_MAX) || 3)
-const POOL_IDLE_MS = Math.max(60_000, Number(process.env.HERMES_DESKTOP_POOL_IDLE_MS) || 10 * 60_000)
+// Pool sizing is a device preference (Settings → Advanced → pool rows), not a
+// launch constant: mutable at runtime, persisted in userData, applied live.
+// The legacy HERMES_DESKTOP_POOL_* env vars remain the initial-value fallback
+// for scripted/headless setups; after launch the stored preference wins.
+const POOL_LIMITS_PATH = path.join(app.getPath('userData'), 'pool-limits.json')
+
+function readPersistedPoolLimits() {
+  try {
+    const limits = parsePoolLimits(fs.readFileSync(POOL_LIMITS_PATH, 'utf8'))
+    rememberLog(
+      `[pool-limits] loaded from ${POOL_LIMITS_PATH}: maxBackends=${limits.maxBackends}, idleMs=${limits.idleMs}`
+    )
+
+    return limits
+  } catch {
+    // No persisted file yet — fall back to the legacy env vars so scripted
+    // setups keep working. Log which source won: a silently-ignored env var
+    // here costs a scripted-setup user a debugging session.
+    const fromEnv = clampPoolLimits({
+      maxBackends: Number(process.env.HERMES_DESKTOP_POOL_MAX) || undefined,
+      idleMs: Number(process.env.HERMES_DESKTOP_POOL_IDLE_MS) || undefined
+    })
+
+    if (fromEnv.maxBackends !== POOL_LIMITS_DEFAULTS.maxBackends || fromEnv.idleMs !== POOL_LIMITS_DEFAULTS.idleMs) {
+      rememberLog(
+        `[pool-limits] no saved file; using env-var overrides: maxBackends=${fromEnv.maxBackends}, idleMs=${fromEnv.idleMs}`
+      )
+    } else {
+      rememberLog('[pool-limits] no saved file and no env overrides; using defaults')
+    }
+
+    return fromEnv
+  }
+}
+
+function persistPoolLimits(limits) {
+  try {
+    fs.mkdirSync(path.dirname(POOL_LIMITS_PATH), { recursive: true })
+    // Atomic write: write to a temp file in the same directory, then rename.
+    // A crash mid-write would otherwise leave truncated JSON and silently
+    // lose the user's saved sizing.
+    const tmpPath = `${POOL_LIMITS_PATH}.tmp`
+    fs.writeFileSync(tmpPath, JSON.stringify(limits, null, 2), 'utf8')
+    fs.renameSync(tmpPath, POOL_LIMITS_PATH)
+  } catch (error) {
+    rememberLog(`[pool-limits] write failed: ${error.message}`)
+  }
+}
+
+// rememberLog() state. Declared here, before the top-level
+// readPersistedPoolLimits() call below, because that call logs during module
+// evaluation; declaring these later crashed launch with `undefined.push` in
+// the packaged build (esbuild lowers the TDZ to undefined instead of throwing).
+const hermesLog = []
+let desktopLogBuffer = ''
+let desktopLogFlushTimer = null
+let desktopLogFlushPromise = Promise.resolve()
+
+let poolLimits = readPersistedPoolLimits()
+// Hard cap on local backends that are starting OR running (the LRU eviction
+// above is soft — it spares keepalive-fresh entries). Follows the live
+// preference: setPoolLimits() pushes a new max into the coordinator.
+const localBackendSpawnCoordinator = new LocalBackendSpawnCoordinator(poolLimits.maxBackends)
+// How long a spawn may wait for a free local slot. Must stay under the
+// renderer's BACKEND_BOOT_WAIT_TIMEOUT_MS (45s, src/lib/with-timeout.ts) so
+// the queued ticket fails before the renderer does and the user sees why.
+const POOL_SLOT_WAIT_MS = 30_000
+
+function poolMaxBackends() {
+  return poolLimits.maxBackends
+}
+
+function poolIdleMs() {
+  return poolLimits.idleMs
+}
+
+/**
+ * Apply new limits live: persist, then converge the running pool — evict
+ * LRU backends down to the new max, and let the (already running) idle
+ * reaper handle a shortened idle window on its next tick. Returns the
+ * limits actually in force (post-clamp).
+ */
+function setPoolLimits(raw) {
+  poolLimits = clampPoolLimits(raw)
+  persistPoolLimits(poolLimits)
+  localBackendSpawnCoordinator.setLimit(poolLimits.maxBackends)
+  evictLruPoolBackends(poolMaxBackends())
+  startPoolIdleReaper()
+
+  return { ...poolLimits }
+}
 
 // A backend touched within this window has a live renderer socket (the keepalive
 // pings every 60s for every open profile). LRU eviction must spare these — a
@@ -1429,7 +1534,7 @@ const POOL_IDLE_MS = Math.max(60_000, Number(process.env.HERMES_DESKTOP_POOL_IDL
 //                       re-allocating pooled gateway secondaries ~700×/day).
 //   * 3× ping + 60s headroom = ~4 min, comfortable margin for two missed
 //     pings + WSL2 IPC stall. The hard ceiling for the cap-eligible set is
-//     POOL_IDLE_MS above (default 10 min) — this constant only governs the
+//     pool idle window above (default 10 min) — this constant only governs the
 //     "is this backend plausibly still alive" question for LRU eviction,
 //     not when the idle reaper definitively tears a backend down.
 const POOL_KEEPALIVE_FRESH_MS = Math.max(
@@ -1487,12 +1592,8 @@ let connectionRegistryCache = null
 let connectionRegistryCacheMtime = null
 let remoteHeaderRulesInstalled = false
 const remoteWsHeaderStore = createRemoteWsHeaderStore()
-const hermesLog = []
 const previewWatchers = new Map()
 let previewShortcutActive = false
-let desktopLogBuffer = ''
-let desktopLogFlushTimer = null
-let desktopLogFlushPromise = Promise.resolve()
 let nativeThemeListenerInstalled = false
 
 let bootProgressState = {
@@ -3401,7 +3502,7 @@ async function backendCommandForPid(pid) {
   }
 }
 
-async function processIdentityMatches(identity) {
+async function processIdentityMatches(identity, timeoutMs: number = 30_000) {
   // Degraded PID-only identity (#93608): the start-marker probe failed while
   // the child was verifiably alive, so only PID liveness can be checked here.
   // backendIdentityMatches layers the command-line check on top before
@@ -3419,14 +3520,14 @@ async function processIdentityMatches(identity) {
   }
 
   try {
-    return (await processStartMarker(identity.pid)) === identity.startMarker
+    return (await processStartMarker(identity.pid, timeoutMs)) === identity.startMarker
   } catch (error) {
     return error?.code === 'ENOENT' || error?.code === 'ESRCH' ? false : undefined
   }
 }
 
 async function backendIdentityMatches(identity) {
-  const processMatches = await processIdentityMatches(identity)
+  const processMatches = await processIdentityMatches(identity, REAP_PROBE_TIMEOUT_MS)
 
   if (processMatches !== true) {
     return processMatches
@@ -3447,15 +3548,24 @@ async function backendParentMatches(entry) {
   }
 
   try {
-    return (await processStartMarker(entry.parentPid)) === entry.parentStartMarker
+    return (await processStartMarker(entry.parentPid, REAP_PROBE_TIMEOUT_MS)) === entry.parentStartMarker
   } catch (error) {
     return error?.code === 'ENOENT' || error?.code === 'ESRCH' ? false : undefined
   }
 }
 
 async function stopOwnedBackend(identity) {
-  if ((await processIdentityMatches(identity)) !== true) {
+  const matches = await processIdentityMatches(identity, REAP_PROBE_TIMEOUT_MS)
+
+  if (matches === false) {
     return
+  }
+
+  if (matches !== true) {
+    // Identity probe failed (not confirmed gone): preserve the record so a
+    // later launch retries the stop instead of dropping it and leaking the
+    // backend. reapOrphans keeps the entry when stop() throws.
+    throw new Error(`Could not verify backend PID ${identity.pid} before stopping it.`)
   }
 
   if (IS_WINDOWS) {
@@ -3474,7 +3584,7 @@ async function stopOwnedBackend(identity) {
     const deadline = Date.now() + 1500
 
     while (Date.now() < deadline) {
-      if ((await processIdentityMatches(identity)) !== true) {
+      if ((await processIdentityMatches(identity, REAP_PROBE_TIMEOUT_MS)) !== true) {
         return
       }
 
@@ -3483,7 +3593,7 @@ async function stopOwnedBackend(identity) {
 
     // Revalidate immediately before escalation so PID reuse cannot target a
     // replacement process.
-    if ((await processIdentityMatches(identity)) === true) {
+    if ((await processIdentityMatches(identity, REAP_PROBE_TIMEOUT_MS)) === true) {
       try {
         process.kill(-identity.pid, 'SIGKILL')
       } catch {
@@ -3493,7 +3603,7 @@ async function stopOwnedBackend(identity) {
   }
 
   await new Promise(resolve => setTimeout(resolve, 50))
-  const remaining = await processIdentityMatches(identity)
+  const remaining = await processIdentityMatches(identity, REAP_PROBE_TIMEOUT_MS)
 
   if (remaining !== false) {
     throw new Error(`Backend PID ${identity.pid} did not stop cleanly.`)
@@ -6611,6 +6721,57 @@ function getAppIconPath() {
     return resolveAppIcon(APP_ICON_PATHS)
   } catch {
     return undefined
+  }
+}
+
+// One-time modal for plugins importing pre-decomposition module paths (see
+// electron/plugin-compat-notice.ts). The backend writes the report during plugin
+// discovery; we show each distinct report exactly once and remember the dismissal
+// in userData so the user is never nagged twice about the same set of plugins.
+let pluginCompatNoticeShown = false
+
+async function showPluginCompatNoticeOnce() {
+  if (pluginCompatNoticeShown) {
+    return
+  }
+
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+
+  let notice
+
+  try {
+    notice = pendingPluginCompatNotice(HERMES_HOME, app.getPath('userData'))
+  } catch (err) {
+    rememberLog(`[plugins] compat notice check failed: ${err.message}`)
+
+    return
+  }
+
+  if (!notice) {
+    return
+  }
+
+  pluginCompatNoticeShown = true
+  rememberLog(`[plugins] compat notice shown (${notice.key})`)
+
+  try {
+    await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      title: notice.title,
+      message: notice.message,
+      detail: notice.detail,
+      buttons: ['OK'],
+      defaultId: 0,
+      noLink: true
+    })
+  } finally {
+    try {
+      recordPluginCompatDismissed(app.getPath('userData'), notice.key)
+    } catch (err) {
+      rememberLog(`[plugins] could not persist compat notice dismissal: ${err.message}`)
+    }
   }
 }
 
@@ -10158,7 +10319,18 @@ function activeSshTerminalTarget(webContentsId?: number) {
 
     const state = sshConnections.get(scope)
 
-    return state && state.ssh ? { ssh: state.ssh, scope } : 'pending'
+    if (state && state.ssh) {
+      return { ssh: state.ssh, scope }
+    }
+
+    // The pool's single writer publishes under the per-profile bootstrap key
+    // while stamping the entry with its registry connection id (#97345), so a
+    // composite-key miss must still resolve the live tunnel by that identity
+    // instead of reporting 'pending' forever.
+    const pooledScope = registrySshPoolScopeByConnectionId(sshConnections, windowRoute.connectionId)
+    const pooledState = pooledScope === null ? null : sshConnections.get(pooledScope)
+
+    return pooledState && pooledState.ssh ? { ssh: pooledState.ssh, scope: pooledScope } : 'pending'
   }
 
   const profile = windowRoute?.profile ?? primaryProfileKey()
@@ -10178,9 +10350,7 @@ function activeSshTerminalTarget(webContentsId?: number) {
     return null
   }
 
-  const scope = route.connectionId
-    ? backendScopeKey(route.connectionId, profile)
-    : sshScopeKey(route.source === 'profile' ? profile : null)
+  const scope = v1SshTerminalPoolKey(route, profile)
 
   const state = sshConnections.get(scope)
 
@@ -11251,7 +11421,7 @@ async function ensureBackend(profile) {
     return connection
   }
 
-  evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
+  evictLruPoolBackends(poolMaxBackends() - 1)
 
   const entry = {
     process: null,
@@ -11259,7 +11429,10 @@ async function ensureBackend(profile) {
     token: null,
     connectionPromise: null,
     lastActiveAt: Date.now(),
-    remoteBaseUrl: null
+    remoteBaseUrl: null,
+    releaseLocalBackendSlot: null,
+    localBackendSlotKey: null,
+    localBackendSpawnRequest: null
   }
 
   entry.connectionPromise = spawnPoolBackend(key, entry).catch(async error => {
@@ -11270,12 +11443,7 @@ async function ensureBackend(profile) {
       `Hermes backend for profile "${key}" failed to start: ${error instanceof Error ? error.message : String(error)}`
     )
 
-    if (backendPool.get(key) === entry) {
-      backendPool.delete(key)
-    }
-
-    stopBackendChild(entry.process)
-    await waitForBackendExit(entry.process)
+    await teardownFailedLocalBackend(key, entry)
     throw error
   })
   backendPool.set(key, entry)
@@ -11419,7 +11587,7 @@ async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrela
       return existingLocal.connectionPromise
     }
 
-    evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
+    evictLruPoolBackends(poolMaxBackends() - 1)
 
     const localEntry = {
       process: null,
@@ -11427,7 +11595,10 @@ async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrela
       token: null,
       connectionPromise: null,
       lastActiveAt: Date.now(),
-      remoteBaseUrl: null
+      remoteBaseUrl: null,
+      releaseLocalBackendSlot: null,
+      localBackendSlotKey: null,
+      localBackendSpawnRequest: null
     }
 
     localEntry.connectionPromise = spawnPoolBackend(profileKey, localEntry, {
@@ -11440,12 +11611,7 @@ async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrela
         `Hermes backend for profile "${profileKey}" (forced-local) failed to start: ${error instanceof Error ? error.message : String(error)}`
       )
 
-      if (backendPool.get(localRoute.poolKey) === localEntry) {
-        backendPool.delete(localRoute.poolKey)
-      }
-
-      stopBackendChild(localEntry.process)
-      await waitForBackendExit(localEntry.process)
+      await teardownFailedLocalBackend(localRoute.poolKey, localEntry)
       throw error
     })
     backendPool.set(localRoute.poolKey, localEntry)
@@ -11492,7 +11658,7 @@ async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrela
     )
   }
 
-  evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
+  evictLruPoolBackends(poolMaxBackends() - 1)
 
   const entry = {
     process: null,
@@ -12147,7 +12313,7 @@ function evictLruPoolBackends(keep) {
   const evictions = selectPoolEvictions(backendPool.entries(), Math.max(0, keep), Date.now(), POOL_KEEPALIVE_FRESH_MS)
 
   for (const profile of evictions) {
-    rememberLog(`Evicting idle profile backend "${profile}" (LRU cap ${POOL_MAX_BACKENDS})`)
+    rememberLog(`Evicting idle profile backend "${profile}" (LRU cap ${poolMaxBackends()})`)
     stopPoolBackend(profile)
   }
 }
@@ -12161,8 +12327,8 @@ function startPoolIdleReaper() {
     const now = Date.now()
 
     for (const [profile, entry] of [...backendPool.entries()]) {
-      if (now - (entry.lastActiveAt || 0) > POOL_IDLE_MS) {
-        rememberLog(`Reaping idle profile backend "${profile}" (idle > ${Math.round(POOL_IDLE_MS / 1000)}s)`)
+      if (now - (entry.lastActiveAt || 0) > poolIdleMs()) {
+        rememberLog(`Reaping idle profile backend "${profile}" (idle > ${Math.round(poolIdleMs() / 1000)}s)`)
         stopPoolBackend(profile)
       }
     }
@@ -12176,6 +12342,67 @@ function startPoolIdleReaper() {
   if (typeof poolIdleReaper.unref === 'function') {
     poolIdleReaper.unref()
   }
+}
+
+function releaseLocalBackendSlot(entry: any) {
+  if (!entry) {
+    return
+  }
+
+  const release = entry.releaseLocalBackendSlot
+  const request = entry.localBackendSpawnRequest as LocalBackendSpawnRequest | null
+  entry.releaseLocalBackendSlot = null
+  entry.localBackendSlotKey = null
+  entry.localBackendSpawnRequest = null
+
+  if (release) {
+    release()
+  } else {
+    request?.cancel()
+  }
+}
+
+function assertPoolEntryStillOwned(poolKey: string, entry: any) {
+  if (backendPool.get(poolKey) !== entry) {
+    releaseLocalBackendSlot(entry)
+    throw new Error(`Profile backend start for "${poolKey}" was cancelled before spawn.`)
+  }
+}
+
+const failedLocalBackendTeardowns = new WeakMap<object, Promise<void>>()
+
+function teardownFailedLocalBackend(poolKey: string, entry: any): Promise<void> {
+  const existing = failedLocalBackendTeardowns.get(entry)
+
+  if (existing) {
+    return existing
+  }
+
+  if (backendPool.get(poolKey) === entry) {
+    backendPool.delete(poolKey)
+  }
+
+  const child = entry.process
+
+  const teardown = releaseLocalBackendSlotAfterExit(
+    () => releaseLocalBackendSlot(entry),
+    async () => {
+      stopBackendChild(child)
+      await waitForBackendExit(child)
+
+      if (child && child.exitCode === null && child.signalCode === null) {
+        throw new Error(`Profile backend for "${poolKey}" did not exit; keeping the local slot occupied.`)
+      }
+
+      releaseBackendChild(child)
+    }
+  )
+
+  // Keep the settled promise in the WeakMap for the lifetime of this entry.
+  // Error + exit + outer catch may all request cleanup; none may run it twice.
+  failedLocalBackendTeardowns.set(entry, teardown)
+
+  return teardown
 }
 
 // Spawn an additional dashboard backend pinned to a named profile. Mirrors the
@@ -12214,6 +12441,29 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
       ...getWindowState()
     }
   }
+
+  // Bound the slot wait BELOW the renderer's backend-boot budget (45s): once
+  // the renderer has given up on this spawn, a ticket still queued for the
+  // pool-idle window (10 min) would hold the pool key hostage and every
+  // later click on the profile would join that stale wait. Failing here
+  // surfaces the "all N slots busy" reason instead of a generic boot timeout.
+  const spawnRequest = localBackendSpawnCoordinator.request(poolKey, { timeoutMs: POOL_SLOT_WAIT_MS })
+  entry.localBackendSlotKey = poolKey
+  entry.localBackendSpawnRequest = spawnRequest
+
+  if (localBackendSpawnCoordinator.activeCount >= poolMaxBackends()) {
+    rememberLog(
+      `Profile backend "${profile}" waiting for a free local slot (${localBackendSpawnCoordinator.activeCount}/${poolMaxBackends()} busy, ${localBackendSpawnCoordinator.queuedCount} queued)`
+    )
+  }
+
+  entry.releaseLocalBackendSlot = await spawnRequest.acquired
+
+  if (entry.localBackendSpawnRequest === spawnRequest) {
+    entry.localBackendSpawnRequest = null
+  }
+
+  assertPoolEntryStillOwned(poolKey, entry)
 
   const token = crypto.randomBytes(32).toString('base64url')
 
@@ -12258,12 +12508,12 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   assertLocalProfileCanStart(profile, profileDeletionGate, key =>
     directoryExists(path.join(HERMES_HOME, 'profiles', key))
   )
-
   rememberLog(`Starting Hermes backend for profile "${profile}" via ${backend.label}`)
 
   const parentStartMarker = await desktopParentStartMarker()
   const backendNonce = crypto.randomBytes(16).toString('hex')
   const parentIdentityEnv = parentWatchdogEnv(process.pid, parentStartMarker, backendNonce)
+  assertPoolEntryStillOwned(poolKey, entry)
 
   const child = spawn(
     backend.command,
@@ -12318,6 +12568,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   // surface as an unhandled rejection before the Promise.race below attaches.
   portAnnouncement.catch(() => {})
   await claimBackendChild(child, `${backend.command} ${backend.args.join(' ')}`, profile, backendNonce, outputTail)
+  assertPoolEntryStillOwned(poolKey, entry)
 
   child.stdout.on('data', rememberLog)
   child.stderr.on('data', rememberLog)
@@ -12331,14 +12582,21 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
 
   child.once('error', error => {
     rememberLog(`Hermes backend for profile "${profile}" failed to start: ${error.message}`)
-    releaseBackendChild(child)
-    backendPool.delete(poolKey)
+    void teardownFailedLocalBackend(poolKey, entry).catch(cleanupError => {
+      rememberLog(
+        `Hermes backend for profile "${profile}" cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
+      )
+    })
     rejectStart?.(error)
   })
   child.once('exit', (code, signal) => {
     rememberLog(`Hermes backend for profile "${profile}" exited (${signal || code})`)
+    releaseLocalBackendSlot(entry)
     releaseBackendChild(child)
-    backendPool.delete(poolKey)
+
+    if (backendPool.get(poolKey) === entry) {
+      backendPool.delete(poolKey)
+    }
 
     if (!ready) {
       rejectStart?.(
@@ -12406,16 +12664,20 @@ const poolStopper = createPoolStopper({
   waitForExit: child => waitForBackendExit(child)
 })
 
-function stopPoolBackend(profile) {
-  return poolStopper.stop(profile)
+async function stopPoolBackend(profile: string) {
+  const entry = backendPool.get(profile)
+  await poolStopper.stop(profile)
+  releaseLocalBackendSlot(entry)
 }
 
 async function teardownPoolBackendAndWait(profile) {
-  await Promise.all(localProfilePoolKeys(profile).map(key => poolStopper.stop(key)))
+  await Promise.all(localProfilePoolKeys(profile).map(key => stopPoolBackend(key)))
 }
 
-function stopAllPoolBackends() {
-  return poolStopper.stopAll()
+async function stopAllPoolBackends() {
+  const entries = [...backendPool.values()]
+  await poolStopper.stopAll()
+  entries.forEach(releaseLocalBackendSlot)
 }
 
 const backendShutdown = createBackendShutdownCoordinator(async () => {
@@ -12856,6 +13118,10 @@ async function startHermes() {
     // accumulated count of the resolved episode.
     bootstrapRepairAttempt = 0
 
+    // The backend's plugin discovery just ran and refreshed HERMES_HOME/.plugin-compat-report.json.
+    // Surface it once (per distinct set of affected plugins) after the window is up; never block boot.
+    setTimeout(() => void showPluginCompatNoticeOnce(), 1500)
+
     return {
       baseUrl,
       mode: 'local',
@@ -12990,11 +13256,11 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   }
 
   installContextMenuBridge(win)
-  win.webContents.setWindowOpenHandler(details => {
-    openExternalUrl(details.url)
-
-    return { action: 'deny' }
-  })
+  // Always deny, never open as a side effect: GHSA-9f4c-93c8-jc8g. Trusted
+  // links arrive via `hermes:openExternal`, not here. See window-open-policy.ts.
+  win.webContents.setWindowOpenHandler(
+    createWindowOpenHandler(origin => rememberLog(`[window-open] denied: ${origin}`))
+  )
   win.webContents.on('will-navigate', (event, url) => {
     if ((DEV_SERVER && url.startsWith(DEV_SERVER)) || (!DEV_SERVER && url.startsWith('file:'))) {
       return
@@ -14609,6 +14875,18 @@ ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
   touchPoolBackend(profile)
 
   return { ok: true }
+})
+// Pool sizing (Settings → Advanced): device-local, live-applied. Main is
+// authoritative (it owns the pool and the persisted copy); the returned
+// limits are what actually took effect post-clamp.
+ipcMain.handle('hermes:pool-limits:get', async () => ({ ...poolLimits }))
+ipcMain.handle('hermes:pool-limits:set', async (_event, raw) => {
+  const next = setPoolLimits({
+    maxBackends: typeof raw?.maxBackends === 'number' ? raw.maxBackends : poolLimits.maxBackends,
+    idleMs: typeof raw?.idleMs === 'number' ? raw.idleMs : poolLimits.idleMs
+  })
+
+  return { ok: true, limits: next }
 })
 ipcMain.handle('hermes:gateway:ws-url', async (_event, profile) => {
   return gatewayWsUrlIpcResult(() => freshGatewayWsUrl(profile))
@@ -16817,7 +17095,9 @@ ipcMain.on('hermes:translucency:support', event => {
 // shortcut edit), and survives self-relaunches because collectRelaunchArgs
 // only strips internal flags.
 ipcMain.on('hermes:launch-flags', event => {
-  event.returnValue = { localModels: process.argv.includes('--local') }
+  event.returnValue = {
+    localModels: process.argv.includes('--local') || process.platform === 'win32' || process.platform === 'darwin'
+  }
 })
 
 ipcMain.on('hermes:translucency', (_event, payload) => {

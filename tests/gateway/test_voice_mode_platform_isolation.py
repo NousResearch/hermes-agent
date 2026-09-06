@@ -77,7 +77,7 @@ class TestLegacyKeyMigration:
             voice_path.write_text(json.dumps(legacy_data))
 
             with patch.object(runner, "_VOICE_MODE_PATH", voice_path):
-                with patch("gateway.run.logger") as mock_logger:
+                with patch("gateway.run_voice.logger") as mock_logger:
                     result = runner._load_voice_modes()
 
             # Legacy keys without ':' should be skipped

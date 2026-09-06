@@ -1584,6 +1584,24 @@ export function reconnectSecondaryGateways({ forceOpenSockets = false }: { force
   }
 }
 
+// How many non-primary backends currently hold an open socket. Hover-intent
+// prewarming consults this before spawning: a speculative spawn that pushes
+// the pool past its cap causes the Electron main to LRU-evict a warm backend
+// — often one the user is about to click — turning the prewarm into churn
+// (the #91545 evict/respawn cascade). The active gateway's backend is
+// primary-routed and never counts toward the pool cap.
+export function openSecondaryCount(): number {
+  let count = 0
+
+  for (const entry of g.secondaries.values()) {
+    if (isOpen(entry.gateway)) {
+      count += 1
+    }
+  }
+
+  return count
+}
+
 // Keep the idle reaper from killing a backend we still need: ping every live
 // secondary. The active one is pinged separately (touchActiveGatewayBackend).
 export function touchSecondaryGateways(): void {

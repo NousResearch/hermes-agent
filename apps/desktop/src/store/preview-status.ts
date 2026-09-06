@@ -24,6 +24,13 @@ const MAX_PER_SESSION = 4
 
 export const $previewStatusBySession = atom<Record<string, PreviewArtifact[]>>({})
 
+// Tool rows re-register their preview target whenever history remounts. Keep a
+// session-scoped, view-only dismissal registry so an X-ed row stays gone for
+// this app run instead of immediately resurrecting. Like dismissed tool rows,
+// a reload intentionally restores history rather than making one click a
+// permanent rewrite of the session.
+const dismissedBySession = new Map<string, Set<string>>()
+
 const writePreviews = (sid: string, items: PreviewArtifact[]) => {
   const current = $previewStatusBySession.get()
 
@@ -56,7 +63,7 @@ export function recordPreviewArtifact(sid: string, target: string, cwd: string) 
 
   const list = $previewStatusBySession.get()[sid] ?? []
 
-  if (list.some(item => item.id === raw)) {
+  if (dismissedBySession.get(sid)?.has(raw) || list.some(item => item.id === raw)) {
     return
   }
 
@@ -64,6 +71,14 @@ export function recordPreviewArtifact(sid: string, target: string, cwd: string) 
 }
 
 export function dismissPreviewArtifact(sid: string, id: string) {
+  if (!sid || !id) {
+    return
+  }
+
+  const dismissed = dismissedBySession.get(sid) ?? new Set<string>()
+  dismissed.add(id)
+  dismissedBySession.set(sid, dismissed)
+
   const list = $previewStatusBySession.get()[sid]
 
   if (list) {
@@ -75,5 +90,8 @@ export function dismissPreviewArtifact(sid: string, id: string) {
 }
 
 export function clearPreviewArtifacts(sid: string) {
+  // Rewind/edit abandons the old timeline. A target produced again by the new
+  // timeline is new work and must be eligible to surface.
+  dismissedBySession.delete(sid)
   writePreviews(sid, [])
 }

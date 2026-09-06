@@ -4191,6 +4191,8 @@ from hermes_cli.kanban_db_dispatch import (  # noqa: E402
     _clear_failure_counter,
     _defer_reclaim_for_live_worker,
     _pid_alive,
+    list_running_workers,
+    prepare_workers_for_gateway_restart,
     _terminate_reclaimed_worker,
     _worker_survived_termination,
     _worker_terminal_timeout_env,

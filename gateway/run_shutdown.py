@@ -131,11 +131,17 @@ class GatewayShutdownMixin:
     # Active-work accounting
     def _active_work_count(self) -> int:
         """All agent work the gateway must expose and drain as one total."""
+        count_kanban = getattr(self, "_active_kanban_worker_count", None)
+        try:
+            active_kanban = max(0, int(count_kanban())) if callable(count_kanban) else 0
+        except Exception:
+            active_kanban = 0
         return (
             self._running_agent_count()
             + self._active_cron_job_count()
             + self._active_api_run_count()
             + self._active_deferred_agent_worker_count()
+            + active_kanban
         )
 
     @staticmethod
@@ -1330,7 +1336,12 @@ class GatewayShutdownMixin:
 
     def _awaitable_work_count(self) -> int:
         """Active work minus wedged turns — what the restart wait waits on."""
-        return max(0, self._active_work_count() - self._wedged_agent_count())
+        count_wedged_kanban = getattr(self, "_wedged_kanban_worker_count", None)
+        try:
+            wedged_kanban = max(0, int(count_wedged_kanban())) if callable(count_wedged_kanban) else 0
+        except Exception:
+            wedged_kanban = 0
+        return max(0, self._active_work_count() - self._wedged_agent_count() - wedged_kanban)
 
     async def _await_active_work_before_restart(self) -> bool:
         """Wait for in-flight work before ``stop()`` so the requesting turn isn't force-interrupted.
@@ -1347,6 +1358,9 @@ class GatewayShutdownMixin:
                 "past the inactivity timeout; skipping the after-turn wait "
                 "and proceeding to stop()/drain which will interrupt them", active,
             )
+            interrupt_kanban = getattr(self, "_interrupt_kanban_workers_for_restart", None)
+            if callable(interrupt_kanban):
+                interrupt_kanban()
             return False
         timeout = float(getattr(self, "_restart_after_turn_timeout", 0.0) or 0.0)
         if timeout <= 0:
@@ -1354,6 +1368,9 @@ class GatewayShutdownMixin:
                 "Restart requested with %d active work unit(s); "
                 "restart_after_turn_timeout=0 — entering stop()/drain immediately", active,
             )
+            interrupt_kanban = getattr(self, "_interrupt_kanban_workers_for_restart", None)
+            if callable(interrupt_kanban):
+                interrupt_kanban()
             return False
         logger.info(
             "Restart requested with %d active work unit(s); "
@@ -1372,6 +1389,9 @@ class GatewayShutdownMixin:
                     "still active; proceeding to stop()/drain which may "
                     "interrupt remaining work (#77184)", timeout, self._active_work_count(),
                 )
+                interrupt_kanban = getattr(self, "_interrupt_kanban_workers_for_restart", None)
+                if callable(interrupt_kanban):
+                    interrupt_kanban()
                 return False
             if (now - last_status_at) >= 30.0:
                 logger.info(
@@ -1387,6 +1407,9 @@ class GatewayShutdownMixin:
                 "Restart deferred wait: %d wedged work unit(s) remain; "
                 "proceeding to stop()/drain which will interrupt them", self._active_work_count(),
             )
+            interrupt_kanban = getattr(self, "_interrupt_kanban_workers_for_restart", None)
+            if callable(interrupt_kanban):
+                interrupt_kanban()
             return False
         logger.info("Restart deferred wait complete — active work drained; proceeding to stop()")
         return True

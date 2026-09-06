@@ -3,6 +3,15 @@ delete-with-confirmation; numbered-list fallback when curses is unavailable (Win
 
 from typing import Optional
 
+from hermes_cli.curses_ui import (
+    NAV_CANCEL,
+    NAV_DOWN,
+    NAV_INTERRUPT,
+    NAV_SELECT,
+    NAV_UP,
+    _decode_menu_key,
+    flush_stdin,
+)
 from hermes_cli.timefmt import relative_time as _relative_time
 
 
@@ -145,7 +154,7 @@ class _CursesBrowser:
                 footer += "   d delete"
         self._put(stdscr, max_y - 1, 0, footer, max_x - 1, footer_attr)
 
-    def _handle_key(self, key) -> bool:
+    def _handle_key(self, key: int, stdscr=None) -> bool:
         """Apply one keypress; return True when the picker should exit."""
         c = self.curses
         if self.confirm_delete is not None:  # y/n confirmation mode — only an explicit 'y' deletes
@@ -159,30 +168,88 @@ class _CursesBrowser:
             self._refilter(reset_cursor=False)
             self.flash = "Deleted."
             return not self.sessions
-        if key in (c.KEY_UP, c.KEY_DOWN):
-            if self.filtered:
-                self.cursor = (self.cursor + (1 if key == c.KEY_DOWN else -1)) % len(self.filtered)
-        elif key in {c.KEY_ENTER, 10, 13}:
-            if self.filtered:
-                self.result = self.filtered[self.cursor]["id"]
-            return True
-        elif key == 27 and not self.search:  # Esc: first clears the search, second exits
-            return True
-        elif key == 27:
-            self.search = ""
-            self._refilter()
-        elif key in {c.KEY_BACKSPACE, 127, 8}:
+
+        # Backspace: remove last search character
+        if key in {c.KEY_BACKSPACE, 127, 8}:
             if self.search:
                 self.search = self.search[:-1]
                 self._refilter()
-        elif key == ord("q") and not self.search:
-            return True
-        elif key == ord("d") and not self.search and self.delete_fn is not None and self.filtered:
-            # 'd' deletes only when the filter is empty; mid-search it types into the query.
+            return False
+
+        # Readline navigation: Ctrl+N (14) down, Ctrl+P (16) up
+        if key in {14, 16}:
+            if self.filtered:
+                self.cursor = (self.cursor + (1 if key == 14 else -1)) % len(self.filtered)
+            return False
+
+        # 'd' deletes only when filter is empty; during search it types into the query
+        if key == ord("d") and not self.search and self.delete_fn is not None and self.filtered:
             self.confirm_delete = self.filtered[self.cursor]
-        elif 32 <= key <= 126:
+            return False
+
+        # 'q' cancels only when filter is empty; during search it types into the query
+        if key == ord("q") and not self.search:
+            return True
+
+        # 'j' (down) / 'k' (up) vim navigation only when filter is empty
+        if not self.search and key in {ord("j"), ord("k")}:
+            if self.filtered:
+                self.cursor = (self.cursor + (1 if key == ord("j") else -1)) % len(self.filtered)
+            return False
+
+        # Enter / return selects the highlighted session
+        if key in {c.KEY_ENTER, 10, 13}:
+            if self.filtered:
+                self.result = self.filtered[self.cursor]["id"]
+            return True
+
+        # Native curses arrow keys
+        if key in (c.KEY_UP, c.KEY_DOWN):
+            if self.filtered:
+                self.cursor = (self.cursor + (1 if key == c.KEY_DOWN else -1)) % len(self.filtered)
+            return False
+
+        # Printable characters typing into search query
+        if 32 <= key <= 126 and (self.search or key not in {ord("q"), ord("j"), ord("k"), ord("d")}):
             self.search += chr(key)
             self._refilter()
+            return False
+
+        # Escape sequence decoding (ANSI CSI, SS3, CSI-u) and menu action normalization
+        action = None
+        if stdscr is not None:
+            try:
+                action = _decode_menu_key(stdscr, key)
+            except StopIteration:
+                action = NAV_CANCEL
+
+        if action == NAV_UP:
+            if self.filtered:
+                self.cursor = (self.cursor - 1) % len(self.filtered)
+            return False
+        if action == NAV_DOWN:
+            if self.filtered:
+                self.cursor = (self.cursor + 1) % len(self.filtered)
+            return False
+        if action == NAV_SELECT:
+            if self.filtered:
+                self.result = self.filtered[self.cursor]["id"]
+            return True
+        if action in (NAV_CANCEL, NAV_INTERRUPT):
+            if action == NAV_CANCEL and self.search:
+                self.search = ""
+                self._refilter()
+                return False
+            return True
+
+        # Lone Esc fallback when stdscr is not available
+        if key == 27:
+            if self.search:
+                self.search = ""
+                self._refilter()
+                return False
+            return True
+
         return False
 
     def run(self, stdscr):
@@ -208,7 +275,7 @@ class _CursesBrowser:
                 return
             self._draw(stdscr, max_y, max_x)
             stdscr.refresh()
-            if self._handle_key(stdscr.getch()):
+            if self._handle_key(stdscr.getch(), stdscr):
                 return
 
 
@@ -260,7 +327,12 @@ def _session_browse_picker(sessions: list, session_db=None) -> Optional[str]:
     try:  # curses first; any failure (no curses module, odd terminal) falls back
         import curses
         browser = _CursesBrowser(curses, sessions, _delete_session if session_db is not None else None)
-        curses.wrapper(browser.run)
+        try:
+            curses.wrapper(browser.run)
+        finally:
+            flush_stdin()
         return browser.result
+    except (KeyboardInterrupt, EOFError):
+        return None
     except Exception:
         return _fallback_picker(sessions)

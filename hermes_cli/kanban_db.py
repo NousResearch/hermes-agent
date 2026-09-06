@@ -2313,11 +2313,14 @@ def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
     ).fetchall()
     for row in stale:
         host_local = (row["claim_lock"] or "").startswith(host_prefix)
+        # ``host_local`` is the provenance reported in the ``reclaimed`` payload;
+        # whether the PID may be probed is the claim-provenance owner's call.
+        pid_checkable = _kbpidns._claim_pid_checkable(row["claim_lock"], host_prefix=host_prefix)
         hb = row["last_heartbeat_at"]
         # Backstop: a heartbeat older than the max-stale threshold means no
         # observable progress — reclaim even if the PID is alive (logic loop).
         heartbeat_stale = hb is not None and (now - int(hb)) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
-        if host_local and row["worker_pid"] and _pid_alive(row["worker_pid"]) and not heartbeat_stale:
+        if pid_checkable and row["worker_pid"] and _pid_alive(row["worker_pid"]) and not heartbeat_stale:
             _extend_live_stale_claim(conn, row, now)
             continue
 
@@ -4173,6 +4176,7 @@ def latest_summaries(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[
 
 
 # --- Split modules (imported at the tail: they import this module as ``_kb``) ---
+from hermes_cli import kanban_db_pidns as _kbpidns  # noqa: E402
 from hermes_cli.kanban_db_connect import (  # noqa: E402
     _INITIALIZED_PATHS,
     init_db,

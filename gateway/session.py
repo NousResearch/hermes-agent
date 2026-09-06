@@ -59,6 +59,12 @@ def _is_path_unsafe(value: object, *, strict: bool = True) -> bool:
 
 _CHAT_TYPE_PREFIX = {"group": "group: ", "channel": "channel: "}
 
+# Auto-reset (idle/daily expiry, /stop suspend) mints a fresh session_id for the same routing
+# key; carry a still-active /goal across that boundary the way compression rotation does (#104445),
+# but only when the goal is recent enough that resuming it is what the user expects — a dormant
+# thread touched weeks later must not resurrect an ancient autonomous loop (#91165).
+_GOAL_RESET_MIGRATION_MAX_AGE_S = 24 * 3600
+
 
 @dataclass
 class SessionSource:
@@ -925,7 +931,31 @@ class SessionStore(
             end_reason=decision.reset_reason or "session_reset", create_kwargs=create_kwargs,
             origin=source, display_name=decision.entry.display_name,
         )
+        self._migrate_goal_across_reset(decision)
         return decision.entry
+
+    def _migrate_goal_across_reset(self, decision: "_RouteDecision") -> None:
+        """Carry a still-active /goal from a reset predecessor onto the fresh session (#104445).
+
+        Only fires on an auto-reset lineage (``prev_session_id`` set to a different id). Best-effort
+        and staleness-capped: a migration failure or an import hiccup must never block routing, and a
+        goal that has been dormant past ``_GOAL_RESET_MIGRATION_MAX_AGE_S`` is left behind (#91165)."""
+        prev_sid = decision.prev_session_id
+        new_sid = decision.entry.session_id if decision.entry else None
+        if not prev_sid or not new_sid or prev_sid == new_sid:
+            return
+        try:
+            from hermes_cli.goals import migrate_goal_to_session
+
+            if migrate_goal_to_session(
+                prev_sid, new_sid, reason=decision.reset_reason or "session_reset",
+                max_age_seconds=_GOAL_RESET_MIGRATION_MAX_AGE_S,
+            ):
+                logger.info(
+                    "gateway.session: carried active /goal across %s reset %s -> %s",
+                    decision.reset_reason or "session", prev_sid, new_sid)
+        except Exception:
+            logger.debug("gateway.session: goal migration across reset failed", exc_info=True)
 
     def _apply_route_checks(
         self, session_key: str, checks: Optional[_RouteChecks], force_new: bool,

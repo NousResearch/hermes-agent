@@ -635,15 +635,24 @@ def clear_goal(session_id: str) -> None:
     save_goal(session_id, state)
 
 
-def migrate_goal_to_session(old_session_id: str, new_session_id: str, *, reason: str = "") -> bool:
+def migrate_goal_to_session(
+    old_session_id: str, new_session_id: str, *, reason: str = "",
+    max_age_seconds: "float | None" = None,
+) -> bool:
     """Carry a persistent /goal from a parent session to its continuation. Best-effort, never raises
-    (a failure here must not block compression). Returns True when a goal was migrated.
+    (a failure here must not block compression or session routing). Returns True when a goal was migrated.
 
     Context compression rotates ``session_id`` to a fresh child session, but ``load_goal`` does a flat
     ``goal:<session_id>`` lookup with no parent-lineage walk — so an active goal silently dies at the
-    compaction boundary (#33618). Copy the goal onto the new session and archive the old row as ``cleared``
-    so exactly one active goal row exists per logical conversation (avoids the "two active goals" hazard of
-    a pure copy).
+    compaction boundary (#33618). The same happens when idle/daily session expiry resets a routing key
+    to a fresh ``session_id`` (#104445). Copy the goal onto the new session and archive the old row as
+    ``cleared`` so exactly one active goal row exists per logical conversation (avoids the "two active
+    goals" hazard of a pure copy).
+
+    ``max_age_seconds`` caps how stale a goal may be and still migrate: when set, a goal whose last
+    activity (``max(created_at, last_turn_at)``) is older than the cap is left behind. This guards the
+    reset path against reviving an ancient autonomous loop when a dormant thread is touched weeks later
+    (#91165); the compression path passes no cap, so its behaviour is unchanged.
     """
     if not old_session_id or not new_session_id or old_session_id == new_session_id:
         return False
@@ -651,6 +660,13 @@ def migrate_goal_to_session(old_session_id: str, new_session_id: str, *, reason:
         state = load_goal(old_session_id)
         if state is None or state.status == "cleared":
             return False
+        if max_age_seconds is not None:
+            last_active = max(state.created_at or 0.0, state.last_turn_at or 0.0)
+            if last_active > 0.0 and (time.time() - last_active) > max_age_seconds:
+                logger.debug(
+                    "GoalManager: goal %s too stale to migrate (%.0fs old > %ss cap); leaving behind",
+                    old_session_id, time.time() - last_active, max_age_seconds)
+                return False
         # Don't clobber a goal already set on the child (e.g. a resumed lineage).
         if load_goal(new_session_id) is not None:
             return False

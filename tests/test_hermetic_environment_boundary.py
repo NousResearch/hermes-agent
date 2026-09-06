@@ -24,6 +24,10 @@ def test_runner_uses_synthetic_home_and_os_sandbox():
         "macos-sandbox-exec",
         "windows-ephemeral-ci",
     }
+    for raw_entry in os.environ["PATH"].split(os.pathsep):
+        entry = Path(raw_entry).resolve()
+        assert entry != real_home
+        assert not entry.is_relative_to(real_home)
 
 
 @pytest.mark.parametrize(

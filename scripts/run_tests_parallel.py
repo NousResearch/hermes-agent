@@ -903,6 +903,18 @@ def _run_one_file_once(
     test_home.mkdir()
     test_hermes_home.mkdir()
     real_home = _resolve_real_home(env)
+    safe_path_entries: list[str] = []
+    for raw_entry in env.get("PATH", "").split(os.pathsep):
+        entry = Path(raw_entry)
+        if not entry.is_absolute():
+            continue
+        resolved_entry = entry.resolve()
+        if resolved_entry == real_home or resolved_entry.is_relative_to(real_home):
+            continue
+        safe_path_entries.append(str(entry))
+    if not safe_path_entries:
+        raise RuntimeError("test PATH has no executable directory outside real HOME")
+    env["PATH"] = os.pathsep.join(safe_path_entries)
     env["PYTEST_DEBUG_TEMPROOT"] = temproot
     cmd.extend(("-o", f"cache_dir={temproot}/pytest-cache"))
     env["TMPDIR"] = temproot

@@ -105,3 +105,39 @@ def test_profile_matcher_receives_raw_source_and_scopes_failure_traceback(
     else:
         assert "15551234567" in caplog.text
         assert "private route failure payload" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform", [Platform.WHATSAPP, Platform.WHATSAPP_CLOUD, Platform.TELEGRAM])
+@pytest.mark.parametrize("operation", ["steer", "redirect"])
+async def test_priority_failure_keeps_raw_instruction_and_fallback(platform, operation, caplog):
+    from unittest.mock import Mock
+    from gateway.run import GatewayRunner
+    from gateway.platforms.base import MessageEvent
+
+    source = SessionSource(platform=platform, chat_id="15551234567", user_id="15551234567")
+    key = build_session_key(source)
+    event = MessageEvent(text="exact private steering instruction", source=source)
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._queue_or_replace_pending_event = Mock()
+    agent = Mock()
+    agent._supports_active_turn_redirect = True
+    method = getattr(agent, operation)
+    method.side_effect = ValueError("private route failure payload")
+    with caplog.at_level(logging.DEBUG, logger="gateway.run"):
+        if operation == "steer":
+            runner._hm_busy_steer(event, agent, key)
+            runner._queue_or_replace_pending_event.assert_called_once_with(key, event)
+        else:
+            await runner._hm_busy_interrupt(event, source, agent, key)
+            agent.interrupt.assert_called_once_with(event.text)
+    method.assert_called_once()
+    # Current main prefixes priority instructions with trusted origin metadata; the original
+    # instruction must still reach the agent unchanged at the end of that context.
+    assert method.call_args.args[0].endswith(event.text)
+    if platform == Platform.TELEGRAM:
+        assert key in caplog.text
+        assert "private route failure payload" in caplog.text
+    else:
+        assert "15551234567" not in caplog.text
+        assert "private route failure payload" not in caplog.text

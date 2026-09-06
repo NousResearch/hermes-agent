@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from gateway.log_redaction import (
-    session_key_for_log,
+    log_safe_gateway_error, log_safe_gateway_exc_info, log_safe_gateway_identity,
+    session_error_for_log, session_exc_info_for_log, session_key_for_log,
 )
 from gateway.config import Platform
 from gateway.restart import (
@@ -116,20 +117,26 @@ subprocess.Popen(
 
 
 @contextmanager
-def _log_suppressed(level: int, msg: str, *args, exc_info: bool = False):
+def _log_suppressed(level: int, msg: str, *args, exc_info: bool = False, platform=None, session_key=None):
     """``suppress(Exception)`` that logs the swallowed exception on ``gateway.run``.
 
     Without ``exc_info`` the exception is appended as the last ``%s`` argument (``msg % (*args, exc)``);
     with it the traceback is attached instead. Best-effort seams use this everywhere a failure must be
-    visible in the log but must never propagate.
+    visible in the log but must never propagate. Optional platform/session context
+    projects only the diagnostic exception; callers retain their raw runtime data.
     """
     try:
         yield
     except Exception as exc:
         if exc_info:
-            logger.log(level, msg, *args, exc_info=(type(exc), exc, exc.__traceback__))
+            info = (type(exc), exc, exc.__traceback__)
+            info = (session_exc_info_for_log(session_key, info) if session_key is not None
+                    else log_safe_gateway_exc_info(platform, info))
+            logger.log(level, msg, *args, exc_info=info)
         else:
-            logger.log(level, msg, *args, exc)
+            error = (session_error_for_log(session_key, exc) if session_key is not None
+                     else log_safe_gateway_error(platform, exc))
+            logger.log(level, msg, *args, error)
 
 
 def _send_failed(result: Any) -> bool:
@@ -797,7 +804,7 @@ class GatewayShutdownMixin:
         for _sk, _agent in list(self._running_agents.items()):
             if _agent is _AGENT_PENDING_SENTINEL:
                 continue
-            with _log_suppressed(logging.DEBUG, "%s failed for %s: %s", log_prefix, _sk):
+            with _log_suppressed(logging.DEBUG, "%s failed for %s: %s", log_prefix, session_key_for_log(_sk), session_key=_sk):
                 await self.async_session_store.mark_resume_pending(_sk, reason)
                 marked.append(_sk)
         return marked
@@ -894,7 +901,7 @@ class GatewayShutdownMixin:
                 entry = self.session_store._entries.get(session_key)
                 source = getattr(entry, "origin", None) if entry else None
         except Exception as e:
-            logger.debug("Failed to load session origin for shutdown notification %s: %s", session_key, e)
+            logger.debug("Failed to load session origin for shutdown notification %s: %s", session_key_for_log(session_key), session_error_for_log(session_key, e))
         if source is None:
             source = self._get_cached_session_source(session_key)
         if source is not None:
@@ -912,7 +919,7 @@ class GatewayShutdownMixin:
         fail_fmt = f"Failed to send shutdown notification to {where}%s:%s: %s"
         if not await self._send_notice_logged(adapter, chat_id, msg, platform_str, fail_fmt, **send_kwargs):
             return False
-        logger.info("Sent shutdown notification to %s %s:%s", kind, platform_str, chat_id)
+        logger.info("Sent shutdown notification to %s %s:%s", kind, platform_str, log_safe_gateway_identity(platform_str, chat_id))
         return True
 
     @staticmethod
@@ -924,10 +931,10 @@ class GatewayShutdownMixin:
         try:
             result = await adapter.send(chat_id, msg, **kw)
         except Exception as e:
-            logger.debug(raise_fmt or fail_fmt, platform_str, chat_id, e)
+            logger.debug(raise_fmt or fail_fmt, platform_str, log_safe_gateway_identity(platform_str, chat_id), log_safe_gateway_error(platform_str, e))
             return False
         if _send_failed(result):
-            logger.debug(fail_fmt, platform_str, chat_id, _send_error(result))
+            logger.debug(fail_fmt, platform_str, log_safe_gateway_identity(platform_str, chat_id), log_safe_gateway_error(platform_str, _send_error(result)))
             return False
         return True
 
@@ -978,7 +985,7 @@ class GatewayShutdownMixin:
                     reply_to_message_id=reply_to_message_id, adapter=adapter,
                 )
             except Exception as e:
-                logger.debug("Failed to send shutdown notification to %s:%s: %s", platform_str, chat_id, e)
+                logger.debug("Failed to send shutdown notification to %s:%s: %s", platform_str, log_safe_gateway_identity(platform_str, chat_id), log_safe_gateway_error(platform_str, e))
                 continue
             if await self._send_shutdown_notice(adapter, chat_id, msg, "active chat", platform_str, metadata=metadata):
                 notified.add(dedup_key)
@@ -1009,7 +1016,7 @@ class GatewayShutdownMixin:
                 metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=adapter)
             except Exception as e:
                 logger.debug(
-                    "Failed to send shutdown notification to home channel %s:%s: %s", platform.value, home.chat_id, e,
+                    "Failed to send shutdown notification to home channel %s:%s: %s", platform.value, log_safe_gateway_identity(platform, home.chat_id), log_safe_gateway_error(platform, e),
                 )
                 continue
             # Home channels omit ``metadata=`` when empty (adapter doubles may not accept the kwarg).
@@ -1629,7 +1636,7 @@ class GatewayShutdownMixin:
                 try:
                     await self.async_session_store.clear_resume_pending(_sk)
                 except Exception as _e:
-                    logger.debug("clear_resume_pending after drain failed for %s: %s", _sk, _e)
+                    logger.debug("clear_resume_pending after drain failed for %s: %s", session_key_for_log(_sk), session_error_for_log(_sk, _e))
 
     async def _stop_interrupt_remaining_work(self, ctx: "GatewayShutdownMixin._StopContext") -> None:
         """Drain timed out: mark resume_pending, interrupt, settle, kill tool subprocesses, notify cron."""

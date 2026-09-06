@@ -20,7 +20,8 @@ from agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.log_redaction import (
-    log_safe_gateway_error, log_safe_gateway_identity, session_exc_info_for_log, session_key_for_log,
+    log_safe_gateway_error, log_safe_gateway_identity, session_error_for_log,
+    session_exc_info_for_log, session_key_for_log,
 )
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
@@ -1409,7 +1410,7 @@ class GatewayTurnMixin:
                 await self.async_session_store.clear_resume_pending(session_key)
             except Exception as _e:
                 logger.debug(
-                    "clear_resume_pending failed for %s: %s", session_key_for_log(session_key), _e
+                    "clear_resume_pending failed for %s: %s", session_key_for_log(session_key), session_error_for_log(session_key, _e)
                 )
 
         # Normalize empty responses: surface errors, partial failures, and work-without-text.
@@ -1821,8 +1822,12 @@ class GatewayTurnMixin:
         turn once and close it, and build the sanitized user-facing error reply."""
         # Retain Slack thread/workspace routing so a failed turn cannot leave its status visible.
         await self._hmwa_stop_typing_for_turn(event, source)
-        logger.exception("Agent error in session %s", session_key)
         status_code = getattr(e, "status_code", None)
+        logger.error(
+            "Agent error in session %s: %s", session_key_for_log(session_key),
+            session_error_for_log(session_key, e),
+            exc_info=session_exc_info_for_log(session_key),
+        )
         if status_code in {400, 500} and len(prepared.history) > 50:
             # Context overflow / payload too large: a deterministic rejection (#107567), and the same
             # no-grow rule as the persist path (#1630) — nothing is written into an oversized session.
@@ -3363,7 +3368,7 @@ class GatewayTurnMixin:
         try:
             await _stts.wait_complete(timeout=10.0)
         except Exception as _stts_done_err:
-            logger.debug("streaming TTS wait_complete error: %s", _stts_done_err)
+            logger.debug("streaming TTS wait_complete error: %s", log_safe_gateway_error(getattr(source, "platform", None), _stts_done_err))
         if not _stts.done:
             _stts.abort("streaming TTS finalisation timeout")
             await _stts.wait_complete(timeout=2.0)
@@ -3482,7 +3487,7 @@ class GatewayTurnMixin:
                     session_key=session_key, inbound_message_id=turn_ctx.inbound_message_id,
                 )
             except Exception as e:
-                logger.warning("Failed to send first response before queued message: %s", e)
+                logger.warning("Failed to send first response before queued message: %s", log_safe_gateway_error(getattr(adapter, "platform", None), e))
         # Release deferred bg-review notifications: pop (no double-fire in base.py's finally) and call.
         _bg_cb = self._pop_post_delivery_callback(adapter, session_key, turn_ctx.run_generation)
         if callable(_bg_cb):
@@ -3669,10 +3674,10 @@ class GatewayTurnMixin:
                 chat_id=source.chat_id, message_id=_sc.message_id, content=content, finalize=True,
             )
         except Exception as _edit_err:
-            logger.warning(fail_exc, _sk, _edit_err)
+            logger.warning(fail_exc, session_key_for_log(_sk), log_safe_gateway_error(source.platform, _edit_err))
             return
         if fail_result is not None and not getattr(_res, "success", True):
-            logger.warning(fail_result, _sk, getattr(_res, "error", None))
+            logger.warning(fail_result, session_key_for_log(_sk), log_safe_gateway_error(source.platform, getattr(_res, "error", None)))
             return
         response["already_sent"] = True
         logger.info(*ok)
@@ -3719,7 +3724,7 @@ class GatewayTurnMixin:
         if not _transformed and (_streamed or _content_delivered):
             logger.info(
                 "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
-                _sk, _streamed, _previewed, _content_delivered,
+                session_key_for_log(_sk), _streamed, _previewed, _content_delivered,
             )
             response["already_sent"] = True
         elif not _transformed and _stale_finalized and _sc is not None:
@@ -3729,26 +3734,26 @@ class GatewayTurnMixin:
             if getattr(_sc, "_turn_split_delivery", False):
                 logger.info(
                     "Stale streamed finalize detected for session %s on a multi-message split; skipping the in-place reconciliation edit and delivering the complete response via normal final send (#78541).",
-                    _sk,
+                    session_key_for_log(_sk),
                 )
             elif _sc_msg_id and _sc_msg_id != "__no_edit__" and getattr(_sc, "adapter", None) is not None:
                 await self._run_agent_edit_streamed_message(
                     _sc, source, response, _final, _sk=_sk,
-                    ok=("Reconciled stale streamed finalize for session %s: edited message %s with the complete response (#71643).", _sk, _sc_msg_id),
+                    ok=("Reconciled stale streamed finalize for session %s: edited message %s with the complete response (#71643).", session_key_for_log(_sk), _sc_msg_id),
                     fail_result="Stale-finalize reconciliation edit failed for session %s (%s); sending complete response via normal final send.",
                     fail_exc="Stale-finalize reconciliation edit failed for session %s: %s; sending complete response via normal final send.",
                 )
             else:
                 logger.info(
                     "Stale streamed finalize detected for session %s with no editable message; delivering complete response via normal final send (#71643).",
-                    _sk,
+                    session_key_for_log(_sk),
                 )
         elif _transformed and _sc is not None:
             # Transformed after streaming: edit the streamed message instead of sending a duplicate.
             if _sc.message_id:
                 await self._run_agent_edit_streamed_message(
                     _sc, source, response, response["final_response"], _sk=_sk,
-                    ok=("Edited streamed message %s for session %s to include plugin-transformed content.", _sc.message_id, _sk),
+                    ok=("Edited streamed message %s for session %s to include plugin-transformed content.", _sc.message_id, session_key_for_log(_sk)),
                     fail_result=None, fail_exc="Failed to edit streamed message for session %s: %s",
                 )
         elif _sc is not None:
@@ -3758,7 +3763,7 @@ class GatewayTurnMixin:
                 "Normal final-send NOT suppressed despite active stream consumer for session %s: "
                 "streamed=%s previewed=%s content_delivered=%s transformed=%s final_len=%d — "
                 "possible duplicate send (see wecom ack-timeout RCA).",
-                _sk, _streamed, _previewed, _content_delivered, _transformed, len(_final),
+                session_key_for_log(_sk), _streamed, _previewed, _content_delivered, _transformed, len(_final),
             )
 
     def _run_agent_schedule_bubble_cleanup(self, response: Any, _cleanup_adapter: Any, turn_ctx: TurnContext) -> None:

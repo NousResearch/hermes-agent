@@ -19,7 +19,7 @@ import time
 from contextlib import suppress
 from gateway.log_redaction import (
     log_safe_gateway_error, log_safe_gateway_exc_info, log_safe_gateway_identity,
-    log_safe_gateway_payload, session_key_for_log,
+    log_safe_gateway_payload, session_error_for_log, session_key_for_log,
 )
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
@@ -589,7 +589,7 @@ class GatewayInboundMixin:
             try:
                 steered = bool(running_agent.steer(self._steer_text_with_origin(steer_text, event)))
             except Exception as exc:
-                logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc)
+                logger.warning("PRIORITY steer failed for session %s: %s", session_key_for_log(_quick_key), session_error_for_log(_quick_key, exc))
         if steered:
             logger.debug("PRIORITY steer for session %s", session_key_for_log(_quick_key))
             return
@@ -617,7 +617,7 @@ class GatewayInboundMixin:
                 logger.warning(
                     "PRIORITY redirect failed for session %s: %s",
                     session_key_for_log(_quick_key),
-                    log_safe_gateway_error(event.source.platform, exc),
+                    session_error_for_log(_quick_key, exc),
                 )
         logger.debug("PRIORITY interrupt for session %s", session_key_for_log(_quick_key))
         _interrupt_text = event.text
@@ -685,7 +685,7 @@ class GatewayInboundMixin:
         else:
             await self._hm_busy_interrupt(event, source, running_agent, _quick_key)
             return None
-        logger.info("PRIORITY interrupt demoted to queue for session %s %s", _quick_key, _demote)
+        logger.info("PRIORITY interrupt demoted to queue for session %s %s", session_key_for_log(_quick_key), _demote)
         self._queue_or_replace_pending_event(_quick_key, event)
         return None
 

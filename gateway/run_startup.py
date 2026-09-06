@@ -18,6 +18,7 @@ from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from gateway.log_redaction import (
+    log_safe_gateway_error, session_error_for_log,
     log_safe_gateway_identity, session_key_for_log,
 )
 from gateway.config import Platform
@@ -396,7 +397,7 @@ class GatewayStartupMixin:
             try:
                 result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)
             except Exception as send_err:
-                logger.warning("obligation %s: redelivery send raised: %s", row["obligation_id"], send_err)
+                logger.warning("obligation %s: redelivery send raised: %s", row["obligation_id"], log_safe_gateway_error(row["platform"], send_err))
                 result = None
             with _log_suppressed(logging.DEBUG, "delivery ledger update failed", exc_info=True):
                 if result is not None and getattr(result, "success", False):
@@ -518,7 +519,7 @@ class GatewayStartupMixin:
             logger.warning(
                 "Skipping auto-resume for %s: authorization check failed: %s",
                 session_key_for_log(session_key),
-                log_safe_gateway_error(source.platform, exc),
+                session_error_for_log(session_key, exc),
             )
         return False
 
@@ -1575,6 +1576,6 @@ class GatewayStartupMixin:
                 dest.platform, str(dest.home.chat_id), response_text, send_metadata,
             )
         except Exception as exc:
-            raise RuntimeError(f"adapter.send failed: {exc}") from exc
+            raise RuntimeError(f"adapter.send failed: {log_safe_gateway_error(dest.platform, exc)}") from exc
         if not getattr(result, "success", True):
-            raise RuntimeError(f"adapter.send failed: {_send_error(result)}")
+            raise RuntimeError(f"adapter.send failed: {log_safe_gateway_error(dest.platform, _send_error(result))}")

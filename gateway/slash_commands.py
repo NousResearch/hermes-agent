@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 from agent.i18n import t
+from gateway.log_redaction import session_key_for_log
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent
@@ -429,7 +430,7 @@ class GatewaySlashCommandsMixin(
         agent = self._running_agents.get(session_key)
         if agent is _AGENT_PENDING_SENTINEL:  # force-clean the sentinel so the session is unlocked
             await _stop(session_key, "stop_command_pending")
-            logger.info("STOP (pending) for session %s — sentinel cleared", session_key)
+            logger.info("STOP (pending) for session %s — sentinel cleared", session_key_for_log(session_key))
             return EphemeralReply(t("gateway.stop.stopped_pending"))
         if agent:  # force-clean the session lock so a truly hung agent doesn't keep it forever
             await _stop(session_key, "stop_command_handler")
@@ -443,7 +444,7 @@ class GatewaySlashCommandsMixin(
             for sibling_key in sibling_keys:
                 await _stop(sibling_key, "stop_command_thread_sibling")
             logger.info("STOP (thread sibling) by %s — interrupted %d run(s) in thread: %s",
-                        session_key, len(sibling_keys), ", ".join(sibling_keys))
+                        session_key_for_log(session_key), len(sibling_keys), ", ".join(session_key_for_log(key) for key in sibling_keys))
             return EphemeralReply(t("gateway.stop.stopped"))
 
         # No running agent anywhere for this scope. A platform status indicator can still be stuck —
@@ -1029,7 +1030,7 @@ class GatewaySlashCommandsMixin(
                 try:
                     from cli import save_config_value
                     save_config_value("approvals.mcp_reload_confirm", False)
-                    logger.info("User opted out of /reload-mcp confirmation (session=%s)", session_key)
+                    logger.info("User opted out of /reload-mcp confirmation (session=%s)", session_key_for_log(session_key))
                 except Exception as exc:
                     logger.warning("Failed to persist mcp_reload_confirm=false: %s", exc)
             # once / always → run the reload

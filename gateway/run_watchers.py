@@ -14,6 +14,7 @@ from collections import Counter
 from typing import Any, Dict, Optional
 
 from gateway.log_redaction import (
+    session_error_for_log,
     session_key_for_log,
 )
 from gateway.session_stall import (
@@ -211,7 +212,7 @@ class GatewaySessionWatchersMixin:
             return False
         except Exception as exc:
             logger.warning(
-                "Session stall notify failed for %s: %s", session_key_for_log(session_key), exc
+                "Session stall notify failed for %s: %s", session_key_for_log(session_key), session_error_for_log(session_key, exc)
             )
             return False
         notified_map[session_key] = True

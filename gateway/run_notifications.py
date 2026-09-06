@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
 from gateway.log_redaction import (
-    log_safe_gateway_error, log_safe_gateway_identity, session_key_for_log,
+    log_safe_gateway_error, log_safe_gateway_identity, session_error_for_log, session_key_for_log,
 )
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
@@ -132,7 +132,7 @@ class GatewayNotificationsMixin:
         if notice_delivery == "private" and getattr(source, "user_id", None):
             with _log_suppressed(
                 logging.DEBUG, "[%s] send_private_notice failed, falling back to public",
-                getattr(source, "platform", "?"), exc_info=True,
+                getattr(source, "platform", "?"), exc_info=True, platform=source.platform,
             ):
                 result = await adapter.send_private_notice(source.chat_id, source.user_id, content, metadata=metadata)
                 if getattr(result, "success", False):
@@ -279,7 +279,7 @@ class GatewayNotificationsMixin:
         #20834.
         """
         from urllib.parse import quote as _quote
-        with _log_suppressed(logging.WARNING, "Post-stream media extraction failed: %s"):
+        with _log_suppressed(logging.WARNING, "Post-stream media extraction failed: %s", platform=getattr(adapter, "platform", None)):
             # Capture [[as_document]] before extract_media strips it: images then go via send_document.
             force_document_attachments = "[[as_document]]" in response
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
@@ -525,7 +525,7 @@ class GatewayNotificationsMixin:
             return
         max_chunk = 3500
         for i in range(0, len(clean), max_chunk):
-            with _log_suppressed(logging.DEBUG, "Update stream send failed: %s"):
+            with _log_suppressed(logging.DEBUG, "Update stream send failed: %s", platform=target.platform):
                 await target.send(f"```\n{clean[i:i + max_chunk]}\n```")
 
     async def _forward_update_prompt(self, target: "_UpdateTarget", prompt_text: str, default: str) -> None:
@@ -533,7 +533,7 @@ class GatewayNotificationsMixin:
         sent_buttons = False
         adapter = target.adapter
         if getattr(type(adapter), "send_update_prompt", None) is not None:
-            with _log_suppressed(logging.DEBUG, "Button-based update prompt failed: %s"):
+            with _log_suppressed(logging.DEBUG, "Button-based update prompt failed: %s", platform=target.platform):
                 await adapter.send_update_prompt(
                     chat_id=target.chat_id, prompt=prompt_text, default=default,
                     session_key=target.session_key, metadata=target.send_metadata(),
@@ -594,7 +594,7 @@ class GatewayNotificationsMixin:
             if paths.exit_code.exists():
                 _read_new_output()
                 await _flush_buffer()
-                with _log_suppressed(logging.WARNING, "Update final notification failed: %s"):
+                with _log_suppressed(logging.WARNING, "Update final notification failed: %s", platform=target.platform):
                     exit_code = self._update_exit_code(paths)
                     await target.send(
                         "✅ Hermes update finished." if exit_code == 0
@@ -643,6 +643,7 @@ class GatewayNotificationsMixin:
             return False
         cleanup = True
         active_pending_path = paths.claimed
+        platform_str = ""
 
         def _defer(reason: str, *args) -> bool:
             nonlocal cleanup, active_pending_path
@@ -696,7 +697,7 @@ class GatewayNotificationsMixin:
                     exit_code,
                 )
         except Exception as e:
-            logger.warning("Post-update notification failed: %s", e)
+            logger.warning("Post-update notification failed: %s", log_safe_gateway_error(platform_str, e))
         finally:
             if cleanup:
                 for p in (active_pending_path, paths.claimed, paths.output, paths.exit_code):
@@ -707,6 +708,7 @@ class GatewayNotificationsMixin:
         """Notify the chat that initiated /restart that the gateway is back."""
         from gateway.delivery import resolve_delivery_transport
         from gateway.run import _hermes_home, _non_conversational_metadata
+        platform_str = ""
         notify_path = _hermes_home / ".restart_notify.json"
         if not notify_path.exists():
             return None
@@ -745,7 +747,7 @@ class GatewayNotificationsMixin:
             # SendResult(success=False) rather than raising, so inspect the result before claiming success.
             if _send_failed(result):
                 logger.warning(
-                    "Restart notification to %s:%s was not delivered: %s", platform_str, chat_id, _send_error(result),
+                    "Restart notification to %s:%s was not delivered: %s", platform_str, log_safe_gateway_identity(platform_str, chat_id), log_safe_gateway_error(platform_str, _send_error(result)),
                 )
                 return None
             logger.info(
@@ -755,7 +757,7 @@ class GatewayNotificationsMixin:
             )
             return str(platform_str), str(chat_id), str(thread_id) if thread_id else None
         except Exception as e:
-            logger.warning("Restart notification failed: %s", e)
+            logger.warning("Restart notification failed: %s", log_safe_gateway_error(platform_str, e))
             return None
         finally:
             notify_path.unlink(missing_ok=True)
@@ -789,11 +791,11 @@ class GatewayNotificationsMixin:
             else:
                 result = await transport.adapter.send(str(home.chat_id), message)
             if _send_failed(result):
-                logger.warning(failure_fmt, platform.value, home.chat_id, _send_error(result))
+                logger.warning(failure_fmt, platform.value, log_safe_gateway_identity(platform, home.chat_id), log_safe_gateway_error(platform, _send_error(result)))
                 return False
             return True
         except Exception as exc:
-            logger.warning(failure_fmt, platform.value, home.chat_id, exc)
+            logger.warning(failure_fmt, platform.value, log_safe_gateway_identity(platform, home.chat_id), log_safe_gateway_error(platform, exc))
             return False
 
     def _free_tier_startup_line(self) -> Optional[str]:
@@ -935,7 +937,7 @@ class GatewayNotificationsMixin:
                 logger.debug(
                     "Synthetic process-event session-store lookup failed for %s: %s",
                     session_key_for_log(session_key),
-                    exc,
+                    session_error_for_log(session_key, exc),
                 )
             cached_source = self._get_cached_session_source(session_key)
             if cached_source is not None:

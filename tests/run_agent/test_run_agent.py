@@ -4826,7 +4826,7 @@ class TestRunConversation:
             "_record_task_failure should not be called outside kanban mode"
         )
 
-    # ── Output-cap retry: safe_out uses provider available_out + request estimate ──
+    # ── Output-cap retry: safe_out uses provider available_out ──
 
     def test_output_cap_retry_uses_provider_available_out(self, agent):
         """run_conversation retries an output-cap error with max_tokens <=

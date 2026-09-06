@@ -34,6 +34,7 @@ class AssembledRequest:
     pending_moa_prepared_request: Any
     approx_tokens: Any
     request_pressure_tokens: Any
+    request_pressure_is_authoritative: bool
     total_chars: Any
 
 
@@ -239,12 +240,14 @@ def assemble_api_request(
     # transport will checkpoint-prune the payload before sending — the generic durable-history figure
     # overstates the wire by orders of magnitude on a compacted session and fires a 600s local compression
     # the main request never needed (#96995, mirroring the turn-prologue preflight #96644/#96155).
-    request_pressure_tokens = _midturn_request_pressure_tokens(
+    rough_request_pressure_tokens = _midturn_request_pressure_tokens(
         agent, api_messages, effective_system or "", approx_tokens
     )
+    request_pressure_tokens = rough_request_pressure_tokens
     # Usage-anchored override: real prompt_tokens (incl. system + tool schemas) +
     # delta estimate replaces the whole-history heuristic when the anchor is fresh.
     _anchored_pressure = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
+    request_pressure_is_authoritative = _anchored_pressure is not None
     if _anchored_pressure is not None:
         request_pressure_tokens = _anchored_pressure
     else:
@@ -258,8 +261,9 @@ def assemble_api_request(
     # count (should_defer_preflight_to_real_usage). getattr: test doubles lack it.
     _note_rough = getattr(agent.context_compressor, "note_request_rough_estimate", None)
     if callable(_note_rough):
-        _note_rough(request_pressure_tokens)
+        _note_rough(rough_request_pressure_tokens)
     return AssembledRequest(
         "fallthrough", api_messages, tools_for_api, _moa_prepared_request,
-        pending_moa_prepared_request, approx_tokens, request_pressure_tokens, approx_tokens * 4,
+        pending_moa_prepared_request, approx_tokens, request_pressure_tokens,
+        request_pressure_is_authoritative, approx_tokens * 4,
     )

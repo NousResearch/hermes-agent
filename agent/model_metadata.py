@@ -1977,8 +1977,9 @@ def estimate_tokens_rough(text: str) -> int:
 
 
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]], *, charge_stale_thinking: bool = True) -> int:
-    """Rough token estimate for a message list (pre-flight only). Images cost a flat ~1500 tokens
-    each rather than their base64 length. ``charge_stale_thinking=False`` mirrors the tail-budget
+    """Rough token estimate for a message list (pre-flight/display only). Opaque provider-owned
+    items are not locally priced; images retain their coarse display/sizing cost.
+    ``charge_stale_thinking=False`` mirrors the tail-budget
     walk (``context_compressor._estimate_msg_budget_tokens``): on non-echo routes stale reasoning
     rides the wire only for the NEWEST assistant turn, so excluding it keeps the compaction TRIGGER
     in the same size class as the walk — otherwise reasoning-heavy sessions fire preflight forever."""
@@ -2093,7 +2094,11 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
     drop_reasoning_dup = isinstance(_rc, str) and bool(_rc.strip())
     shadow: Dict[str, Any] = {}
     for k, v in msg.items():
-        if k in ("_anthropic_content_blocks", "reasoning_details") or k in PERSISTENCE_ONLY_MESSAGE_FIELDS or (k == "reasoning" and drop_reasoning_dup):
+        if (
+            k in ("_anthropic_content_blocks", "reasoning_details", "codex_reasoning_items")
+            or k in PERSISTENCE_ONLY_MESSAGE_FIELDS
+            or (k == "reasoning" and drop_reasoning_dup)
+        ):
             continue
         if k == "api_content":
             if sidecar_wins:
@@ -2134,9 +2139,9 @@ def estimate_request_tokens_rough(
 
 
 # Usage-anchored accounting: ``usage.prompt_tokens`` is EXACT for everything sent on that request, so
-# anchoring shrinks chars/4 estimation to the messages appended since. Fields: prompt_tokens /
-# completion_tokens (provider usage at capture); base_count (len(messages) at capture — the reply is
-# not yet appended and is covered by completion_tokens, so the delta walk skips it at index base_count);
+# anchoring shrinks local estimation to the replayable messages appended since. Fields: prompt_tokens /
+# completion_tokens (provider usage at capture; diagnostic only because hidden reasoning need not be
+# replayed); base_count (len(messages) at capture — the reply is appended at this index);
 # base_last_id / base_last_role (identity of the last message; compaction/splices replace it -> full estimation).
 
 
@@ -2159,10 +2164,34 @@ def capture_usage_anchor(prompt_tokens: Any, completion_tokens: Any, messages: L
     }
 
 
+def provider_prompt_with_delta(
+    prompt_tokens: Any, delta_messages: List[Dict[str, Any]], *,
+    charge_stale_thinking: bool = True,
+) -> Optional[int]:
+    """Provider prompt usage plus a local estimate of only newly replayable rows."""
+    try:
+        total = int(prompt_tokens or 0)
+    except (TypeError, ValueError):
+        return None
+    if total <= 0 or not isinstance(delta_messages, list):
+        return None
+    if delta_messages:
+        if not charge_stale_thinking:
+            delta_messages = _strip_stale_thinking_for_estimate(delta_messages)
+        # Images and opaque replay fields have no provider-independent local
+        # price. They will be included in the next real prompt count.
+        total += sum(_estimate_message_tokens_cached(msg, 0) for msg in delta_messages)
+    return total
+
+
 def anchored_context_tokens(messages: List[Dict[str, Any]], anchor: Optional[Dict[str, Any]], *, charge_stale_thinking: bool = True) -> Optional[int]:
-    """Anchored prompt+completion tokens plus a rough estimate of ONLY the messages appended since;
-    None when the anchor is missing or stale. The anchored response's own reply is skipped (already
-    in completion_tokens). ``charge_stale_thinking`` is forwarded to the delta estimate."""
+    """Real prompt tokens plus a rough estimate of ONLY replayable messages appended since.
+
+    ``completion_tokens`` is deliberately excluded: provider usage may include hidden reasoning
+    that does not consume the next request. The durable assistant reply is part of ``delta`` and is
+    estimated from the representation Hermes will replay. None means there is no authoritative base
+    and callers must ask the provider rather than make an automatic compression decision.
+    ``charge_stale_thinking`` is forwarded to the delta estimate."""
     if not isinstance(anchor, dict) or not isinstance(messages, list):
         return None
     base_count = anchor.get("base_count") or 0
@@ -2172,13 +2201,11 @@ def anchored_context_tokens(messages: List[Dict[str, Any]], anchor: Optional[Dic
     base_role = base_msg.get("role") if isinstance(base_msg, dict) else None
     if id(base_msg) != anchor.get("base_last_id") or base_role != anchor.get("base_last_role"):
         return None
-    total = int(anchor["prompt_tokens"]) + int(anchor.get("completion_tokens") or 0)
     delta = messages[base_count:]
-    if delta and isinstance(delta[0], dict) and delta[0].get("role") == "assistant":
-        delta = delta[1:]
-    if delta:
-        total += estimate_messages_tokens_rough(delta, charge_stale_thinking=charge_stale_thinking)
-    return total
+    return provider_prompt_with_delta(
+        anchor.get("prompt_tokens"), delta,
+        charge_stale_thinking=charge_stale_thinking,
+    )
 
 
 # Keyed by ``id(tools)``; bounded, oldest-first eviction. Repeated ``str(tools)`` on

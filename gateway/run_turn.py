@@ -608,7 +608,10 @@ class GatewayTurnMixin:
     async def _hmwa_hygiene_plan(self, hs, history, session_entry, session_key):
         """Decide whether hygiene compression fires this turn (token/message thresholds, DB-backed
         failure cooldown, in-flight compression)."""
-        from agent.model_metadata import estimate_messages_tokens_rough, get_model_context_length_async
+        from agent.model_metadata import (
+            estimate_messages_tokens_rough, get_model_context_length_async,
+            provider_prompt_with_delta,
+        )
         _hyg_context_length = await get_model_context_length_async(
             hs.model, base_url=hs.base_url or "", api_key=hs.api_key or "",
             config_context_length=hs.config_context_length, provider=hs.provider or "",
@@ -617,16 +620,24 @@ class GatewayTurnMixin:
         _warn_token_threshold = int(_hyg_context_length * 0.95)
         _msg_count = len(history)
 
-        # Prefer the API-reported prompt tokens over the rough estimate (runs 30-50% high, which only
-        # fires hygiene early — safe). Do NOT compensate with a threshold multiplier.
+        # Gateway history is read between turns: the last provider prompt covered every
+        # row except the final assistant response. Price only that replayable delta locally.
+        # With no real prompt count, the full-history estimate remains display-only and
+        # the next provider request establishes authority.
+        _has_real_usage = session_entry.last_prompt_tokens > 0
         if session_entry.last_prompt_tokens > 0:
-            _approx_tokens, _token_source = session_entry.last_prompt_tokens, "actual"
+            _tail = history[-1] if history and isinstance(history[-1], dict) else None
+            _delta = [_tail] if _tail and _tail.get("role") == "assistant" else []
+            _approx_tokens = provider_prompt_with_delta(
+                session_entry.last_prompt_tokens, _delta
+            )
+            _token_source = "provider+delta"
         else:
             _approx_tokens, _token_source = estimate_messages_tokens_rough(history), "estimated"
 
-        # Hard safety valve: force compression at an extreme message count regardless of tokens,
-        # breaking the disconnect → no token data → no compression spiral. 5000 clears 1M+ sessions.
-        _needs_compress = _approx_tokens >= _compress_token_threshold or _msg_count >= hs.hard_msg_limit
+        # Message count remains useful telemetry, but it cannot override the
+        # provider's token accounting for an automatic compression decision.
+        _needs_compress = _has_real_usage and _approx_tokens >= _compress_token_threshold
 
         if _needs_compress:
             # DB-backed cooldown (shared with context_compressor.py): survives gateway restarts, so a
@@ -1198,8 +1209,8 @@ class GatewayTurnMixin:
         self, event, source, session_entry, session_key, history, _quick_key, run_generation,
     ):
         """Auto-compress pathologically large transcripts before the agent starts so oversized
-        histories don't cause repeated truncation/context failures. Token source: the API's
-        prompt_tokens from the last turn, else a char/4 estimate."""
+        histories don't cause repeated truncation/context failures. Token decisions use the
+        API's prompt_tokens from the last turn plus the final replayable response delta."""
         from gateway.run import HygieneTurnHoldExceeded
         if not history or len(history) < 4:
             return history

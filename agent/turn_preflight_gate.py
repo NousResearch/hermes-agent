@@ -18,7 +18,8 @@ logger = logging.getLogger("agent.conversation_loop")
 
 
 def run_preflight_gate(
-    agent: Any, *, request_pressure_tokens: Any, _moa_prepared_request: Any,
+    agent: Any, *, request_pressure_tokens: Any, request_pressure_is_authoritative: bool,
+    _moa_prepared_request: Any,
     pending_moa_prepared_request: Any, messages: Any, system_message: Any, user_message: Any,
     active_system_prompt: Any, conversation_history: Any, api_call_count: Any,
     compression_attempts: Any, max_compression_attempts: Any, effective_task_id: Any,
@@ -43,7 +44,10 @@ def run_preflight_gate(
         _last_preflight_pressure=None,
     )
 
-    _runtime_context_error = _ollama_context_limit_error(agent, request_pressure_tokens)
+    _runtime_context_error = (
+        _ollama_context_limit_error(agent, request_pressure_tokens)
+        if request_pressure_is_authoritative else None
+    )
     if _runtime_context_error:
         v.final_response = _runtime_context_error
         v.failed = True
@@ -89,6 +93,7 @@ def run_preflight_gate(
         )
     return run_preflight_compression(
         agent, v, compressor=_compressor, request_pressure_tokens=request_pressure_tokens,
+        request_pressure_is_authoritative=request_pressure_is_authoritative,
         provider_overflow_preflight=_provider_overflow_preflight,
         defer_preflight=getattr(
             _compressor, "should_defer_preflight_to_real_usage", lambda _t: False

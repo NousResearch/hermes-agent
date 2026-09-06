@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.model_metadata import capture_usage_anchor
 from agent.context_compressor import ContextCompressor
 from agent.turn_context import (
     PreflightCompressionTimedOut,
@@ -239,6 +240,7 @@ def test_preflight_timeout_stops_turn_before_provider_boundary():
     oversized_history = [
         {"role": "assistant", "content": "x" * 8_000},
     ]
+    agent._usage_anchor = capture_usage_anchor(2_000, 0, oversized_history)
     provider_call = MagicMock()
 
     def run_turn():
@@ -250,6 +252,30 @@ def test_preflight_timeout_stops_turn_before_provider_boundary():
 
     agent._compress_context.assert_called_once()
     provider_call.assert_not_called()
+
+
+@pytest.mark.parametrize("prompt_tokens", [None, 500])
+def test_preflight_never_compacts_from_inflated_history_without_provider_pressure(
+    prompt_tokens,
+):
+    """Missing or under-threshold usage cannot be overridden by bytes/4."""
+    agent = _FakeAgent()
+    agent.compression_enabled = True
+    agent.context_compressor = types.SimpleNamespace(
+        protect_first_n=0,
+        protect_last_n=0,
+        threshold_tokens=1_000,
+        should_compress=lambda tokens=None: tokens >= 1_000,
+        should_compress_info=lambda tokens=None: (tokens >= 1_000, None),
+    )
+    agent._compress_context = MagicMock()
+    history = [{"role": "assistant", "content": "x" * 8_000}]
+    if prompt_tokens is not None:
+        agent._usage_anchor = capture_usage_anchor(prompt_tokens, 0, history)
+
+    _build(agent, conversation_history=history)
+
+    agent._compress_context.assert_not_called()
 
 
 def test_user_message_preserves_platform_event_timestamp():

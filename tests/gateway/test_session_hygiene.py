@@ -54,6 +54,37 @@ def _make_large_history_tokens(target_tokens: int) -> list:
     return _make_history(n_msgs, content_size=content_size)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_tokens", "expected"),
+    [(0, False), (100, False), (600, True)],
+)
+async def test_hygiene_token_gate_requires_provider_usage(
+    provider_tokens, expected
+):
+    """Whole-history inflation is only a hint; provider usage plus the final
+    replayable response delta is the automatic hygiene authority."""
+    gateway_run = importlib.import_module("gateway.run")
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._session_db = None
+    runner._session_has_compression_in_flight = AsyncMock(return_value=False)
+    hs = SimpleNamespace(
+        model="test", base_url="", api_key="", config_context_length=1_000,
+        provider="openai", threshold_pct=0.5, hard_msg_limit=5_000,
+    )
+    history = [
+        {"role": "user", "content": "x" * 80_000},
+        {"role": "assistant", "content": "short response"},
+    ]
+    entry = SimpleNamespace(
+        session_id="session", last_prompt_tokens=provider_tokens
+    )
+
+    plan = await runner._hmwa_hygiene_plan(hs, history, entry, "key")
+
+    assert plan.needs_compress is expected
+
+
 class HygieneCaptureAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="fake-token"), Platform.TELEGRAM)
@@ -279,6 +310,7 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
         session_id="sess-1",
         created_at=datetime.now(),
         updated_at=datetime.now(),
+        last_prompt_tokens=100,
         platform=Platform.TELEGRAM,
         chat_type="group",
     )
@@ -441,6 +473,7 @@ async def test_session_hygiene_preserves_transcript_when_in_place_configured_but
         session_id="sess-1",
         created_at=datetime.now(),
         updated_at=datetime.now(),
+        last_prompt_tokens=100,
         platform=Platform.TELEGRAM,
         chat_type="group",
     )
@@ -578,6 +611,7 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
         session_id="sess-timeout",
         created_at=datetime.now(),
         updated_at=datetime.now(),
+        last_prompt_tokens=100,
         platform=Platform.TELEGRAM,
         chat_type="dm",
     )
@@ -745,6 +779,7 @@ async def test_session_hygiene_turn_hold_budget_abandons_streaming_wait(
         session_id="sess-turnhold",
         created_at=datetime.now(),
         updated_at=datetime.now(),
+        last_prompt_tokens=100,
         platform=Platform.TELEGRAM,
         chat_type="dm",
     )
@@ -922,6 +957,7 @@ async def test_session_hygiene_idle_timeout_still_takes_failure_path(
         session_id="sess-idle-timeout",
         created_at=datetime.now(),
         updated_at=datetime.now(),
+        last_prompt_tokens=100,
         platform=Platform.TELEGRAM,
         chat_type="dm",
     )
@@ -1077,6 +1113,7 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
         session_id="sess-1",
         created_at=datetime.now(),
         updated_at=datetime.now(),
+        last_prompt_tokens=100,
         platform=Platform.TELEGRAM,
         chat_type="private",
     )
@@ -1153,16 +1190,10 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
 
 
 @pytest.mark.asyncio
-async def test_session_hygiene_honors_configurable_hard_message_limit(
+async def test_session_hygiene_message_limit_cannot_override_provider_usage(
     monkeypatch, tmp_path
 ):
-    """compression.hygiene_hard_message_limit overrides the default.
-
-    Regression for user-reported fix: a gateway session with a small
-    transcript (12 messages) should not hit hygiene compression by default,
-    but WILL when the user lowers the hard-limit to 10.  Verifies the new
-    config key is actually read and applied at the force-compress gate.
-    """
+    """A message-count hint cannot override under-threshold provider usage."""
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
@@ -1211,11 +1242,11 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
         session_id="sess-1",
         created_at=datetime.now(),
         updated_at=datetime.now(),
+        last_prompt_tokens=100,
         platform=Platform.TELEGRAM,
         chat_type="private",
     )
-    # 12 messages: below default → no compression without override,
-    # but above the configured limit of 10 → should compress.
+    # 12 messages exceed the configured hint, while provider usage is low.
     runner.session_store.load_transcript.return_value = _make_history(12, content_size=40)
     runner.session_store.has_any_sessions.return_value = True
     runner.session_store.rewrite_transcript = MagicMock()
@@ -1240,9 +1271,7 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
     monkeypatch.setattr(
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
     )
-    # Pick a context length large enough that the token-based threshold
-    # won't trigger for 12 short messages — hard-limit must be the ONLY
-    # thing firing compression.
+    # Pick a context length large enough that provider usage is under threshold.
     monkeypatch.setattr(
         "agent.model_metadata.get_model_context_length",
         lambda *_args, **_kwargs: 1_000_000,
@@ -1262,12 +1291,8 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
     result = await runner._handle_message(event)
 
     assert result == "ok"
-    # The compression agent was instantiated → hard-limit fired on the
-    # configured value (10), not the hardcoded 400 default.
-    assert FakeCompressAgent.last_instance is not None, (
-        "Expected hygiene compression to fire when message count (12) "
-        "exceeds configured hygiene_hard_message_limit (10)"
-    )
+    assert FakeCompressAgent.last_instance is None
+    runner._run_agent.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1304,6 +1329,7 @@ def _make_progress_runner(monkeypatch, tmp_path, agent_cls, cfg_text):
         session_id="sess-progress",
         created_at=datetime.now(),
         updated_at=datetime.now(),
+        last_prompt_tokens=100,
         platform=Platform.TELEGRAM,
         chat_type="dm",
     )
@@ -1392,6 +1418,7 @@ def _make_cooldown_runner(monkeypatch, tmp_path, agent_cls, session_db, session_
         session_id=session_id,
         created_at=datetime.now(),
         updated_at=datetime.now(),
+        last_prompt_tokens=100,
         platform=Platform.TELEGRAM,
         chat_type="dm",
     )

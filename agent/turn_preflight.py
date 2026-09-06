@@ -56,6 +56,7 @@ class PreflightGateVerdict:
 
 def run_preflight_compression(
     agent: Any, v: PreflightGateVerdict, *, compressor: Any, request_pressure_tokens: int,
+    request_pressure_is_authoritative: bool,
     provider_overflow_preflight: bool, defer_preflight: Any, moa_prepared_request: Any,
     system_message: Any, user_message: Any, max_compression_attempts: int, effective_task_id: Any,
 ) -> PreflightGateVerdict:
@@ -92,6 +93,7 @@ def run_preflight_compression(
     )
     if (
         _eligible
+        and (request_pressure_is_authoritative or provider_overflow_preflight)
         and not _review_fork_first_request_pending(agent)
         and (not v._preflight_compression_blocked or provider_overflow_preflight)
         and (not defer_preflight(request_pressure_tokens) or provider_overflow_preflight)
@@ -197,7 +199,12 @@ def run_preflight_compression(
         # All recovery passes consumed and still over threshold: fail closed —
         # llama.cpp may silently truncate an oversized retry.
         return _done("return", _exhausted_result())
-    elif _eligible and not defer_preflight(request_pressure_tokens) and _compression_cooldown:
+    elif (
+        _eligible
+        and (request_pressure_is_authoritative or provider_overflow_preflight)
+        and not defer_preflight(request_pressure_tokens)
+        and _compression_cooldown
+    ):
         # Summary-LLM cooldown blocks compression: deduped warning only when over
         # threshold (should_compress_info reason is None below it).
         _block_reason = _blocked_compress_reason(compressor, request_pressure_tokens)
@@ -206,7 +213,7 @@ def run_preflight_compression(
                 _block_reason, request_pressure_tokens,
                 int(getattr(compressor, "threshold_tokens", 0) or 0),
             )
-    elif not agent.compression_enabled and len(v.messages) > 1:
+    elif request_pressure_is_authoritative and not agent.compression_enabled and len(v.messages) > 1:
         # Uncompressed session guard: compression is disabled, so warn (deduped) when
         # the request exceeds the context window; the turn-context preflight re-arms.
         _ctx_len = getattr(getattr(agent, "context_compressor", None), "context_length", None)
@@ -244,16 +251,15 @@ def compress_after_tool_results(
     turn_exit_reason: Any,
 ) -> PostToolCompressionVerdict:
     """Post-tool-call compression decision. Pressure comes from API-reported
-    ``prompt_tokens`` (a tight lower bound; thinking models inflate completion tokens),
-    ``0`` right after compression (no real count yet), else the route-aware
-    overhead-inclusive estimate. Over threshold but blocked → deduped warning plus the
+    ``prompt_tokens`` plus replayable messages appended since that response.
+    Without a fresh usage anchor the next provider request obtains the count instead
+    of authorizing compaction from a whole-context estimate. Over threshold but blocked → deduped warning plus the
     deterministic tool-result-only prune, committed only when the engine returns a NEW
     list (never rebuild ``conversation_history`` for it)."""
     from agent.conversation_loop import (
-        _HANDOFF_SKIP_FINAL_RESPONSE, _midturn_request_pressure_tokens,
-        _should_skip_model_call_for_reference_handoff,
+        _HANDOFF_SKIP_FINAL_RESPONSE, _should_skip_model_call_for_reference_handoff,
     )
-    from agent.model_metadata import estimate_request_tokens_rough
+    from agent.model_metadata import anchored_context_tokens
 
     def _verdict(end_turn: bool) -> PostToolCompressionVerdict:
         return PostToolCompressionVerdict(
@@ -263,39 +269,14 @@ def compress_after_tool_results(
         )
 
     _compressor = agent.context_compressor
-    # Use real token counts from the API response to decide compression.  prompt_tokens + completion_tokens
-    # is the actual context size the provider reported plus the assistant turn — a tight lower bound for the
-    # next prompt. Tool results appended above aren't counted yet, but the threshold (default 50%) leaves
-    # ample headroom; if tool results push past it, the next API call will report the real total and trigger
-    # compression then. If last_prompt_tokens is 0 (stale after API disconnect or provider returned no usage
-    # data), fall back to rough estimate to avoid missing compression. Without this, a session can grow
-    # unbounded after disconnects because should_compress(0) never fires. (#2153)
-    if _compressor.last_prompt_tokens > 0:
-        # Only prompt_tokens: thinking models inflate completion_tokens with
-        # reasoning that uses no context → premature compression.
-        # Only use prompt_tokens — completion/reasoning tokens don't consume context window space. (#12026)
-        _real_tokens = _compressor.last_prompt_tokens
-    elif _compressor.last_prompt_tokens == -1:
-        # Compression just ran, no API prompt count yet: don't treat a rough
-        # schema-heavy post-compression estimate as real context pressure.
-        _real_tokens = 0
-    else:
-        # Include tool schemas (20-30K tokens the messages-only estimate misses) and
-        # stay route-aware: on a compacted native-Codex session the generic
-        # durable-history figure would false-trigger.
-        # Include tool schemas — with 50+ tools enabled these add 20-30K tokens the messages-only estimate
-        # misses, which can skip compression past the configured threshold (#14695). Route-aware
-        # (#96995/#97602 class): on a compacted native-Codex session the generic durable-history figure
-        # overstates the wire and would false-trigger compression here exactly like the pre-API guard — this
-        # fallback runs precisely when no provider usage is available (post-disconnect / gateway restart),
-        # the unanchored case from #97602's repro.
-        _real_tokens = _midturn_request_pressure_tokens(
-            agent, messages, active_system_prompt or "",
-            estimate_request_tokens_rough(messages, tools=agent.tools or None),
-        )
+    _authoritative_tokens = anchored_context_tokens(
+        messages, getattr(agent, "_usage_anchor", None)
+    )
+    _real_tokens = _authoritative_tokens or 0
 
     if (
         agent.compression_enabled
+        and _authoritative_tokens is not None
         and compression_attempts < max_compression_attempts
         and not bool(
             getattr(_compressor, "awaiting_real_usage_after_compression", False)
@@ -355,7 +336,7 @@ def compress_after_tool_results(
                     final_response = _HANDOFF_SKIP_FINAL_RESPONSE
                 turn_exit_reason = "compaction_handoff_not_actionable"
                 return _verdict(True)
-    elif agent.compression_enabled:
+    elif agent.compression_enabled and _authoritative_tokens is not None:
         # Over threshold but compression blocked (cooldown/anti-thrash): deduped
         # warning so context can't silently overflow. ``attempts_spent`` names the
         # attempts_exhausted lockout when the engine says RUN but the per-turn

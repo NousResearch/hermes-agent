@@ -19,6 +19,7 @@ from agent.conversation_compression import (
     IDLE_COMPACTION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
     compression_skipped_due_to_lock, conversation_history_after_compression,
 )
+from agent.model_metadata import anchored_context_tokens
 
 logger = logging.getLogger("agent.turn_context")
 
@@ -161,11 +162,12 @@ def _idle_compaction(
     # still needed.  Threshold and post-tool preflight honor the same latch.
     if bool(getattr(_compressor, "awaiting_real_usage_after_compression", False)):
         return
-    # Route-aware pressure: on compacted native-Codex sessions the durable figure
-    # overstates the wire, so reuse the preflight estimator.
-    _idle_tokens = _tc._preflight_request_tokens(
-        agent, messages, out.active_system_prompt or ""
-    )
+    # Idle is an automatic compaction decision: only provider usage plus the
+    # replayable delta may authorize it. Without a fresh anchor, let the next
+    # request obtain real usage instead of pricing the whole transcript locally.
+    _idle_tokens = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
+    if _idle_tokens is None:
+        return
     # Don't summarise a thread already below the post-compression target size.
     _idle_floor = int(_compressor.threshold_tokens * _compressor.summary_target_ratio)
     _idle_cooldown = getattr(
@@ -230,8 +232,7 @@ def _preflight_compression(
     agent: Any, out: CompactionOutcome, system_message: Optional[str], user_message: Any,
     effective_task_id: str,
 ) -> None:
-    """Preflight context compression; the cheap pre-check gates the full estimate
-    (see ``_should_run_preflight_estimate`` for the OR semantics)."""
+    """Preflight context compression driven by provider usage plus replay delta."""
     from agent import turn_context as _tc
 
     agent._turn_received_provider_response = False
@@ -246,9 +247,24 @@ def _preflight_compression(
     ):
         return
 
-    _preflight_tokens = _tc._preflight_request_tokens(
-        agent, out.messages, out.active_system_prompt or ""
+    # Automatic compression requires a real provider prompt count as its base.
+    # Evaluate it even when a messages-only hint is low: system/tool schemas may
+    # dominate the provider's count.
+    _preflight_tokens = anchored_context_tokens(
+        out.messages, getattr(agent, "_usage_anchor", None)
     )
+    if _preflight_tokens is None:
+        _rough_hint = _tc._preflight_request_tokens(
+            agent, out.messages, out.active_system_prompt or ""
+        )
+        if _tc._should_run_preflight_estimate(
+            out.messages, _compressor.protect_first_n, _compressor.protect_last_n,
+            _compressor.threshold_tokens,
+        ):
+            logger.debug(
+                "Preflight pressure hint is high; waiting for provider usage before compaction"
+            )
+        return
     # getattr guard: compressor doubles and plugin engines lack this method — absence
     # means no snapshot and the finalizer's rollback stays disarmed.
     _snapshot_fn = getattr(_compressor, "snapshot_preflight_display_tokens", None)
@@ -409,18 +425,10 @@ def _run_preflight_passes(
             agent, out.messages, out.conversation_history
         )
         _reset_retry_state_after_compaction(agent)
-        if not _compressor.should_compress(_preflight_tokens):
-            break
-        if not _tc._compression_warrants_another_preflight_pass(
-            _orig_tokens, _preflight_tokens, _compressor.threshold_tokens
-        ):
-            out.blocked = True
-            logger.warning(
-                "Preflight compression made insufficient progress: "
-                "~%s -> ~%s request tokens; skipping additional passes",
-                f"{_orig_tokens:,}", f"{_preflight_tokens:,}",
-            )
-            break
+        # Compaction rewrote the transcript and invalidated its usage anchor.
+        # A second automatic pass must wait for the provider to price the new
+        # request; the estimate above is progress telemetry only.
+        break
 
 
 def _engine_preflight_maintenance(

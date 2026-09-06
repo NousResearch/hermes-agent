@@ -29,6 +29,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.model_metadata import capture_usage_anchor
 from agent.memory_manager import build_memory_context_block
 from agent.turn_context import build_turn_context, compose_user_api_content
 from hermes_state import SessionDB
@@ -628,6 +629,7 @@ class TestPrologueMoaAndInPlaceBackfill:
             {"role": "user", "content": big},
             {"role": "assistant", "content": big},
         ]
+        agent._usage_anchor = capture_usage_anchor(2_000, 0, history)
         with patch(
             "hermes_cli.plugins.invoke_hook",
             return_value=[{"context": "PLUGIN-CTX"}],
@@ -975,8 +977,10 @@ class TestSessionRowExistsBeforePreflightCompaction:
         sid = "sess-fresh-inplace"
         try:
             agent, seen = self._make_agent(db, sid, in_place=True)
+            history = self._oversized_history()
+            agent._usage_anchor = capture_usage_anchor(2_000, 0, history)
             with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
-                ctx = _build(agent, conversation_history=self._oversized_history())
+                ctx = _build(agent, conversation_history=history)
 
             # The row was created before compression started — without it the
             # FK on messages.session_id rejects the compacted rows and the
@@ -996,8 +1000,10 @@ class TestSessionRowExistsBeforePreflightCompaction:
         sid = "sess-fresh-rot"
         try:
             agent, seen = self._make_agent(db, sid, in_place=False)
+            history = self._oversized_history()
+            agent._usage_anchor = capture_usage_anchor(2_000, 0, history)
             with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
-                _build(agent, conversation_history=self._oversized_history())
+                _build(agent, conversation_history=history)
 
             # The parent row existed before compression started — the child
             # INSERT's parent_session_id FK needs it; without it

@@ -27,6 +27,7 @@ from unittest.mock import MagicMock, patch
 
 from hermes_state import SessionDB
 
+from agent.model_metadata import capture_usage_anchor
 from agent.turn_context import build_turn_context
 
 from tests.agent.test_compression_concurrent_fork import _build_agent_with_db
@@ -63,6 +64,7 @@ def _run_prologue(agent, history, user_message="hello again",
     coverage in ``test_turn_context.py``). ``rough_tokens`` pins the estimate
     that the idle floor is compared against.
     """
+    agent._usage_anchor = capture_usage_anchor(rough_tokens, 0, history)
     with patch("agent.auxiliary_client.set_runtime_main", lambda *a, **k: None), \
          patch("agent.turn_context._should_run_preflight_estimate",
                return_value=False), \

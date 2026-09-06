@@ -191,10 +191,9 @@ class ContextEngine(ABC):
         # should_defer_preflight_to_real_usage() suppress a preflight compression the new model actually
         # needs — the exact oversized-send-after-switch failure in #23767. The new model's first response
         # repopulates them via update_from_response(). Setting last_prompt_tokens to 0 (NOT -1) is
-        # deliberate: 0 is the documented "no real usage yet -> use the rough estimate" state, so the post-
-        # response should_compress path falls back to estimate_request_tokens_rough rather than skipping
-        # compression. -1 is a different sentinel (#36718, "compression just ran, await real usage") and
-        # must not be set here.
+        # deliberate: 0 is the documented "no real usage yet" state, so automatic gates wait for
+        # the switched provider to price one request. -1 is a different sentinel (#36718,
+        # "compression just ran, await real usage") and must not be set here.
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
         self.last_total_tokens = 0

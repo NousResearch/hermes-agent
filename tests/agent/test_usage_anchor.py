@@ -4,9 +4,8 @@ Context-size checks anchor on the provider-reported ``usage.prompt_tokens``
 of the last main-loop response and estimate ONLY the messages appended
 since. These tests cover:
 
-  * anchor + delta arithmetic (exact base, small estimated delta);
-  * the image-heavy divergence the anchor eliminates (flat 1500/image
-    heuristic vs provider truth);
+  * anchor + delta arithmetic (exact prompt base, replayable estimated delta);
+  * opaque provider-owned items and images never being priced locally;
   * fallback to full estimation when no anchor exists (first request,
     usage-less providers);
   * invalidation when compaction rewrites the transcript (structural
@@ -56,6 +55,10 @@ def _history_with_images(n_images=10):
     return msgs
 
 
+def _history_with_inflated_text():
+    return [_msg("user", "x" * 80_000), _msg("assistant", "done")]
+
+
 class TestAnchorArithmetic:
     def test_anchor_plus_small_delta(self):
         messages = _history_with_images(10)
@@ -71,29 +74,27 @@ class TestAnchorArithmetic:
 
         anchored = anchored_context_tokens(messages, anchor)
         assert anchored is not None
-        # Exact base + completion; the assistant reply at base_count is
-        # covered by completion_tokens, so only the follow-up is estimated.
-        delta_est = estimate_messages_tokens_rough([messages[-1]])
-        assert anchored == 50_000 + 250 + delta_est
+        # Hidden completion/reasoning usage is not replayed. Estimate both
+        # durable messages appended after the exact provider prompt base.
+        delta_est = estimate_messages_tokens_rough(messages[-2:])
+        assert anchored == 50_000 + delta_est
         assert delta_est < 50  # the estimated window is one small message
 
-    def test_image_heavy_divergence_eliminated(self):
+    def test_opaque_items_and_images_are_not_locally_priced(self):
         messages = _history_with_images(10)
-        # Provider ground truth: say the real prompt was 12,000 tokens
-        # (providers often charge far less than 1500/image, or the images
-        # were downscaled). The heuristic charges 10 * 1500 + text.
+        messages[-1]["codex_reasoning_items"] = [
+            {"type": "reasoning", "encrypted_content": "z" * 80_000}
+        ]
         anchor = capture_usage_anchor(12_000, 100, messages)
         messages.append(_msg("assistant", "reply"))
         messages.append(_msg("user", "ok"))
 
         rough = estimate_messages_tokens_rough(messages)
         anchored = anchored_context_tokens(messages, anchor)
-        assert rough >= 15_000  # flat 1500 x 10 images dominates
+        assert rough >= 15_000
         assert anchored is not None
         assert anchored < 12_200
-        # The whole-history heuristic diverges by thousands of tokens;
-        # the anchored figure is provider truth + a tiny delta.
-        assert rough - anchored > 2_800
+
 
     def test_no_usage_returns_none(self):
         messages = [_msg("user", "hi")]
@@ -172,14 +173,14 @@ class TestPreflightConsumer:
         messages = _history_with_images(3)
         agent = self._agent(None)
         got = _preflight_request_tokens(agent, messages, "sys")
-        # Pure heuristic: flat image cost dominates.
+        # Display fallback retains the coarse image estimate.
         assert got >= 4_500
 
     def test_sabotage_disabling_anchor_changes_result(self):
         """Prove the anchored path produced the number: with the anchor
         removed (the sabotage), the same inputs yield the heuristic figure,
-        which diverges by thousands of tokens on an image-heavy history."""
-        messages = _history_with_images(10)
+        which diverges by thousands of tokens on a text-heavy history."""
+        messages = _history_with_inflated_text()
         anchor = capture_usage_anchor(12_000, 100, messages)
         messages.append(_msg("assistant", "reply"))
         messages.append(_msg("user", "ok"))
@@ -190,21 +191,21 @@ class TestPreflightConsumer:
         sabotaged_result = _preflight_request_tokens(
             self._agent(None), messages, ""
         )
-        assert sabotaged_result - anchored_result > 2_800
+        assert sabotaged_result - anchored_result > 7_000
 
 
 class TestCompressionTriggerUsesAnchor:
     def test_threshold_decision_flips_with_anchor(self):
-        """An image-heavy history the heuristic pushes over a 15K threshold
+        """A text-heavy history the heuristic pushes over a 15K threshold
         stays under it when the provider reports the real 12K prompt."""
-        messages = _history_with_images(10)
+        messages = _history_with_inflated_text()
         anchor = capture_usage_anchor(12_000, 100, messages)
         messages.append(_msg("assistant", "reply"))
 
         threshold = 15_000
         heuristic = estimate_messages_tokens_rough(messages)
         anchored = anchored_context_tokens(messages, anchor)
-        assert heuristic >= threshold  # old behavior: spurious compression
+        assert heuristic >= threshold  # local hint says to ask for real usage
         assert anchored is not None and anchored < threshold
 
 

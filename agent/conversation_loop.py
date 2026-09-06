@@ -1305,6 +1305,7 @@ class _LoopState:
     _moa_prepared_request: Any = None
     approx_tokens: Any = None
     request_pressure_tokens: Any = None
+    request_pressure_is_authoritative: bool = False
     total_chars: Any = None
     thinking_spinner: Any = None
     api_start_time: Any = None

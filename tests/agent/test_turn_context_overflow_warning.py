@@ -14,6 +14,7 @@ import time
 from unittest.mock import patch
 
 from agent.context_compressor import ContextCompressor
+from agent.model_metadata import capture_usage_anchor
 from agent.turn_context import build_turn_context
 from tests.agent.test_turn_context import _FakeAgent
 
@@ -89,6 +90,10 @@ class _WarnAgent(_FakeAgent):
 def _build_warn_agent(compressor: ContextCompressor) -> _WarnAgent:
     agent = _WarnAgent()
     agent.context_compressor = compressor
+    agent._session_messages = [{"role": "assistant", "content": "previous response"}]
+    agent._usage_anchor = capture_usage_anchor(
+        compressor.last_prompt_tokens, 0, agent._session_messages
+    )
     return agent
 
 
@@ -101,7 +106,7 @@ def _run_build(agent):
             agent=agent,
             user_message="hello",
             system_message=None,
-            conversation_history=None,
+            conversation_history=agent._session_messages,
             task_id=None,
             stream_callback=None,
             persist_user_message=None,

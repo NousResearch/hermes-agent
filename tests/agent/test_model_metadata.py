@@ -83,18 +83,14 @@ class TestEstimateMessagesTokensRough:
     def test_message_with_list_content(self):
         """Vision messages with multimodal content arrays.
 
-        Image parts are counted at a flat ~1500-token rate per image
-        rather than counting the base64 char length, so a tiny stub
-        payload still registers as full image cost.
+        Image parts retain a coarse display/sizing cost; provider-authoritative
+        pressure accounting does not use that cost for appended deltas.
         """
         msg = {"role": "user", "content": [
             {"type": "text", "text": "describe"},
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
         ]}
         result = estimate_messages_tokens_rough([msg])
-        # Flat cost = 1500 per image plus the small text overhead. Allow
-        # a small band so this isn't a change-detector for the exact
-        # string representation.
         assert 1500 <= result < 2000
 
     def test_api_content_substitutes_for_content_not_added_to_it(self):

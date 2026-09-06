@@ -276,16 +276,11 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
 
 def _clamp_output_cap(st: _Recovery, _retry: TurnRetryState, available_out: int, old_ctx: int) -> OverflowVerdict:
     """Output-cap error ("max_tokens too large": input fits but input + max_tokens >
-    window). The provider's available_tokens is the authoritative bound; also estimate
-    the real request shape (API-only content) and use the smaller minus a margin."""
+    window). The provider's available_tokens is the sole cap authority; the local
+    request estimate is retained only for compression sizing and diagnostics."""
     agent = st.agent
     request_input_estimate = st.request_tokens()
-    local_available_out = old_ctx - request_input_estimate
-    if local_available_out > 0:
-        safe_out = max(1, min(available_out, local_available_out) - 64)
-    else:
-        # Local estimate can overshoot; fall back to the provider-reported budget.
-        safe_out = max(1, available_out - 64)
+    safe_out = max(1, available_out - 64)
     agent._ephemeral_max_output_tokens = safe_out
     agent._buffer_vprint(
         f"⚠️  Output cap too large for current prompt — retrying with max_tokens={safe_out:,} "

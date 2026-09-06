@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.model_metadata import capture_usage_anchor
 from tests.agent.test_turn_context import _FakeAgent, _build
 
 
@@ -48,6 +49,7 @@ def _make_agent():
     agent = _FakeAgent()
     agent.compression_enabled = True
     agent.context_compressor = _pressured_compressor()
+    agent._usage_anchor = capture_usage_anchor(10, 0, _HISTORY)
     agent._emit_status = MagicMock()
     return agent
 

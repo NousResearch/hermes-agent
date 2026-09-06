@@ -81,6 +81,7 @@ class TestSchema:
         assert "window" in params
         # Shared
         assert "role_filter" in params
+        assert params["scope"]["enum"] == ["current", "all"]
         # Mode is inferred from which args are set — no explicit mode param
         assert "mode" not in params
 
@@ -98,7 +99,7 @@ class TestSchema:
             "sort",
             "profile",
         ]
-        assert parameters == [*historical_prefix, "detail"]
+        assert parameters == [*historical_prefix, "detail", "scope"]
 
 
 class TestFormatTimestamp:
@@ -182,7 +183,9 @@ class TestBrowseShape:
             lambda _profile: profile_db,
         )
 
-        result = json.loads(session_search(db=shared_db, profile="work"))
+        result = json.loads(
+            session_search(db=shared_db, profile="work", scope="all")
+        )
 
         assert result["success"] is True
         assert profile_db.closed == 1
@@ -1155,4 +1158,3 @@ class TestNewResetLineageBrowse:
         result = json.loads(session_search(db=db, current_session_id="s_other"))
         sids = [r["session_id"] for r in result["results"]]
         assert "s_legacy_child" in sids
-

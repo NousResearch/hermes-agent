@@ -2455,6 +2455,92 @@ class TestSystemdCgroupIsolation:
 
         assert pr._stop_systemd_unit("hermes-worker-gone.scope") is True
 
+    def test_scope_probe_negotiates_away_oom_policy_on_unknown_assignment(
+        self, monkeypatch
+    ):
+        """systemd that rejects OOMPolicy on transient scopes must still get scopes.
+
+        Production reproducer (#102486 on systemd 249, #103693 on 239): the full
+        argv fails with ``Unknown assignment: OOMPolicy=kill`` and every cron
+        dispatch used to fail closed. The probe retries once without the
+        property, marks it unsupported, and real spawns build the degraded set."""
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_OOM_POLICY_SUPPORTED", True)
+        probe_calls = []
+
+        def fake_run(*args, **kwargs):
+            probe_calls.append(list(args[0]))
+            if len(probe_calls) == 1:
+                return subprocess.CompletedProcess(
+                    args=args[0],
+                    returncode=1,
+                    stderr=b"Unknown assignment: OOMPolicy=kill\n",
+                )
+            return subprocess.CompletedProcess(args=args[0], returncode=0)
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        assert pr._systemd_run_user_scope_available() is True
+        assert pr._SYSTEMD_OOM_POLICY_SUPPORTED is False
+        # Retry was the degraded argv: no OOMPolicy property anywhere in it.
+        assert "OOMPolicy=kill" not in probe_calls[1]
+        # Later spawns build the degraded set with scopes still available.
+        argv = pr._build_systemd_scope_argv(["/bin/bash", "-lc", "true"], "unit-x")
+        assert "OOMPolicy=kill" not in argv
+        assert "MemoryAccounting=yes" in argv
+
+    def test_scope_probe_failure_without_oom_rejection_stays_fail_closed(
+        self, monkeypatch
+    ):
+        """A probe failure that is NOT an OOMPolicy rejection must not retry and
+        must keep the fail-closed scope contract (spawn stays in-process)."""
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_OOM_POLICY_SUPPORTED", True)
+        probe_calls = []
+
+        def fake_run(*args, **kwargs):
+            probe_calls.append(args)
+            return subprocess.CompletedProcess(
+                args=args[0],
+                returncode=1,
+                stderr=b"Failed to connect to user bus\n",
+            )
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        assert pr._systemd_run_user_scope_available() is False
+        assert pr._SYSTEMD_OOM_POLICY_SUPPORTED is True
+        assert len(probe_calls) == 1, "non-OOMPolicy failures must not trigger the degraded retry"
+
+    def test_scope_probe_success_keeps_oom_policy_and_single_probe(
+        self, monkeypatch
+    ):
+        """A host that accepts the full property set keeps OOMPolicy and probes once."""
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_OOM_POLICY_SUPPORTED", True)
+        probe_calls = []
+
+        def fake_run(*args, **kwargs):
+            probe_calls.append(args)
+            return subprocess.CompletedProcess(args=args[0], returncode=0)
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        assert pr._systemd_run_user_scope_available() is True
+        assert pr._SYSTEMD_OOM_POLICY_SUPPORTED is True
+        assert len(probe_calls) == 1
+        argv = pr._build_systemd_scope_argv(["/bin/bash", "-lc", "true"], "unit-y")
+        assert "OOMPolicy=kill" in argv
+
     def test_darwin_never_takes_scope_path_even_with_systemd_run_on_path(
         self, registry, monkeypatch, _gateway_identity
     ):

@@ -80,6 +80,12 @@ _SYSTEMD_SCOPE_AVAILABLE: Optional[bool] = None
 _SYSTEMD_SCOPE_PROBE_LOCK = threading.Lock()
 _SYSTEMD_SCOPE_PROBED_AT = 0.0
 _SYSTEMD_SCOPE_FAILURE_TTL_SECONDS = 60.0
+# OOMPolicy arrived in systemd 243, but transient --scope units reject it on some
+# builds that report >= 243 (#102486 reproduces "Unknown assignment: OOMPolicy=kill"
+# on systemd 249). The availability probe therefore negotiates: it first tries the
+# full property set and, on a scoped OOMPolicy rejection, retries once without the
+# property and flips this flag off for the process lifetime (#103693).
+_SYSTEMD_OOM_POLICY_SUPPORTED = True
 _MIN_WORKER_MEMORY_MAX_BYTES = 64 * 1024 * 1024
 _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
 _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
@@ -124,16 +130,25 @@ def _worker_memory_max_bytes() -> int:
     return min(override_bound, safe_bound) if override_bound else safe_bound
 
 
-def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
+def _systemd_scope_argv(binary: str, unit_name: str, *argv: str, include_oom_policy: Optional[bool] = None) -> List[str]:
     """``systemd-run --user --scope`` argv shared by the probe and real spawns.
-    ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl."""
-    return [
+    ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl.
+
+    ``OOMPolicy`` arrived in systemd 243; on older systemd ``systemd-run`` rejects the
+    whole invocation with ``Unknown assignment`` (#103693). The availability probe
+    detects that failure and retries once without the property, flipping
+    ``_SYSTEMD_OOM_POLICY_SUPPORTED`` off; real spawns then build the degraded set."""
+    if include_oom_policy is None:
+        include_oom_policy = _SYSTEMD_OOM_POLICY_SUPPORTED
+    cmd = [
         binary, "--user", "--scope", "--quiet", "--unit", unit_name, "--collect",
         "--property", "MemoryAccounting=yes",
         "--property", f"MemoryMax={_worker_memory_max_bytes()}",
-        "--property", "OOMPolicy=kill",
-        "--", *argv,
     ]
+    if include_oom_policy:
+        cmd.extend(["--property", "OOMPolicy=kill"])
+    cmd.extend(["--", *argv])
+    return cmd
 
 
 def _systemd_scope_cached() -> Optional[bool]:
@@ -149,8 +164,12 @@ def _systemd_run_user_scope_available() -> bool:
     """True if ``systemd-run --user --scope`` can create a cgroup.
     ``shutil.which`` alone is insufficient: system services and containers may lack
     the user D-Bus bus even with the binary on PATH (every spawn would fail with
-    ``Failed to connect to user bus``), so a cheap ``/bin/true`` probe is run and cached."""
-    global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
+    ``Failed to connect to user bus``), so a cheap ``/bin/true`` probe is run and cached.
+    The probe also negotiates the property set: if the full argv is rejected with
+    ``Unknown assignment: OOMPolicy``, it retries once without that property and
+    disables it for the process lifetime — scopes stay available on old/partial
+    systemd instead of fail-closing the whole dispatch path (#103693)."""
+    global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT, _SYSTEMD_OOM_POLICY_SUPPORTED
     verdict = _systemd_scope_cached()
     if verdict is not None:
         return verdict
@@ -173,6 +192,29 @@ def _systemd_run_user_scope_available() -> bool:
                         _systemd_scope_argv(binary, probe_unit, "/bin/true"), capture_output=True, timeout=3,
                     )
                     available = result.returncode == 0
+                    if (
+                        not available
+                        and _SYSTEMD_OOM_POLICY_SUPPORTED
+                        and b"OOMPolicy" in (result.stderr or b"")
+                    ):
+                        # The host's systemd rejects OOMPolicy on transient scopes
+                        # (pre-243, or a build like #102486's 249 that accepts the
+                        # directive only for services). Retry degraded — omitting one
+                        # optional property is strictly safer than disabling scopes.
+                        degraded = subprocess.run(
+                            _systemd_scope_argv(
+                                binary, probe_unit + "-degraded", "/bin/true", include_oom_policy=False
+                            ),
+                            capture_output=True,
+                            timeout=3,
+                        )
+                        if degraded.returncode == 0:
+                            _SYSTEMD_OOM_POLICY_SUPPORTED = False
+                            available = True
+                            logger.info(
+                                "systemd rejects OOMPolicy on transient scopes; continuing with "
+                                "MemoryAccounting/MemoryMax only for worker scopes"
+                            )
                     if not available:
                         logger.debug(
                             "systemd-run --user --scope probe failed (rc=%s): %s",

@@ -112,6 +112,7 @@ class FrameTrackingMixin:
 
     async def _enable_child_domains(self, sid: str) -> None:
         """Enable Page+Runtime (+nested setAutoAttach) and the dialog bridge on a child session."""
+        await self._enable_network_tracking(sid)
         try:
             await self._enable_page_domains(sid, timeout=3.0)
         except Exception as e:

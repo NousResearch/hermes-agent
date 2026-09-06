@@ -649,6 +649,55 @@ _BOT_DETECTION_TITLE_PATTERNS = (
 )
 
 
+def _network_peer_violation(task_id: str, *, rotate: bool = False):
+    """Check recorded peers; only explicit navigation may recover from an old page."""
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    from tools.url_safety import ip_address_block_reason
+
+    supervisor = SUPERVISOR_REGISTRY.get(task_id)
+    if supervisor is None:
+        return None
+    try:
+        # A failed round trip does not erase peers already observed. Missing
+        # optional CDP fields are not evidence of a safe or unsafe connection.
+        supervisor.flush_network_events()
+        records = (supervisor.start_network_response_window() if rotate
+                   else supervisor.snapshot().network_responses)
+    except Exception:
+        return ("peer inspection unavailable", "", "")
+    allow_private = (_cloud._is_local_backend() or _is_local_sidecar_key(task_id)
+                     or _cloud._allow_private_urls())
+    for record in records:
+        if record.remote_ip:
+            reason = ip_address_block_reason(record.remote_ip, allow_private=allow_private)
+            if reason:
+                return reason, record.remote_ip, record.url
+    return None
+
+
+def _block_network_peer(task_id: str, violation) -> str:
+    """Withhold browser data and move away; retain the latch if recovery fails."""
+    reason, remote_ip, url = violation
+    try:
+        result = _session._run_browser_command(task_id, "open", ["about:blank"], timeout=10)
+    except Exception:
+        result = {"success": False}
+    if not result.get("success"):
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+        if supervisor is not None and remote_ip:
+            supervisor.retain_network_violation(remote_ip, url)
+        else:
+            _lifecycle._cleanup_single_browser_session(task_id)
+    message = f"browser connected to a {reason}" if remote_ip else "browser peer inspection unavailable"
+    return _dumps(_err(f"Blocked: {message}"))
+
+
+def _guard_network_peer(task_id: str) -> Optional[str]:
+    violation = _network_peer_violation(task_id)
+    return _block_network_peer(task_id, violation) if violation else None
+
+
 def _post_redirect_block(nav_session_key: str, url: str, final_url: str, auto_local_this_nav: bool) -> Optional[str]:
     """Post-redirect SSRF check; blocked JSON payload or None. The page is moved to about:blank
     first so later snapshots can't read the internal content. The metadata floor fires for
@@ -693,10 +742,20 @@ def _attach_auto_snapshot(response: Dict[str, Any], nav_session_key: str) -> Non
     """Add a compact snapshot to a navigate response so the model can act without browser_snapshot."""
     try:
         snap_result = _session._run_browser_command(nav_session_key, "snapshot", ["-c"])
+        blocked = _guard_network_peer(nav_session_key)
+        if blocked is not None:
+            response.clear()
+            response.update(json.loads(blocked))
+            return
         if snap_result.get("success"):
             response.update(_snapshot_fields(snap_result))
             _merge_fallback_warning(response, snap_result)
     except Exception as e:
+        blocked = _guard_network_peer(nav_session_key)
+        if blocked is not None:
+            response.clear()
+            response.update(json.loads(blocked))
+            return
         logger.debug("Auto-snapshot after navigate failed: %s", e)
 
 
@@ -730,9 +789,19 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         session_info["_first_nav"] = False
         _maybe_start_recording(nav_session_key)
 
-    result = _session._run_browser_command(nav_session_key, "open", [url],
-                                  timeout=_get_open_command_timeout(first_open=is_first_nav))
+    _cdp._ensure_cdp_supervisor(nav_session_key)
+    prior_peer_violation = _network_peer_violation(nav_session_key, rotate=True)
+    try:
+        result = _session._run_browser_command(nav_session_key, "open", [url],
+                                      timeout=_get_open_command_timeout(first_open=is_first_nav))
+    except Exception as exc:
+        result = _err(str(exc))
+    blocked = _guard_network_peer(nav_session_key)
+    if blocked is not None:
+        return blocked
     if not result.get("success"):
+        if prior_peer_violation:
+            return _block_network_peer(nav_session_key, prior_peer_violation)
         return _dumps(_err(result.get("error", "Navigation failed")))
 
     data = result.get("data", {})
@@ -746,12 +815,15 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     features = session_info.get("features") or {}
     if features.get("real_profile"):  # auditability: this ran on the user's real-profile copy-browser
         response["used_real_profile"] = True
-    # Only a successful, non-blocked navigation becomes the task owner: failed opens
-    # and blocked redirects must not retarget follow-up clicks to an irrelevant session.
-    _last_active_session_key[effective_task_id] = nav_session_key
     _lp._copy_fallback_warning(response, result)
     _add_navigate_warnings(response, title, session_info if is_first_nav else None)
     _attach_auto_snapshot(response, nav_session_key)
+    if response.get("success"):
+        blocked = _guard_network_peer(nav_session_key)
+        if blocked is not None:
+            return blocked
+        # Publish ownership only after navigation and its content checks succeed.
+        _last_active_session_key[effective_task_id] = nav_session_key
     return _dumps(response)
 
 

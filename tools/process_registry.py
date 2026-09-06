@@ -1341,6 +1341,7 @@ class ProcessRegistry:
 
     def drain_notifications(
         self, session_key: str = "", owns_event=None, *, skip_poll_observed: bool = True,
+        event_types: "set[str] | None" = None,
     ) -> "list[tuple[dict, str]]":
         """Pop all pending events and return ``(raw_event, formatted_text)`` pairs.
         Skips completions per ``_drain_should_skip`` (gateway/TUI pass
@@ -1349,7 +1350,9 @@ class ProcessRegistry:
         ``origin_ui_session_id``; ``owns_event(evt)`` (strongest; the TUI passes a
         compression-chain-aware check) consumes ONLY on True, ``session_key`` uses plain
         equality; non-owned events are re-queued for their owner. No filter consumes
-        everything (legacy single-session) except restored delegation payloads (fail-closed)."""
+        everything (legacy single-session) except restored delegation payloads (fail-closed).
+        When ``event_types`` is set, events of other types remain queued for their
+        existing consumer rather than being claimed by this drain."""
         results: "list[tuple[dict, str]]" = []
         requeue: "list[dict]" = []
         # delegation.surface_child_process_notifications, read at most once per drain
@@ -1360,6 +1363,9 @@ class ProcessRegistry:
                 evt = self.completion_queue.get_nowait()
             except Exception:
                 break
+            if event_types is not None and evt.get("type", "completion") not in event_types:
+                requeue.append(evt)
+                continue
             is_async_delegation = evt.get("type") == "async_delegation"
             if not self._owns_event(evt, session_key, owns_event, is_async_delegation):
                 requeue.append(evt)

@@ -939,6 +939,12 @@ def _flush_one_shot_session_store(cli) -> None:
     if db is None:
         return
     try:
+        from hermes_cli.oneshot_completions import persist_oneshot_process_completions
+
+        persist_oneshot_process_completions(db, session_id)
+    except Exception:
+        logger.debug("one-shot background completion persist failed", exc_info=True)
+    try:
         db.flush_token_counts()
     except Exception:
         logger.debug("one-shot token-count drain failed", exc_info=True)

@@ -200,6 +200,10 @@ def _trim_summary_with_footer(summary: str, cap: int, task_index: int) -> tuple[
         tail = tail[nl + 1:]
 
     spill_path = _spill_summary_to_file(task_index, summary)
+    if spill_path:
+        # Agent-visible path: the parent's read_file runs inside the active backend (#81984, #77015).
+        from tools.credential_files import to_agent_visible_cache_path
+        spill_path = to_agent_visible_cache_path(spill_path)
     footer_lines = [
         "", "─" * 8 + " [SUMMARY TRUNCATED] " + "─" * 8,
         f"Showing {len(head):,} chars (head) + {len(tail):,} chars (tail) "

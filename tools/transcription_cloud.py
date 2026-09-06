@@ -209,6 +209,8 @@ _DASHSCOPE_ASR_INPUT_LIMIT_BYTES = 10 * 1024 * 1024
 def _dashscope_audio_data_url(file_path: str) -> str:
     """Read and encode one local file for DashScope's transmitted input."""
     mime_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+    if mime_type == "audio/x-wav":
+        mime_type = "audio/wav"
     encoded = base64.b64encode(Path(file_path).read_bytes()).decode("ascii")
     return f"data:{mime_type};base64,{encoded}"
 

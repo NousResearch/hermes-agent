@@ -123,6 +123,17 @@ def test_dashscope_stt_enforces_encoded_input_limit(tmp_path):
     post.assert_not_called()
 
 
+def test_dashscope_stt_normalizes_linux_wav_mime_type(tmp_path):
+    from tools.transcription_cloud import _dashscope_audio_data_url
+
+    audio_path = tmp_path / "speech.wav"
+    audio_path.write_bytes(b"RIFF-valid-wav")
+    with patch("tools.transcription_cloud.mimetypes.guess_type", return_value=("audio/x-wav", None)):
+        data_url = _dashscope_audio_data_url(str(audio_path))
+
+    assert data_url.startswith("data:audio/wav;base64,")
+
+
 def test_explicit_openai_without_sdk_returns_actionable_error(tmp_path):
     from tools import transcription_tools
 

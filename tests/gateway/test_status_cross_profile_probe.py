@@ -47,3 +47,24 @@ class TestCrossProfileProbe:
         assert status_mod.get_running_pid(foreign_pid) is None
         assert not foreign_pid.exists()
         assert not foreign_lock.exists()
+
+    def test_poisoned_own_record_with_live_foreign_pid_still_cleaned(
+        self, tmp_path, monkeypatch
+    ):
+        """Own-home pid file naming another profile's LIVE gateway is still
+        unlinked: the file is ours (poison), only the record is foreign.
+        Guards the #89315 stop-refusal contract at the probe level."""
+        own_home = tmp_path / "own"
+        own_home.mkdir()
+        other_home = tmp_path / "other"
+        other_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(own_home))
+        monkeypatch.setattr(status_mod, "is_gateway_runtime_lock_active", lambda _p: True)
+        record = {"pid": os.getpid(), "hermes_home": str(other_home)}
+        own_pid = own_home / "gateway.pid"
+        own_lock = own_home / "gateway.lock"
+        own_pid.write_text(json.dumps(record), encoding="utf-8")
+        own_lock.write_text(json.dumps(record), encoding="utf-8")
+
+        assert status_mod.get_running_pid() is None
+        assert not own_pid.exists()

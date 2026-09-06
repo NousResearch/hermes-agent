@@ -63,6 +63,25 @@ _UPSTREAM_CONTEXT_INTRO = (
 )
 
 
+def _is_real_run_output(path) -> bool:
+    """True unless ``path`` is a short-circuit run doc rather than real agent output.
+
+    Monitor/no_agent/blocked ticks still write an output ``.md`` — a no_change stub, a
+    silent/empty placeholder, or an error alert — as the run's audit trail. Every such doc
+    carries a ``**Status:**`` line right after the fixed run-doc header (see
+    ``scheduler._job_doc_header``), whereas real agent output uses a ``---`` separator and
+    never places a status line there. Because those stubs are the newest files by mtime, the
+    continuity selection below would otherwise pick one and tell the agent to "continue" from a
+    placeholder — the quieter a monitor job, the faster its real continuity is lost. Skipping
+    them walks selection back to the most recent genuine output while the stubs stay on disk.
+    """
+    try:
+        head = path.read_text(encoding="utf-8", errors="replace")[:400]
+    except OSError:
+        return False
+    return "\n**Status:** " not in head
+
+
 def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
     """Prepend the latest output of each ``context_from`` job; returns ``(prompt, injected)``."""
     context_from = job.get("context_from")
@@ -88,11 +107,12 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
             continue
         try:
             output_files = sorted(
-                (output_dir / source_job_id).glob("*.md"), key=lambda f: f.stat().st_mtime,
+                (f for f in (output_dir / source_job_id).glob("*.md") if _is_real_run_output(f)),
+                key=lambda f: f.stat().st_mtime,
                 reverse=True,
             )
             if not output_files:
-                continue  # silent skip — no output yet
+                continue  # silent skip — no real output yet (only short-circuit stubs, or none)
             latest_output = output_files[0].read_text(encoding="utf-8").strip()
             if len(latest_output) > _MAX_CONTEXT_CHARS:
                 latest_output = (

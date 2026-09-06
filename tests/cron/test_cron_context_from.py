@@ -440,3 +440,94 @@ class TestContinuityFlag:
         assert "previous run" in prompt.lower()
 
 
+
+
+class TestContinuitySkipsShortCircuitStubs:
+    """Monitor/no_agent short-circuit ticks write status-only ``.md`` stubs as an audit trail.
+
+    Those stubs are the newest files by mtime, so continuity selection must walk *past* them to
+    the most recent real agent output instead of telling the agent to continue from a
+    placeholder (issue #104541). The quieter a monitor job, the more stubs pile up, so this is
+    exactly when continuity matters most.
+    """
+
+    @staticmethod
+    def _stub(job_id, when, status):
+        # Mirrors scheduler._job_doc_header + the short-circuit status line.
+        return (
+            f"# Cron Job: watcher\n\n"
+            f"**Job ID:** {job_id}\n"
+            f"**Run Time:** {when}\n"
+            f"**Mode:** monitor\n"
+            f"**Status:** {status}\n"
+        )
+
+    def test_no_change_stubs_are_skipped_for_real_output(self, cron_env):
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+        import time
+
+        job = create_job(prompt="Watch the site", schedule="every 10m", context_from="self")
+        out_dir = OUTPUT_DIR / job["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Real agent output, then a run of newer no_change stubs (the observed pattern).
+        real = out_dir / "2026-09-06_14-50-20.md"
+        real.write_text(
+            "# Cron Job: watcher\n\n**Mode:** monitor\n\n---\n\nReported: 3 new listings found.\n",
+            encoding="utf-8",
+        )
+        for i, when in enumerate(("15-00-03", "15-10-03", "15-20-03")):
+            time.sleep(0.01)
+            (out_dir / f"2026-09-06_{when}.md").write_text(
+                self._stub(job["id"], f"2026-09-06 {when.replace('-', ':')}",
+                           "no_change (agent run suppressed)"),
+                encoding="utf-8",
+            )
+
+        prompt = _build_job_prompt(job)
+        assert "Reported: 3 new listings found." in prompt
+        assert "no_change" not in prompt
+        assert "previous run" in prompt.lower()
+
+    def test_silent_empty_stub_is_skipped(self, cron_env):
+        """Sibling path: no_agent 'silent (empty output)' placeholders erode continuity too."""
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+        import time
+
+        job = create_job(prompt="Digest", schedule="every 1h", context_from="self")
+        out_dir = OUTPUT_DIR / job["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        real = out_dir / "2026-09-06_10-00-00.md"
+        real.write_text(
+            "# Cron Job: watcher\n\n**Mode:** agent\n\n---\n\nYesterday's digest body.\n",
+            encoding="utf-8",
+        )
+        time.sleep(0.01)
+        (out_dir / "2026-09-06_11-00-00.md").write_text(
+            self._stub(job["id"], "2026-09-06 11:00:00", "silent (empty output)"),
+            encoding="utf-8",
+        )
+
+        prompt = _build_job_prompt(job)
+        assert "Yesterday's digest body." in prompt
+        assert "silent (empty output)" not in prompt
+
+    def test_only_stubs_yields_silent_skip(self, cron_env):
+        """If a job has produced nothing but stubs, inject nothing rather than a placeholder."""
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job = create_job(prompt="Watch", schedule="every 10m", context_from="self")
+        out_dir = OUTPUT_DIR / job["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "2026-09-06_15-00-03.md").write_text(
+            self._stub(job["id"], "2026-09-06 15:00:03", "no_change (agent run suppressed)"),
+            encoding="utf-8",
+        )
+
+        prompt = _build_job_prompt(job)
+        assert "Watch" in prompt
+        assert "no_change" not in prompt
+        assert "previous run" not in prompt.lower()

@@ -336,6 +336,15 @@ def test_repair_controller_dedupes_exact_head_and_preserves_merge_authority(
     assert task.evidence["expected_base_sha"] == "b" * 40
     assert task.evidence["expected_head_branch"] == "codex/fix"
     assert task.evidence["expected_head_repository"] == "acme/widgets"
+    import re
+    import shlex
+
+    push = re.search(r"`(git push [^`]+)`", task.instructions)
+    assert push is not None
+    assert shlex.split(push.group(1)) == [
+        "git", "push", f"https://github.com/{task.evidence['expected_head_repository']}.git",
+        f"HEAD:refs/heads/{task.evidence['expected_head_branch']}",
+    ]
     assert task.evidence["expected_head_sha"] == SHA
     identity_command = (
         "github-pr-feedback inspect-pr --repository acme/widgets --pr-number 17"

@@ -52,6 +52,7 @@ const SIDEBAR_WORKSPACE_COLLAPSED_STORAGE_KEY = 'hermes.desktop.workspaceCollaps
 const SIDEBAR_WORKSPACE_NODE_OPEN_STORAGE_KEY = 'hermes.desktop.workspaceNodeOpen'
 const SIDEBAR_DISMISSED_AUTO_PROJECTS_STORAGE_KEY = 'hermes.desktop.dismissedAutoProjects'
 const SIDEBAR_DISMISSED_WORKTREES_STORAGE_KEY = 'hermes.desktop.dismissedWorktrees'
+const SIDEBAR_DISMISSED_WORKTREE_META_STORAGE_KEY = 'hermes.desktop.dismissedWorktreeMeta'
 const PANES_FLIPPED_STORAGE_KEY = 'hermes.desktop.panesFlipped'
 const RIGHT_RAIL_ACTIVE_TAB_STORAGE_KEY = 'hermes.desktop.rightRailActiveTab'
 
@@ -205,6 +206,32 @@ export const $dismissedWorktreeIds = persistentAtom(
   SIDEBAR_DISMISSED_WORKTREES_STORAGE_KEY,
   [] as string[],
   Codecs.stringArray
+)
+
+interface DismissedWorktreeMeta {
+  pathWasLive: boolean
+}
+
+function sanitizeDismissedWorktreeMeta(raw: unknown): Record<string, DismissedWorktreeMeta> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return {}
+  }
+
+  return Object.fromEntries(
+    Object.entries(raw).flatMap(([id, value]) => {
+      if (!id || !value || typeof value !== 'object' || Array.isArray(value)) {
+        return []
+      }
+
+      return [[id, { pathWasLive: (value as Partial<DismissedWorktreeMeta>).pathWasLive === true }]]
+    })
+  )
+}
+
+export const $dismissedWorktreeMeta = persistentAtom(
+  SIDEBAR_DISMISSED_WORKTREE_META_STORAGE_KEY,
+  {} as Record<string, DismissedWorktreeMeta>,
+  Codecs.json(sanitizeDismissedWorktreeMeta)
 )
 export const $sidebarPinsOpen = atom(true)
 export const $sidebarRecentsOpen = atom(true)
@@ -467,12 +494,51 @@ export function filterVisibleProjects<T extends { id: string; isAuto?: boolean }
   return projects.filter(project => !(project.isAuto && dismissed.has(project.id)))
 }
 
-// Hide a worktree row after it's been removed via git.
-export function dismissWorktree(id: string): void {
+export function filterVisibleWorktreeGroups<T extends { id: string; isMain?: boolean; path?: null | string }>(
+  groups: readonly T[],
+  liveWorktreePaths: ReadonlySet<string>,
+  dismissedIds: readonly string[] = $dismissedWorktreeIds.get(),
+  dismissalMeta: Record<string, DismissedWorktreeMeta> = $dismissedWorktreeMeta.get()
+): T[] {
+  if (!dismissedIds.length) {
+    return groups as T[]
+  }
+
+  const dismissed = new Set(dismissedIds)
+
+  return groups.filter(group => {
+    if (group.isMain || !dismissed.has(group.id)) {
+      return true
+    }
+
+    const path = group.path?.trim()
+    const live = Boolean(path && liveWorktreePaths.has(path))
+
+    // A live discovery should only resurrect dismissals made after the worktree
+    // was removed. If the user hid a lane while the path was still live (or we
+    // only have a legacy id with no metadata), their explicit hide wins.
+    return live && dismissalMeta[group.id]?.pathWasLive === false
+  })
+}
+
+interface DismissWorktreeOptions {
+  pathWasLive?: boolean
+}
+
+// Hide a worktree row. Callers that know the row was removed via git pass
+// pathWasLive=false so a later `git worktree list` discovery can resurrect it.
+export function dismissWorktree(id: string, options: DismissWorktreeOptions = {}): void {
   const current = $dismissedWorktreeIds.get()
 
   if (!current.includes(id)) {
     $dismissedWorktreeIds.set([...current, id])
+  }
+
+  const pathWasLive = options.pathWasLive !== false
+  const meta = $dismissedWorktreeMeta.get()
+
+  if (meta[id]?.pathWasLive !== pathWasLive) {
+    $dismissedWorktreeMeta.set({ ...meta, [id]: { pathWasLive } })
   }
 }
 
@@ -483,6 +549,13 @@ export function restoreWorktree(id: string): void {
 
   if (current.includes(id)) {
     $dismissedWorktreeIds.set(current.filter(worktreeId => worktreeId !== id))
+  }
+
+  const meta = $dismissedWorktreeMeta.get()
+
+  if (id in meta) {
+    const { [id]: _removed, ...rest } = meta
+    $dismissedWorktreeMeta.set(rest)
   }
 }
 

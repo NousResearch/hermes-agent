@@ -9,7 +9,13 @@ import type { HermesGitWorktree } from '@/global'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
-import { $dismissedWorktreeIds, dismissWorktree, setWorkspaceNodeOpen } from '@/store/layout'
+import {
+  $dismissedWorktreeIds,
+  $dismissedWorktreeMeta,
+  dismissWorktree,
+  filterVisibleWorktreeGroups,
+  setWorkspaceNodeOpen
+} from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { removeWorktreePath } from '@/store/projects'
 
@@ -101,6 +107,7 @@ function RepoFlatSection({
   const s = t.sidebar
   const [open, toggleOpen] = useWorkspaceNodeOpen(repo.id)
   const dismissedWorktrees = useStore($dismissedWorktreeIds)
+  const dismissedWorktreeMeta = useStore($dismissedWorktreeMeta)
 
   // The repo's session lanes already come fully built from the backend; this
   // only injects empty VISUAL lanes from a live `git worktree list`.
@@ -131,11 +138,14 @@ function RepoFlatSection({
   )
 
   // Main lanes are always visible; linked worktrees can be user-dismissed.
-  // A live `git worktree list` hit wins over an old dismissal: if git says the
-  // worktree exists again (or still exists after "hide from sidebar"), surface it.
-  const ordered = overlaidGroups.filter(
-    group =>
-      group.isMain || !dismissedWorktrees.includes(group.id) || (group.path && discoveredWorktreePaths.has(group.path))
+  // A live `git worktree list` hit only wins over dismissals recorded after the
+  // worktree was removed. A deliberate "hide from sidebar" on a still-live lane
+  // remains hidden instead of being re-added one render later.
+  const ordered = filterVisibleWorktreeGroups(
+    overlaidGroups,
+    discoveredWorktreePaths,
+    dismissedWorktrees,
+    dismissedWorktreeMeta
   )
 
   // Removal asks how: actually `git worktree remove` it, or just hide the lane
@@ -151,7 +161,7 @@ function RepoFlatSection({
 
     try {
       await removeWorktreePath(repo.path, group.path, { force })
-      dismissWorktree(group.id)
+      dismissWorktree(group.id, { pathWasLive: false })
     } catch (err) {
       // git refuses a non-force remove on a dirty/locked worktree — offer force
       // rather than dead-ending on an error toast.
@@ -205,7 +215,11 @@ function RepoFlatSection({
       open={Boolean(target)}
       secondaryAction={{
         label: s.projects.removeFromSidebar,
-        onClick: () => target && dismissWorktree(target.id)
+        onClick: () =>
+          target &&
+          dismissWorktree(target.id, {
+            pathWasLive: Boolean(target.path && discoveredWorktreePaths.has(target.path))
+          })
       }}
       title={`${s.projects.removeWorktree} "${target?.label ?? ''}"?`}
     />

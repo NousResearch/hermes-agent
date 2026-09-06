@@ -3,7 +3,8 @@ import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
-import { switchBranchInRepo } from '@/store/projects'
+import { $dismissedWorktreeIds, $dismissedWorktreeMeta, dismissWorktree, restoreWorktree } from '@/store/layout'
+import { removeWorktreePath, switchBranchInRepo } from '@/store/projects'
 
 import {
   EnteredProjectContent,
@@ -148,11 +149,43 @@ function commitLatestDrag() {
   commit({ anchor: 'workspace', before: 'session-tile:next', dir: 'right' })
 }
 
+function renderEnteredProjectWithLiveWorktree() {
+  render(
+    <EnteredProjectContent
+      project={project({
+        repos: [
+          {
+            groups: [group()],
+            id: '/repo',
+            label: 'Repo',
+            path: '/repo',
+            sessionCount: 0
+          }
+        ]
+      })}
+      renderRows={() => null}
+      repoWorktrees={{
+        '/repo': [
+          {
+            branch: 'feature',
+            detached: false,
+            isMain: false,
+            locked: false,
+            path: '/repo/.worktrees/feature'
+          }
+        ]
+      }}
+    />
+  )
+}
+
 afterEach(cleanup)
 
 beforeEach(() => {
   noop.mockClear()
   startNewSessionDrag.mockReset()
+  $dismissedWorktreeIds.set([])
+  $dismissedWorktreeMeta.set({})
   vi.mocked(switchBranchInRepo).mockReset()
 })
 
@@ -319,6 +352,47 @@ describe('project-associated new-session drag sources', () => {
     expect(screen.queryByRole('button', { name: 'New session in Review board' })).toBeNull()
     expect(startNewSessionDrag).not.toHaveBeenCalled()
     expect(onNewSessionSplit).not.toHaveBeenCalled()
+  })
+
+  it('keeps a live worktree lane hidden after an explicit sidebar dismissal', () => {
+    dismissWorktree('/repo/.worktrees/feature', { pathWasLive: true })
+    renderEnteredProjectWithLiveWorktree()
+
+    expect(screen.queryByTitle(/feature/)).toBeNull()
+  })
+
+  it('hides a live worktree lane through the non-destructive removal dialog path', async () => {
+    renderEnteredProjectWithLiveWorktree()
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Actions' }), { button: 0, ctrlKey: false })
+    fireEvent.click(await screen.findByText('Remove worktree…'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove from sidebar' }))
+
+    await waitFor(() => expect(screen.queryByTitle(/feature/)).toBeNull())
+    expect(removeWorktreePath).not.toHaveBeenCalled()
+    expect($dismissedWorktreeMeta.get()['/repo/.worktrees/feature']).toEqual({ pathWasLive: true })
+  })
+
+  it('treats a legacy dismissed worktree id as a durable live-lane hide', () => {
+    $dismissedWorktreeIds.set(['/repo/.worktrees/feature'])
+    renderEnteredProjectWithLiveWorktree()
+
+    expect(screen.queryByTitle(/feature/)).toBeNull()
+  })
+
+  it('resurfaces a dismissed worktree lane when a removed worktree is discovered again', () => {
+    dismissWorktree('/repo/.worktrees/feature', { pathWasLive: false })
+    renderEnteredProjectWithLiveWorktree()
+
+    expect(screen.getByTitle(/feature/)).toBeTruthy()
+  })
+
+  it('shows a dismissed worktree lane again after explicit restore', () => {
+    dismissWorktree('/repo/.worktrees/feature', { pathWasLive: true })
+    restoreWorktree('/repo/.worktrees/feature')
+    renderEnteredProjectWithLiveWorktree()
+
+    expect(screen.getByTitle(/feature/)).toBeTruthy()
   })
 })
 

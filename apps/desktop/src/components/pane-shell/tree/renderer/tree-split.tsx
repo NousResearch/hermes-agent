@@ -387,10 +387,8 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
       //  - every visible flex track is pinned to `0 1 <px>`. The plan keeps
       //    the run's total px constant, so no leftover gap can open.
       //  - hidden (display:none) and minimized tracks are left untouched.
-      //  - cleanup: a real drag commits the store once, and React's re-render
-      //    rewrites the `flex` shorthand, which clears the overrides (writing
-      //    the shorthand resets the longhands). A no-movement click restores
-      //    the captured style attributes instead, since nothing re-renders.
+      //  - cleanup: release restores the captured style attributes, then a
+      //    real drag commits the store once and React re-renders from it.
       const previewPlan = (plan: ReturnType<typeof planFor>) => {
         sashTracks.forEach((track, index) => {
           if (!track.visible || track.minimized) {
@@ -458,6 +456,14 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
         done = true
         resize.finish()
 
+        // Put every wrapper's inline style back exactly as React last wrote
+        // it BEFORE the store commit. React only rewrites a wrapper whose
+        // style prop changed; a preview pinned on a track the commit leaves
+        // alone (the flex run beside a zone that folded to its rail) would
+        // otherwise survive as a stale `flex: 0 1 <px>` and stop it growing.
+        // A no-movement click has no commit, so this is also its whole cleanup.
+        restoreStyles()
+
         if (lastPlan && lastPlan.moved !== 0) {
           // Dragged a tool panel down to its collapsed header? Fold the zone
           // to its rail instead of persisting a sliver — and DON'T write the
@@ -473,10 +479,6 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
           } else {
             commitPlan(lastPlan)
           }
-        } else {
-          // Click without movement: nothing will re-render, so put the
-          // wrappers' inline styles back exactly as React last wrote them.
-          restoreStyles()
         }
 
         // Geometry vars re-enable AFTER the final store commit above, so the

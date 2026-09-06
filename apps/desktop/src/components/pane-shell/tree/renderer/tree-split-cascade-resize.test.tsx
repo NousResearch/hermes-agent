@@ -76,6 +76,13 @@ function setWidth(element: HTMLElement, width: number) {
   Object.defineProperty(element, 'getBoundingClientRect', { configurable: true, value: () => rect(width) })
 }
 
+function setHeight(element: HTMLElement, height: number) {
+  Object.defineProperty(element, 'getBoundingClientRect', {
+    configurable: true,
+    value: () => ({ ...rect(1000), bottom: height, height })
+  })
+}
+
 function row(): SplitNode {
   const tree = $layoutTree.get()
 
@@ -179,5 +186,48 @@ describe('TreeSplit cascading expansion', () => {
     expect($paneStates.get().browser?.widthOverride).toBe(500)
     expect(row().weights[0]).toBeCloseTo(2.2)
     expect(row().children[3]).toMatchObject({ id: 'terminal-zone', minimized: true })
+  })
+  it('folding a tool zone at its floor leaves no drag preview pinned on the flex sibling', () => {
+    markCollapsePane('terminal')
+    disposers.push(
+      registry.register({
+        area: 'panes',
+        data: { height: '200px', placement: 'bottom' },
+        id: 'terminal',
+        render: () => null,
+        title: 'Terminal'
+      })
+    )
+
+    const tree = split(
+      'column',
+      [group(['chat'], { id: 'chat-zone' }), group(['terminal'], { id: 'terminal-zone' })],
+      [1, 1],
+      'root-column'
+    )
+
+    $layoutTree.set(tree)
+
+    render(<TreeSplit node={tree} root />)
+
+    const container = document.querySelector<HTMLElement>('[data-tree-split="root-column"]')!
+    const [chat, terminal] = [...container.children] as HTMLElement[]
+    setHeight(container, 800)
+    setHeight(chat, 600)
+    setHeight(terminal, 200)
+    setHeight(document.querySelector<HTMLElement>('[data-tree-group="terminal-zone"]')!, 200)
+
+    const chatFlex = chat.style.flex
+    const terminalSash = document.querySelectorAll('[role="separator"]')[0]!
+    fireEvent.pointerDown(terminalSash, { button: 0, clientY: 600, pointerId: 1, pointerType: 'mouse' })
+    fireEvent.pointerMove(window, { clientY: 790, pointerId: 1, pointerType: 'mouse' })
+    fireEvent.pointerUp(window, { clientY: 790, pointerId: 1, pointerType: 'mouse' })
+
+    // The zone folds to its rail (no sliver persisted) and the chat wrapper —
+    // which the commit does not re-render — is back on React's own flex, not
+    // the `0 1 <px>` pin the gesture previewed.
+    expect(row().children[1]).toMatchObject({ id: 'terminal-zone', minimized: true })
+    expect($paneStates.get().terminal?.heightOverride).toBeUndefined()
+    expect(chat.style.flex).toBe(chatFlex)
   })
 })

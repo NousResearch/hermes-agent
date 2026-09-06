@@ -1,8 +1,11 @@
+import { useStore } from '@nanostores/react'
+
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { $sidebarActiveFilterKinds, clearSidebarFilters } from '@/store/layout'
 
 import { SidebarRowCluster, SidebarRowShell, SidebarRowStack } from './chrome'
 
@@ -35,6 +38,25 @@ export function SidebarBlankState({ onNewProject }: { onNewProject: () => void }
         <Button className="mt-0.5 text-(--ui-text-secondary)" onClick={onNewProject} size="sm" variant="ghost">
           <Codicon name="add" size="0.75rem" />
           {s.projects.newButton}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+export function SidebarFilterEmptyState() {
+  const { t } = useI18n()
+  const s = t.sidebar
+  const kinds = useStore($sidebarActiveFilterKinds)
+  const labels = kinds.map(kind => s.filterKinds[kind]).join(' · ')
+
+  return (
+    <div className="grid min-h-16 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">
+      <div className="flex flex-col items-center gap-1.5">
+        <p>{s.noFilterMatches}</p>
+        {labels ? <p className="text-(--ui-text-quaternary)">{s.activeFilters(labels)}</p> : null}
+        <Button className="mt-0.5 text-(--ui-text-secondary)" onClick={clearSidebarFilters} size="sm" variant="ghost">
+          {s.clearFilters}
         </Button>
       </div>
     </div>

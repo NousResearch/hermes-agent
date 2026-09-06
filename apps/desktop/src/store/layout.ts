@@ -374,10 +374,66 @@ export const $sidebarOrdering: ReadableAtom<SidebarOrdering> = computed(
   (manual, key) => (manual ? 'manual' : key)
 )
 
+export type SidebarFilterKind = 'archived' | 'pr' | 'profile' | 'project' | 'status'
+
+/** Which filter dimensions currently hide rows — empty-state copy names these. */
+export function sidebarActiveFilterKinds(
+  statuses: readonly unknown[],
+  projects: readonly unknown[],
+  profiles: readonly unknown[],
+  prs: readonly unknown[],
+  archived: boolean
+): SidebarFilterKind[] {
+  const kinds: SidebarFilterKind[] = []
+
+  if (statuses.length > 0) {
+    kinds.push('status')
+  }
+
+  if (projects.length > 0) {
+    kinds.push('project')
+  }
+
+  if (profiles.length > 0) {
+    kinds.push('profile')
+  }
+
+  if (prs.length > 0) {
+    kinds.push('pr')
+  }
+
+  if (archived) {
+    kinds.push('archived')
+  }
+
+  return kinds
+}
+
+/** Selected values across every filter dimension (archived counts as one). */
+export function sidebarActiveFilterCount(
+  statuses: readonly unknown[],
+  projects: readonly unknown[],
+  profiles: readonly unknown[],
+  prs: readonly unknown[],
+  archived: boolean
+): number {
+  return statuses.length + projects.length + profiles.length + prs.length + (archived ? 1 : 0)
+}
+
 export const $sidebarFiltersActive: ReadableAtom<boolean> = computed(
   [$sidebarStatusFilter, $sidebarProjectFilter, $sidebarProfileFilter, $sidebarPrFilter, $sidebarShowArchived],
   (statuses, projects, profiles, prs, archived) =>
-    statuses.length > 0 || projects.length > 0 || profiles.length > 0 || prs.length > 0 || archived
+    sidebarActiveFilterCount(statuses, projects, profiles, prs, archived) > 0
+)
+
+export const $sidebarActiveFilterKinds: ReadableAtom<SidebarFilterKind[]> = computed(
+  [$sidebarStatusFilter, $sidebarProjectFilter, $sidebarProfileFilter, $sidebarPrFilter, $sidebarShowArchived],
+  sidebarActiveFilterKinds
+)
+
+export const $sidebarActiveFilterCount: ReadableAtom<number> = computed(
+  [$sidebarStatusFilter, $sidebarProjectFilter, $sidebarProfileFilter, $sidebarPrFilter, $sidebarShowArchived],
+  sidebarActiveFilterCount
 )
 
 /** Anything at all moved off the shipped view — what makes a reset worth
@@ -669,7 +725,9 @@ export function toggleSidebarPrFilter(bucket: PullRequestBucket) {
   toggleIn($sidebarPrFilter, bucket)
 }
 
-function clearSidebarFilters() {
+/** Drop only what hides rows. Grouping, ordering, row metadata, and inbox
+ *  style stay put — those are view preferences, not filters. */
+export function clearSidebarFilters() {
   $sidebarStatusFilter.set([])
   $sidebarProjectFilter.set([])
   $sidebarProfileFilter.set([])

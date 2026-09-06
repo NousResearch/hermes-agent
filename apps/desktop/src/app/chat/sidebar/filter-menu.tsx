@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 
 import { sessionDotClassName } from '@/app/chat/session-status-dot'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -20,8 +21,10 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
 import { desktopGit } from '@/lib/desktop-git'
+import { compactNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
+  $sidebarActiveFilterCount,
   $sidebarCardRows,
   $sidebarFiltersActive,
   $sidebarGrouping,
@@ -164,6 +167,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const prFilter = useStore($sidebarPrFilter)
   const showArchived = useStore($sidebarShowArchived)
   const filtersActive = useStore($sidebarFiltersActive)
+  const activeFilterCount = useStore($sidebarActiveFilterCount)
   const viewCustomized = useStore($sidebarViewCustomized)
   const nodeOpen = useStore($sidebarWorkspaceNodeOpen)
   const listGroupIds = useStore($sidebarListGroupIds)
@@ -217,7 +221,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
-          aria-label="Filters"
+          aria-label={t.sidebar.filtersAria(activeFilterCount)}
           className={cn(
             className,
             'data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100',
@@ -230,7 +234,16 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
           type="button"
           variant="ghost"
         >
-          <Codicon name="list-filter" size="0.75rem" />
+          <span className="relative inline-flex">
+            <Codicon name="list-filter" size="0.75rem" />
+            {activeFilterCount > 0 ? (
+              <span className="pointer-events-none absolute -top-2.5 -right-1.5 z-1">
+                <Badge aria-hidden size="overlay" variant="solid">
+                  {compactNumber(activeFilterCount)}
+                </Badge>
+              </span>
+            ) : null}
+          </span>
         </Button>
       </DropdownMenuTrigger>
 

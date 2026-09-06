@@ -81,7 +81,11 @@ def test_loopback_bind_sets_match():
 
 
 def test_child_env_sanitizer_parity(monkeypatch):
-    """Both launchers must strip the same secrets from the cua-driver child env."""
+    """Both launchers must strip the same secrets from the cua-driver child env.
+
+    Guards the X-stack sanitizer (``_sanitize_standalone_env``) directly: it
+    is still the env filter used for Xvfb/openbox children.
+    """
     strip_vars = ["HERMES_CUA_REMOTE_TOKEN", "CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS",
                   "ANTHROPIC_API_KEY"]
     for v in strip_vars:
@@ -104,6 +108,62 @@ def test_child_env_sanitizer_parity(monkeypatch):
     for var in ("HERMES_CUA_REMOTE_TOKEN", "CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS",
                 "CUA_DRIVER_RS_TELEMETRY_ENABLED"):
         assert var in sa_src, f"standalone launcher no longer strips/sets {var}"
+
+
+def test_standalone_driver_child_env_is_sanitized(monkeypatch):
+    """The ACTUAL driver child env builder must not leak parent secrets.
+
+    This guards ``_build_child_session_context`` — the function that builds the
+    env handed to the cua-driver stdio child — not just ``_sanitize_standalone_env``
+    (which is used for the X stack).  A canary secret in ``os.environ`` must
+    never survive into the child env, while the vars the driver genuinely needs
+    (DISPLAY, PATH, HOME) and the ones the builder sets explicitly
+    (CUA_DRIVER_PERMISSION_MODE, CUA_DRIVER_RS_TELEMETRY_ENABLED) must be present.
+    """
+    # Seed a realistic parent env with canary secrets + required vars.
+    canary_secrets = {
+        "ANTHROPIC_API_KEY": "sk-ant-canary",
+        "OPENAI_API_KEY": "sk-canary",
+        "HERMES_CUA_REMOTE_TOKEN": "t" * 64,
+        "CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS": "1",
+        "AWS_SECRET_ACCESS_KEY": "aws-canary",
+    }
+    needed = {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/tmp/fake-home",
+        "DISPLAY": ":99",
+        "LANG": "C.UTF-8",
+    }
+    for k, v in {**canary_secrets, **needed}.items():
+        monkeypatch.setenv(k, v)
+
+    # The builder returns an async context manager; we only need the env it
+    # captured, so intercept the inner _cua_driver_session_context.
+    captured: dict[str, str] = {}
+    real_ctx = standalone._cua_driver_session_context
+
+    def _capture_ctx(*, command, args, env):
+        captured.update(env)
+        return real_ctx(command=command, args=args, env=env)
+
+    monkeypatch.setattr(standalone, "_cua_driver_session_context", _capture_ctx)
+    standalone._build_child_session_context("/fake/cua-driver")
+
+    # Secrets from the parent env must be absent.
+    leaked = [k for k in canary_secrets if k in captured]
+    assert not leaked, f"driver child env leaks parent secrets: {leaked}"
+
+    # Required allowlist vars the driver genuinely needs must survive.
+    for k in ("PATH", "HOME", "DISPLAY", "LANG"):
+        assert k in captured, f"driver child env dropped required {k}"
+
+    # Explicit CUA_* assignments from the builder must be present and correct.
+    assert captured.get("CUA_DRIVER_PERMISSION_MODE") == "standard"
+    assert captured.get("CUA_DRIVER_RS_TELEMETRY_ENABLED") == "0"
+
+    # Non-allowlisted, non-secret parent vars must also be dropped (the whole
+    # point of building from the allowlist, not raw os.environ).
+    assert "AWS_SECRET_ACCESS_KEY" not in captured
 
 
 # ── 3. whitespace handling in list args ──────────────────────────────────────

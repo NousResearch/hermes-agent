@@ -575,10 +575,8 @@ def _(rid, params: dict) -> dict:
     # Re-bind to the current transport: streaming must stay on the active websocket even
     # if a disconnect/fallback moved the session to stdio.
     with _session_resume_lock:
-        if _sessions.get(sid) is not session:
-            return _err(rid, 4007, "session no longer live; retry resume")
-        if session.get("_client_gone_interrupt_requested"):
-            return _err(rid, 4009, "session disconnect interrupt settling")
+        if (refusal := _reattach_refusal(rid, sid, session)) is not None:
+            return refusal
         if (t := current_transport()) is not None:
             session["transport"] = t
             _cancel_ws_orphan_reap(sid)

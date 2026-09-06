@@ -443,6 +443,17 @@ def _cancel_ws_orphan_reap(sid: str) -> None:
             timer.cancel()
 
 
+def _reattach_refusal(rid, sid: str, session: dict) -> dict | None:
+    """Under ``_session_resume_lock``: the error a reattaching RPC (resume/activate/prompt.submit) must return
+    instead of rebinding — ``session`` is no longer the live record for ``sid``, or a client-gone interrupt is
+    still settling and the reap Timer must keep polling. None when the reattach may proceed."""
+    if _sessions.get(sid) is not session:
+        return _err(rid, 4007, "session no longer live; retry resume")
+    if session.get("_client_gone_interrupt_requested"):
+        return _err(rid, 4009, "session disconnect interrupt settling")
+    return None
+
+
 def _ws_orphan_turn_activity_is_fresh(session: dict) -> bool:
     """Whether a detached RUNNING turn's activity clock (``_touch_activity``) is still fresh — the reaper must NOT
     interrupt healthy detached work (closed laptop). Conservative: disabled threshold, missing/opaque agent, unreadable

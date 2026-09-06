@@ -524,10 +524,8 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
     if ctx.owns_db:
         _release_db(ctx.db)
     with _session_resume_lock:
-        if _sessions.get(live_sid) is not live:
-            return _err(ctx.rid, 4007, "session no longer live; retry resume")
-        if live.get("_client_gone_interrupt_requested"):
-            return _err(ctx.rid, 4009, "session disconnect interrupt settling")
+        if (refusal := _reattach_refusal(ctx.rid, live_sid, live)) is not None:
+            return refusal
         live["last_active"] = time.time()
         if (transport := current_transport()) is not None:
             with live.setdefault("history_lock", threading.Lock()):
@@ -637,10 +635,8 @@ def _resume_reuse_live(ctx: _Resume, sid: str, session: dict) -> dict:
 
 def _resume_reuse_live_locked(ctx: _Resume, sid: str, session: dict) -> dict:
     """Reuse with _session_resume_lock already held (including the eager double-check)."""
-    if _sessions.get(sid) is not session:
-        return _err(ctx.rid, 4007, "session no longer live; retry resume")
-    if session.get("_client_gone_interrupt_requested"):
-        return _err(ctx.rid, 4009, "session disconnect interrupt settling")
+    if (refusal := _reattach_refusal(ctx.rid, sid, session)) is not None:
+        return refusal
     _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
     payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
                                     transport=current_transport() or _stdio_transport)
@@ -898,10 +894,8 @@ def _(rid, params: dict, session: dict) -> dict:
     """Attach the frontend to a live TUI session without closing the previously focused one."""
     sid = str(params.get("session_id") or "")
     with _session_resume_lock:
-        if _sessions.get(sid) is not session:
-            return _err(rid, 4007, "session no longer live; retry resume")
-        if session.get("_client_gone_interrupt_requested"):
-            return _err(rid, 4009, "session disconnect interrupt settling")
+        if (refusal := _reattach_refusal(rid, sid, session)) is not None:
+            return refusal
         return _ok(rid, _live_session_payload(
             sid, session, touch=True, transport=current_transport() or _stdio_transport,
             omit_messages=is_truthy_value(params.get("omit_messages", False))))

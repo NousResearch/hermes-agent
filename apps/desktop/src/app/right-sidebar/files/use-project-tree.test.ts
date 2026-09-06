@@ -294,7 +294,12 @@ describe('useProjectTree', () => {
         })
     )
     readDir.mockResolvedValueOnce(ok([{ name: 'from-b', path: '/shared/from-b', isDirectory: false }]))
-    $connection.set({ baseUrl: 'https://gateway.example', connectionId: 'connection-a', mode: 'local', profile: 'default' } as never)
+    $connection.set({
+      baseUrl: 'https://gateway.example',
+      connectionId: 'connection-a',
+      mode: 'local',
+      profile: 'default'
+    } as never)
 
     const { result } = renderHook(() => useProjectTree('/shared'))
 
@@ -332,7 +337,12 @@ describe('useProjectTree', () => {
         })
     )
     readDir.mockResolvedValueOnce(ok([{ name: 'src', path: '/shared/src', isDirectory: true }]))
-    $connection.set({ baseUrl: 'https://gateway.example', connectionId: 'connection-a', mode: 'local', profile: 'default' } as never)
+    $connection.set({
+      baseUrl: 'https://gateway.example',
+      connectionId: 'connection-a',
+      mode: 'local',
+      profile: 'default'
+    } as never)
 
     const { result } = renderHook(() => useProjectTree('/shared'))
 
@@ -369,7 +379,12 @@ describe('useProjectTree', () => {
         })
     )
     readDir.mockResolvedValueOnce(ok([{ name: 'from-b', path: '/shared/from-b', isDirectory: false }]))
-    $connection.set({ baseUrl: 'https://gateway.example', connectionId: 'connection-a', mode: 'local', profile: 'default' } as never)
+    $connection.set({
+      baseUrl: 'https://gateway.example',
+      connectionId: 'connection-a',
+      mode: 'local',
+      profile: 'default'
+    } as never)
 
     const { result } = renderHook(() => useProjectTree('/shared'))
 
@@ -446,5 +461,98 @@ describe('useProjectTree', () => {
 
     await waitFor(() => expect(result.current.rootError).toBe('no-bridge'))
     expect(result.current.data).toEqual([])
+  })
+
+  // An unreadable root self-heals on a 3s timer, so this probe runs forever
+  // while the pane just sits there. Blanking the error first made every one of
+  // those a visible "unreadable" → blank → "unreadable" strobe.
+  it('keeps an unreadable root on screen while it re-probes', async () => {
+    readDir.mockResolvedValue({ entries: [], error: 'ENOENT' })
+
+    const { result } = renderHook(() => useProjectTree('/gone'))
+
+    await waitFor(() => expect(result.current.rootError).toBe('ENOENT'))
+
+    let releaseProbe: ((value: HermesReadDirResult) => void) | undefined
+
+    readDir.mockImplementationOnce(
+      () =>
+        new Promise<HermesReadDirResult>(resolve => {
+          releaseProbe = resolve
+        })
+    )
+
+    act(() => {
+      void result.current.refreshRoot()
+    })
+
+    expect(result.current.rootLoading).toBe(true)
+    expect(result.current.rootError).toBe('ENOENT')
+
+    await act(async () => {
+      releaseProbe?.({ entries: [], error: 'ENOENT' })
+    })
+
+    expect(result.current.rootError).toBe('ENOENT')
+  })
+
+  it('keeps loaded rows on screen while the root refreshes', async () => {
+    readDir.mockResolvedValueOnce(ok([{ name: 'src', path: '/p/src', isDirectory: true }]))
+
+    const { result } = renderHook(() => useProjectTree('/p'))
+
+    await waitFor(() => expect(result.current.data.length).toBe(1))
+
+    let releaseRefresh: ((value: HermesReadDirResult) => void) | undefined
+
+    readDir.mockImplementationOnce(
+      () =>
+        new Promise<HermesReadDirResult>(resolve => {
+          releaseRefresh = resolve
+        })
+    )
+
+    act(() => {
+      void result.current.refreshRoot()
+    })
+
+    expect(result.current.rootLoading).toBe(true)
+    expect(result.current.data.map(node => node.name)).toEqual(['src'])
+
+    await act(async () => {
+      releaseRefresh?.(ok([{ name: 'src', path: '/p/src', isDirectory: true }]))
+    })
+  })
+
+  it('clears the rows when the same path is re-read from another backend', async () => {
+    readDir.mockResolvedValueOnce(ok([{ name: 'from-a', path: '/shared/from-a', isDirectory: false }]))
+    $connection.set({ baseUrl: 'local-a', connectionId: 'connection-a', mode: 'local', profile: 'default' } as never)
+
+    const { result } = renderHook(() => useProjectTree('/shared'))
+
+    await waitFor(() => expect(result.current.data.map(node => node.name)).toEqual(['from-a']))
+
+    let releaseFromB: ((value: HermesReadDirResult) => void) | undefined
+
+    readDir.mockImplementationOnce(
+      () =>
+        new Promise<HermesReadDirResult>(resolve => {
+          releaseFromB = resolve
+        })
+    )
+
+    act(() => {
+      $connection.set({ baseUrl: 'local-b', connectionId: 'connection-b', mode: 'local', profile: 'default' } as never)
+    })
+
+    // The path is unchanged but the machine is not, so the old machine's
+    // listing must not sit there while the new one loads.
+    expect(result.current.data).toEqual([])
+
+    await act(async () => {
+      releaseFromB?.(ok([{ name: 'from-b', path: '/shared/from-b', isDirectory: false }]))
+    })
+
+    await waitFor(() => expect(result.current.data.map(node => node.name)).toEqual(['from-b']))
   })
 })

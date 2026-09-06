@@ -21,6 +21,11 @@ def _compressor(protect_first_n: int = 1) -> ContextCompressor:
             protect_first_n=protect_first_n,
             protect_last_n=1,
             quiet_mode=True,
+            # Pinned: these tests assert the stored summary ENDS with the raw
+            # LLM text. Lean mode (the default since the tail-default flip)
+            # appends the verbatim-user-quote appendix after it by design;
+            # the continuity contract under test is mode-independent.
+            tail_mode="legacy",
         )
 
 

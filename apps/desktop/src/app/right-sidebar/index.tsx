@@ -36,8 +36,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
   // A transition intentionally retains the old CWD until the new session
   // confirms its workspace. Do not issue a filesystem read against that path:
   // under a gateway switch it may belong to a different remote machine.
-  const hasWorkspace =
-    Boolean(currentCwd) && (workspaceCwdOwner ?? null) === (selectedStoredSessionId ?? null)
+  const hasWorkspace = Boolean(currentCwd) && (workspaceCwdOwner ?? null) === (selectedStoredSessionId ?? null)
 
   const {
     collapseAll,

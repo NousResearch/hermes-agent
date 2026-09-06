@@ -155,6 +155,45 @@ export function installZoomReassertOnWindowEvents(win, reassert, platform = proc
 }
 
 /**
+ * Chromium persists zoom PER URL, and a hash route is a distinct URL. Desktop
+ * is a HashRouter over one `file://index.html`, so every session/settings route
+ * carries its own `partition.per_host_zoom_levels` record, and an in-page
+ * navigation applies the target route's record over whatever the window is
+ * showing. A route the user never zoomed on has no record at all, so it
+ * resolves to the host default — level 0, i.e. 100%.
+ *
+ * In-page navigation fires neither `did-finish-load` nor any window event, so
+ * nothing re-asserted the persisted level: opening a fresh session dropped the
+ * window to 100% while the Appearance control kept reading the chosen scale (it
+ * only learns of changes through `hermes:zoom:changed`, which never fired —
+ * which is why touching the setting appeared to fix it). #48658, #38854, #79863.
+ *
+ * Verified on real Electron 40.10.2 / Chromium 144 (win32): at
+ * `did-navigate-in-page` the frame already reports the target route's level, so
+ * restorePersistedZoomLevel's drift-guard sees the drop and re-applies — and
+ * still no-ops when the route's record already matches. Subframe hash changes
+ * must not touch the chat window's UI scale.
+ */
+export function installZoomReassertOnNavigation(webContents, reassert) {
+  if (!webContents?.on) {
+    return
+  }
+
+  const reassertIfAlive = () => {
+    if (!webContents.isDestroyed?.()) {
+      reassert()
+    }
+  }
+
+  webContents.on('did-finish-load', reassertIfAlive)
+  webContents.on('did-navigate-in-page', (_event, _url, isMainFrame) => {
+    if (isMainFrame) {
+      reassertIfAlive()
+    }
+  })
+}
+
+/**
  * Zoom-wiring decision per window kind. Chat windows (main + session + the HUD)
  * keep global UI zoom; the pet overlay and the Quick Entry composer opt out
  * because they size their own OS window and inheriting zoom would crop or

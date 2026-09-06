@@ -17,11 +17,13 @@ def _reset_emitter():
 
 
 def test_lives_in_the_gui_surface_toolset(monkeypatch):
-    """Reaches a desktop client on ANY backend, including one with no
-    HERMES_DESKTOP in its environment (URL / cloud gateways)."""
+    import tools.preview_tool  # noqa: F401 — registers desktop_preview
+    """Consolidated (#95681): this module's tool became an action of the
+    single `desktop_preview` tool in desktop_ui; the old registration is gone and
+    `preview` reaches a desktop client on ANY backend (no env gate)."""
     monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    entry = registry.get_entry("open_preview")
-
+    assert registry.get_entry("open_preview") is None
+    entry = registry.get_entry("desktop_preview")
     assert entry is not None
     assert entry.toolset == "desktop_ui"
     assert entry.check_fn is None

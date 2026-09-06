@@ -10,14 +10,18 @@ same as every other ``_spawn_detached`` caller.
 
 from __future__ import annotations
 
+import pytest
+
 from hermes_cli import gateway as hermes_gateway
 from hermes_cli import gateway_windows
 from hermes_cli import main as cli_main
+import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
 
 
 def _run_cold_start(monkeypatch, capsys, *, surviving_pids):
     monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
 
     # The pre-spawn re-check (``all_profiles=True``) must find nothing
     # running so the cold-start path proceeds and actually spawns.
@@ -37,11 +41,11 @@ def _run_cold_start(monkeypatch, capsys, *, surviving_pids):
     return capsys.readouterr().out
 
 
-def test_cold_start_reports_failure_when_process_does_not_survive(monkeypatch, capsys):
-    out = _run_cold_start(monkeypatch, capsys, surviving_pids=[])
+def test_cold_start_raises_when_process_does_not_survive(monkeypatch, capsys):
+    with pytest.raises(RuntimeError, match="did not become ready"):
+        _run_cold_start(monkeypatch, capsys, surviving_pids=[])
 
-    assert "✓ Starting Windows gateway after update" not in out
-    assert "no process detected" in out
+    assert "✓ Starting Windows gateway after update" not in capsys.readouterr().out
 
 
 def test_cold_start_reports_success_when_process_survives(monkeypatch, capsys):

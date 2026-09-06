@@ -22,7 +22,7 @@ class FakeStreamConsumer:
 
 class PreDeliveryTurnIntegrationTests(unittest.TestCase):
     def make_turn(self, gate):
-        runner = SimpleNamespace(_pre_delivery_gate=gate)
+        runner = SimpleNamespace(pre_delivery_gate=gate)
         ctx = SimpleNamespace(
             result_holder=[None],
             source=SimpleNamespace(platform="test", chat_id="chat-1"),
@@ -63,6 +63,15 @@ class PreDeliveryTurnIntegrationTests(unittest.TestCase):
         turn._finish_stream_consumer(result, [], stream)
         self.assertEqual(stream.calls, [("legacy",)])
         self.assertFalse(stream.suppressed)
+
+    def test_strict_gate_applies_when_streaming_is_disabled(self):
+        def policy(*, final_text, metadata):
+            return {"allowed": True, "final_text": "approved", "status": "passed"}
+
+        turn, _ = self.make_turn(PreDeliveryGate(mode="strict", policy=policy))
+        result = {"final_response": "unvalidated", "messages": [], "completed": True}
+        turn._finish_stream_consumer(result, [], None)
+        self.assertEqual(result["final_response"], "approved")
 
 
 if __name__ == "__main__":

@@ -63,6 +63,7 @@ class FailoverReason(enum.Enum):
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
     provider_policy_blocked = "provider_policy_blocked"  # Aggregator (e.g. OpenRouter) blocked the only endpoint due to account data/privacy policy
     content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — deterministic per-request, don't retry unchanged
+    egress_policy_blocked = "egress_policy_blocked"  # Local privacy firewall denied remote transport — fall back locally without retry
 
     # Request format
     format_error = "format_error"        # 400 bad request — abort or strip + retry
@@ -839,6 +840,19 @@ def classify_api_error(
     Returns:
         ClassifiedError with reason and recovery action hints.
     """
+    from agent.llm_egress_firewall import EgressBlocked
+
+    if isinstance(error, EgressBlocked):
+        return ClassifiedError(
+            reason=FailoverReason.egress_policy_blocked,
+            provider=provider or None,
+            model=model or None,
+            message="remote request denied by local egress policy",
+            error_context={"reason_codes": error.decision.reason_codes},
+            retryable=False,
+            should_fallback=True,
+        )
+
     status_code = _extract_status_code(error)
     error_type = type(error).__name__
     # Copilot/GitHub Models RateLimitError may not set .status_code; force 429

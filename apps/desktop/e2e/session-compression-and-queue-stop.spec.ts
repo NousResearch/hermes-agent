@@ -57,6 +57,23 @@ test.describe('session compression', () => {
     await send(page, 'E2E_COMPRESSION_THIRD')
     await expect.poll(() => receivedUserTexts().filter(text => text === 'E2E_COMPRESSION_THIRD').length).toBe(1)
 
+    // The mock receiving the third prompt does not mean the TURN is over —
+    // /compress on a busy session errors with "session busy — /interrupt the
+    // current turn before /compress". Wait for the third reply to render and
+    // for the composer to leave its busy state (no Stop affordance) first.
+    await page.waitForFunction(
+      expected =>
+        ((document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').split(expected).length - 1) >= 3,
+      reply,
+      { timeout: 90_000 }
+    )
+    await expect
+      .poll(
+        () => page.locator('[data-slot="composer-root"] button[aria-label="Stop"]').count(),
+        { timeout: 30_000, message: 'turn should settle before /compress' }
+      )
+      .toBe(0)
+
     // This test covers compression and continuation, not slash completion.
     // Insert the complete command atomically and click Send so an async
     // completion response cannot consume Enter as a picker acceptance.
@@ -89,6 +106,8 @@ test.describe('session compression in progress', () => {
   protect_first_n: 0
   protect_last_n: 1
 auxiliary:
+  title_generation:
+    enabled: false
   compression:
     provider: custom
     model: mock-model`,
@@ -124,7 +143,11 @@ auxiliary:
     await expect(page.getByRole('status', { name: 'Summarizing thread' }).last()).toBeVisible()
 
     const primary = page.locator('[data-slot="composer-root"] button[type="submit"]')
-    await expect(primary).toHaveAttribute('aria-label', 'Queue message')
+    // Since "running is not busy" (3bc52fb9df) an empty composer mid-turn
+    // shows Stop — the Queue affordance appears once a payload is typed, and
+    // the Enter path below still queues instead of steering while compaction
+    // holds the turn.
+    await expect(primary).toHaveAttribute('aria-label', 'Stop')
 
     await send(page, queued)
     await expect(page.getByText('1 Queued')).toBeVisible()

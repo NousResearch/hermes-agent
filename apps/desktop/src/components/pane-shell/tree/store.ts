@@ -98,6 +98,15 @@ export const $treeDragging = atom<string | null>(null)
  *  overlay renders its normal targets, scoped to session-hosting zones. */
 export const SESSION_TILE_DRAG = '__session-tile-drag__'
 
+/** Sentinel `$treeDragging` value for a NEW-session drag (the sidebar's
+ *  "New session" row dragged into a zone). It reuses the SAME zone overlay as
+ *  a session drag EXCEPT the "link to chat" affordance never lights: a session
+ *  that doesn't exist yet can't be `@session`-linked, so a center drop stacks a
+ *  fresh tab instead. Keeping this distinct from SESSION_TILE_DRAG is what lets
+ *  the overlay's `sessionDrag` checks (which gate the link affordance) stay
+ *  false here with zero edits to the hot overlay paths. */
+export const NEW_SESSION_DRAG = '__new-session-drag__'
+
 /**
  * Panes hidden by app chrome toggles (titlebar sidebar / right-sidebar
  * buttons). The tree KEEPS the zone and its mounted content; a zone whose
@@ -500,6 +509,16 @@ export const isSessionStripPane = (paneId: string): boolean =>
 export const isMainStripPane = (paneId: string): boolean =>
   (registry.getArea('panes').find(c => c.id === paneId)?.data as { placement?: string } | undefined)?.placement ===
   'main'
+
+/** Whether a zone may receive a SESSION drop — an existing session dragged
+ *  from the sidebar, or a brand-new one dropped from a create-drag ("New
+ *  session" row, project "+" buttons, "New project" +). Any zone hosting a
+ *  chat strip or another main tile qualifies; standing side chrome never does.
+ *  The resolvers (session-drag.ts / new-session-drag.ts) and the zone overlay
+ *  (tree-group.tsx) share this one truth, so every painted zone can commit
+ *  and every denied zone stays dark — the two cannot drift apart again. */
+export const hostsSessionDropTarget = (paneIds: readonly string[]): boolean =>
+  paneIds.some(isSessionStripPane) || paneIds.some(isMainStripPane)
 
 /** The zone the session-tab verbs (⌘T / ⌘⇧T / the strip's "+") act on: the
  *  first of hovered / focused / workspace that hosts a chat strip. Same ladder
@@ -1040,6 +1059,13 @@ export function revealTreePane(paneId: string) {
   // Reveal beats a Close: un-dismiss and let adoption put the pane back.
   if ($dismissedPanes.get().has(paneId)) {
     setDismissed(paneId, false)
+  }
+
+  // A layout replacement can omit a still-registered pane without dismissing
+  // it. Reconcile that saved contribution before claiming to reveal it.
+  const currentTree = $layoutTree.get()
+
+  if (currentTree && !findGroupOfPane(currentTree, paneId)) {
     adoptContributedPanes()
   }
 
@@ -1064,8 +1090,8 @@ export function revealTreePane(paneId: string) {
 
   if (hiddenNow.has(paneId)) {
     setTreePaneHidden(paneId, false)
-
-    return
+    // Reactive unhide preserves a visible sibling. Explicit reveal must also
+    // front this pane and restore its group below.
   }
 
   const tree = $layoutTree.get()
@@ -1326,7 +1352,8 @@ function adoptContributedPanes(): void {
   const panes = registry.getArea('panes')
 
   const dataOf = (paneId: string) =>
-    panes.find(c => c.id === paneId)?.data as { placement?: string; dock?: PaneDockHint } | undefined
+    panes.find(c => c.id === paneId)?.data as
+      { defaultCollapsed?: boolean; dock?: PaneDockHint; placement?: string } | undefined
 
   const placementOf = (paneId: string) => dataOf(paneId)?.placement
   const mainId = panes.find(c => placementOf(c.id) === 'main')?.id
@@ -1391,6 +1418,17 @@ function adoptContributedPanes(): void {
 
   if (next !== tree) {
     commit(next)
+  }
+
+  // After the commit, so the zone exists to minimize. `defaultCollapsed` is the
+  // pane's arrival state, not a standing invariant: it runs on the adoption
+  // that put the pane in the tree, and a pane already in the tree is never
+  // re-adopted — so a user's expand persists with the layout and is never
+  // overruled on a later boot.
+  for (const pane of missing) {
+    if (dataOf(pane.id)?.defaultCollapsed) {
+      setPaneCollapsed(pane.id, true)
+    }
   }
 }
 

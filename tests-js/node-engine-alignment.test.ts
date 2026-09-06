@@ -83,12 +83,12 @@ describe('Node engine alignment', () => {
   const rootRange = nodeRange(rootManifest, 'root package.json')
   const desktopRange = nodeRange(desktopManifest, 'apps/desktop/package.json')
 
-  test.each(['22.22.0', '22.23.1', '24.0.0', '26.0.0'])('all workspace manifests accept supported Node %s', version => {
+  test.each(['22.22.0', '22.23.1', '24.11.0', '24.18.2', '26.0.0'])('all workspace manifests accept supported Node %s', version => {
     assert.ok(satisfiesRange(version, rootRange))
     assert.ok(satisfiesRange(version, desktopRange))
   })
 
-  test.each(['22.21.1', '23.0.0', '25.2.1'])(
+  test.each(['22.21.1', '23.0.0', '24.0.0', '24.10.9', '25.2.1'])(
     'all workspace manifests reject dependency-incompatible Node %s',
     version => {
       assert.ok(!satisfiesRange(version, rootRange))

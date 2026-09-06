@@ -169,7 +169,7 @@ def test_get_qwen_auth_status_refreshes_expired_token(qwen_env):
 
 
 def test_model_flow_qwen_oauth_stale_token_shows_reauth_guidance(qwen_env, monkeypatch, capsys):
-    from hermes_cli.main import _model_flow_qwen_oauth
+    from hermes_cli.model_setup_flows import _model_flow_qwen_oauth
 
     expired_ms = int((time.time() - 3600) * 1000)
     tokens = _make_qwen_tokens(access_token="dead-at", expiry_date=expired_ms)

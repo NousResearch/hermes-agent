@@ -253,7 +253,7 @@ CODING_AGENT_GUIDANCE = (
     "paths for the same flaw and fix the class, not just the reported site.\n"
     "- When fixing linter/type errors on a file, stop after about three "
     "attempts on the same file and ask the user rather than looping.\n"
-    "- Track multi-step work with `todo`. Reference code as `path:line` instead "
+    "- Track multi-step work with `todo_list`. Reference code as `path:line` instead "
     "of pasting whole files.\n"
     "\n"
     "Respect the user's repo: don't commit, push, or rewrite history unless "
@@ -351,6 +351,50 @@ def _coding_mode(config: Optional[dict[str, Any]]) -> str:
     if mode in {"off", "false", "no", "0", "never"}:
         return "off"
     return "auto"
+
+
+def guarded_prompt_enabled(
+    *,
+    platform: Optional[str] = None,
+    cwd: Optional[str | Path] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    config: Optional[dict[str, Any]] = None,
+) -> bool:
+    """Whether this session may use the explicitly opt-in local prompt profile.
+
+    The smaller profile is deliberately fail-closed. It is available only in
+    a focused coding workspace and only when the active provider/model pair
+    is an exact entry in ``agent.guarded_prompt_mode.routes``.
+    """
+    if config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            config = load_config_readonly()
+        except Exception:
+            return False
+    agent_cfg = (config or {}).get("agent", {}) or {}
+    if not isinstance(agent_cfg, dict) or _coding_mode(config) != "focus":
+        return False
+    raw = agent_cfg.get("guarded_prompt_mode")
+    if not isinstance(raw, dict) or raw.get("enabled") is not True:
+        return False
+    routes = raw.get("routes")
+    if not isinstance(routes, (list, tuple)):
+        return False
+    provider_name = str(provider or "").strip().lower()
+    model_name = str(model or "").strip().lower()
+    allowed_routes = {
+        (str(route.get("provider") or "").strip().lower(), str(route.get("model") or "").strip().lower())
+        for route in routes
+        if isinstance(route, dict)
+    }
+    if not provider_name or not model_name or (provider_name, model_name) not in allowed_routes:
+        return False
+    return resolve_runtime_mode(
+        platform=platform, cwd=cwd, config=config, model=model
+    ).is_coding
 
 
 def _coding_instructions(config: Optional[dict[str, Any]]) -> str:
@@ -547,9 +591,9 @@ class RuntimeMode:
         trailing: list[str] = []
         if self.profile.guidance:
             brief = self.profile.guidance
-            if valid_tool_names is not None and "todo" not in valid_tool_names:
+            if valid_tool_names is not None and "todo_list" not in valid_tool_names:
                 brief = brief.replace(
-                    "- Track multi-step work with `todo`. Reference code as "
+                    "- Track multi-step work with `todo_list`. Reference code as "
                     "`path:line` instead of pasting whole files.",
                     "- Reference code as `path:line` instead of pasting "
                     "whole files.",

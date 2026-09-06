@@ -15,8 +15,22 @@ from tools.skill_manager_tool import SKILL_MANAGE_SCHEMA
 
 
 class TestSkillManageSchemaDiet(unittest.TestCase):
-    def test_patch_args_defer_to_patch_tool(self):
+    def _op_props(self):
+        return SKILL_MANAGE_SCHEMA["parameters"]["properties"]["operations"]["items"]["properties"]
+
+    def test_single_call_shape(self):
+        """Maintainer-directed: operations[] IS the interface — each op
+        names its skill; a single edit is a list of one. Flat fields are
+        handler-only compat."""
         props = SKILL_MANAGE_SCHEMA["parameters"]["properties"]
+        self.assertEqual(sorted(props), ["operations"])
+        self.assertEqual(SKILL_MANAGE_SCHEMA["parameters"]["required"], ["operations"])
+        items = SKILL_MANAGE_SCHEMA["parameters"]["properties"]["operations"]["items"]
+        self.assertEqual(items["required"], ["name", "action"])
+        self.assertIn("delete", self._op_props()["action"]["enum"])
+
+    def test_patch_args_defer_to_patch_tool(self):
+        props = self._op_props()
         self.assertIn("patch tool", props["old_string"]["description"])
         # The uniqueness/context curriculum lives in the patch tool's schema,
         # not here.
@@ -24,7 +38,7 @@ class TestSkillManageSchemaDiet(unittest.TestCase):
         self.assertNotIn("surrounding context", props["old_string"]["description"])
 
     def test_file_path_states_relative_shape(self):
-        desc = SKILL_MANAGE_SCHEMA["parameters"]["properties"]["file_path"]["description"]
+        desc = self._op_props()["file_path"]["description"]
         self.assertIn("RELATIVE", desc)
         self.assertIn("references/api.md", desc)
         self.assertIn("never absolute", desc)
@@ -42,13 +56,14 @@ class TestSkillManageSchemaDiet(unittest.TestCase):
         self.assertIn("skill_view()", desc)
         self.assertNotIn("numbered steps", desc)
         # Stale action vocabulary must not return.
-        self.assertNotIn("edit", SKILL_MANAGE_SCHEMA["parameters"]["properties"]["name"]["description"])
+        self.assertNotIn("edit", self._op_props()["name"]["description"])
 
     def test_content_keeps_pre_irreversibility_warning(self):
         """The REPLACES-whole-file warning is pre-irreversibility guidance:
         an error can't teach after a successful full rewrite, so it must
-        stay schema-side (maintainer call)."""
-        desc = SKILL_MANAGE_SCHEMA["parameters"]["properties"]["content"]["description"]
+        stay schema-side (maintainer call). Lives in the description now
+        (op fields stay terse)."""
+        desc = SKILL_MANAGE_SCHEMA["description"]
         self.assertIn("REPLACES", desc)
         self.assertIn("skill_view()", desc)
 

@@ -65,8 +65,10 @@ class TestFailoverReason:
             "model_not_found", "format_error",
             "invalid_encrypted_content",
             "multimodal_tool_content_unsupported",
+            "reasoning_mandatory",
             "provider_policy_blocked",
             "content_policy_blocked",
+            "egress_policy_blocked",
             "thinking_signature", "long_context_tier",
             "oauth_long_context_beta_forbidden",
             "llama_cpp_grammar_pattern",
@@ -74,6 +76,38 @@ class TestFailoverReason:
         }
         actual = {r.value for r in FailoverReason}
         assert expected == actual
+
+    def test_egress_policy_denial_falls_back_without_retry(self):
+        from agent.llm_egress_firewall import (
+            DestinationClass,
+            EgressBlocked,
+            EgressDecision,
+        )
+
+        error = EgressBlocked(
+            EgressDecision(
+                allowed=False,
+                destination_class=DestinationClass.REMOTE,
+                provider="nous",
+                model="test-model",
+                payload_sha256="",
+                serialized_bytes=0,
+                estimated_tokens=0,
+                source_grant_count=0,
+                source_segment_count=0,
+                session_id="session",
+                turn_id="turn",
+                request_id="request",
+                policy_digest="policy",
+                reason_codes=("secret_detected",),
+            )
+        )
+
+        result = classify_api_error(error, provider="nous", model="test-model")
+
+        assert result.reason is FailoverReason.egress_policy_blocked
+        assert result.retryable is False
+        assert result.should_fallback is True
 
 
 # ── Test: ClassifiedError ──────────────────────────────────────────────
@@ -689,6 +723,21 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.invalid_encrypted_content
         assert result.retryable is True
         assert result.should_fallback is False
+
+    # ── Reasoning-mandatory route rejecting a disable ──
+
+    def test_reasoning_mandatory_400_is_retryable_not_format_error(self):
+        e = MockAPIError(
+            "Error code: 400 - This request is not valid. Check the model name "
+            "and other parameters. Additional info: Reasoning is mandatory for "
+            "this endpoint and cannot be disabled.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="nous", model="z-ai/glm-5.3-flash")
+        assert result.reason == FailoverReason.reasoning_mandatory
+        assert result.retryable is True
+        assert result.should_fallback is False
+        assert result.should_compress is False
 
     # ── Provider-specific: llama.cpp grammar-parse ──
 
@@ -1578,5 +1627,3 @@ class TestServerInjectedParameterRejection:
         result = classify_api_error(e, provider="custom", model="m")
         assert result.reason == FailoverReason.format_error
         assert result.retryable is False
-
-

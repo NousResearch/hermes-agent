@@ -72,6 +72,96 @@ def test_parse_typed_references_ignores_emails_and_handles():
     assert refs[2].target == "2"
 
 
+def test_exact_file_reference_issues_only_the_resolved_slice(sample_repo: Path):
+    from agent.context_references import preprocess_context_references
+    from agent.source_provenance import SourceProvenanceRegistry
+
+    registry = SourceProvenanceRegistry()
+    result = preprocess_context_references(
+        "Review @file:src/main.py:4-5",
+        cwd=sample_repo,
+        context_length=100_000,
+        source_provenance_registry=registry,
+        session_id="session-1",
+        turn_id="turn-1",
+        request_id="request-1",
+        policy_digest="policy-1",
+    )
+
+    grant = registry.grants_for_request("request-1")[0]
+    expected = b"".join((sample_repo / "src" / "main.py").read_bytes().splitlines(keepends=True)[3:5])
+    assert result.expanded
+    assert (grant.line_start, grant.line_end) == (4, 5)
+    assert grant.content_sha256 == __import__("hashlib").sha256(expected).hexdigest()
+
+
+def test_context_reference_without_exact_range_cannot_issue_a_grant(sample_repo: Path):
+    from agent.context_references import preprocess_context_references
+    from agent.source_provenance import SourceProvenanceRegistry
+
+    registry = SourceProvenanceRegistry()
+    preprocess_context_references(
+        "Review @file:src/main.py",
+        cwd=sample_repo,
+        context_length=100_000,
+        source_provenance_registry=registry,
+        session_id="session-1",
+        turn_id="turn-1",
+        request_id="request-1",
+        policy_digest="policy-1",
+    )
+
+    assert registry.grants_for_request("request-1") == ()
+
+
+def test_exact_file_reference_through_a_symlink_never_issues_a_grant(sample_repo: Path):
+    from agent.context_references import preprocess_context_references
+    from agent.source_provenance import SourceProvenanceRegistry
+
+    (sample_repo / "src" / "linked.py").symlink_to(sample_repo / "src" / "main.py")
+    registry = SourceProvenanceRegistry()
+
+    result = preprocess_context_references(
+        "Review @file:src/linked.py:1-1",
+        cwd=sample_repo,
+        context_length=100_000,
+        source_provenance_registry=registry,
+        session_id="session-1",
+        turn_id="turn-1",
+        request_id="request-1",
+        policy_digest="policy-1",
+    )
+
+    assert result.expanded
+    assert registry.grants_for_request("request-1") == ()
+    assert any("symlink_path" in warning for warning in result.warnings)
+
+
+def test_exact_file_reference_through_a_symlinked_ancestor_never_issues_a_grant(
+    sample_repo: Path,
+):
+    from agent.context_references import preprocess_context_references
+    from agent.source_provenance import SourceProvenanceRegistry
+
+    (sample_repo / "linked-src").symlink_to(sample_repo / "src", target_is_directory=True)
+    registry = SourceProvenanceRegistry()
+
+    result = preprocess_context_references(
+        "Review @file:linked-src/main.py:1-1",
+        cwd=sample_repo,
+        context_length=100_000,
+        source_provenance_registry=registry,
+        session_id="session-1",
+        turn_id="turn-1",
+        request_id="request-1",
+        policy_digest="policy-1",
+    )
+
+    assert result.expanded
+    assert registry.grants_for_request("request-1") == ()
+    assert any("symlink_path" in warning for warning in result.warnings)
+
+
 
 
 
@@ -121,6 +211,67 @@ def test_missing_file_becomes_warning(sample_repo: Path):
     assert "not found" in result.message.lower()
 
 
+def test_oversized_text_file_falls_back_to_tool_readable_path(tmp_path: Path):
+    from agent.context_references import preprocess_context_references
+
+    payload = tmp_path / "large.txt"
+    payload.write_text("FULL-CONTENT-MARKER\n" + ("x" * 8_000), encoding="utf-8")
+
+    result = preprocess_context_references(
+        f"Inspect @file:{payload.name}",
+        cwd=tmp_path,
+        context_length=1_000,
+    )
+
+    assert result.expanded
+    assert not result.blocked
+    assert str(payload) in result.message
+    assert "too large to inline safely" in result.message
+    assert "read_file" in result.message
+    assert "FULL-CONTENT-MARKER" not in result.message
+    # The fallback block alone carries the message — a companion warning would
+    # repeat "too large to inline safely" under --- Context Warnings ---.
+    assert not result.warnings
+
+
+def test_file_line_range_is_applied_before_oversized_fallback(tmp_path: Path):
+    from agent.context_references import preprocess_context_references
+
+    payload = tmp_path / "large.txt"
+    payload.write_text(
+        "first line\nsecond line\n" + "\n".join("x" * 200 for _ in range(100)),
+        encoding="utf-8",
+    )
+
+    result = preprocess_context_references(
+        f"Inspect @file:{payload.name}:1-2",
+        cwd=tmp_path,
+        context_length=1_000,
+    )
+
+    assert result.expanded
+    assert not result.blocked
+    assert "first line\nsecond line" in result.message
+    assert "too large to inline safely" not in result.message
+
+
+def test_multiple_individually_safe_files_still_obey_aggregate_limit(tmp_path: Path):
+    from agent.context_references import preprocess_context_references
+
+    for name in ("first.txt", "second.txt"):
+        (tmp_path / name).write_text("x" * 1_200, encoding="utf-8")
+
+    result = preprocess_context_references(
+        "Inspect @file:first.txt and @file:second.txt",
+        cwd=tmp_path,
+        context_length=1_000,
+    )
+
+    assert result.blocked
+    assert not result.expanded
+    assert "context injection refused" in "\n".join(result.warnings)
+
+
 def test_binary_reference_block_maps_host_attachment_to_container_path(tmp_path: Path, monkeypatch):
     """Docker backend: a staged binary attachment's host path is rendered as the
     bind-mounted in-container path so the agent's tools can read it.
@@ -149,6 +300,33 @@ def test_binary_reference_block_maps_host_attachment_to_container_path(tmp_path:
     # Default container base for the docker backend is /root/.hermes.
     assert "/root/.hermes/attachments/archive.zip" in result.message
     assert "binary file, not inlined" in result.message
+
+
+def test_oversized_text_reference_maps_host_attachment_to_container_path(
+    tmp_path: Path, monkeypatch
+):
+    from agent.context_references import preprocess_context_references
+
+    hermes_home = tmp_path / ".hermes"
+    attachments = hermes_home / "attachments"
+    attachments.mkdir(parents=True)
+    payload = attachments / "large.txt"
+    payload.write_text("x" * 8_000, encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+    result = preprocess_context_references(
+        f"Read the attachment @file:{payload}",
+        cwd=tmp_path,
+        context_length=1_000,
+    )
+
+    assert result.expanded
+    assert not result.blocked
+    attached_context = result.message.split("--- Attached Context ---", 1)[1]
+    assert "/root/.hermes/attachments/large.txt" in attached_context
+    assert "too large to inline safely" in result.message
 
 
 def test_binary_reference_block_keeps_host_path_on_local_backend(tmp_path: Path, monkeypatch):

@@ -20,18 +20,27 @@ vi.mock('@/store/system-actions', () => ({ runGatewayRestart: vi.fn() }))
 vi.mock('@/store/session', async () => {
   const { atom } = await import('nanostores')
 
+  type LineageRow = { _lineage_root_id?: null | string; id: string }
+
   return {
     $activeSessionId: atom(null),
     $connection: atom(null),
+    $cronSessions: atom([]),
     $currentCwd: atom(''),
     $currentModel: atom(''),
     $gatewayState: atom('open'),
     $messages: atom([]),
+    $messagingSessions: atom([]),
     $selectedStoredSessionId: atom(null),
     $sessions: atom([]),
+    $unreadFinishedSessionIds: atom([]),
+    lineageAliases: (storedId: string) => [storedId],
     rememberedSessionProfile: (_sessions: unknown, _sessionId: null | string, activeProfile: null | string) =>
       (activeProfile ?? '').trim() || 'default',
     requestSessionResume: vi.fn(),
+    sessionMatchesStoredId: (session: LineageRow, storedSessionId: string) =>
+      session.id === storedSessionId || session._lineage_root_id === storedSessionId,
+    sessionPinId: (session: LineageRow) => session._lineage_root_id ?? session.id,
     setSessionOwnerHint: vi.fn(),
     setResumeExhaustedSessionId: vi.fn()
   }
@@ -40,13 +49,17 @@ vi.mock('@/store/session-states', async () => {
   const { atom } = await import('nanostores')
 
   return {
+    $attentionSessionIds: atom([]),
+    $draftSessionIds: atom([]),
     $focusedRuntimeId: atom(null),
     $focusedSessionState: atom(null),
     $focusedStoredSessionId: atom(null),
     $sessionTiles: atom([]),
     $sessionStates: atom({}),
-    sessionTileDelegate: vi.fn(() => null),
-    dropTilesForProfile: vi.fn()
+    $stalledSessionIds: atom([]),
+    $workingSessionIds: atom([]),
+    dropTilesForProfile: vi.fn(),
+    sessionTileDelegate: vi.fn(() => null)
   }
 })
 vi.mock('@/store/profile', async () => {
@@ -69,6 +82,7 @@ vi.mock('@/store/profile', async () => {
     $gatewaySwapTarget: atom(null),
     $hydrationSyncProfile: atom(null),
     $profiles: profiles,
+    $showAllProfiles: atom(false),
     ensureGatewayAgent: vi.fn(),
     ensureGatewayProfile: vi.fn(),
     newSessionInAgent: vi.fn(),
@@ -85,6 +99,7 @@ vi.mock('@/store/gateway', async () => {
 
   return {
     $gateway: atom(null),
+    activeGateway: vi.fn(() => null),
     activeGatewayConnectionId: vi.fn(() => 'local'),
     ensureGatewayForAgent: vi.fn(),
     openGatewayForAgent: vi.fn(),
@@ -322,6 +337,106 @@ describe('connection-aware plugin host APIs', () => {
     expect(vi.mocked(hermesApi).mock.calls.every(([request]) => !('profile' in request))).toBe(true)
     expect(requestGatewayForAgent).not.toHaveBeenCalled()
     expect(requestGatewayForProfile).not.toHaveBeenCalled()
+  })
+
+  it('forwards an explicit timeout so long-running methods outlive the generic deadline', async () => {
+    // #93911: bot_relay.deliver's backend contract tolerates ~1320s (120s turn
+    // lock + a 600s turn, doubled by the bounded retry). Without a way to pass
+    // that bound through, every such call died at the pool's generic 30s
+    // deadline and surfaced as an unclassified failure.
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'remote-worker',
+      targetProfile: 'backend-worker'
+    }
+
+    await host.requestProfile(route, 'bot_relay.deliver', { message: 'hi', profile: 'backend-worker' }, 1_320_000)
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'source-a',
+      'remote-worker',
+      'bot_relay.deliver',
+      { message: 'hi', profile: 'backend-worker' },
+      1_320_000
+    )
+  })
+
+  it('survives a backend that settles at its own ceiling, and only fails past the client deadline', async () => {
+    // #93911 review follow-up (adversarial): the failure mode is not "no
+    // timeout" but "a timeout equal to the backend's ceiling". Model the
+    // documented worst case on a virtual clock — the turn lock wait, a full
+    // timed attempt, the policy-gated re-run, and then the settlement the
+    // handler still has to serialize and transport — and assert that a
+    // deadline set AT the ceiling loses that race while one with margin wins.
+    const LOCK_WAIT_MS = 120_000
+    const ATTEMPT_MS = 600_000
+    const ATTEMPTS = 2
+    const CEILING_MS = LOCK_WAIT_MS + ATTEMPT_MS * ATTEMPTS
+    const SETTLEMENT_MS = 1_000
+
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'remote-worker',
+      targetProfile: 'backend-worker'
+    }
+
+    // A gateway that answers only after the full ceiling plus settlement, and
+    // aborts at whatever deadline the caller handed down.
+    const backendAtItsLimit = async (
+      _connectionId: string,
+      _profile: string,
+      _method: string,
+      _params: Record<string, unknown>,
+      timeoutMs?: number
+    ) =>
+      new Promise((resolve, reject) => {
+        setTimeout(() => resolve({ reply: 'delivered', reason: 'ok' }), CEILING_MS + SETTLEMENT_MS)
+
+        if (timeoutMs !== undefined) {
+          setTimeout(() => reject(new Error('request timed out')), timeoutMs)
+        }
+      })
+
+    vi.useFakeTimers()
+
+    try {
+      vi.mocked(requestGatewayForAgent).mockImplementation(backendAtItsLimit as never)
+
+      // Deadline exactly at the ceiling: the typed settlement loses the race.
+      const atCeiling = host.requestProfile(route, 'bot_relay.deliver', {}, CEILING_MS)
+      const atCeilingSettled = expect(atCeiling).rejects.toThrow(/timed out/)
+      await vi.advanceTimersByTimeAsync(CEILING_MS + SETTLEMENT_MS)
+      await atCeilingSettled
+
+      // Same backend, deadline with settlement margin: the answer gets through.
+      const withMargin = host.requestProfile(route, 'bot_relay.deliver', {}, CEILING_MS + SETTLEMENT_MS * 180)
+
+      const withMarginSettled = expect(withMargin).resolves.toEqual({
+        reason: 'ok',
+        reply: 'delivered'
+      })
+
+      await vi.advanceTimersByTimeAsync(CEILING_MS + SETTLEMENT_MS)
+      await withMarginSettled
+    } finally {
+      vi.useRealTimers()
+      vi.mocked(requestGatewayForAgent).mockReset()
+    }
+  })
+
+  it('leaves callers that pass no timeout on the pool default', async () => {
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'remote-worker',
+      targetProfile: 'backend-worker'
+    }
+
+    await host.requestProfile(route, 'profiles.list', {})
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith('source-a', 'remote-worker', 'profiles.list', {})
   })
 
   it('fails closed when a descriptor omits connection or target profile identity', async () => {

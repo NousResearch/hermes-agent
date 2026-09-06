@@ -1,13 +1,9 @@
-"""Verification runner: execute a Recipe's phases and smoke-test the app.
+"""Verification runner: bootstrap -> build -> test -> start in background ->
+readiness loop -> teardown (scoped port of grok-cli's verify flow).
 
-Scoped port of the execution flow grok-cli's verify sub-agent performs
-(install/bootstrap -> build -> test -> start in background -> curl-style
-readiness loop -> teardown), reimplemented as a plain subprocess runner.
-
-Commands come from the project's own recipe (its package.json scripts,
-Makefile targets, etc.) and are executed with ``shell=True`` on purpose:
-this is a developer tool running the project's own build commands in the
-project's own checkout — the same trust level as the terminal tool.
+Commands come from the project's own recipe and run with ``shell=True`` on
+purpose: a developer tool running the project's own build commands in its own
+checkout — the same trust level as the terminal tool.
 """
 
 from __future__ import annotations
@@ -28,6 +24,11 @@ DEFAULT_PHASE_TIMEOUT = 600.0
 DEFAULT_READY_TIMEOUT = 60.0
 _TAIL_CHARS = 2000
 PHASE_ORDER = ("bootstrap", "build", "test")
+# Project-authored shell commands; see module docstring.
+_SUBPROCESS_KW: dict[str, Any] = dict(
+    shell=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    text=True, errors="replace",
+)
 
 
 @dataclass
@@ -45,12 +46,8 @@ class PhaseResult:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "phase": self.phase,
-            "command": self.command,
-            "exitCode": self.exit_code,
-            "duration": round(self.duration, 3),
-            "ok": self.ok,
-            "timedOut": self.timed_out,
+            "phase": self.phase, "command": self.command, "exitCode": self.exit_code,
+            "duration": round(self.duration, 3), "ok": self.ok, "timedOut": self.timed_out,
             "outputTail": self.output_tail,
         }
 
@@ -66,12 +63,8 @@ class ReadinessResult:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "url": self.url,
-            "ready": self.ready,
-            "statusCode": self.status_code,
-            "duration": round(self.duration, 3),
-            "error": self.error,
-            "outputTail": self.output_tail,
+            "url": self.url, "ready": self.ready, "statusCode": self.status_code,
+            "duration": round(self.duration, 3), "error": self.error, "outputTail": self.output_tail,
         }
 
 
@@ -83,14 +76,11 @@ class VerifyResult:
 
     @property
     def ok(self) -> bool:
-        phases_ok = all(p.ok for p in self.phases)
-        readiness_ok = self.readiness.ready if self.readiness is not None else True
-        return phases_ok and readiness_ok
+        return all(p.ok for p in self.phases) and (self.readiness is None or self.readiness.ready)
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "recipe": self.recipe_name,
-            "ok": self.ok,
+            "recipe": self.recipe_name, "ok": self.ok,
             "phases": [p.to_dict() for p in self.phases],
             "readiness": self.readiness.to_dict() if self.readiness else None,
         }
@@ -101,46 +91,21 @@ def _tail(text: str, limit: int = _TAIL_CHARS) -> str:
 
 
 def _run_phase_command(
-    phase: str,
-    command: str,
-    root: Path,
-    timeout: float,
+    phase: str, command: str, root: Path, timeout: float,
     on_output: Callable[[str], None] | None = None,
 ) -> PhaseResult:
     started = time.monotonic()
     try:
-        proc = subprocess.run(
-            command,
-            shell=True,  # project-authored commands; see module docstring
-            cwd=str(root),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=timeout,
-            text=True,
-            errors="replace",
-        )
-        output = proc.stdout or ""
-        exit_code: int | None = proc.returncode
-        timed_out = False
+        proc = subprocess.run(command, cwd=str(root), timeout=timeout, **_SUBPROCESS_KW)
+        output, exit_code, timed_out = proc.stdout or "", proc.returncode, False
     except subprocess.TimeoutExpired as exc:
         raw = exc.output
-        if isinstance(raw, bytes):
-            output = raw.decode("utf-8", errors="replace")
-        else:
-            output = raw or ""
-        exit_code = None
-        timed_out = True
+        output = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else (raw or "")
+        exit_code, timed_out = None, True
     duration = time.monotonic() - started
     if on_output and output:
         on_output(output)
-    return PhaseResult(
-        phase=phase,
-        command=command,
-        exit_code=exit_code,
-        duration=duration,
-        output_tail=_tail(output),
-        timed_out=timed_out,
-    )
+    return PhaseResult(phase, command, exit_code, duration, _tail(output), timed_out)
 
 
 def _poll_readiness(url: str, timeout: float, interval: float = 1.0) -> tuple[bool, int | None, str | None]:
@@ -160,12 +125,8 @@ def _poll_readiness(url: str, timeout: float, interval: float = 1.0) -> tuple[bo
 
 
 def _terminate_process_group(proc: subprocess.Popen) -> None:
-    """Terminate the started app and its whole process group cleanly.
-
-    On POSIX the child is spawned with ``start_new_session=True`` so we can
-    signal the whole group; on Windows (no ``os.killpg``) we fall back to
-    terminating just the direct child.
-    """
+    """SIGTERM the app's process group (``start_new_session=True`` on POSIX; just the
+    direct child on Windows, which lacks ``os.killpg``), SIGKILL after 10s."""
     if proc.poll() is not None:
         return
     killpg = getattr(os, "killpg", None)
@@ -175,22 +136,23 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
         try:
             pgid = getpgid(proc.pid)
         except (ProcessLookupError, PermissionError):
-            pgid = None
-    try:
-        if pgid is not None and killpg is not None:
-            killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX-only branch (killpg checked above)
+            pass
+
+    def stop(sig: int, fallback: Callable[[], None]) -> None:
+        if pgid is not None:
+            killpg(pgid, sig)  # windows-footgun: ok — POSIX-only branch (pgid only set when killpg exists)
         else:
-            proc.terminate()
+            fallback()
+
+    try:
+        stop(signal.SIGTERM, proc.terminate)
     except (ProcessLookupError, PermissionError):
         return
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
         try:
-            if pgid is not None and killpg is not None:
-                killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX-only branch (killpg checked above)
-            else:
-                proc.kill()
+            stop(getattr(signal, "SIGKILL", signal.SIGTERM), proc.kill)
         except (ProcessLookupError, PermissionError):
             pass
         try:
@@ -200,80 +162,47 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
 
 
 def _run_start_phase(
-    recipe: Recipe,
-    root: Path,
-    ready_timeout: float,
-    port_override: int | None = None,
+    recipe: Recipe, root: Path, ready_timeout: float, port_override: int | None = None
 ) -> ReadinessResult:
     assert recipe.start is not None
     port = port_override or recipe.port or 8000
     url = f"http://127.0.0.1:{port}{recipe.readiness_path}"
     started = time.monotonic()
-    proc = subprocess.Popen(
-        recipe.start,
-        shell=True,  # project-authored command; see module docstring
-        cwd=str(root),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,  # own process group for clean teardown
-        text=True,
-        errors="replace",
-    )
+    # start_new_session: own process group for clean teardown.
+    proc = subprocess.Popen(recipe.start, cwd=str(root), start_new_session=True, **_SUBPROCESS_KW)
     output = ""
     try:
         ready, status, error = _poll_readiness(url, ready_timeout)
     finally:
         _terminate_process_group(proc)
         try:
-            if proc.stdout is not None:
-                output = proc.stdout.read() or ""
+            output = proc.stdout.read() or "" if proc.stdout is not None else ""
         except (OSError, ValueError):
             output = ""
-    return ReadinessResult(
-        url=url,
-        ready=ready,
-        status_code=status,
-        duration=time.monotonic() - started,
-        error=error,
-        output_tail=_tail(output),
-    )
+    return ReadinessResult(url, ready, status, time.monotonic() - started, error, _tail(output))
 
 
 def run_verify(
-    root: Path,
-    recipe: Recipe,
-    phases: tuple[str, ...] | list[str] | None = None,
-    phase_timeout: float = DEFAULT_PHASE_TIMEOUT,
-    ready_timeout: float = DEFAULT_READY_TIMEOUT,
-    skip_start: bool = False,
-    port_override: int | None = None,
-    stop_on_failure: bool = True,
+    root: Path, recipe: Recipe, phases: tuple[str, ...] | list[str] | None = None,
+    phase_timeout: float = DEFAULT_PHASE_TIMEOUT, ready_timeout: float = DEFAULT_READY_TIMEOUT,
+    skip_start: bool = False, port_override: int | None = None, stop_on_failure: bool = True,
     on_output: Callable[[str], None] | None = None,
 ) -> VerifyResult:
-    """Run a verify pass for ``recipe`` at project ``root``.
-
-    Executes the selected command phases sequentially, then (unless
-    ``skip_start`` or a phase failed) launches ``recipe.start`` in the
-    background, polls the readiness URL, and tears the process group down.
-    """
+    """Run the selected command phases sequentially, then (unless ``skip_start`` or a
+    phase failed) boot ``recipe.start``, poll readiness, and tear the process group down."""
     root = Path(root)
     selected = tuple(phases) if phases else PHASE_ORDER + ("start",)
     result = VerifyResult(recipe_name=recipe.name)
 
-    failed = False
     for phase in PHASE_ORDER:
         if phase not in selected:
             continue
         for command in getattr(recipe, phase):
             phase_result = _run_phase_command(phase, command, root, phase_timeout, on_output)
             result.phases.append(phase_result)
-            if not phase_result.ok:
-                failed = True
-                if stop_on_failure:
-                    return result
+            if not phase_result.ok and stop_on_failure:
+                return result
 
-    if skip_start or "start" not in selected or failed or not recipe.start:
-        return result
-
-    result.readiness = _run_start_phase(recipe, root, ready_timeout, port_override)
+    if not skip_start and "start" in selected and recipe.start and all(p.ok for p in result.phases):
+        result.readiness = _run_start_phase(recipe, root, ready_timeout, port_override)
     return result

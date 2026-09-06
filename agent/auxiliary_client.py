@@ -1102,7 +1102,7 @@ def _fast_model_from_catalog(provider_id: str) -> str:
     is_nous = provider_id.strip().lower() == "nous"
     try:
         from hermes_cli.auth import resolve_api_key_provider_credentials
-        from hermes_cli.models import fetch_models_with_pricing
+        from hermes_cli.models_pricing import fetch_models_with_pricing
         from providers import get_provider_profile
 
         # The provider's own credentials, because most ``/v1/models`` endpoints
@@ -1124,7 +1124,7 @@ def _fast_model_from_catalog(provider_id: str) -> str:
             # read returns the full catalog, and a model picked from it is
             # refused at request time by the org's policy.
             try:
-                from hermes_cli.models import _resolve_nous_pricing_credentials
+                from hermes_cli.models_pricing import _resolve_nous_pricing_credentials
 
                 api_key, base_url = _resolve_nous_pricing_credentials()
             except Exception:
@@ -1143,7 +1143,7 @@ def _fast_model_from_catalog(provider_id: str) -> str:
         # and leaves the policy catalog with no expiry.
         _nous_kwargs = {}
         if is_nous:
-            from hermes_cli.models import _NOUS_CATALOG_TTL_SECONDS
+            from hermes_cli.models_pricing import _NOUS_CATALOG_TTL_SECONDS
 
             _nous_kwargs = {
                 "include_sale_original": True,
@@ -1161,7 +1161,7 @@ def _fast_model_from_catalog(provider_id: str) -> str:
         # The catalog's keys are a source of ids here, so the policy narrows
         # them as it does the pickers' lists.
         try:
-            from hermes_cli.models import (
+            from hermes_cli.models_pricing import (
                 nous_policy_allowed_ids,
                 restrict_to_nous_policy,
             )

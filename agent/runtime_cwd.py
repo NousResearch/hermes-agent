@@ -50,6 +50,12 @@ def clear_session_cwd() -> None:
     _SESSION_CWD.set("")
 
 
+def scope_terminal_cwd() -> str:
+    """Return the session-scoped terminal cwd, falling back to the environment."""
+    override = _session_cwd_override()
+    return override or str(os.environ.get("TERMINAL_CWD") or "").strip()
+
+
 def _session_cwd_override() -> str:
     value = _SESSION_CWD.get()
     if value is _UNSET:

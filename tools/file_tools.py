@@ -723,6 +723,11 @@ def _get_hermes_config_resolved() -> str | None:
 
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
+    from tools.file_tools_write_guards import _check_sensitive_path as _guard_check_sensitive_path
+
+    return _guard_check_sensitive_path(filepath, task_id)
+
+    # Kept below only as a compatibility reference for older callers.
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):

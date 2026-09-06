@@ -44,11 +44,12 @@ from tools.terminal_tool_lifecycle import (
     _evict_environment_for_task, cleanup_all_environments, ensure_task_env,
 )
 from tools.terminal_tool_config import (
-    _is_container_backend, _is_host_cwd, _is_unusable_container_cwd, _parse_env_var,
-    _plugin_env_flag, _quiet, _safe_getcwd, _tenv, _tenv_bool,
+    _CONTAINER_BACKENDS, _is_container_backend, _is_host_cwd, _is_unusable_container_cwd,
+    _parse_env_var, _plugin_env_flag, _quiet, _safe_getcwd, _tenv, _tenv_bool,
 )
 from tools.terminal_tool_backends import (
     _REQUIREMENT_CHECKERS, _VERCEL_SANDBOX_DEFAULT_CWD, _check_plugin_requirements,
+    _create_environment,
 )
 # display_hermes_home imported lazily at call site (stale-module safety during hermes update)
 from tools.tool_backend_helpers import coerce_modal_mode, managed_nous_tools_enabled

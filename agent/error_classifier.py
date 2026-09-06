@@ -69,6 +69,7 @@ class FailoverReason(enum.Enum):
     format_error = "format_error"        # 400 bad request — abort or strip + retry
     invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
+    reasoning_mandatory = "reasoning_mandatory"  # Provider requires reasoning for this model — retry with reasoning enabled
 
     # Provider-specific
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
@@ -1004,6 +1005,16 @@ def classify_api_error(
             FailoverReason.content_policy_blocked,
             retryable=False,
             should_fallback=True,
+        )
+
+    # Reasoning-required endpoints reject an explicit disable with a 400, but
+    # the request is recoverable by retrying with reasoning enabled.
+    if status_code == 400 and "reasoning is mandatory" in error_msg:
+        return _result(
+            FailoverReason.reasoning_mandatory,
+            retryable=True,
+            should_fallback=False,
+            should_compress=False,
         )
 
     # Anthropic thinking block recovery (400).  Two distinct failure modes,

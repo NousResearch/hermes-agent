@@ -1,0 +1,7 @@
+name: doc-sync
+version: 1.0.0
+description: "Auto-sync documentation after code changes. Tracks modified files and updates CHANGELOG/INDEX on session end."
+author: "Hermes Agent"
+hooks:
+  - post_tool_call
+  - on_session_end

@@ -366,10 +366,14 @@ def _is_codex_interim(m: Dict) -> bool:
 
 def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
     """Fold a consecutive assistant ``msg`` into ``prev`` (union tool_calls, concat text)."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    mutated = False
     prev_calls = list(prev.get("tool_calls") or [])
     new_calls = list(msg.get("tool_calls") or [])
     if new_calls:
         prev["tool_calls"] = prev_calls + new_calls
+        mutated = True
     elif prev_calls:
         prev["tool_calls"] = prev_calls
     else:
@@ -384,7 +388,9 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
         # resume, subagents, cron) and is replayed on the next turn — which is how #58755 kept reproducing
         # after the chokepoint fix (#77921). Popping is non-destructive: an empty array carries no
         # information.
-        prev.pop("tool_calls", None)
+        if "tool_calls" in prev:
+            prev.pop("tool_calls", None)
+            mutated = True
     # Concatenate plain-text content only; leave multimodal (list) content alone.
     prev_content = prev.get("content")
     new_content = msg.get("content")
@@ -403,6 +409,7 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
     # providers need one on the merged tool-call turn).
     if not prev.get("reasoning_content") and msg.get("reasoning_content"):
         prev["reasoning_content"] = msg["reasoning_content"]
+        mutated = True
     # A stale ``api_content`` sidecar overrides ``content`` at API-build time and would replay
     # pre-merge bytes; drop it only when content actually changed.
     # ``prev`` may carry an ``api_content`` sidecar (the exact bytes previously sent to the API, e.g. a
@@ -419,6 +426,12 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
     # invariant for no reason (wz-heng, #78063 review).
     if content_rewritten:
         drop_stale_api_content(prev)
+        mutated = True
+    if mutated:
+        # A merged-into row whose bytes changed is no longer what the DB
+        # holds: pop the persisted marker so the next flush rewrites it
+        # (same contract as the api_content sidecar above).
+        prev.pop(_DB_PERSISTED_MARKER, None)
 
 
 def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int]:
@@ -507,6 +520,8 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
                 answered.update(tool_result_id_variants(tid))
         kept_calls = [tc for tc in msg["tool_calls"] if tool_call_id_variants(tc) & answered]
         if len(kept_calls) != len(msg["tool_calls"]):
+            from agent.context_compressor import _DB_PERSISTED_MARKER
+
             repairs += 1
             if not kept_calls and not _msg_has_payload({k: v for k, v in msg.items() if k != "tool_calls"}):
                 # Pruned calls were the only payload; drop the turn (empty assistant messages 400).
@@ -515,6 +530,8 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
                 msg["tool_calls"] = kept_calls
             else:
                 msg.pop("tool_calls", None)
+            # Pruned turn differs from the flushed row: force a rewrite.
+            msg.pop(_DB_PERSISTED_MARKER, None)
         pruned.append(msg)
     return pruned, repairs
 
@@ -542,6 +559,10 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             )
             # Merged content invalidates the api_content sidecar; drop it so replay cannot use stale bytes.
             drop_stale_api_content(prev)
+            # ... and the persisted marker, so the next flush rewrites the merged row.
+            from agent.context_compressor import _DB_PERSISTED_MARKER
+
+            prev.pop(_DB_PERSISTED_MARKER, None)
             repairs += 1
             continue
         merged.append(msg)
@@ -572,6 +593,11 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     if repairs > 0:
         # Rewrite in place so persistence/return value/DB flush see the repaired sequence.
         messages[:] = current
+        # Merges mutate flushed dicts in place and drop rows: the settled
+        # flush-scan prefix snapshots pre-repair order, so force a full
+        # re-scan on the next flush instead of trusting it.
+        if hasattr(agent, "_db_flush_scan_prefix"):
+            agent._db_flush_scan_prefix = None
     return repairs
 
 

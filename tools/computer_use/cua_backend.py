@@ -44,10 +44,21 @@ def _computer_use_cfg() -> Dict[str, Any]:
     return {}
 
 def _remote_cfg() -> Optional[Any]:
-    """Active remote CUA transport config, or None (local mode / broken config falls open to local)."""
-    with contextlib.suppress(Exception):
+    """Active remote CUA transport config, or None when remote is absent / disabled.
+
+    ``resolve_remote_cua_config`` raises ``RuntimeError`` for every misconfiguration
+    (bad token, invalid URL, non-HTTPS non-loopback, wrong permission mode …) — that
+    is the legitimate 'not configured / misconfigured' signal and is suppressed so the
+    caller falls back to local mode (``check_computer_use_requirements`` fail-closes
+    separately at the registry layer).  Any *other* exception (``ImportError``,
+    ``KeyError``, ``TypeError`` …) is a config-loading bug, not a 'not configured'
+    signal; it propagates so the error surfaces instead of silently selecting the
+    local desktop.
+    """
+    try:
         return resolve_remote_cua_config(_computer_use_cfg(), permission_mode="standard")
-    return None
+    except RuntimeError:
+        return None
 
 def _cua_no_overlay() -> bool:
     """Pass ``--no-overlay``? ``computer_use.no_overlay`` overrides; else off on macOS (cursor-overlay redraw

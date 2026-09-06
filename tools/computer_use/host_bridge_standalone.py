@@ -4,11 +4,19 @@ Runs on any machine with cua-driver + Python 3.11+. Starts Xvfb (if no DISPLAY),
 spawns cua-driver in MCP stdio mode, and wraps it behind the authenticated
 streamable-HTTP bridge so a remote Hermes agent can drive this desktop.
 
+--allowed-hosts entries are exact-match Host-header values: the bridge compares
+each incoming request's ``Host`` header against the list verbatim, so each entry
+must include the port when the bridge listens on a nonstandard port (e.g.
+``localhost:8765``, not bare ``localhost``).  --allowed-origins is a SEPARATE
+list for browser-origin protection (the ``Origin`` header) and is not an
+alternative spelling of --allowed-hosts; the two headers are validated
+independently.
+
 Usage:
     export HERMES_CUA_REMOTE_TOKEN=$(python3 -c "import secrets; print(secrets.token_hex(32))")
     export CUA_DRIVER_PERMISSION_MODE=standard
     python3 host_bridge_standalone.py --port 8765 \
-        --allowed-hosts localhost,127.0.0.1 \
+        --allowed-hosts localhost:8765,127.0.0.1:8765 \
         --allowed-origins http://localhost:8765,http://127.0.0.1:8765
 """
 

@@ -292,7 +292,7 @@ def _configured_model(model_cfg: object) -> str:
 
 
 def _resolve_model_and_provider(cfg: dict, model: Optional[str], provider: Optional[str]) -> _ModelChoice:
-    """Effective model = arg → env → config; provider = arg → auto-detect → config/env.
+    """Effective model = arg → env → config; provider = arg → configured declaration → auto-detect → config/env.
 
     Auto-detection only runs when the model was explicitly requested (arg or env var) — same
     semantic as ``/model <name>`` — because the configured default provider may not host it.
@@ -320,6 +320,21 @@ def _resolve_model_and_provider(cfg: dict, model: Optional[str], provider: Optio
         if isinstance(model_cfg, dict):
             cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         current_provider = cfg_provider or os.getenv("HERMES_INFERENCE_PROVIDER", "").strip().lower() or "auto"
+        from hermes_cli.model_switch import _configured_provider_matches
+
+        configured_matches = _configured_provider_matches(
+            explicit_model,
+            cfg.get("providers"),
+            cfg.get("custom_providers"),
+        )
+        current_keys = (current_provider, current_provider.removeprefix("custom:"))
+        configured_provider = next((key for key in current_keys if key in configured_matches), None)
+        if configured_provider is None and len(configured_matches) == 1:
+            configured_provider = next(iter(configured_matches))
+        if configured_provider is not None:
+            choice.provider = configured_provider
+            choice.model = configured_matches[configured_provider]
+            return choice
         detected = detect_provider_for_model(explicit_model, current_provider)
         if detected:
             choice.provider, choice.model = detected

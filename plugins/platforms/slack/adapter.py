@@ -6516,7 +6516,8 @@ async def _standalone_upload_file(
 
 async def _standalone_send_media(
     token: str, chat_id: str, media_files: list, thread_id: Optional[str], formatted: Optional[str],
-    formatted_caption: Optional[str], unfurl_kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    formatted_caption: Optional[str], unfurl_kwargs: Dict[str, Any], *,
+    base_url: Optional[str] = None) -> Dict[str, Any]:
     """Media branch of ``_standalone_send``: ``files_upload_v2`` per file (+ optional text post).
     ``caption`` rides as ``initial_comment`` on the first successful upload unless
     link-preview controls are explicit (the upload API cannot carry them)."""
@@ -6529,7 +6530,12 @@ async def _standalone_send_media(
             'error': "slack_sdk not installed. Run: pip install 'slack-sdk' (required for Slack MEDIA delivery via send_message)",
         }
     client = _AsyncWebClient(token=token)
-    _apply_slack_proxy(client, resolve_proxy_url())
+    _apply_slack_base_url(client, base_url)
+    # One proxy decision per client, taken against the endpoint host — same
+    # rule as the text-only leg in _standalone_send. files_upload_v2 then
+    # posts the bytes to whatever upload URL the endpoint hands out.
+    _apply_slack_proxy(
+        client, _resolve_slack_proxy_url(_slack_endpoint_bypass_hosts(base_url)))
     last_message_id = None
     # The upload API cannot carry unfurl controls; explicit ones need a separate caption post.
     caption_as_upload_comment = bool(formatted_caption) and not unfurl_kwargs
@@ -6640,117 +6646,9 @@ async def _standalone_send(
     formatted_caption = _standalone_format_mrkdwn(caption) if caption else caption
     unfurl_kwargs = _slack_unfurl_kwargs(getattr(pconfig, "extra", None))
     if media_files:
-        # Function-local import: tests inject a fake slack_sdk via
-        # sys.modules, and installs without slack_sdk get a clean error
-        # instead of an ImportError at module load.
-        try:
-            from slack_sdk.web.async_client import AsyncWebClient as _AsyncWebClient
-        except ImportError:
-            return {
-                "error": (
-                    "slack_sdk not installed. Run: pip install 'slack-sdk' "
-                    "(required for Slack MEDIA delivery via send_message)"
-                )
-            }
-
-        client = _AsyncWebClient(token=token)
-        _apply_slack_base_url(client, _base_url)
-        # One proxy decision per client, taken against the endpoint host —
-        # same rule as the text-only leg below. files_upload_v2 then posts the
-        # bytes to whatever upload URL the endpoint hands out (files.slack.com
-        # unless it rewrites them), reusing that decision.
-        _apply_slack_proxy(
-            client, _resolve_slack_proxy_url(_slack_endpoint_bypass_hosts(_base_url))
-        )
-        last_message_id = None
-
-        # Caption mode: skip a separate text post; comment rides the upload.
-        text_to_send = "" if formatted_caption else (formatted or "")
-        if text_to_send.strip():
-            post_kwargs: Dict[str, Any] = {
-                "channel": chat_id,
-                "text": text_to_send,
-                "mrkdwn": True,
-            }
-            if thread_id:
-                post_kwargs["thread_ts"] = thread_id
-            try:
-                post_payload = _slack_response_payload(
-                    await client.chat_postMessage(**post_kwargs)
-                )
-                if not post_payload.get("ok", True):
-                    return {
-                        "error": f"Slack API error: {post_payload.get('error', 'unknown')}"
-                    }
-                last_message_id = post_payload.get("ts")
-            except Exception as e:
-                return {"error": f"Slack send failed: {e}"}
-
-        caption_pending = bool(formatted_caption)
-        uploaded_any = False
-        for media_path, _is_voice in media_files:
-            if not os.path.exists(media_path):
-                warning = f"Media file not found, skipping: {media_path}"
-                logger.warning("[Slack] %s", warning)
-                warnings.append(warning)
-                if caption_pending:
-                    # Keep caption deliverable even when the file is missing.
-                    try:
-                        fallback_kwargs: Dict[str, Any] = {
-                            "channel": chat_id,
-                            "text": formatted_caption,
-                            "mrkdwn": True,
-                        }
-                        if thread_id:
-                            fallback_kwargs["thread_ts"] = thread_id
-                        fb = _slack_response_payload(
-                            await client.chat_postMessage(**fallback_kwargs)
-                        )
-                        if fb.get("ok", True):
-                            last_message_id = fb.get("ts") or last_message_id
-                            caption_pending = False
-                    except Exception:
-                        logger.warning(
-                            "[Slack] Caption-fallback send failed for missing media",
-                            exc_info=True,
-                        )
-                continue
-            try:
-                upload_result = await _standalone_upload_file(
-                    client,
-                    chat_id,
-                    media_path,
-                    initial_comment=formatted_caption if caption_pending else "",
-                    thread_id=thread_id,
-                )
-                if upload_result.get("error"):
-                    warnings.append(
-                        f"Failed to send media {media_path}: {upload_result['error']}"
-                    )
-                    continue
-                uploaded_any = True
-                caption_pending = False
-                last_message_id = upload_result.get("message_id") or last_message_id
-            except Exception as e:
-                warning = f"Failed to send media {media_path}: {e}"
-                logger.error("[Slack] %s", warning, exc_info=True)
-                warnings.append(warning)
-
-        if last_message_id is None and not uploaded_any and not text_to_send.strip():
-            error = "No deliverable text or media remained after processing"
-            if warnings:
-                return {"error": error, "warnings": warnings}
-            return {"error": error}
-
-        result: Dict[str, Any] = {
-            "success": True,
-            "platform": "slack",
-            "chat_id": chat_id,
-            "message_id": last_message_id,
-        }
-        if warnings:
-            result["warnings"] = warnings
-        return result
+        return await _standalone_send_media(
+            token, chat_id, media_files, thread_id, formatted, formatted_caption, unfurl_kwargs,
+            base_url=_base_url)
 
     # --- Text-only path (existing aiohttp chat.postMessage) ---
     if not formatted or not formatted.strip():

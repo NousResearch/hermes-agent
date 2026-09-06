@@ -22,8 +22,63 @@ class _IdleAgent:
         self.interrupts.append(reason)
 
 
+class _UnavailableActivityAgent:
+    def __init__(self):
+        self.interrupts = []
+
+    def get_activity_summary(self):
+        return {"seconds_since_activity": None}
+
+    def interrupt(self, reason):
+        self.interrupts.append(reason)
+
+
 def _state():
     return threading.Event(), threading.Event(), threading.Lock()
+
+
+def test_thread_watchdog_times_out_when_agent_activity_is_unavailable(monkeypatch):
+    agent = _UnavailableActivityAgent()
+    worker_done, timeout_fired, cleanup_lock = _state()
+    calls = []
+    monkeypatch.setattr(
+        process_registry,
+        "kill_started_since",
+        lambda task_id, baseline, *, source: calls.append(
+            (task_id, baseline, source)
+        )
+        or 0,
+    )
+
+    watchdog = threading.Thread(
+        target=_watch_gateway_turn_inactivity,
+        kwargs={
+            "agent_holder": [agent],
+            "task_id": "session-without-agent",
+            "process_baseline": frozenset(),
+            "timeout": 0.03,
+            "worker_done": worker_done,
+            "timeout_fired": timeout_fired,
+            "cleanup_lock": cleanup_lock,
+            "poll_interval": 0.01,
+        },
+    )
+    watchdog.start()
+    watchdog.join(timeout=1)
+    if watchdog.is_alive():
+        worker_done.set()
+        watchdog.join(timeout=1)
+
+    assert not watchdog.is_alive()
+    assert timeout_fired.is_set()
+    assert agent.interrupts == ["Execution timed out (inactivity)"]
+    assert calls == [
+        (
+            "session-without-agent",
+            frozenset(),
+            "gateway_turn_timeout",
+        )
+    ]
 
 
 def test_thread_watchdog_reaps_only_processes_created_by_timed_out_turn(monkeypatch):

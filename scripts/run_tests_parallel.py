@@ -244,40 +244,49 @@ def _sandboxed_test_command(
         # any time, and native code must not gain it merely because the
         # Python guard does not know its name yet.
         home_is_masked = real_home.is_dir()
+        masked_roots = tuple(
+            root
+            for root in (real_home, Path("/tmp"), Path("/run"), Path("/var/tmp"))
+            if root.is_dir()
+        )
         if home_is_masked:
             wrapped.extend(("--tmpfs", str(real_home)))
-            restored = tuple(
-                required
-                for required in (
-                    repo_root,
-                    Path(sys.prefix).resolve(),
-                    Path(sys.base_prefix).resolve(),
-                    Path(sys._base_executable).absolute().parent.parent,
-                )
-                if required.is_dir() and _under(required, real_home)
+        restored = tuple(
+            required
+            for required in (
+                repo_root,
+                Path(sys.prefix).resolve(),
+                Path(sys.base_prefix).resolve(),
+                Path(sys._base_executable).absolute().parent.parent,
             )
-            bind_targets = [
-                *restored,
-                *additional_writable_paths,
-                *additional_readonly_paths,
-            ]
-            if parent_sandbox_root is not None:
-                bind_targets.append(parent_sandbox_root)
-            bind_targets.append(sandbox_root)
-            if ephemeral_docker_socket is not None:
-                bind_targets.append(ephemeral_docker_socket.parent)
-            parents: set[Path] = set()
-            for required in bind_targets:
-                if not _under(required, real_home):
-                    continue
-                parent = required.parent
-                while parent != real_home:
-                    parents.add(parent)
-                    parent = parent.parent
-            for parent in sorted(parents, key=lambda item: len(item.parts)):
-                wrapped.extend(("--dir", str(parent)))
-            for required in restored:
-                wrapped.extend(("--ro-bind", str(required), str(required)))
+            if required.is_dir()
+        )
+        bind_targets = [
+            *restored,
+            *additional_writable_paths,
+            *additional_readonly_paths,
+        ]
+        if parent_sandbox_root is not None:
+            bind_targets.append(parent_sandbox_root)
+        bind_targets.append(sandbox_root)
+        if ephemeral_docker_socket is not None:
+            bind_targets.append(ephemeral_docker_socket.parent)
+        parents: set[Path] = set()
+        for required in bind_targets:
+            enclosing = [root for root in masked_roots if _under(required, root)]
+            if not enclosing:
+                continue
+            mount_root = max(enclosing, key=lambda item: len(item.parts))
+            if required == mount_root:
+                raise RuntimeError("refusing to restore an entire masked host root")
+            parent = required.parent
+            while parent != mount_root:
+                parents.add(parent)
+                parent = parent.parent
+        for parent in sorted(parents, key=lambda item: len(item.parts)):
+            wrapped.extend(("--dir", str(parent)))
+        for required in restored:
+            wrapped.extend(("--ro-bind", str(required), str(required)))
         for path in additional_readonly_paths:
             if path.exists():
                 wrapped.extend(("--ro-bind", str(path), str(path)))

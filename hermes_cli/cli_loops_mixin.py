@@ -560,14 +560,16 @@ class CLILoopsMixin:
         last_response = self._last_assistant_response_text()
         if not last_response.strip():
             return
+        _active_deleg = 0
         try:
-            from hermes_cli.goals import gather_background_processes as _gather_bg
+            from hermes_cli.goals import count_active_delegations, gather_background_processes as _gather_bg
             # Only THIS session's processes: subagents' pollers must not park the parent's goal.
             _bg_procs = _gather_bg(owner_task_id=getattr(self, "session_id", None) or None)
+            _active_deleg = count_active_delegations(getattr(self.agent, "session_id", None))
         except Exception:
             _bg_procs = None
         decision = mgr.evaluate_after_turn(
-            last_response, user_initiated=True, background_processes=_bg_procs)
+            last_response, user_initiated=True, background_processes=_bg_procs, active_delegations=_active_deleg)
         _print_decision_message(decision)
         if decision.get("should_continue"):
             prompt = decision.get("continuation_prompt")

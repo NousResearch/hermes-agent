@@ -292,15 +292,17 @@ def _goal_followup_after_turn(
         return goal_followup
     try:
         if session.get("session_key") and (goal_mgr := _active_goal_manager(session)) is not None:
+            _active_deleg = 0
             try:
-                from hermes_cli.goals import gather_background_processes as _gather_bg
+                from hermes_cli.goals import count_active_delegations, gather_background_processes as _gather_bg
                 # Only THIS session's processes (TUI turns register under session_key): subagents'
                 # pollers must not park the parent's goal. Same rule as the CLI and gateway loops.
                 _bg_procs = _gather_bg(owner_task_id=session.get("session_key") or None)
+                _active_deleg = count_active_delegations(getattr(session.get("agent"), "session_id", None))
             except Exception:
                 _bg_procs = None
             decision = goal_mgr.evaluate_after_turn(
-                raw, user_initiated=True, background_processes=_bg_procs)
+                raw, user_initiated=True, background_processes=_bg_procs, active_delegations=_active_deleg)
             if verdict_msg := decision.get("message") or "":
                 _emit("status.update", sid, {"kind": "goal", "text": verdict_msg})
             if decision.get("should_continue") and (

@@ -45,6 +45,44 @@ class _ExecApprovalDeclined(RuntimeError):
     """
 
 
+class _BoundedCallbackQueue(queue.Queue):
+    """Best-effort telemetry; capacity never blocks a callback producer."""
+
+    def __init__(self, maxsize=512):
+        super().__init__(maxsize=maxsize)
+        self._dropped = 0
+
+    def offer(self, item, *, latest=False):
+        # Use Queue's mutex for one atomic eviction/admission, including ordinary
+        # Queue producers and consumers. Its storage and wakeups stay standard.
+        with self.not_full:
+            if self.maxsize > 0 and self._qsize() >= self.maxsize:
+                self._dropped += 1
+                if not latest:
+                    return False
+                self._get()
+                self.unfinished_tasks -= 1
+            self._put(item)
+            self.unfinished_tasks += 1
+            self.not_empty.notify()
+            return True
+
+    @property
+    def dropped(self):
+        with self.mutex:
+            return self._dropped
+
+
+def _offer_callback_event(callback_queue, item, *, latest=False):
+    if isinstance(callback_queue, _BoundedCallbackQueue):
+        return callback_queue.offer(item, latest=latest)
+    try:
+        callback_queue.put_nowait(item)
+        return True
+    except queue.Full:
+        return False
+
+
 class TurnRunner:
     """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
 
@@ -108,7 +146,7 @@ class TurnRunner:
         if ctx.log_queue is not None and event_type == "tool.started" and tool_name and tool_name != "_thinking":
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             preview_str = f' "{preview}"' if preview else ""
-            ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
+            _offer_callback_event(ctx.log_queue, f"{ts}  {tool_name}:{preview_str}".rstrip())
         if not ctx.progress_queue or not ctx._run_still_current():
             return
         if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
@@ -119,7 +157,7 @@ class TurnRunner:
         if event_type == "_thinking" or tool_name == "_thinking":
             thinking_text = (preview if tool_name == "_thinking" else tool_name) if ctx._thinking_enabled else None
             if thinking_text:
-                ctx.progress_queue.put(f"💬 {thinking_text}")
+                _offer_callback_event(ctx.progress_queue, f"💬 {thinking_text}")
             return
         # Native task cards consume the ID-bearing tool_start/tool_complete callbacks instead;
         # name-correlated text events would duplicate cards and mispair concurrent same-tool calls.
@@ -144,10 +182,12 @@ class TurnRunner:
         # "new" mode: only report when tool changes
         if ctx.progress_mode == "new" and tool_name == ctx.last_tool[0]:
             return
-        ctx.last_tool[0] = tool_name
+        previous_terminal_block = ctx.last_was_terminal_block[0]
         msg = self._progress_build_message(tool_name, preview, args)
-        if msg is not None:
-            self._progress_emit(msg)
+        if self._progress_emit(msg, dedup=ctx.progress_mode != "verbose"):
+            ctx.last_tool[0] = tool_name
+        else:
+            ctx.last_was_terminal_block[0] = previous_terminal_block
 
     def _progress_subagent_notice(self, preview, kwargs: dict) -> None:
         """Only terminal failure statuses render (same notice rail as credit warnings)."""
@@ -192,9 +232,9 @@ class TurnRunner:
                 cfg = _load_gateway_config()
                 gate_on = is_truthy_value(cfg_get(cfg, "display", "tool_progress_command"), default=False)
                 if gate_on and not is_seen(cfg, TOOL_PROGRESS_FLAG):
-                    ctx.long_tool_hint_fired[0] = True
-                    ctx.progress_queue.put(tool_progress_hint_gateway())
-                    mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
+                    if _offer_callback_event(ctx.progress_queue, tool_progress_hint_gateway()):
+                        ctx.long_tool_hint_fired[0] = True
+                        mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
         except Exception as err:
             logger.debug("tool-progress onboarding hint failed: %s", err)
 
@@ -229,7 +269,7 @@ class TurnRunner:
         return f"{header}```\n{cmd_full}\n```", f"{header}```\n{cmd_short}\n```"
 
     def _progress_build_message(self, tool_name, preview, args) -> Optional[str]:
-        """Render the progress line. Verbose mode queues directly (no dedup) and returns None."""
+        """Render a progress line without advancing accepted-event state."""
         ctx = self._ctx
         from agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚙️")
@@ -253,8 +293,7 @@ class TurnRunner:
                 code = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
             elif code is None:
                 code = f"{emoji} {tool_name}: \"{preview}\"" if preview else f"{emoji} {tool_name}..."
-            ctx.progress_queue.put(code)
-            return None
+            return code
         if code is not None:
             return code
         if not preview:
@@ -269,24 +308,28 @@ class TurnRunner:
             return f"{emoji} {tool_name}: \"{preview}\""
         return f"{emoji} {verb}" if verb_drops_preview(tool_name) else f"{emoji} {verb}{tool_verb_connector(tool_name)}{preview}"
 
-    def _progress_emit(self, msg: str) -> None:
+    def _progress_emit(self, msg: str, *, dedup=True) -> bool:
         """Dedup consecutive identical lines (execute_code boilerplate), then route to the native
         stream bubble when the consumer accepts tool progress, else the progress queue."""
         ctx = self._ctx
+        if not dedup:
+            return _offer_callback_event(ctx.progress_queue, msg)
         sc = self._stream_consumer()
         native = sc is not None and getattr(sc, "accepts_tool_progress", False)
         if msg == ctx.last_progress_msg[0]:
-            ctx.repeat_count[0] += 1
+            repeats = ctx.repeat_count[0] + 1
             if native:
-                sc.on_tool_progress(f"{msg} (×{ctx.repeat_count[0] + 1})")
-            else:
-                ctx.progress_queue.put(("__dedup__", msg, ctx.repeat_count[0]))
-            return
-        ctx.last_progress_msg[0], ctx.repeat_count[0] = msg, 0
+                sc.on_tool_progress(f"{msg} (×{repeats + 1})")
+            elif not _offer_callback_event(ctx.progress_queue, ("__dedup__", msg, repeats)):
+                return False
+            ctx.repeat_count[0] = repeats
+            return True
         if native:
             sc.on_tool_progress(msg)
-        else:
-            ctx.progress_queue.put(msg)
+        elif not _offer_callback_event(ctx.progress_queue, msg):
+            return False
+        ctx.last_progress_msg[0], ctx.repeat_count[0] = msg, 0
+        return True
 
     # ── Slack-native task cards (progress-queue drain) ──────────────────────────────────────
 
@@ -727,7 +770,7 @@ class TurnRunner:
             return
         from agent.display import build_tool_preview
         name = str(tool_name or "tool")
-        self._ctx.progress_queue.put({
+        _offer_callback_event(self._ctx.progress_queue, {
             "type": "tool.started", "tool_call_id": str(call_id or ""), "tool_name": name,
             "preview": build_tool_preview(name, args or {}, max_len=64) or "",
         })
@@ -739,9 +782,9 @@ class TurnRunner:
         from agent.display import _detect_tool_failure
         name = str(tool_name or "tool")
         is_error, _ = _detect_tool_failure(name, result)
-        self._ctx.progress_queue.put({
+        _offer_callback_event(self._ctx.progress_queue, {
             "type": "tool.completed", "tool_call_id": str(call_id or ""), "tool_name": name, "is_error": bool(is_error),
-        })
+        }, latest=True)
 
     def combined_tool_start_callback(self, call_id, tool_name, args):
         """Compose the voice ack + native task-card start consumers."""
@@ -864,7 +907,7 @@ class TurnRunner:
                         adapter=adapter, chat_id=ctx.source.chat_id, config=consumer_cfg,
                         metadata=ctx._status_thread_metadata,
                         on_new_message=(
-                            (lambda: ctx.progress_queue.put(("__reset__",))) if ctx.progress_queue is not None else None
+                            (lambda: _offer_callback_event(ctx.progress_queue, ("__reset__",), latest=True)) if ctx.progress_queue is not None else None
                         ),
                         on_before_finalize=pause_typing_before_finalize,
                         initial_reply_to_id=ctx.event_message_id, run_still_current=ctx._run_still_current,

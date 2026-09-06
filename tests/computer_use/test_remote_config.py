@@ -112,6 +112,106 @@ class TestPermissionMode:
             resolve_remote_cua_config(cfg, permission_mode="unrestricted")
 
 
+class TestRemoteKeyPresence:
+    """H4: 'remote' absent vs explicit null must NOT be conflated.
+
+    Absent → local mode (back-compat; existing deployments that omit the key).
+    Present but null (``remote: null`` in YAML, a common typo) → fail closed,
+    NOT silently select local mode.
+    """
+
+    def test_absent_key_returns_none(self):
+        assert resolve_remote_cua_config({"cua_telemetry": False}, permission_mode="standard") is None
+
+    def test_explicit_null_raises(self):
+        with pytest.raises(RuntimeError, match="must be a mapping"):
+            resolve_remote_cua_config({"remote": None}, permission_mode="standard")
+
+    def test_empty_block_enabled_false_returns_none(self, valid_token):
+        cfg = {"remote": {"enabled": False, "url": "https://example.com:8443"}}
+        assert resolve_remote_cua_config(cfg, permission_mode="standard") is None
+
+    def test_valid_block_returns_config(self, valid_token):
+        cfg = {"remote": {"enabled": True, "url": "https://example.com:8443"}}
+        result = resolve_remote_cua_config(cfg, permission_mode="standard")
+        assert isinstance(result, RemoteCuaConfig)
+
+
+class TestTokenScopeResolution:
+    """H1: the token resolves through the profile secret scope FIRST, then
+    falls back to the explicit environ mapping. Scoped token wins; a scope
+    miss falls back to environ; no-scope (single-profile fleet) reads environ;
+    multiplex-on with no scope fails closed.
+
+    Uses the real ``agent.secret_scope.set_secret_scope`` /
+    ``set_multiplex_active`` — the same primitives the gateway installs per
+    turn — not a mock, so the integration is exercised end to end.
+    """
+
+    _CFG = {"remote": {"enabled": True, "url": "https://example.com:8443"}}
+    _ENV_TOKEN = "e" * 32
+    _SCOPED_TOKEN = "s" * 32
+
+    def test_scoped_token_wins_over_environ(self, monkeypatch):
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        monkeypatch.setenv("HERMES_CUA_REMOTE_TOKEN", self._ENV_TOKEN)
+        token = set_secret_scope({"HERMES_CUA_REMOTE_TOKEN": self._SCOPED_TOKEN})
+        try:
+            result = resolve_remote_cua_config(self._CFG, permission_mode="standard")
+            assert isinstance(result, RemoteCuaConfig)
+            assert result.token == self._SCOPED_TOKEN
+        finally:
+            reset_secret_scope(token)
+
+    def test_scope_active_var_absent_falls_back_to_environ(self, monkeypatch):
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        monkeypatch.setenv("HERMES_CUA_REMOTE_TOKEN", self._ENV_TOKEN)
+        token = set_secret_scope({"OTHER_SECRET": "other"})  # scope without our var
+        try:
+            result = resolve_remote_cua_config(self._CFG, permission_mode="standard")
+            assert isinstance(result, RemoteCuaConfig)
+            assert result.token == self._ENV_TOKEN
+        finally:
+            reset_secret_scope(token)
+
+    def test_no_scope_installed_reads_environ(self, monkeypatch):
+        """Single-profile deployment (our fleet): no scope, multiplex off → environ."""
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        monkeypatch.setenv("HERMES_CUA_REMOTE_TOKEN", self._ENV_TOKEN)
+        assert current_secret_scope() is None
+        assert is_multiplex_active() is False
+        result = resolve_remote_cua_config(self._CFG, permission_mode="standard")
+        assert isinstance(result, RemoteCuaConfig)
+        assert result.token == self._ENV_TOKEN
+
+    def test_scoped_token_wins_over_conflicting_environ(self, monkeypatch):
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        monkeypatch.setenv("HERMES_CUA_REMOTE_TOKEN", self._ENV_TOKEN)
+        token = set_secret_scope({"HERMES_CUA_REMOTE_TOKEN": self._SCOPED_TOKEN})
+        try:
+            result = resolve_remote_cua_config(self._CFG, permission_mode="standard")
+            assert result.token == self._SCOPED_TOKEN
+            assert result.token != self._ENV_TOKEN
+        finally:
+            reset_secret_scope(token)
+
+    def test_multiplex_active_no_scope_fails_closed(self, monkeypatch):
+        """Multiplexing ON with no scope installed must not borrow os.environ."""
+        from agent.secret_scope import set_multiplex_active
+
+        monkeypatch.setenv("HERMES_CUA_REMOTE_TOKEN", self._ENV_TOKEN)
+        set_multiplex_active(True)
+        try:
+            with pytest.raises(RuntimeError, match="no profile secret scope"):
+                resolve_remote_cua_config(self._CFG, permission_mode="standard")
+        finally:
+            set_multiplex_active(False)
+
+
 class TestConfigShape:
     def test_non_mapping_remote_raises(self):
         cfg = {"remote": "not a mapping"}

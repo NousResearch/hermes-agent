@@ -8,7 +8,44 @@ import os
 from typing import Any, Mapping, Optional
 from urllib.parse import urlsplit
 
+from agent.secret_scope import (
+    current_secret_scope,
+    get_secret,
+    is_multiplex_active,
+)
+
 _REMOTE_TOKEN_ENV = "HERMES_CUA_REMOTE_TOKEN"
+_ABSENT = object()  # sentinel: 'remote' key is absent from the config mapping
+
+
+def _resolve_token(environ: Mapping[str, str]) -> str:
+    """Resolve the remote CUA bearer token, honoring the profile secret scope.
+
+    A profile-scoped token (multiplexed gateway, per-turn scope installed) wins
+    over any ambient process-wide value — preventing cross-profile credential
+    routing (profile A's desktop token sent to profile B's endpoint). When no
+    scope is active (single-profile deployment; our fleet) or the scope does not
+    provide the var, fall back to the explicit ``environ`` mapping the resolver
+    receives (``os.environ`` in production, injectable for tests). An
+    ``UnscopedSecretError`` (multiplexing ON, no scope installed) is a gateway
+    misconfiguration that must fail closed rather than silently borrowing
+    another profile's ``os.environ`` value.
+    """
+    if current_secret_scope() is not None:
+        scoped = get_secret(_REMOTE_TOKEN_ENV)
+        if scoped is not None:
+            return scoped
+        # Scope active but var absent: fall back to the injected environ, NOT
+        # os.environ — under multiplexing a scope miss must not borrow another
+        # profile's process-wide value.
+        return environ.get(_REMOTE_TOKEN_ENV, "")
+    if is_multiplex_active():
+        raise RuntimeError(
+            f"{_REMOTE_TOKEN_ENV} could not be resolved: no profile secret scope "
+            f"is active while gateway multiplexing is on. The remote CUA token "
+            f"read must run inside a set_secret_scope(...) block."
+        )
+    return environ.get(_REMOTE_TOKEN_ENV, "")
 
 
 @dataclass(frozen=True)
@@ -37,10 +74,10 @@ def resolve_remote_cua_config(
     A bare-host URL (empty or "/" path) is normalized to "/mcp" — the bridge serves
     a single /mcp route, so a host-only URL would 404.
     """
-    raw = computer_use_config.get("remote")
-    if raw is None:
+    raw = computer_use_config.get("remote", _ABSENT)
+    if raw is _ABSENT:
         return None
-    if not isinstance(raw, Mapping):
+    if raw is None or not isinstance(raw, Mapping):
         raise RuntimeError("remote computer use configuration must be a mapping")
 
     enabled = raw.get("enabled", False)
@@ -52,7 +89,7 @@ def resolve_remote_cua_config(
         raise RuntimeError("remote computer use supports standard permission mode only")
 
     env = environ if environ is not None else os.environ
-    token = env.get(_REMOTE_TOKEN_ENV, "")
+    token = _resolve_token(env)
     if not isinstance(token, str):
         raise RuntimeError(f"{_REMOTE_TOKEN_ENV} must contain at least 32 bytes")
     try:

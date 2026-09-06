@@ -10,9 +10,12 @@ import sys
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        raise SystemExit("expected one encoded test contract")
-    contract = json.loads(base64.b64decode(sys.argv[1]).decode("utf-8"))
+    if len(sys.argv) != 1:
+        raise SystemExit("restricted entrypoint does not accept arguments")
+    encoded = os.environ.pop("HERMES_TEST_CONTRACT", "")
+    if not encoded:
+        raise SystemExit("restricted test contract is missing")
+    contract = json.loads(base64.b64decode(encoded).decode("utf-8"))
     python = Path(contract["python"]).resolve()
     repo = Path(contract["repo"]).resolve()
     if python != Path(sys.executable).resolve() or not repo.is_dir():

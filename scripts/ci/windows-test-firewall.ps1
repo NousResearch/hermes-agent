@@ -120,27 +120,189 @@ if ($Mode -eq "Run") {
         arguments = @($arguments)
     } | ConvertTo-Json -Compress -Depth 5
     $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($contract))
-    # Start-Process flattens alternate-credential arguments into one command
-    # line and returns ERROR_INVALID_PARAMETER on hosted Windows. Build the
-    # ProcessStartInfo explicitly so .NET passes the local account domain and
-    # the two arguments to CreateProcessWithLogonW without re-parsing.
-    $start = [Diagnostics.ProcessStartInfo]::new()
-    $start.FileName = $python
-    $start.ArgumentList.Add($entry)
-    $start.ArgumentList.Add($encoded)
-    $start.WorkingDirectory = $repo
-    $start.UserName = $state.User
-    $start.Domain = $env:COMPUTERNAME
-    $start.Password = $password
-    $start.UseShellExecute = $false
-    $start.LoadUserProfile = $true
-    $start.Environment.Clear()
-    foreach ($pair in $safe.GetEnumerator()) {
-        $start.Environment[[string]$pair.Key] = [string]$pair.Value
+    # CreateProcessWithLogonW limits its command line to 1,024 characters.
+    # Carry the one-shot bootstrap contract in the isolated environment, then
+    # have the entrypoint delete it before it replaces its environment.
+    $safe["HERMES_TEST_CONTRACT"] = $encoded
+    # Start-Process and ProcessStartInfo both return ERROR_INVALID_PARAMETER
+    # for alternate local credentials plus an explicit environment on hosted
+    # Windows. Invoke the owning Win32 API directly so the child receives only
+    # this allowlist (including sitecustomize) from its first Python import.
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class HermesRestrictedProcess
+{
+    private const UInt32 LOGON_WITH_PROFILE = 0x00000001;
+    private const UInt32 CREATE_UNICODE_ENVIRONMENT = 0x00000400;
+    private const UInt32 INFINITE = 0xffffffff;
+    private const UInt32 WAIT_FAILED = 0xffffffff;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public Int32 cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public UInt32 dwX;
+        public UInt32 dwY;
+        public UInt32 dwXSize;
+        public UInt32 dwYSize;
+        public UInt32 dwXCountChars;
+        public UInt32 dwYCountChars;
+        public UInt32 dwFillAttribute;
+        public UInt32 dwFlags;
+        public UInt16 wShowWindow;
+        public UInt16 cbReserved2;
+        public IntPtr lpReserved2;
+        public IntPtr hStdInput;
+        public IntPtr hStdOutput;
+        public IntPtr hStdError;
     }
-    $process = [Diagnostics.Process]::Start($start)
-    $process.WaitForExit()
-    exit $process.ExitCode
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess;
+        public IntPtr hThread;
+        public UInt32 dwProcessId;
+        public UInt32 dwThreadId;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessWithLogonW(
+        string lpUsername,
+        string lpDomain,
+        string lpPassword,
+        UInt32 dwLogonFlags,
+        string lpApplicationName,
+        StringBuilder lpCommandLine,
+        UInt32 dwCreationFlags,
+        IntPtr lpEnvironment,
+        string lpCurrentDirectory,
+        ref STARTUPINFO lpStartupInfo,
+        out PROCESS_INFORMATION lpProcessInformation);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern UInt32 WaitForSingleObject(IntPtr hHandle, UInt32 dwMilliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetExitCodeProcess(IntPtr hProcess, out UInt32 lpExitCode);
+
+    [DllImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    private static IntPtr BuildEnvironment(IDictionary environment)
+    {
+        var ordered = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (DictionaryEntry pair in environment)
+        {
+            var key = Convert.ToString(pair.Key);
+            var value = Convert.ToString(pair.Value);
+            if (String.IsNullOrEmpty(key) || key.IndexOfAny(new[] { '=', '\0' }) >= 0 ||
+                value.IndexOf('\0') >= 0)
+            {
+                throw new ArgumentException("Invalid restricted-process environment");
+            }
+            ordered[key] = value;
+        }
+
+        var block = new StringBuilder();
+        foreach (var pair in ordered)
+        {
+            block.Append(pair.Key).Append('=').Append(pair.Value).Append('\0');
+        }
+        block.Append('\0');
+        return Marshal.StringToHGlobalUni(block.ToString());
+    }
+
+    public static Int32 Run(
+        string username,
+        string password,
+        string application,
+        string entry,
+        string workingDirectory,
+        IDictionary environment)
+    {
+        var startup = new STARTUPINFO();
+        startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+        var commandLine = new StringBuilder(
+            "\"" + application + "\" \"" + entry + "\"");
+        var environmentBlock = BuildEnvironment(environment);
+        PROCESS_INFORMATION process;
+        try
+        {
+            if (!CreateProcessWithLogonW(
+                username,
+                ".",
+                password,
+                LOGON_WITH_PROFILE,
+                application,
+                commandLine,
+                CREATE_UNICODE_ENVIRONMENT,
+                environmentBlock,
+                workingDirectory,
+                ref startup,
+                out process))
+            {
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(), "CreateProcessWithLogonW failed");
+            }
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(environmentBlock);
+        }
+
+        try
+        {
+            if (WaitForSingleObject(process.hProcess, INFINITE) == WAIT_FAILED)
+            {
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(), "WaitForSingleObject failed");
+            }
+            UInt32 exitCode;
+            if (!GetExitCodeProcess(process.hProcess, out exitCode))
+            {
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(), "GetExitCodeProcess failed");
+            }
+            return unchecked((Int32)exitCode);
+        }
+        finally
+        {
+            CloseHandle(process.hThread);
+            CloseHandle(process.hProcess);
+        }
+    }
+}
+'@
+    $passwordPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($password)
+    try {
+        $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR(
+            $passwordPointer
+        )
+        $exitCode = [HermesRestrictedProcess]::Run(
+            $state.User,
+            $plainPassword,
+            $python,
+            $entry,
+            $repo,
+            $safe
+        )
+    } finally {
+        $plainPassword = $null
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordPointer)
+    }
+    exit $exitCode
 }
 
 New-Item -ItemType Directory -Path $stateDir -Force | Out-Null

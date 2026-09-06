@@ -377,16 +377,24 @@ class TestGatewayHistoryOffsetAfterSplit:
 
 
 
-class TestStoredPromptCwdDrift:
-    """Verify that stored system prompts are rejected when cwd changed."""
+class TestStoredPromptRuntimeIdentity:
+    """Runtime identity is model + provider ONLY.
 
-    def _make_agent(self, model="test/model", provider="openrouter"):
+    Model/provider drift changes the provider's cache domain, so it must force a
+    rebuild. Platform (desktop/tui/cli) and cwd are volatile-tier prose: they drift
+    whenever a user switches surface or resumes after a dashboard restart, and
+    treating them as identity threw away a ~200K-token prefix cache to correct one
+    stale line. Reusing the stored bytes is the intended tradeoff (#104414).
+    """
+
+    def _make_agent(self, model="test/model", provider="openrouter", platform="cli"):
         class _Agent:
             pass
 
         agent = _Agent()
         agent.model = model
         agent.provider = provider
+        agent.platform = platform
         return agent
 
     @staticmethod
@@ -394,10 +402,8 @@ class TestStoredPromptCwdDrift:
         """A stored prompt fragment shaped like the real host-info block.
 
         ``build_environment_hints`` always emits ``User home directory:``
-        immediately before the working-directory line, and the staleness check
-        anchors on that pair so user project files can't shadow the real value.
-        Fixtures must therefore include the anchor or they stop exercising the
-        cwd path at all.
+        immediately before the working-directory line; fixtures keep the pair so
+        they stay shaped like the prompts this check actually reads.
         """
         return (
             "Host: Linux (6.16.0)\n"
@@ -405,8 +411,8 @@ class TestStoredPromptCwdDrift:
             f"Current working directory: {cwd}\n"
         )
 
-    def test_stored_prompt_stale_when_cwd_differs(self):
-        """Different cwd should force a prompt rebuild."""
+    def test_cwd_drift_does_not_force_a_rebuild(self):
+        """A different cwd must NOT reject the stored prompt."""
         from unittest.mock import patch
         from agent.conversation_loop import _stored_prompt_matches_runtime
 
@@ -418,8 +424,34 @@ class TestStoredPromptCwdDrift:
         )
 
         with patch("os.getcwd", return_value="/project/new"):
-            assert _stored_prompt_matches_runtime(agent, stored_prompt) is False, (
-                "Expected False when stored cwd differs from current cwd"
+            assert _stored_prompt_matches_runtime(agent, stored_prompt) is True, (
+                "cwd drift is volatile-tier prose — rebuilding for it costs a full "
+                "prefix-cache miss and buys one corrected line"
+            )
+
+    def test_surface_switch_with_cwd_drift_reuses_stored_prompt(self):
+        """🔴 #104414: desktop → TUI, different cwd, same model/provider → reuse.
+
+        Switching surfaces (or resuming after a dashboard restart) rewrites both
+        the ``Platform:`` and cwd lines. When those counted as identity, every such
+        resume rebuilt the system prompt and missed the provider prefix cache
+        100% (~200K+ tokens re-prefilled).
+        """
+        from unittest.mock import patch
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = self._make_agent(platform="tui")
+        stored_prompt = (
+            self._host_block("/project/old")
+            + "Model: test/model\n"
+            "Provider: openrouter\n"
+            "Platform: desktop\n"
+        )
+
+        with patch("os.getcwd", return_value="/project/new"):
+            assert _stored_prompt_matches_runtime(agent, stored_prompt) is True, (
+                "A desktop-built prompt must be reusable from the TUI when model "
+                "and provider still match"
             )
 
     def test_stored_prompt_fresh_when_cwd_matches(self):
@@ -439,6 +471,22 @@ class TestStoredPromptCwdDrift:
             assert _stored_prompt_matches_runtime(agent, stored_prompt) is True, (
                 "Expected True when stored cwd matches current cwd"
             )
+
+    def test_model_drift_still_forces_a_rebuild(self):
+        """Model/provider drift changes the cache domain — still a hard reject."""
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = self._make_agent(model="other/model")
+        stored_prompt = (
+            self._host_block("/project/current")
+            + "Model: test/model\n"
+            "Provider: openrouter\n"
+        )
+
+        assert _stored_prompt_matches_runtime(agent, stored_prompt) is False, (
+            "A live /model switch must rebuild; otherwise the prompt advertises "
+            "the previous model to the new one"
+        )
 
     def test_project_context_cannot_force_a_rebuild(self):
         """🔴 CACHE INVARIANT: user project text must never invalidate the prompt.
@@ -461,43 +509,44 @@ class TestStoredPromptCwdDrift:
             self._host_block(current_cwd)
             + "\n# AGENTS.md\n\n"
             "Our deploy convention:\n\n"
-            "Current working directory: /srv/decoy\n\n"
+            "Current working directory: /srv/decoy\n"
+            "Platform: telegram\n\n"
             "Always run make before pushing.\n\n"
             "Model: test/model\n"
             "Provider: openrouter\n"
+            "Platform: cli\n"
         )
 
         with patch("os.getcwd", return_value=current_cwd):
             assert _stored_prompt_matches_runtime(agent, stored_prompt) is True, (
                 "A project file that merely MENTIONS 'Current working "
-                "directory:' must not invalidate the prompt — that would "
-                "rebuild every turn and break the prefix cache"
+                "directory:' or 'Platform:' must not invalidate the prompt — "
+                "that would rebuild every turn and break the prefix cache"
             )
 
     def test_project_context_cannot_mask_real_drift(self):
         """The inverse: project text must not fake a match either.
 
-        A stored prompt built in /project/old whose embedded AGENTS.md happens
-        to name the NEW cwd must still be rejected — otherwise project prose
-        could suppress genuine drift detection.
+        The real ``Model:``/``Provider:`` lines live in the volatile tier at the
+        very END of the prompt, after any embedded project files, so the
+        last-match-wins read must land on them and not on prose that happens to
+        name the model the agent is running right now.
         """
-        from unittest.mock import patch
         from agent.conversation_loop import _stored_prompt_matches_runtime
 
-        agent = self._make_agent()
+        agent = self._make_agent(model="new/model")
         stored_prompt = (
-            self._host_block("/project/old")
+            self._host_block("/project/current")
             + "\n# AGENTS.md\n\n"
-            "Current working directory: /project/new\n\n"
-            "Model: test/model\n"
+            "Model: new/model\n\n"
+            "Model: old/model\n"
             "Provider: openrouter\n"
         )
 
-        with patch("os.getcwd", return_value="/project/new"):
-            assert _stored_prompt_matches_runtime(agent, stored_prompt) is False, (
-                "Embedded project text naming the new cwd must not mask real "
-                "drift in the host-info block"
-            )
+        assert _stored_prompt_matches_runtime(agent, stored_prompt) is False, (
+            "Embedded project text naming the live model must not mask real "
+            "drift in the prompt's own trailer"
+        )
 
 
 

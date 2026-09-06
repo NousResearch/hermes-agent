@@ -27,7 +27,6 @@ from agent.prompt_caching import (
     strip_anthropic_cache_control,
     strip_anthropic_tool_cache_control,
 )
-from agent.runtime_cwd import resolve_agent_cwd
 from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
 from agent.turn_retry_state import TurnRetryState
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
@@ -753,43 +752,32 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
 
 def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
-    """Return False when the persisted runtime-identity lines are stale."""
+    """Return False when the persisted runtime-identity lines are stale.
+
+    Identity is model + provider ONLY. Those pick the provider's cache domain, so a live
+    ``/model`` switch must rebuild (and the prompt would otherwise advertise the previous
+    model to the new one). ``Platform:`` and the host block's cwd are volatile-tier prose:
+    they drift whenever a user moves between surfaces (desktop ↔ TUI ↔ CLI) or resumes
+    after a dashboard restart, and rejecting the stored prompt for them re-prefilled a
+    ~200K-token prefix to correct one line. Reusing the stored bytes with a slightly stale
+    Platform/cwd line is the intended tradeoff — per-conversation prompt caching is
+    sacred (#104414)."""
 
     lines = prompt.splitlines()
 
     def line_value(label: str) -> str:
         """Last matching line wins — safe ONLY for volatile-tier fields at the END of the
-        prompt (embedded project context could shadow earlier fields; see ``host_info_value``)."""
+        prompt, where embedded project context cannot shadow the prompt's own trailer."""
         prefix = f"{label}:"
         matches = [line[len(prefix):].strip() for line in lines if line.startswith(prefix)]
         return matches[-1] if matches else ""
 
-    def host_info_value(label: str) -> str:
-        """Read a field from the prompt's own host-info block, anchored on the FIRST ``User
-        home directory:`` line so a user's ``AGENTS.md`` row cannot force a rebuild every turn."""
-        prefix = f"{label}:"
-        for idx, line in enumerate(lines):
-            if line.startswith("User home directory:"):
-                for candidate in lines[idx + 1: idx + 4]:
-                    if candidate.startswith(prefix):
-                        return candidate[len(prefix):].strip()
-        return ""
-
-    # Model/provider identity, then cwd drift, then runtime-surface drift (reusing a
-    # desktop-built prompt on a terminal session would inject the wrong runtime hints).
     for label, attr in (("Model", "model"), ("Provider", "provider")):
         stored = line_value(label)
         current = str(getattr(agent, attr, "") or "").strip()
         if stored and current and stored != current:
             return False
-    # Compare against resolve_agent_cwd() — the SAME resolver used to build the
-    # prompt — so TERMINAL_CWD sessions are not falsely rejected.
-    stored_cwd = host_info_value("Current working directory")
-    if stored_cwd and stored_cwd != str(resolve_agent_cwd()):
-        return False
-    stored_platform = line_value("Platform")
-    current_platform = str(getattr(agent, "platform", "") or "").strip()
-    return not (stored_platform and current_platform and stored_platform != current_platform)
+    return True
 
 
 # Named so _is_synthetic_compression_user_turn can recognize a crash-persisted nudge by

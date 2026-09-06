@@ -210,7 +210,8 @@ def _list_block(items: List[Tuple[int, bool, str]]) -> Block:
 
 
 def _section_block(text: str) -> Block:
-    return {"type": "section", "text": {"type": "mrkdwn", "text": text}}
+    # Keep answers readable in narrow threads without Slack's "see more" fold.
+    return {"type": "section", "text": {"type": "mrkdwn", "text": text}, "expand": True}
 
 
 # ----------------------------------------------------------------------------

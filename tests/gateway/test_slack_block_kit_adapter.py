@@ -59,6 +59,26 @@ def _slack_connection_key():
 
 class TestSendMessageBlocks:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("finalize_edit", [False, True])
+    async def test_answer_sections_reach_slack_expanded(self, finalize_edit):
+        adapter, client = _make_adapter({"rich_blocks": True})
+        content = ("This answer should be readable in a narrow Slack thread. " * 7
+                   + "\n\n## Next steps\n\n- Read the answer\n- Continue the conversation")
+
+        if finalize_edit:
+            await adapter.edit_message("C1", "111.222", content, finalize=True)
+            payload = client.chat_update.await_args.kwargs
+        else:
+            await adapter.send("C1", content)
+            payload = client.chat_postMessage.await_args.kwargs
+
+        sections = [block for block in payload["blocks"] if block["type"] == "section"]
+        assert sections and all(block["expand"] is True for block in sections)
+        assert all("expand" not in block for block in payload["blocks"]
+                   if block["type"] != "section")
+        assert "Continue the conversation" in payload["text"]
+
+    @pytest.mark.asyncio
     async def test_disabled_by_default_no_blocks(self):
         adapter, client = _make_adapter()
         await adapter.send("C1", RICH_MD)
@@ -197,5 +217,4 @@ class TestMarkdownBlockMode:
         kwargs = client.chat_update.await_args.kwargs
         assert kwargs["blocks"][0]["type"] == "markdown"
         assert kwargs["blocks"][0]["text"] == RICH_TABLE_MD
-
 

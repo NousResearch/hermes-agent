@@ -14,6 +14,14 @@ def _types(blocks):
 
 
 class TestRenderBlocksBasics:
+    def test_split_paragraphs_remain_expanded_without_losing_text(self):
+        text = "A" * (MAX_SECTION_TEXT + 200)
+        blocks = sanitize_blocks(render_blocks(text))
+        assert len(blocks) > 1
+        assert all(block["expand"] is True for block in blocks)
+        assert all(len(block["text"]["text"]) <= MAX_SECTION_TEXT for block in blocks)
+        assert "".join(block["text"]["text"] for block in blocks) == text
+
     def test_empty_returns_none(self):
         assert render_blocks("") is None
         assert render_blocks("   \n  ") is None
@@ -232,5 +240,4 @@ class TestSplitTextFenceBalanced:
             assert chunk.count("```") % 2 == 0, (
                 f"chunk {i} has unbalanced fences: {chunk[:60]!r}"
             )
-
 

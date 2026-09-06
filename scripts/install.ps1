@@ -2477,25 +2477,37 @@ function Install-Repository {
                 # git stash for manual recovery. Untracked files are included so
                 # agent-created dirs (e.g. tinker-atropos/) survive too.
                 $statusOut = git -c windows.appendAtomically=false status --porcelain 2>$null
+                if ($LASTEXITCODE -ne 0) { throw "Cannot inspect local changes before updating" }
                 if (-not [string]::IsNullOrWhiteSpace(($statusOut -join "`n"))) {
-                    # A previously interrupted update can leave the index with
-                    # unmerged entries. In that state `git stash` aborts with
-                    # "could not write index" and the following `git checkout`
-                    # aborts with "you need to resolve your current index first"
-                    # -- the GUI "git checkout main failed (exit 1)" install
-                    # failure. Clear the conflict markers with `git reset` first:
-                    # working-tree changes are kept (and stashed just below); only
-                    # the index conflict state is dropped. Mirrors the `hermes
-                    # update` path (#4735).
+                    # An unmerged index is user recovery evidence. Do not reset
+                    # it merely to make an automatic stash possible.
                     $unmergedOut = git -c windows.appendAtomically=false ls-files --unmerged 2>$null
+                    if ($LASTEXITCODE -ne 0) { throw "Cannot inspect the index before stashing local changes" }
                     if (-not [string]::IsNullOrWhiteSpace(($unmergedOut -join "`n"))) {
-                        Write-Info "Clearing unmerged index entries from a previous conflict..."
-                        git -c windows.appendAtomically=false reset -q 2>$null
+                        throw "Local changes contain unresolved conflicts. Resolve the index before updating; it was left intact."
                     }
-                    $stashName = "hermes-install-autostash-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+                    $stashName = "hermes-install-autostash-" + [Guid]::NewGuid().ToString('N')
                     Write-Info "Local changes detected, stashing before update..."
                     git -c windows.appendAtomically=false stash push --include-untracked -m "$stashName"
-                    if ($LASTEXITCODE -eq 0) { $autostashRef = "stash@{0}" }
+                    $stashExit = $LASTEXITCODE
+                    # Another actor may have pushed a newer stash. Resolve our
+                    # unique subject to an immutable object, never stash@{0}.
+                    $stashRecords = @(git -c windows.appendAtomically=false stash list '--format=%H%x09%gs' 2>$null)
+                    $stashListExit = $LASTEXITCODE
+                    $ownedStashes = @($stashRecords | Where-Object {
+                        $_ -match '^[0-9a-f]{40,64}\t' -and $_.EndsWith(": $stashName", [StringComparison]::Ordinal)
+                    })
+                    if ($stashListExit -eq 0 -and $ownedStashes.Count -eq 1) {
+                        $autostashRef = ($ownedStashes[0] -split "`t", 2)[0]
+                    }
+                    if ($stashExit -ne 0) {
+                        throw "git stash failed (exit $stashExit). Update stopped before fetch or checkout; inspect local changes and the recovery stash."
+                    }
+                    if (-not $autostashRef) { throw "Cannot verify the stash created for this update; stopping before fetch or checkout" }
+                    $remainingChanges = @(git -c windows.appendAtomically=false status --porcelain 2>$null)
+                    if ($LASTEXITCODE -ne 0 -or -not [string]::IsNullOrWhiteSpace(($remainingChanges -join "`n"))) {
+                        throw "Local changes remain after stashing; stopping before fetch or checkout"
+                    }
                 }
                 git -c windows.appendAtomically=false fetch origin $Branch
                 if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE)" }
@@ -2584,8 +2596,10 @@ function Install-Repository {
                             git -c windows.appendAtomically=false diff --name-only --diff-filter=U 2>$null
                         ) | Where-Object { $_ -and $_.ToString().Trim() }
                         if (($restoreExit -eq 0) -and ($conflictedFiles.Count -eq 0)) {
-                            git -c windows.appendAtomically=false stash drop $autostashRef 2>$null
+                            # Keep the immutable recovery object reachable. A
+                            # reflog position can change between lookup and drop.
                             Write-Warn "Local changes were restored on top of the updated codebase."
+                            Write-Info "Recovery stash retained: $autostashRef"
                             Write-Warn "Review git diff / git status if Hermes behaves unexpectedly."
                         } else {
                             Write-Err "Update pulled new code, but restoring local changes hit conflicts."
@@ -2604,9 +2618,8 @@ function Install-Repository {
                             Write-Host ""
                             Write-Info "Your stashed changes are preserved -- nothing is lost."
                             Write-Info "  Stash ref: $autostashRef"
-                            git -c windows.appendAtomically=false reset --hard HEAD 2>$null | Out-Null
-                            Write-Info "Working tree reset to clean state."
                             Write-Info "Restore your changes later with: git stash apply $autostashRef"
+                            throw "Local-change restoration failed; conflict state and recovery stash were left intact"
                         }
                     } else {
                         Write-Info "Skipped restoring local changes."
@@ -2820,7 +2833,6 @@ function Install-Repository {
 
     Write-Success "Repository ready"
 }
-
 function Install-Venv {
     if ($NoVenv) {
         Write-Info "Skipping virtual environment (-NoVenv)"

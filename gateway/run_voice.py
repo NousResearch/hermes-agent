@@ -134,18 +134,42 @@ class GatewayVoiceMixin:
             return int(raw.guild_id)
         return raw.guild.id if getattr(raw, "guild", None) else None  # regular message
 
+    def _voice_scope_id(self, adapter, event: MessageEvent):
+        """The id an adapter keys a live voice session on.
+
+        Discord needs the guild, because a voice channel and the text channel its
+        transcripts land in are two different objects. An adapter whose call lives *in* the
+        chat says so with ``voice_scope = "chat"`` (MatrixRTC: the call belongs to the room
+        it is about) and is keyed by chat id — a string, and never absent.
+        """
+        if getattr(adapter, "voice_scope", "guild") == "chat":
+            return event.source.chat_id
+        return self._get_guild_id(event)
+
+    @staticmethod
+    def _bind_voice_session(adapter, scope_id, source: SessionSource) -> None:
+        """Hand a chat-scoped adapter the live session its call should speak into.
+
+        The live ``SessionSource``, not the ``to_dict()`` Discord round-trips through
+        ``_voice_sources``: that round-trip drops the transport-adapter ref and
+        ``role_authorized``, which is exactly what the voice path's authorization reads.
+        """
+        if getattr(adapter, "voice_scope", "guild") == "chat":
+            adapter.bind_voice_session(scope_id, source)
+
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         adapter = self._adapter_for_source(event.source)
         if not hasattr(adapter, "join_voice_channel"):
             return "Voice channels are not supported on this platform."
-        guild_id = self._get_guild_id(event)
-        if not guild_id:
+        scope_id = self._voice_scope_id(adapter, event)
+        if not scope_id:
             return "This command only works in a Discord server."
-        voice_channel = await adapter.get_user_voice_channel(guild_id, event.source.user_id)
+        voice_channel = await adapter.get_user_voice_channel(scope_id, event.source.user_id)
         if not voice_channel:
             return "You need to be in a voice channel first."
         # Wire callbacks BEFORE join so voice input arriving right after connection is not lost.
         self._bind_voice_input_callback(adapter)
+        self._bind_voice_session(adapter, scope_id, event.source)
         voice_profile = self._adapter_profile_for_source(event.source)
         if hasattr(adapter, "_on_voice_disconnect"):
             adapter._on_voice_disconnect = functools.partial(
@@ -167,23 +191,34 @@ class GatewayVoiceMixin:
         if not success:
             adapter._voice_input_callback = None
             return "Failed to join voice channel. Check bot permissions (Connect + Speak)."
-        adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
+        if hasattr(adapter, "_voice_text_channels"):  # a chat-scoped call is already in its chat
+            adapter._voice_text_channels[scope_id] = int(event.source.chat_id)
         if hasattr(adapter, "_voice_sources"):
-            adapter._voice_sources[guild_id] = event.source.to_dict()
+            adapter._voice_sources[scope_id] = event.source.to_dict()
         self._apply_voice_mode(adapter, self._voice_key_for_source(event.source),
                                event.source.chat_id, "all")
         return (f"Joined voice channel **{voice_channel.name}**.\n"
                 f"I'll speak my replies and listen to you. Use /voice leave to disconnect.")
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
+        """Hang up. A chat-scoped call is left whether or not we can still speak into it.
+
+        ``is_in_voice_channel`` answers "is there a live connection in *this process*",
+        which is the whole of a Discord call and only half of a MatrixRTC one: the
+        membership that puts the bot in the call UI is room state, and it outlives the
+        gateway. Guarding the leave on the in-memory half means a restart answers "Not in a
+        voice channel." while a muted ghost of the bot is still sitting in the call, with
+        nothing else in the system able to clear it. Idempotence is the adapter's job.
+        """
         adapter = self._adapter_for_source(event.source)
-        guild_id = self._get_guild_id(event)
-        if not (guild_id and hasattr(adapter, "leave_voice_channel")
+        scope_id = self._voice_scope_id(adapter, event)
+        chat_scoped = getattr(adapter, "voice_scope", "guild") == "chat"
+        if not (scope_id and hasattr(adapter, "leave_voice_channel")
                 and hasattr(adapter, "is_in_voice_channel")
-                and adapter.is_in_voice_channel(guild_id)):
+                and (chat_scoped or adapter.is_in_voice_channel(scope_id))):
             return "Not in a voice channel."
         try:
-            await adapter.leave_voice_channel(guild_id)
+            await adapter.leave_voice_channel(scope_id)
         except Exception as e:
             logger.warning("Error leaving voice channel: %s", e)
         # Always clean up state even if leave raised an exception
@@ -352,12 +387,12 @@ class GatewayVoiceMixin:
     async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: List[str]) -> None:
         """Play the files in the connected voice channel, else send them as voice messages."""
         adapter = self._adapter_for_source(event.source)
-        guild_id = self._get_guild_id(event)
+        scope_id = self._voice_scope_id(adapter, event)
         play = getattr(adapter, "play_in_voice_channel", None)
         is_in_vc = getattr(adapter, "is_in_voice_channel", None)
-        if guild_id and callable(play) and callable(is_in_vc) and is_in_vc(guild_id):
+        if scope_id and callable(play) and callable(is_in_vc) and is_in_vc(scope_id):
             for path in audio_paths:
-                await play(guild_id, path)
+                await play(scope_id, path)
             return
         if not callable(send_voice := getattr(adapter, "send_voice", None)):
             return

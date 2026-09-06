@@ -646,8 +646,8 @@ class GatewaySlashCommandsMixin(
             mode = self._voice_mode.get(voice_key, "off")
             label = t(f"gateway.voice.label_{mode}") if mode in ("off", "voice_only", "all") else mode
             lines = [t("gateway.voice.status_mode", label=label)]
-            guild_id = self._get_guild_id(event)  # append voice channel info if connected
-            info = adapter.get_voice_channel_info(guild_id) if guild_id and hasattr(adapter, "get_voice_channel_info") else None
+            scope_id = self._voice_scope_id(adapter, event)  # append voice channel info if connected
+            info = adapter.get_voice_channel_info(scope_id) if scope_id and hasattr(adapter, "get_voice_channel_info") else None
             if info:
                 lines += [t("gateway.voice.status_channel", channel=info['channel_name']),
                           t("gateway.voice.status_participants", count=info['member_count'])]

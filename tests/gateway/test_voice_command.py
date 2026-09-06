@@ -608,6 +608,19 @@ class TestVoiceChannelCommands:
         assert runner._voice_mode["discord:123"] == "off"
         mock_adapter.leave_voice_channel.assert_called_once_with(111)
 
+    @pytest.mark.asyncio
+    async def test_leave_without_a_connection_is_refused(self, runner):
+        """A guild-scoped call *is* the in-process voice client: no connection means there
+        is nothing left to hang up, remotely or otherwise. Chat-scoped adapters differ."""
+        mock_adapter = AsyncMock()
+        mock_adapter.is_in_voice_channel = MagicMock(return_value=False)
+        mock_adapter.leave_voice_channel = AsyncMock()
+        event = self._make_discord_event("/voice leave")
+        runner.adapters[event.source.platform] = mock_adapter
+        result = await runner._handle_voice_channel_leave(event)
+        assert result == "Not in a voice channel."
+        mock_adapter.leave_voice_channel.assert_not_called()
+
     # -- _handle_voice_channel_input --
 
 

@@ -201,6 +201,10 @@ messaging = ["python-telegram-bot[webhooks]==22.8", "discord.py[voice]==2.7.1", 
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.30.0", "slack-sdk==3.43.0", "aiohttp==3.14.3"]
 matrix = ["mautrix[encryption]==0.21.1", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0", "aiohttp==3.14.3"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7 (mautrix/aiohttp-socks only cap aiohttp<4 / >=3.10, so pin the patched floor directly)
+# MatrixRTC voice channels — headless LiveKit participant for Matrix/Element calls.
+# Separate from [matrix] so text-only Matrix users don't pull a native media wheel;
+# lazy-installed via tools/lazy_deps.py (LAZY_DEPS["platform.matrix_rtc"]).
+matrix-rtc = ["livekit==1.1.14"]
 # WeCom callback-mode adapter — parses untrusted XML POST bodies from
 # WeCom-controlled callback endpoints, so we use defusedxml (drop-in
 # replacement for stdlib xml.etree.ElementTree) to block billion-laughs
@@ -499,6 +503,7 @@ httpx2 = false
 huggingface_hub = false
 jinja2 = false
 lark-oapi = false
+livekit = false
 markdown = false
 maturin = false
 mautrix = false

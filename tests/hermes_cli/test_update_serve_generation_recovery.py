@@ -921,7 +921,13 @@ def test_no_survivors_prints_nothing(capsys):
 def test_recovery_module_reports_serve_units_in_a_real_process():
     """The protocol survives a genuine subprocess round-trip."""
     result = subprocess.run(
-        [sys.executable, "-m", "hermes_cli.update_restart_recovery", "--stdin"],
+        [
+            sys.executable,
+            "-c",
+            "from hermes_cli import update_restart_recovery as m; "
+            "m._systemctl_scopes = lambda: []; "
+            "raise SystemExit(m.main(['--stdin']))",
+        ],
         input=json.dumps(
             {"profiles": [], "serve_units": {"recover": True, "skip": []}}
         ),

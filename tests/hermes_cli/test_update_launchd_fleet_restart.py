@@ -197,6 +197,11 @@ class TestProbeLaunchdDomainForLabel:
 
 class TestGetServicePidsScoping:
     def _wire(self, monkeypatch):
+        def fake_launchctl_list(command, **_kwargs):
+            if command == ["launchctl", "list"]:
+                return _completed(0, "")
+            raise AssertionError(f"unexpected command {command}")
+
         monkeypatch.setattr(gw, "is_macos", lambda: True)
         monkeypatch.setattr(gw, "supports_systemd_services", lambda: False)
         monkeypatch.setattr(gw, "get_launchd_label", lambda: "ai.hermes.gateway")
@@ -212,6 +217,11 @@ class TestGetServicePidsScoping:
         }
         monkeypatch.setattr(
             gw, "_locate_launchd_gateway_service", lambda label: located[label]
+        )
+        monkeypatch.setattr(
+            gw.subprocess,
+            "run",
+            fake_launchctl_list,
         )
 
     def test_all_profiles_returns_every_gateway_service_pid(self, monkeypatch):

@@ -381,6 +381,7 @@ def _segment_protected_context(
     used_grants: dict[str, SourceGrant],
     *,
     sanitized_cap: int,
+    allow_line_split: bool = True,
 ) -> SanitizedSegment | SourceBoundSegment | ValidatedToolSyntaxSegment | OutboundText:
     """Preserve exact text while typing narrow application-owned identifiers."""
 
@@ -393,7 +394,7 @@ def _segment_protected_context(
                 grant_texts,
                 used_grants,
                 sanitized_cap=sanitized_cap,
-                allow_line_split=True,
+                allow_line_split=allow_line_split,
             )
             segments.extend(prefix.segments if isinstance(prefix, OutboundText) else (prefix,))
         token = validate_tool_syntax(match.group(0), "application_identifier")
@@ -405,7 +406,7 @@ def _segment_protected_context(
             grant_texts,
             used_grants,
             sanitized_cap=sanitized_cap,
-            allow_line_split=True,
+            allow_line_split=allow_line_split,
         )
         segments.extend(suffix.segments if isinstance(suffix, OutboundText) else (suffix,))
     if not segments:
@@ -414,7 +415,7 @@ def _segment_protected_context(
             grant_texts,
             used_grants,
             sanitized_cap=sanitized_cap,
-            allow_line_split=True,
+            allow_line_split=allow_line_split,
         )
     return segments[0] if len(segments) == 1 else OutboundText(tuple(segments))
 
@@ -584,6 +585,7 @@ def _typed_payload(
     protected_tool_content: bool = False,
     elide_kanban_tool_content: bool = False,
     protected_kanban_context: bool = False,
+    preserve_segment_boundaries: bool = False,
     generated_context: bool = False,
     redact_generated_context: bool = False,
     registry: SourceProvenanceRegistry | None = None,
@@ -611,6 +613,7 @@ def _typed_payload(
                 grant_texts,
                 used_grants,
                 sanitized_cap=sanitized_cap,
+                allow_line_split=not preserve_segment_boundaries,
             )
         return _segment_text(
             value,
@@ -682,6 +685,7 @@ def _typed_payload(
                     is_elided_kanban_tool_result and key in {"content", "output"}
                 ),
                 protected_kanban_context=protected_kanban_context,
+                preserve_segment_boundaries=preserve_segment_boundaries,
                 generated_context=(
                     redact_generated_context
                     and (
@@ -708,6 +712,7 @@ def _typed_payload(
                 protected_tool_content=protected_tool_content,
                 elide_kanban_tool_content=elide_kanban_tool_content,
                 protected_kanban_context=protected_kanban_context,
+                preserve_segment_boundaries=preserve_segment_boundaries,
                 generated_context=generated_context,
                 redact_generated_context=redact_generated_context,
                 registry=registry,
@@ -909,6 +914,7 @@ def authorize_agent_sdk_kwargs(
             else frozenset()
         ),
         protected_kanban_context=protected_remote_context,
+        preserve_segment_boundaries=bool(getattr(agent, "_llm_egress_preserve_segment_boundaries", False)),
         redact_generated_context=redact_protected_generated_context,
         registry=registry if isinstance(registry, SourceProvenanceRegistry) else None,
         request_identity=(session_id, turn_id, request_id, policy_digest),

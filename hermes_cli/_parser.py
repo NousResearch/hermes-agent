@@ -246,7 +246,7 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
     add("--checkpoints", action="store_true", default=False,
         help="Enable filesystem checkpoints before destructive file operations (use /rollback to restore)")
     add("--max-turns", type=int, default=None, metavar="N",
-        help="Maximum tool-calling iterations per conversation turn (default: 500, or agent.max_turns in config)")
+        help="Maximum tool-calling iterations per conversation turn (default: unlimited; a positive integer here or agent.max_turns in config opts into a cap)")
     add("--run-budget", type=float, default=None, metavar="SECONDS", dest="run_budget", help=(
         "Optional wall-clock budget in seconds for each conversation run. "
         "At 80%% elapsed the agent gets a one-time wrap-up notice, and "

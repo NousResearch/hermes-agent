@@ -9,17 +9,10 @@ Inspired by Mercury Agent's permission-hardened blocklist.
 
 import pytest
 
-from tools.approval import (
-    HARDLINE_PATTERNS,
-    check_all_command_guards,
-    check_dangerous_command,
-    detect_dangerous_command,
-    detect_hardline_command,
-    disable_session_yolo,
-    enable_session_yolo,
-    reset_current_session_key,
-    set_current_session_key,
-)
+from tools.approval import check_all_command_guards, check_dangerous_command, detect_dangerous_command, detect_hardline_command, disable_session_yolo, enable_session_yolo
+from tools.approval_context import reset_current_session_key, set_current_session_key
+from tools.approval_detection import HARDLINE_PATTERNS
+from tools import approval_context
 
 
 # -------------------------------------------------------------------------
@@ -688,7 +681,9 @@ def test_approvals_mode_off_cannot_bypass_hardline(clean_session, monkeypatch, t
     """config approvals.mode=off (yolo-equivalent) must not bypass hardline."""
     # _get_approval_mode() reads from hermes config; simplest path: monkeypatch the helper.
     import tools.approval as approval_mod
-    monkeypatch.setattr(approval_mod, "_get_approval_mode", lambda: "off")
+    from tools import approval_context
+    from tools import approval_context
+    monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "off")
 
     result = check_all_command_guards("rm -rf /", "local")
     assert result["approved"] is False
@@ -699,7 +694,7 @@ def test_cron_approve_mode_cannot_bypass_hardline(clean_session, monkeypatch):
     """Cron sessions with cron_mode=approve must not bypass hardline."""
     monkeypatch.setenv("HERMES_CRON_SESSION", "1")
     import tools.approval as approval_mod
-    monkeypatch.setattr(approval_mod, "_get_cron_approval_mode", lambda: "approve")
+    monkeypatch.setattr(approval_context, "_get_cron_approval_mode", lambda: "approve")
 
     result = check_all_command_guards("rm -rf /", "local")
     assert result["approved"] is False

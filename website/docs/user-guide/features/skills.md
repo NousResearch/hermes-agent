@@ -388,7 +388,7 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 
 ### How it works
 
-- **Create locally, update in place**: New agent-created skills are written to `~/.hermes/skills/`. Existing skills are modified where they are found, including skills under `external_dirs`, when the agent uses `skill_manage` actions such as `patch`, `edit`, `write_file`, `remove_file`, or `delete`.
+- **Create locally, update in place**: New agent-created skills are written to `~/.hermes/skills/` (or `skills.create_dir` when configured — see below). Existing skills are modified where they are found, including skills under `external_dirs`, when the agent uses `skill_manage` actions such as `patch`, `edit`, `write_file`, `remove_file`, or `delete`.
 - **External dirs are not a write-protection boundary**: If an external skill directory is writable by the Hermes process, agent-managed skill updates can change files in that directory. Use filesystem permissions or a separate profile/toolset setup if shared external skills must stay read-only.
 - **Local precedence**: If the same skill name exists in both the local dir and an external dir, the local version wins.
 - **Full integration**: External skills appear in the system prompt index, `skills_list`, `skill_view`, and as `/skill-name` slash commands — no different from local skills.
@@ -411,6 +411,25 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 ```
 
 All four skills appear in your skill index. If you create a new skill called `my-custom-workflow` locally, it shadows the external version.
+
+## Redirecting Skill Creation (`skills.create_dir`)
+
+By default the agent writes new skills to the profile-local `~/.hermes/skills/`. If you want agent-created skills to land somewhere else — a shared "brain" directory, a git-tracked repo, or a fleet-wide skills volume — set `create_dir` under the `skills` section:
+
+```yaml
+skills:
+  create_dir: /opt/brain/skills
+```
+
+What this changes:
+
+- **`skill_manage` create writes there.** New skills (including category subdirectories) are created under `create_dir` instead of the local skills dir. The directory is created on first write if it doesn't exist.
+- **The agent's instructions follow the config.** Every agent-facing instruction that names the skill-creation path — the `skill_manage` tool description and related prompt text — dynamically renders the configured directory, so the agent is told to create skills there. No system-prompt overrides or filesystem tricks needed.
+- **The directory is fully integrated.** Skills under `create_dir` are scanned alongside the local dir: they appear in the skill index, `skills_list`, `skill_view`, slash commands, and can be patched or deleted like any local skill.
+- **Everything else stays local.** Existing skills are still modified in place wherever they live; bundled skill sync, the hub, and the curator keep operating on the profile-local dir.
+
+Paths support `~` expansion and `${VAR}` substitution; relative paths resolve against your Hermes home. Setting `create_dir` to the local skills dir is the same as leaving it unset.
+
 
 ## Project-Local Skills
 
@@ -558,6 +577,25 @@ future reuse. In practice that covers:
 - When it worked out a multi-step workflow worth repeating
 - When it hit errors or dead ends and found the working path
 - When the user corrected its approach
+
+### What a skill entry looks like
+
+A skill is the instructions for doing a class of task the most efficient and correct
+way, to your specifications: the procedure in order, the commands and tool calls that
+work, how you want the result to look, and the pitfalls that cost time. Whether written
+in a foreground turn, by the background review, or by the curator's consolidation pass,
+it captures **lessons, not logs**: a pitfall is a generalizable rule plus one clause of
+*why* (the mechanism), attached to the step it affects, stated once. Incident narration, PR or
+issue numbers, dates, and quoted chat are not skill content; the rule has to stand
+without the story behind it. Always-on rules live in `SKILL.md` itself; `references/`
+holds a small set of files named by topic (a decision table, a recipe, provider quirks),
+extended in place rather than accumulated one file per session. Skills also do not
+restate what is already loaded every turn (the repo's `AGENTS.md`, tool schemas).
+
+`skill_manage` runs an advisory linter on `create` and on `references/` writes and
+returns its findings in the tool result. Two rules exist specifically for this shape:
+`incident-log-shape` (a body dense in PR/issue numbers) and `references-sprawl` (more
+than 60 reference files). They warn; they never block a write.
 
 ### Actions
 
@@ -942,7 +980,7 @@ Useful when you want to share one skill without asking the user to subscribe to 
 
 #### Trust levels for taps
 
-New taps are assigned `community` trust by default. Skills installed from them run through the standard security scan and show the third-party warning panel on first install. If your org or a widely-trusted source should get higher trust, add its repo to `TRUSTED_REPOS` in `tools/skills_hub.py` (requires a Hermes core PR).
+New taps are assigned `community` trust by default. Skills installed from them run through the standard security scan and show the third-party warning panel on first install. If your org or a widely-trusted source should get higher trust, add its repo to `TRUSTED_REPOS` in `tools/skills_guard.py` (requires a Hermes core PR).
 
 #### Tap management
 

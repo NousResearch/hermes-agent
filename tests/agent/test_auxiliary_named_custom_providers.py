@@ -1,5 +1,6 @@
 """Tests for named custom provider and 'main' alias resolution in auxiliary_client."""
 
+import json
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -122,6 +123,38 @@ class TestResolveProviderClientNamedCustom:
         assert client is not None
         # no-key-required should be used
 
+    def test_providers_dict_uses_durable_pool_when_no_inline_key(self, tmp_path):
+        """Titles/compression/vision must read credential_pool.<key>, not a placeholder."""
+        _write_config(tmp_path, {
+            "providers": {
+                "b-ai": {
+                    "name": "B.AI",
+                    "base_url": "https://api.b.ai/v1",
+                },
+            },
+        })
+        auth_path = tmp_path / ".hermes" / "auth.json"
+        auth_path.write_text(json.dumps({
+            "version": 1,
+            "providers": {},
+            "credential_pool": {
+                "b-ai": [
+                    {
+                        "id": "k1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-real-b-ai-pool-key-12345",
+                    }
+                ]
+            },
+        }))
+        from agent.auxiliary_client import resolve_provider_client
+        client, _model = resolve_provider_client("b-ai", "b-ai-model")
+        assert client is not None
+        assert "api.b.ai" in str(client.base_url)
+        assert client.api_key == "sk-real-b-ai-pool-key-12345"
 
 
 class TestResolveProviderClientModelNormalization:

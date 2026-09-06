@@ -172,10 +172,7 @@ class TestClientShape:
     def test_lookalike_host_does_not_get_portal_treatment(self):
         """Substring matching would hand a spoofed host the Portal JWT as a
         Bearer token. Hostname matching must reject it."""
-        from agent.anthropic_adapter import (
-            _is_nous_portal_endpoint,
-            _requires_bearer_auth,
-        )
+        from agent.anthropic_endpoints import _is_nous_portal_endpoint, _requires_bearer_auth
 
         spoofed = "https://inference-api.nousresearch.com.attacker.test/v1"
         assert not _is_nous_portal_endpoint(spoofed)
@@ -369,7 +366,7 @@ class TestPortalThinkingReplay:
         ]
 
     def _assert_thinking_kept(self, base_url):
-        from agent.anthropic_adapter import convert_messages_to_anthropic
+        from agent.anthropic_message_convert import convert_messages_to_anthropic
 
         _system, converted = convert_messages_to_anthropic(
             self._messages(),
@@ -402,7 +399,7 @@ class TestPortalThinkingReplay:
 
     def test_other_third_party_gateways_still_strip_thinking(self):
         """The Portal carve-out must not leak into MiniMax-style proxies."""
-        from agent.anthropic_adapter import convert_messages_to_anthropic
+        from agent.anthropic_message_convert import convert_messages_to_anthropic
 
         _system, converted = convert_messages_to_anthropic(
             self._messages(),

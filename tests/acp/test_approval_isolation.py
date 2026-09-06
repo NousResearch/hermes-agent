@@ -16,6 +16,7 @@ Both fixed together by:
 import threading
 
 import pytest
+from tools import approval_context
 
 
 @pytest.fixture(autouse=True)
@@ -30,6 +31,7 @@ def _isolate_approval_state(monkeypatch):
     for reasons unrelated to the code under test.
     """
     import tools.approval as _approval
+    from tools import approval_context
 
     monkeypatch.setattr(_approval, "_permanent_approved", set())
     monkeypatch.setattr(_approval, "_session_approved", {})
@@ -38,7 +40,7 @@ def _isolate_approval_state(monkeypatch):
     # command before the callback is consulted (test-order dependent, since
     # load_config() caching decides which config file is in effect). Pin the
     # mode so the GHSA regression path is what actually runs.
-    monkeypatch.setattr(_approval, "_get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
 
 
 class TestThreadLocalApprovalCallback:

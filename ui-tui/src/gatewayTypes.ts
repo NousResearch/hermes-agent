@@ -79,6 +79,7 @@ export type CommandDispatchResponse =
 export interface ConfigDisplayConfig {
   battery?: boolean
   bell_on_complete?: boolean
+  bell_on_prompt?: boolean
   busy_input_mode?: string
   details_mode?: string
   /** Focus view (/focus) — display-only reduced-output mode. */
@@ -543,6 +544,9 @@ export interface RollbackRestoreResponse {
 export interface SubagentEventPayload {
   api_calls?: number
   cost_usd?: number
+  /** Batch (delegation) id this subagent belongs to — distinguishes
+   *  interleaved `[n/N]` progress from concurrent or nested fan-outs. */
+  delegation_id?: string
   depth?: number
   duration_seconds?: number
   files_read?: string[]

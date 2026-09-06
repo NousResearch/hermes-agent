@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Propagate agent-turn context into worker threads that dispatch Hermes tools.
 
 A bare ``threading.Thread`` / ``ThreadPoolExecutor`` worker starts with an

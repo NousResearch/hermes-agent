@@ -592,6 +592,7 @@ const LOCAL_PRIMARY_SCOPED_ROUTES = new Set([
   'GET /api/skills/content',
   'PUT /api/skills/toggle',
   'POST /api/skills/hub/install',
+  'GET /api/skills/hub/official',
   'GET /api/skills/hub/preview',
   'GET /api/skills/hub/scan',
   'GET /api/skills/hub/search',

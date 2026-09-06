@@ -1342,6 +1342,30 @@ describe('collectUnspokenTurnSpeech', () => {
     expect(collectUnspokenTurnSpeech([assistant('a1', 'Done.')], 'a1')).toBeNull()
     expect(collectUnspokenTurnSpeech([user('u1', 'hello'), assistant('a1', '')], null)).toBeNull()
   })
+
+  it('does not replay earlier turns when the spoken id is missing or stale', () => {
+    const messages = [
+      user('u1', 'old question'),
+      assistant('a1', 'Previous output from last turn.'),
+      user('u2', 'new question'),
+      assistant('a2', 'Live reply only.')
+    ]
+
+    expect(collectUnspokenTurnSpeech(messages, null)?.text).toBe('Live reply only.')
+    expect(collectUnspokenTurnSpeech(messages, 'vanished-stream-id')?.text).toBe('Live reply only.')
+    expect(collectUnspokenTurnSpeech(messages, 'a1')?.text).toBe('Live reply only.')
+  })
+
+  it('bounds to a hidden user turn too (widget intents render no bubble)', () => {
+    const messages = [
+      user('u1', 'old question'),
+      assistant('a1', 'Previous output from last turn.'),
+      { ...user('u2', 'widget intent'), hidden: true },
+      assistant('a2', 'Live reply only.')
+    ]
+
+    expect(collectUnspokenTurnSpeech(messages, null)?.text).toBe('Live reply only.')
+  })
 })
 
 describe('stripPendingClarifyProjectionForCache', () => {

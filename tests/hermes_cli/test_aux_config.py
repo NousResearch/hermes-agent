@@ -15,14 +15,7 @@ from __future__ import annotations
 import pytest
 
 from hermes_cli.config import DEFAULT_CONFIG, load_config
-from hermes_cli.main import (
-    _AUX_TASKS,
-    _DELEGATION_TASK_KEY,
-    _delegation_cfg_as_task,
-    _format_aux_current,
-    _reset_aux_to_auto,
-    _save_aux_choice,
-)
+from hermes_cli.main_provider_setup import _AUX_TASKS, _DELEGATION_TASK_KEY, _delegation_cfg_as_task, _format_aux_current, _reset_aux_to_auto, _save_aux_choice
 
 
 # ── Default config ──────────────────────────────────────────────────────────
@@ -179,6 +172,7 @@ def test_leave_unchanged_replaces_cancel_label(tmp_path, monkeypatch):
     (tmp_path / ".hermes").mkdir(exist_ok=True)
 
     from hermes_cli import main as main_mod
+    import hermes_cli.main_provider_setup as hermes_cli_main_provider_setup
 
     captured: list[list[str]] = []
 
@@ -191,6 +185,7 @@ def test_leave_unchanged_replaces_cancel_label(tmp_path, monkeypatch):
         raise AssertionError("Leave unchanged not in provider list")
 
     monkeypatch.setattr(main_mod, "_prompt_provider_choice", fake_prompt)
+    monkeypatch.setattr(hermes_cli_main_provider_setup, "_prompt_provider_choice", fake_prompt)
 
     main_mod.select_provider_and_model()
 

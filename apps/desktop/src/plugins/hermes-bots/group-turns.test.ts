@@ -271,6 +271,45 @@ describe('per-turn socket lease', () => {
   })
 })
 
+describe('push-woken poll', () => {
+  it("wakes on the member session's message.complete instead of sleeping out the backstop", async () => {
+    // Real timers here: the contract is about WHEN the poll re-reads.
+    vi.unstubAllGlobals()
+    const listeners = new Map<string, Set<(event: unknown) => void>>()
+    const room = await loadRoom({ pollsBusy: 1, turn: () => 'woken reply' })
+
+    host.onEvent = (type: string, listener: (event: unknown) => void) => {
+      const set = listeners.get(type) ?? new Set()
+      set.add(listener)
+      listeners.set(type, set)
+
+      return () => set.delete(listener)
+    }
+
+    const started = Date.now()
+    const turn = room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'hi', 't1', [])
+
+    // Let the submit land and the first poll wait attach its listeners, then
+    // fire the terminal frame for the runtime id the submit used.
+    await new Promise(resolve => setTimeout(resolve, 50))
+    // The harness mints a fresh runtime id on every resume; the frame carries
+    // whichever one the session currently answers to.
+    const runtime = room.gateway.sessions.get(room.gateway.calls[0]?.stored)?.runtime
+    expect(listeners.get('message.complete')?.size).toBe(1)
+
+    for (const listener of listeners.get('message.complete') ?? []) {
+      listener({ type: 'message.complete', session_id: runtime })
+    }
+
+    expect(await turn).toBe('woken reply')
+    // Two quick re-reads (busy once, then done) — well under one 5s backstop tick.
+    expect(Date.now() - started).toBeLessThan(2000)
+    // Every listener was disposed once the turn finished.
+    expect(listeners.get('message.complete')?.size ?? 0).toBe(0)
+    expect(listeners.get('error')?.size ?? 0).toBe(0)
+  })
+})
+
 // #94376: a Codex intent-ack continuation nudge can land a substantive
 // answer, then get a synthetic "(pass)" reply to the nudge itself.
 describe('reply selection (#94376)', () => {

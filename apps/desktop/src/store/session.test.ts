@@ -30,6 +30,7 @@ import {
   _resetLegacyDiscardForTests,
   _resetSessionOwnerHintsForTests,
   applyConfiguredDefaultProjectDir,
+  carryForwardFailedProfileSessions,
   commitWorkspaceCwdForSelectedSession,
   ensureDefaultWorkspaceCwd,
   forgetSessionOwnerHintsForConnection,
@@ -37,15 +38,19 @@ import {
   getConfiguredDefaultProjectDir,
   getRememberedRoute,
   getRememberedSessionId,
+  getRememberedWorkspaceCwd,
   getSessionOwnerHint,
   getSessionOwnerHints,
   hydrateSessionOwnerHints,
+  keepFailedProfileMeta,
   knownSessionOwner,
   knownSessionProfile,
+  lineageAliases,
   mergeSessionPage,
   rememberedSessionProfile,
   resolveComposerSessionKey,
   sessionBelongsToProfile,
+  sessionMatchesStoredId,
   sessionOwnerRouteFromRow,
   sessionPinId,
   setComposerSelectionOwner,
@@ -363,6 +368,18 @@ describe('sessionPinId', () => {
   })
 })
 
+describe('lineageAliases across a deep compression chain', () => {
+  it('aliases every segment, intermediates included', () => {
+    // The projected row carries the full chain: a tile or route can hold a
+    // MIDDLE segment's id from when IT was the tip.
+    const rows = [session({ _lineage_ids: ['root', 'mid', 'tip'], _lineage_root_id: 'root', id: 'tip' })]
+
+    expect(lineageAliases('mid', rows).sort()).toEqual(['mid', 'root', 'tip'])
+    expect(lineageAliases('tip', rows).sort()).toEqual(['mid', 'root', 'tip'])
+    expect(sessionMatchesStoredId(rows[0], 'mid')).toBe(true)
+  })
+})
+
 describe('resolveComposerSessionKey', () => {
   it('keeps the lineage root across compression tip rotation', () => {
     const tipBefore = '20260720_062637_ad96b3'
@@ -672,6 +689,87 @@ describe('mergeSessionPage', () => {
   })
 })
 
+describe('carryForwardFailedProfileSessions', () => {
+  it('is a no-op when the backend reported no profile errors', () => {
+    const previous = [session({ id: 'yesterday', profile: 'default' })]
+    const incoming = [session({ id: 'today', profile: 'default' })]
+
+    expect(carryForwardFailedProfileSessions(previous, incoming, undefined)).toBe(incoming)
+    expect(carryForwardFailedProfileSessions(previous, incoming, [])).toBe(incoming)
+  })
+
+  it('re-attaches idle rows for a profile whose slice failed (empty 200 + errors)', () => {
+    // Repro: current session is running, sidebar scan hits disk I/O, backend
+    // returns recents=[] with errors=[{profile:default}]. mergeSessionPage then
+    // keeps only working/pinned/selected and Yesterday/This-week vanish.
+    const previous = [
+      session({ id: 'running', last_active: 300, profile: 'default', title: 'Now' }),
+      session({ id: 'yesterday', last_active: 200, profile: 'default', title: 'Yesterday' }),
+      session({ id: 'week', last_active: 100, profile: 'default', title: 'This week' })
+    ]
+
+    const carried = carryForwardFailedProfileSessions(previous, [], [{ profile: 'default', error: 'disk I/O error' }])
+
+    expect(carried.map(s => s.id)).toEqual(['running', 'yesterday', 'week'])
+    expect(carried[1]).toBe(previous[1])
+  })
+
+  it('does not resurrect a successful profile’s omitted rows, and does not duplicate', () => {
+    const previous = [
+      session({ id: 'work-old', profile: 'work' }),
+      session({ id: 'home-idle', profile: 'default' }),
+      session({ id: 'home-fresh', profile: 'default' })
+    ]
+
+    const incoming = [session({ id: 'home-fresh', message_count: 4, profile: 'default' })]
+
+    const carried = carryForwardFailedProfileSessions(previous, incoming, [{ profile: 'work' }])
+
+    expect(carried.map(s => `${s.profile}:${s.id}`)).toEqual(['default:home-fresh', 'work:work-old'])
+  })
+
+  it('re-ranks carried rows by recency instead of parking them at the tail', () => {
+    const previous = [
+      session({ id: 'idle-newer', last_active: 500, profile: 'work' }),
+      session({ id: 'idle-older', last_active: 50, profile: 'work' })
+    ]
+
+    const incoming = [session({ id: 'home', last_active: 100, profile: 'default' })]
+
+    expect(carryForwardFailedProfileSessions(previous, incoming, [{ profile: 'work' }]).map(s => s.id)).toEqual([
+      'idle-newer',
+      'home',
+      'idle-older'
+    ])
+  })
+
+  it('treats a missing profile tag on the error as default', () => {
+    const previous = [session({ id: 'idle', profile: 'default' })]
+
+    expect(carryForwardFailedProfileSessions(previous, [], [{ error: 'disk I/O error' }]).map(s => s.id)).toEqual([
+      'idle'
+    ])
+  })
+})
+
+describe('keepFailedProfileMeta', () => {
+  it('is a no-op when the backend reported no profile errors', () => {
+    const incoming = { default: { cost_usd: 1, tokens: 2 } }
+
+    expect(keepFailedProfileMeta({ default: { cost_usd: 9, tokens: 9 } }, incoming, [])).toBe(incoming)
+  })
+
+  it('restores previous usage/truncated flags for profiles whose slice failed', () => {
+    const previous = { default: { cost_usd: 4, tokens: 40 }, work: { cost_usd: 1, tokens: 10 } }
+    const incoming = { work: { cost_usd: 2, tokens: 20 } }
+
+    expect(keepFailedProfileMeta(previous, incoming, [{ profile: 'default' }])).toEqual({
+      default: { cost_usd: 4, tokens: 40 },
+      work: { cost_usd: 2, tokens: 20 }
+    })
+  })
+})
+
 describe('touchSessionActivity', () => {
   afterEach(() => {
     setSessions([])
@@ -814,16 +912,22 @@ describe('workspaceCwdForNewSession', () => {
     $currentCwd.set('/live/session/path')
     $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
 
+    // Bare new sessions are intentionally DETACHED across every mode
+    // (#57911): neither sticky local nor sticky remote cwd is an accept-
+    // able bare-default — only an explicit configured default pre-attaches.
+    // The per-backend memory itself stays isolated (asserted directly).
     expect(workspaceCwdForNewSession()).toBe('')
 
     setCurrentCwd('/backend/project-a')
-    expect(workspaceCwdForNewSession()).toBe('/backend/project-a')
-
-    $connection.set({ baseUrl: 'http://backend-b', mode: 'remote' } as never)
+    expect(getRememberedWorkspaceCwd()).toBe('/backend/project-a')
     expect(workspaceCwdForNewSession()).toBe('')
 
+    $connection.set({ baseUrl: 'http://backend-b', mode: 'remote' } as never)
+    expect(getRememberedWorkspaceCwd()).toBe('')
+
     setCurrentCwd('/backend/project-b')
-    expect(workspaceCwdForNewSession()).toBe('/backend/project-b')
+    expect(getRememberedWorkspaceCwd()).toBe('/backend/project-b')
+    expect(workspaceCwdForNewSession()).toBe('')
 
     // Back on local with no configured default: a bare new chat is detached and
     // never reads the remote keys (nor inherits the sticky local workspace).
@@ -832,20 +936,23 @@ describe('workspaceCwdForNewSession', () => {
   })
 
   it('remembers only the workspace the user picked, not the one they looked at', () => {
-    // The reported bug (#77496 / #80213): on a remote backend a new chat starts
-    // in the remembered workspace, and every session resume used to write that
-    // key — so opening a project chat silently made it the destination for the
-    // next "New session". Following a conversation must leave the memory alone.
+    // The reported bug (#77496 / #80213): every session resume used to write
+    // the remembered-workspace key — so opening a project chat silently moved
+    // the memory. Following a conversation must leave the memory alone.
+    // (Since #57911 a bare new session is detached in remote mode too, so the
+    // memory is asserted directly — its remaining consumer is resume seeding
+    // via ensureDefaultWorkspaceCwd.)
     $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
     setCurrentCwd('/backend/picked')
 
     setCurrentCwdTransient('/backend/some-other-project')
 
     expect($currentCwd.get()).toBe('/backend/some-other-project')
-    expect(workspaceCwdForNewSession()).toBe('/backend/picked')
+    expect(getRememberedWorkspaceCwd()).toBe('/backend/picked')
+    expect(workspaceCwdForNewSession()).toBe('')
   })
 
-  it('settling a resumed session does not move where the next new chat starts', () => {
+  it('settling a resumed session does not move the remembered workspace', () => {
     // The reporter's exact sequence: work in a project, open a chat from it,
     // then ask for a new session. Resume settling publishes the conversation's
     // cwd through commitWorkspaceCwdForSelectedSession — which must not claim
@@ -856,7 +963,33 @@ describe('workspaceCwdForNewSession', () => {
     setSelectedStoredSessionId('sess-in-project')
     commitWorkspaceCwdForSelectedSession('/backend/last-project')
 
-    expect(workspaceCwdForNewSession()).toBe('/backend/picked')
+    expect(getRememberedWorkspaceCwd()).toBe('/backend/picked')
+    expect(workspaceCwdForNewSession()).toBe('')
+  })
+
+  it('does not stick a previous remote workspace onto a bare new session (#57911)', () => {
+    // Repro: in remote mode the user attaches to project-A so the renderer
+    // persists /tradingview as the remembered cwd under the remote key. The
+    // user then presses Cmd+N *without* being scoped into any project. A bare
+    // new session must NOT inherit /tradingview — pre-fix this returned the
+    // sticky remembered cwd and the gateway mapped it back to the wrong
+    // project via project_tree.py.
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
+    setCurrentCwd('/tradingview')
+    applyConfiguredDefaultProjectDir(null)
+
+    expect(workspaceCwdForNewSession()).toBe('')
+  })
+
+  it('respects an explicit configured default in remote mode (#57911)', () => {
+    // Symmetric guard: removing the remote branch must NOT regress users who
+    // *did* set a configured default — the explicit default pre-attaches
+    // identically across local and remote mode.
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
+    setCurrentCwd('/tradingview')
+    applyConfiguredDefaultProjectDir('/home/user/configured')
+
+    expect(workspaceCwdForNewSession()).toBe('/home/user/configured')
   })
 })
 

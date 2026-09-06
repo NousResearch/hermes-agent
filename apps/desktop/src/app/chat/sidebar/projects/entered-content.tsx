@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useMemo, useState } from 'react'
 
+import { type NewSessionSplitHandler, startNewSessionDrag } from '@/app/chat/new-session-drag'
 import { Codicon } from '@/components/ui/codicon'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import type { HermesGitWorktree } from '@/global'
@@ -33,6 +34,7 @@ export function EnteredProjectContent({
   project,
   renderRows,
   onNewSession,
+  onNewSessionSplit,
   repoWorktrees,
   liveSessions,
   removedSessionIds
@@ -40,6 +42,7 @@ export function EnteredProjectContent({
   project: SidebarProjectTree
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
+  onNewSessionSplit?: NewSessionSplitHandler
   repoWorktrees?: Record<string, HermesGitWorktree[]>
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
@@ -64,6 +67,7 @@ export function EnteredProjectContent({
           key={repo.id}
           liveSessions={liveSessions}
           onNewSession={onNewSession}
+          onNewSessionSplit={onNewSessionSplit}
           removedSessionIds={removedSessionIds}
           renderRows={renderRows}
           repo={repo}
@@ -79,6 +83,7 @@ function RepoFlatSection({
   showHeader,
   renderRows,
   onNewSession,
+  onNewSessionSplit,
   discoveredWorktrees,
   liveSessions,
   removedSessionIds
@@ -87,6 +92,7 @@ function RepoFlatSection({
   showHeader: boolean
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
+  onNewSessionSplit?: NewSessionSplitHandler
   discoveredWorktrees?: HermesGitWorktree[]
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
@@ -166,6 +172,7 @@ function RepoFlatSection({
           // The kanban bucket is read-only: it aggregates many task worktrees, so
           // "new session here" and "remove worktree" have no single target.
           onNewSession={group.isKanban ? undefined : onNewSession}
+          onNewSessionSplit={group.isKanban ? undefined : onNewSessionSplit}
           onRemove={group.isMain || group.isKanban ? undefined : () => setRemoveTarget(group)}
           renderRows={renderRows}
         />
@@ -245,6 +252,24 @@ function RepoFlatSection({
                 setWorkspaceNodeOpen(repo.id, true)
                 onNewSession(repo.path)
               }}
+              onPointerDown={
+                onNewSessionSplit
+                  ? event => {
+                      startNewSessionDrag(
+                        placement => {
+                          setWorkspaceNodeOpen(repo.id, true)
+                          onNewSessionSplit(placement.dir, {
+                            anchor: placement.anchor,
+                            before: placement.before,
+                            cwd: repo.path
+                          })
+                        },
+                        event,
+                        { cwd: repo.path, label: s.newSessionIn(repo.label) }
+                      )
+                    }
+                  : undefined
+              }
             />
           )
         }

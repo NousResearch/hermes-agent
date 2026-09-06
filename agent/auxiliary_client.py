@@ -3675,9 +3675,12 @@ def _plan_fallback_candidate(
     return destination, _fallback_request_kwargs(destination, **common), _rebuild
 
 
-def _quarantine_fallback_candidate(task: Optional[str], fb_label: str, fb_provider: str, fb_err: Exception, *, tag: str = "") -> None:
+def _quarantine_fallback_candidate(
+    task: Optional[str], fb_label: str, fb_provider: str, fb_err: Exception, *,
+    base_url: str = "", tag: str = "",
+) -> None:
     """Refresh unavailable or still 401s: token is dead. Quarantine the candidate so the caller moves on."""
-    _mark_provider_unhealthy(fb_provider or fb_label)
+    _mark_provider_unhealthy(fb_provider or fb_label, base_url=base_url)
     logger.warning("Auxiliary %s%s: fallback candidate %s has a stale/unrefreshable "
                    "credential (%s) — skipping to next fallback", task or "call", tag, fb_label, fb_err)
 
@@ -3738,13 +3741,17 @@ def _call_fallback_candidate_sync(
         if not _is_auth_error(fb_err):
             raise
         fb_provider, retry = _plan_fallback_auth_retry(destination, rebuild, async_mode=False)
+        failed_destination = destination
         if retry is not None:
+            failed_destination = retry[2]
             try:
                 return _send(*retry)
             except Exception as retry_err:
                 if not _is_auth_error(retry_err):
                     raise
-        _quarantine_fallback_candidate(task, fb_label, fb_provider, fb_err)
+        _quarantine_fallback_candidate(
+            task, fb_label, fb_provider, fb_err, base_url=failed_destination.base_url,
+        )
         return None
 
 
@@ -3772,13 +3779,18 @@ async def _call_fallback_candidate_async(
         if not _is_auth_error(fb_err):
             raise
         fb_provider, retry = _plan_fallback_auth_retry(destination, rebuild, async_mode=True)
+        failed_destination = destination
         if retry is not None:
+            failed_destination = retry[2]
             try:
                 return await _send(*retry)
             except Exception as retry_err:
                 if not _is_auth_error(retry_err):
                     raise
-        _quarantine_fallback_candidate(task, fb_label, fb_provider, fb_err, tag=" (async)")
+        _quarantine_fallback_candidate(
+            task, fb_label, fb_provider, fb_err,
+            base_url=failed_destination.base_url, tag=" (async)",
+        )
         return None
 
 

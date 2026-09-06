@@ -20,6 +20,7 @@ from dataclasses import field
 from pathlib import Path
 from typing import Any
 from typing import Callable
+from typing import Iterable
 from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -133,6 +134,113 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    capacity_deferred: Optional[str] = None
+    """``"max_spawn"`` / ``"max_in_progress"`` when :func:`_tick_spawn_budget`
+    returned before ANY spawn attempt because that cap was already full.
+    Deferred, not stuck: the queue is picked up when a worker finishes. Every
+    other deliberate decline already left a mark (``memory_pressure``,
+    ``skipped_per_profile_capped``, ``respawn_guarded``, ``skipped_locked``);
+    the capacity cap was the one silent outcome, which made a full board
+    indistinguishable from a broken profile to health telemetry (#46800)."""
+
+
+# Respawn-guard reasons that mean "deliberately deferred, retry later".
+# ``blocker_auth`` is deliberately absent: it is the quota/auth fault the
+# dispatcher health warning exists to surface.
+_BENIGN_RESPAWN_REASONS = frozenset({"recent_success", "active_pr", "rate_limit_cooldown"})
+
+
+def idle_reason(result: DispatchResult) -> Optional[str]:
+    """Why this tick spawned nothing ON PURPOSE, or ``None`` if unexplained.
+
+    The single answer consumed by both health checks (the gateway watcher and
+    the deprecated ``hermes kanban daemon --force`` loop) so they cannot drift.
+    ``None`` means "spawned nothing and nothing explains it" — the actionable
+    state the "dispatcher stuck" warning is for.
+
+    A fault on the same tick always wins: ``auto_blocked`` (the spawn-failure
+    circuit breaker tripped, or the reclaim phase auto-blocked a crashed
+    worker for a systemic error fingerprint / protocol-violation streak)
+    short-circuits every benign reason, so a board that is both deferring and
+    failing still reports as unexplained. A first spawn failure records
+    nothing at all, so it is unexplained by omission — which is exactly what
+    we want.
+    """
+    if result.auto_blocked:
+        return None
+    if result.skipped_locked:
+        return "locked"
+    if result.capacity_deferred:
+        return f"capacity:{result.capacity_deferred}"
+    # "elevated" still permits one spawn, so a zero-spawn elevated tick is NOT
+    # explained by memory pressure; only "critical" spawns nothing by design.
+    if result.memory_pressure == "critical":
+        return "memory_pressure"
+    if result.skipped_per_profile_capped:
+        return "per_profile_capped"
+    if result.rate_limited:
+        return "rate_limited"
+    if result.respawn_guarded and all(
+        reason in _BENIGN_RESPAWN_REASONS for _tid, reason in result.respawn_guarded
+    ):
+        return "respawn_guarded"
+    return None
+
+
+def next_bad_tick_count(bad_ticks: int, *, stalled: bool, deferred: bool) -> int:
+    """Advance the dispatcher-health streak by one tick.
+
+    Three states, not two — a deliberate deferral must HOLD the streak rather
+    than clear it. Resetting on a benign tick would let a board that alternates
+    "deferred" with "genuinely failing" (e.g. one profile at its per-profile
+    cap while another cannot launch) oscillate below the warning window
+    forever, silently losing a signal that fires on main today.
+    """
+    if stalled:
+        return bad_ticks + 1
+    if deferred:
+        return bad_ticks
+    return 0
+
+
+def advance_stall_streaks(
+    streaks: Mapping[str, int],
+    *,
+    stalled: Iterable[str],
+    deferred: Iterable[str],
+) -> dict[str, int]:
+    """Step the per-board "nothing can launch" streak by one tick.
+
+    Returns a NEW mapping containing only the boards still under judgement.
+    A board that spawned, or that has no spawnable work this tick, appears in
+    neither input and is therefore dropped — dropping IS the reset, so a stale
+    count can never outlive the condition that produced it. ``stalled`` is
+    applied last so a slug in both inputs advances rather than holds.
+
+    Per board rather than per host because the streak is what the warning
+    counts: one global counter accumulated across non-consecutive stalls on
+    different boards, which made "%d consecutive ticks" untrue and could name
+    boards that had not contributed to the count (#46800).
+    """
+    nxt: dict[str, int] = {}
+    for slug in deferred:
+        nxt[slug] = next_bad_tick_count(streaks.get(slug, 0), stalled=False, deferred=True)
+    for slug in stalled:
+        nxt[slug] = next_bad_tick_count(streaks.get(slug, 0), stalled=True, deferred=False)
+    return nxt
+
+
+def boards_at_health_window(streaks: Mapping[str, int], window: int) -> list[str]:
+    """Boards whose unexplained-stall streak reached ``window``, sorted.
+
+    This IS the warn decision: an empty list means stay quiet. Every named
+    board has personally accrued ``window`` unexplained ticks of its own —
+    not necessarily adjacent, because a deferred tick holds the count rather
+    than resetting it (``next_bad_tick_count``) — so the warning cannot fire
+    with an empty board list, and cannot name a board that is merely deferring
+    while another one built the count.
+    """
+    return sorted(slug for slug, ticks in streaks.items() if ticks >= window)
 
 
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in
@@ -1662,6 +1770,10 @@ def _tick_spawn_budget(
     by N every tick. ``max_in_progress`` is a HOST-level cap: running workers on
     every other board count against the same budget, else N boards multiply the
     cap by N — exactly the fan-out the memory-derived default exists to prevent.
+
+    A full cap sets ``result.capacity_deferred`` before returning
+    ``(False, None)`` so health telemetry can tell "every slot is busy" from
+    "nothing can launch"; see :func:`idle_reason`.
     """
     # Count already-running tasks so max_spawn enforces concurrency, not a
     # per-tick budget: "running" tasks stay running until the worker calls
@@ -1671,15 +1783,20 @@ def _tick_spawn_budget(
     if max_spawn is not None or max_in_progress is not None:
         running_count = count_running_tasks(conn)
 
-    # Both ready and review loops consume from the same budget.
+    # Both ready and review loops consume from the same budget. Both gates
+    # record ``capacity_deferred``: a serial board (max_spawn == 1) returns at
+    # the board gate before the host gate is ever evaluated, so flagging only
+    # one of them misses the configuration that hits this every tick.
     if max_spawn is not None:
         if running_count >= max_spawn:
+            result.capacity_deferred = "max_spawn"
             return False, None
         spawn_budget = max_spawn - running_count
 
     if max_in_progress is not None:
         total_running = running_count + count_running_tasks_other_boards(board)
         if total_running >= max_in_progress:
+            result.capacity_deferred = "max_in_progress"
             return False, None
         remaining = max_in_progress - total_running
         if spawn_budget is None or spawn_budget > remaining:

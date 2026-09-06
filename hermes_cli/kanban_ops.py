@@ -105,6 +105,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
             "auto_assigned_default": res.auto_assigned_default,
+            # "max_spawn" / "max_in_progress" when the board was already at
+            # that cap: deferred, not stuck.
+            "capacity_deferred": res.capacity_deferred,
         }, ascii=True)
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -131,6 +134,13 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
     for tid, who, current in res.skipped_per_profile_capped:
         print(f"Deferred ({who} at per-profile cap, {current} running): {tid}")
+    if res.capacity_deferred:
+        # max_in_progress is a HOST-level cap: other boards' workers count.
+        scope = "host" if res.capacity_deferred == "max_in_progress" else "board"
+        print(
+            f"Deferred ({scope} already at the kanban.{res.capacity_deferred} cap — "
+            f"ready work is queued, not stuck)"
+        )
     if res.skipped_nonspawnable:
         print(
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
@@ -184,7 +194,14 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
     # nothing (broken profile, PATH drift, missing venv, credential loss) —
     # the per-task breaker auto-blocks quietly, so the operator needs a signal.
     HEALTH_WINDOW = 6  # ticks (default 30s at interval=5)
-    health_state = {"bad_ticks": 0, "last_warn_at": 0}
+    # One streak per board via the same helpers as the embedded gateway
+    # dispatcher (gateway/kanban_watchers.py) so the two cannot drift. This
+    # loop dispatches a single board, so the mapping holds at most one entry.
+    try:
+        board_slug = kb.get_current_board()
+    except Exception:
+        board_slug = kb.DEFAULT_BOARD
+    health_state: dict = {"streaks": {}, "last_warn_at": 0}
 
     def _ready_queue_nonempty() -> bool:
         """Is there a ready+assigned+unclaimed task the dispatcher would spawn for?
@@ -196,21 +213,35 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             return False
 
     def _on_tick(res):
+        # Same three-state streak as the embedded gateway dispatcher (see
+        # gateway/kanban_watchers.py): a deliberate decline (capacity cap,
+        # respawn guard, critical memory pressure, ...) HOLDS the streak
+        # instead of clearing it, so a board that alternates "deferred" with
+        # "genuinely failing" still reaches the window; the counted ticks
+        # therefore need not be adjacent. The pending predicate
+        # differs from the gateway's, as it did before: this loop also counts
+        # ``skipped_unassigned`` (#100956) as work that wants a worker.
         ready_pending = bool(res.skipped_unassigned) or _ready_queue_nonempty()
-        if ready_pending and not res.spawned:
-            health_state["bad_ticks"] += 1
-        else:
-            health_state["bad_ticks"] = 0
-        # Warn once per HEALTH_WINDOW bad ticks, at most every 5 minutes.
-        if health_state["bad_ticks"] >= HEALTH_WINDOW:
+        idle = kbd.idle_reason(res)
+        pending_idle = bool(ready_pending) and not res.spawned
+        health_state["streaks"] = kbd.advance_stall_streaks(
+            health_state["streaks"],
+            stalled=[board_slug] if pending_idle and idle is None else [],
+            deferred=[board_slug] if pending_idle and idle is not None else [],
+        )
+        # Warn once the board's own streak reaches the window, at most every
+        # 5 minutes. An empty list means stay quiet.
+        stuck = kbd.boards_at_health_window(health_state["streaks"], HEALTH_WINDOW)
+        if stuck:
             now = int(time.time())
             if now - health_state["last_warn_at"] >= 300:
+                ticks = max(health_state["streaks"][slug] for slug in stuck)
                 print(
-                    f"[{_fmt_ts(now)}] WARN dispatcher stuck: ready queue non-empty for "
-                    f"{health_state['bad_ticks']} consecutive ticks but 0 workers spawned "
-                    f"successfully. Check profile health (venv, PATH, credentials) and `hermes "
-                    f"kanban list --status ready` / `hermes kanban list --status blocked` for "
-                    f"recent spawn_failed tasks.",
+                    f"[{_fmt_ts(now)}] WARN dispatcher stuck: boards={stuck} have spawnable "
+                    f"work but spawned 0 workers successfully for {ticks} unexplained ticks "
+                    f"(capacity/guard deferrals hold the count, they do not reset it). Check "
+                    f"profile health (venv, PATH, credentials) and `hermes kanban list --status "
+                    f"ready` / `hermes kanban list --status blocked` for recent spawn_failed tasks.",
                     file=sys.stderr, flush=True,
                 )
                 health_state["last_warn_at"] = now

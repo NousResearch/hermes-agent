@@ -209,14 +209,16 @@ class _KanbanDispatcher:
         """Run one dispatch_once per board. Returns (slug, result) pairs."""
         return [(slug, self.tick_once_for_board(slug)) for slug in self._board_slugs()]
 
-    def ready_nonempty(self) -> bool:
-        """Is there a ready+assigned+unclaimed task on ANY board the dispatcher would spawn for?
+    def _iter_spawnable_boards(self):
+        """Yield each board slug with work the dispatcher would spawn for.
 
         Control-plane lanes (e.g. ``orion-cc``) are pulled by terminals via
         ``claim_task`` and never spawnable — a queue full of those is
         "correctly idle", not "stuck". The review column is probed only when
         review dispatch is on (same gate as the dispatcher): a task waiting
-        for a human reviewer is idle, not stuck.
+        for a human reviewer is idle, not stuck. One read-only connection per
+        board, opened and closed inside the loop. A board that fails to open is
+        skipped, never fatal.
         """
         kbd = _kbd()
         _review_probe = kbd.review_dispatch_enabled()
@@ -225,14 +227,24 @@ class _KanbanDispatcher:
             try:
                 conn = _kbc().connect(board=slug)
                 if kbd.has_spawnable_ready(conn) or (_review_probe and kbd.has_spawnable_review(conn)):
-                    return True
+                    yield slug
             except Exception:
                 continue
             finally:
                 if conn is not None:
                     with contextlib.suppress(Exception):
                         conn.close()
-        return False
+
+    def spawnable_boards(self) -> set[str]:
+        """Slugs of every board with spawnable ready/review work.
+
+        The health check needs the SET, not a yes/no: "board A is at its cap"
+        must not be allowed to explain away "board B cannot launch anything".
+        It therefore visits every board — one connection per board on a host
+        with N boards, where the yes/no probe it replaces stopped at the first
+        board with work. Same single thread hop per tick as before.
+        """
+        return set(self._iter_spawnable_boards())
 
     def auto_decompose_tick(self, auto_decompose_per_tick: int) -> int:
         """Auto-decompose up to N triage tasks across all boards into ready workgraphs.
@@ -289,6 +301,47 @@ class _KanbanDispatcher:
         else:
             logger.info("kanban auto-decompose [%s]: %s → single task (no fanout)", slug, tid)
         return 1
+
+
+def _classify_idle_boards(
+    results: Optional[list], spawnable: set[str],
+) -> tuple[list[str], dict[str, str]]:
+    """Split the boards that had work but spawned nothing into ``(stalled, deferred)``.
+
+    Board-local by construction: each board is judged only on ITS OWN result,
+    so a board sitting at its capacity cap can never explain away a sibling
+    board whose profile cannot launch (the aggregate ``any()`` that stalled the
+    earlier attempts on this bug).
+
+    ``deferred`` — slug -> the :func:`kanban_db_dispatch.idle_reason` that
+    named a deliberate decline (cap full, lock lost, critical memory pressure,
+    respawn guard, ...); kept so the tick can log WHICH reason held each board.
+    ``stalled`` — nothing explains the zero spawns; that is the actionable
+    state. A board whose tick failed outright or was quarantined (``res is
+    None``) stays unexplained, exactly as before this change, and a board with
+    pending work but no result at all is treated the same way.
+    """
+    idle_reason = _kbd().idle_reason
+    stalled: list[str] = []
+    deferred: dict[str, str] = {}
+    seen: set[str] = set()
+    for slug, res in (results or []):
+        if slug not in spawnable:
+            continue
+        seen.add(slug)
+        if res is None:
+            # Tick failed or the board is quarantined: unexplained by omission.
+            stalled.append(slug)
+            continue
+        if res.spawned:
+            continue
+        reason = idle_reason(res)
+        if reason is None:
+            stalled.append(slug)
+        else:
+            deferred[slug] = reason
+    stalled.extend(sorted(spawnable - seen))
+    return stalled, deferred
 
 
 def _log_spawn_results(results: Optional[list]) -> bool:

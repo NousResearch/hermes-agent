@@ -27,6 +27,7 @@ from gateway.kanban_watchers_common import (
 from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
 from gateway.kanban_watchers_dispatcher import (
     _KanbanDispatcher,
+    _classify_idle_boards,
     _log_spawn_results,
     _resolve_dispatcher_settings,
 )
@@ -249,19 +250,24 @@ class GatewayKanbanWatchersMixin:
         # Initial delay so adapters are wired before workers spawn (matches the notifier).
         await asyncio.sleep(5)
 
-        # Health telemetry (mirrors `_cmd_daemon`): warn when the ready queue
-        # is non-empty but spawns are 0 for N consecutive ticks — usually a
-        # broken PATH, missing venv, or credential loss.
-        bad_ticks = 0
+        # Health telemetry (mirrors `_cmd_daemon`): warn when a board has
+        # spawnable work and accrues N zero-spawn ticks that nothing explains
+        # — usually a broken PATH, missing venv, or credential loss. A board
+        # at its concurrency cap is deferring, not stuck: a deferred tick
+        # HOLDS the streak (it neither counts nor resets, see
+        # `next_bad_tick_count`), so the ticks counted need not be adjacent.
+        # One streak PER BOARD, so the warning names exactly the boards that
+        # built their own count.
+        stall_streaks: dict[str, int] = {}
         last_warn_at = 0
         dispatcher = _KanbanDispatcher(_kb, settings)
+        from hermes_cli import kanban_db_dispatch as _kbd
 
         logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
         while self._running:
             try:
                 # Reap zombies before per-board work so a board DB failure
                 # cannot block cleanup of unrelated workers.
-                from hermes_cli import kanban_db_dispatch as _kbd
                 pids = await _to_thread_process_service(_kbd.reap_worker_zombies)
                 if pids:
                     logger.info("kanban dispatcher: reaped %d zombie worker(s), pids=%s", len(pids), pids)
@@ -272,7 +278,7 @@ class GatewayKanbanWatchersMixin:
                 # Emergency stop (`hermes pause`): no auto-decompose or
                 # dispatch while paused; running workers finish naturally.
                 if not _kanban_dispatch_allowed():
-                    bad_ticks = 0
+                    stall_streaks = {}
                 else:
                     # Re-read the auto-decompose toggle live so disabling it
                     # takes effect on the next tick, not on restart.
@@ -281,17 +287,32 @@ class GatewayKanbanWatchersMixin:
                     if _ad_enabled:
                         await _to_thread_process_service(dispatcher.auto_decompose_tick, _ad_per_tick)
                     results = await _to_thread_process_service(dispatcher.tick_once)
-                    any_spawned = _log_spawn_results(results)
-                    ready_pending = await _to_thread_process_service(dispatcher.ready_nonempty)
-                    bad_ticks = bad_ticks + 1 if ready_pending and not any_spawned else 0
+                    _log_spawn_results(results)
+                    # The SET of boards with work, not a global yes/no: the
+                    # verdict below is per board, so one full board can never
+                    # explain away a sibling that cannot launch anything.
+                    spawnable = await _to_thread_process_service(dispatcher.spawnable_boards)
+                    stalled, deferred = _classify_idle_boards(results, spawnable)
+                    for slug, reason in sorted(deferred.items()):
+                        logger.debug("kanban dispatcher [%s]: deferred (%s)", slug, reason)
+                    # Three states per board, shared with `_cmd_daemon`: a
+                    # stalled board advances its streak, a deferred board HOLDS
+                    # it (a reset would let a board that alternates "capped"
+                    # with "failing" stay under the window forever), and a
+                    # board that spawned or has no spawnable work is dropped.
+                    stall_streaks = _kbd.advance_stall_streaks(
+                        stall_streaks, stalled=stalled, deferred=deferred,
+                    )
                 now = int(time.time())
-                if bad_ticks >= _HEALTH_WINDOW and now - last_warn_at >= 300:
+                stuck = _kbd.boards_at_health_window(stall_streaks, _HEALTH_WINDOW)
+                if stuck and now - last_warn_at >= 300:
                     logger.warning(
-                        "kanban dispatcher stuck: ready queue non-empty for "
-                        "%d consecutive ticks but 0 workers spawned. Check "
-                        "profile health (venv, PATH, credentials) and "
-                        "`hermes kanban list --status ready`.",
-                        bad_ticks,
+                        "kanban dispatcher stuck: boards=%s each have spawnable "
+                        "work but spawned 0 workers for >=%d unexplained ticks "
+                        "(capacity/guard deferrals hold the count, they do not "
+                        "reset it). Check profile health (venv, PATH, "
+                        "credentials) and `hermes kanban list --status ready`.",
+                        stuck, _HEALTH_WINDOW,
                     )
                     last_warn_at = now
             except asyncio.CancelledError:

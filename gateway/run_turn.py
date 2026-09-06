@@ -1836,19 +1836,17 @@ class GatewayTurnMixin:
         running (history unreadable); ``None`` drops the turn (inbound text rejected)."""
         from gateway.run import _load_gateway_config
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
-        context = build_session_context(source, self.config, session_entry)
+        from gateway.run_session_metadata import bind_session_context_for_turn, source_with_trigger_message_id
+        context = build_session_context(source_with_trigger_message_id(event, source), self.config, session_entry)
         # Session context variables for tools (task-local, concurrency-safe)
-        _session_env_tokens = self._set_session_env(context)
+        _session_env_tokens, _redact_pii = bind_session_context_for_turn(self, context)
         # Self-injected turns (MessageEvent(internal=True)) persist with a DB-only display_kind so
         # UIs render timeline notices, not user bubbles; role/content untouched.
         persist_user_display_kind = "internal_notification" if getattr(event, "internal", False) else None
-        _redact_pii = False  # privacy.redact_pii, re-read per message
-        with suppress(Exception):
-            _redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
 
         # The context prompt render is pinned per session, keyed by a hash of the renderer inputs, so
         # the system prompt cannot drift turn-over-turn; a miss (thread rename, /sethome) re-renders.
-        context_prompt = self._pinned_session_context_prompt(context, _redact_pii, session_key)
+        context_prompt = self._pinned_session_context_prompt(context, _redact_pii is not False, session_key)
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
         # (appending to the ephemeral system prompt forced a full agent rebuild).
@@ -3449,6 +3447,10 @@ class GatewayTurnMixin:
                     "Queued follow-up session-key resolution failed; reusing %s",
                     session_key or "?", exc_info=True,
                 )
+            from gateway.run_session_metadata import bind_followup_event_context
+            next_source = bind_followup_event_context(
+                self, pending_event, session_key=next_session_key, session_id=session_id,
+            )
             next_message = await self._prepare_profile_scoped_inbound_message_text(
                 event=pending_event, source=next_source, history=updated_history, session_key=next_session_key,
             )
@@ -3457,6 +3459,10 @@ class GatewayTurnMixin:
             next_message_id = self._reply_anchor_for_event(pending_event)
             next_channel_prompt = getattr(pending_event, "channel_prompt", None)
             next_message_type = getattr(pending_event, "message_type", None)
+        else:
+            # A bare text continuation has no authenticated event to attest.
+            from gateway.session_context import _SESSION_REDACT_PII
+            _SESSION_REDACT_PII.set(None)
 
         # Clear the prior turn's streaming-TTS completion marker so the recursive turn isn't suppressed.
         # See #60671.

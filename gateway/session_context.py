@@ -51,6 +51,8 @@ _SESSION_VARS = (
 # ``async_delivery_supported()``).  _UNSET => supported (CLI, contextvar-unaware paths); stateless
 # adapters (API server, Kanban workers) opt OUT via ``supports_async_delivery = False`` at bind.
 _SESSION_ASYNC_DELIVERY = ContextVar("HERMES_SESSION_ASYNC_DELIVERY", default=_UNSET)
+# A per-turn policy snapshot. Unknown is not permission to disclose identifiers.
+_SESSION_REDACT_PII = ContextVar("HERMES_SESSION_REDACT_PII", default=None)
 
 # Cron auto-delivery vars, set per-job in run_job() so concurrent jobs don't clobber.
 _CRON_AUTO_DELIVER_PLATFORM = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
@@ -107,7 +109,7 @@ def set_session_vars(
     user_name: str = "", scope_id: str = "", session_key: str = "", session_id: str = "",
     message_id: str = "", profile: str = "", browser_control_principal: str = "",
     browser_control_transport_family: str = "", cwd: str = "", async_delivery: bool = True,
-    ui_session_id: str = "", cron_session: Any = _UNSET,
+    ui_session_id: str = "", cron_session: Any = _UNSET, redact_pii: bool | None = None,
 ) -> list:
     """Set all session context variables and return reset tokens.  Call
     ``clear_session_vars(tokens)`` in a ``finally``; not nestable, clearing resets every var
@@ -121,6 +123,7 @@ def set_session_vars(
     )
     tokens = [var.set(value) for var, value in zip(_SESSION_VARS, values)]
     tokens.append(_SESSION_ASYNC_DELIVERY.set(bool(async_delivery)))
+    tokens.append(_SESSION_REDACT_PII.set(redact_pii))
     _runtime_cwd("set_session_cwd", cwd)
     return tokens
 
@@ -132,6 +135,7 @@ def clear_session_vars(tokens: list) -> None:
     for var in _SESSION_VARS:
         var.set("")
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
+    _SESSION_REDACT_PII.set(None)
     _runtime_cwd("clear_session_cwd")
 
 
@@ -143,6 +147,7 @@ def reset_session_vars() -> None:
     for var in _VAR_MAP.values():
         var.set(_UNSET)
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
+    _SESSION_REDACT_PII.set(None)
     _runtime_cwd("clear_session_cwd")
 
 

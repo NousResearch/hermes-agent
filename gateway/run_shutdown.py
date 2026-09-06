@@ -1741,6 +1741,15 @@ class GatewayShutdownMixin:
             )
             return
         logger.info("Shutdown phase: executor quiesced at +%.2fs", ctx.elapsed())
+        if self._restart_requested and self._restart_via_service:
+            # Service restarts end in os._exit(), which releases these descriptors before the
+            # supervisor starts the successor. Calling sqlite3_close() first may unlink the WAL
+            # generation underneath a surviving dashboard/serve writer (#104451).
+            logger.info(
+                "Shutdown phase: SessionDB close skipped at +%.2fs; the service-restart hard exit "
+                "will release its descriptors without a SQLite close-time checkpoint", ctx.elapsed(),
+            )
+            return
         _step = GatewayShutdownMixin._quiet_step
         # Close SQLite session DBs so --replace's new gateway does not hit 'database is locked'.
         # ``_session_db`` is an AsyncSessionDB facade — unwrap; ``session_store`` holds ``_db``.

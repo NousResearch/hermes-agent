@@ -45,6 +45,7 @@ class _FakeGateway:
         self._restart_requested = False
         self._restart_detached = False
         self._restart_via_service = False
+        self._restart_command_source = None
         self._stop_task = None
         self._exit_cleanly = False
         self._exit_with_failure = False
@@ -211,6 +212,17 @@ async def test_stuck_worker_skips_the_session_db_close():
     release.set()
     future.result(timeout=5)
     assert "worker_write" in events, "worker never finished"
+
+
+@pytest.mark.asyncio
+async def test_service_restart_skips_session_db_close():
+    """The service hard exit, not SQLite close, must release the database handle."""
+    events = []
+    gw = _FakeGateway(events)
+
+    await gw_mod.GatewayRunner.stop(gw, restart=True, service_restart=True)
+
+    assert "close:session_db" not in events
 
 
 def test_shutdown_executor_defaults_to_no_wait():

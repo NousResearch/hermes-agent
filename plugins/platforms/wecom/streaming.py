@@ -25,7 +25,11 @@ STREAM_REQUEST_EXPIRED_ERRCODE = 846604
 STREAM_NOT_SUBSCRIBED_ERRCODE = 846609
 STREAM_VERSION_CONFLICT_ERRCODE = 6000
 MAX_STREAM_CONTENT_LENGTH = 20480  # WeCom server-enforced byte limit per frame
-# SDK queue is 100 frames per reqId; cap intermediates (openclaw uses 85) so finalize has room.
+# Retained only for the PLUGIN-COMPAT re-export in adapter.py (removed 2026-09-14). No longer
+# enforced: the fire-and-forget WebSocket long-connection path has no WeCom frame-count limit
+# (official docs specify only content byte-length + session frequency). Capping intermediates
+# froze long turns (>~85s: 1fps timer ticks + text exhaust the cap, later frames silently dropped);
+# see the removal in fix(wecom) "remove MAX_INTERMEDIATE_FRAMES cap that froze long turns".
 MAX_INTERMEDIATE_FRAMES = 85
 
 # Two defences against the 10-min window (docs/wecom-stream-keepalive-*.md):
@@ -138,7 +142,6 @@ class StreamTurn:
         self.finalized = self.seeded = self.expired = False  # seeded prevents a double seed (errcode 6000)
         self.start_time = time.monotonic()
         self.last_sent_content: str = ""  # content ACTUALLY sent; final frame must differ or WeCom drops it
-        self._intermediate_frames_sent: int = 0
         # Per-turn asyncio TimerHandles — each MUST be cancelled on every turn-exit path.
         self.keepalive_handle: Optional[asyncio.TimerHandle] = None       # Layer 1 heartbeat
         self.rotation_check_handle: Optional[asyncio.TimerHandle] = None  # Layer 2 active timer
@@ -170,7 +173,6 @@ class StreamTurn:
         self.stream_id = f"stream_{uuid.uuid4().hex[:12]}"
         self.seeded = False
         self.last_sent_content = ""
-        self._intermediate_frames_sent = 0
 
 
 def _stream_of(body: Dict[str, Any]) -> Dict[str, Any]:
@@ -383,8 +385,8 @@ class WeComStreamMixin:
         an un-seeded turn (a concurrent rotation just rotate()'d it) the tick skips and re-arms — sending
         content onto an un-seeded new stream would double-seed (errcode 6000). On 846604/846608 the turn is
         retired for Layer 2."""
-        if turn.finalized or turn.expired or turn._intermediate_frames_sent >= MAX_INTERMEDIATE_FRAMES:
-            return  # cap reached: no room for intermediates; let finalize / Layer 2 run
+        if turn.finalized or turn.expired:
+            return  # turn done: let finalize / Layer 2 run
         async with turn.rotation_lock():
             if turn.finalized or turn.expired:
                 return
@@ -694,10 +696,9 @@ class WeComStreamMixin:
                 turn.accumulated_text = body_text
             elif not is_overlay_frame:
                 turn.accumulated_text = text
-            if turn._intermediate_frames_sent >= MAX_INTERMEDIATE_FRAMES or text == turn.last_sent_content:
-                return StreamFrameResult.DELIVERED  # cap reached (finalize drains the rest) or nothing new
+            if text == turn.last_sent_content:
+                return StreamFrameResult.DELIVERED  # nothing new (identity dedup)
             await self._send_stream_reply(turn.req_id, turn.stream_id, text, finish=False)
-            turn._intermediate_frames_sent += 1
             turn.last_sent_content = text
             return StreamFrameResult.DELIVERED
         except WeComStreamExpiredError:

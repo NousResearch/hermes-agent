@@ -138,13 +138,13 @@ class TestDiscordRequest:
     @patch("tools.discord_tool.urllib.request.urlopen")
     def test_get_request(self, mock_urlopen_fn):
         mock_urlopen_fn.return_value = _mock_urlopen({"ok": True})
-        result = _discord_request("GET", "/test", "token123")
+        result = _discord_request("GET", "/users/@me/guilds", "token123")
         assert result == {"ok": True}
 
         # Verify the request was constructed correctly
         call_args = mock_urlopen_fn.call_args
         req = call_args[0][0]
-        assert "https://discord.com/api/v10/test" in req.full_url
+        assert "https://discord.com/api/v10/users/@me/guilds" in req.full_url
         assert req.get_header("Authorization") == "Bot token123"
         assert req.get_method() == "GET"
 
@@ -160,7 +160,7 @@ class TestDiscordRequest:
         mock_urlopen_fn.return_value = mock_resp
 
         with pytest.raises(DiscordAPIError) as exc_info:
-            _discord_request("GET", "/test", "tok")
+            _discord_request("GET", "/users/@me/guilds", "tok")
 
         assert exc_info.value.status == 502
         assert "response body exceeded 8 bytes" in exc_info.value.body
@@ -754,3 +754,43 @@ class TestModelToolsIntegration:
         assert discord_admin_tool is not None, "discord_admin should be in the schema"
         actions = discord_admin_tool["function"]["parameters"]["properties"]["action"]["enum"]
         assert actions == ["list_guilds", "server_info"]
+
+
+# ---------------------------------------------------------------------------
+# Snowflake validation in _discord_request (2/2 of PR fix)
+#
+# INVARIANT: a non-digit, non-keyword path segment NEVER reaches urlopen.
+# These tests must be RED on 29524eb (no choke-point check) and GREEN once
+# the path-segment validation is in _discord_request.
+# ---------------------------------------------------------------------------
+
+class TestSnowflakeValidationAtChokePoint:
+    """_discord_request rejects any path segment that is neither a recognised
+    Discord API keyword nor a pure-digit snowflake, before any network I/O."""
+
+    @patch("tools.discord_tool.urllib.request.urlopen")
+    def test_injection_id_on_read_path_never_reaches_urlopen(self, mock_urlopen, monkeypatch):
+        """A model-supplied guild_id of 'foo/bar' must not produce a network call.
+
+        Contract: the error is returned and urlopen is never called.
+        Fails on 29524eb (no choke-point guard); passes after the fix.
+        """
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_admin_handler(action="server_info", guild_id="foo/bar"))
+        assert "error" in result, "expected an error for non-digit guild_id"
+        assert "numeric" in result["error"].lower() or "invalid" in result["error"].lower()
+        mock_urlopen.assert_not_called()
+
+    @patch("tools.discord_tool.urllib.request.urlopen")
+    def test_known_keyword_segment_is_allowed(self, mock_urlopen):
+        """Paths that contain only known keywords and digit snowflakes must not
+        be rejected by the segment check — e.g. /applications/@me must reach the wire."""
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = b'{"flags": 0}'
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+        # Must not raise; @me is an allowed keyword
+        _discord_request("GET", "/applications/@me", "tok")
+        mock_urlopen.assert_called_once()

@@ -27,6 +27,15 @@ DISCORD_API_BASE = "https://discord.com/api/v10"
 _DISCORD_RESPONSE_BODY_MAX_BYTES = 4 * 1024 * 1024
 _DISCORD_ERROR_BODY_MAX_BYTES = 64 * 1024
 
+# Path segments that are known Discord API keywords — every other segment that
+# appears where a resource ID would go must be a pure-digit snowflake.  Checked
+# once in _discord_request before the URL is constructed so no individual helper
+# needs its own guard (covers read helpers AND _mutation write helpers).
+_DISCORD_PATH_KEYWORDS = frozenset({
+    "users", "guilds", "channels", "messages", "members",
+    "roles", "pins", "threads", "applications", "search", "@me",
+})
+
 # Application flag bits (GET /applications/@me → "flags"); the *_LIMITED bit is the
 # <100-guild variant of the same intent.
 _FLAGS_GUILD_MEMBERS = (1 << 14) | (1 << 15)
@@ -55,7 +64,18 @@ def _get_bot_token() -> Optional[str]:
 def _discord_request(
     method: str, path: str, token: str, params: Optional[Dict[str, str]] = None,
     body: Optional[Dict[str, Any]] = None, timeout: int = 15) -> Any:
-    """Make a request to the Discord REST API."""
+    """Make a request to the Discord REST API.
+
+    Validates every path segment before issuing the HTTP call: segments that are
+    not recognised Discord API keywords must be pure-digit snowflakes.  This is
+    the single choke point for all helpers (read and write alike) so injection via
+    a model-supplied ID (e.g. ``"../evil"`` or ``"foo/bar"``) is caught before the
+    URL is ever constructed.
+    """
+    for segment in path.split("/"):
+        if segment and segment not in _DISCORD_PATH_KEYWORDS and not segment.isdigit():
+            raise DiscordAPIError(
+                400, f"Invalid Discord ID in path segment '{segment}': must be numeric")
     url = f"{DISCORD_API_BASE}{path}"
     if params:
         url += "?" + urllib.parse.urlencode(params)
@@ -370,11 +390,9 @@ def _create_thread(
 
 
 def _mutation(method: str, path: str, message: str):
-    """Body-less write action: ``path``/``message`` are format templates over the action kwargs."""
+    """Body-less write action: ``path``/``message`` are format templates over the action kwargs.
+    Snowflake validation is handled by _discord_request before the HTTP call."""
     def _action(token: str, **kw: Any) -> str:
-        for _k, _v in kw.items():
-            if '{' + _k + '}' in path and not str(_v).isdigit():
-                return json.dumps({"error": f"Invalid Discord ID for {_k}: must be numeric"})
         _discord_request(method, path.format(**kw), token)
         return json.dumps({"success": True, "message": message.format(**kw)})
     return _action

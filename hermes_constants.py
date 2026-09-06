@@ -484,7 +484,7 @@ def _stage_windows_node_zip(home: Path, node_arch: str) -> Path | None:
 
     A sibling makes the later swap a same-volume rename. ``None`` on any failure.
     """
-    import tempfile
+    import io
     import uuid
     import zipfile
 
@@ -501,20 +501,23 @@ def _stage_windows_node_zip(home: Path, node_arch: str) -> Path | None:
     if zip_bytes is None:
         return None
     staged = home / f"node.new-{uuid.uuid4().hex[:8]}"
+    unpack = home / f"{staged.name}.unpack"
     try:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_path = Path(tmp_dir)
-            (tmp_path / zip_name).write_bytes(zip_bytes)
-            extract_dir = tmp_path / "extract"
-            extract_dir.mkdir()
-            with zipfile.ZipFile(tmp_path / zip_name) as archive:
-                archive.extractall(extract_dir)
-            extracted = next(extract_dir.glob("node-v*"), None)
-            if extracted is None or not extracted.is_dir():
-                return None
-            shutil.move(str(extracted), str(staged))
-    except OSError:
+        # A same-volume move preserves the source ACL. Extract under the
+        # destination's inheritance instead of carrying tempfile's protected
+        # OWNER RIGHTS descriptor into the installed runtime (#104212).
+        unpack.mkdir()
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
+            archive.extractall(unpack)
+        extracted = next(unpack.glob("node-v*"), None)
+        if extracted is None or not extracted.is_dir():
+            return None
+        shutil.move(str(extracted), str(staged))
+    except (OSError, zipfile.BadZipFile):
+        shutil.rmtree(staged, ignore_errors=True)
         return None
+    finally:
+        shutil.rmtree(unpack, ignore_errors=True)
     return staged
 
 
@@ -742,8 +745,15 @@ def path_entry_usable(candidate: Path) -> bool:
 def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
     """Return *env* with Hermes-managed Node directories prepended to PATH."""
     merged = dict(os.environ if env is None else env)
-    parts = [p for p in merged.get("PATH", "").split(os.pathsep) if p]
-    for entry in reversed([str(path) for path in iter_hermes_node_dirs() if path_entry_usable(path)]):
+    candidates = iter_hermes_node_dirs()
+    managed = [str(path) for path in candidates if path_entry_usable(path)]
+    # An installer may have already put the damaged tree on PATH. Do not retain
+    # that entry simply because this call did not add it (#97212 / #83589).
+    unusable = {os.path.normcase(os.path.normpath(str(path))) for path in candidates
+                if str(path) not in managed}
+    parts = [p for p in merged.get("PATH", "").split(os.pathsep)
+             if p and os.path.normcase(os.path.normpath(p)) not in unusable]
+    for entry in reversed(managed):
         if entry not in parts:
             parts.insert(0, entry)
     merged["PATH"] = os.pathsep.join(parts)

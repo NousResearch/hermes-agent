@@ -1189,12 +1189,35 @@ def _apply_display_config(agent, _agent_cfg, platform):
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
 
 
+def _memory_provider_platform(platform) -> str:
+    """Surface-scoping label for memory providers.
+
+    CLI one-shot integrations may set ``HERMES_SESSION_SOURCE`` to tag the
+    effective surface (for example ``hermes chat --source telegram -q ...``).
+    Session persistence already records that source through
+    ``run_agent._session_source_for_agent``; external memory providers need the
+    same label during initialisation so their turn-sync policy can match the
+    apparent surface instead of always seeing bare ``cli``.
+    """
+    raw_platform = str(platform or "").strip() or "cli"
+    if raw_platform != "cli":
+        return raw_platform
+    try:
+        from gateway.session_context import get_session_env
+
+        source = get_session_env("HERMES_SESSION_SOURCE", "")
+    except Exception:
+        source = os.environ.get("HERMES_SESSION_SOURCE", "")
+    return str(source or "").strip() or raw_platform
+
+
 def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
     """Scoping kwargs for ``MemoryManager.initialize_all`` (status_callback is CLI-only:
     gateway status travels a different path and the indicator no-ops without it)."""
+    provider_platform = _memory_provider_platform(platform)
     kwargs = {
         "session_id": agent.session_id,
-        "platform": platform or "cli",
+        "platform": provider_platform,
         "hermes_home": str(get_hermes_home()),
         "agent_context": "primary",
     }

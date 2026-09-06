@@ -725,6 +725,34 @@ class TestRunJobSessionPersistence:
         assert "file" in (kwargs["enabled_toolsets"] or [])
         assert "memory" not in kwargs["disabled_toolsets"]
 
+    def test_run_job_failure_reason_excludes_response_body(self, tmp_path):
+        """Issue #69224: on an agent-flagged failure that carries a real (non-error)
+        ``final_response``, the failure reason must be built from failure metadata
+        only. The response body must never be pasted into ``error`` — otherwise the
+        whole reply lands in ``last_status``/alerts and a genuine crash becomes
+        indistinguishable from a truncated-but-successful run.
+        """
+        body = "Quarterly summary: revenue up 12%, three incidents resolved."
+        job = {"id": "report-job", "name": "weekly report", "prompt": "summarize"}
+        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls):
+            mock_agent_cls.return_value.run_conversation.return_value = {
+                "final_response": body,
+                "failed": True,
+                "completed": False,
+                "turn_exit_reason": "model_abort",
+            }
+            success, output, final_response, error = run_job(job)
+
+        assert success is False
+        assert final_response == ""
+        # The response body must not leak into the failure reason or FAILED output.
+        assert error is not None
+        assert body not in error
+        assert body not in output
+        # A useful failure reason is still produced, tagged with the exit reason.
+        assert "agent reported failure" in error
+        assert "model_abort" in error
+
     def test_tick_skips_due_jobs_while_dispatch_is_paused(self, tmp_path):
         """The drain gate runs before advancing a due job's schedule."""
         from cron.scheduler import tick

@@ -10,6 +10,7 @@ import io
 import json
 import subprocess
 import tempfile
+import uuid
 import zipfile
 
 import pytest
@@ -119,3 +120,36 @@ def test_failed_staging_preserves_live_tree_and_removes_owned_scratch(tmp_path, 
     assert hc._stage_windows_node_zip(home, "x64") is None
     assert sentinel.read_bytes() == b"working"
     assert sorted(path.name for path in home.iterdir()) == ["node"]
+
+
+@pytest.mark.parametrize("boundary", ["unpack-exists", "unpack-denied", "stage-exists"])
+def test_staging_never_removes_or_nests_into_unowned_paths(tmp_path, monkeypatch, boundary):
+    home = tmp_path / "managed-home"
+    home.mkdir()
+    token = uuid.UUID("12345678-1234-5678-1234-567812345678")
+    monkeypatch.setattr(uuid, "uuid4", lambda: token)
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w") as archive:
+        archive.writestr("node-v22.99.0-win-x64/node.exe", b"candidate")
+    monkeypatch.setattr(hc, "_fetch_url", lambda url, timeout: (
+        payload.getvalue() if url.endswith(".zip") else b"node-v22.99.0-win-x64.zip"))
+    # Cover the original shortened token and the full UUID independently of
+    # which generation of the production staging implementation is running.
+    owned_elsewhere = []
+    for identifier in (token.hex, token.hex[:8]):
+        path = home / (f"node.new-{identifier}" + (".unpack" if boundary.startswith("unpack") else ""))
+        path.mkdir()
+        (path / "sentinel").write_bytes(b"another operation")
+        owned_elsewhere.append(path)
+    if boundary == "unpack-denied":
+        real_mkdir = type(home).mkdir
+
+        def mkdir(path, *args, **kwargs):
+            if path in owned_elsewhere:
+                raise PermissionError("cannot claim this directory")
+            return real_mkdir(path, *args, **kwargs)
+        monkeypatch.setattr(type(home), "mkdir", mkdir)
+    assert hc._stage_windows_node_zip(home, "x64") is None
+    for path in owned_elsewhere:
+        assert (path / "sentinel").read_bytes() == b"another operation"
+        assert list(path.iterdir()) == [path / "sentinel"]

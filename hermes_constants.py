@@ -500,24 +500,30 @@ def _stage_windows_node_zip(home: Path, node_arch: str) -> Path | None:
     zip_bytes = _fetch_url(f"{index_url}{zip_name}", 300)
     if zip_bytes is None:
         return None
-    staged = home / f"node.new-{uuid.uuid4().hex[:8]}"
+    staged = home / f"node.new-{uuid.uuid4().hex}"
     unpack = home / f"{staged.name}.unpack"
+    unpack_owned = False
     try:
+        if os.path.lexists(staged):
+            return None
         # A same-volume move preserves the source ACL. Extract under the
         # destination's inheritance instead of carrying tempfile's protected
         # OWNER RIGHTS descriptor into the installed runtime (#104212).
         unpack.mkdir()
+        unpack_owned = True
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
             archive.extractall(unpack)
         extracted = next(unpack.glob("node-v*"), None)
         if extracted is None or not extracted.is_dir():
             return None
-        shutil.move(str(extracted), str(staged))
+        # Windows rename refuses an existing destination instead of nesting
+        # inside it (shutil.move) or falling back to a partial cross-volume copy.
+        os.rename(extracted, staged)
     except (OSError, zipfile.BadZipFile):
-        shutil.rmtree(staged, ignore_errors=True)
         return None
     finally:
-        shutil.rmtree(unpack, ignore_errors=True)
+        if unpack_owned:
+            shutil.rmtree(unpack, ignore_errors=True)
     return staged
 
 

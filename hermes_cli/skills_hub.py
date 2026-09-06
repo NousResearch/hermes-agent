@@ -28,11 +28,11 @@ _TRUST_RANK = {"builtin": 3, "trusted": 2, "community": 1}
 # silently caps the hub (50 and 5000 both truncated). The index is disk-cached and browse
 # paginates client-side. The external limits only apply when the index is unavailable.
 _BROWSE_LIMITS = {
-    "hermes-index": 1000000, "official": 200, "skills-sh": 200, "well-known": 50,
+    "hermes-index": 1000000, "official": 200, "skills-sh": 200, "loopskill": 200, "well-known": 50,
     "github": 200, "clawhub": 500, "lobehub": 500, "browse-sh": 500}
 # Programmatic (TUI gateway) browse keeps its own, lower caps.
 _BROWSE_API_LIMITS = {
-    "hermes-index": 5000, "official": 100, "skills-sh": 100, "well-known": 25,
+    "hermes-index": 5000, "official": 100, "skills-sh": 100, "loopskill": 100, "well-known": 25,
     "github": 100, "clawhub": 50, "lobehub": 50, "browse-sh": 500}
 _EXTRA_META_LABELS = (
     ("repo_url", "Repo"), ("detail_url", "Detail Page"), ("index_url", "Index"),
@@ -1433,7 +1433,7 @@ _SLASH_ACTIONS = {
 
 # Actions that need at least one argument -> usage lines printed when called bare.
 _SLASH_USAGE = {
-    "search": ("[bold red]Usage:[/] /skills search <query> [--source skills-sh|github|official|nvidia|openai|anthropic|huggingface] [--limit N] [--json]\n",),
+    "search": ("[bold red]Usage:[/] /skills search <query> [--source skills-sh|loopskill|github|official|nvidia|openai|anthropic|huggingface] [--limit N] [--json]\n",),
     "install": ("[bold red]Usage:[/] /skills install <identifier-or-url> [--name <name>] [--category <cat>] [--force] [--now]\n",),
     "inspect": ("[bold red]Usage:[/] /skills inspect <identifier>\n",),
     "uninstall": ("[bold red]Usage:[/] /skills uninstall <name> [--now]\n",),

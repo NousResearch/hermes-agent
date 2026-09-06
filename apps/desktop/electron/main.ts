@@ -14803,7 +14803,7 @@ function createWindow() {
   })
 }
 
-ipcMain.handle('hermes:connection', async (_event, profile, extra) => {
+ipcMain.handle('hermes:connection', async (event, profile, extra) => {
   // Coalesce concurrent renderer dials for one profile scope (#90812): the
   // renderer-side reconnect lock is per-window, so two windows waking at once
   // both land here. The claim key mirrors ensureBackend()'s own profile
@@ -14825,15 +14825,21 @@ ipcMain.handle('hermes:connection', async (_event, profile, extra) => {
   }
 
   const connectionId = resolvedConnectionId(readDesktopConnectionsRegistry(), connection)
+  // Republished connections reach a window that may have moved, resized or changed
+  // display since it first dialled, so re-read the state of the calling window here
+  // instead of letting the renderer keep the values from its original connect.
+  const windowState = getWindowState(BrowserWindow.fromWebContents(event.sender) || mainWindow)
 
-  return connectionId ? { ...connection, connectionId } : connection
+  return connectionId
+    ? { ...connection, ...windowState, connectionId }
+    : { ...connection, ...windowState }
 })
 // Registry-scoped variant: resolve a backend for (connectionId, profile).
 // connectionId '' / 'local' / the registry primary all behave sensibly; the
 // local kind delegates to ensureBackend when the v1 route is local, and
 // forces a genuinely-local child when the v1 global mode is remote (the
 // registry 'local' entry always means this machine).
-ipcMain.handle('hermes:connection:for', async (_event, payload) => {
+ipcMain.handle('hermes:connection:for', async (event, payload) => {
   const { connectionId, profile, priority } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
   const registry = readDesktopConnectionsRegistry()
   const id = String(connectionId || '').trim() || registry.primary
@@ -14853,7 +14859,9 @@ ipcMain.handle('hermes:connection:for', async (_event, payload) => {
     clearSpawnPriority()
   }
 
-  return { ...connection, connectionId: id, registryScoped: true }
+  const windowState = getWindowState(BrowserWindow.fromWebContents(event.sender) || mainWindow)
+
+  return { ...connection, ...windowState, connectionId: id, registryScoped: true }
 })
 
 const windowConnectionRoutes = new WindowConnectionRouteRegistry()

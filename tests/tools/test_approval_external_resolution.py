@@ -41,9 +41,9 @@ def _clean_approval_state():
 
 
 def _short_timeout(monkeypatch, seconds):
-    from tools import approval as mod
+    from tools import approval_context as ctx
     monkeypatch.setattr(
-        mod, "_get_approval_config",
+        ctx, "_get_approval_config",
         lambda: {"mode": "manual", "gateway_timeout": seconds,
                  "timeout": seconds},
     )
@@ -165,9 +165,9 @@ class TestPublishLifecycle:
 
     def test_interrupt_resolves_deny_and_retracts(self, tmp_path, monkeypatch):
         """/stop during a pending approval cleans up the mirror too."""
-        from tools import approval as mod
+        from tools import approval_gateway_wait as wait_mod
         _short_timeout(monkeypatch, 30)
-        monkeypatch.setattr(mod, "is_interrupted", lambda: True)
+        monkeypatch.setattr(wait_mod, "is_interrupted", lambda: True)
 
         thread, box = _start_wait()
         thread.join(timeout=5)

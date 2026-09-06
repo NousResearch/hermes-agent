@@ -7,12 +7,14 @@ and the assignee-fallback logic.
 
 from __future__ import annotations
 
+import argparse
 import json as jsonlib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_decompose as decomp
@@ -160,5 +162,153 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
             p.stop()
     assert outcome.ok is False
     assert "not in triage" in outcome.reason
+
+
+# ---------------------------------------------------------------------------
+# CLI --board plumbing for the decomposer.
+#
+# `hermes kanban decompose --board <slug>` must reach the kernel: the sweep
+# runner forwards it, decompose_task accepts it, and _apply_fanout passes it
+# to kb.decompose_triage_task. The subcommand's --board uses dest
+# "target_board" so it cannot clobber the parent parser's global --board
+# (which re-scopes the ROOT's DB) in the shared argparse namespace.
+# ---------------------------------------------------------------------------
+
+
+def test_decompose_parser_accepts_board_flag(kanban_home):
+    from hermes_cli import kanban as kc
+
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+
+    args = parser.parse_args(["kanban", "decompose", "--board", "watched", "t_abc123"])
+    assert args.target_board == "watched"
+    assert args.task_id == "t_abc123"
+
+    all_args = parser.parse_args(["kanban", "decompose", "--all", "--board", "watched"])
+    assert all_args.target_board == "watched"
+    assert all_args.all_triage is True
+
+
+def test_decompose_board_flag_passes_through_to_kernel(kanban_home):
+    """End-to-end: --board flows CLI -> decompose_task -> _apply_fanout ->
+    kb.decompose_triage_task. (Fails against a kernel without the flag:
+    unrecognized arguments --board.)"""
+    kb.create_board("watched")
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="ship a feature", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test split",
+        "tasks": [
+            {"title": "research", "body": "look it up", "assignee": "researcher", "parents": []},
+        ],
+    })
+
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+    args = parser.parse_args(["kanban", "decompose", "--board", "watched", tid])
+
+    patches = _patch_list_profiles(["orchestrator", "researcher", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        seen = {}
+
+        real = decomp._apply_fanout
+
+        def spy(task_id, parsed, routing, author, **kwargs):
+            outcome = real(task_id, parsed, routing, author, **kwargs)
+            seen["child_ids"] = outcome.child_ids
+            seen["ok"] = outcome.ok
+            seen["reason"] = outcome.reason
+            seen["root_board_status"] = outcome.root_board_status
+            return outcome
+
+        with patch.object(decomp, "_apply_fanout", spy), \
+                _patch_aux_client(llm_payload), _patch_extra_body():
+            rc = kc.kanban_command(args)
+
+        assert rc == 0
+        assert seen.get("ok") is True, seen.get("reason")
+        child_ids = seen.get("child_ids") or []
+        assert len(child_ids) == 1
+        # The root intentionally stays in triage on its own board.
+        assert seen.get("root_board_status") == "triage"
+    finally:
+        for p in patches:
+            p.stop()
+
+    # The child lives on the target board; the root stays home in triage,
+    # un-dispatchable there.
+    with kbc.connect_closing(board="watched") as conn:
+        assert kb.get_task(conn, child_ids[0]) is not None
+    with kbc.connect_closing() as conn:
+        root = kb.get_task(conn, tid)
+        assert root is not None and root.status == "triage"
+        assert kb.get_task(conn, child_ids[0]) is None, \
+            "children must not stay on the parent board"
+
+
+def test_decompose_without_board_flag_preserves_parent_board(kanban_home):
+    """Backwards compat end-to-end: no --board flag means children + cover
+    card land on the parent's board, exactly as today."""
+    kb.create_board("watched")  # exists but must stay empty
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="ship a feature", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test split",
+        "tasks": [
+            {"title": "research", "body": "look it up", "assignee": "researcher", "parents": []},
+        ],
+    })
+
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+    args = parser.parse_args(["kanban", "decompose", tid])
+
+    patches = _patch_list_profiles(["orchestrator", "researcher", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        seen = {}
+
+        real = decomp._apply_fanout
+
+        def spy(task_id, parsed, routing, author, **kwargs):
+            outcome = real(task_id, parsed, routing, author, **kwargs)
+            seen["child_ids"] = outcome.child_ids
+            seen["ok"] = outcome.ok
+            seen["reason"] = outcome.reason
+            return outcome
+
+        with patch.object(decomp, "_apply_fanout", spy), \
+                _patch_aux_client(llm_payload), _patch_extra_body():
+            rc = kc.kanban_command(args)
+
+        assert rc == 0
+        assert seen.get("ok") is True, seen.get("reason")
+        child_ids = seen.get("child_ids") or []
+        assert len(child_ids) == 1
+    finally:
+        for p in patches:
+            p.stop()
+
+    # Parent board (default) holds the root AND the child.
+    with kbc.connect_closing() as conn:
+        root = kb.get_task(conn, tid)
+        assert root is not None and root.status == "todo"
+        assert kb.get_task(conn, child_ids[0]) is not None
+    # The untargeted board stays empty.
+    with kbc.connect_closing(board="watched") as conn:
+        for row_id in (tid, child_ids[0]):
+            assert kb.get_task(conn, row_id) is None, \
+                "nothing may land on an untargeted board"
 
 

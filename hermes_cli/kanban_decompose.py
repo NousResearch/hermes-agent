@@ -118,6 +118,7 @@ class DecomposeOutcome:
     fanout: bool = False
     child_ids: list[str] | None = None
     new_title: Optional[str] = None
+    root_board_status: Optional[str] = None
 
 
 def _profile_author() -> str:
@@ -266,7 +267,8 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[l
     return children, ""
 
 
-def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
+def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str,
+                  board: Optional[str] = None) -> DecomposeOutcome:
     raw_tasks = parsed.get("tasks") or []
     if not isinstance(raw_tasks, list) or not raw_tasks:
         return DecomposeOutcome(task_id, False, "decomposer returned fanout=true with empty tasks list")
@@ -282,6 +284,7 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) ->
                 children=children,
                 author=author,
                 auto_promote=routing.auto_promote,
+                board=board,
             )
     except ValueError as exc:
         return DecomposeOutcome(task_id, False, f"DB rejected graph: {exc}")
@@ -289,9 +292,32 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) ->
         logger.exception("decompose: DB error on task %s", task_id)
         return DecomposeOutcome(task_id, False, f"DB error: {type(exc).__name__}")
     if child_ids is None:
+        if board is not None:
+            try:
+                with kbc.connect_closing() as conn:
+                    already = kb._has_decompose_event(conn, task_id)
+            except Exception:
+                already = False
+            if already:
+                return DecomposeOutcome(
+                    task_id, False,
+                    f"already decomposed (children on board {board!r}); repeat is a no-op",
+                )
         return DecomposeOutcome(task_id, False, "task moved out of triage before decomposition")
+    # With --board the root intentionally stays in ``triage`` on its own board
+    # (see kb.decompose_triage_task): it must not become a dispatchable card
+    # there, since its gating links live on the target board.
+    root_status = None
+    if board is not None:
+        try:
+            with kbc.connect_closing() as conn:
+                root_task = kb.get_task(conn, task_id)
+                root_status = root_task.status if root_task is not None else None
+        except Exception:
+            pass
     return DecomposeOutcome(
-        task_id, True, f"decomposed into {len(child_ids)} children", fanout=True, child_ids=child_ids,
+        task_id, True, f"decomposed into {len(child_ids)} children",
+        fanout=True, child_ids=child_ids, root_board_status=root_status,
     )
 
 
@@ -300,10 +326,12 @@ def decompose_task(
     *,
     author: Optional[str] = None,
     timeout: Optional[int] = None,
+    board: Optional[str] = None,
 ) -> DecomposeOutcome:
     """Decompose a triage task into a graph of child tasks. Expected failures
     (not in triage, no aux client, API error, malformed/empty reply) surface
-    as ``ok=False``."""
+    as ``ok=False``. ``board`` optionally targets the fan-out: children are
+    created on that board instead of the task's own (the root stays put)."""
     task, reason = _load_triage_task(task_id)
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
@@ -328,7 +356,7 @@ def decompose_task(
     audit_author = author or _profile_author()
     if not parsed.get("fanout"):
         return _apply_single(task, parsed, routing, audit_author)
-    return _apply_fanout(task_id, parsed, routing, audit_author)
+    return _apply_fanout(task_id, parsed, routing, audit_author, board=board)
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:

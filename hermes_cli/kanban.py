@@ -1149,9 +1149,11 @@ def _cmd_context(args: argparse.Namespace) -> int:
 
 
 def _run_triage_sweep(args: argparse.Namespace, verb: str, mod, run_one, json_key: str,
-                      json_fields: tuple[str, ...], human_ok) -> int:
+                      json_fields: tuple[str, ...], human_ok,
+                      target_board: Optional[str] = None) -> int:
     """Shared driver for ``specify`` / ``decompose``: validate ids (one task id XOR ``--all``), run
-    ``run_one(tid, author=...)`` per id, print JSON or human lines, exit code."""
+    ``run_one(tid, author=...)`` per id, print JSON or human lines, exit code.
+    ``target_board`` (decompose only) is passed through to every ``run_one`` call."""
     all_flag = bool(getattr(args, "all_triage", False))
     author = getattr(args, "author", None) or _profile_author()
     want_json = bool(getattr(args, "json", False))
@@ -1173,7 +1175,12 @@ def _run_triage_sweep(args: argparse.Namespace, verb: str, mod, run_one, json_ke
 
     ok_count = 0
     for tid in ids:
-        outcome = run_one(tid, author=author)
+        # specify has no board target (single-task promotion); decompose passes
+        # it through. The None branch keeps the legacy exact call shape.
+        if target_board:
+            outcome = run_one(tid, author=author, board=target_board)
+        else:
+            outcome = run_one(tid, author=author)
         if outcome.ok:
             ok_count += 1
         if want_json:
@@ -1203,8 +1210,11 @@ def _cmd_specify(args: argparse.Namespace) -> int:
 
 def _decompose_ok_line(o) -> str:
     if o.fanout and o.child_ids:
+        root_note = ""
+        if o.root_board_status is not None:
+            root_note = f"; root stays {o.root_board_status} (children on target board)"
         return (f"Decomposed {o.task_id} → {len(o.child_ids)} "
-                f"children ({', '.join(o.child_ids)}); root promoted to todo")
+                f"children ({', '.join(o.child_ids)}){root_note}")
     return f"Specified {o.task_id} → todo (no fanout){_retitled_suffix(o)}"
 
 
@@ -1212,8 +1222,28 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
     """Fan a triage task (or all) out into child tasks via the auxiliary LLM."""
     from hermes_cli import kanban_decompose as decomp
 
+    # Validate the child-target board up front (clean CLI error, not a
+    # mid-decomposition failure). ``--board default`` is always legal; other
+    # slugs must exist — matching the top-level --board guard in
+    # kanban_command. dest is target_board: the parent parser owns --board
+    # (the root's board) and subparser defaults would clobber it in the
+    # shared namespace.
+    target_board = (getattr(args, "target_board", None) or "").strip() or None
+    if target_board:
+        try:
+            normed = kb._normalize_board_slug(target_board)
+        except ValueError as exc:
+            return _err(f"kanban: {exc}", 2)
+        if not normed:
+            return _err("kanban: decompose --board requires a slug", 2)
+        if normed != kb.DEFAULT_BOARD and not kb.board_exists(normed):
+            return _err(f"kanban: board {normed!r} does not exist. "
+                        f"Create it with `hermes kanban boards create {normed}`.")
+        target_board = normed
+
     return _run_triage_sweep(args, "decompose", decomp, decomp.decompose_task, "decomposed",
-                             ("task_id", "ok", "reason", "fanout", "child_ids", "new_title"), _decompose_ok_line)
+                             ("task_id", "ok", "reason", "fanout", "child_ids", "new_title"),
+                             _decompose_ok_line, target_board=target_board)
 
 
 _HANDLERS = {

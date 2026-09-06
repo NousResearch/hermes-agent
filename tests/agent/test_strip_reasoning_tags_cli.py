@@ -6,6 +6,9 @@ final displayed assistant text (after streaming) without depending on the
 AIAgent instance. It must stay in sync with run_agent.py::_strip_think_blocks
 for tool-call tag coverage."""
 
+from functools import partial
+
+import pytest
 
 from agent.agent_runtime_helpers import strip_think_blocks
 from cli import _strip_reasoning_tags
@@ -57,11 +60,37 @@ class TestToolCallStripping:
     def test_empty_string(self):
         assert _strip_reasoning_tags("") == ""
 
-    def test_cut_tool_call_stripped_to_visible_prefix(self):
-        """Both strippers drop the unrecoverable tail; only prose survives."""
-        assert _strip_reasoning_tags(_CUT_FRAGMENT) == "Both gates started."
-        assert strip_think_blocks(None, _CUT_FRAGMENT).strip() == "Both gates started."
-        assert strip_think_blocks(None, "Waiting.\n<tool_call>process_manage").strip() == "Waiting."
+    @pytest.mark.parametrize(
+        "stripper", [_strip_reasoning_tags, partial(strip_think_blocks, None)],
+        ids=["display", "storage"],
+    )
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            (_CUT_FRAGMENT, "Both gates started."),
+            (_CUT_FRAGMENT.split("\n", 1)[1], ""),
+            (_CUT_FRAGMENT + "\nThird line must survive.",
+             "Both gates started.\nThird line must survive."),
+            ("Waiting.\n<tool_call>process_manage", "Waiting."),
+        ],
+        ids=["original-fragment", "fragment-only", "prose-after-fragment", "unclosed-call"],
+    )
+    def test_cut_tool_call_stripped_to_visible_prefix(self, stripper, text, expected):
+        """A cut call is unrecoverable, but unrelated prose must not be lost."""
+        assert stripper(text).strip() == expected
+
+    @pytest.mark.parametrize(
+        "stripper", [_strip_reasoning_tags, partial(strip_think_blocks, None)],
+        ids=["display", "storage"],
+    )
+    @pytest.mark.parametrize("tag", ["arg_key", "arg_value", "/arg_key", "/arg_value"])
+    def test_bracketed_arg_tag_prose_and_tail_survive(self, stripper, tag):
+        text = (
+            "First line stays.\n"
+            f"The <{tag}> holds the parameter name.\n"
+            "Third line must survive."
+        )
+        assert stripper(text) == text
 
     def test_complete_block_and_inline_prose_mentions_untouched(self):
         for out in (_strip_reasoning_tags(_COMPLETE_WITH_PROSE),
@@ -69,4 +98,3 @@ class TestToolCallStripping:
             assert "Use <function> in JS. The arg_key field maps to arg_value." in out
             assert out.rstrip().endswith("Done.")
             assert "<tool_call>" not in out
-

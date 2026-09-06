@@ -7,6 +7,7 @@ import {
   handleIdleHotkeyExit,
   resolveCtrlCComposerAction,
   shouldAllowIdleHotkeyExit,
+  shouldDetachEditedHistoryInput,
   shouldFallThroughForScroll
 } from '../app/useInputHandlers.js'
 
@@ -57,6 +58,22 @@ describe('shouldAllowIdleHotkeyExit', () => {
 
   it('disables idle exit hotkeys in dashboard chat', () => {
     expect(shouldAllowIdleHotkeyExit(true)).toBe(false)
+  })
+})
+
+describe('shouldDetachEditedHistoryInput', () => {
+  const history = ['older message', 'line one\nline two']
+
+  it('detaches a recalled entry as soon as the user edits it', () => {
+    expect(shouldDetachEditedHistoryInput(1, history, 'line one edited\nline two')).toBe(true)
+  })
+
+  it('keeps unchanged recalled entries in history navigation', () => {
+    expect(shouldDetachEditedHistoryInput(1, history, 'line one\nline two')).toBe(false)
+  })
+
+  it('does not detach an ordinary current draft', () => {
+    expect(shouldDetachEditedHistoryInput(null, history, 'new draft')).toBe(false)
   })
 })
 

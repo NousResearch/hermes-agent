@@ -1,23 +1,10 @@
 """Relay transport protocol — the gateway<->connector wire contract. EXPERIMENTAL.
 
-The ``RelayAdapter`` (gateway side) delegates all wire I/O to a ``RelayTransport``.
-The gateway dials OUT to the connector, so a production transport is a WebSocket
-client; in tests it is an in-memory stub (``tests/gateway/relay/stub_connector.py``).
-
-This module defines the protocol surface only — no concrete transport. The
-contract has four concerns:
-
-  1. Lifecycle: ``connect`` / ``disconnect``.
-  2. Handshake: ``handshake`` returns the ``CapabilityDescriptor`` the connector
-     advertises for the platform this adapter fronts.
-  3. Inbound: ``set_inbound_handler`` registers a callback the transport invokes
-     with each normalized ``MessageEvent`` the connector delivers.
-  4. Outbound: ``send_outbound`` carries send/edit/typing actions back to the
-     connector; ``get_chat_info`` proxies a chat-info lookup; ``send_interrupt``
-     routes a mid-turn /stop down the socket that owns the session_key.
-
-EXPERIMENTAL: may change without a deprecation cycle until >=2 Class-1 platforms
-validate it. See docs/relay-connector-contract.md.
+The ``RelayAdapter`` delegates all wire I/O to a ``RelayTransport``. The gateway
+dials OUT to the connector, so production is a WebSocket client (``ws_transport.py``)
+and tests use an in-memory stub (``tests/gateway/relay/stub_connector.py``). This
+module defines the protocol surface only. May change without a deprecation cycle
+until >=2 Class-1 platforms validate it. See docs/relay-connector-contract.md.
 """
 
 from __future__ import annotations
@@ -30,11 +17,10 @@ from gateway.relay.descriptor import CapabilityDescriptor
 # Callback the transport invokes for each inbound normalized event.
 InboundHandler = Callable[[MessageEvent], Awaitable[None]]
 
-# Callback the transport invokes for each forwarded passthrough request (§5.1).
-# The first arg is a PassthroughForward (gateway/relay/ws_transport.py) — typed
-# as Any here to keep this protocol module free of a concrete-transport import
-# (ws_transport imports FROM this module). The second is an optional bufferId
-# (Phase 5 §5.3 buffered flip) the handler acks after durable handoff.
+# Callback for each forwarded passthrough request (§5.1): ``(forward, buffer_id)``.
+# ``forward`` is a ws_transport.PassthroughForward, typed Any here because
+# ws_transport imports FROM this module; ``buffer_id`` (§5.3 buffered flip) is
+# acked by the handler after durable handoff.
 PassthroughHandler = Callable[[Any, Optional[str]], Awaitable[None]]
 
 
@@ -47,7 +33,6 @@ class RelayTransport(Protocol):
         ...
 
     async def disconnect(self) -> None:
-        """Close the connection."""
         ...
 
     async def handshake(self) -> CapabilityDescriptor:
@@ -55,18 +40,14 @@ class RelayTransport(Protocol):
         ...
 
     def set_inbound_handler(self, handler: InboundHandler) -> None:
-        """Register the callback invoked with each inbound MessageEvent."""
         ...
 
     def set_passthrough_handler(self, handler: "PassthroughHandler") -> None:
-        """Register the callback invoked with each forwarded passthrough request.
+        """Register the callback for each forwarded passthrough request (§5.1).
 
-        Phase 5 §5.1: the passthrough plane (Discord interactions, Twilio, …)
-        answers the provider's edge ACK at the connector, then forwards the real
-        request to the gateway over this same outbound socket (a hosted gateway
-        has no public inbound port). The transport invokes ``handler(forward,
-        buffer_id)`` for each ``passthrough_forward`` frame. Optional on a
-        transport (an in-memory stub may not implement it).
+        The connector answers the provider's edge ACK itself, then forwards the real
+        request over this same outbound socket (a hosted gateway has no public
+        inbound port). Optional on a transport (a stub may not implement it).
         """
         ...
 
@@ -75,14 +56,10 @@ class RelayTransport(Protocol):
     ) -> Dict[str, Any]:
         """Carry an outbound action (send/edit/typing) to the connector.
 
-        Returns a result dict; for ``op == "send"`` it carries
-        ``success`` and optionally ``message_id`` / ``error``.
-
-        ``platform`` (Phase 1.5) tags WHICH fronted platform this reply targets,
-        carried on the OutboundFrame envelope so a gateway fronting N platforms
-        egresses each reply through the right sender (the transport resolves the
-        matching advertised botId). Omitted ⇒ the connector falls back to the
-        session's default platform (single-platform deploys unchanged).
+        Returns a result dict; for ``op == "send"`` it carries ``success`` and
+        optionally ``message_id`` / ``error``. ``platform`` tags WHICH fronted
+        platform this reply targets (the transport resolves the matching botId);
+        omitted ⇒ the connector uses the session's default platform.
         """
         ...
 
@@ -91,26 +68,18 @@ class RelayTransport(Protocol):
         ...
 
     async def send_interrupt(self, session_key: str, reason: Optional[str] = None) -> None:
-        """Route a mid-turn /stop to the connector for ``session_key``.
-
-        The connector forwards it down the socket owned by the gateway
-        instance running that session (the /stop routing invariant). On the
-        gateway side this is the OUTBOUND direction; the actual task
-        cancellation happens when the connector echoes an interrupt inbound
-        (handled in Task 1.4).
-        """
+        """Route a mid-turn /stop to the connector for ``session_key`` (OUTBOUND
+        direction; the actual cancellation happens when the connector echoes an
+        interrupt inbound down the socket owning that session)."""
         ...
 
     async def go_idle(self, timeout_s: float = 10.0) -> bool:
-        """Ask the connector to flip this instance to buffered-only (Phase 5 §5.3).
+        """Ask the connector to flip this instance to buffered-only (§5.3).
 
-        Sends ``going_idle`` and awaits the connector's ``going_idle_ack`` — the
-        connector-authoritative confirmation that live delivery stopped and inbound
-        now buffers durably for replay on reconnect (Q-5.3c). Returns True on ack,
-        False on timeout / not-connected (the caller proceeds to close regardless;
-        without §5.3 wiring there is simply no buffering). Optional on a transport
-        (an in-memory stub may not implement it). Emitted as part of the gateway's
-        EXISTING drain transition — not a new idle path.
+        Sends ``going_idle`` and awaits the connector-authoritative ``going_idle_ack``
+        (live delivery stopped; inbound now buffers for replay on reconnect). True on
+        ack, False on timeout / not-connected — the caller closes regardless.
+        Optional on a transport; part of the gateway's EXISTING drain transition.
         """
         ...
 
@@ -119,25 +88,12 @@ class RelayTransport(Protocol):
     ) -> Dict[str, Any]:
         """Act on a shared-identity capability bound to a session (A2 outbound).
 
-        Some platforms hand the connector a credential that acts on the SHARED
-        bot identity (e.g. a Discord interaction follow-up token, valid ~15min).
-        Under A2 that credential NEVER reaches the gateway — the connector
-        stripped it at the edge and bound it in its capability vault keyed by
-        the session. To use it, the gateway issues a SEMANTIC action against the
-        session it is already in; it never names or holds a token.
-
-        The action dict carries:
-          ``op``          == ``"follow_up"``
-          ``session_key`` the session whose bound capability to wield
-          ``kind``        the capability kind (e.g. ``"discord.interaction_token"``)
-          ``content``     the message content to send via that capability
-          ``metadata?``   optional extras
-
-        The connector resolves the real capability (``resolveOutboundCapability``
-        on its side), enforces the tenant match (tenant B can never wield tenant
-        A's capability), and egresses. Returns ``{success, message_id?, error?}``;
-        ``success`` is False when the capability is absent/expired or the tenant
-        doesn't match — the gateway then has nothing to retry with (by design: a
-        leaked gateway holds zero capability material).
+        A credential acting on the SHARED bot identity (e.g. a Discord interaction
+        follow-up token) NEVER reaches the gateway: the connector vaults it keyed by
+        session and the gateway issues a SEMANTIC action (``op == "follow_up"``,
+        ``session_key``, ``kind`` e.g. ``"discord.interaction_token"``, ``content``,
+        optional ``metadata``). Returns ``{success, message_id?, error?}``; ``success``
+        is False when the capability is absent/expired or the tenant mismatches —
+        nothing to retry with (a leaked gateway holds zero capability material).
         """
         ...

@@ -296,6 +296,31 @@ _WINDOWS_NODE_SHIMS = {
 }
 
 
+def _probe_file(candidate: Path) -> bool | None:
+    """Three-state ``is_file()``: True, False, or ``None`` for unstattable.
+
+    ``Path.is_file()`` only swallows the Windows errors listed in
+    ``pathlib._IGNORED_WINERRORS`` (21, 123, 1921). ``ERROR_CANT_ACCESS_FILE``
+    (1920) is not among them, so an unresolvable reparse point raises
+    ``OSError`` instead of reporting "not a file" — e.g. a POSIX Node tarball
+    unpacked into a Windows ``HERMES_HOME`` leaves ``node/bin/npm`` as a symlink
+    Windows cannot traverse. Every probe below scans directories that can
+    contain exactly that, and the raise escapes far enough to abort
+    ``hermes dashboard``.
+
+    ``None`` is deliberately distinct from ``False``. A directory entry that
+    raises is *present* — it just cannot be inspected — so managed-tree callers
+    must read it as broken-and-heal-me, not as absent. Collapsing the two would
+    let a present-but-broken tree fall through to system npm, reversing
+    65be0061e ("heal broken managed Node tree instead of PATH fallback"). PATH
+    scanning wants the opposite: skip the entry and keep looking.
+    """
+    try:
+        return candidate.is_file()
+    except OSError:
+        return None
+
+
 def _candidate_node_command_names(command: str) -> list[str]:
     base = Path(command).name
     if sys.platform != "win32" or "." in base:
@@ -305,11 +330,12 @@ def _candidate_node_command_names(command: str) -> list[str]:
 
 
 def _iter_managed_node_candidates(names: list[str], home: Path | None = None):
-    """Yield existing (and on POSIX, executable) ``<node-dir>/<name>`` files."""
+    """Yield existing or uninspectable candidates; unreadable means broken, not absent."""
     for directory in iter_hermes_node_dirs(home):
         for name in names:
             candidate = directory / name
-            if candidate.is_file() and (sys.platform == "win32" or os.access(candidate, os.X_OK)):
+            present = _probe_file(candidate)
+            if present is None or (present and (sys.platform == "win32" or os.access(candidate, os.X_OK))):
                 yield candidate
 
 
@@ -360,7 +386,7 @@ def node_tool_runnable(path: str | None) -> bool:
     """True only when *path* is a Node/npm/npx binary that actually runs (``--version`` probe)."""
     if not path:
         return False
-    present = Path(path).is_file() if sys.platform == "win32" else _is_executable_file(path)
+    present = _probe_file(Path(path)) is True if sys.platform == "win32" else _is_executable_file(path)
     return present and _version_probe_ok(path)
 
 
@@ -659,11 +685,11 @@ def find_node_executable_on_path(command: str) -> str | None:
         return shutil.which(command)
     command_str = str(command)
     if any(sep and sep in command_str for sep in (os.sep, os.altsep, "/", "\\")):
-        return command_str if Path(command_str).is_file() else None
+        return command_str if _probe_file(Path(command_str)) is True else None
     directories = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d]
     for name in _candidate_node_command_names(command_str):
         for directory in directories:
-            if (Path(directory) / name).is_file():
+            if _probe_file(Path(directory) / name) is True:
                 return str(Path(directory) / name)
     return None
 

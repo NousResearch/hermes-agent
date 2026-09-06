@@ -2517,7 +2517,11 @@ def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
     def apply(jobs, _i, job):
         return _refresh_claim(jobs, job.get("fire_claim"), expected_owner)
 
-    return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
+    # Renewal only changes the timestamp: the jobs lock makes the owner check + write atomic
+    # against takeover/completion, just like heartbeat_run_claim. Taking the fire fence here
+    # would block behind our own delivery and mistake its lock timeout for ownership loss.
+    # Keep that fence on owner mutations and external side effects, not lease renewal.
+    return _with_job(job_id, apply, False)
 
 
 # Completed one-shots are retained in jobs.json (final status stays inspectable) and pruned by

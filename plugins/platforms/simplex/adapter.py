@@ -26,7 +26,7 @@ from urllib.parse import unquote
 
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult, cache_image_from_url
+from gateway.platforms.base import BasePlatformAdapter, SendResult, cache_image_from_url, redact_transport_error_text
 from gateway.platforms.event import MessageEvent, MessageType
 
 logger = logging.getLogger(__name__)
@@ -544,8 +544,9 @@ class SimplexAdapter(BasePlatformAdapter):
             try:
                 file_path = await cache_image_from_url(image_url)
             except Exception as e:
-                logger.warning("SimpleX: failed to download image: %s", e)
-                return SendResult(success=False, error=str(e))
+                safe_error = redact_transport_error_text(e)
+                logger.warning("SimpleX: failed to download image: %s", safe_error)
+                return SendResult(success=False, error=safe_error)
         if not file_path or not Path(file_path).exists():
             return SendResult(success=False, error="Image file not found")
         png_path, thumb_uri = self._prepare_image(file_path)

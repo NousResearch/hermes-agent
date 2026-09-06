@@ -25,6 +25,7 @@ import httpx
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    redact_transport_error_text, safe_url_for_log,
     BasePlatformAdapter, SendResult, cache_image_from_bytes_async,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_url, utf16_len,
 )
@@ -56,9 +57,9 @@ _MEDIA_TYPE_BY_MIME_PREFIX = (
 _OUTCOME_REACTION = {ProcessingOutcome.SUCCESS: "✅", ProcessingOutcome.FAILURE: "❌"}
 # send_multiple_images skip reasons → logger.warning args (url, detail).
 _SKIP_IMAGE_LOG = {
-    "download": lambda url, detail: ("Signal: failed to download image %s: %s", url, detail),
-    "missing": lambda url, detail: ("Signal: image file not found for %s", url),
-    "oversize": lambda url, detail: ("Signal: image too large (%d bytes), skipping %s", detail, url)}
+    "download": lambda url, detail: ("Signal: failed to download image %s: %s", safe_url_for_log(url), redact_transport_error_text(detail)),
+    "missing": lambda url, detail: ("Signal: image file not found for %s", safe_url_for_log(url)),
+    "oversize": lambda url, detail: ("Signal: image too large (%d bytes), skipping %s", detail, safe_url_for_log(url))}
 _QUOTE_AUTHOR_KEYS = (
     "author", "authorNumber", "authorUuid", "authorAci", "authorServiceId", "authorServiceIdString")
 
@@ -874,10 +875,10 @@ class SignalAdapter(BasePlatformAdapter):
         await self._stop_typing_indicator(chat_id)
         file_path, reason, detail = await self._resolve_image_path(image_url)
         if reason == "download":
-            logger.warning("Signal: failed to download image: %s", detail)
+            logger.warning("Signal: failed to download image: %s", redact_transport_error_text(detail))
         if reason:
             return SendResult(success=False, error={
-                "download": str(detail), "missing": "Image file not found",
+                "download": redact_transport_error_text(detail), "missing": "Image file not found",
                 "oversize": f"Image too large ({detail} bytes)"}[reason])
         return await self._send_file(chat_id, file_path, caption, "RPC send with attachment failed")
 

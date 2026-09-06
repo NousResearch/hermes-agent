@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
-from gateway.platforms.base import SendResult, cache_document_from_bytes_async, cache_image_from_bytes_async
+from gateway.platforms.base import SendResult, cache_document_from_bytes_async, cache_image_from_bytes_async, redact_transport_error_text, safe_url_for_log
 
 logger = logging.getLogger("plugins.platforms.wecom.adapter")
 
@@ -285,12 +285,14 @@ class WeComMediaMixin:
     async def _send_media_source(self, chat_id: str, media_source: str, caption: Optional[str] = None, file_name: Optional[str] = None, reply_to: Optional[str] = None) -> SendResult:
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
+        safe_source = safe_url_for_log(media_source) if self._looks_like_url(media_source) else media_source
         try:
             prepared = await self._prepare_outbound_media(media_source, file_name=file_name)
         except Exception as exc:
-            if not isinstance(exc, FileNotFoundError):
-                logger.error("[%s] Failed to prepare outbound media %s: %s", self.name, media_source, exc)
-            return SendResult(success=False, error=str(exc))
+            if isinstance(exc, FileNotFoundError):
+                return SendResult(success=False, error=str(exc))
+            logger.error("[%s] Failed to prepare outbound media %s: %s", self.name, safe_source, redact_transport_error_text(exc))
+            return SendResult(success=False, error=redact_transport_error_text(exc))
         if prepared["rejected"]:
             await self._send_followup_markdown(chat_id, f"⚠️ {prepared['reject_reason']}", reply_to=reply_to)
             return SendResult(success=False, error=prepared["reject_reason"])
@@ -308,11 +310,11 @@ class WeComMediaMixin:
                 media_response = await self._send_media_message(chat_id, prepared["final_type"], upload_result["media_id"])
             logger.info("[%s] %s OK: %s", self.name, "send_reply_media" if reply_req_id else "send_media_message", media_response)
         except asyncio.TimeoutError:
-            logger.error("[%s] TIMEOUT in _send_media_source for %s", self.name, media_source)
+            logger.error("[%s] TIMEOUT in _send_media_source for %s", self.name, safe_source)
             return SendResult(success=False, error="Timeout sending media to WeCom")
         except Exception as exc:
-            logger.error("[%s] Failed to send media %s: %s", self.name, media_source, exc)
-            return SendResult(success=False, error=str(exc))
+            logger.error("[%s] Failed to send media %s: %s", self.name, safe_source, redact_transport_error_text(exc))
+            return SendResult(success=False, error=redact_transport_error_text(exc))
         raw: Dict[str, Any] = {"upload": upload_result, "media": media_response}
         for key, text in (("caption", caption), ("downgrade", f"ℹ️ {prepared['downgrade_note']}" if prepared["downgraded"] and prepared["downgrade_note"] else None)):
             followup = await self._send_followup_markdown(chat_id, text, reply_to=reply_to) if text else None
@@ -324,7 +326,7 @@ class WeComMediaMixin:
         result = await self._send_media_source(chat_id=chat_id, media_source=image_url, caption=caption, reply_to=reply_to)
         if result.success or not self._looks_like_url(image_url):
             return result
-        logger.warning("[%s] Falling back to text send for image URL %s: %s", self.name, image_url, result.error)
+        logger.warning("[%s] Falling back to text send for image URL %s: %s", self.name, safe_url_for_log(image_url), redact_transport_error_text(result.error))
         from gateway.platforms.base import sanitize_remote_image_url_for_plaintext
 
         image_url = sanitize_remote_image_url_for_plaintext(image_url)

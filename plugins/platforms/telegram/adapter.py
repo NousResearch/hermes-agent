@@ -142,6 +142,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 from gateway.authz_mixin import _coerce_allow_set
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    redact_transport_error_text,
     BasePlatformAdapter, SendResult, classify_send_error,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
@@ -4708,7 +4709,7 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning(
                     "[%s] send_media_group failed (chunk %d/%d), falling back to per-image: %s", self.name,
-                    chunk_idx + 1, len(chunks), _redact_telegram_error_text(e), exc_info=True)
+                    chunk_idx + 1, len(chunks), redact_transport_error_text(e))
                 fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
                 delivered = delivered or fallback.success
             finally:
@@ -4806,7 +4807,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.warning(
-                "[%s] URL-based send_photo failed, trying file upload: %s", self.name, _redact_telegram_error_text(e), exc_info=True)
+                "[%s] URL-based send_photo failed, trying file upload: %s", self.name, redact_transport_error_text(e))
             try:
                 from gateway.platforms.base import _ssrf_redirect_guard
                 from tools.url_safety import create_ssrf_safe_async_client
@@ -4818,7 +4819,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     self._bot.send_photo, chat_id, reply_to, metadata, "uploaded photo", photo=image_data, caption=photo_caption)
                 return SendResult(success=True, message_id=str(msg.message_id))
             except Exception as e2:
-                logger.error("[%s] File upload send_photo also failed: %s", self.name, e2, exc_info=True)
+                logger.error("[%s] File upload send_photo also failed: %s", self.name, redact_transport_error_text(e2))
                 return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
 
     async def send_animation(
@@ -4835,7 +4836,7 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error(
                 "[%s] Failed to send Telegram animation, falling back to photo: %s", self.name,
-                _redact_telegram_error_text(e), exc_info=True)
+                redact_transport_error_text(e))
             return await self.send_image(chat_id, animation_url, caption, reply_to, metadata=metadata)
 
     @staticmethod

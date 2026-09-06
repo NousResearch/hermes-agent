@@ -500,14 +500,16 @@ def safe_url_for_log(url: str, max_len: int = 80) -> str:
     try:
         parsed = urlsplit(raw)
     except Exception:
-        return raw[:max_len]
-    safe = raw
-    if parsed.scheme and parsed.netloc:
-        # Strip potential embedded credentials (user:pass@host).
-        path = parsed.path or ""
-        basename = path.rsplit("/", 1)[-1]
-        tail = "" if path in ("", "/") else f"/.../{basename}" if basename else "/..."
-        safe = f"{parsed.scheme}://{parsed.netloc.rsplit('@', 1)[-1]}{tail}"
+        safe = "<invalid URL>"
+    else:
+        safe = raw.split("?", 1)[0].split("#", 1)[0]
+        if parsed.netloc:
+            # Absolute and network references can both carry user:pass@host.
+            path = parsed.path or ""
+            basename = path.rsplit("/", 1)[-1]
+            tail = "" if path in ("", "/") else f"/.../{basename}" if basename else "/..."
+            prefix = f"{parsed.scheme}:" if parsed.scheme else ""
+            safe = f"{prefix}//{parsed.netloc.rsplit('@', 1)[-1]}{tail}"
     if len(safe) <= max_len:
         return safe
     return "." * max_len if max_len <= 3 else f"{safe[:max_len - 3]}..."
@@ -518,6 +520,16 @@ def sanitize_remote_image_url_for_plaintext(url: str) -> str:
     from agent.redact import redact_sensitive_text
 
     return redact_sensitive_text(url, force=True, redact_url_credentials=True)
+
+
+def redact_transport_error_text(error: object) -> str:
+    """Mask secrets and signed URL credentials at transport diagnostic boundaries."""
+    try:
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text(
+            "" if error is None else str(error), force=True, redact_url_credentials=True)
+    except Exception:
+        return "<transport error redacted>"
 
 
 async def _ssrf_redirect_guard(response):
@@ -2636,11 +2648,11 @@ class BasePlatformAdapter(ABC):
                 img_result = await sender(
                     chat_id=chat_id, **url_kw, caption=alt_text or None, metadata=metadata)
                 if not img_result.success:
-                    logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+                    logger.error("[%s] Failed to send image: %s", self.name, redact_transport_error_text(img_result.error))
                 else:
                     delivered = True
             except Exception as img_err:
-                logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+                logger.error("[%s] Error sending image: %s", self.name, redact_transport_error_text(img_err))
         if not images:
             return SendResult(success=False, error="no images to send")
         return SendResult(

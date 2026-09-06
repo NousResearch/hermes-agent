@@ -43,6 +43,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    redact_transport_error_text, safe_url_for_log,
     BasePlatformAdapter, SendResult,
     cache_document_from_bytes_async, cache_image_from_bytes_async, cache_video_from_bytes_async,
 )
@@ -2218,10 +2219,10 @@ class MediaSendHandler(ABC):
                 msg_body.append(_text_elem(caption))
             return await adapter._outbound.sender.dispatch_msg_body(chat_id, msg_body, reply_to, group_code=kwargs.get("group_code", ""))
         except ValueError as ve:
-            return SendResult(success=False, error=str(ve))
+            return SendResult(success=False, error=redact_transport_error_text(ve))
         except Exception as exc:
-            logger.error("[%s] %s.handle() failed: %s", adapter.name, type(self).__name__, exc, exc_info=True)
-            return SendResult(success=False, error=str(exc) or type(exc).__name__)
+            logger.error("[%s] %s.handle() failed: %s", adapter.name, type(self).__name__, redact_transport_error_text(exc))
+            return SendResult(success=False, error=redact_transport_error_text(exc) or type(exc).__name__)
 
 
 class _ImageHandler(MediaSendHandler):
@@ -2237,7 +2238,7 @@ class ImageUrlHandler(_ImageHandler):
     """Image from a URL (download → COS → TIMImageElem)."""
     async def acquire_file(self, adapter, **kwargs):
         image_url: str = kwargs["image_url"]
-        logger.info("[%s] ImageUrlHandler: downloading %s", adapter.name, image_url)
+        logger.info("[%s] ImageUrlHandler: downloading %s", adapter.name, safe_url_for_log(image_url))
         file_bytes, content_type = await media_download_url(image_url, max_size_mb=adapter.MEDIA_MAX_SIZE_MB)
         path_part = image_url.split("?")[0]
         if not content_type or content_type == "application/octet-stream":

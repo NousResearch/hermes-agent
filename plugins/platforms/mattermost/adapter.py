@@ -22,7 +22,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
-from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
+from gateway.platforms.base import (
+    gateway_trust_env, BasePlatformAdapter, SendResult, redact_transport_error_text, safe_url_for_log,
+)
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, profile_scoped as _profile_scoped_config_load
 
@@ -348,7 +350,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                     if (resp.status >= 500 or resp.status == 429) and attempt < 2:
                         logger.debug("Mattermost download retry %d/2 for %s (status %d)",
-                                     attempt + 1, url[:80], resp.status)
+                                     attempt + 1, safe_url_for_log(url), resp.status)
                     elif resp.status >= 400:
                         return await fallback()
                     else:
@@ -356,7 +358,7 @@ class MattermostAdapter(BasePlatformAdapter):
                         break
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 if attempt == 2:
-                    logger.warning("Mattermost: failed to download %s after %d attempts: %s", url, attempt + 1, exc)
+                    logger.warning("Mattermost: failed to download %s after %d attempts: %s", safe_url_for_log(url), attempt + 1, redact_transport_error_text(exc))
                     return await fallback()
             await asyncio.sleep(1.5 * (attempt + 1))
         file_id = await self._upload_file(chat_id, file_data, _url_filename(url, f"{kind}.png"), ct)
@@ -394,11 +396,11 @@ class MattermostAdapter(BasePlatformAdapter):
         try:
             async with self._session.get(image_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                 if resp.status >= 400:
-                    logger.warning("Mattermost: failed to download image (HTTP %d): %s", resp.status, image_url[:80])
+                    logger.warning("Mattermost: failed to download image (HTTP %d): %s", resp.status, safe_url_for_log(image_url))
                     return None
                 file_data, ct = await resp.read(), resp.content_type or "image/png"
         except Exception as dl_err:
-            logger.warning("Mattermost: download failed for %s: %s", image_url[:80], dl_err)
+            logger.warning("Mattermost: download failed for %s: %s", safe_url_for_log(image_url), redact_transport_error_text(dl_err))
             return None
         return file_data, _url_filename(image_url, f"image_{index}.png"), ct
 
@@ -434,7 +436,7 @@ class MattermostAdapter(BasePlatformAdapter):
                     delivered = delivered or fallback.success
             except Exception as e:
                 logger.warning("Mattermost: multi-image send failed (chunk %d/%d), falling back: %s",
-                               chunk_idx + 1, len(chunks), e, exc_info=True)
+                               chunk_idx + 1, len(chunks), redact_transport_error_text(e))
                 fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
                 delivered = delivered or fallback.success
         return SendResult(success=delivered, error=None if delivered else "all images failed to send")

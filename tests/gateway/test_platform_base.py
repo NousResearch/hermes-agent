@@ -1625,6 +1625,7 @@ class _PlaintextImageFallbackAdapter(BasePlatformAdapter):
     """Exercise BasePlatformAdapter.send_image's plaintext URL fallback."""
 
     name = "plaintext-image-fallback"
+    platform = "webhook"
 
     def __init__(self):
         self.sent = []

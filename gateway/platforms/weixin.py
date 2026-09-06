@@ -30,6 +30,7 @@ CRYPTO_AVAILABLE = Cipher is not None
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator, greedy_pack_blocks
 from gateway.platforms.base import (
+    safe_url_for_log,
     _IMAGE_EXTS, _VIDEO_EXTS, gateway_trust_env, BasePlatformAdapter, SendResult,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
 )
@@ -1167,7 +1168,8 @@ class WeixinAdapter(BasePlatformAdapter):
     async def _download_remote_media(self, url: str) -> str:
         from tools.url_safety import is_safe_url
         if not is_safe_url(url):
-            raise ValueError(f"Blocked unsafe URL (SSRF protection): {url}")
+            logger.warning("weixin: blocked unsafe remote-media URL: %s", safe_url_for_log(url))
+            raise ValueError("Blocked unsafe remote-media URL (SSRF protection)")
         assert self._send_session is not None
         data = await _download_bytes(self._send_session, url=url, timeout_seconds=30)
         with tempfile.NamedTemporaryFile(delete=False, suffix=Path(url.split("?", 1)[0]).suffix or ".bin") as handle:

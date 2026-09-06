@@ -59,6 +59,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    redact_transport_error_text,
     gateway_trust_env, BasePlatformAdapter,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
 )
@@ -1475,7 +1476,7 @@ class MatrixAdapter(BasePlatformAdapter):
         try:
             data, ct, fname = await self._download_external_media_with_cap(image_url)
         except Exception as exc:
-            logger.warning("Matrix: failed to download image %s: %s", _redact_url_for_log(image_url), exc)
+            logger.warning("Matrix: failed to download image %s: %s", _redact_url_for_log(image_url), redact_transport_error_text(exc))
             fallback = ("I couldn't download and upload the image to Matrix. "
                         "The source URL was not shown because it may contain private tokens.")
             return await self.send(chat_id, f"{caption}\n{fallback}" if caption else fallback, reply_to)

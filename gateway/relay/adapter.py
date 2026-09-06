@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    redact_transport_error_text,
     BasePlatformAdapter, SendResult,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
@@ -402,8 +403,8 @@ class RelayAdapter(BasePlatformAdapter):
             result = await self._transport.send_outbound(
                 action, platform=platform or self._platform_by_chat.get(str(chat_id))
             )
-        except Exception:  # noqa: BLE001 - transport failure degrades to the caller's fallback
-            logger.debug("relay %s transport failure", op, exc_info=True)
+        except Exception as exc:  # noqa: BLE001 - transport failure degrades to the caller's fallback
+            logger.debug("relay %s transport failure: %s", op, redact_transport_error_text(exc))
             return None
         if not result.get("success"):
             # P5(b): an AUTHORIZATION decline is not lane unavailability. This
@@ -427,7 +428,7 @@ class RelayAdapter(BasePlatformAdapter):
             if decline_level is not None:
                 logger.log(
                     decline_level, "relay %s declined for %s: %s",
-                    op, chat_id if subject is None else subject, result.get("error"),
+                    op, chat_id if subject is None else subject, redact_transport_error_text(result.get("error")),
                 )
             return None
         return result

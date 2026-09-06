@@ -39,6 +39,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    redact_transport_error_text,
     gateway_trust_env, BasePlatformAdapter, SendResult,
     _ssrf_redirect_guard, cache_document_from_bytes_async, cache_image_from_bytes_async,
 )
@@ -1593,8 +1594,9 @@ class QQAdapter(BasePlatformAdapter):
                 success=False, retryable=False,
                 error=f"{exc.file_name!r} ({exc.file_size_human}) exceeds the QQ per-file upload limit ({exc.limit_human}).")
         except Exception as exc:
-            logger.error("[%s] Media send failed: %s", self._log_tag, exc)
-            return SendResult(success=False, error=str(exc) or type(exc).__name__)
+            safe_error = redact_transport_error_text(exc) or type(exc).__name__
+            logger.error("[%s] Media send failed: %s", self._log_tag, safe_error)
+            return SendResult(success=False, error=safe_error)
 
     async def _upload_local_file(
         self, chat_type: str, chat_id: str, media_source: str, file_type: int, file_name: Optional[str],

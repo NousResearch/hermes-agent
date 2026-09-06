@@ -13,7 +13,10 @@ import pytest
 from rich.console import Console
 
 from tools.skills_guard import SCANNER_VERSION, scan_skill_cached
-from tools.skills_hub import GitHubAuth, GitHubSource, HubLockFile, SkillBundle, UrlSource
+from tools.skills_hub import HubLockFile
+from tools.skills_hub_github import GitHubAuth, GitHubSource
+from tools.skills_hub_models import SkillBundle
+from tools.skills_hub_sources import UrlSource
 
 
 SKILL_MD = """---
@@ -22,7 +25,8 @@ description: A multi-file test skill.
 ---
 # Demo
 Read [the guide](references/guide.md#usage), use `templates/report.md?raw=1`, and run
-`scripts/run.py`. See `examples/endpoint-inventory.md`. The repository also
+`scripts/run.py`, `references/foo%23bar.md`, and `references/my%20guide.md`. See
+`examples/endpoint-inventory.md`. The repository also
 contains assets/logo.png.
 """
 
@@ -43,6 +47,8 @@ def served_repo(tmp_path, monkeypatch):
     (repo / "SKILL.md").write_text(SKILL_MD)
     for rel, content in {
         "references/guide.md": "safe guide\n",
+        "references/foo#bar.md": "encoded delimiter\n",
+        "references/my guide.md": "encoded space\n",
         "templates/report.md": "report\n",
         "scripts/run.py": "print('ok')\n",
         "assets/logo.png": b"\x89PNG\r\n\x1a\n\x00\xff",
@@ -87,12 +93,16 @@ def test_url_source_fetches_only_referenced_allowed_support_directories(served_r
     assert set(bundle.files) == {
         "SKILL.md",
         "references/guide.md",
+        "references/foo#bar.md",
+        "references/my guide.md",
         "templates/report.md",
         "scripts/run.py",
         "assets/logo.png",
         "examples/endpoint-inventory.md",
     }
     assert bundle.files["assets/logo.png"] == b"\x89PNG\r\n\x1a\n\x00\xff"
+    assert bundle.files["references/foo#bar.md"] == b"encoded delimiter\n"
+    assert bundle.files["references/my guide.md"] == b"encoded space\n"
     assert "examples/not-installed.md" not in bundle.files
     assert bundle.metadata["source_url"] == url
 
@@ -105,9 +115,112 @@ def test_url_source_rejects_traversal_reference(monkeypatch):
     assert source.fetch("https://example.com/bad/SKILL.md") is None
 
 
+def test_same_dir_linked_siblings_are_fetched(served_repo, monkeypatch):
+    """#96310: explicitly linked same-skill-directory files must ship in the
+    bundle — dropping them made installs "succeed" with unresolved links."""
+    repo, url = served_repo
+    (repo / "CONTEXT-FORMAT.md").write_text("format\n")
+    (repo / "DEEPENING.md").write_text("deepening\n")
+    (repo / "SKILL.md").write_text(SKILL_MD + "See [the format](./CONTEXT-FORMAT.md) and [deepening](DEEPENING.md).\n")
+    monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
+    monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+
+    bundle = UrlSource().fetch(url)
+
+    assert bundle is not None
+    assert bundle.files["CONTEXT-FORMAT.md"] == b"format\n"
+    assert bundle.files["DEEPENING.md"] == b"deepening\n"
+    # Unlinked siblings stay excluded — same fetch-minimization contract.
+    assert "README.md" not in bundle.files
+
+
+def test_same_dir_traversal_link_is_rejected(monkeypatch):
+    source = UrlSource()
+    skill = (
+        "---\nname: bad\ndescription: bad\n---\n"
+        "[bad](./../outside-secret.md)\n"
+    )
+    monkeypatch.setattr(source, "_fetch_text", lambda _url: skill)
+
+    assert source.fetch("https://example.com/bad/SKILL.md") is None
+
+
+def test_same_dir_link_without_extension_is_ignored(monkeypatch):
+    """Prose targets that aren't file links (no extension) never fetch."""
+    from tools.skills_hub_models import _referenced_support_paths
+
+    skill = "---\nname: x\ndescription: x\n---\nsee [notes](NOTES) and `README`\n"
+    assert _referenced_support_paths(skill) == set()
+
+
+def test_same_dir_link_query_and_fragment_are_stripped():
+    """?query and #fragment never leak into the fetched bundle path."""
+    from tools.skills_hub_models import _referenced_support_paths
+
+    skill = (
+        "---\nname: x\ndescription: x\n---\n"
+        "[a](CONTEXT-FORMAT.md?raw=1) [b](DEEPENING.md#usage)\n"
+    )
+    assert _referenced_support_paths(skill) == {"CONTEXT-FORMAT.md", "DEEPENING.md"}
+
+
+def test_case_variant_of_skill_md_is_never_a_sibling_entry():
+    """skill.md must not ship as a bundle file (case-insensitive FS collision)."""
+    from tools.skills_hub_models import _referenced_support_paths
+
+    skill = "---\nname: x\ndescription: x\n---\n[home](skill.md)\n"
+    assert _referenced_support_paths(skill) == set()
+
+
+def test_case_folded_sibling_collision_drops_the_pair():
+    """A.md + a.md would collide on install — neither ships."""
+    from tools.skills_hub_models import _referenced_support_paths
+
+    skill = "---\nname: x\ndescription: x\n---\n[a](A.md) [a2](a.md)\n"
+    assert _referenced_support_paths(skill) == set()
+
+
+def test_github_fetches_pin_to_the_tree_revision(monkeypatch):
+    """#96310 review: every byte fetch carries the tree's SHA as ?ref=."""
+    source = GitHubSource(GitHubAuth())
+    fetched: list[tuple[str, dict | None]] = []
+
+    def _fake_content(repo, path, ref=None):
+        fetched.append((path, {"ref": ref} if ref else None))
+        return SKILL_MD if path.endswith("SKILL.md") else "x"
+
+    monkeypatch.setattr(source, "_fetch_file_content", _fake_content)
+    monkeypatch.setattr(
+        source,
+        "_fetch_file_bytes",
+        lambda repo, path, ref=None: fetched.append((path, {"ref": ref} if ref else None)) or b"x",
+    )
+    source._tree_cache["owner/repo"] = (
+        "main",
+        [
+            {"path": "skill/SKILL.md", "type": "blob", "mode": "100644"},
+            {"path": "skill/CONTEXT-FORMAT.md", "type": "blob", "mode": "100644"},
+        ],
+    )
+    source._tree_revisions["owner/repo"] = "treesha123"
+
+    minimal_skill = "---\nname: x\ndescription: x\n---\nSee [the format](CONTEXT-FORMAT.md).\n"
+    monkeypatch.setattr(
+        source, "_fetch_file_content",
+        lambda repo, path, ref=None: fetched.append((path, {"ref": ref} if ref else None)) or minimal_skill,
+    )
+
+    bundle = source.fetch("owner/repo/skill")
+
+    assert bundle is not None
+    assert fetched, "expected byte fetches"
+    for path, params in fetched:
+        assert params == {"ref": "treesha123"}, path
+
+
 def test_github_source_rejects_symlink_in_referenced_directory(monkeypatch):
     source = GitHubSource(GitHubAuth())
-    monkeypatch.setattr(source, "_fetch_file_content", lambda _repo, path: SKILL_MD if path.endswith("SKILL.md") else "x")
+    monkeypatch.setattr(source, "_fetch_file_content", lambda _repo, path, ref=None: SKILL_MD if path.endswith("SKILL.md") else "x")
     source._tree_cache["owner/repo"] = (
         "main",
         [
@@ -116,6 +229,84 @@ def test_github_source_rejects_symlink_in_referenced_directory(monkeypatch):
         ],
     )
 
+    assert source.fetch("owner/repo/skill") is None
+
+
+def test_github_source_fetch_downloads_full_skill_directory(monkeypatch):
+    """Support files a skill keeps outside SKILL.md-linked paths still install.
+
+    Regression for skills using non-canonical support dirs (impeccable keeps
+    everything under `reference/` singular and `scripts/` linked only from
+    reference files): the old link-driven fetch shipped SKILL.md alone.
+    """
+    source = GitHubSource(GitHubAuth())
+    skill_md = (
+        "---\nname: full-dir\ndescription: d\n---\n"
+        "See [audit](reference/audit.md) and run `node scripts/pin.mjs`.\n"
+    )
+    fetched: list = []
+    monkeypatch.setattr(source, "_fetch_file_content", lambda _repo, path, ref=None: skill_md)
+    monkeypatch.setattr(
+        source, "_fetch_file_bytes",
+        lambda _repo, path, ref=None: fetched.append(path) or b"content-of-" + path.encode(),
+    )
+    source._tree_cache["owner/repo"] = (
+        "main",
+        [
+            {"path": "skill/SKILL.md", "type": "blob", "mode": "100644"},
+            {"path": "skill/reference/audit.md", "type": "blob", "mode": "100644"},
+            {"path": "skill/reference/deep/native.md", "type": "blob", "mode": "100644"},
+            {"path": "skill/scripts/pin.mjs", "type": "blob", "mode": "100644"},
+            {"path": "skill/LICENSE", "type": "blob", "mode": "100644"},
+            # skipped: symlink, hidden file, pyc, out-of-prefix
+            {"path": "skill/reference/link.md", "type": "blob", "mode": "120000"},
+            {"path": "skill/.hidden", "type": "blob", "mode": "100644"},
+            {"path": "skill/scripts/x.pyc", "type": "blob", "mode": "100644"},
+            {"path": "other/README.md", "type": "blob", "mode": "100644"},
+        ],
+    )
+
+    bundle = source.fetch("owner/repo/skill")
+
+    assert bundle is not None
+    assert set(bundle.files) == {
+        "SKILL.md",
+        "reference/audit.md",
+        "reference/deep/native.md",
+        "scripts/pin.mjs",
+        "LICENSE",
+    }
+
+
+def test_github_source_fetch_dangling_linked_reference_warns_not_aborts(monkeypatch):
+    """A SKILL.md-linked references/ path absent from the tree installs
+    without the file (dangling links are prose over-matches / repo-only dev
+    tools — #66760/#90081); a SYMLINKED referenced path still hard-rejects."""
+    source = GitHubSource(GitHubAuth())
+    skill_md = (
+        "---\nname: dangling\ndescription: d\n---\n"
+        "Read [the guide](references/guide.md).\n"
+    )
+    monkeypatch.setattr(source, "_fetch_file_content", lambda _repo, path, ref=None: skill_md)
+    monkeypatch.setattr(source, "_fetch_file_bytes", lambda _repo, path, ref=None: b"x")
+
+    # Missing entirely -> installs without it.
+    source._tree_cache["owner/repo"] = (
+        "main",
+        [{"path": "skill/SKILL.md", "type": "blob", "mode": "100644"}],
+    )
+    bundle = source.fetch("owner/repo/skill")
+    assert bundle is not None
+    assert "references/guide.md" not in bundle.files
+
+    # Present as a symlink -> hard rejection.
+    source._tree_cache["owner/repo"] = (
+        "main",
+        [
+            {"path": "skill/SKILL.md", "type": "blob", "mode": "100644"},
+            {"path": "skill/references/guide.md", "type": "blob", "mode": "120000"},
+        ],
+    )
     assert source.fetch("owner/repo/skill") is None
 
 
@@ -141,20 +332,21 @@ def test_lock_file_persists_scan_provenance(tmp_path):
 
 def test_real_temp_repo_and_home_install_e2e(served_repo, monkeypatch, tmp_path):
     from hermes_cli.skills_hub import do_install
-    import tools.skills_hub as hub
 
     _repo, url = served_repo
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
     monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
-    monkeypatch.setattr(hub, "create_source_router", lambda auth=None: [UrlSource()])
+    monkeypatch.setattr("tools.skills_hub_search.create_source_router", lambda auth=None: [UrlSource()])
 
     sink = StringIO()
     do_install(url, console=Console(file=sink, force_terminal=False), skip_confirm=True)
 
     installed = home / "skills" / "demo-bundle"
     assert (installed / "references" / "guide.md").read_text() == "safe guide\n"
+    assert (installed / "references" / "foo#bar.md").read_text() == "encoded delimiter\n"
+    assert (installed / "references" / "my guide.md").read_text() == "encoded space\n"
     assert (installed / "templates" / "report.md").is_file()
     assert (installed / "scripts" / "run.py").is_file()
     assert (installed / "examples" / "endpoint-inventory.md").is_file()
@@ -196,7 +388,6 @@ def test_install_with_junctioned_skills_dir(served_repo, monkeypatch, tmp_path):
     entry without a content_hash (which then poisons 'hermes skills check').
     """
     from hermes_cli.skills_hub import do_install
-    import tools.skills_hub as hub
 
     _repo, url = served_repo
     home = tmp_path / "home"
@@ -210,7 +401,7 @@ def test_install_with_junctioned_skills_dir(served_repo, monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
     monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
-    monkeypatch.setattr(hub, "create_source_router", lambda auth=None: [UrlSource()])
+    monkeypatch.setattr("tools.skills_hub_search.create_source_router", lambda auth=None: [UrlSource()])
 
     sink = StringIO()
     do_install(url, console=Console(file=sink, force_terminal=False), skip_confirm=True)
@@ -229,8 +420,86 @@ def test_install_with_junctioned_skills_dir(served_repo, monkeypatch, tmp_path):
     assert "Installed:" in sink.getvalue()
 
 
+
+SKILL_MD_MISSING_REF = """---
+name: partial-bundle
+description: References a support file that is unreachable.
+---
+# Partial
+Read [the guide](references/present.md#usage) and the appendix at
+`references/absent.md`, then run `scripts/run.py`.
+"""
+
+
+@pytest.fixture
+def served_repo_missing_support(tmp_path, monkeypatch):
+    """Serve a skill whose SKILL.md references a support file that is not
+    present on the server, so fetching it returns 404."""
+    # Serve over loopback while opting this test server into private-address
+    # access, so the SSRF-safe HTTP client is exercised for real (see
+    # ``served_repo``).
+    monkeypatch.setattr("tools.url_safety._global_allow_private_urls", lambda: True)
+
+    repo = tmp_path / "upstream-missing"
+    repo.mkdir()
+    (repo / "SKILL.md").write_text(SKILL_MD_MISSING_REF)
+    # references/absent.md is deliberately NOT created, so the server 404s it.
+    for rel, content in {
+        "references/present.md": "present guide\n",
+        "scripts/run.py": "print('ok')\n",
+    }.items():
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), partial(_QuietHandler, directory=str(repo))
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield repo, f"http://127.0.0.1:{server.server_port}/SKILL.md"
+    finally:
+        server.shutdown()
+        thread.join()
+
+
+def test_install_skips_unreachable_support_file_e2e(served_repo_missing_support, monkeypatch, tmp_path):
+    """A referenced support file that 404s is skipped rather than aborting the
+    whole URL install: the bundle still installs end-to-end through quarantine,
+    scan, install, and lock provenance, with only the reachable files landing
+    on disk and recorded in the lock file (#66760)."""
+    from hermes_cli.skills_hub import do_install
+
+    _repo, url = served_repo_missing_support
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
+    monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+    monkeypatch.setattr("tools.skills_hub_search.create_source_router", lambda auth=None: [UrlSource()])
+
+    sink = StringIO()
+    do_install(url, console=Console(file=sink, force_terminal=False), skip_confirm=True)
+
+    installed = home / "skills" / "partial-bundle"
+    assert (installed / "SKILL.md").is_file()
+    assert (installed / "references" / "present.md").read_text() == "present guide\n"
+    assert (installed / "scripts" / "run.py").is_file()
+    # The unreachable reference neither blocked the install nor was written.
+    assert not (installed / "references" / "absent.md").exists()
+
+    entry = json.loads((home / "skills" / ".hub" / "lock.json").read_text())["installed"]["partial-bundle"]
+    assert entry["scan_provenance"]["source_url"] == url
+    assert "references/present.md" in entry["files"]
+    assert "references/absent.md" not in entry["files"]
+
+
+
+
+
+
 def test_bundled_optional_source_still_includes_support_files(tmp_path, monkeypatch):
-    from tools.skills_hub import OptionalSkillSource
+    from tools.skills_hub_official import OptionalSkillSource
 
     root = tmp_path / "optional-skills"
     skill = root / "category" / "official-demo"
@@ -243,3 +512,95 @@ def test_bundled_optional_source_still_includes_support_files(tmp_path, monkeypa
     bundle = source.fetch("official/category/official-demo")
     assert bundle is not None
     assert set(bundle.files) == {"SKILL.md", "references/all.md"}
+
+
+UPSTREAM_STUB_MD = """---
+name: upstream-demo
+description: Upstream-maintained catalog entry.
+metadata:
+  hermes:
+    upstream:
+      repo: acme/design-skill
+      path: .hermes/skills/design
+---
+# Stub
+"""
+
+
+def test_optional_source_upstream_stub_fetches_from_external_repo(tmp_path, monkeypatch):
+    """A catalog stub with metadata.hermes.upstream installs the upstream repo's
+    content (relabelled official/trusted), not the stub itself."""
+    from tools.skills_hub_models import SkillBundle
+    from tools.skills_hub_official import OptionalSkillSource
+
+    root = tmp_path / "optional-skills"
+    skill = root / "creative" / "upstream-demo"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(UPSTREAM_STUB_MD)
+
+    source = OptionalSkillSource()
+    source._optional_dir = root
+
+    fetched_ids = []
+
+    class _FakeGitHub:
+        def fetch(self, identifier):
+            fetched_ids.append(identifier)
+            return SkillBundle(
+                name="design",
+                files={"SKILL.md": "---\nname: design\ndescription: real\n---\nreal body",
+                       "reference/audit.md": "audit"},
+                source="github",
+                identifier=identifier,
+                trust_level="community",
+                metadata={"source_url": "https://github.com/acme/design-skill"},
+            )
+
+    monkeypatch.setattr(source, "_get_github", lambda: _FakeGitHub())
+
+    bundle = source.fetch("official/creative/upstream-demo")
+
+    assert fetched_ids == ["acme/design-skill/.hermes/skills/design"]
+    assert bundle is not None
+    assert bundle.source == "official"
+    assert bundle.identifier == "official/creative/upstream-demo"
+    assert bundle.trust_level == "trusted"
+    assert bundle.files["SKILL.md"].startswith("---\nname: design")
+    assert bundle.metadata["upstream_repo"] == "acme/design-skill"
+
+
+def test_optional_source_upstream_pointer_rejects_malformed(tmp_path):
+    from tools.skills_hub_official import OptionalSkillSource
+
+    source = OptionalSkillSource()
+    bad = [
+        "---\nname: x\nmetadata:\n  hermes:\n    upstream:\n      repo: acme\n      path: skills/x\n---\n",          # repo not owner/name
+        "---\nname: x\nmetadata:\n  hermes:\n    upstream:\n      repo: a/b/c\n      path: skills/x\n---\n",        # repo too deep
+        "---\nname: x\nmetadata:\n  hermes:\n    upstream:\n      repo: acme/skill\n      path: ../../etc\n---\n",  # traversal
+        "---\nname: x\nmetadata:\n  hermes:\n    upstream:\n      repo: acme/skill\n---\n",                          # missing path
+        "---\nname: x\n---\n",                                                                                       # no pointer
+    ]
+    for content in bad:
+        assert source._upstream_pointer_from_content(content) is None
+
+
+def test_unified_search_trust_rank_survives_limit_cut():
+    """Official/builtin results must survive the limit truncation even when a
+    high-volume community source floods the merged list first."""
+    from unittest.mock import patch as _patch
+    from tools.skills_hub_models import SkillMeta
+    from tools.skills_hub_search import unified_search
+
+    community = [
+        SkillMeta(name=f"s{i}", description="", source="skills.sh",
+                  identifier=f"skills-sh/x/s{i}", trust_level="community")
+        for i in range(20)
+    ]
+    official = [SkillMeta(name="s-official", description="", source="official",
+                          identifier="official/cat/s-official", trust_level="builtin")]
+
+    with _patch("tools.skills_hub_search.parallel_search_sources",
+                return_value=(community + official, {}, [])):
+        results = unified_search("s", [], source_filter="all", limit=10)
+
+    assert results[0].identifier == "official/cat/s-official"

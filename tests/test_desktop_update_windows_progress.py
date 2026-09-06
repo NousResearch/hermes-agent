@@ -35,17 +35,24 @@ def _read_progress(url: str, deadline: float) -> dict[str, object]:
     ``urlopen(timeout=5)`` propagating TimeoutError was exactly the Aug 2026
     flake (run 32440286339). Only a listener that stays unresponsive until
     the deadline fails the test.
+
+    Per-attempt timeout is 1s, not 5s: a connection the kernel accepted into
+    the backlog before the runspace was serving never gets answered, and a 5s
+    wait on it burned half the readiness budget per attempt (two stale
+    attempts = red, run 33591547099). The script's own readiness handshake
+    now keeps that gap from reaching us, but the probe should not be able to
+    lose the whole budget to one dead socket either way.
     """
     last_exc: Exception | None = None
     attempted = False
     while not attempted or time.monotonic() < deadline:
         attempted = True
         try:
-            with urlopen(f"{url}progress", timeout=5) as response:
+            with urlopen(f"{url}progress", timeout=1) as response:
                 return json.loads(response.read().decode("utf-8"))
         except (TimeoutError, OSError) as exc:  # transient stall — retry
             last_exc = exc
-            time.sleep(0.2)
+            time.sleep(0.1)
     raise AssertionError(
         f"/progress unresponsive until deadline (last error: {last_exc!r})"
     )

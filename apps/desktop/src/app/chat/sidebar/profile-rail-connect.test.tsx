@@ -61,7 +61,12 @@ vi.mock('@/store/profile', () => ({
   sortByProfileOrder: (profiles: unknown[]) => profiles
 }))
 
-vi.mock('@/store/connections', () => ({ $hasMultipleConnections: atom(false) }))
+vi.mock('@/store/connections', () => ({
+  $activeConnectionId: atom(null),
+  $connectionsRegistry: atom(null),
+  $hasMultipleConnections: atom(false),
+  selectConnection: vi.fn()
+}))
 
 vi.mock('@/store/profile-share', () => ({
   runExportProfileFlow: vi.fn(),

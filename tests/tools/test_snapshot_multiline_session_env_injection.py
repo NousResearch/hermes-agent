@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.environments.base import _export_dump_excluding_session_vars
+from tools.environments.base_session_env import _export_dump_excluding_session_vars
 
 
 def _bash() -> str:

@@ -151,7 +151,7 @@ export function setTranslucencyScope(scope: GlassScope): void {
 // secondary session windows). The HUD, pet overlay, quick entry and wake
 // indicator are transparent special-purpose windows that manage their own
 // backgrounds — a page-surface rewrite there would fight them.
-const CHAT_WINDOW_KINDS = new Set([null, 'secondary'])
+const CHAT_WINDOW_KINDS = new Set([null, 'secondary', 'browser'])
 
 export const isChatWindow = (search = typeof window === 'undefined' ? '' : window.location.search): boolean => {
   try {

@@ -12,6 +12,7 @@ import {
   applyZoomLevel,
   clampZoomLevel,
   DEFAULT_ZOOM_LEVEL,
+  installZoomReassertOnNavigation,
   installZoomReassertOnWindowEvents,
   isDebouncedReassertEvent,
   percentToZoomLevel,
@@ -290,6 +291,34 @@ test('installZoomReassertOnWindowEvents skips destroyed windows', () => {
   destroyed = true
   handlers.get('show')()
   assert.equal(calls, 0)
+})
+
+test('installZoomReassertOnNavigation covers full loads and main-frame in-page routes', () => {
+  const handlers = new Map()
+  let destroyed = false
+  let calls = 0
+
+  const webContents = {
+    isDestroyed: () => destroyed,
+    on(event, listener) {
+      handlers.set(event, listener)
+    }
+  }
+
+  installZoomReassertOnNavigation(webContents, () => {
+    calls += 1
+  })
+
+  assert.deepEqual([...handlers.keys()], ['did-finish-load', 'did-navigate-in-page'])
+
+  handlers.get('did-finish-load')()
+  handlers.get('did-navigate-in-page')({}, 'file:///app/index.html#/new', true)
+  handlers.get('did-navigate-in-page')({}, 'file:///app/frame.html#anchor', false)
+  assert.equal(calls, 2)
+
+  destroyed = true
+  handlers.get('did-navigate-in-page')({}, 'file:///app/index.html#/session/next', true)
+  assert.equal(calls, 2)
 })
 
 // Zoom-wiring contract: chat windows keep global UI zoom while fixed-size

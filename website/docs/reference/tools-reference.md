@@ -145,7 +145,8 @@ Registered when the agent is either (a) spawned by the kanban dispatcher (`HERME
 | `kanban_create` | Fan out child tasks from the current task. Used by orchestrators and follow-up-spawning workers. | `HERMES_KANBAN_TASK` or `kanban` toolset |
 | `kanban_link` | Link tasks with a parent → child dependency edge. | `HERMES_KANBAN_TASK` or `kanban` toolset |
 | `kanban_unblock` | Move a blocked task to `ready` when all parents are done, or `todo` while any parent remains open. Orchestrator-only; hidden from dispatcher-spawned task workers. | profile with `kanban` toolset |
-| `kanban_attach` | Attach a file to a task by passing its bytes inline (base64). Stored as a real attachment under the task's attachments dir, capped at 25 MB. | `HERMES_KANBAN_TASK` or `kanban` toolset |
+| `kanban_attach` | Attach a file to a task by passing its bytes inline (base64). Stored as a real attachment under the task's attachments dir, capped at 25 MB. content_base64 must be mechanically encoded from the source file — path-like placeholder payloads are rejected by an integrity guard; the result echoes the stored sha256. | `HERMES_KANBAN_TASK` or `kanban` toolset |
+| `kanban_attach_file` | Attach a local file by path — Hermes reads the bytes from disk (worktree/absolute/unicode paths all fine) and stores them byte-verified, recording the sha256 in the attachment row. Preferred for files already on disk. | `HERMES_KANBAN_TASK` or `kanban` toolset |
 | `kanban_attach_url` | Attach a file to a task by URL — Hermes downloads it server-side and stores it as a real attachment (capped at 25 MB). Only http/https URLs. | `HERMES_KANBAN_TASK` or `kanban` toolset |
 | `kanban_attachments` | List the files attached to a task: id, filename, content_type, size, uploader, and the absolute on-disk path. | `HERMES_KANBAN_TASK` or `kanban` toolset |
 

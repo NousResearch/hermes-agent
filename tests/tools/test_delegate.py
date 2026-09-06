@@ -220,9 +220,9 @@ class TestChildAgentContextIsolation(unittest.TestCase):
                         "TERMINAL_CWD": str(workspace),
                     },
                 ),
-                patch("run_agent.get_tool_definitions", return_value=tool_defs),
-                patch("run_agent.check_toolset_requirements", return_value={}),
-                patch("run_agent.OpenAI"),
+                patch("model_tools.get_tool_definitions", return_value=tool_defs),
+                patch("model_tools.check_toolset_requirements", return_value={}),
+                patch("agent.process_bootstrap.OpenAI"),
             ):
                 try:
                     child = _build_child_agent(

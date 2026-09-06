@@ -241,10 +241,10 @@ def _write_or_exit(payload: dict, reason: str) -> None:
 def main():
     _install_sidecar_publisher()
 
-    # The heartbeat row lets the orphan sweep tell "live but idle" from "truly orphaned",
-    # so it must start BEFORE the sweep.
+    # The process liveness row and the Desktop session heartbeat driver must start before the sweep.
     for start, what in (
             (server._start_backend_heartbeat_refresher, "backend heartbeat refresher start"),
+            (server._start_desktop_heartbeat_driver, "desktop heartbeat driver start"),
             (server._schedule_startup_orphan_sweep, "startup orphan sweep scheduling")):
         try:
             start()

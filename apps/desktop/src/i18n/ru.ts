@@ -2736,6 +2736,7 @@ export const ru = defineLocale({
     agents: 'Агенты',
     background: count => `${count} ${RU_NOUN(count, 'фоновая задача', 'фоновые задачи', 'фоновых задач')}`,
     goalActive: 'Цель активна',
+    goalBlocked: 'Цель заблокирована',
     goalDone: 'Цель выполнена',
     goalPaused: 'Цель на паузе',
     goalWaiting: 'Цель ожидает',

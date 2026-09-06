@@ -280,11 +280,10 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             # global broadcasts write_json can't route.
             server._ensure_skin_watcher()
             server.register_live_transport(transport)
-        # Cross-backend liveness: a heartbeat row lets the startup orphan sweep tell "live but idle
-        # backend" from "truly orphaned". Idempotent and once-per-process, like the orphan sweep (the
-        # desktop app and web dashboard reach the agent via this sidecar, not entry.main()).
+        # The process liveness row and Desktop session driver are both idempotent and once-per-process.
         for start, what in (
             (server._start_backend_heartbeat_refresher, "backend heartbeat refresher start"),
+            (server._start_desktop_heartbeat_driver, "desktop heartbeat driver start"),
             (server._schedule_startup_orphan_sweep, "startup orphan sweep scheduling"),
         ):
             try:

@@ -57,6 +57,20 @@ export function formatApproximateTime(targetTimestamp: number): string {
   return `~${days}d`
 }
 
+/** Formats a countdown precisely without exposing the user's local timezone. */
+export function formatHeartbeatCountdown(targetTimestamp: number, now = Date.now()): string {
+  const targetMs = targetTimestamp > 1e11 ? targetTimestamp : targetTimestamp * 1000
+  const remainingSeconds = Math.max(0, Math.ceil((targetMs - now) / 1000))
+  const days = Math.floor(remainingSeconds / 86_400)
+  const hours = Math.floor((remainingSeconds % 86_400) / 3_600)
+  const minutes = Math.floor((remainingSeconds % 3_600) / 60)
+  const seconds = remainingSeconds % 60
+  const padded = (value: number) => String(value).padStart(2, '0')
+  const clock = `${padded(hours)}:${padded(minutes)}:${padded(seconds)}`
+
+  return days > 0 ? `${days}d ${clock}` : clock
+}
+
 export function formatInterval(seconds: number, t: Translations): string {
   if (seconds % 3600 === 0) {
     return t.statusStack.control.loopEveryHours(seconds / 3600)

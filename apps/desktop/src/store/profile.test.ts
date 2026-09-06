@@ -9,10 +9,24 @@ import type { ProfileInfo } from '@/types/hermes'
 const ensureGatewayForProfile = vi.fn(async () => undefined)
 const ensureGatewayForAgent = vi.fn(async () => undefined)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
-const $gateway = atom<unknown>({ id: 'live-socket' })
+const openSecondaryCount = vi.fn(() => 0)
+const $gateway = atom<unknown>({ id: 'live-socket', connectionState: 'open' })
 const resetStarmapGraph = vi.fn()
 
-vi.mock('@/store/gateway', () => ({ $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile }))
+vi.mock('@/store/gateway', () => ({
+  $gateway,
+  ensureGatewayForAgent,
+  ensureGatewayForProfile,
+  openGatewayForProfile,
+  openSecondaryCount
+}))
+// The pool-limits atom is profile.ts's live saturation signal — keep the real
+// one so tests can move the cap via the store, but stub its IPC bridge.
+vi.mock('@/store/pool-limits', async () => {
+  const { atom } = await import('nanostores')
+
+  return { $poolLimits: atom({ idleMs: 600_000, maxBackends: 3 }) }
+})
 vi.mock('@/hermes', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   setApiRequestProfile: vi.fn()
@@ -28,6 +42,8 @@ const {
   prewarmProfileBackend,
   refreshProfiles
 } = await import('./profile')
+
+const { $poolLimits } = await import('@/store/pool-limits')
 
 const { $connection } = await import('./session')
 const { invalidateProfileScopedQueries } = await import('@/lib/query-client')
@@ -55,7 +71,8 @@ beforeEach(() => {
   getConnection.mockReset()
   ensureGatewayForProfile.mockClear()
   openGatewayForProfile.mockClear()
-  $gateway.set({ id: 'live-socket' })
+  openSecondaryCount.mockReturnValue(0)
+  $gateway.set({ id: 'live-socket', connectionState: 'open' })
   $activeGatewayProfile.set('default')
   $connection.set(localConn())
   $profiles.set([])
@@ -115,6 +132,17 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     expect(ensureGatewayForProfile).not.toHaveBeenCalled()
     expect($connection.get()?.mode).toBe('remote')
   })
+
+  it('reconnects when the target profile is active but its gateway socket is closed', async () => {
+    $activeGatewayProfile.set('vps-remote')
+    $connection.set(remoteConn())
+    $gateway.set({ connectionState: 'closed' })
+    getConnection.mockResolvedValue(remoteConn())
+
+    await ensureGatewayProfile('vps-remote')
+
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('vps-remote')
+  })
 })
 
 describe('profile-scoped cache invalidation', () => {
@@ -158,9 +186,56 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
 
     expect(() => prewarmProfileBackend('warm-failing')).not.toThrow()
   })
+
+  it('skips pre-warm when the pool is saturated (#91545 evict/respawn cascade)', () => {
+    // Every pool slot occupied: a speculative spawn would LRU-evict a warm
+    // backend — often the one the user is about to click. Default limit 3,
+    // 3 open secondaries → the next spawn would exceed the cap.
+    openSecondaryCount.mockReturnValue(3)
+
+    prewarmProfileBackend('warm-saturated')
+
+    expect(openGatewayForProfile).not.toHaveBeenCalled()
+  })
+
+  it('pre-warms while pool slots are free', () => {
+    openSecondaryCount.mockReturnValue(1)
+
+    prewarmProfileBackend('warm-slot-free')
+
+    expect(openGatewayForProfile).toHaveBeenCalledWith('warm-slot-free')
+  })
+
+  it('follows the live pool-limit atom, not a hard-coded cap', () => {
+    // User raises Warm Bot Backends to 8 in Settings: prewarming must keep
+    // working well past the old default of 3.
+    openSecondaryCount.mockReturnValue(5)
+    $poolLimits.set({ idleMs: 600_000, maxBackends: 8 })
+
+    prewarmProfileBackend('warm-raised-cap')
+
+    expect(openGatewayForProfile).toHaveBeenCalledWith('warm-raised-cap')
+
+    // And lowering the cap re-engages the guard at the new boundary.
+    $poolLimits.set({ idleMs: 600_000, maxBackends: 2 })
+
+    prewarmProfileBackend('warm-lowered-cap')
+
+    expect(openGatewayForProfile).not.toHaveBeenCalledWith('warm-lowered-cap')
+  })
 })
 
 describe('refreshProfiles shared rail list (#49289)', () => {
+  beforeEach(() => {
+    vi.mocked(getProfiles).mockReset()
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.clearAllTimers()
+    vi.useRealTimers()
+  })
+
   it('removes a deleted profile from the shared $profiles cache after Manage Profiles refreshes', async () => {
     $profiles.set([profile('default', true), profile('test1')])
     vi.mocked(getProfiles).mockResolvedValueOnce({ profiles: [profile('default', true)] })
@@ -170,12 +245,54 @@ describe('refreshProfiles shared rail list (#49289)', () => {
     expect($profiles.get().map(profile => profile.name)).toEqual(['default'])
   })
 
-  it('leaves the shared $profiles cache intact when the refresh fails', async () => {
+  it('recovers from transient failures and writes the returned profile list (#70679)', async () => {
+    // Global remote mode: the refresh fires while the remote HTTP proxy is still
+    // routing, so the first attempts fail and a later one succeeds. The retry
+    // backoff is 500ms then 1000ms (refreshProfiles retries twice on failure).
+    $profiles.set([])
+    vi.mocked(getProfiles)
+      .mockRejectedValueOnce(new Error('backend unavailable'))
+      .mockRejectedValueOnce(new Error('backend unavailable'))
+      .mockResolvedValueOnce({ profiles: [profile('default', true), profile('healthops')] })
+
+    const refresh = refreshProfiles()
+    await vi.advanceTimersByTimeAsync(500)
+    await vi.advanceTimersByTimeAsync(1000)
+    await expect(refresh).resolves.toHaveLength(2)
+
+    expect(vi.mocked(getProfiles)).toHaveBeenCalledTimes(3)
+    expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'healthops'])
+  })
+
+  it('shares one retry chain across concurrent callers (single-flight)', async () => {
+    // Gateway open fires both useBackgroundSync and the activeGatewayProfile
+    // effect at once; both callers must ride the same chain, not double it.
+    $profiles.set([])
+    vi.mocked(getProfiles)
+      .mockRejectedValueOnce(new Error('backend unavailable'))
+      .mockResolvedValueOnce({ profiles: [profile('default', true), profile('healthops')] })
+
+    const first = refreshProfiles()
+    const second = refreshProfiles()
+    await vi.advanceTimersByTimeAsync(500)
+    await expect(first).resolves.toHaveLength(2)
+    await expect(second).resolves.toHaveLength(2)
+
+    expect(vi.mocked(getProfiles)).toHaveBeenCalledTimes(2)
+    expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'healthops'])
+  })
+
+  it('leaves the shared $profiles cache intact when every retry fails', async () => {
     $profiles.set([profile('default', true), profile('test1')])
-    vi.mocked(getProfiles).mockRejectedValueOnce(new Error('backend unavailable'))
+    vi.mocked(getProfiles).mockRejectedValue(new Error('backend unavailable'))
 
-    await expect(refreshProfiles()).rejects.toThrow('backend unavailable')
+    const refresh = refreshProfiles()
+    const rejection = expect(refresh).rejects.toThrow('backend unavailable')
+    await vi.advanceTimersByTimeAsync(500)
+    await vi.advanceTimersByTimeAsync(1000)
+    await rejection
 
+    expect(vi.mocked(getProfiles)).toHaveBeenCalledTimes(3)
     expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'test1'])
   })
 })

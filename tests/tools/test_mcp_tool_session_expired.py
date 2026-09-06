@@ -17,6 +17,7 @@ import time
 from unittest.mock import MagicMock
 
 import pytest
+from tools import mcp_tool_loop as _mcp_loop
 
 
 # ---------------------------------------------------------------------------
@@ -26,7 +27,7 @@ import pytest
 
 def test_is_session_expired_detects_invalid_or_expired_session():
     """Reporter's exact wpcom-mcp error message (#13383)."""
-    from tools.mcp_tool import _is_session_expired_error
+    from tools.mcp_tool_errors import _is_session_expired_error
     exc = RuntimeError("Invalid params: Invalid or expired session")
     assert _is_session_expired_error(exc) is True
 
@@ -34,7 +35,7 @@ def test_is_session_expired_detects_invalid_or_expired_session():
 def test_is_session_expired_detects_expired_session_variant():
     """Generic ``session expired`` / ``expired session`` phrasings used
     by other SDK servers."""
-    from tools.mcp_tool import _is_session_expired_error
+    from tools.mcp_tool_errors import _is_session_expired_error
     assert _is_session_expired_error(RuntimeError("Session expired")) is True
     assert _is_session_expired_error(RuntimeError("expired session: abc")) is True
 
@@ -42,7 +43,7 @@ def test_is_session_expired_detects_expired_session_variant():
 def test_is_session_expired_detects_session_not_found():
     """Server-side GC produces ``session not found`` / ``unknown session``
     on some implementations."""
-    from tools.mcp_tool import _is_session_expired_error
+    from tools.mcp_tool_errors import _is_session_expired_error
     assert _is_session_expired_error(RuntimeError("session not found")) is True
     assert _is_session_expired_error(RuntimeError("Unknown session: abc123")) is True
 
@@ -50,10 +51,11 @@ def test_is_session_expired_detects_session_not_found():
 def test_is_session_expired_traversal_is_budget_bounded():
     """Pathologically long chains stop at the node budget without spinning."""
     import tools.mcp_tool as mcp_mod
-    from tools.mcp_tool import _is_session_expired_error
+    from tools import mcp_tool_errors as _mcp_errors
+    from tools.mcp_tool_errors import _is_session_expired_error
 
     exc: BaseException = RuntimeError("leaf")
-    for i in range(mcp_mod._EXC_TRAVERSAL_MAX_NODES * 2):
+    for i in range(_mcp_errors._EXC_TRAVERSAL_MAX_NODES * 2):
         wrapper = RuntimeError(f"layer {i}")
         wrapper.__cause__ = exc
         exc = wrapper
@@ -75,7 +77,7 @@ def _install_stub_server(name: str = "wpcom"):
     the event fires."""
     from tools import mcp_tool
 
-    mcp_tool._ensure_mcp_loop()
+    _mcp_loop._ensure_mcp_loop()
 
     server = MagicMock()
     server.name = name
@@ -141,10 +143,11 @@ def test_call_tool_handler_rebuilds_configured_server_transport(
     """The real server run loop selects and rebuilds its configured transport."""
     from anyio import ClosedResourceError
     from tools import mcp_tool
-    from tools.mcp_tool import MCPServerTask, _make_tool_handler
+    from tools.mcp_tool import MCPServerTask
+    from tools.mcp_tool_handlers import _make_tool_handler
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    mcp_tool._ensure_mcp_loop()
+    _mcp_loop._ensure_mcp_loop()
     transport_ready = threading.Event()
     routes = []
     configs = []
@@ -219,9 +222,10 @@ def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from tools import mcp_tool
-    from tools.mcp_tool import _make_tool_handler
+    from tools import mcp_tool_loop as _mcp_loop
+    from tools.mcp_tool_handlers import _make_tool_handler
 
-    mcp_tool._ensure_mcp_loop()
+    _mcp_loop._ensure_mcp_loop()
     server = MagicMock()
     server.name = "hindsight"
     ready_flag = threading.Event()
@@ -290,7 +294,7 @@ def test_session_expired_handler_returns_none_without_loop(monkeypatch):
     race), the handler must fall through cleanly instead of hanging
     or raising."""
     from tools import mcp_tool
-    from tools.mcp_tool import _handle_session_expired_and_retry
+    from tools.mcp_tool_handlers import _handle_session_expired_and_retry
 
     # Install a server stub but make the event loop unavailable.
     server = MagicMock()
@@ -320,7 +324,7 @@ def test_session_expired_handler_returns_none_without_loop(monkeypatch):
 def test_session_expired_handler_returns_none_without_server_record():
     """If the server has been torn down / isn't in _servers, fall
     through cleanly — nothing to reconnect to."""
-    from tools.mcp_tool import _handle_session_expired_and_retry
+    from tools.mcp_tool_handlers import _handle_session_expired_and_retry
     out = _handle_session_expired_and_retry(
         "does-not-exist",
         RuntimeError("Invalid or expired session"),
@@ -378,7 +382,8 @@ def test_non_tool_handlers_also_reconnect_on_session_expired(
 
     setattr(server.session, session_method, _sequence)
 
-    factory = getattr(mcp_tool, handler_factory)
+    from tools import mcp_tool_handlers as _mcp_handlers
+    factory = getattr(_mcp_handlers, handler_factory)
     # list_resources / list_prompts take (server_name, timeout).
     # read_resource / get_prompt take the same signature.
     try:

@@ -724,8 +724,19 @@ export interface CodingWorkspaceBinding {
   mode?: 'worktree' | 'existing' | 'current' | 'folder'
 }
 
+/** The linked git worktree the agent's terminal activity settled in, when that
+ *  tree is NOT the session's own workspace (e.g. the agent ran `git worktree add`
+ *  mid-chat and worked there via `workdir=`). Display-only: never a re-home. */
+export interface AgentWorktree {
+  cwd: string
+  branch: string | null
+  repoRoot: string
+  projectName: string
+}
+
 export interface SessionRuntimeInfo {
   coding_workspace?: CodingWorkspaceBinding | null
+  agent_worktree?: AgentWorktree | null
   approval_mode?: 'manual' | 'off' | 'smart'
   branch?: string
   config_warning?: string

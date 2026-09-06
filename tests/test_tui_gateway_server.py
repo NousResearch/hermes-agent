@@ -3866,7 +3866,7 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
 
     assert resp is not None
     assert resp["result"]["info"] == {
-        "model": "gpt-5.4", "provider": "openai-codex", "coding_workspace": None,
+        "model": "gpt-5.4", "provider": "openai-codex", "coding_workspace": None, "agent_worktree": None,
     }
     assert captured["model_override"] == {
         "model": "gpt-5.4",

@@ -184,6 +184,10 @@ def _emit_settled_session_info(sid: str, session: dict, agent) -> None:
         _reconcile_session_cwd_from_terminal(session)
     except Exception:
         logger.debug("failed to reconcile settled session cwd", exc_info=True)
+    try:
+        _revalidate_agent_worktree(session)
+    except Exception:
+        logger.debug("failed to revalidate agent worktree", exc_info=True)
     _emit("session.info", sid, _session_info(agent, session))
 
 

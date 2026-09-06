@@ -1577,7 +1577,7 @@ export async function resolveSessionOwner(storedSessionId: null | string): Promi
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
-    'branch' | 'codingWorkspace' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
+    'agentWorktree' | 'branch' | 'codingWorkspace' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
   >
 >
 
@@ -1670,6 +1670,10 @@ export function applyRuntimeInfo(
 
   if (info.coding_workspace !== undefined) {
     sessionState.codingWorkspace = info.coding_workspace
+  }
+
+  if (info.agent_worktree !== undefined) {
+    sessionState.agentWorktree = info.agent_worktree
   }
 
   if (typeof info.model === 'string') {

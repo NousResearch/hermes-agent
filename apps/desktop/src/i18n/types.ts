@@ -94,6 +94,9 @@ export interface Translations {
     newWorktree: string
     existingWorktree: string
     currentCheckout: string
+    agentWorktree: string
+    agentWorktreeNote: string
+    newChatHere: string
     projectFolder: string
     searchProjects: string
     noProjects: string

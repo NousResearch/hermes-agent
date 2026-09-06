@@ -493,7 +493,9 @@ class _Resume:
             self.target, cols=self.cols, cwd=cwd, history=history, lease=None, source=source,
             close_on_disconnect=_flag(self.params, "close_on_disconnect"),
             profile_home=self.profile_home, explicit_cwd=bool(self.profile_resume_cwd), **extra)
-        record["coding_workspace"] = _parse_model_config((self.found or {}).get("model_config"), quiet=True).get("coding_workspace")
+        stored_config = _parse_model_config((self.found or {}).get("model_config"), quiet=True)
+        record["coding_workspace"] = stored_config.get("coding_workspace")
+        _restore_agent_worktree(record, stored_config)
         return record
 
     def claim(self, sid: str, record: dict) -> dict | None:
@@ -684,7 +686,8 @@ def _resume_response(
         message_count = len(count_source) if ctx.omit_messages else len(messages)
     payload = {"session_id": sid, "resumed": ctx.target, "message_count": message_count, "messages": messages,
                **({"messages_omitted": ctx.omit_messages} if hydrating is None else {"hydrating": hydrating}),
-               "info": {**info, "coding_workspace": record.get("coding_workspace")},
+               "info": {**info, "coding_workspace": record.get("coding_workspace"),
+                        "agent_worktree": record.get("agent_worktree")},
                "inflight": None, "running": running, "session_key": ctx.target,
                "started_at": record["created_at"] if started_at is None else started_at, "status": status}
     if auto_continue is not None:

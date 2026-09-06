@@ -2,7 +2,7 @@ import type { ThreadMessageLike } from '@assistant-ui/react'
 import { type BillingBlock } from '@hermes/shared'
 
 import type { ErrorSurface } from '@/lib/error-surface'
-import type { CodingWorkspaceBinding, MessageReaction, SessionMessage, UsageStats } from '@/types/hermes'
+import type { AgentWorktree, CodingWorkspaceBinding, MessageReaction, SessionMessage, UsageStats } from '@/types/hermes'
 
 export interface TimelinePartMetadata {
   /** Unix seconds when this visible activity segment began. Fractional values
@@ -159,6 +159,7 @@ export type GatewayEventPayload = {
   // opened, so the sidebar working indicator updates without opening the chat.
   stored_session_id?: string
   coding_workspace?: CodingWorkspaceBinding | null
+  agent_worktree?: AgentWorktree | null
   // moa.reference / moa.aggregating (Mixture of Agents per-model relay)
   label?: string
   index?: number

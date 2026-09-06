@@ -24,6 +24,12 @@ Click the summary for a single compact checkout path and the workspace actions. 
 
 Native folder reveal requires a verified local descriptor for that exact session owner; it does not borrow the foreground pane's locality. Git status keeps its stricter foreground-route guard. **New chat in another workspace** starts a fresh draft with the coding controls available; it does not retarget the original chat or provision a checkout. Workspace browsing continues to leave the sidebar's grouping, ordering, and filters alone.
 
+## Agent-made worktrees
+
+A chat that was not started in a project (the profile's default directory, often not a Git repository) shows nothing above the input. When the agent then creates a linked worktree itself (`git worktree add`) and runs its commands there — typically through the terminal tool's per-command `workdir` — the row shows **project · Agent worktree · branch** with a yellow branch marker, from the first command that runs there. The session's own working directory does not change: this is a badge, not a retarget, and a per-command `workdir` stays transient for later commands. Click the summary for the path, **Copy path**, **Open folder** (local owners) and **New chat in this worktree**, which starts a fresh chat anchored there with the full coding rail.
+
+The badge follows the agent between linked worktrees of the same repository, ignores visits to the main checkout or unrelated directories, is persisted with the conversation, and is cleared at turn end when the tree was removed or the chat's own workspace became that tree. A workspace chosen through the Project picker always takes precedence.
+
 ## Binding and failure behavior
 
 The first-send transaction captures the draft, connection and profile before asynchronous work. It prepares a checkout, creates or recovers an idempotent session, and verifies the real execution directory before dispatching the prompt. A lost response must not create another checkout or session. Preparation/verification failures retain the draft and references.
@@ -34,6 +40,6 @@ Research and verification outputs have a managed session artifacts location sepa
 
 ## Regression coverage
 
-Backend coverage lives in `tests/tui_gateway/test_coding_workspaces.py`, `test_coding_workspace_restart.py`, and `test_coding_workspace_worker.py`. Frontend coverage spans the coding-workspaces store, composer controls/selection/controller, scoped setting, and session-create/submit hooks.
+Backend coverage lives in `tests/tui_gateway/test_coding_workspaces.py`, `test_coding_workspace_restart.py`, `test_coding_workspace_worker.py`, and `test_agent_worktree.py`. Frontend coverage spans the coding-workspaces store, composer controls/selection/controller, scoped setting, session-create/submit hooks, and the agent-worktree row.
 
 For native development verification, use a separate HOME, HERMES_HOME, Electron user-data directory and CDP port, with `HERMES_DESKTOP_HERMES_ROOT` pinned to the feature checkout. Test real temporary Git repositories and read the resulting workspace/session state back. Restart both Vite and Electron after the source settles; importing unversioned store modules into an HMR-versioned renderer can itself create duplicate module state and invalidate routing observations.

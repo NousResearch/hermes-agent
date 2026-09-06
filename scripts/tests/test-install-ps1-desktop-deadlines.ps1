@@ -80,6 +80,15 @@ try {
     function New-DesktopShortcuts { }
     function icacls { $global:LASTEXITCODE = 0 }
     function Clear-ElectronBuildCache { @() }
+    # Desktop packaging recovery is owned by test-install-ps1-pack-recovery.ps1
+    # (through the real Invoke-DesktopPack + runner). This fixture stays scoped
+    # to the deadline/ownership boundary, so it calls the timeout helper
+    # directly exactly as the pre-recovery wrapper did.
+    function Invoke-DesktopPack {
+        param([string]$NpmPath, [string]$DesktopDir)
+        Invoke-ProcessWithWallClockTimeout -FilePath $NpmPath -ArgumentList @('run', 'pack') `
+            -TimeoutSec $script:InstallerCommandTimeouts.Desktop -WorkingDirectory $DesktopDir -Label 'Desktop packaging'
+    }
     # Native npm.cmd adds a second cold script host; allow it to start before
     # the intentional 12-second stall, including under concurrent CI load.
     $script:InstallerCommandTimeouts = @{ Desktop = 8; Electron = 8 }

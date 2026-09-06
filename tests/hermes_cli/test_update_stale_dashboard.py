@@ -111,6 +111,9 @@ def test_update_cleanup_spares_backend_owned_by_valid_ssh_lock(tmp_path, monkeyp
         return []
 
     with patch(
+        "hermes_cli.main_dashboard._restart_managed_dashboard_service",
+        return_value=False,
+    ), patch(
         "hermes_cli.main_dashboard._find_stale_dashboard_pids",
         side_effect=assert_owned_pid_is_excluded,
     ):

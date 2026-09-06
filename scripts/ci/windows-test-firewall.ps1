@@ -102,6 +102,11 @@ if ($Mode -eq "Run") {
     $safe["HERMES_TEST_WINDOWS_STATE_PATH"] = $statePath
     $safe["HERMES_TEST_REAL_HOME"] = $state.RealHome
     $safe["HERMES_TEST_REPO_ROOT"] = $repo
+    $safe["HERMES_TEST_SANDBOX_ROOT"] = $state.TestRoot
+    $safe["GIT_CONFIG_NOSYSTEM"] = "1"
+    $safe["GIT_CONFIG_GLOBAL"] = "NUL"
+    $safe["GIT_TERMINAL_PROMPT"] = "0"
+    $safe["GCM_INTERACTIVE"] = "Never"
     $safe["PYTHONPATH"] = Join-Path $repo "scripts\hermetic_site"
     $safe["PYTHONDONTWRITEBYTECODE"] = "1"
     $safe["PYTHONHASHSEED"] = "0"

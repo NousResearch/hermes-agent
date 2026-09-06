@@ -39,6 +39,7 @@ def test_runner_uses_synthetic_home_and_os_sandbox():
         ["docker", "info"],
         ["netsh", "advfirewall", "set", "allprofiles", "state", "off"],
         ["git", "ls-remote", "https://example.invalid/repo.git"],
+        ["env", "git", "fetch", "https://example.invalid/repo.git"],
     ],
 )
 def test_forbidden_subprocess_classes_fail_before_exec(command):
@@ -51,6 +52,135 @@ def test_shell_wrapped_forbidden_operation_is_blocked():
         subprocess.run(
             ["bash", "-c", "launchctl kickstart -k gui/501/ai.hermes.gateway"],
             check=False,
+        )
+    with pytest.raises(RuntimeError, match="git remote network operation"):
+        subprocess.run(
+            ["bash", "-c", "echo preflight; git fetch https://example.invalid/live.git"],
+            check=False,
+        )
+    for command in (
+        ["env", "bash", "-c", "git fetch https://example.invalid/live.git"],
+        ["bash", "--norc", "-c", "git fetch https://example.invalid/live.git"],
+        ["bash", "-c", '"$@"', "_", "launchctl", "kickstart", "ai.hermes.gateway"],
+        ["env", "-S", "git fetch https://example.invalid/live.git"],
+        ["xargs", "git", "fetch"],
+    ):
+        with pytest.raises(RuntimeError, match="guard"):
+            subprocess.run(command, input="https://example.invalid/live.git\n", text=True)
+
+
+def test_git_local_fixture_operations_are_allowed_but_remote_alias_is_blocked(
+    tmp_path,
+):
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+    origin = tmp_path / "origin"
+    clone = tmp_path / "clone"
+    origin.mkdir()
+
+    def git(cwd, *args):
+        return subprocess.run(
+            ["git", *args], cwd=cwd, capture_output=True, text=True, check=True
+        )
+
+    git(origin, "init", "-q")
+    git(origin, "config", "user.email", "test@example.invalid")
+    git(origin, "config", "user.name", "Hermetic Test")
+    (origin / "tracked.txt").write_text("one\n")
+    git(origin, "add", "tracked.txt")
+    git(origin, "commit", "-qm", "initial")
+    git(tmp_path, "clone", "-q", str(origin), str(clone))
+    (clone / "tracked.txt").write_text("two\n")
+    git(clone, "stash", "push", "-m", "local-only")
+    git(clone, "fetch", "-q", "origin")
+
+    env = os.environ.copy()
+    env["GIT_DIR"] = str(clone / ".git")
+    with pytest.raises(RuntimeError, match="git remote network operation"):
+        subprocess.run(["git", "fetch", "origin"], cwd=clone, env=env, check=False)
+    unsafe_env = os.environ.copy()
+    unsafe_env.pop("GIT_CONFIG_NOSYSTEM")
+    unsafe_env.pop("GIT_CONFIG_GLOBAL")
+    with pytest.raises(RuntimeError, match="git remote network operation"):
+        subprocess.run(
+            ["git", "fetch", str(origin)], cwd=clone, env=unsafe_env, check=False
+        )
+    with pytest.raises(RuntimeError, match="guard"):
+        subprocess.run(
+            [
+                "env",
+                "-u",
+                "GIT_CONFIG_NOSYSTEM",
+                "-u",
+                "GIT_CONFIG_GLOBAL",
+                "git",
+                "fetch",
+                str(origin),
+            ],
+            cwd=clone,
+            check=False,
+        )
+    with pytest.raises(RuntimeError, match="git remote network operation"):
+        subprocess.run(
+            ["git", "fetch", "--upload-pack=/bin/false", str(origin)],
+            cwd=clone,
+            check=False,
+        )
+
+    git(clone, "remote", "add", "live", "https://example.invalid/live.git")
+    with pytest.raises(RuntimeError, match="git remote network operation"):
+        subprocess.run(["git", "fetch", "live"], cwd=clone, check=False)
+    with pytest.raises(RuntimeError, match="git remote network operation"):
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "remote.origin.url=https://example.invalid/override.git",
+                "fetch",
+                "origin",
+            ],
+            cwd=clone,
+            check=False,
+        )
+    git(
+        clone,
+        "config",
+        "remote.origin.pushurl",
+        "https://example.invalid/push.git",
+    )
+    with pytest.raises(RuntimeError, match="git remote network operation"):
+        subprocess.run(["git", "push", "origin"], cwd=clone, check=False)
+    with pytest.raises(RuntimeError, match="git remote network operation"):
+        subprocess.run(
+            ["git", "remote", "add", "-f", "eager", "https://example.invalid/eager.git"],
+            cwd=clone,
+            check=False,
+        )
+    with pytest.raises(RuntimeError, match="git remote network operation"):
+        subprocess.run(
+            ["git", "remote", "set-head", "live", "-a"], cwd=clone, check=False
+        )
+    git(clone, "config", "url.https://example.invalid/rewrite/.insteadOf", str(origin))
+    with pytest.raises(RuntimeError, match="git remote network operation"):
+        subprocess.run(["git", "fetch", "origin"], cwd=clone, check=False)
+    with pytest.raises(RuntimeError, match="git remote network operation"):
+        subprocess.run(["git", "fetch", str(origin)], cwd=clone, check=False)
+
+
+@pytest.mark.windows_only
+def test_windows_git_drive_remote_stays_inside_restricted_test_root(tmp_path):
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+    sandbox = Path(os.environ["HERMES_TEST_SANDBOX_ROOT"]).resolve()
+    assert tmp_path.resolve().is_relative_to(sandbox)
+    origin = tmp_path / "windows-origin"
+    clone = tmp_path / "windows-clone"
+    origin.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=origin, check=True)
+    subprocess.run(["git", "clone", "-q", str(origin), str(clone)], check=True)
+    with pytest.raises(RuntimeError, match="git remote network operation"):
+        subprocess.run(
+            ["git", "ls-remote", r"\\live-host\hermes"], check=False
         )
 
 

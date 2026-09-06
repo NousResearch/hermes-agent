@@ -870,6 +870,10 @@ def _run_one_file_once(
     env["HERMES_TEST_GUARD_ACTIVE"] = "1"
     env["HERMES_TEST_REAL_HOME"] = str(real_home)
     env["HERMES_TEST_REPO_ROOT"] = str(repo_root.resolve())
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GCM_INTERACTIVE"] = "Never"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env.pop("HERMES_TEST_GUARD_ROOT_PID", None)
     host_canary_path: Path | None = None

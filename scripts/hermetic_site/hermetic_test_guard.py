@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+from collections.abc import Mapping
 import io
 import ipaddress
 import os
@@ -25,6 +26,7 @@ import sqlite3
 import subprocess
 import sys
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 
 class HermeticTestViolation(RuntimeError):
@@ -441,12 +443,486 @@ def _process_command_targets_test_tree(tokens: list[str], direct: str) -> bool:
     return all(pid > 0 and _is_test_process(pid) for pid in pids)
 
 
-def _check_command(command: object, operation: str) -> None:
+def _git_subcommand(tokens: list[str]) -> tuple[str | None, list[str]]:
+    """Return Git's actual subcommand and its remaining arguments.
+
+    Git accepts global options before the subcommand.  Looking for words such
+    as ``push`` anywhere in argv incorrectly classifies the entirely local
+    ``git stash push`` operation as a network push.
+    """
+    options_with_values = {
+        "-C",
+        "-c",
+        "--config-env",
+        "--exec-path",
+        "--git-dir",
+        "--namespace",
+        "--super-prefix",
+        "--work-tree",
+    }
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        option = token.split("=", 1)[0]
+        if option in options_with_values:
+            index += 1 if "=" in token else 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return token.lower(), tokens[index + 1 :]
+    return None, []
+
+
+def _first_git_positional(args: list[str], *, subcommand: str) -> str | None:
+    """Find the repository operand for a Git network-capable subcommand."""
+    value_options = {
+        "clone": {
+            "-b", "--branch", "-j", "--jobs", "-o", "--origin",
+            "-u", "--upload-pack", "--depth", "--filter", "--reference",
+            "--reference-if-able", "--separate-git-dir", "--server-option",
+            "--shallow-exclude", "--shallow-since",
+        },
+        "fetch": {
+            "-j", "--jobs", "--depth", "--deepen", "--filter", "--negotiation-tip",
+            "--server-option", "--shallow-exclude", "--shallow-since", "--upload-pack",
+        },
+        "pull": {
+            "-j", "--jobs", "--depth", "--deepen", "--filter", "--server-option",
+            "--shallow-exclude", "--shallow-since", "--upload-pack",
+        },
+        "push": {
+            "--exec", "--push-option", "--receive-pack", "--repo",
+        },
+        "ls-remote": {"--server-option", "--sort", "--upload-pack"},
+    }.get(subcommand, set())
+    index = 0
+    while index < len(args):
+        token = args[index]
+        option = token.split("=", 1)[0]
+        if option in value_options:
+            index += 1 if "=" in token else 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return token
+    return None
+
+
+def _git_working_directory(tokens: list[str], cwd: object | None) -> Path:
+    base = _resolved(cwd) if cwd is not None else Path.cwd().resolve(strict=False)
+    assert base is not None
+    for index, token in enumerate(tokens[1:-1], start=1):
+        if token == "-C":
+            candidate = Path(tokens[index + 1]).expanduser()
+            base = (
+                candidate.resolve(strict=False)
+                if candidate.is_absolute()
+                else (base / candidate).resolve(strict=False)
+            )
+        elif token.startswith("-C") and len(token) > 2:
+            candidate = Path(token[2:]).expanduser()
+            base = (
+                candidate.resolve(strict=False)
+                if candidate.is_absolute()
+                else (base / candidate).resolve(strict=False)
+            )
+    return base
+
+
+def _git_repository_config_paths(cwd: Path) -> list[Path]:
+    current = cwd
+    while True:
+        marker = current / ".git"
+        if marker.is_dir():
+            return [marker / "config", marker / "config.worktree"]
+        if marker.is_file():
+            try:
+                declaration = marker.read_text(encoding="utf-8").strip()
+            except OSError:
+                return []
+            if not declaration.lower().startswith("gitdir:"):
+                return []
+            gitdir = Path(declaration.split(":", 1)[1].strip()).expanduser()
+            if not gitdir.is_absolute():
+                gitdir = (current / gitdir).resolve(strict=False)
+            common_gitdir = gitdir
+            common = gitdir / "commondir"
+            if common.is_file():
+                try:
+                    common_dir = Path(common.read_text(encoding="utf-8").strip())
+                except OSError:
+                    return []
+                common_gitdir = (
+                    common_dir.resolve(strict=False)
+                    if common_dir.is_absolute()
+                    else (gitdir / common_dir).resolve(strict=False)
+                )
+            return [common_gitdir / "config", gitdir / "config.worktree"]
+        if current.parent == current:
+            return []
+        current = current.parent
+
+
+def _git_repository_config(cwd: Path) -> list[str] | None:
+    lines: list[str] = []
+    for config_path in _git_repository_config_paths(cwd):
+        if not config_path.exists():
+            continue
+        try:
+            lines.extend(config_path.read_text(encoding="utf-8").splitlines())
+        except OSError:
+            return None
+    return lines
+
+
+def _configured_git_remote(
+    lines: list[str], name: str, *, for_push: bool = False
+) -> list[str] | None:
+    """Resolve a simple remote URL from already-audited repository config."""
+    wanted = f'remote "{name}"'.lower()
+    in_remote = False
+    urls: list[str] = []
+    push_urls: list[str] = []
+    for raw in lines:
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip().lower()
+            if section == "include" or section.startswith(
+                ("includeif ", "url ", "http ", "credential ")
+            ):
+                return None
+            in_remote = section == wanted
+            continue
+        if "=" in line:
+            key, value = line.split("=", 1)
+            normalized_key = key.strip().lower()
+            if normalized_key in {
+                "gitproxy",
+                "insteadof",
+                "proxy",
+                "pushinsteadof",
+                "receivepack",
+                "sshcommand",
+                "uploadpack",
+                "vcs",
+            }:
+                return None
+            if not in_remote:
+                continue
+            if normalized_key == "url":
+                urls.append(value.strip())
+            elif normalized_key == "pushurl":
+                push_urls.append(value.strip())
+    return push_urls if for_push and push_urls else urls
+
+
+def _local_git_remote(remote: str, cwd: Path) -> bool:
+    """Permit only filesystem remotes contained by the disposable sandbox."""
+    windows_drive = (
+        len(remote) >= 3
+        and remote[0].isalpha()
+        and remote[1] == ":"
+        and remote[2] in {"/", "\\"}
+    )
+    if remote.startswith(("\\\\", "//")):
+        return False
+    parsed = urlparse(remote) if not windows_drive else None
+    if parsed is not None and parsed.scheme:
+        if parsed.scheme != "file" or parsed.netloc not in {"", "localhost"}:
+            return False
+        raw_path = unquote(parsed.path)
+    else:
+        # Git's scp-like syntax is a network destination, not a local path.
+        if ":" in remote and not remote.startswith(("./", "../", "/")):
+            return False
+        raw_path = remote
+    candidate = Path(raw_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = cwd / candidate
+    candidate = candidate.resolve(strict=False)
+    sandbox_raw = os.environ.get("HERMES_TEST_SANDBOX_ROOT", "").strip()
+    sandbox = _resolved(sandbox_raw) if sandbox_raw else None
+    return sandbox is not None and candidate.exists() and _under(candidate, sandbox)
+
+
+def _git_operand_is_literal(remote: str) -> bool:
+    return (
+        remote.startswith((".", "/", "\\", "~"))
+        or "/" in remote
+        or "\\" in remote
+        or ":" in remote
+    )
+
+
+_LOCAL_GIT_SUBCOMMANDS = {
+    "add", "am", "apply", "bisect", "blame", "branch", "bundle",
+    "cat-file", "checkout", "cherry", "cherry-pick", "clean", "commit",
+    "config", "describe", "diff", "diff-tree", "for-each-ref",
+    "format-patch", "fsck", "gc", "grep", "hash-object", "init", "log",
+    "ls-files", "ls-tree", "merge", "merge-base", "mv", "name-rev",
+    "notes", "prune", "read-tree", "reflog", "reset", "restore",
+    "rev-list", "rev-parse", "rm", "show", "show-ref", "sparse-checkout",
+    "stash", "status", "switch", "symbolic-ref", "tag", "update-index",
+    "update-ref", "verify-commit", "verify-tag", "worktree", "write-tree",
+}
+
+
+def _git_remote_overrides_present(
+    tokens: list[str], child_env: object | None
+) -> bool:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "-c" and index + 1 < len(tokens):
+            value = tokens[index + 1]
+            index += 2
+            key = value.split("=", 1)[0].strip().lower()
+            if key.startswith(
+                ("alias.", "credential.", "http.", "remote.", "url.")
+            ) or key in {"core.gitproxy", "core.sshcommand"}:
+                return True
+            continue
+        if token.startswith("-c") and len(token) > 2:
+            key = token[2:].split("=", 1)[0].strip().lower()
+            if key.startswith(
+                ("alias.", "credential.", "http.", "remote.", "url.")
+            ) or key in {"core.gitproxy", "core.sshcommand"}:
+                return True
+        if token == "--config-env" or token.startswith("--config-env="):
+            return True
+        index += 1
+    effective_env = child_env if isinstance(child_env, Mapping) else os.environ
+    normalized_env = {str(key).upper(): value for key, value in effective_env.items()}
+    if normalized_env.get("GIT_CONFIG_NOSYSTEM") != "1" or str(
+        normalized_env.get("GIT_CONFIG_GLOBAL", "")
+    ).lower() != os.devnull.lower():
+        return True
+    repository_selectors = {
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_DIR",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_WORK_TREE",
+    }
+    if any(name in normalized_env for name in repository_selectors):
+        return True
+    for name, value in normalized_env.items():
+        if not name.startswith("GIT_CONFIG_"):
+            continue
+        if name == "GIT_CONFIG_NOSYSTEM" and str(value) == "1":
+            continue
+        if name == "GIT_CONFIG_GLOBAL" and str(value).lower() == os.devnull.lower():
+            continue
+        return True
+    return False
+
+
+def _git_remote_is_test_local(
+    tokens: list[str], cwd: object | None, child_env: object | None
+) -> bool:
+    subcommand, args = _git_subcommand(tokens)
+    if subcommand in _LOCAL_GIT_SUBCOMMANDS:
+        return True
+    if subcommand == "remote":
+        action = next((arg for arg in args if not arg.startswith("-")), None)
+        if action == "add" and any(arg in {"-f", "--fetch"} for arg in args):
+            return False
+        if action == "set-head" and any(arg in {"-a", "--auto"} for arg in args):
+            return False
+        return action in {
+            None,
+            "add",
+            "get-url",
+            "remove",
+            "rename",
+            "set-head",
+            "set-url",
+        }
+    if subcommand == "archive":
+        return not any(arg == "--remote" or arg.startswith("--remote=") for arg in args)
+    if subcommand not in {"clone", "fetch", "pull", "push", "ls-remote"}:
+        # Unknown subcommands may be aliases that launch arbitrary helpers.
+        return False
+    # Config and repository-path overrides can redirect an apparently local
+    # remote after this guard has resolved it. Fail closed instead of trying
+    # to duplicate Git's full configuration precedence language.
+    if _git_remote_overrides_present(tokens, child_env) or any(
+        token == "--git-dir" or token.startswith("--git-dir=")
+        for token in tokens[1:]
+    ):
+        return False
+    if subcommand == "fetch" and any(
+        token in {"--all", "--multiple"} for token in args
+    ):
+        return False
+    if subcommand == "push" and any(
+        token == "--repo" or token.startswith("--repo=") for token in args
+    ):
+        return False
+    transport_helper_options = {
+        "-u",
+        "--exec",
+        "--receive-pack",
+        "--upload-pack",
+    }
+    if any(
+        token.split("=", 1)[0] in transport_helper_options for token in args
+    ):
+        return False
+    working_directory = _git_working_directory(tokens, cwd)
+    config_lines = _git_repository_config(working_directory)
+    if config_lines is None:
+        return False
+    if _configured_git_remote(config_lines, "__hermetic_audit__") is None:
+        return False
+    operand = _first_git_positional(args, subcommand=subcommand)
+    if subcommand in {"fetch", "pull", "push"}:
+        operand = operand or "origin"
+        if _git_operand_is_literal(operand):
+            return _local_git_remote(operand, working_directory)
+        configured = _configured_git_remote(
+            config_lines, operand, for_push=subcommand == "push"
+        )
+        if configured:
+            return all(
+                _local_git_remote(remote, working_directory)
+                for remote in configured
+            )
+        # A bare unresolved name could be supplied by an includeIf/global
+        # config the intentionally small parser did not load.
+        return False
+    return operand is not None and _local_git_remote(operand, working_directory)
+
+
+def _shell_payload_tokens(payload: str) -> list[str]:
+    try:
+        lexer = shlex.shlex(payload, posix=True, punctuation_chars=";&|()")
+        lexer.whitespace_split = True
+        return list(lexer)
+    except ValueError:
+        return payload.split()
+
+
+def _check_wrapped_commands(
+    tokens: list[str],
+    *,
+    operation: str,
+    cwd: object | None,
+    child_env: object | None,
+) -> None:
+    direct = _basename(tokens[0])
+    if direct == "env":
+        inherited = dict(child_env if isinstance(child_env, Mapping) else os.environ)
+        index = 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token in {"-i", "--ignore-environment"}:
+                inherited.clear()
+                index += 1
+                continue
+            if token in {"-S", "--split-string"} or token.startswith(
+                "--split-string="
+            ):
+                raise _violation(f"{operation} env split-string wrapper", tokens)
+            if token in {"-u", "--unset"}:
+                if index + 1 < len(tokens):
+                    unwanted = tokens[index + 1].upper()
+                    inherited = {
+                        key: value
+                        for key, value in inherited.items()
+                        if str(key).upper() != unwanted
+                    }
+                index += 2
+                continue
+            if token.startswith("--unset="):
+                unwanted = token.split("=", 1)[1].upper()
+                inherited = {
+                    key: value
+                    for key, value in inherited.items()
+                    if str(key).upper() != unwanted
+                }
+                index += 1
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            if "=" in token and not token.startswith("="):
+                key, value = token.split("=", 1)
+                inherited[key] = value
+                index += 1
+                continue
+            break
+        if index < len(tokens):
+            _check_command(
+                tokens[index:],
+                operation,
+                cwd=cwd,
+                child_env=inherited,
+            )
+        return
+
+    inspected = tokens
+    if direct in {"sh", "bash", "zsh", "dash"}:
+        payload: str | None = None
+        for index, token in enumerate(tokens[1:-1], start=1):
+            if token == "-c" or (
+                token.startswith("-")
+                and not token.startswith("--")
+                and "c" in token[1:]
+            ):
+                payload = tokens[index + 1]
+                break
+        if payload is None:
+            return
+        if any(marker in payload for marker in ("$", "`", "<(" , ">(")):
+            raise _violation(f"{operation} dynamic shell wrapper", tokens)
+        inspected = _shell_payload_tokens(payload)
+
+    bases = [_basename(token) for token in inspected]
+    forbidden = _SERVICE_COMMANDS | _CREDENTIAL_COMMANDS | _NETWORK_COMMANDS
+    match = next((base for base in bases if base in forbidden), None)
+    if match is not None:
+        raise _violation(f"{operation} wrapped forbidden executable", tokens)
+    # Shell/process-wrapper indirection obscures process identity and PID
+    # parsing. Direct kill/taskkill remains permitted only for the test tree.
+    if any(base in _PROCESS_COMMANDS for base in bases):
+        raise _violation(f"{operation} wrapped process control", tokens)
+    for index, base in enumerate(bases):
+        if direct == "xargs" and base in _WRAPPERS | {"git"}:
+            raise _violation(f"{operation} data-driven wrapped command", tokens)
+        if base == "git" or (base in _WRAPPERS and index > 0):
+            _check_command(
+                inspected[index:],
+                operation,
+                cwd=cwd,
+                child_env=child_env,
+            )
+            return
+
+
+def _check_command(
+    command: object,
+    operation: str,
+    *,
+    cwd: object | None = None,
+    child_env: object | None = None,
+) -> None:
     tokens = _tokens(command)
     if not tokens:
         return
     bases = [_basename(token) for token in tokens]
     direct = bases[0]
+    if direct in _WRAPPERS:
+        _check_wrapped_commands(
+            tokens,
+            operation=operation,
+            cwd=cwd,
+            child_env=child_env,
+        )
     if direct == "docker":
         shim_raw = os.environ.get("HERMES_TEST_DOCKER_SHIM", "").strip()
         docker_host = os.environ.get("DOCKER_HOST", "")
@@ -508,9 +984,7 @@ def _check_command(command: object, operation: str) -> None:
         )
     ):
         raise _violation(f"{operation} PowerShell/cmd live operation", command)
-    if direct == "git" and any(
-        verb in tokens[1:] for verb in ("clone", "fetch", "pull", "push", "ls-remote")
-    ):
+    if direct == "git" and not _git_remote_is_test_local(tokens, cwd, child_env):
         raise _violation(f"{operation} git remote network operation", command)
     if direct in {"pip", "pip3"} and any(
         verb in tokens[1:] for verb in ("install", "download", "wheel")
@@ -571,7 +1045,12 @@ def _install_process_guards() -> None:
 
     class GuardedPopen(real_popen):  # type: ignore[misc, valid-type]
         def __init__(self, args, *pargs, **kwargs):
-            _check_command(args, "subprocess.Popen")
+            _check_command(
+                args,
+                "subprocess.Popen",
+                cwd=kwargs.get("cwd"),
+                child_env=kwargs.get("env"),
+            )
             super().__init__(args, *pargs, **kwargs)
 
     GuardedPopen.__name__ = "Popen"
@@ -589,7 +1068,12 @@ def _install_process_guards() -> None:
         real = getattr(subprocess, name)
 
         def guarded(command, *args, __real=real, __name=name, **kwargs):
-            _check_command(command, f"subprocess.{__name}")
+            _check_command(
+                command,
+                f"subprocess.{__name}",
+                cwd=kwargs.get("cwd"),
+                child_env=kwargs.get("env"),
+            )
             return __real(command, *args, **kwargs)
 
         setattr(subprocess, name, guarded)
@@ -625,11 +1109,21 @@ def _install_process_guards() -> None:
     real_async_shell = asyncio.create_subprocess_shell
 
     async def guarded_async_exec(program, *args, **kwargs):
-        _check_command([program, *args], "asyncio.create_subprocess_exec")
+        _check_command(
+            [program, *args],
+            "asyncio.create_subprocess_exec",
+            cwd=kwargs.get("cwd"),
+            child_env=kwargs.get("env"),
+        )
         return await real_async_exec(program, *args, **kwargs)
 
     async def guarded_async_shell(command, *args, **kwargs):
-        _check_command(command, "asyncio.create_subprocess_shell")
+        _check_command(
+            command,
+            "asyncio.create_subprocess_shell",
+            cwd=kwargs.get("cwd"),
+            child_env=kwargs.get("env"),
+        )
         return await real_async_shell(command, *args, **kwargs)
 
     asyncio.create_subprocess_exec = guarded_async_exec

@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Query
 from hermes_cli.config import get_config_path, read_raw_config
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_profiles import (
-    _approval_mode_of, _aux_task_summary, _aux_usage_rows, _broadcast_gateway_session_info, _is_other_profile, _merge_aux_into_by_model,
+    _approval_mode_of, _aux_task_summary, _aux_usage_rows, _broadcast_gateway_session_info, _is_other_profile,
 )
 from hermes_cli.web_models import RawConfigUpdate
 
@@ -94,23 +94,27 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
             GROUP BY day ORDER BY day
         """, cutoff)
 
-        by_model = _rows(db, """
-            SELECT model,
-                   SUM(input_tokens) as input_tokens,
-                   SUM(output_tokens) as output_tokens,
-                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
-                   COUNT(*) as sessions,
-                   SUM(COALESCE(api_call_count, 0)) as api_calls
-            FROM sessions WHERE started_at > ? AND model IS NOT NULL
-            GROUP BY model ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
-        """, cutoff)
+        # Per-call attribution from session_model_usage: a session that
+        # switched models via /model splits across every model it actually
+        # used, and model names come back already normalized (provider prefix
+        # stripped). The old `GROUP BY sessions.model` misattributed a
+        # multi-model session's tokens to its *current* model only (#103063).
+        engine = InsightsEngine(db)
+        sessions = engine._get_sessions(cutoff)
+        by_model = [
+            {
+                "model": m["model"],
+                "input_tokens": m["input_tokens"],
+                "output_tokens": m["output_tokens"],
+                "estimated_cost": m.get("cost") or 0.0,
+                "sessions": m["sessions"],
+                "api_calls": m["api_calls"],
+            }
+            for m in (engine._compute_model_breakdown(sessions, cutoff) if sessions else [])
+        ]
 
-        # Fold in auxiliary usage (vision, compression, ...) from session_model_usage.
-        # Aux calls never touch the sessions counters, so this is add-only — no double count.
-        # Without it the models list shows only the main agent model even when aux models are actively
-        # burning tokens (issue #23270).
+        # Aux-only rows still feed the by_task summary below.
         aux_rows = _aux_usage_rows(db, cutoff)
-        by_model = _merge_aux_into_by_model(by_model, aux_rows)
 
         totals = _rows(db, """
             SELECT SUM(input_tokens) as total_input,
@@ -123,7 +127,7 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
                    SUM(COALESCE(api_call_count, 0)) as total_api_calls
             FROM sessions WHERE started_at > ?
         """, cutoff)[0]
-        usage = InsightsEngine(db).get_usage_breakdown(days=days)
+        usage = engine.get_usage_breakdown(days=days)
 
         return {
             "daily": daily,

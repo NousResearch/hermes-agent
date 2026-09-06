@@ -519,7 +519,16 @@ def _schedule_ws_orphan_reap(
             if _pending_ws_reaps.get(sid) is not timer:
                 return
             current = _sessions.get(sid)
-            if current is None or not _ws_session_is_detached(current):
+            if current is None:
+                _pending_ws_reaps.pop(sid, None)
+                return
+            if not _ws_session_is_detached(current):
+                # This Timer is abandoning the interrupt claim because another
+                # writer moved the live record off the detached transport.
+                # Do not leave reattach RPCs fenced with 4009, or let this
+                # generation's settlement polls shorten a later detachment.
+                current.pop("_client_gone_interrupt_requested", None)
+                current.pop("_client_gone_interrupt_polls", None)
                 _pending_ws_reaps.pop(sid, None)
                 return
             if _session_has_active_delegations(sid, current):

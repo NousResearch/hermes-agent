@@ -577,6 +577,80 @@ def _emit(event: str, sid: str, payload: dict | None = None):
     write_json(_event_frame(event, sid, payload))
 
 
+def _runtime_trace(
+    session: dict | None,
+    sid: str,
+    event_name: str,
+    *,
+    success: bool | None = None,
+    error_class: str | None = None,
+    duration_ms: float | None = None,
+    operation: str | None = None,
+) -> None:
+    """Emit opt-in, content-free runtime boundary telemetry for one session."""
+    if not isinstance(session, dict) or not session.get("runtime_trace_enabled"):
+        return
+    raw_correlation = str(session.get("runtime_trace_id") or sid or "")
+    correlation_id = hashlib.sha256(raw_correlation.encode("utf-8")).hexdigest()[:12]
+    payload: dict[str, Any] = {
+        "event_name": str(event_name),
+        "monotonic_ns": time.monotonic_ns(),
+        "correlation_id": correlation_id,
+        "process_id": os.getpid(),
+        "thread_id": threading.get_ident(),
+    }
+    if success is not None:
+        payload["success"] = bool(success)
+    if error_class:
+        payload["error_class"] = str(error_class)
+    if duration_ms is not None:
+        payload["duration_ms"] = round(float(duration_ms), 3)
+    if operation:
+        payload["operation"] = str(operation)
+    _emit("runtime.trace", sid, payload)
+
+
+def _pause_unstarted_goal_for_runtime_failure(
+    session: dict,
+    sid: str,
+    error_surface: dict | None,
+) -> bool:
+    """Pause only an unstarted active Goal after a non-retryable auth failure.
+
+    The failure is not Goal progress.  Leaving this exact state active at zero
+    turns caused rejected credentials to look like a silent runtime stall;
+    pausing preserves the Goal and requires an explicit later resume.
+    """
+    if not isinstance(session, dict) or not isinstance(error_surface, dict):
+        return False
+    if str(error_surface.get("layer") or "") != "auth" or bool(error_surface.get("retryable")):
+        return False
+    session_key = str(session.get("session_key") or "").strip()
+    if not session_key:
+        return False
+    try:
+        from hermes_cli.goals import GoalManager
+
+        goal_mgr = GoalManager(session_key)
+        state = goal_mgr.state
+        if not goal_mgr.is_active() or state is None or int(state.turns_used or 0) != 0:
+            return False
+        code = "HERMES_RUNTIME_MODEL_AUTH_FAILED"
+        goal_mgr.pause(reason=code)
+    except Exception as exc:
+        _runtime_trace(
+            session, sid, "FIRST_NATIVE_TURN_FAILURE_PERSIST_FAILED",
+            success=False, error_class=type(exc).__name__,
+        )
+        return False
+    _runtime_trace(session, sid, "FIRST_NATIVE_TURN_FAILED", success=False, error_class=code)
+    _emit("status.update", sid, {
+        "kind": "runtime", "code": code,
+        "retryable": bool(error_surface.get("retryable")), "text": code,
+    })
+    return True
+
+
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background
 # events, which write_json would otherwise drop on stdio (see _broadcast_global_event).
 _live_transports: set[Transport] = set()
@@ -939,6 +1013,10 @@ def _attach_built_agent(current: dict, agent) -> None:
     if _title_hint := str(current.get("pending_title") or "").strip():
         agent._session_title_hint = _title_hint
     current["agent"] = agent
+    if current.get("runtime_trace_enabled"):
+        sid = str(current.get("runtime_id") or "")
+        agent.runtime_trace_callback = lambda event_name, **fields: _runtime_trace(
+            current, sid, event_name, **fields)
     _session_todo_state(current)
     # Baseline for the per-turn config sync (profile home override still active).
     current["config_model_seen"] = _config_model_target()
@@ -997,9 +1075,14 @@ def _start_agent_build(sid: str, session: dict) -> None:
     key = session["session_key"]
 
     def _build() -> None:
+        build_started = time.monotonic()
+        _runtime_trace(session, sid, "AGENT_BUILD_ENTER")
         with _sessions_lock:
             current = _sessions.get(sid)
         if current is None:
+            _runtime_trace(session, sid, "AGENT_BUILD_EXIT", success=False,
+                           error_class="SessionNotFound",
+                           duration_ms=(time.monotonic() - build_started) * 1000)
             ready.set()
             return
         notify_registered, scopes, session_db = False, None, None
@@ -1015,12 +1098,22 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 scopes = _bind_build_profile_scopes(profile_home)
                 session_db = _open_profile_session_db(profile_home)
             try:
+                _runtime_trace(current, sid, "TOOLS_INIT_ENTER", operation="mcp_discovery_start")
                 from tui_gateway.entry import ensure_mcp_discovery_started
                 ensure_mcp_discovery_started()
             except Exception:
                 logger.warning("MCP discovery startup failed", exc_info=True)
+                _runtime_trace(current, sid, "TOOLS_INIT_EXIT", success=False,
+                               error_class="McpDiscoveryStartError", operation="mcp_discovery_start")
+            else:
+                _runtime_trace(current, sid, "TOOLS_INIT_EXIT", success=True,
+                               operation="mcp_discovery_start")
             try:
-                agent = _make_agent(sid, key, **_deferred_build_agent_kwargs(current, session_db))
+                agent = _make_agent(
+                    sid, key,
+                    runtime_trace=lambda event_name, **fields: _runtime_trace(
+                        current, sid, event_name, **fields),
+                    **_deferred_build_agent_kwargs(current, session_db))
             finally:
                 _clear_session_context(tokens)
             _attach_built_agent(current, agent)
@@ -1030,10 +1123,16 @@ def _start_agent_build(sid: str, session: dict) -> None:
             _announce_built_agent(sid, key, current, agent)
         except Exception as e:
             current["agent_error"] = str(e)
+            _runtime_trace(current, sid, "AGENT_BUILD_EXIT", success=False,
+                           error_class=type(e).__name__,
+                           duration_ms=(time.monotonic() - build_started) * 1000)
             _emit("error", sid, {"message": f"agent init failed: {e}"})
         finally:
             _finish_agent_build(
                 sid, key, current, notify_registered=notify_registered, scopes=scopes, session_db=session_db)
+            if current.get("agent") is not None and not current.get("agent_error"):
+                _runtime_trace(current, sid, "AGENT_BUILD_EXIT", success=True,
+                               duration_ms=(time.monotonic() - build_started) * 1000)
             ready.set()
 
     build_thread = threading.Thread(target=_build, daemon=True)
@@ -2260,7 +2359,8 @@ def _make_agent(
     sid: str, key: str, session_id: str | None = None, session_db=None,
     model_override: dict | str | None = None, provider_override: str | None = None,
     reasoning_config_override: dict | None = None, service_tier_override: str | None = None,
-    platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None):
+    platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None,
+    runtime_trace: Callable[..., None] | None = None):
     # AC-4 test seam: dead unless armed by the isolated certify harness.
     from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
@@ -2270,37 +2370,65 @@ def _make_agent(
     # MCP discovery runs in a daemon thread (a dead server can't freeze the shell); the agent snapshots its tool
     # list once, so briefly wait for in-flight discovery. Dashboard /api/ws uses mcp_startup; TUI stdio uses entry.
     for _mod in ("hermes_cli.mcp_startup", "tui_gateway.entry"):
-        with contextlib.suppress(Exception):
+        if runtime_trace is not None:
+            runtime_trace("TOOLS_INIT_ENTER", operation=f"{_mod}.wait_for_mcp_discovery")
+        try:
             importlib.import_module(_mod).wait_for_mcp_discovery()
+        except Exception as exc:
+            if runtime_trace is not None:
+                runtime_trace("TOOLS_INIT_EXIT", success=False, error_class=type(exc).__name__,
+                              operation=f"{_mod}.wait_for_mcp_discovery")
+        else:
+            if runtime_trace is not None:
+                runtime_trace("TOOLS_INIT_EXIT", success=True,
+                              operation=f"{_mod}.wait_for_mcp_discovery")
     cfg = _load_cfg()
     system_prompt = _startup_system_prompt(cfg, session_id or key)
-    model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
+    if runtime_trace is not None:
+        runtime_trace("PROVIDER_RESOLUTION_ENTER")
+    try:
+        model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
+    except Exception as exc:
+        if runtime_trace is not None:
+            runtime_trace("PROVIDER_RESOLUTION_EXIT", success=False, error_class=type(exc).__name__)
+        raise
+    if runtime_trace is not None:
+        runtime_trace("PROVIDER_RESOLUTION_EXIT", success=True)
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
-    agent = AIAgent(
-        model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
-        base_url=runtime.get("base_url"), api_key=runtime.get("api_key"), api_mode=runtime.get("api_mode"),
-        acp_command=runtime.get("command"), acp_args=runtime.get("args"),
-        credential_pool=runtime.get("credential_pool"), quiet_mode=True,
-        verbose_logging=False,  # DEBUG agent logging; independent of tool_progress_mode
-        reasoning_config=(
-            reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
-        service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
-        enabled_toolsets=_load_enabled_toolsets(platform),
-        # OpenRouter provider_routing prefs (gateway + CLI parity).
-        providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),
-        provider_sort=_pr.get("sort"), provider_require_parameters=_pr.get("require_parameters", False),
-        provider_data_collection=_pr.get("data_collection"), platform=platform, session_id=session_id or key,
-        session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
-        checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
-        pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
-        skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
-        **_agent_cbs(sid))
+    if runtime_trace is not None:
+        runtime_trace("AGENT_CONSTRUCTION_ENTER")
+    try:
+        agent = AIAgent(
+            model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
+            base_url=runtime.get("base_url"), api_key=runtime.get("api_key"), api_mode=runtime.get("api_mode"),
+            acp_command=runtime.get("command"), acp_args=runtime.get("args"),
+            credential_pool=runtime.get("credential_pool"), quiet_mode=True,
+            verbose_logging=False,  # DEBUG agent logging; independent of tool_progress_mode
+            reasoning_config=(
+                reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
+            service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
+            enabled_toolsets=_load_enabled_toolsets(platform),
+            # OpenRouter provider_routing prefs (gateway + CLI parity).
+            providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),
+            provider_sort=_pr.get("sort"), provider_require_parameters=_pr.get("require_parameters", False),
+            provider_data_collection=_pr.get("data_collection"), platform=platform, session_id=session_id or key,
+            session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
+            checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
+            pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
+            skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
+            **_agent_cbs(sid))
+    except Exception as exc:
+        if runtime_trace is not None:
+            runtime_trace("AGENT_CONSTRUCTION_EXIT", success=False, error_class=type(exc).__name__)
+        raise
     if context_cwd_is_launch_artifact is None:
         with _sessions_lock:
             context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(_sessions.get(sid))
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
+    if runtime_trace is not None:
+        runtime_trace("AGENT_CONSTRUCTION_EXIT", success=True)
     return agent
 
 

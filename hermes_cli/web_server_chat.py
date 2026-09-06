@@ -237,7 +237,7 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
         # that don't bring in the dashboard_auth layer.
         from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
         from hermes_cli.dashboard_auth.ws_tickets import (
-            TicketInvalid, consume_internal_credential, consume_ticket)
+            TicketInvalid, consume_internal_credential, consume_principal_capability, consume_ticket)
 
         def _reject(reason: str) -> None:
             audit_log(
@@ -256,7 +256,10 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
         internal = ws.query_params.get("internal", "")
         if internal:
             try:
-                _stamp_identity(consume_internal_credential(internal))
+                info = consume_internal_credential(internal)
+                if capability := ws.query_params.get("principal", ""):
+                    info = consume_principal_capability(capability)
+                _stamp_identity(info)
                 return None, "internal"
             except TicketInvalid as exc:
                 _reject(f"internal: {exc}")
@@ -297,7 +300,9 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
 
 def _resolve_chat_argv(
     resume: Optional[str] = None, sidecar_url: Optional[str] = None, profile: Optional[str] = None,
-    active_session_file: Optional[str] = None) -> tuple[list[str], Optional[str], Optional[dict]]:
+    active_session_file: Optional[str] = None, user_id: Optional[str] = None,
+    provider: Optional[str] = None, principal_capability: Optional[str] = None
+) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve the argv + cwd + env for the chat PTY (what ``hermes --tui`` runs).
 
     Tests monkeypatch this with a tiny fake command.  Env contract: resume goes
@@ -351,6 +356,13 @@ def _resolve_chat_argv(
     # deploys have no COLORTERM, so hex colors would snap to the 256 palette.
     env.setdefault("COLORTERM", "truecolor")
     env["HERMES_TUI_DASHBOARD"] = "1"
+    # Only a freshly spawned profile gateway reads these; shared gateways use
+    # the authenticated attach capability instead of process-global identity.
+    env.pop("HERMES_TUI_USER_ID", None)
+    env.pop("HERMES_TUI_USER_PROVIDER", None)
+    if user_id:
+        env["HERMES_TUI_USER_ID"] = user_id
+        env["HERMES_TUI_USER_PROVIDER"] = provider or ""
 
     if resume:
         _resume_db = _open_session_db_for_profile(
@@ -371,8 +383,13 @@ def _resolve_chat_argv(
 
     # Without the attach URL, gatewayClient spawns its own `tui_gateway.entry`,
     # which inherits the profile HERMES_HOME set above.
-    if profile_dir is None and (gateway_ws_url := _build_gateway_ws_url()):
-        env["HERMES_TUI_GATEWAY_URL"] = gateway_ws_url
+    if profile_dir is None:
+        gateway_ws_url = (_build_gateway_ws_url(principal_capability=principal_capability)
+                          if principal_capability else _build_gateway_ws_url())
+        if gateway_ws_url:
+            env["HERMES_TUI_GATEWAY_URL"] = gateway_ws_url
+    else:
+        env.pop("HERMES_TUI_GATEWAY_URL", None)
 
     return list(argv), str(cwd) if cwd else None, env
 
@@ -418,9 +435,10 @@ def _server_internal_ws_url(path: str, **extra_qs) -> Optional[str]:
     return f"ws://{netloc}{path}?{urllib.parse.urlencode({**auth, **extra_qs})}"
 
 
-def _build_gateway_ws_url() -> Optional[str]:
+def _build_gateway_ws_url(*, principal_capability: Optional[str] = None) -> Optional[str]:
     """ws:// URL the PTY child attaches to for JSON-RPC gateway traffic."""
-    return _server_internal_ws_url("/api/ws")
+    return _server_internal_ws_url(
+        "/api/ws", **({"principal": principal_capability} if principal_capability else {}))
 
 
 def _build_sidecar_url(channel: str) -> Optional[str]:
@@ -430,11 +448,17 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
 
 async def _resolve_chat_argv_async(
     resume: Optional[str] = None, sidecar_url: Optional[str] = None, profile: Optional[str] = None,
-    active_session_file: Optional[str] = None) -> tuple[list[str], Optional[str], Optional[dict]]:
+    active_session_file: Optional[str] = None, user_id: Optional[str] = None,
+    provider: Optional[str] = None, principal_capability: Optional[str] = None
+) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve chat argv off the event loop (it may run ``npm run build``); the
     async lock keeps one-build-at-a-time without parking worker threads."""
     from hermes_cli.web_server import _get_chat_argv_lock, app
     kwargs = {"resume": resume, "sidecar_url": sidecar_url, "profile": profile}
+    for key, value in (("user_id", user_id), ("provider", provider),
+                       ("principal_capability", principal_capability)):
+        if value is not None:
+            kwargs[key] = value
     if active_session_file is not None:
         kwargs["active_session_file"] = active_session_file
 

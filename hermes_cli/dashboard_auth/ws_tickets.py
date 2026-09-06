@@ -23,6 +23,7 @@ TTL_SECONDS = 30
 _lock = threading.Lock()
 _tickets: Dict[str, Tuple[int, Dict[str, Any]]] = {}  # ticket -> (expires_at, info)
 _internal_credential: Optional[str] = None  # lazily minted; guarded by ``_lock``
+_principal_capabilities: Dict[str, Dict[str, str]] = {}
 
 #: Identity recorded for internal-credential connections (audit logs distinguish them from tickets).
 INTERNAL_USER_ID = "server-internal"
@@ -89,9 +90,29 @@ def consume_internal_credential(value: str) -> Dict[str, Any]:
     return {"user_id": INTERNAL_USER_ID, "provider": INTERNAL_PROVIDER}
 
 
+def mint_principal_capability(*, user_id: str, provider: str) -> str:
+    """Mint an opaque, process-lifetime capability for one dashboard user."""
+    capability = secrets.token_urlsafe(32)
+    with _lock:
+        _principal_capabilities[capability] = {"user_id": user_id, "provider": provider}
+    return capability
+
+
+def consume_principal_capability(value: str) -> Dict[str, Any]:
+    """Verify a server-minted capability and return its bound identity."""
+    if not isinstance(value, str) or not value:
+        raise TicketInvalid("invalid principal capability")
+    with _lock:
+        info = _principal_capabilities.get(value)
+    if info is None:
+        raise TicketInvalid("principal capability mismatch")
+    return dict(info)
+
+
 def _reset_for_tests() -> None:
     """Test-only: drop all tickets and the internal credential."""
     global _internal_credential
     with _lock:
         _tickets.clear()
+        _principal_capabilities.clear()
         _internal_credential = None

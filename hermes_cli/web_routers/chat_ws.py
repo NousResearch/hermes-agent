@@ -468,6 +468,14 @@ async def pty_ws(ws: WebSocket) -> None:
                 await ws.send_json({"type": "resume", "id": resume})
 
     resolve_kwargs = {"resume": resume, "sidecar_url": sidecar_url, "profile": profile}
+    auth_info = getattr(ws, "_hermes_auth_identity", None)
+    if auth_info and (auth_info.get("user_id"), auth_info.get("provider")) != (
+            "server-internal", "server-internal"):
+        from hermes_cli.dashboard_auth.ws_tickets import mint_principal_capability
+        resolve_kwargs.update(
+            user_id=auth_info["user_id"], provider=auth_info["provider"],
+            principal_capability=mint_principal_capability(
+                user_id=auth_info["user_id"], provider=auth_info["provider"]))
     if active_session_file is not None:
         resolve_kwargs["active_session_file"] = str(active_session_file)
 

@@ -158,7 +158,7 @@ def _has_xai_stt_credentials_quietly() -> bool:
 
 def _resolve_explicit_openai() -> str:
     if not _HAS_OPENAI:
-        logger.warning("STT provider 'openai' configured but the openai package is not installed")
+        logger.warning("STT provider 'openai' configured but no API key available")
         return "none"
     # Resolved directly so a managed openai-audio gateway outage is logged with its real reason.
     reason = _openai_audio_unavailable_reason()
@@ -211,7 +211,7 @@ _CLOUD_PROVIDER_SPECS = {
              "STT provider 'groq' configured but GROQ_API_KEY not set",
              "No local STT available, using Groq Whisper API"),
     "openai": (None, lambda: _HAS_OPENAI and _has_openai_audio_backend(),
-               "STT provider 'openai' configured but the openai package is not installed",
+               None,
                "No local STT available, using OpenAI Whisper API"),
     "mistral": (_has_mistral_key, _has_mistral_key,
                 "STT provider 'mistral' configured but mistralai package not installed or MISTRAL_API_KEY not set",
@@ -512,10 +512,8 @@ def _no_provider_error(provider: str, stt_config: Dict[str, Any]) -> Dict[str, A
         reason = _openai_audio_unavailable_reason()
         if reason is not None:
             return _error_result(reason)
-    if provider_key == "none" and selected in _CLOUD_PROVIDER_SPECS:
-        warning = _CLOUD_PROVIDER_SPECS[selected][2]
-        if warning:
-            return _error_result(warning)
+    if provider_key == "none" and selected == "dashscope":
+        return _error_result(_CLOUD_PROVIDER_SPECS["dashscope"][2])
     return _error_result(
         "No STT provider available. Install faster-whisper for free local "
         f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "

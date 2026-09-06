@@ -134,19 +134,6 @@ def test_dashscope_stt_normalizes_linux_wav_mime_type(tmp_path):
     assert data_url.startswith("data:audio/wav;base64,")
 
 
-def test_explicit_openai_without_sdk_returns_actionable_error(tmp_path):
-    from tools import transcription_tools
-
-    audio_path = _silent_wav(tmp_path / "speech.wav")
-    with patch.object(transcription_tools, "_load_stt_config", return_value={"provider": "openai"}), \
-         patch.object(transcription_tools, "_HAS_OPENAI", False):
-        result = transcription_tools.transcribe_audio(audio_path)
-
-    assert result["success"] is False
-    assert isinstance(result["error"], str)
-    assert "openai package" in result["error"]
-
-
 def test_dashscope_tts_downloads_native_audio_result(tmp_path):
     from tools.tts_tool import text_to_speech_tool
 

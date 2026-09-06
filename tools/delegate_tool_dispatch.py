@@ -42,6 +42,7 @@ class _Batch:
     origin_owner_transport: Any
     origin_owner_session_record: Any
     overall_start: float
+    result_delivery: str = "after_turn"
 
     def owner_kwargs(self) -> Dict[str, Any]:
         """Steer/stop authority of the originating session, passed to every child run."""
@@ -290,13 +291,20 @@ _BACKGROUND_NOTES = {
     ),
 }
 
-def _dispatched_payload(dispatch: dict, goals: List[str], child_agents: List[Any], live_paths: List[str]) -> dict:
+def _dispatched_payload(dispatch: dict, goals: List[str], child_agents: List[Any], live_paths: List[str],
+                        result_delivery: str = "after_turn") -> dict:
     """Model-facing handle for an accepted background batch."""
     n = len(goals)
     payload = {
         "status": "dispatched", "mode": "background", "count": n, "delegation_id": dispatch["delegation_id"],
         "goals": goals, "note": _BACKGROUND_NOTES["one"] if n == 1 else _BACKGROUND_NOTES["many"].format(n=n),
     }
+    payload["result_delivery"] = result_delivery
+    if result_delivery == "inject":
+        payload["note"] = (
+            "Subagents run asynchronously. Keep working: ready results may ride a new tool-result "
+            "boundary in this turn. Missed boundaries use normal after-turn delivery. Never wait or poll."
+        )
     sids = [getattr(c, "_subagent_id", None) for c in child_agents]
     if any(isinstance(s, str) and s for s in sids):
         payload["subagent_ids"] = sids
@@ -340,6 +348,8 @@ def _dispatch_background(batch: _Batch) -> str:
         role=batch.top_role, model=batch.creds["model"], session_key=session_key,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=wake_sid,
         parent_session_id=getattr(parent_agent, "session_id", None),
+        result_delivery=batch.result_delivery,
+        parent_turn_id=str(getattr(parent_agent, "_active_turn_id", "") or ""),
         runner=lambda: _execute_and_aggregate(batch, honor_parent_interrupt=False),
         interrupt_fn=_batch_interrupt, max_async_children=_get_max_async_children(),
         # Reuse the live-transcript directory's id (when created) so the returned delegation_id matches
@@ -348,7 +358,7 @@ def _dispatch_background(batch: _Batch) -> str:
         progress_fn=lambda: _batch_progress_token(child_agents),
     )
     if dispatch.get("status") == "dispatched":
-        return json.dumps(_dispatched_payload(dispatch, goals, child_agents, batch.live_paths), ensure_ascii=False)
+        return json.dumps(_dispatched_payload(dispatch, goals, child_agents, batch.live_paths, batch.result_delivery), ensure_ascii=False)
     # Pool at capacity / schedule failure: the async unit was never accepted, so just run inline (re-attaching to the
     # parent list is not needed).
     logger.info(

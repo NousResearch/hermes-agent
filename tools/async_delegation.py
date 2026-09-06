@@ -4,7 +4,8 @@
 The parent dispatches a subagent on a module-level daemon executor and returns a handle
 immediately. On completion a ``type="async_delegation"`` event (self-contained task-source
 block) is pushed onto the SHARED ``process_registry.completion_queue`` the CLI/gateway drain
-while idle, so results surface as a NEW turn (never mid-turn) and inherit its de-dup and
+while idle. Opted-in results may instead ride a new tool result in their parent turn,
+with the same de-dup and
 crash-recovery wiring. Only the async lifecycle lives here; the child run is an injected ``runner``."""
 
 from __future__ import annotations
@@ -168,7 +169,7 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
         owner_started_at = None
     task_payload = {
         key: record.get(key)
-        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", *_ROUTING_KEYS)
+        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "result_delivery", "parent_turn_id", *_ROUTING_KEYS)
         if key in record}
     with _DB_LOCK, _transaction() as conn:
         conn.execute("""INSERT OR REPLACE INTO async_delegations
@@ -242,6 +243,8 @@ def publish_batch_child(batch_id: str, task_index: int, child: Dict[str, Any]) -
         "batch_id": batch_id, "task_index": task_index,
         "session_key": record.get("session_key", ""), "origin_ui_session_id": record.get("origin_ui_session_id", ""),
         "origin_session_id": record.get("origin_session_id", ""), "parent_session_id": record.get("parent_session_id"),
+        "result_delivery": record.get("result_delivery", "after_turn"),
+        "parent_turn_id": record.get("parent_turn_id", ""),
         "goal": goals[task_index] if 0 <= task_index < len(goals) else record.get("goal", ""), "goals": goals,
         "context": record.get("context"), "toolsets": record.get("toolsets"), "role": record.get("role"),
         "model": child.get("model") or record.get("model"), "status": child.get("status") or "completed",
@@ -303,6 +306,8 @@ def recover_abandoned_delegations() -> int:
                 "parent_session_id": parent_id, "goal": task.get("goal", ""), "goals": task.get("goals"),
                 "context": task.get("context"), "toolsets": task.get("toolsets"), "role": task.get("role"),
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
+                "result_delivery": task.get("result_delivery", "after_turn"),
+                "parent_turn_id": task.get("parent_turn_id", ""),
                 "status": "unknown", "summary": None, "error": error,
                 "dispatched_at": dispatched_at, "completed_at": now,
                 **{k: task[k] for k in _ROUTING_KEYS if task.get(k)}}
@@ -368,14 +373,75 @@ def mark_completion_delivered(delegation_id: str) -> bool:
            WHERE delegation_id=? AND delivery_state!='delivered'""", (now, now, delegation_id))
 
 
+def _reconcile_tool_carrier(conn, delegation_id: str, payload: str | None) -> bool:
+    """An exact transcript receipt closes the commit-before-ack crash window.
+
+    Runs inside the existing claim transaction, including gateway direct claims.
+    The receipt is scoped to the parent session, role and row id; no second ledger.
+    """
+    event = json.loads(payload or "{}")
+    if event.get("result_delivery") != "inject" or not event.get("parent_session_id"):
+        return False
+    try:
+        rows = conn.execute(
+            "SELECT display_metadata FROM messages WHERE session_id=? AND role='tool' "
+            "AND display_metadata IS NOT NULL AND instr(display_metadata, ?) > 0",
+            (event["parent_session_id"], delegation_id),
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc) or "no such column" in str(exc):
+            return False
+        raise
+    for (raw,) in rows:
+        try:
+            metadata = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(metadata, dict) or metadata.get("delegation_delivery") != "tool_boundary":
+            continue
+        identities = metadata.get("delegation_event_ids")
+        if isinstance(identities, list) and delegation_id in identities:
+            now = time.time()
+            conn.execute(
+                "UPDATE async_delegations SET delivery_state='delivered', delivered_at=?, updated_at=?, "
+                "delivery_claim=NULL, delivery_claimed_at=NULL WHERE delegation_id=? AND delivery_state='pending'",
+                (now, now, delegation_id),
+            )
+            return True
+    return False
+
+
+def get_event_delivery_state(evt: Dict[str, Any]) -> Optional[str]:
+    if evt.get("type") != "async_delegation":
+        return None
+    with _DB_LOCK, _transaction() as conn:
+        row = conn.execute("SELECT delivery_state FROM async_delegations WHERE delegation_id=?",
+                           (str(evt.get("delegation_id") or ""),)).fetchone()
+    return row[0] if row else None
+
+
+def renew_event_delivery(evt: Dict[str, Any], claim_id: str) -> bool:
+    """Keep the existing single-row lease live until the transcript flush settles."""
+    if not claim_id or evt.get("type") != "async_delegation":
+        return False
+    now = time.time()
+    return _update_delivery(
+        "UPDATE async_delegations SET delivery_claimed_at=?, updated_at=? "
+        "WHERE delegation_id=? AND delivery_state='pending' AND delivery_claim=?",
+        (now, now, str(evt.get("delegation_id") or ""), claim_id),
+    )
+
+
 def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Claim one pending completion across competing consumers/processes."""
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
         row = conn.execute(
-            "SELECT delivery_state FROM async_delegations WHERE delegation_id=?", (delegation_id,)).fetchone()
+            "SELECT delivery_state, event_json FROM async_delegations WHERE delegation_id=?", (delegation_id,)).fetchone()
         if row is None:
             return True  # legacy event created before durable dispatch
+        if row[0] == "pending" and _reconcile_tool_carrier(conn, delegation_id, row[1]):
+            return False
         cur = conn.execute("""UPDATE async_delegations SET delivery_claim=?, delivery_claimed_at=?,
                       delivery_attempts=delivery_attempts+1, updated_at=?
                WHERE delegation_id=? AND delivery_state='pending'
@@ -438,17 +504,18 @@ def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
              AND delivery_claim=?""", (now, now, delegation_id, claim_id))
 
 
-def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
-    _event_delivery(complete_completion_delivery, evt, claim_id)
+def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> bool:
+    return (_event_delivery(complete_completion_delivery, evt, claim_id)
+            or get_event_delivery_state(evt) == "delivered")
 
 
-def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
-    _event_delivery(release_completion_delivery, evt, claim_id)
+def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> bool:
+    return _event_delivery(release_completion_delivery, evt, claim_id)
 
 
-def _event_delivery(fn, evt: Dict[str, Any], claim_id: str) -> None:
-    if claim_id and evt.get("type") == "async_delegation":
-        fn(str(evt.get("delegation_id") or ""), claim_id)
+def _event_delivery(fn, evt: Dict[str, Any], claim_id: str) -> bool:
+    return bool(claim_id and evt.get("type") == "async_delegation"
+                and fn(str(evt.get("delegation_id") or ""), claim_id))
 
 
 def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
@@ -558,11 +625,15 @@ def _dispatch(
     parent_session_id: Optional[str], runner: Callable[[], Dict[str, Any]], origin_ui_session_id: str,
     origin_session_id: str, interrupt_fn: Optional[Callable[[], None]], max_async_children: int,
     progress_fn: Optional[Callable[[], tuple]], capacity_error: str,
+    result_delivery: Optional[str] = None, parent_turn_id: str = "",
 ) -> Dict[str, Any]:
     """Shared dispatch core for single (``goals is None``) and batch units. Capacity check +
     record insert happen under ONE lock hold so concurrent dispatches can't both pass the check
     and exceed the cap. At capacity the dispatch is REJECTED (never queued) so a runaway model
     can't pile up unbounded background work."""
+    result_delivery = str(result_delivery or "after_turn").strip().lower()
+    if result_delivery not in {"inject", "after_turn"}:
+        result_delivery = "after_turn"
     is_batch = goals is not None
     label = " batch" if is_batch else ""
     classify = _batch_status if is_batch else (lambda r: r.get("status") or "completed")
@@ -573,6 +644,7 @@ def _dispatch(
         "context": context, "toolsets": list(toolsets) if toolsets else None, "role": role, "model": model,
         "session_key": session_key, "origin_ui_session_id": origin_ui_session_id,
         "origin_session_id": origin_session_id, "parent_session_id": parent_session_id,
+        "result_delivery": result_delivery, "parent_turn_id": parent_turn_id,
         **_capture_routing_origin(),
         "status": "running", "dispatched_at": dispatched_at, "completed_at": None,
         "interrupt_fn": interrupt_fn, **({"is_batch": True} if is_batch else {}), "progress_fn": progress_fn,
@@ -617,6 +689,7 @@ def dispatch_async_delegation(
     session_key: str, parent_session_id: Optional[str] = None, runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "", origin_session_id: str = "", interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN, progress_fn: Optional[Callable[[], tuple]] = None,
+    result_delivery: Optional[str] = None, parent_turn_id: str = "",
 ) -> Dict[str, Any]:
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
     ``session_key``/``parent_session_id`` are captured on the parent thread (the worker carries
@@ -628,6 +701,7 @@ def dispatch_async_delegation(
         delegation_id=delegation_id, goal=goal, goals=None, context=context,
         toolsets=toolsets, role=role, model=model, session_key=session_key,
         parent_session_id=parent_session_id, runner=runner,
+        result_delivery=result_delivery, parent_turn_id=parent_turn_id,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn,
         capacity_error=(
@@ -646,6 +720,7 @@ def dispatch_async_delegation_batch(
     origin_ui_session_id: str = "", origin_session_id: str = "", interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN, delegation_id: Optional[str] = None,
     progress_fn: Optional[Callable[[], tuple]] = None,
+    result_delivery: Optional[str] = None, parent_turn_id: str = "",
 ) -> Dict[str, Any]:
     """Dispatch a WHOLE fan-out batch as ONE background unit: ``runner`` runs the
     entire batch and returns the combined ``{"results": [...], "total_duration_seconds": N}``
@@ -658,6 +733,7 @@ def dispatch_async_delegation_batch(
         delegation_id=delegation_id, goal=combined_goal, goals=goals, context=context,
         toolsets=toolsets, role=role, model=model, session_key=session_key,
         parent_session_id=parent_session_id, runner=runner,
+        result_delivery=result_delivery, parent_turn_id=parent_turn_id,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn,
         capacity_error=(
@@ -729,6 +805,8 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
         "origin_ui_session_id": record.get("origin_ui_session_id", ""),
         "origin_session_id": record.get("origin_session_id", ""),
         "parent_session_id": record.get("parent_session_id"),
+        "parent_turn_id": record.get("parent_turn_id", ""),
+        "result_delivery": record.get("result_delivery", "after_turn"),
         "goal": record.get("goal", ""), **({"goals": record.get("goals")} if is_batch else {}),
         "context": record.get("context"), "toolsets": record.get("toolsets"), "role": record.get("role"),
         "model": record.get("model") if is_batch else (result.get("model") or record.get("model")),

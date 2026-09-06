@@ -1849,14 +1849,10 @@ test('cleanupStale keeps the lockfile when even SIGKILL cannot confirm the pid d
   // The record must survive so the next connect's reap pass retries.
   assert.ok(!ssh.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)))
 })
-test('buildSpawnCommand quotes expandRemotePath fragments exactly once (real sh parse)', async () => {
-  // Regression: expandRemotePath() returns an already-quoted shell fragment
-  // ("$HOME"'/path'). Wrapping such a fragment in shq() again ships literal
-  // quote characters to the remote: python received a mutex path named
-  // '"$HOME"'"'"'/…'"'"'', and the payload's `mkdir "$reservation"` spun
-  // forever on a path that can never exist, so every SSH backend spawn hung
-  // until the connect timeout. Parse the composed command with a real sh the
-  // way the remote login shell does, and require the paths to come out clean.
+test.skipIf(process.platform === 'win32')('buildSpawnCommand quotes expandRemotePath fragments exactly once (real sh parse)', async () => {
+  // expandRemotePath() output is pre-quoted; a second shq() ships literal quote
+  // characters to the remote python. Parse the composed command with a real sh,
+  // as the remote login shell does, and require every path to come out clean.
   const cmd = buildSpawnCommand('/x/hermes', 'work', {
     hermesHome: '~/.hermes',
     logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
@@ -1864,58 +1860,44 @@ test('buildSpawnCommand quotes expandRemotePath fragments exactly once (real sh 
     reservationNonce: SPAWN_NONCE,
     spawnNonce: SPAWN_NONCE,
     tokenFilePath: spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE),
-    lockMetadata: {
-      ownershipId: OWNERSHIP_ID,
-      spawnNonce: SPAWN_NONCE,
-      port: 0,
-      profile: 'work',
-      hermesPath: '/x/hermes',
-      hermesHome: '~/.hermes',
-      logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
-      tokenFingerprint: fingerprintToken('stored-token'),
-      protocolVersion: PROTOCOL_VERSION,
-      startedAt: '2026-07-14T00:00:00.000Z'
-    }
+    lockMetadata: { ownershipId: OWNERSHIP_ID, spawnNonce: SPAWN_NONCE }
   })
 
   // Capture the argv a remote shell would hand to python3, via a shim on PATH.
-  const shimDir = await mkdtemp(path.join(os.tmpdir(), 'hermes-argv-shim-'))
-  const fakeHome = await mkdtemp(path.join(os.tmpdir(), 'hermes-fake-home-'))
+  const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-argv-shim-'))
   try {
+    const shimDir = path.join(root, 'shim')
+    const fakeHome = path.join(root, 'home')
+    await mkdir(shimDir)
+    await mkdir(fakeHome)
     const argvFile = path.join(shimDir, 'argv')
-    await writeFile(
-      path.join(shimDir, 'python3'),
-      `#!/bin/sh\nprintf '%s\\0' "$@" > ${argvFile}\n`,
-      { mode: 0o755 }
-    )
-    await promisify(execCallback)(cmd, {
+    await writeFile(path.join(shimDir, 'python3'), `#!/bin/sh\nprintf '%s\\0' "$@" > '${argvFile}'\n`, { mode: 0o755 })
+    await exec(cmd, {
       env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}`, HOME: fakeHome }
     })
     const argv = (await readFile(argvFile, 'utf8')).split('\0')
 
     // argv: ['-c', <mutex script>, <mutex path>, <payload>]
-    const mutexPath = argv[2]
     assert.equal(
-      mutexPath,
+      argv[2],
       `${fakeHome}/.hermes/.hermes-update-in-progress.mutex`,
       'mutex path must reach python fully expanded, with no quote characters'
     )
 
     // The payload assigns reservation/lock/owner_file before its mkdir loop.
-    // Evaluate that prefix the way the remote sh does and require real paths.
+    // Evaluate only that prefix the way the remote sh does; never the loop itself.
     const payload = argv[3]
-    const prefix = payload.slice(0, payload.indexOf('i=0;'))
-    const { stdout } = await promisify(execCallback)(
-      `${prefix} printf '%s\\n' "$reservation" "$lock" "$owner_file"`,
-      { env: { ...process.env, HOME: fakeHome } }
-    )
+    const loopStart = payload.indexOf('i=0;')
+    assert.ok(loopStart > 0, 'payload prefix sentinel missing')
+    const { stdout } = await exec(`${payload.slice(0, loopStart)} printf '%s\\n' "$reservation" "$lock" "$owner_file"`, {
+      env: { ...process.env, HOME: fakeHome }
+    })
     const [reservation, lock, ownerFile] = stdout.split('\n')
     const base = `${fakeHome}/.hermes/desktop-ssh/${OWNERSHIP_ID}`
     assert.equal(reservation, `${base}/.connect.lock`)
     assert.equal(lock, `${base}/backend.lock.json`)
     assert.equal(ownerFile, `${base}/.connect.lock/owner`)
   } finally {
-    await rm(shimDir, { recursive: true, force: true })
-    await rm(fakeHome, { recursive: true, force: true })
+    await rm(root, { recursive: true, force: true })
   }
 })

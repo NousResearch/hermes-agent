@@ -82,6 +82,23 @@ async def test_send_rejects_whitespace_and_records_failed_final_reply(
     assert "Dropped empty message to chat=555" in caplog.text
 
 
+@pytest.mark.asyncio
+async def test_delete_message_uses_discord_partial_message():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    delete = AsyncMock()
+    partial = SimpleNamespace(delete=delete)
+    channel = SimpleNamespace(get_partial_message=MagicMock(return_value=partial))
+    get_channel = MagicMock(return_value=channel)
+    adapter._client = SimpleNamespace(get_channel=get_channel, fetch_channel=AsyncMock())
+
+    result = await adapter.delete_message("555", "123")
+
+    assert result is True
+    get_channel.assert_called_once_with(555)
+    channel.get_partial_message.assert_called_once_with(123)
+    delete.assert_awaited_once_with()
+
+
 def _voice_adapter(reference_obj, *, native_result=None, native_error=None):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
     ref_msg = SimpleNamespace(id=99, to_reference=MagicMock(return_value=reference_obj))

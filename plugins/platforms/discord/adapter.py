@@ -2986,6 +2986,42 @@ class DiscordAdapter(BasePlatformAdapter):
             success=True, message_id=message_id, raw_response={"thread_id": thread_id},
         )
 
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a previously sent Discord message.
+
+        The gateway uses this for temporary tool-progress and status bubbles
+        after a successful final response. A partial message avoids an extra
+        fetch round trip and works for normal channels and Discord threads.
+        Deletion is best-effort: a missing channel, invalid ID, permission
+        failure, or transport error leaves the message visible and returns
+        ``False`` without affecting the user-facing response.
+        """
+        if not self._client:
+            return False
+        try:
+            numeric_message_id = int(message_id)
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+            if not channel:
+                return False
+            get_partial_message = getattr(channel, "get_partial_message", None)
+            if callable(get_partial_message):
+                message = get_partial_message(numeric_message_id)
+            else:
+                message = await channel.fetch_message(numeric_message_id)
+            await message.delete()
+            return True
+        except Exception as exc:  # pragma: no cover - platform/permission dependent
+            logger.debug(
+                "[%s] Failed to delete Discord message %s in channel %s: %s",
+                self.name,
+                message_id,
+                chat_id,
+                exc,
+            )
+            return False
+
     async def edit_message(
         self, chat_id: str, message_id: str, content: str, *, finalize: bool = False,
         metadata: Optional[Dict[str, Any]] = None,

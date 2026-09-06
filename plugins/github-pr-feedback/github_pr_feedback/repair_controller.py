@@ -695,6 +695,10 @@ def _repair_task(
             identity_preflight
             + "Re-read the canonical pull request and require its base and head identities to "
             "equal every expected identity field. "
+            "expected_base_sha and observed_base_sha describe the inspected PR base; "
+            "target_base_sha is the immutable commit to merge and may differ from them. "
+            "Validate PR identity against the observed fields, but fetched commit identity "
+            "against target_base_sha. Do not reject the target because those SHAs differ. "
             f"For a merge conflict or base_refresh_required trigger, run exactly "
             f"`git fetch --quiet --no-tags --no-recurse-submodules "
             f"https://github.com/{receipt.repository}.git {target_base_sha or pull.base_sha}` and require "

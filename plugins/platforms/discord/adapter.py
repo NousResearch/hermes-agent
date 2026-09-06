@@ -4693,7 +4693,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     def _get_allow_bots(self) -> str:
         """Per-profile DISCORD_ALLOW_BOTS mode (none|mentions|all)."""
-        return self._gate_env("DISCORD_ALLOW_BOTS", "none").lower().strip() or "none"
+        raw = self._gate_raw("allow_bots", "DISCORD_ALLOW_BOTS")
+        return str(raw or "none").lower().strip() or "none"
 
     def _discord_free_response_channels(self) -> set:
         """Channel IDs/names needing no mention; a lone "*" is preserved for wildcard short-circuit."""
@@ -6993,6 +6994,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     _gate("allow_from", "DISCORD_ALLOWED_USERS", from_platform_extra=True)
     _gate("allowed_roles", "DISCORD_ALLOWED_ROLES", from_platform_extra=True)
     _gate("allow_all_users", "DISCORD_ALLOW_ALL_USERS", from_platform_extra=True, lower=True)
+    _gate("allow_bots", "DISCORD_ALLOW_BOTS", from_platform_extra=True, lower=True)
     approval_mentions_cfg = (
         discord_cfg["approval_mentions"] if "approval_mentions" in discord_cfg
         else platform_extra_cfg.get("approval_mentions")

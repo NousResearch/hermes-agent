@@ -941,6 +941,19 @@ def resolve_per_model_reasoning_effort(model: str, overrides: dict | None) -> di
     return None
 
 
+def resolve_per_model_provider_routing(model: str, models: dict | None) -> dict:
+    """``provider_routing.models.<id>`` entry for *model*, spelling-tolerant like
+    ``reasoning_overrides``; ``{}`` when none matches. Only the keys a user sets per model
+    are returned so unset ones fall through to the flat ``provider_routing`` values."""
+    if not model or not isinstance(models, dict):
+        return {}
+    for variant in _canonical_model_variants(model):
+        entry = models.get(variant)
+        if isinstance(entry, dict):
+            return entry
+    return {}
+
+
 def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
     """Effective reasoning config for *model*: per-model override, then global ``agent.reasoning_effort``.
 

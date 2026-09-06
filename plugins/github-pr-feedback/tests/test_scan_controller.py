@@ -2580,6 +2580,15 @@ def test_completed_feedback_immediately_schedules_exact_head_local_ci(tmp_path: 
     )
     item = feedback("fixed")
     ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    old_receipt = FeedbackReceipt("acme/widgets", 17, item.kind, item.feedback_id, "a" * 40)
+    old_lease = ledger.claim(
+        old_receipt,
+        owner="previous-worker",
+        claimed_at=datetime(2026, 8, 24, 0, 30, tzinfo=UTC),
+        stale_before=datetime(2026, 8, 24, 0, 25, tzinfo=UTC),
+    )
+    assert old_lease is not None
+    ledger.finalize(old_receipt, "previous-feedback-task", old_lease)
     receipt = FeedbackReceipt("acme/widgets", 17, item.kind, item.feedback_id, sha)
     lease = ledger.claim(
         receipt,
@@ -2594,7 +2603,12 @@ def test_completed_feedback_immediately_schedules_exact_head_local_ci(tmp_path: 
         resolved_head_sha=sha,
         actioned_at=datetime(2026, 8, 24, 2, 0, tzinfo=UTC),
     )
-    kanban = RecordingKanban()
+    class TerminalFeedbackKanban(RecordingKanban):
+        def task_status(self, board, task_id):
+            assert task_id == "previous-feedback-task"
+            return "done"
+
+    kanban = TerminalFeedbackKanban()
     github = FakeGitHub(admitted_pull_request(sha), (item,))
     github.actions_are_enabled = False
     controller = ScanController(
@@ -2605,6 +2619,7 @@ def test_completed_feedback_immediately_schedules_exact_head_local_ci(tmp_path: 
         RecordingLocalGit(),
     )
 
+    assert ledger.has_pending_mutation("acme/widgets", 17)
     status = controller.dispatch_local_ci_after_feedback(admitted_pull_request(sha))
 
     assert status == "scheduled"

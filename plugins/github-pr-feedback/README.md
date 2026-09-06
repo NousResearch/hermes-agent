@@ -240,6 +240,12 @@ hermes github-pr-feedback merge-disable --repository owner/repository --pr-numbe
 outcome is ambiguous remains eligible for verification even if the PR is no longer open
 or its enrollment was later removed; this readback is required to reconcile durable state.
 
+Before dispatching local CI, obsolete duplicate review/comment dispatches are reconciled
+only when the same immutable feedback identity has already been acknowledged and the old
+Kanban task is done or archived. The canonical PR head/base is reread before the exact
+ledger transition. Active, unknown, or unacknowledged work remains pending; this recovery
+creates no CI receipt and does not satisfy any merge gate.
+
 PR intake prefers older PR numbers and places an open parent before its child when
 canonical repository/branch identities establish that dependency. Repair inspection
 rotates a durable 12-PR window across the catalogue, so repeated updates to newer PRs

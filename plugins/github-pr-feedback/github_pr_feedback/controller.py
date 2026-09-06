@@ -1835,7 +1835,11 @@ class ScanController:
         if current.head_sha != listed.head_sha:
             return "head_changed"
         from .ci_admission import local_ci_admission_blocker
+        from .ledger_action_supersession import reconcile_inactive_actioned_duplicates
 
+        reconcile_inactive_actioned_duplicates(
+            self._ledger, self._kanban, self._github, current, board=self._policy.board or ""
+        )
         blocker = local_ci_admission_blocker(self._github, self._ledger, current)
         if blocker is not None:
             return blocker

@@ -105,7 +105,7 @@ def test_running_descendant_event_precedes_termination_via_reclaim_helper(
 
     kills: list[tuple] = []
 
-    def fake_terminate(pid, claim_lock, started_at=None, **kwargs):
+    def fake_terminate(pid, claim_lock, *, claim_pidns=None, started_at=None, **kwargs):
         # The audit trail must already be durable when the kill fires:
         # standalone calls commit before terminating.
         side = kbc.connect(tmp_path / "kanban.db")
@@ -114,7 +114,10 @@ def test_running_descendant_event_precedes_termination_via_reclaim_helper(
         finally:
             side.close()
         assert "descendant_invalidated" in kinds
-        kills.append((pid, claim_lock, started_at))
+        # The claim's PID namespace and the spawn-time fingerprint travel with
+        # the PID so the callee can tell whether that number is probeable here
+        # at all and whether it was recycled.
+        kills.append((pid, claim_lock, claim_pidns, started_at))
         return {"terminated": True}
 
     monkeypatch.setattr(kb, "_terminate_reclaimed_worker", fake_terminate)

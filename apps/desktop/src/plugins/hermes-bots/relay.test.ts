@@ -582,6 +582,34 @@ describe('the drain loop wires drain → deliver → reply', () => {
     stopBotRelay()
   })
 
+  it('qualifies a sender marker after a long display name', async () => {
+    const displayName = 'x'.repeat(220)
+
+    const calls = respondWith(call =>
+      call.method === 'bot_relay.outbox.drain'
+        ? {
+            envelopes:
+              call.connectionId === 'a'
+                ? [{ ...envelope, message: `Message from 🤖 ${displayName} (@hermes): status?` }]
+                : []
+          }
+        : call.method === 'bot_relay.deliver'
+          ? { reply: 'all green' }
+          : {}
+    )
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await pushAndSettle()
+
+    expect(calls.find(call => call.method === 'bot_relay.deliver')?.params.message).toBe(
+      `Message from 🤖 ${displayName} (@hermes@a): status?`
+    )
+
+    stopBotRelay()
+  })
+
   it('still posts a reply when the target connection is gone — the waiter must never dangle', async () => {
     const calls = respondWith(call =>
       call.method === 'bot_relay.outbox.drain'

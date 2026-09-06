@@ -175,7 +175,7 @@ function qualifyRelaySender(message: unknown, envelope: RelayEnvelope, connectio
   const marker = `(@${handle}):`
   const markerAt = text.indexOf(marker)
 
-  if (markerAt < 0 || markerAt > 200) {
+  if (markerAt < 0 || /[\r\n]/.test(text.slice('Message from 🤖 '.length, markerAt))) {
     return text
   }
 

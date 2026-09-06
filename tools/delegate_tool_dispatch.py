@@ -94,7 +94,7 @@ def _report_child_done(parent_agent, spinner_ref, entry, tag, task_labels, n_tas
         with _quiet("Spinner update_text failed: %s"):
             spinner_ref.update_text(f"🔀 {'[' + tag + '] ' if tag else ''}{remaining} task{'s' if remaining != 1 else ''} remaining")
 
-def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interrupt: bool, detached: bool = False) -> None:
+def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interrupt: bool) -> None:
     """Run the batch's children in parallel, appending entries to ``results`` (sorted by task_index on return, one
     completion line printed per child). Polls futures with a short ``wait()`` timeout instead of ``as_completed()``
     so a wedged child cannot block the parent forever after an interrupt; on parent interrupt the still-pending
@@ -157,7 +157,7 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     if len(batch.children) == 1:
         results.append(batch.run_child(*batch.children[0]))
     else:
-        _run_children_parallel(batch, results, honor_parent_interrupt=honor_parent_interrupt, detached=detached)
+        _run_children_parallel(batch, results, honor_parent_interrupt=honor_parent_interrupt)
 
     _finalize_child_results(results, batch.task_list, batch.children, batch.parent_agent)
     total_duration = round(time.monotonic() - batch.overall_start, 2)

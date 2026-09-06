@@ -273,6 +273,35 @@ class TestModelSwitchCopy:
         assert "openrouter" not in msg and "switching" not in msg
 
 
+class TestRotationNeverRewritesTheConversationModel:
+    """A credential rotation adopts an entry only if its route can serve the conversation's model.
+    The model is never changed by a swap; an ineligible entry is refused (swap returns False)."""
+
+    def _agent(self, api_mode="chat_completions", model="nous/paid-model"):
+        from types import SimpleNamespace
+        return SimpleNamespace(provider="nous", api_mode=api_mode, base_url="https://inference-api.nousresearch.com/v1",
+                               api_key="k", model=model, _client_kwargs={}, _credential_pool_entry_id="p",
+                               _reapply_route_client_config=lambda **kw: None, _replace_primary_openai_client=lambda **kw: None,
+                               _anthropic_client=SimpleNamespace(close=lambda: None),
+                               _build_direct_anthropic_client=lambda key, url: object(), _anthropic_oauth_flag=lambda key: False)
+
+    def test_paid_conversation_refuses_a_welcome_route_on_every_wire_mode(self, portal):
+        from types import SimpleNamespace
+        from agent.client_lifecycle import ClientLifecycleMixin
+        for mode, model in (("chat_completions", "nous/paid-model"), ("anthropic_messages", "anthropic/claude-sonnet")):
+            agent = self._agent(mode, model)
+            ok = ClientLifecycleMixin._swap_credential(agent, SimpleNamespace(id="g", runtime_api_key="jwt", runtime_base_url=WELCOME))
+            assert ok is False
+            assert agent.model == model and agent.api_key == "k" and agent._credential_pool_entry_id == "p"
+
+    def test_welcome_conversation_may_move_to_the_portal_host(self, portal):
+        from types import SimpleNamespace
+        from agent.client_lifecycle import ClientLifecycleMixin
+        agent = self._agent(model=anon_auth.GUEST_MODEL); agent.base_url = WELCOME
+        ok = ClientLifecycleMixin._swap_credential(agent, SimpleNamespace(id="p2", runtime_api_key="key", runtime_base_url="https://inference-api.nousresearch.com/v1"))
+        assert ok is True and agent.model == anon_auth.GUEST_MODEL
+
+
 class TestBackgroundRetry:
     def test_background_failure_releases_the_latch(self, portal):
         import time as _t
@@ -292,32 +321,7 @@ class TestBackgroundRetry:
         assert anon_auth.has_guest()
 
 
-class TestPoolSwapKeepsRouteAndModelTogether:
-    def test_swap_to_welcome_pins_and_swap_to_paid_restores_caller_model(self, portal):
-        from types import SimpleNamespace
-        from agent.client_lifecycle import ClientLifecycleMixin
-        agent = SimpleNamespace(provider="nous", api_mode="chat_completions", base_url="https://inference-api.nousresearch.com/v1",
-                                api_key="k", model="nous/paid-model", _client_kwargs={},
-                                _reapply_route_client_config=lambda **kw: None,
-                                _replace_primary_openai_client=lambda **kw: None)
-        swap = ClientLifecycleMixin._swap_credential
-        swap(agent, SimpleNamespace(id="g", runtime_api_key="jwt", runtime_base_url=WELCOME))
-        assert agent.model == anon_auth.GUEST_MODEL and agent.base_url.rstrip("/") == WELCOME
-        agent.model = "nous/paid-model"
-        swap(agent, SimpleNamespace(id="p", runtime_api_key="key", runtime_base_url="https://inference-api.nousresearch.com/v1"))
-        assert agent.model == "nous/paid-model"
-
-
-class TestSwapCoversEveryWireMode:
-    def test_anthropic_messages_swap_pins_before_returning(self, portal):
-        from types import SimpleNamespace
-        from agent.client_lifecycle import ClientLifecycleMixin
-        agent = SimpleNamespace(provider="nous", api_mode="anthropic_messages", base_url="https://inference-api.nousresearch.com/v1",
-                                api_key="k", model="anthropic/claude-sonnet", _client_kwargs={}, _anthropic_client=SimpleNamespace(close=lambda: None),
-                                _build_direct_anthropic_client=lambda key, url: object(), _anthropic_oauth_flag=lambda key: False)
-        ClientLifecycleMixin._swap_credential(agent, SimpleNamespace(id="g", runtime_api_key="jwt", runtime_base_url=WELCOME))
-        assert agent.model == anon_auth.GUEST_MODEL
-
+class TestBackgroundLatchOnThreadFailure:
     def test_thread_start_failure_releases_latch(self, portal, monkeypatch):
         import threading
         class Boom(threading.Thread):
@@ -381,3 +385,30 @@ class TestIdentityOfRecordIsTheSharedStore:
         monkeypatch.setattr(auth_nous, "_nous_shared_store_lock", shared)
         anon_auth.ensure_portal_identity(blocking=True)
         assert order[:2] == ["profile", "shared"]
+
+
+class TestConnectorTokenPath:
+    def test_opt_out_hides_the_free_tier_from_connectors_including_cached_tokens(self, portal, monkeypatch):
+        anon_auth.ensure_portal_identity(blocking=True)
+        from hermes_cli.auth_nous import resolve_nous_runtime_credentials
+        resolve_nous_runtime_credentials()  # now a cached, valid JWT exists
+        from tools import managed_tool_gateway as mtg
+        assert mtg.read_nous_access_token()
+        _write_config(monkeypatch, guest=False)
+        assert mtg.peek_nous_access_token() is None
+        assert mtg.read_nous_access_token() is None
+
+    def test_connector_path_replaces_a_dead_credential_once(self, portal):
+        first = anon_auth.ensure_portal_identity(blocking=True)
+        from hermes_cli.auth import _auth_store_lock, _save_auth_store
+        with _auth_store_lock():
+            store = _load_auth_store()
+            store["providers"]["nous"]["expires_at"] = "2000-01-01T00:00:00+00:00"
+            store["providers"]["nous"]["access_token"] = _jwt(exp=1)
+            _save_auth_store(store)
+        portal.dead_tokens.add(first["anon_token"])
+        from tools import managed_tool_gateway as mtg
+        token = mtg.read_nous_access_token()
+        assert token and token != _jwt(exp=1)
+        assert _load_auth_store()["providers"]["nous"]["anon_token"] != first["anon_token"]
+        assert portal.minted == 2

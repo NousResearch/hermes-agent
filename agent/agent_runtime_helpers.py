@@ -749,7 +749,8 @@ def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_co
             )
             return False, has_retried_429
     _ra().logger.info("Credential auth failure — refreshed pool entry %s", getattr(refreshed, 'id', '?'))
-    agent._swap_credential(refreshed)
+    if agent._swap_credential(refreshed) is False:
+        return False, has_retried_429
     return True, has_retried_429
 
 
@@ -847,8 +848,7 @@ def recover_with_credential_pool(
             "Credential %s (%s) — rotated to pool entry %s",
             rotate_status, label, getattr(next_entry, "id", "?"),
         )
-        agent._swap_credential(next_entry)
-        return True
+        return agent._swap_credential(next_entry) is not False
     if effective_reason == FailoverReason.upstream_rate_limit:
         # Upstream (e.g. DeepSeek behind OpenRouter) is throttling the aggregator; the credential is
         # healthy. Do not rotate/exhaust; let fallback switch models.

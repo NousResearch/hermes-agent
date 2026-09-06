@@ -121,15 +121,25 @@ WELCOME_HOSTS = frozenset({"welcome-api.nousresearch.com"})
 
 
 def pin_model_for_route(provider: Any, base_url: Any, model: Any) -> Any:
-    """The one model-policy decision the free tier owns: on the Nous welcome host the model is
-    ``nous/welcome``; anywhere else the caller's model stands. Called wherever a Nous route is
-    finalized (agent init and every credential-pool swap), so endpoint and model never drift.
+    """Model policy at agent START: on the Nous welcome host the model is ``nous/welcome``; anywhere
+    else the caller's model stands. Used once, when the route is first finalized. Mid-conversation
+    route changes go through :func:`route_can_serve_model` instead: a conversation's model is never
+    silently rewritten by a credential rotation.
     """
     if provider == "nous" and route_is_welcome_host(base_url):
         if model and model != GUEST_MODEL:
             logger.info("Nous free tier: using %s instead of configured model %s", GUEST_MODEL, model)
         return GUEST_MODEL
     return model
+
+
+def route_can_serve_model(provider: Any, base_url: Any, model: Any) -> bool:
+    """Eligibility for a credential ROTATION: the welcome host serves only ``nous/welcome``, so a
+    conversation on any other model must not be rotated onto it (and a ``nous/welcome`` conversation
+    may move to the portal host, which serves it too). Non-Nous routes are always eligible."""
+    if provider != "nous" or not route_is_welcome_host(base_url):
+        return True
+    return not model or model == GUEST_MODEL
 
 
 def route_is_welcome_host(base_url: Any) -> bool:

@@ -1177,6 +1177,7 @@ platform:
       action_deny: "❌ Ablehnen"
       toast_invalid_data: "Ungültige Genehmigungsdaten."
       toast_already_resolved: "Diese Genehmigung wurde bereits beantwortet."
+      toast_admin_only: "⛔ Nur ein Admin kann hier Befehle genehmigen."
       resolved_once: "✅ Einmalig genehmigt"
       resolved_session: "✅ Für diese Sitzung genehmigt"
       resolved_always: "✅ Dauerhaft genehmigt"

@@ -1177,6 +1177,7 @@ platform:
       action_deny: "❌ 拒否"
       toast_invalid_data: "承認データが無効です。"
       toast_already_resolved: "この承認はすでに処理されています。"
+      toast_admin_only: "⛔ ここでコマンドを承認できるのは管理者だけです。"
       resolved_once: "✅ 一度だけ承認"
       resolved_session: "✅ セッション中は承認"
       resolved_always: "✅ 永続的に承認"

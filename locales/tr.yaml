@@ -1177,6 +1177,7 @@ platform:
       action_deny: "❌ Reddet"
       toast_invalid_data: "Geçersiz onay verisi."
       toast_already_resolved: "Bu onay zaten sonuçlandırıldı."
+      toast_admin_only: "⛔ Burada komutları yalnızca bir yönetici onaylayabilir."
       resolved_once: "✅ Bir kez onaylandı"
       resolved_session: "✅ Oturum için onaylandı"
       resolved_always: "✅ Kalıcı olarak onaylandı"

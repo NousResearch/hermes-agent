@@ -1194,6 +1194,7 @@ platform:
       action_deny: "❌ Elutasít"
       toast_invalid_data: "Érvénytelen jóváhagyási adat."
       toast_already_resolved: "Ezt a jóváhagyást már elbírálták."
+      toast_admin_only: "⛔ Itt csak adminisztrátor hagyhat jóvá parancsokat."
       resolved_once: "✅ Egyszer jóváhagyva"
       resolved_session: "✅ Munkamenetre jóváhagyva"
       resolved_always: "✅ Véglegesen jóváhagyva"

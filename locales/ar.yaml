@@ -1177,6 +1177,7 @@ platform:
       action_deny: "❌ رفض"
       toast_invalid_data: "بيانات الموافقة غير صالحة."
       toast_already_resolved: "تم البت في هذه الموافقة مسبقًا."
+      toast_admin_only: "⛔ يمكن للمسؤول فقط الموافقة على الأوامر هنا."
       resolved_once: "✅ تمت الموافقة مرة"
       resolved_session: "✅ تمت الموافقة للجلسة"
       resolved_always: "✅ تمت الموافقة دائمًا"

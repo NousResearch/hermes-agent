@@ -1177,6 +1177,7 @@ platform:
       action_deny: "❌ 拒絕"
       toast_invalid_data: "批准資料無效。"
       toast_already_resolved: "此批准已處理完畢。"
+      toast_admin_only: "⛔ 只有管理員可以在這裡批准指令。"
       resolved_once: "✅ 已批准一次"
       resolved_session: "✅ 已批准（本次工作階段）"
       resolved_always: "✅ 已永久批准"

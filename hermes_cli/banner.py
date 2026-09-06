@@ -236,15 +236,25 @@ def _tips_behind(head_rev: Optional[str], target_rev: Optional[str], repo_dir: O
     With ``repo_dir``, a target that is already an ancestor of HEAD (local-ahead checkout) is 0 too.
     ``ahead_by == 0`` with differing tips means the remote tip is reachable from our HEAD — NOT
     behind. A local-only HEAD 404s on the API, which degrades to ``UPDATE_AVAILABLE_NO_COUNT`` —
-    never a fabricated 1.
+    never a fabricated 1. A failed local ancestry probe stays unknown unless the API answers.
     """
     if not head_rev or not target_rev:
         return None
-    if head_rev == target_rev or (repo_dir is not None and _git_ok(
-            ["merge-base", "--is-ancestor", target_rev, "HEAD"], cwd=repo_dir)):
+    if head_rev == target_rev:
         return 0
+    ancestry_known = repo_dir is None
+    if repo_dir is not None:
+        ancestor = _git_run(
+            ["merge-base", "--is-ancestor", target_rev, "HEAD"], cwd=repo_dir
+        )
+        if ancestor is not None:
+            if ancestor.returncode == 0:
+                return 0
+            ancestry_known = ancestor.returncode == 1
     counted = _github_compare_behind(head_rev, target_rev)
-    return counted if counted is not None else UPDATE_AVAILABLE_NO_COUNT
+    if counted is not None:
+        return counted
+    return UPDATE_AVAILABLE_NO_COUNT if ancestry_known else None
 
 
 def _upstream_main_sha() -> Optional[str]:

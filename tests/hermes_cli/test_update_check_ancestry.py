@@ -86,14 +86,20 @@ def test_a_genuinely_behind_checkout_still_reports_an_update(shallow_check, caps
     assert "behind" in out.lower()
 
 
-def test_a_failed_ancestry_probe_is_not_reported_as_behind(shallow_check, capsys):
+@pytest.mark.parametrize(
+    "ancestor_result",
+    [128, subprocess.TimeoutExpired("git", 5), OSError("git unavailable")],
+)
+def test_a_failed_ancestry_probe_is_not_reported_as_behind(
+    shallow_check, capsys, ancestor_result
+):
     """git failing to run says nothing about the checkout.
 
     With the compare API also unable to answer, the only honest verdict is
     unknown — not "update available".
     """
     shallow_check(
-        ancestor_result=subprocess.SubprocessError("git unavailable"),
+        ancestor_result=ancestor_result,
         compare_behind=None,
     )
 

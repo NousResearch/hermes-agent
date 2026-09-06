@@ -428,6 +428,11 @@ export function liveSessionProjectId(session: SessionInfo, explicitProjects: Pro
   return repoRoot
 }
 
+/** The lane a row files under: its live project, or Home for detached (cwd-less) rows. */
+export function sessionBucketId(session: SessionInfo, explicitProjects: ProjectInfo[]): null | string {
+  return liveSessionProjectId(session, explicitProjects) ?? (isDetachedSession(session) ? NO_PROJECT_ID : null)
+}
+
 /**
  * The ONE row-level project-filter rule the flat list and the project lanes
  * narrow by. Detached (cwd-less) rows belong to the Home bucket
@@ -443,7 +448,7 @@ export function sessionMatchesProjectFilter(
     return true
   }
 
-  const id = liveSessionProjectId(session, explicitProjects) ?? (isDetachedSession(session) ? NO_PROJECT_ID : null)
+  const id = sessionBucketId(session, explicitProjects)
 
   return id !== null && filter.includes(id)
 }
@@ -802,8 +807,7 @@ export function overlayLivePreviews(
       continue
     }
 
-    const projectId =
-      liveSessionProjectId(session, explicitProjects) ?? (isDetachedSession(session) ? NO_PROJECT_ID : null)
+    const projectId = sessionBucketId(session, explicitProjects)
 
     if (!projectId) {
       continue

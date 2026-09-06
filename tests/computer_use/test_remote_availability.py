@@ -8,7 +8,7 @@ Behaviour contracts (not change-detectors):
 - _empty_discovery_reason: remote-active reports the host-bridge hint and never
   probes the local loginctl/DISPLAY session; inactive engages the local probing path.
 - DEFAULT_CONFIG ships computer_use.remote disabled (opt-in) with an empty URL.
-- `hermes computer-use bridge` parses with safe defaults, requires --allowed-hosts,
+- `hermes computer-use host-bridge` parses with safe defaults, requires --allowed-hosts,
   and dispatches exactly the kwargs run_host_bridge owns today.
 """
 import argparse
@@ -130,8 +130,8 @@ class TestBridgeSubcommand:
         return parser.parse_args(argv)
 
     def test_bridge_defaults(self):
-        args = self._parse(["computer-use", "bridge", "--allowed-hosts", "desktop.example.com"])
-        assert args.computer_use_action == "bridge"
+        args = self._parse(["computer-use", "host-bridge", "--allowed-hosts", "desktop.example.com"])
+        assert args.computer_use_action == "host-bridge"
         assert args.port == 8765
         assert args.bind == "127.0.0.1"
         assert args.allowed_origins == ""
@@ -140,7 +140,7 @@ class TestBridgeSubcommand:
     def test_allowed_hosts_required(self):
         # An empty allowlist must not be silently accepted at the CLI layer either.
         with pytest.raises(SystemExit):
-            self._parse(["computer-use", "bridge"])
+            self._parse(["computer-use", "host-bridge"])
 
     def test_dispatch_passes_only_current_run_host_bridge_kwargs(self, monkeypatch):
         # Signature-drift guard: new bridge options default host-side, the CLI forwards five.
@@ -152,6 +152,6 @@ class TestBridgeSubcommand:
         monkeypatch.setattr("tools.computer_use.host_bridge_cli.run_host_bridge", _fake_bridge)
         args = argparse.Namespace(allowed_hosts="a.com,b.com", allowed_origins="",
                                   port=9000, bind="0.0.0.0", session_idle_timeout=1800)
-        assert cu_cli._cu_bridge(args) == 0
+        assert cu_cli._cu_host_bridge(args) == 0
         assert captured == {"allowed_hosts": ["a.com", "b.com"], "allowed_origins": [],
                             "port": 9000, "bind": "0.0.0.0", "session_idle_timeout": 1800}

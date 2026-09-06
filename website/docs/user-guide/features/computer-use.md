@@ -85,7 +85,7 @@ platform-appropriate prereqs:
 | Platform | Prereqs |
 |---|---|
 | **macOS** | System Settings → Privacy & Security → **Accessibility** + **Screen Recording**. Grant the identity named by `hermes computer-use doctor`. Standard mode uses CuaDriver.app; bounded and unrestricted modes use the Hermes host identity. |
-| **Windows** | None at install time. If you're driving over SSH (not RDP / console), you need the autostart pattern — see [cua.ai/docs/how-to-guides/driver/windows-ssh](https://cua.ai/docs/how-to-guides/driver/windows-ssh) for the Session 0 ↔ Session 1+ proxy. |
+| **Windows** | None at install time. If Hermes runs in Session 0 (for example, from SSH or a service), use the autostart pattern and set `computer_use.daemon_socket` to the interactive daemon's named pipe. See [cua.ai/docs/how-to-guides/driver/windows-ssh](https://cua.ai/docs/how-to-guides/driver/windows-ssh). |
 | **Linux** | A reachable display server: `DISPLAY` set for X11, or `XDG_SESSION_TYPE=wayland`. Wayland sessions need an XWayland bridge for capture. AT-SPI must be on (default on GNOME/KDE/Xfce). |
 
 Then start a session with the toolset enabled:
@@ -93,6 +93,17 @@ Then start a session with the toolset enabled:
 ```
 hermes -t computer_use chat
 ```
+
+For a Windows Session 0 gateway, point Hermes at the interactive daemon explicitly:
+
+```yaml
+computer_use:
+  daemon_socket: '\\.\pipe\cua-driver'
+```
+
+The endpoint is used only when configured. Hermes does not discover or connect
+to an ambient daemon automatically. A driver-provided MCP endpoint remains
+authoritative.
 
 or add `computer_use` to your enabled toolsets in `~/.hermes/config.yaml`.
 

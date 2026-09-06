@@ -113,6 +113,18 @@ def _mcp_args_with_overlay_flag(args: List[str], driver_cmd: str = _CUA_DRIVER_D
     on = _cb()._cua_no_overlay() and _cua_driver_supports_no_overlay(driver_cmd)
     return [*args, "--no-overlay"] if on else list(args)
 
+
+def _mcp_args_with_configured_socket(args: List[str]) -> List[str]:
+    """Bind MCP to the operator-configured daemon endpoint when present.
+
+    A manifest-advertised endpoint wins. This keeps driver-owned launch
+    descriptors authoritative and avoids duplicate or conflicting flags.
+    """
+    if any(arg == "--socket" or arg.startswith("--socket=") for arg in args):
+        return list(args)
+    socket = _cb()._cua_daemon_socket()
+    return [*args, "--socket", socket] if socket else list(args)
+
 @functools.lru_cache(maxsize=1)
 def _cua_driver_supports_no_overlay(driver_cmd: str) -> bool:
     """True if ``<driver> --help`` mentions ``--no-overlay`` (probed once); older drivers reject unknown flags, which
@@ -149,6 +161,7 @@ def _resolve_mcp_invocation(driver_cmd: str, *, timeout: float = 6.0) -> Tuple[s
     # not the system one.
     command = _wsl_windows_path_to_posix(command) if isinstance(command, str) and command else ""
     command = command if command and _has_path_separator(command) else driver_cmd
+    args = _mcp_args_with_configured_socket(args)
     return command, _mcp_args_with_overlay_flag(args, driver_cmd=command)
 
 def _manifest_contract_reason(manifest: Optional[Dict[str, Any]]) -> str:

@@ -108,8 +108,11 @@ def _extract_health_report_from_result(result: Report) -> Report:
     raise RuntimeError(f"health_report response carried neither structuredContent nor a parseable JSON text block. Result keys: {list(result.keys())}")
 
 def _open_mcp(binary: str) -> subprocess.Popen:
-    """Spawn ``<binary> mcp``; pin UTF-8 — cua-driver emits emoji/arbitrary paths and Windows' cp1252 would raise."""
-    return subprocess.Popen([binary, "mcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    """Spawn the resolved MCP invocation; pin UTF-8 for arbitrary driver output."""
+    from tools.computer_use.cua_backend_driver import _resolve_mcp_invocation
+
+    command, args = _resolve_mcp_invocation(binary)
+    return subprocess.Popen([command, *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8", errors="replace", bufsize=1, creationflags=windows_hide_flags(),
                             env=_sanitized_cua_env())
 

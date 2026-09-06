@@ -42,6 +42,20 @@ def _computer_use_cfg() -> Dict[str, Any]:
         return (load_config() or {}).get("computer_use") or {}
     return {}
 
+
+def _cua_daemon_socket() -> Optional[str]:
+    """Explicit ``computer_use.daemon_socket`` endpoint, or ``None``.
+
+    The value is passed as one subprocess argument, never through a shell.
+    Invalid values fail closed to the driver's normal local runtime rather
+    than becoming an implicit remote/discovered authority.
+    """
+    value = _computer_use_cfg().get("daemon_socket")
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value if value and "\x00" not in value else None
+
 def _cua_no_overlay() -> bool:
     """Pass ``--no-overlay``? ``computer_use.no_overlay`` overrides; else off on macOS (cursor-overlay redraw
     loop can peg a core after a session), headless Linux / WSL2 / containers, and Linux X11 (the overlay is a

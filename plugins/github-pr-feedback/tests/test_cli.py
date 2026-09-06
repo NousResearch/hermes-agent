@@ -823,7 +823,9 @@ def test_namespaced_context_loads_assignee_rules_for_runtime_routing(
     assert policy.assignee_for("Reduce latency") == "performance-patch-steward"
 
 
+@pytest.mark.parametrize("state", ["OPEN", "CLOSED", "MERGED"])
 def test_inspect_pr_emits_canonical_identity_from_the_shared_github_client(
+    state: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -835,7 +837,7 @@ def test_inspect_pr_emits_canonical_identity_from_the_shared_github_client(
     settings = enabled_settings(repository)
     expected = PullRequest(
         17,
-        "OPEN",
+        state,
         "acme/widgets",
         "acme/widgets",
         "owner",
@@ -867,6 +869,7 @@ def test_inspect_pr_emits_canonical_identity_from_the_shared_github_client(
         "head_sha": "a" * 40,
         "number": 17,
         "repository": "acme/widgets",
+        "state": expected.state,
     }
 
 

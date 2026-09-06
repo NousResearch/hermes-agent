@@ -2582,6 +2582,7 @@ def _inspect_pr(ctx: Any, args: argparse.Namespace) -> int:
                 "head_sha": pull_request.head_sha,
                 "number": pull_request.number,
                 "repository": pull_request.base_repository,
+                "state": pull_request.state,
             },
             sort_keys=True,
         )

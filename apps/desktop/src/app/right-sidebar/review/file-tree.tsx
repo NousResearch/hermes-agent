@@ -18,6 +18,7 @@ import type { HermesReviewFile } from '@/global'
 import { useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { displayPath } from '@/lib/display-path'
+import { pickRevealLabel } from '@/lib/file-manager'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import {
@@ -45,8 +46,6 @@ import {
   unstageReviewFile
 } from '@/store/review'
 import { $currentCwd } from '@/store/session'
-
-import { pickRevealLabel } from '../file-actions'
 
 import {
   buildReviewFlatList,

@@ -11,7 +11,7 @@ import {
 } from '@/components/ui/context-menu'
 import { translateNow, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
-import { IS_MAC } from '@/lib/keybinds/combo'
+import { pickRevealLabel } from '@/lib/file-manager'
 import { cn } from '@/lib/utils'
 import {
   $fileActionDialog,
@@ -30,17 +30,9 @@ import {
 } from '@/store/file-actions'
 import { notifyError } from '@/store/notifications'
 
-const IS_WIN = typeof navigator !== 'undefined' && /win/i.test(navigator.platform || navigator.userAgent || '')
-
 // F2 starts a rename anywhere; Enter starts one when a row is focused (VS Code).
 export function isRenameShortcut(event: KeyboardEvent | ReactKeyboardEvent): boolean {
   return event.key === 'F2' || event.key === 'Enter'
-}
-
-/** The platform-appropriate "reveal in file manager" label (Finder / Explorer
- *  / containing folder). Shared so every file menu reads consistently. */
-export function pickRevealLabel(finder: string, explorer: string, fileManager: string): string {
-  return IS_MAC ? finder : IS_WIN ? explorer : fileManager
 }
 
 interface FileEntryContextMenuProps {

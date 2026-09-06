@@ -1,6 +1,8 @@
 import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { capitalize } from '@/lib/text'
 import { $connection } from '@/store/session'
+import { assertSessionOwnerResolved, SessionOwnerResolutionError } from '@/store/session-owner-resolution'
+import { knownOwnerForSession } from '@/store/session-states'
 
 export type MediaKind = 'audio' | 'image' | 'video' | 'file'
 
@@ -56,10 +58,14 @@ export function mediaMime(path: string): string {
 }
 
 export function mediaName(path: string): string {
+  if (/^[a-z]:[\\/]/i.test(path) || path.startsWith('\\\\')) {
+    return path.split(/[\\/]/).filter(Boolean).pop() || path
+  }
+
   try {
     const url = new URL(path)
 
-    return url.pathname.split('/').filter(Boolean).pop() || path
+    return decodeURIComponent(url.pathname).split(/[\\/]/).filter(Boolean).pop() || path
   } catch {
     return path.split(/[\\/]/).filter(Boolean).pop() || path
   }
@@ -178,9 +184,18 @@ export function filePathFromMediaPath(path: string): string {
   }
 
   try {
-    return decodeURIComponent(new URL(path).pathname)
+    const url = new URL(path)
+    const pathname = decodeURIComponent(url.pathname)
+
+    if (url.hostname) {
+      return `//${url.hostname}${pathname}`
+    }
+
+    return /^\/[a-z]:[\\/]/i.test(pathname) ? pathname.slice(1) : pathname
   } catch {
-    return path.replace(/^file:\/\//, '')
+    const fallback = path.replace(/^file:\/\//, '')
+
+    return /^\/[a-z]:[\\/]/i.test(fallback) ? fallback.slice(1) : fallback
   }
 }
 
@@ -204,19 +219,46 @@ export async function gatewayMediaDataUrl(path: string): Promise<string> {
 // avoids browser/OS downloads losing OAuth cookies and avoids the data-URL cap
 // used by preview endpoints.
 export async function downloadGatewayMediaFile(
-  path: string
+  path: string,
+  sessionId?: null | string
 ): Promise<{ canceled?: boolean; path?: string; saved: boolean }> {
   const file = filePathFromMediaPath(path)
   const conn = $connection.get()
+  const normalizedSessionId = sessionId?.trim() || null
+  const owner = knownOwnerForSession(normalizedSessionId)
+  let connectionId: null | string
+  let profile: null | string
+
+  if (owner && typeof owner === 'object') {
+    connectionId = owner.connectionId.trim()
+    profile = (owner.targetProfile || owner.profile).trim() || null
+
+    if (!connectionId) {
+      throw new SessionOwnerResolutionError(normalizedSessionId || '(unknown)', 'file.download')
+    }
+  } else if (typeof owner === 'string' && owner.trim()) {
+    // A bare owner is a legacy profile-pool route. Never combine it with the
+    // ambient registered connection: that can select the same-named profile
+    // on another machine.
+    connectionId = null
+    profile = owner.trim()
+  } else {
+    // Unknown transcript owners fail closed whenever more than one backend may
+    // exist. The authoritative gate preserves the supported legacy exception:
+    // an old registry-less, single-profile Desktop has only the ambient owner.
+    assertSessionOwnerResolved(owner, { method: 'file.download', sessionId: normalizedSessionId })
+    connectionId = conn?.connectionId?.trim() || null
+    profile = conn?.profile?.trim() || null
+  }
 
   if (!window.hermesDesktop?.saveGatewayFile) {
     throw new Error('Desktop file download bridge is unavailable')
   }
 
   return window.hermesDesktop.saveGatewayFile({
-    connectionId: conn?.connectionId,
+    connectionId,
     path: file,
-    profile: conn?.profile,
+    profile,
     suggestedName: mediaName(file)
   })
 }

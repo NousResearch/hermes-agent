@@ -1,3 +1,4 @@
+import { atom } from 'nanostores'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -15,7 +16,11 @@ import { startSessionDrag } from './session-drag'
  * the drop has to land on the tab the user can actually see.
  */
 
-vi.mock('@/store/session-states', () => ({ openSessionTile: vi.fn() }))
+vi.mock('@/store/session-states', () => ({
+  $sessionStates: atom({}),
+  isSessionRemote: vi.fn(() => false),
+  openSessionTile: vi.fn()
+}))
 vi.mock('./composer/focus', () => ({ requestComposerInsertRefs: vi.fn() }))
 
 const ZONE = { left: 0, top: 0, right: 1000, bottom: 800 }

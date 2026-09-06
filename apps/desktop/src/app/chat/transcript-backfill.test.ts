@@ -12,7 +12,8 @@ import {
 } from './transcript-backfill'
 
 vi.mock('@/hermes', () => ({
-  getOlderSessionMessages: vi.fn()
+  getOlderSessionMessages: vi.fn(),
+  setApiRequestProfile: vi.fn()
 }))
 
 const { getOlderSessionMessages } = await import('@/hermes')

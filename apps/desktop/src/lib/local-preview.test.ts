@@ -133,6 +133,18 @@ describe('remote HTML previews', () => {
     expect(localPreviewTarget('//srv/share/report #1?.html')?.url).toBe('file:////srv/share/report%20%231%3F.html')
   })
 
+  it.each([
+    ['Windows drive path', 'C:\\Users\\a\\report.pdf', 'C:\\Users\\a\\report.pdf'],
+    ['Windows file URL', 'file:///C:/Users/a/report.pdf', 'C:/Users/a/report.pdf'],
+    ['home-relative path', '~/todo.md', '~/todo.md']
+  ])('does not prepend the session cwd to a %s', (_kind, target, expected) => {
+    expect(localPreviewTarget(target, '/srv/work')?.path).toBe(expected)
+  })
+
+  it('resolves a genuinely relative target against the session cwd', () => {
+    expect(localPreviewTarget('report.pdf', '/srv/work')?.path).toBe('/srv/work/report.pdf')
+  })
+
   it('opens ordinary targets without staging them', async () => {
     const openPreviewInBrowser = vi.fn(async () => undefined)
     const saveImageBuffer = vi.fn()

@@ -64,6 +64,36 @@ function joinPath(base: string, rel: string) {
   return `${base.replace(/\/+$/, '')}/${rel.replace(/^\.?\//, '')}`
 }
 
+function isAbsolutePreviewPath(value: string) {
+  return (
+    value.startsWith('/') ||
+    value.startsWith('\\') ||
+    /^[a-z]:[\\/]/i.test(value) ||
+    value === '~' ||
+    /^~[\\/]/.test(value)
+  )
+}
+
+function pathFromFileUrl(value: string) {
+  try {
+    const url = new URL(value)
+    const pathname = decodeURIComponent(url.pathname)
+
+    if (url.hostname) {
+      return `//${url.hostname}${pathname}`
+    }
+
+    // WHATWG URLs represent Windows drive paths as `/C:/...`. The backend
+    // expects the drive path itself, even when this renderer is viewing a
+    // transcript from a remote Windows gateway.
+    return /^\/[a-z]:[\\/]/i.test(pathname) ? pathname.slice(1) : pathname
+  } catch {
+    const path = value.replace(/^file:\/\//i, '')
+
+    return /^\/[a-z]:[\\/]/i.test(path) ? path.slice(1) : path
+  }
+}
+
 function pathToFileUrl(path: string) {
   const isWindowsUnc = path.startsWith('\\\\')
   const normalized = isWindowsUnc || /^[a-z]:[\\/]/i.test(path) ? path.replace(/\\/g, '/') : path
@@ -192,12 +222,8 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
   let path = raw
 
   if (/^file:\/\//i.test(raw)) {
-    try {
-      path = decodeURIComponent(new URL(raw).pathname)
-    } catch {
-      path = raw.replace(/^file:\/\//i, '')
-    }
-  } else if (!raw.startsWith('/') && cwd) {
+    path = pathFromFileUrl(raw)
+  } else if (!isAbsolutePreviewPath(raw) && cwd) {
     path = joinPath(cwd, raw)
   }
 

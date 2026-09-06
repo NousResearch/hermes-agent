@@ -12,6 +12,7 @@ import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
+import { RevealInFolderTrigger } from '@/components/chat/reveal-in-folder'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
@@ -143,11 +144,10 @@ function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string
   )
 }
 
-function MediaAttachment({ path }: { path: string }) {
+function PlayableMediaAttachment({ kind, path }: { kind: 'audio' | 'image' | 'video'; path: string }) {
   const [src, setSrc] = useState('')
   const [failed, setFailed] = useState(false)
   const { open, openFailed } = useOpenMediaFile(path)
-  const kind = mediaKind(path)
   const name = mediaName(path)
 
   useEffect(() => {
@@ -156,14 +156,6 @@ function MediaAttachment({ path }: { path: string }) {
 
     setFailed(false)
     setSrc('')
-
-    if (kind === 'file') {
-      setFailed(true)
-
-      return () => {
-        cancelled = true
-      }
-    }
 
     void resolveMediaPlaybackSrc(path)
       .then(value => {
@@ -195,7 +187,7 @@ function MediaAttachment({ path }: { path: string }) {
   if (kind === 'image' && src) {
     return (
       <span className="block">
-        <MarkdownImage alt={name} src={src} />
+        <MarkdownImage alt={name} rawSrc={path} src={src} />
       </span>
     )
   }
@@ -227,16 +219,18 @@ function MediaAttachment({ path }: { path: string }) {
 
   return (
     <span className="wrap-anywhere">
-      <a
-        className="ref wrap-anywhere"
-        href="#"
-        onClick={event => {
-          event.preventDefault()
-          open()
-        }}
-      >
-        {failed ? `Open ${name}` : `Loading ${name}...`}
-      </a>
+      <RevealInFolderTrigger path={path}>
+        <a
+          className="ref wrap-anywhere"
+          href="#"
+          onClick={event => {
+            event.preventDefault()
+            open()
+          }}
+        >
+          {failed ? `Open ${name}` : `Loading ${name}...`}
+        </a>
+      </RevealInFolderTrigger>
       {openFailed && <OpenMediaFailedNote name={name} />}
     </span>
   )
@@ -258,6 +252,8 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   const mediaPath = mediaPathFromMarkdownHref(href)
 
   if (mediaPath) {
+    const kind = mediaKind(mediaPath)
+
     // A delivered markdown document is renderable content, not an opaque
     // download: route it to the preview rail (which renders .md with a
     // rendered/source toggle) instead of the download-link fallback that
@@ -272,11 +268,11 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     // the same file card + "Open preview" the bare-path markdown-link
     // branch below produces — so MEDIA: uniformly delivers the richest
     // rendering for every file type.
-    if (mediaKind(mediaPath) === 'file') {
+    if (kind === 'file') {
       return <PreviewAttachment source="tool-result" target={mediaPath} />
     }
 
-    return <MediaAttachment path={mediaPath} />
+    return <PlayableMediaAttachment kind={kind} path={mediaPath} />
   }
 
   const previewTarget = previewTargetFromMarkdownHref(href)
@@ -306,10 +302,12 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     const fileHref = href && !href.startsWith('#') && isFileMediaPath(href) ? href : null
 
     if (fileHref) {
-      return mediaKind(fileHref) === 'file' ? (
+      const kind = mediaKind(fileHref)
+
+      return kind === 'file' ? (
         <PreviewAttachment source="explicit-link" target={fileHref} />
       ) : (
-        <MediaAttachment path={fileHref} />
+        <PlayableMediaAttachment kind={kind} path={fileHref} />
       )
     }
 
@@ -348,7 +346,7 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
 // Generated/inline media often arrives as image markdown — `![clip](clip.mp4)`.
 // A raw <img> with a video/audio source renders a broken-image icon (the file is
 // valid, the browser just can't paint it as an image), so route those sources to
-// MediaAttachment, which picks the right <video>/<audio> element (streaming
+// PlayableMediaAttachment, which picks the right <video>/<audio> element (streaming
 // protocol + open-externally fallback) by media kind. Detection is
 // extension-based via mediaKind(); an extension-less/data/blob video URL still
 // resolves to 'file' and falls through to the image path as before.
@@ -356,18 +354,31 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
 // This is split from the image path because that path is built on hooks: a
 // conditional return inside it would have to sit after every hook call, which
 // would still fire an image resolve for media we never render as an image.
-export function MarkdownImage(props: ComponentProps<'img'>) {
-  const rawSrc = typeof props.src === 'string' ? props.src : ''
-  const kind = rawSrc ? mediaKind(rawSrc) : 'file'
+//
+// `rawSrc` (optional) is the ORIGINAL disk path when the rendered `src` is a
+// resolved blob/data URL — it feeds the right-click "Reveal in folder" menu,
+// which needs a real path, not a blob: URL.
+export function MarkdownImage(props: ComponentProps<'img'> & { rawSrc?: string }) {
+  const { rawSrc, ...imgProps } = props
+  const src = typeof imgProps.src === 'string' ? imgProps.src : ''
+  const kind = src ? mediaKind(src) : 'file'
 
   if (kind === 'video' || kind === 'audio') {
-    return <MediaAttachment path={rawSrc} />
+    return <PlayableMediaAttachment kind={kind} path={src} />
   }
 
-  return <MarkdownImageContent {...props} />
+  const localPath = isFileMediaPath(rawSrc || src) ? rawSrc || src : undefined
+
+  return <MarkdownImageContent localPath={localPath} {...imgProps} />
 }
 
-function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<'img'>) {
+function MarkdownImageContent({
+  className,
+  src,
+  alt,
+  localPath,
+  ...props
+}: ComponentProps<'img'> & { localPath?: string }) {
   const rawSrc = typeof src === 'string' ? src : ''
   const [resolvedSrc, setResolvedSrc] = useState(() => (rawSrc && isInlineMediaSrc(rawSrc) ? rawSrc : ''))
   const [failed, setFailed] = useState(false)
@@ -435,6 +446,7 @@ function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<
         className
       )}
       containerClassName="my-2 block w-fit max-w-[min(100%,var(--image-preview-max-width))]"
+      revealPath={localPath}
       slot="aui_markdown-image"
       src={resolvedSrc}
       {...props}

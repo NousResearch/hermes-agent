@@ -29,10 +29,9 @@ describe('markdown documents delivered via MEDIA', () => {
 
     // PreviewAttachment renders an "open preview" toggle button; the old
     // MediaAttachment 'file' fallback rendered a bare "Open ..." anchor.
-    // Two buttons now: Download + Open preview (maintainer-requested).
-    const buttons = await screen.findAllByRole('button')
-    expect(buttons.length).toBe(2)
-    expect(screen.getByText('Download')).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'Open preview' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'File actions' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy()
     expect(screen.queryByText(/^Loading /)).toBeNull()
     expect(screen.getByText('report.md')).toBeTruthy()
   })
@@ -47,9 +46,9 @@ describe('markdown documents delivered via MEDIA', () => {
 
     render(<MarkdownTextContent isRunning={false} text={`[archive.zip](${href})`} />)
 
-    const buttons = await screen.findAllByRole('button')
-    expect(buttons.length).toBe(2)
-    expect(screen.getByText('Download')).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'Open preview' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'File actions' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy()
     expect(screen.getByText('archive.zip')).toBeTruthy()
     expect(screen.queryByText(/^Open archive/)).toBeNull()
   })
@@ -59,8 +58,9 @@ describe('markdown documents delivered via MEDIA', () => {
 
     render(<MarkdownTextContent isRunning={false} text={`[report.pdf](${href})`} />)
 
-    const buttons = await screen.findAllByRole('button')
-    expect(buttons.length).toBe(2)
+    expect(await screen.findByRole('button', { name: 'Open preview' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'File actions' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy()
     expect(screen.getByText('report.pdf')).toBeTruthy()
   })
 })

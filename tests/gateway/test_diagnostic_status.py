@@ -2,9 +2,8 @@
 
 ``diagnostic_status`` defaults to ``"all"`` (forward internal recovery messages).
 Operators who do not want implementation-detail messages in customer-facing chats
-set ``display.diagnostic_status: off`` (or per-platform).  When ``"off"``, the
-agent's ``status_callback`` is set to ``None`` so messages like
-"⚠️ Model returned empty after tool calls" never reach the adapter.
+set ``display.diagnostic_status: off`` (or per-platform). When ``"off"``, recovery-class
+statuses are filtered; lifecycle and warning callbacks still deliver.
 """
 
 import importlib
@@ -183,4 +182,45 @@ async def test_diagnostic_status_all_forwards_status_callback(monkeypatch, tmp_p
     ]
     assert len(diagnostic_sends) == 1, (
         f"Expected exactly one diagnostic message, got: {diagnostic_sends}"
+    )
+
+
+def test_prepare_gateway_status_off_drops_recovery_keeps_lifecycle():
+    """diagnostic_status=off filters recovery-class text, not lifecycle/warnings."""
+    from gateway.config import Platform
+    from gateway.run import _prepare_gateway_status_message
+
+    recovery = "⚠️ Model returned empty after tool calls — nudging to continue"
+    lifecycle = "Session started"
+    warning = "⚠️ Provider rate-limited; retrying"
+
+    assert (
+        _prepare_gateway_status_message(
+            Platform.WHATSAPP, "recovery", recovery, diagnostic_status="off"
+        )
+        is None
+    )
+    assert (
+        _prepare_gateway_status_message(
+            Platform.WHATSAPP, "agent.status", recovery, diagnostic_status="off"
+        )
+        is None
+    )
+    assert (
+        _prepare_gateway_status_message(
+            Platform.WHATSAPP, "lifecycle", lifecycle, diagnostic_status="off"
+        )
+        == lifecycle
+    )
+    assert (
+        _prepare_gateway_status_message(
+            Platform.WHATSAPP, "warn", warning, diagnostic_status="off"
+        )
+        == warning
+    )
+    assert (
+        _prepare_gateway_status_message(
+            Platform.WHATSAPP, "recovery", recovery, diagnostic_status="all"
+        )
+        == recovery
     )

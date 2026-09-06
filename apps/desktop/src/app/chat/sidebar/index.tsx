@@ -158,6 +158,7 @@ import { ProjectDialog } from './project-dialog'
 import {
   excludeProjectSessions,
   liveSessionProjectId,
+  NO_PROJECT_ID,
   orderProjectsByIds,
   overlayLiveLanes,
   overlayLivePreviews,
@@ -535,7 +536,7 @@ export function ChatSidebar({
 
       // Same membership the sidebar groups and colors by, so a filtered row
       // lands in the lane the user picked it from.
-      return !projectFilter.length || projectFilter.includes(liveSessionProjectId(session, projects) ?? '')
+      return !projectFilter.length || projectFilter.includes(liveSessionProjectId(session, projects) ?? NO_PROJECT_ID)
     },
     [statusFilter, projectFilter, profileFilter, showAllProfiles, prFilter, pullRequests, projects, dotStates]
   )

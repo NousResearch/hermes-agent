@@ -481,6 +481,7 @@ _STYLE_TEMPLATES = {
     "placeholder": "{dim} italic", "prompt": "{prompt}", "prompt-working": "{dim} italic",
     "hint": "{dim} italic",
     "status-bar": "bg:{status_bg} {status_text}", "status-bar-strong": "bg:{status_bg} {status_strong} bold",
+    "status-bar-session-title": "bg:{status_strong} {status_bg} bold",
     "status-bar-dim": "bg:{status_bg} {status_dim}", "status-bar-good": "bg:{status_bg} {status_good} bold",
     "status-bar-warn": "bg:{status_bg} {status_warn} bold", "status-bar-bad": "bg:{status_bg} {status_bad} bold",
     "status-bar-critical": "bg:{status_bg} {status_critical} bold",

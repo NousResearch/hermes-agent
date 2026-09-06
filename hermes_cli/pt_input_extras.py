@@ -241,6 +241,13 @@ def _modify_other_keys_aliases(ANSI_SEQUENCES: dict, Keys) -> dict[str, object]:
                 for modifier in (7, 8):  # Ctrl+Alt and Ctrl+Alt+Shift — same normalization
                     _install_paired(modifier, {cp: (Keys.Escape, ctrl_key)})
 
+    # Shift+symbol keys leak as raw modifyOtherKeys escapes: under level 2 the terminal already
+    # resolved the layout, so the reported codepoint IS the produced character — self-map it.
+    # Non-digit codepoints 33–126 to chr(cp), both forms. Digits/BASE codepoints stay unmapped
+    # (ESC[27;2;50~ = Shift on key '2' is layout-dependent). Letters were already mapped above
+    # and setdefault means they win. See upstream #93633 / #102683.
+    _install_paired(2, {cp: chr(cp) for cp in range(33, 127) if not chr(cp).isdigit()})
+
     # The Esc KEY under Kitty disambiguate mode: ESC[27u (+ modifiers 1-16 incl. super 9+, and
     # lock twins of the modifier-less form, which is how a lone Esc arrives with a lock on).
     _put("\x1b[27u", Keys.Escape)

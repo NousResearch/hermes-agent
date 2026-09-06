@@ -399,6 +399,34 @@ def test_shift_space_keypress_data_is_plain_space(seq):
     )
 
 
+def test_shift_hyphen_produces_underscore():
+    """Shift+hyphen (underscore) under modifyOtherKeys must insert '_',
+    not leak '[27;2;95~' as literal text.
+    Covers the upstream #93633 / #102683 repro: ESC[27;2;95~ instead of '_'."""
+    assert _parse("\x1b[27;2;95~") == ["_"]
+    assert _parse("\x1b[95;2u") == ["_"]
+
+
+def test_shift_symbols_self_map():
+    """Other Shift+symbol codepoints (non-digit 33-126) self-map to chr(cp), #93633."""
+    assert _parse("\x1b[27;2;64~") == ["@"]
+    assert _parse("\x1b[33;2u") == ["!"]
+    assert _parse("\x1b[27;2;126~") == ["~"]
+    assert _parse("\x1b[123;2u") == ["{"]
+
+
+def test_shift_symbol_keypress_data_is_character():
+    """The KeyPress data for Shift+symbol must be the character, not the raw
+    CSI sequence — self-insert inserts event.data (#88071)."""
+    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+
+    install_keypress_data_normalization()
+    for seq in ("\x1b[27;2;95~", "\x1b[64;2u"):
+        presses = _parse_presses(seq)
+        assert len(presses) == 1
+        assert presses[0].key == presses[0].data, f"{seq!r} key/data both the char"
+
+
 @pytest.mark.parametrize("seq", ["\x1b[97;2u", "\x1b[27;2;97~"])
 def test_shift_letter_keypress_data_is_uppercase(seq):
     """Shift+letter (modifier 2) maps to the uppercase letter; its KeyPress

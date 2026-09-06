@@ -17,7 +17,7 @@ import threading
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 from agent.secret_scope import get_secret
@@ -32,6 +32,120 @@ _CLIENT_ERROR_TYPES = ("MemoryNotFoundError", "ValidationError")
 # Placeholder user_id. initialize() treats it as "no operator-configured user_id"
 # so legacy mem0.json files written by the wizard don't override gateway-native ids.
 _DEFAULT_USER_ID = "hermes-user"
+
+# Process-level backend cache keyed by (mode, oss config, host).
+# Qdrant local-path storage (the default OSS vector store) refuses a second
+# QdrantClient on the same folder within one process ("already accessed by
+# another instance"). Long-lived hosts (desktop serve, gateway) re-initialize
+# memory providers per session, which would otherwise create a fresh backend
+# each time and trip that single-instance guard. Caching the backend per
+# process makes every session in the process share one Qdrant client.
+_BACKEND_CACHE: dict[tuple, Any] = {}
+_BACKEND_CACHE_LOCK = threading.Lock()
+
+
+def _close_cached_backends() -> None:
+    """Close every process-cached backend at interpreter exit.
+
+    Cached backends are shared across sessions in long-lived hosts, so
+    per-session shutdown deliberately leaves them open; this runs exactly
+    once via atexit so the Qdrant local-path lock is released when the
+    process finally goes away.
+    """
+    with _BACKEND_CACHE_LOCK:
+        backends = list(_BACKEND_CACHE.values())
+        _BACKEND_CACHE.clear()
+    for backend in backends:
+        try:
+            if backend is not None:
+                backend.close()
+        except Exception:
+            pass
+
+
+def _normalize_backend_config(cfg: dict) -> dict:
+    """Return a copy of ``cfg`` with path-like fields canonicalized for caching.
+
+    The OSS cache key is derived from this config, so semantically identical
+    configs that differ only in spelling (``~`` vs the expanded home dir,
+    redundant ``./`` segments, trailing slashes, case) must hash to the same
+    key — otherwise the same Qdrant local-path folder could be handed to two
+    distinct OSSBackend instances, recreating the very "already accessed by
+    another instance" failure this cache exists to prevent.
+    """
+    import copy
+
+    out = copy.deepcopy(cfg)
+    vs = out.get("vector_store")
+    if isinstance(vs, dict):
+        vs_cfg = vs.get("config")
+        if isinstance(vs_cfg, dict) and vs_cfg.get("path"):
+            vs_cfg["path"] = os.path.abspath(os.path.expanduser(str(vs_cfg["path"])))
+        elif isinstance(vs_cfg, dict) and vs_cfg.get("host"):
+            vs_cfg["host"] = str(vs_cfg["host"]).rstrip("/").lower()
+    for key in ("llm", "embedder"):
+        block = out.get(key)
+        if isinstance(block, dict) and isinstance(block.get("config"), dict):
+            cfg_block = block["config"]
+            for k in ("api_base", "base_url"):
+                if cfg_block.get(k):
+                    cfg_block[k] = str(cfg_block[k]).rstrip("/").lower()
+    return out
+
+
+def _cache_key_for(mode: str, oss_config: dict | None, host: str | None, api_key: str | None) -> tuple:
+    """Build a normalized cache key that reflects the backend's actual identity.
+
+    Includes the API key (or a hash) so a key rotation mid-process — or two
+    sessions using different keys against the same host — never reuse a
+    backend constructed with a stale credential.
+    """
+    if mode == "oss":
+        norm = _normalize_backend_config(oss_config or {})
+        return ("oss", json.dumps(norm, sort_keys=True, default=str))
+    if host:
+        key_suffix = api_key[-8:] if api_key else "<none>"
+        return ("host", host.rstrip("/").lower(), key_suffix)
+    return ("platform", "<none>")
+
+
+# Per-key locks guard access to shared cached backends so a non-thread-safe
+# QdrantClient is never used concurrently by tool calls and mirror threads.
+# The key is the same normalized tuple as the cache, so one lock per backend.
+_BACKEND_LOCKS: dict[tuple, threading.Lock] = {}
+_BACKEND_LOCKS_GUARD = threading.Lock()
+
+
+def _backend_lock_for(key: tuple) -> threading.Lock:
+    """Return the per-backend lock for ``key``, creating it on first use."""
+    with _BACKEND_LOCKS_GUARD:
+        lock = _BACKEND_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _BACKEND_LOCKS[key] = lock
+        return lock
+
+
+class _BackendGuard:
+    """Context manager that serializes access to a shared cached backend.
+
+    Takes the per-key lock for the duration of a call so concurrent tool
+    calls and mirror daemon threads touching the same QdrantClient don't
+    interleave. Construction itself happens outside the process-wide cache
+    lock via double-checked locking, so a slow QdrantClient init never
+    serializes all providers.
+    """
+
+    def __init__(self, key: tuple):
+        self._lock = _backend_lock_for(key)
+
+    def __enter__(self):
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self._lock.release()
+        return False
 
 
 def _is_client_error(exc: Exception) -> bool:
@@ -89,6 +203,7 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def __init__(self):
         self._config = self._backend = self._sync_thread = self._prefetch_thread = None
+        self._backend_key = None  # normalized cache key for the active backend
         self._mode, self._api_key, self._host, self._user_id, self._agent_id = "platform", "", "", _DEFAULT_USER_ID, "hermes"
         self._rerank_default, self._channel = False, "cli"  # channel = gateway name (cli/telegram/discord/...)
         self._prefetch_query = self._prefetch_result = ""
@@ -131,20 +246,57 @@ class Mem0MemoryProvider(MemoryProvider):
         return template.format(vs=self._config.get("oss", {}).get("vector_store", {}).get("provider", default)) if self._mode == "oss" else ""
 
     def _create_backend(self):
-        # Lazy-install the mem0 SDK before the backend imports it (honors security.allow_lazy_installs);
-        # on failure the backend import raises the canonical error, captured below.
-        with suppress(Exception):
+        # Lazy-install the mem0 SDK on demand before either backend imports
+        # it. ensure() honors security.allow_lazy_installs (default true) and,
+        # on a sealed Docker venv, redirects the install to the durable
+        # target. On failure we fall through so the import inside the backend
+        # produces the canonical error, captured below.
+        try:
             from tools.lazy_deps import ensure as _lazy_ensure
             _lazy_ensure("memory.mem0", prompt=False)
+        except ImportError:
+            pass
+        except Exception:
+            pass
         try:
-            from . import _backend
             if self._mode == "oss":
-                return _backend.OSSBackend(self._config.get("oss", {}))
-            return _backend.SelfHostedBackend(self._api_key, self._host) if self._host else _backend.PlatformBackend(self._api_key)
+                from ._backend import OSSBackend
+                cfg = self._config.get("oss", {})
+                key = _cache_key_for("oss", cfg, None, None)
+                # Double-checked locking: read the cache without the write
+                # lock, construct OUTSIDE the process-wide cache lock (a slow
+                # QdrantClient init must not serialize all providers), then
+                # re-check before inserting so a racing constructor wins only
+                # once.
+                cached = _BACKEND_CACHE.get(key)
+                if cached is not None:
+                    return cached, key
+                with _BACKEND_CACHE_LOCK:
+                    cached = _BACKEND_CACHE.get(key)
+                    if cached is not None:
+                        return cached, key
+                    backend = OSSBackend(cfg)
+                    _BACKEND_CACHE[key] = backend
+                    return backend, key
+            if self._host:
+                key = _cache_key_for("host", None, self._host, self._api_key)
+                cached = _BACKEND_CACHE.get(key)
+                if cached is not None:
+                    return cached, key
+                with _BACKEND_CACHE_LOCK:
+                    cached = _BACKEND_CACHE.get(key)
+                    if cached is not None:
+                        return cached, key
+                    from ._backend import SelfHostedBackend
+                    backend = SelfHostedBackend(self._api_key, self._host)
+                    _BACKEND_CACHE[key] = backend
+                    return backend, key
+            from ._backend import PlatformBackend
+            return PlatformBackend(self._api_key), ("platform", "<none>")
         except Exception as e:
             logger.error("Mem0 backend failed to initialize (%s mode): %s", self._mode, e)
             self._init_error = str(e)
-            return None
+            return None, None
 
     def _is_breaker_open(self) -> bool:
         """True while the breaker is tripped; an expired cooldown resets the failure count."""
@@ -196,9 +348,10 @@ class Mem0MemoryProvider(MemoryProvider):
         _rr = cfg.get("rerank", False)
         self._rerank_default = _rr.lower() in ("true", "1", "yes") if isinstance(_rr, str) else bool(_rr)
         self._channel = kwargs.get("platform") or "cli"
-        self._backend = self._create_backend()
+        backend, key = self._create_backend()
+        self._backend, self._backend_key = backend, key
         if self._backend and not self._atexit_registered:
-            atexit.register(self._shutdown_backend)
+            atexit.register(_close_cached_backends)
             self._atexit_registered = True
 
     def _search(self, query: str, top_k: int = 10, rerank: bool = False, backend=None) -> list:
@@ -309,7 +462,39 @@ class Mem0MemoryProvider(MemoryProvider):
         "mem0_delete": (("memory_id",), "Delete failed", lambda self, a: json.dumps(self._backend.delete(a["memory_id"])), "not_found"),
     }
 
+    def _ensure_backend(self):
+        """Lazily (re)initialize the backend if it is not available.
+
+        A backend can be None because initialization failed at startup —
+        e.g. another process held the Qdrant local-path lock at the time.
+        That condition is transient: once the lock is released the backend
+        can initialize fine. Retrying on each call (guarded by the circuit
+        breaker, plus a short backoff) lets the provider recover without a
+        process restart, instead of being permanently wedged until the host
+        restarts. The backoff prevents hammering a still-held lock when the
+        transient condition persists.
+        """
+        if self._backend is not None or self._is_breaker_open():
+            return self._backend
+        now = time.monotonic()
+        if now < getattr(self, "_retry_after", 0.0):
+            return None
+        result = self._create_backend()
+        if isinstance(result, tuple):
+            self._backend, self._backend_key = result
+        else:
+            self._backend = result
+            self._backend_key = None
+        if self._backend is not None:
+            self._init_error = None
+            self._retry_after = 0.0
+        else:
+            # Backoff: retry again after a short delay instead of on every call.
+            self._retry_after = now + 1.0
+        return self._backend
+
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
+        self._ensure_backend()
         if self._backend is None:
             err = getattr(self, "_init_error", "unknown error")
             return json.dumps({"error": f"Mem0 backend not initialized: {err}.{self._oss_hint(' Check that {vs} is running and reachable.')}"})
@@ -321,7 +506,9 @@ class Mem0MemoryProvider(MemoryProvider):
         if missing := next((k for k in required if not args.get(k, "")), None):
             return tool_error(f"Missing required parameter: {missing}")
         try:
-            result = body(self, args)
+            key = self._backend_key or ("platform", "<none>")
+            with _BackendGuard(key):
+                result = body(self, args)
         except Exception as e:
             client = _is_client_error(e)
             if client and on_client_error == "not_found":
@@ -333,16 +520,74 @@ class Mem0MemoryProvider(MemoryProvider):
         return result
 
     def _shutdown_backend(self):
-        with suppress(Exception):
-            if self._backend:
-                self._backend.close()
-                self._backend = None
+        try:
+            if self._backend is None:
+                return
+            # Cached (shared) backends must NOT be closed on per-session
+            # shutdown — the next session in this process reuses the same
+            # instance (Qdrant local-path is single-instance per process).
+            # They are closed once at interpreter exit by _close_cached_backends.
+            with _BACKEND_CACHE_LOCK:
+                for cached in _BACKEND_CACHE.values():
+                    if cached is self._backend:
+                        self._backend = None
+                        return
+            self._backend.close()
+            self._backend = None
+        except Exception:
+            pass
 
     def shutdown(self) -> None:
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
         self._shutdown_backend()
+
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Mirror built-in memory tool writes into Mem0.
+
+        Only ``add`` is mirrored: ``replace``/``remove`` cannot be reliably
+        mapped back to Mem0 memory IDs (Mem0 has no text→ID delete lookup),
+        so mirroring them would leave stale duplicates. The entry is stored
+        verbatim (``infer=False``) — it is already a curated fact, so no
+        extraction is needed. Runs on a daemon thread; failures never block
+        or break the built-in memory write.
+        """
+        if action != "add" or not content:
+            return
+        if self._backend is None or self._is_breaker_open():
+            return
+        backend = self._backend
+        guard_key = self._backend_key or ("platform", "<none>")
+
+        def _write():
+            try:
+                meta = dict(metadata or {})
+                meta.setdefault("write_origin", "builtin_memory_mirror")
+                meta["target"] = target
+                # Use the same per-backend guard as tool calls so the mirror
+                # thread never races a tool call on the shared QdrantClient.
+                with _BackendGuard(guard_key):
+                    backend.add(
+                        [{"role": "user", "content": content}],
+                        user_id=self._user_id,
+                        agent_id=self._agent_id,
+                        infer=False,
+                        metadata=meta,
+                    )
+                self._record_success()
+            except Exception as e:
+                self._record_failure()
+                logger.debug("Mem0 memory mirror failed: %s", e)
+
+        t = threading.Thread(target=_write, daemon=True, name="mem0-memwrite")
+        t.start()
 
 
 def register(ctx) -> None:

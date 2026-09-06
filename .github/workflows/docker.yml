@@ -93,6 +93,17 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install test sandbox
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
 
       - name: Reject profile exports in the build context
         run: python3 scripts/ci/check_profile_archive_boundary.py
@@ -164,6 +175,59 @@ jobs:
         with:
           command: uv sync --locked --python 3.11 --extra dev
 
+      - name: Start disposable network-isolated Docker test daemon
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_root="$RUNNER_TEMP/hermes-test-docker"
+          dind_image="docker:28.5.1-dind-rootless"
+          mkdir -p "$test_root/daemon" "$test_root/pytest-roots"
+          chmod 0711 "$test_root"
+          chmod 0777 "$test_root/pytest-roots"
+          # UID 1000 is the rootless dockerd owner. The runner's group gets
+          # traversal so its Docker client can reach the socket; no other
+          # host path is writable or even bound into the daemon container.
+          sudo chown "1000:$(id -g)" "$test_root/daemon"
+          sudo chmod 0770 "$test_root/daemon"
+          docker save "${IMAGE_NAME}:test" -o "$test_root/image.tar"
+          docker pull "$dind_image"
+          dind_id=$(docker run -d \
+            --name "hermes-test-dind-${{ matrix.arch }}" \
+            --privileged \
+            --network none \
+            --pid private \
+            --ipc private \
+            --tmpfs /var/lib/docker:rw,nosuid,nodev,noexec \
+            --env DOCKER_TLS_CERTDIR= \
+            --volume "$test_root:$test_root" \
+            "$dind_image" \
+            --host="unix://$test_root/daemon/docker.sock" \
+            --bridge=none \
+            --iptables=false \
+            --ip6tables=false \
+            --ip-forward=false \
+            --ip-masq=false)
+          echo "$dind_id" > "$test_root/dind.container-id"
+          for attempt in $(seq 1 60); do
+            if sudo test -S "$test_root/daemon/docker.sock" && docker \
+               --host "unix://$test_root/daemon/docker.sock" info >/dev/null 2>&1; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              docker logs "$dind_id"
+              exit 1
+            fi
+            sleep 1
+          done
+          sudo chmod 0660 "$test_root/daemon/docker.sock"
+          sudo chown "1000:$(id -g)" "$test_root/daemon/docker.sock"
+          docker --host "unix://$test_root/daemon/docker.sock" load -i "$test_root/image.tar"
+          echo "HERMES_TEST_EPHEMERAL_DOCKER_SOCKET=$test_root/daemon/docker.sock" >> "$GITHUB_ENV"
+          echo "HERMES_TEST_DIND_SHARED_ROOT=$test_root" >> "$GITHUB_ENV"
+          echo "HERMES_TEST_DIND_CONTAINER_ID=$dind_id" >> "$GITHUB_ENV"
+          echo "HERMES_TEST_DIND_IMAGE=$dind_image" >> "$GITHUB_ENV"
+          echo "HERMES_TEST_REAL_DOCKER=$(command -v docker)" >> "$GITHUB_ENV"
+
       - name: Run docker integration tests
         env:
           # Skip rebuild; use the image already loaded by the build step.
@@ -179,6 +243,19 @@ jobs:
           # default from run_tests.sh is cpu_count*2, which starts 64
           # containers together on the 32-core amd64 runner.
           HERMES_TEST_WORKERS=$(nproc) scripts/run_tests.sh tests/docker/ --file-timeout 600
+
+      - name: Stop disposable Docker test daemon
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_root="$RUNNER_TEMP/hermes-test-docker"
+          if [ -f "$test_root/dind.container-id" ]; then
+            dind_id=$(cat "$test_root/dind.container-id")
+            if [[ "$dind_id" =~ ^[a-f0-9]{64}$ ]]; then
+              docker rm -f "$dind_id" >/dev/null 2>&1 || true
+            fi
+          fi
 
   # ---------------------------------------------------------------------------
   # Rebuild and push each architecture only after the unprivileged build/test

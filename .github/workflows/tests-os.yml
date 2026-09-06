@@ -15,10 +15,10 @@ name: OS-specific tests
 #   windows  → ``-m windows_only``   on windows-latest
 #
 # Deliberately NOT sliced. The marked set is small (tens of tests, not
-# thousands), so one plain ``pytest`` process per OS is both faster and far
-# less machinery than the per-file parallel runner the Linux lane uses.
-# If either lane grows past its timeout, that is the signal to reach for
-# scripts/run_tests.sh here too.
+# thousands), but it still runs through the canonical hermetic boundary.
+# macOS uses scripts/run_tests.sh. Windows runs only on a fresh GitHub-hosted
+# VM. An elevated setup owner installs the firewall boundary, then launches
+# pytest as a separate non-admin identity; developer Windows hosts fail closed.
 #
 # Each lane FAILS when it selects zero tests (pytest exit code 5). Without
 # that guard, a renamed marker or a bad selector would report a green job
@@ -66,6 +66,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
@@ -96,6 +98,13 @@ jobs:
 
       - name: Minimize uv cache
         run: uv cache prune --ci
+
+      - name: Block Windows test-process egress
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/ci/windows-test-firewall.ps1 -Mode Enable
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
 
       - name: Run ${{ matrix.marker }} tests
         # Two-step selection:
@@ -161,11 +170,24 @@ jobs:
           fi
 
           status=0
-          uv run --no-sync python -m pytest \
-            "$@" \
-            ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
-            -m "${{ matrix.marker }} and not integration" \
-            -v --tb=short || status=$?
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            scripts/run_tests.sh \
+              "$@" \
+              ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
+              -m "${{ matrix.marker }} and not integration" \
+              -v --tb=short || status=$?
+          else
+            RESTRICTED_ARGS=(
+              -TestListPath "$LIST"
+              -Marker "${{ matrix.marker }}"
+            )
+            if [ "${{ inputs.desktop_updater }}" != "true" ]; then
+              RESTRICTED_ARGS+=(-IgnoreDesktopUpdater)
+            fi
+            powershell.exe -NoProfile -NonInteractive -File \
+              scripts/ci/windows-run-hermetic-tests.ps1 \
+              "${RESTRICTED_ARGS[@]}" || status=$?
+          fi
           if [ "$status" -eq 5 ]; then
             echo "::error::No tests matched -m ${{ matrix.marker }}. Either the" \
                  "marker was renamed/dropped or selection is broken — this job" \
@@ -174,8 +196,16 @@ jobs:
           fi
           exit "$status"
         env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
           # Belt-and-suspenders with tests/conftest.py's env blanking: no
           # test may reach a real provider API.
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
+
+      - name: Finalize Windows boundary (VM remains network-blocked)
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/ci/windows-test-firewall.ps1 -Mode Disable
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}

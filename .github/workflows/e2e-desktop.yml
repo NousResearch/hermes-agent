@@ -26,6 +26,8 @@ jobs:
       review_status: ${{ steps.review-status.outputs.review_status }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       # ── System deps for Electron on headless Ubuntu ───────────────────
       # Electron needs GTK, NSS,atk, etc. even under xvfb. Playwright's
@@ -35,9 +37,13 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
+            bubblewrap \
             xvfb \
             libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
             xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
 
       # ── Node ───────────────────────────────────────────────────────────
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -106,16 +112,15 @@ jobs:
       # `npm run test:e2e` builds dist/ as a pretest hook so the renderer
       # is always fresh — no separate build step needed.
       - name: Run Playwright E2E tests
-        working-directory: apps/desktop
         run: |
           if [ "${{ github.ref_name }}" = "main" ]; then
             echo "On main — generating/updating baseline screenshots"
-            npm run build && xvfb-run -a --server-args="-screen 0 1280x1024x24" \
-              npx playwright test --reporter=list --update-snapshots
+            python3 scripts/run_hermetic_command.py --cwd apps/desktop -- \
+              bash -c 'npm run build && xvfb-run -a --server-args="-screen 0 1280x1024x24" npx playwright test --reporter=list --update-snapshots'
           else
             echo "On PR — comparing against cached baselines"
-            npm run build && xvfb-run -a --server-args="-screen 0 1280x1024x24" \
-              npx playwright test --reporter=list
+            python3 scripts/run_hermetic_command.py --cwd apps/desktop -- \
+              bash -c 'npm run build && xvfb-run -a --server-args="-screen 0 1280x1024x24" npx playwright test --reporter=list'
           fi
         env:
           CI: 'true'

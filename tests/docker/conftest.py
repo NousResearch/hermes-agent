@@ -14,12 +14,30 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
 IMAGE_TAG = os.environ.get("HERMES_TEST_IMAGE", "hermes-agent-harness:latest")
+
+# Docker is rootless inside a separate user namespace. Its mapped uid differs
+# from the hosted runner uid, so bind-mounted fixtures must be accessible to
+# that uid. These paths live only under HERMES_TEST_DIND_SHARED_ROOT and the OS
+# sandbox exposes no operator/repository path to the daemon.
+os.umask(0)
+_REAL_MKDTEMP = tempfile.mkdtemp
+
+
+def _docker_accessible_mkdtemp(*args, **kwargs):
+    path = _REAL_MKDTEMP(*args, **kwargs)
+    Path(path).chmod(0o777)
+    return path
+
+
+tempfile.mkdtemp = _docker_accessible_mkdtemp
 
 
 def _docker_available() -> bool:
@@ -37,6 +55,12 @@ def _docker_available() -> bool:
 
 def pytest_collection_modifyitems(config, items):  # noqa: D401 - pytest hook
     """Apply docker-suite policy: timeout bump + skip on missing docker."""
+    if not os.environ.get("HERMES_TEST_IMAGE"):
+        pytest.exit(
+            "Docker tests require the CI-prebuilt image and disposable "
+            "network-isolated daemon; local host-daemon builds are forbidden",
+            returncode=3,
+        )
     docker_ok = _docker_available()
     skip_docker = pytest.mark.skip(
         reason="Docker not available or daemon not running",

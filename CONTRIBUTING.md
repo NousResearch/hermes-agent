@@ -205,10 +205,14 @@ ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
 # via run_tests_parallel.py, worker count auto-scaled); see AGENTS.md
 scripts/run_tests.sh
 
-# Alternative (activate the venv first). The wrapper is still recommended
-# for parity with GitHub Actions before you open a PR:
-pytest tests/ -v
+# The wrapper is mandatory. Direct pytest exits before collection because it
+# lacks the kernel sandbox and repo-owned pre-collection guard.
 ```
+
+The test runner uses a synthetic home and a fail-closed OS sandbox. It cannot
+contact host services, live credential/Hermes paths, providers, external
+networks, or loopback listeners the test did not create. Tests that need those
+behaviors must inject a double or create a test-owned process/listener.
 
 ---
 

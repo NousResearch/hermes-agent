@@ -29,9 +29,13 @@ jobs:
     name: venv-holder live E2E (windows-latest)
     runs-on: windows-latest
     timeout-minutes: 25
+    env:
+      RUNNER_ENVIRONMENT: ${{ runner.environment }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
@@ -52,29 +56,44 @@ jobs:
         with:
           command: uv sync --locked --python 3.11 --extra dev --extra messaging
 
+      - name: Block Windows test-process egress
+        shell: pwsh
+        run: ./scripts/ci/windows-test-firewall.ps1 -Mode Enable
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+
       - name: Run venv-holder live E2E
-        shell: bash
+        shell: pwsh
         run: |
-          set -uo pipefail
-          uv run --no-sync python -m pytest \
-            tests/hermes_cli/test_venv_holder_windows_live.py \
-            tests/hermes_cli/test_taskkill_identity_windows_live.py \
-            tests/hermes_cli/test_git_trampoline_windows_live.py \
-            "tests/hermes_cli/test_managed_uv.py::TestWindowsRuntimeSelfLock" \
-            -o addopts= -v -p no:cacheprovider
+          $list = Join-Path $env:RUNNER_TEMP "venv-holder-tests.txt"
+          @(
+            "tests/hermes_cli/test_venv_holder_windows_live.py"
+            "tests/hermes_cli/test_taskkill_identity_windows_live.py"
+            "tests/hermes_cli/test_git_trampoline_windows_live.py"
+            "tests/hermes_cli/test_managed_uv.py::TestWindowsRuntimeSelfLock"
+          ) | Set-Content $list
+          ./scripts/ci/windows-run-hermetic-tests.ps1 `
+            -TestListPath $list -ClearAddopts
 
       - name: Run Telegram CLOSE-WAIT reconnect live E2E (#87057)
-        shell: bash
+        shell: pwsh
         run: |
-          set -uo pipefail
-          uv run --no-sync python -m pytest \
-            tests/gateway/test_telegram_closewait_windows_live.py \
-            -o addopts= -v -p no:cacheprovider
+          $list = Join-Path $env:RUNNER_TEMP "telegram-tests.txt"
+          "tests/gateway/test_telegram_closewait_windows_live.py" | Set-Content $list
+          ./scripts/ci/windows-run-hermetic-tests.ps1 `
+            -TestListPath $list -ClearAddopts
 
       - name: Run background-executor spawn parity live E2E (#70716)
-        shell: bash
+        shell: pwsh
         run: |
-          set -uo pipefail
-          uv run --no-sync python -m pytest \
-            tests/tools/test_process_registry_windows_live.py \
-            -o addopts= -v -p no:cacheprovider
+          $list = Join-Path $env:RUNNER_TEMP "process-registry-tests.txt"
+          "tests/tools/test_process_registry_windows_live.py" | Set-Content $list
+          ./scripts/ci/windows-run-hermetic-tests.ps1 `
+            -TestListPath $list -ClearAddopts
+
+      - name: Finalize boundary (VM remains network-blocked)
+        if: always()
+        shell: pwsh
+        run: ./scripts/ci/windows-test-firewall.ps1 -Mode Disable
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}

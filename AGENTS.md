@@ -175,8 +175,9 @@ session-scoped. Assert the GUI session gets the tool **with the env var absent**
 ```bash
 source .venv/bin/activate   # or: source venv/bin/activate
 ```
-`scripts/run_tests.sh` probes `.venv`, then `venv`, then `$HOME/.hermes/hermes-agent/venv`
-(worktrees sharing the main checkout's venv).
+`scripts/run_tests.sh` probes `.venv` first, then `venv`, then the explicit
+Nix-devShell `HERMES_PYTHON`. It never borrows an interpreter from
+`$HOME/.hermes`: the test sandbox hides the entire live Hermes home.
 
 ## Project Structure
 
@@ -310,11 +311,13 @@ changing `pyproject.toml`. Reference: #2810 (bounds), #9801 (SHA pinning + audit
 
 ## Testing (applies everywhere)
 
-**ALWAYS use `scripts/run_tests.sh`**, never bare `pytest`. It enforces CI parity: credential
-vars unset, `TZ=UTC`, `LANG=C.UTF-8`, `HERMES_HOME` → temp dir, and per-file subprocess
-isolation via `scripts/run_tests_parallel.py` (no xdist; workers scale with CPU count) so
-module-level dicts/ContextVars cannot leak between files. Direct `pytest` on a big machine
-with API keys set has caused repeated "works locally, fails in CI" incidents (and the reverse).
+**ALWAYS use `scripts/run_tests.sh`**, never bare `pytest`. It enforces CI parity with a
+synthetic HOME/HERMES_HOME, a repo-owned guard installed before collection, a fail-closed OS
+sandbox, credential removal, `TZ=UTC`, `LANG=C.UTF-8`, and per-file subprocess isolation via
+`scripts/run_tests_parallel.py` (no xdist; workers scale with CPU count). Direct pytest exits
+before collection. The legacy `live_system_guard_bypass` marker cannot disable the boundary.
+Non-pytest JavaScript, Playwright, and Rust CI test commands run through
+`scripts/run_hermetic_command.py` and its equivalent kernel boundary.
 
 ```bash
 scripts/run_tests.sh                                    # full suite
@@ -322,6 +325,12 @@ scripts/run_tests.sh tests/gateway/                     # one directory
 scripts/run_tests.sh tests/agent/test_foo.py -k test_x  # runner is file-granular; -k narrows
 scripts/run_tests.sh -v --tb=long                       # pytest flags pass through
 ```
+
+The runner refuses if its platform boundary is unavailable. Linux uses private PID/network
+namespaces and masks the operator home; macOS denies network, signals, and live-home access;
+Windows tests use a disposable hosted VM, admin-owned outbound firewall block, and a separate
+non-admin test user. Docker tests use a rootless disposable daemon and `none` networking.
+Tests must use injected service/provider doubles and test-owned processes/listeners only.
 
 - **Flake policy:** a failing FILE is retried once in a fresh subprocess (`--file-retries`;
   `HERMES_TEST_FILE_RETRIES=0` disables). Pass-on-retry is green but printed under `⚠ FLAKY`

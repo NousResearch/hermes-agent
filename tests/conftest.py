@@ -5,11 +5,9 @@ Hermetic-test invariants enforced here (see AGENTS.md for rationale):
 1. **No credential env vars.** All provider/credential-shaped env vars
    (ending in _API_KEY, _TOKEN, _SECRET, _PASSWORD, _CREDENTIALS, etc.)
    are unset before every test. Local developer keys cannot leak in.
-2. **Isolated HERMES_HOME.** HERMES_HOME points to a per-test tempdir so
-   code reading ``~/.hermes/*`` via ``get_hermes_home()`` can't see the
-   real one. (We do NOT also redirect HOME — that broke subprocesses in
-   CI. Code using ``Path.home() / ".hermes"`` instead of the canonical
-   ``get_hermes_home()`` is a bug to fix at the callsite.)
+2. **Synthetic user home.** HOME, HERMES_HOME, XDG homes, and temp roots
+   point inside a per-file sandbox. The real Hermes and credential roots
+   are hidden by the host OS sandbox before Python starts.
 3. **Deterministic runtime.** TZ=UTC, LANG=C.UTF-8, PYTHONHASHSEED=0.
 4. **No HERMES_SESSION_* inheritance** — the agent's current gateway
    session must not leak into tests.
@@ -24,7 +22,10 @@ import atexit
 import importlib
 import os
 import shutil
+import socket
 import sqlite3
+import stat
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -35,6 +36,161 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+# The canonical runner places every test file inside a host OS sandbox before
+# Python starts. Refuse collection when that outer boundary is absent: a
+# best-effort fixture is not an acceptable substitute on a machine that may be
+# running a real gateway.
+_TEST_BOUNDARY = os.environ.get("HERMES_TEST_OS_SANDBOX", "").strip()
+_VALID_TEST_BOUNDARIES = {"linux-bwrap", "macos-sandbox-exec"}
+if (
+    _TEST_BOUNDARY == "windows-ephemeral-ci"
+    and os.environ.get("GITHUB_ACTIONS") == "true"
+    and os.environ.get("CI") == "true"
+    and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
+    and os.environ.get("HERMES_TEST_WINDOWS_FIREWALL") == "1"
+    and os.environ.get("HERMES_TEST_WINDOWS_RESTRICTED_USER")
+    and not (
+        Path(os.environ.get("HERMES_TEST_REAL_HOME", "C:/invalid")) / ".hermes"
+    ).exists()
+):
+    import ctypes
+
+    if ctypes.windll.shell32.IsUserAnAdmin() != 0:
+        pytest.exit(
+            "Hermes Windows sandbox attestation failed: pytest is privileged",
+            returncode=3,
+        )
+    try:
+        Path(os.environ["HERMES_TEST_WINDOWS_STATE_PATH"]).read_bytes()
+    except PermissionError:
+        pass
+    else:
+        pytest.exit(
+            "Hermes Windows sandbox attestation failed: pytest can read boundary state",
+            returncode=3,
+        )
+    firewall = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$profiles = Get-NetFirewallProfile | Where-Object "
+            "{ $_.DefaultOutboundAction -ne 'Block' }; "
+            "$runner = Get-NetFirewallRule -Group 'Hermes Test Boundary' | "
+            "Where-Object { $_.Action -eq 'Allow' -and $_.Enabled -eq 'True' }; "
+            "$other = Get-NetFirewallRule -Direction Outbound -Action Allow "
+            "-Enabled True | Where-Object { $_.Group -ne 'Hermes Test Boundary' }; "
+            "if ($profiles -or -not $runner -or $other) { exit 9 }; 'BOUNDARY_OK'",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    if firewall.returncode == 0 and firewall.stdout.strip() == "BOUNDARY_OK":
+        _VALID_TEST_BOUNDARIES.add("windows-ephemeral-ci")
+if _TEST_BOUNDARY not in _VALID_TEST_BOUNDARIES:
+    pytest.exit(
+        "Hermes tests must run through scripts/run_tests.sh; refusing an "
+        "unsandboxed pytest process (Windows is allowed only on a fresh "
+        "GitHub-hosted CI VM)",
+        returncode=3,
+    )
+
+
+def _linux_mounts() -> dict[str, tuple[set[str], str]]:
+    mounts: dict[str, tuple[set[str], str]] = {}
+    for line in Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines():
+        before, after = line.split(" - ", 1)
+        fields = before.split()
+        target = fields[4].replace("\\040", " ").replace("\\134", "\\")
+        mounts[target] = (set(fields[5].split(",")), after.split()[0])
+    return mounts
+
+
+if _TEST_BOUNDARY == "linux-bwrap":
+    try:
+        if Path("/proc/1/comm").read_text(encoding="utf-8").strip() != "bwrap":
+            raise RuntimeError("PID namespace init is not bubblewrap")
+        if socket.if_nameindex() != [(1, "lo")]:
+            raise RuntimeError("network namespace exposes a non-loopback interface")
+        mounts = _linux_mounts()
+        if "ro" not in mounts["/"][0]:
+            raise RuntimeError("host root is not read-only")
+        if mounts["/run"][1] != "tmpfs":
+            raise RuntimeError("host runtime sockets are not hidden")
+        for variable, expected_fs in (
+            ("HERMES_TEST_MASKED_DIRECTORIES", "tmpfs"),
+            ("HERMES_TEST_MASKED_FILES", None),
+        ):
+            for raw_path in os.environ.get(variable, "").split(os.pathsep):
+                if not raw_path:
+                    continue
+                record = mounts.get(str(Path(raw_path).resolve()))
+                if record is None or (expected_fs is not None and record[1] != expected_fs):
+                    raise RuntimeError(f"missing sandbox mask for {raw_path}")
+        sandbox_root = Path(os.environ["HERMES_TEST_SANDBOX_ROOT"]).resolve()
+        allowed_docker_socket: Path | None = None
+        if os.environ.get("HERMES_TEST_EPHEMERAL_DOCKER") == "1":
+            docker_host = os.environ.get("DOCKER_HOST", "")
+            if not docker_host.startswith("unix://"):
+                raise RuntimeError("ephemeral Docker boundary has no Unix socket")
+            docker_socket = Path(docker_host.removeprefix("unix://")).resolve()
+            shared_root = Path(os.environ["HERMES_TEST_DIND_SHARED_ROOT"]).resolve()
+            if (
+                docker_socket.parent.parent != shared_root
+                or not docker_socket.is_socket()
+                or sandbox_root.parent != shared_root / "pytest-roots"
+            ):
+                raise RuntimeError("ephemeral Docker socket is outside the sandbox")
+            allowed_docker_socket = docker_socket
+        for socket_root in (Path("/tmp"), Path("/run"), Path("/var/tmp")):
+            for current_root, directories, files in os.walk(socket_root):
+                current = Path(current_root)
+                if current == sandbox_root or sandbox_root in current.parents:
+                    directories[:] = []
+                    continue
+                for name in files:
+                    try:
+                        candidate = (current / name).resolve()
+                        if candidate == allowed_docker_socket:
+                            continue
+                        if stat.S_ISSOCK(candidate.stat().st_mode):
+                            raise RuntimeError(f"host Unix socket remains visible: {candidate}")
+                    except FileNotFoundError:
+                        pass
+    except Exception as exc:
+        pytest.exit(f"Hermes Linux sandbox attestation failed: {exc}", returncode=3)
+
+if _TEST_BOUNDARY == "macos-sandbox-exec":
+    try:
+        import ctypes
+        import errno
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.kill(os.getpid(), 0) != -1 or ctypes.get_errno() != errno.EPERM:
+            raise RuntimeError("Seatbelt signal denial is not active")
+    except Exception as exc:
+        pytest.exit(f"Hermes macOS sandbox attestation failed: {exc}", returncode=3)
+
+# Defense in depth and child-process propagation. sitecustomize normally
+# installed this before pytest itself imported; importing again is idempotent
+# and makes a missing PYTHONPATH injection fail loudly instead of weakening the
+# run.
+_HERMETIC_GUARD_SITE = PROJECT_ROOT / "scripts" / "hermetic_site"
+if str(_HERMETIC_GUARD_SITE) not in sys.path:
+    sys.path.insert(0, str(_HERMETIC_GUARD_SITE))
+from hermetic_test_guard import install as _install_hermetic_test_guard
+from hermetic_test_guard import installed as _hermetic_test_guard_installed
+
+_install_hermetic_test_guard()
+if not _hermetic_test_guard_installed():
+    pytest.exit(
+        "Hermes repo-owned pre-collection guard did not install; refusing tests",
+        returncode=3,
+    )
 
 
 # ── Sandbox HERMES_HOME before ANY test module is imported ──────────────────
@@ -747,8 +903,6 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
 # ``SessionDB()`` construction goes through) refuses, under pytest, any DB
 # path that resolves inside the REAL Hermes root. This fixture wires the
 # test-side knobs:
-#   • honors ``@pytest.mark.live_system_guard_bypass`` (the established
-#     escape-hatch marker) by disabling the state-db guard for that test;
 #   • injects the pre-sandbox CUSTOM production root (Docker/portable
 #     installs where HERMES_HOME is not ~/.hermes) into the guard's
 #     deny-list, mirroring the kanban deny-list capture above.
@@ -761,10 +915,6 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
 def _state_db_write_guard(request, monkeypatch):
     _hs = sys.modules.get("hermes_state")
     if _hs is None or not hasattr(_hs, "_STATE_DB_GUARD_BYPASS"):
-        yield
-        return
-    if request.node.get_closest_marker("live_system_guard_bypass") is not None:
-        monkeypatch.setattr(_hs, "_STATE_DB_GUARD_BYPASS", True)
         yield
         return
     extra_roots = []
@@ -1149,9 +1299,9 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
     """Register markers used by hermetic conftest."""
     config.addinivalue_line(
         "markers",
-        f"{_LIVE_SYSTEM_GUARD_BYPASS_MARK}: bypass the live-system guard "
-        "(only for tests that genuinely need real os.kill / subprocess "
-        "behaviour — e.g. PTY tests that signal their own child).",
+        f"{_LIVE_SYSTEM_GUARD_BYPASS_MARK}: legacy marker retained for test "
+        "selection only; it cannot disable the hermetic boundary. Tests may "
+        "signal their own child processes without a bypass.",
     )
     config.addinivalue_line(
         "markers",
@@ -1310,10 +1460,6 @@ def _live_system_guard(request, monkeypatch):
     are all caught. ``pkill``/``killall``/``taskkill`` invocations
     targeting hermes/python patterns are also blocked.
     """
-    if request.node.get_closest_marker(_LIVE_SYSTEM_GUARD_BYPASS_MARK):
-        yield
-        return
-
     import os as _os
     import shlex as _shlex
     import subprocess as _subprocess

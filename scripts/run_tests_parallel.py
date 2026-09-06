@@ -46,6 +46,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -103,6 +104,401 @@ _DEFAULT_FILE_RETRIES = 1
 # wall-clock seconds. Used by ``--slice`` to distribute files across
 # CI jobs by estimated total time, so no one job gets all the slow files.
 _DURATIONS_FILE = "test_durations.json"
+
+
+def _sandbox_profile_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _under(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_real_home(environment: dict[str, str]) -> Path:
+    """Resolve the account home independently and reject spoofed declarations."""
+    if os.name != "posix":
+        raise RuntimeError("account-home attestation is implemented only for POSIX")
+    import pwd
+
+    account_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+    declared_real_raw = environment.get("HERMES_TEST_REAL_HOME", "").strip()
+    if declared_real_raw:
+        declared_real = Path(declared_real_raw).expanduser().resolve()
+        if declared_real != account_home:
+            raise RuntimeError("HERMES_TEST_REAL_HOME does not match the OS account home")
+        return account_home
+    declared_home = Path(environment.get("HOME", "")).expanduser().resolve()
+    if declared_home != account_home:
+        raise RuntimeError("HOME does not match the OS account home; refusing tests")
+    return account_home
+
+
+def _sensitive_host_paths(
+    real_home: Path, repo_root: Path
+) -> tuple[list[Path], list[Path]]:
+    """Return credential/runtime directories and files hidden from tests."""
+    directories = [
+        real_home / ".hermes",
+        real_home / ".credentials",
+        real_home / ".ssh",
+        real_home / ".aws",
+        real_home / ".gnupg",
+        real_home / ".claude",
+        real_home / ".codex",
+        real_home / ".copilot",
+        real_home / ".minimax",
+        real_home / ".config" / "github-copilot",
+        real_home / ".config" / "gh",
+        real_home / ".config" / "gcloud",
+        real_home / ".config" / "op",
+        real_home / ".config" / "openai",
+        real_home / ".config" / "anthropic",
+        real_home / ".config" / "huggingface",
+        real_home / ".cache" / "huggingface",
+        real_home / ".azure",
+        real_home / ".kube",
+        real_home / ".docker",
+        real_home / ".local" / "share" / "keyrings",
+        real_home / "Library" / "Keychains",
+    ]
+    files = [
+        real_home / ".netrc",
+        real_home / ".gitconfig",
+        real_home / ".git-credentials",
+        real_home / ".npmrc",
+        real_home / ".pypirc",
+        real_home / ".anthropic_oauth.json",
+        real_home / ".cargo" / "credentials",
+        real_home / ".cargo" / "credentials.toml",
+        real_home / "Library" / "LaunchAgents" / "ai.hermes.gateway.plist",
+    ]
+    for pattern in (
+        ".env*",
+        ".npmrc",
+        ".pypirc",
+        "apps/*/.env*",
+        "web/.env*",
+        "ui-tui/.env*",
+    ):
+        files.extend(path for path in repo_root.glob(pattern) if path.is_file())
+    return directories, files
+
+
+def _sandboxed_test_command(
+    command: list[str],
+    *,
+    env: dict[str, str],
+    repo_root: Path,
+    sandbox_root: Path,
+    real_home: Path,
+    parent_sandbox_root: Path | None = None,
+    ephemeral_docker_socket: Path | None = None,
+    writable_repo: bool = False,
+    working_directory: Path | None = None,
+    additional_writable_paths: tuple[Path, ...] = (),
+    additional_readonly_paths: tuple[Path, ...] = (),
+) -> list[str]:
+    """Wrap one pytest file in the host's fail-closed OS sandbox."""
+    directories, files = _sensitive_host_paths(real_home, repo_root)
+    if sys.platform.startswith("linux"):
+        bwrap = shutil.which("bwrap")
+        if not bwrap:
+            raise RuntimeError(
+                "Hermes tests require bubblewrap on Linux; refusing an "
+                "unsandboxed test process"
+            )
+        env["HERMES_TEST_OS_SANDBOX"] = "linux-bwrap"
+        live_hermes = real_home / ".hermes"
+        if repo_root == live_hermes or repo_root.is_relative_to(live_hermes):
+            raise RuntimeError(
+                "refusing to run tests from the live ~/.hermes tree; use an "
+                "isolated source worktree with its own test venv"
+            )
+        if Path(sys.executable).absolute().is_relative_to(live_hermes):
+            raise RuntimeError(
+                "refusing the live ~/.hermes interpreter for tests; create "
+                "a test-only virtualenv in the isolated source worktree"
+            )
+        wrapped = [
+            bwrap,
+            "--die-with-parent",
+            "--new-session",
+            "--unshare-pid",
+            "--unshare-ipc",
+            "--unshare-uts",
+            "--unshare-net",
+            "--ro-bind", "/", "/",
+            "--tmpfs", "/run",
+            "--tmpfs", "/tmp",
+            "--tmpfs", "/var/tmp",
+            "--dev", "/dev",
+            "--proc", "/proc",
+        ]
+        # Hide the operator's *entire* home before restoring only the source
+        # tree and interpreter needed by this test.  A credential inventory
+        # is necessarily incomplete: providers may add another dotfile at
+        # any time, and native code must not gain it merely because the
+        # Python guard does not know its name yet.
+        home_is_masked = real_home.is_dir()
+        if home_is_masked:
+            wrapped.extend(("--tmpfs", str(real_home)))
+            restored = tuple(
+                required
+                for required in (
+                    repo_root,
+                    Path(sys.prefix).resolve(),
+                    Path(sys.base_prefix).resolve(),
+                    Path(sys._base_executable).absolute().parent.parent,
+                )
+                if required.is_dir() and _under(required, real_home)
+            )
+            bind_targets = [
+                *restored,
+                *additional_writable_paths,
+                *additional_readonly_paths,
+            ]
+            if parent_sandbox_root is not None:
+                bind_targets.append(parent_sandbox_root)
+            bind_targets.append(sandbox_root)
+            if ephemeral_docker_socket is not None:
+                bind_targets.append(ephemeral_docker_socket.parent)
+            parents: set[Path] = set()
+            for required in bind_targets:
+                if not _under(required, real_home):
+                    continue
+                parent = required.parent
+                while parent != real_home:
+                    parents.add(parent)
+                    parent = parent.parent
+            for parent in sorted(parents, key=lambda item: len(item.parts)):
+                wrapped.extend(("--dir", str(parent)))
+            for required in restored:
+                wrapped.extend(("--ro-bind", str(required), str(required)))
+        for path in additional_readonly_paths:
+            if path.exists():
+                wrapped.extend(("--ro-bind", str(path), str(path)))
+        for path in additional_writable_paths:
+            if path.is_dir():
+                wrapped.extend(("--bind", str(path), str(path)))
+        if writable_repo:
+            wrapped.extend(("--bind", str(repo_root), str(repo_root)))
+        masked_directories: list[Path] = [real_home] if home_is_masked else []
+        masked_files: list[Path] = []
+        for path in directories:
+            if path.is_dir() and not home_is_masked:
+                wrapped.extend(("--tmpfs", str(path)))
+                masked_directories.append(path)
+        for path in files:
+            if path.is_file() and (
+                not home_is_masked or _under(path.resolve(), repo_root.resolve())
+            ):
+                wrapped.extend(("--ro-bind", "/dev/null", str(path)))
+                masked_files.append(path)
+        env["HERMES_TEST_MASKED_DIRECTORIES"] = os.pathsep.join(
+            str(path) for path in masked_directories
+        )
+        env["HERMES_TEST_MASKED_FILES"] = os.pathsep.join(
+            str(path) for path in masked_files
+        )
+        if parent_sandbox_root is not None and parent_sandbox_root.is_dir():
+            wrapped.extend(
+                ("--bind", str(parent_sandbox_root), str(parent_sandbox_root))
+            )
+        wrapped.extend(("--bind", str(sandbox_root), str(sandbox_root)))
+        if ephemeral_docker_socket is not None:
+            wrapped.extend(
+                (
+                    "--bind",
+                    str(ephemeral_docker_socket.parent),
+                    str(ephemeral_docker_socket.parent),
+                )
+            )
+            env["DOCKER_HOST"] = f"unix://{ephemeral_docker_socket}"
+            env["HERMES_TEST_EPHEMERAL_DOCKER"] = "1"
+            env["HERMES_TEST_DOCKER_SHIM"] = str(
+                repo_root / "scripts" / "hermetic_site" / "docker"
+            )
+            env["PATH"] = str(repo_root / "scripts" / "hermetic_site") + (
+                os.pathsep + env["PATH"] if env.get("PATH") else ""
+            )
+        wrapped.extend(("--chdir", str(working_directory or repo_root)))
+        return [*wrapped, *command]
+
+    if sys.platform == "darwin":
+        sandbox_exec = shutil.which("sandbox-exec")
+        if not sandbox_exec:
+            raise RuntimeError(
+                "Hermes tests require sandbox-exec on macOS; refusing an "
+                "unsandboxed test process"
+            )
+        env["HERMES_TEST_OS_SANDBOX"] = "macos-sandbox-exec"
+        rules = [
+            "(version 1)",
+            "(allow default)",
+            "(deny network*)",
+            # macOS has no Linux-style PID namespace. Denying the signal
+            # syscall at Seatbelt level prevents ctypes/native-code bypasses
+            # from reaching any host process, including the live gateway.
+            "(deny signal)",
+            # Credential and service APIs can bypass command/path guards by
+            # calling securityd or launchd over Mach/XPC directly. No Hermes
+            # test needs a host broker, so deny lookup broadly and fail closed.
+            "(deny mach-lookup)",
+        ]
+        readable_home_paths = {
+            repo_root.resolve(),
+            Path(sys.prefix).resolve(),
+            Path(sys.base_prefix).resolve(),
+            Path(sys._base_executable).absolute().parent.parent,
+        }
+        home_filter_parts = [
+            f'(subpath "{_sandbox_profile_escape(str(real_home))}")'
+        ]
+        for path in sorted(readable_home_paths, key=str):
+            if _under(path, real_home):
+                escaped = _sandbox_profile_escape(str(path))
+                home_filter_parts.append(
+                    f'(require-not (subpath "{escaped}"))'
+                )
+        rules.append(
+            "(deny file-read* (require-all "
+            + " ".join(home_filter_parts)
+            + "))"
+        )
+        writable_home_parts = [
+            f'(subpath "{_sandbox_profile_escape(str(real_home))}")'
+        ]
+        if writable_repo and _under(repo_root.resolve(), real_home):
+            writable_home_parts.append(
+                '(require-not (subpath "'
+                + _sandbox_profile_escape(str(repo_root.resolve()))
+                + '"))'
+            )
+        rules.append(
+            "(deny file-write* (require-all "
+            + " ".join(writable_home_parts)
+            + "))"
+        )
+        for path in directories:
+            if path.exists():
+                escaped = _sandbox_profile_escape(str(path))
+                rules.append(f'(deny file-read* (subpath "{escaped}"))')
+                rules.append(f'(deny file-write* (subpath "{escaped}"))')
+        for path in files:
+            if path.exists():
+                escaped = _sandbox_profile_escape(str(path))
+                rules.append(f'(deny file-read* (literal "{escaped}"))')
+                rules.append(f'(deny file-write* (literal "{escaped}"))')
+        live_roots = (
+            real_home / ".hermes",
+            real_home / "Library" / "LaunchAgents",
+        )
+        for path in live_roots:
+            if path.exists():
+                escaped = _sandbox_profile_escape(str(path))
+                rules.append(f'(deny file-write* (subpath "{escaped}"))')
+        for executable in (
+            "/bin/launchctl", "/usr/bin/security", "/usr/bin/killall",
+            "/usr/bin/pkill", "/bin/kill", "/usr/bin/ssh",
+            "/usr/bin/curl", "/usr/bin/nc",
+        ):
+            if Path(executable).exists():
+                escaped = _sandbox_profile_escape(executable)
+                rules.append(f'(deny process-exec (literal "{escaped}"))')
+                rules.append(f'(deny file-read-data (literal "{escaped}"))')
+        profile = sandbox_root / "hermes-test.sb"
+        profile.write_text("\n".join(rules) + "\n", encoding="utf-8")
+        return [sandbox_exec, "-f", str(profile), *command]
+
+    raise RuntimeError(
+        f"Hermes has no fail-closed OS test sandbox for {sys.platform!r}; "
+        "refusing to run tests on this host"
+    )
+
+
+def _attest_ephemeral_docker(
+    socket_path: Path,
+    container_id: str,
+    expected_image: str,
+    real_docker: Path,
+    shared_root: Path,
+) -> None:
+    """Prove a socket belongs to a rootless daemon in an isolated container."""
+    if not sys.platform.startswith("linux") or not socket_path.is_socket():
+        raise RuntimeError("ephemeral Docker requires a live Linux Unix socket")
+    if socket_path.parent.parent != shared_root:
+        raise RuntimeError("Docker socket is outside the disposable shared root")
+    if not re.fullmatch(r"[a-f0-9]{64}", container_id):
+        raise RuntimeError("invalid disposable Docker outer-container identity")
+    if not real_docker.is_absolute() or not real_docker.is_file():
+        raise RuntimeError("invalid host Docker client for boundary attestation")
+    try:
+        inspection = subprocess.run(
+            [str(real_docker), "inspect", container_id],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        if inspection.returncode != 0:
+            raise RuntimeError("cannot inspect disposable Docker outer container")
+        record = json.loads(inspection.stdout)[0]
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, IndexError) as exc:
+        raise RuntimeError("invalid Docker outer-container attestation") from exc
+    host = record.get("HostConfig", {})
+    config = record.get("Config", {})
+    mounts = record.get("Mounts", [])
+    if not record.get("State", {}).get("Running"):
+        raise RuntimeError("disposable Docker outer container is not running")
+    if config.get("Image") != expected_image or config.get("User") != "rootless":
+        raise RuntimeError("Docker-in-Docker image/user is not the rootless contract")
+    if (
+        host.get("NetworkMode") != "none"
+        or host.get("PidMode") == "host"
+        or host.get("IpcMode") == "host"
+        or host.get("UTSMode") == "host"
+    ):
+        raise RuntimeError("Docker-in-Docker shares a host namespace")
+    bind_mounts = [mount for mount in mounts if mount.get("Type") == "bind"]
+    unexpected_mounts = [
+        mount
+        for mount in mounts
+        if mount.get("Type") not in {"bind", "tmpfs"}
+        or (
+            mount.get("Type") == "tmpfs"
+            and mount.get("Destination") != "/var/lib/docker"
+        )
+    ]
+    if len(bind_mounts) != 1 or unexpected_mounts:
+        raise RuntimeError("Docker-in-Docker has unexpected host mounts")
+    mount = bind_mounts[0]
+    if not (
+        mount.get("Type") == "bind"
+        and Path(mount.get("Source", "")).resolve() == shared_root
+        and mount.get("Destination") == str(shared_root)
+        and mount.get("RW") is True
+    ):
+        raise RuntimeError("Docker-in-Docker exposes a host path outside test storage")
+    daemon_info = subprocess.run(
+        [
+            str(real_docker),
+            "--host",
+            f"unix://{socket_path}",
+            "info",
+            "--format",
+            "{{json .SecurityOptions}}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+    if daemon_info.returncode != 0 or "name=rootless" not in daemon_info.stdout:
+        raise RuntimeError("inner Docker daemon is not running rootless")
 
 
 def _split_pathspec(value: str) -> List[str]:
@@ -399,8 +795,104 @@ def _run_one_file_once(
     # One root for each subprocess removes the shared directory that the race
     # needs. The parent deletes the root after the attempt.
     env = os.environ.copy()
-    temproot = tempfile.mkdtemp(prefix="hermes-pytest-tmproot-")
+    docker_socket_raw = env.pop("HERMES_TEST_EPHEMERAL_DOCKER_SOCKET", "").strip()
+    dind_id = env.pop("HERMES_TEST_DIND_CONTAINER_ID", "").strip()
+    dind_image = env.pop("HERMES_TEST_DIND_IMAGE", "").strip()
+    dind_shared_root_raw = env.pop("HERMES_TEST_DIND_SHARED_ROOT", "").strip()
+    real_docker_raw = env.get("HERMES_TEST_REAL_DOCKER", "").strip()
+    ephemeral_docker_socket: Path | None = None
+    dind_shared_root: Path | None = None
+    if (
+        docker_socket_raw
+        or dind_id
+        or dind_image
+        or dind_shared_root_raw
+        or real_docker_raw
+    ):
+        candidate = Path(docker_socket_raw).resolve()
+        dind_shared_root = Path(dind_shared_root_raw).resolve()
+        _attest_ephemeral_docker(
+            candidate,
+            dind_id,
+            dind_image,
+            Path(real_docker_raw).resolve(),
+            dind_shared_root,
+        )
+        ephemeral_docker_socket = candidate
+        env["HERMES_TEST_DIND_SHARED_ROOT"] = str(dind_shared_root)
+    inherited_sandbox_root = env.get("HERMES_TEST_SANDBOX_ROOT", "").strip()
+    parent_sandbox_root = (
+        Path(inherited_sandbox_root).resolve()
+        if inherited_sandbox_root
+        else None
+    )
+    pytest_root = dind_shared_root / "pytest-roots" if dind_shared_root else None
+    if pytest_root is not None and not pytest_root.is_dir():
+        raise RuntimeError("disposable Docker pytest root does not exist")
+    temproot = tempfile.mkdtemp(prefix="hermes-pytest-tmproot-", dir=pytest_root)
+    if dind_shared_root is not None:
+        # The rootless daemon maps its container root to a distinct host uid.
+        # This disposable directory is the only shared filesystem capability;
+        # world access here lets Docker bind-mount test fixtures without
+        # granting access to any operator or repository path.
+        Path(temproot).chmod(0o777)
+    sandbox_root = Path(temproot)
+    test_home = sandbox_root / "home"
+    test_hermes_home = test_home / ".hermes"
+    test_home.mkdir()
+    test_hermes_home.mkdir()
+    real_home = _resolve_real_home(env)
     env["PYTEST_DEBUG_TEMPROOT"] = temproot
+    cmd.extend(("-o", f"cache_dir={temproot}/pytest-cache"))
+    env["TMPDIR"] = temproot
+    env["TEMP"] = temproot
+    env["TMP"] = temproot
+    env["HOME"] = str(test_home)
+    env["USERPROFILE"] = str(test_home)
+    env["HOMEDRIVE"] = test_home.drive
+    env["HOMEPATH"] = str(test_home)
+    env["XDG_CONFIG_HOME"] = str(test_home / ".config")
+    env["XDG_CACHE_HOME"] = str(test_home / ".cache")
+    env["XDG_DATA_HOME"] = str(test_home / ".local" / "share")
+    env["XDG_STATE_HOME"] = str(test_home / ".local" / "state")
+    env["HERMES_HOME"] = str(test_hermes_home)
+    env["HERMES_TEST_ISOLATION"] = str(test_hermes_home)
+    env["HERMES_TEST_SANDBOX_ROOT"] = str(sandbox_root)
+    env["HERMES_TEST_GUARD_ACTIVE"] = "1"
+    env["HERMES_TEST_REAL_HOME"] = str(real_home)
+    env["HERMES_TEST_REPO_ROOT"] = str(repo_root.resolve())
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env.pop("HERMES_TEST_GUARD_ROOT_PID", None)
+    host_canary_path: Path | None = None
+    host_socket_path: Path | None = None
+    host_socket: socket.socket | None = None
+    if file.name == "test_hermetic_environment_boundary.py" and sys.platform.startswith(
+        "linux"
+    ):
+        canary_fd, canary_name = tempfile.mkstemp(prefix="hermes-host-canary-")
+        os.write(canary_fd, b"HERMES_HOST_CANARY")
+        os.close(canary_fd)
+        host_canary_path = Path(canary_name)
+        host_socket_path = host_canary_path.with_suffix(".sock")
+        host_socket = socket.socket(socket.AF_UNIX)
+        host_socket.bind(str(host_socket_path))
+        host_socket.listen(1)
+        env["HERMES_TEST_HOST_CANARY"] = str(host_canary_path)
+        env["HERMES_TEST_HOST_SOCKET"] = str(host_socket_path)
+    guard_site = repo_root / "scripts" / "hermetic_site"
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(guard_site) + (
+        os.pathsep + existing_pythonpath if existing_pythonpath else ""
+    )
+    cmd = _sandboxed_test_command(
+        cmd,
+        env=env,
+        repo_root=repo_root,
+        sandbox_root=sandbox_root,
+        real_home=real_home,
+        parent_sandbox_root=parent_sandbox_root,
+        ephemeral_docker_socket=ephemeral_docker_socket,
+    )
 
     subproc_start = time.monotonic()
     # launch the pytest process
@@ -455,6 +947,14 @@ def _run_one_file_once(
 
         output +=  "\n"
     finally:
+        if host_socket is not None:
+            host_socket.close()
+        for probe_path in (host_socket_path, host_canary_path):
+            if probe_path is not None:
+                try:
+                    probe_path.unlink()
+                except FileNotFoundError:
+                    pass
         # Delete the temp root for this attempt. Nothing reads it after the
         # subprocess exits. More than 3000 of them fill the disk of the
         # runner over one suite.
@@ -651,6 +1151,11 @@ def _save_durations(
     repo-relative paths so the cache is portable across checkouts
     and CI runners.
     """
+    if os.environ.get("HERMES_TEST_OS_SANDBOX"):
+        # A runner invoked from a test is inside a read-only repository mount.
+        # Its timing data is ephemeral and must not punch a write hole in the
+        # outer sandbox merely to update a performance cache.
+        return
     data: dict[str, float] = _load_durations(repo_root)
     for f, t in file_times:
         key = _format_file(f, repo_root)

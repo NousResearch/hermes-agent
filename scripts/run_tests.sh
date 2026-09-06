@@ -8,10 +8,12 @@
 #     subprocess. No xdist, no shared workers, no module-level leakage
 #     between files.
 #   * TZ=UTC, LANG=C.UTF-8, PYTHONHASHSEED=0 (deterministic)
-#   * Env vars blanked (conftest.py also does this, but this
-#     is belt-and-suspenders for anyone running pytest outside our
-#     conftest path — e.g. on a single file)
-#   * Proper venv activation (probes .venv, venv, then ~/.hermes/...)
+#   * Kernel sandbox per test file: no external network, no host PID namespace,
+#     and no writable host filesystem (Linux bwrap / macOS sandbox-exec)
+#   * Repo-owned pre-collection Python guard inherited by child interpreters
+#   * Env vars blanked and a synthetic HOME/HERMES_HOME per test file
+#   * Proper test-venv activation (.venv, venv, or explicit HERMES_PYTHON;
+#     the live ~/.hermes release venv is never a test interpreter)
 #
 # Usage:
 #   scripts/run_tests.sh                            # full suite
@@ -42,16 +44,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # (HERMES_PYTHON is exported by the devShell hook and ships [dev] extras:
 # pytest, pytest-asyncio, pytest-timeout, ruff, ty).
 #
-# A candidate must have pytest INSTALLED, not merely exist. The release venv
-# at ~/.hermes/hermes-agent/venv has bin/activate but no pytest, so an
-# existence-only probe selected it in checkouts/worktrees without a local
-# .venv — every file then died with "No module named pytest" and the run
-# reported "0 tests passed" (which reads green at a glance even though the
-# exit code is 1). Skip such a venv and keep probing instead.
+# A candidate must have pytest INSTALLED, not merely exist. Never borrow the
+# release venv under ~/.hermes: the OS sandbox hides the entire live Hermes
+# home, including its interpreter and credential/runtime stores.
 VENV=""
 VENV_PYTHON=""
 SKIPPED_VENVS=""
-for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
+for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv"; do
   if [ -f "$candidate/bin/activate" ]; then
     if "$candidate/bin/python" -c 'import pytest' 2>/dev/null; then
       VENV="$candidate"
@@ -99,15 +98,6 @@ else
 fi
 
 
-# ── Live-gateway plugin (computed before we drop env) ───────────────────────
-EXTRA_PYTHONPATH=""
-EXTRA_PYTEST_PLUGINS=""
-if [ -f "$HOME/.hermes/pytest_live_guard.py" ]; then
-  EXTRA_PYTHONPATH="$HOME/.hermes"
-  EXTRA_PYTEST_PLUGINS="pytest_live_guard"
-fi
-
-
 # ── Windows location variables (computed before we drop env) ───────────────
 # `env -i` forwards HOME, which is enough on POSIX. Native Windows CPython
 # resolves Path.home() from USERPROFILE (or HOMEDRIVE+HOMEPATH), stdlib
@@ -143,15 +133,21 @@ done
 # credential can leak" property stays auditable at a glance.
 TEST_ENV=()
 for _test_var in HERMES_TEST_IMAGE HERMES_TEST_WORKERS HERMES_TEST_PATHS \
-  HERMES_TEST_FILE_TIMEOUT HERMES_TEST_FILE_RETRIES HERMES_TEST_SLICE; do
+  HERMES_TEST_FILE_TIMEOUT HERMES_TEST_FILE_RETRIES HERMES_TEST_SLICE \
+  HERMES_TEST_EPHEMERAL_DOCKER_SOCKET \
+  HERMES_TEST_DIND_CONTAINER_ID HERMES_TEST_DIND_IMAGE \
+  HERMES_TEST_DIND_SHARED_ROOT \
+  HERMES_TEST_REAL_DOCKER; do
   if [ -n "${!_test_var:-}" ]; then
     TEST_ENV+=("$_test_var=${!_test_var}")
   fi
 done
 
 # ── Run in hermetic env ──────────────────────────────────────────────────────
-# env -i: start with empty environment, opt-in only what we need.
-# No credential var can leak — you'd have to explicitly add it here.
+# env -i: start with empty environment, opt-in only what the runner needs.
+# The per-file runner replaces HOME/USERPROFILE with a synthetic directory
+# before pytest starts. No executable code is imported from the real Hermes
+# home; the guard is versioned in scripts/hermetic_site/.
 echo "▶ running per-file parallel test suite via run_tests_parallel.py"
 echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)"
 
@@ -178,6 +174,4 @@ exec env -i \
   PYTHONUTF8=1 \
   ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"} \
   ${HERMES_E2E_BROWSER:+HERMES_E2E_BROWSER="$HERMES_E2E_BROWSER"} \
-  ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
-  ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \
   "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"

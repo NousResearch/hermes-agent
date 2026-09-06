@@ -118,7 +118,7 @@ def test_os_kill_blocks_negative_one():
 
 @pytest.mark.skipif(not hasattr(os, "killpg"), reason="killpg POSIX-only")
 def test_os_killpg_blocks_foreign_pgid():
-    with pytest.raises(RuntimeError, match="live-system guard"):
+    with pytest.raises(RuntimeError, match="live-system guard|hermetic-test guard"):
         os.killpg(FOREIGN_PID, signal.SIGTERM)
 
 
@@ -296,14 +296,13 @@ def test_subprocess_killall_hermes_blocked():
 
 
 @pytest.mark.live_system_guard_bypass
-def test_bypass_marker_disables_guard():
-    """The bypass marker exists for tests that genuinely need real signal delivery
-    (e.g. PTY tests SIGINTing their own child). Verify it works.
-
-    We use it harmlessly here by signaling our own PID 0 (own group) so we
-    don't actually kill anything — but the call goes through real os.kill.
-    """
-    # With bypass, the guard yields without installing the monkeypatch,
-    # so we get the real os.kill. Calling os.kill(os.getpid(), 0) just
-    # checks that the PID exists — harmless.
-    os.kill(os.getpid(), 0)  # No exception — guard is OFF.
+def test_legacy_bypass_marker_cannot_disable_guard():
+    """The legacy marker is inert; own-process liveness remains permitted."""
+    assert _live_system_guard_is_active() is True
+    if os.environ.get("HERMES_TEST_OS_SANDBOX") == "macos-sandbox-exec":
+        with pytest.raises(PermissionError):
+            os.kill(os.getpid(), 0)
+    else:
+        os.kill(os.getpid(), 0)
+    with pytest.raises(RuntimeError, match="live-system guard|hermetic-test guard"):
+        os.kill(FOREIGN_PID, signal.SIGTERM)

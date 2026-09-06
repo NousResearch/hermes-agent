@@ -1,0 +1,20 @@
+#!/bin/sh
+# Docker test shim. The socket belongs to a disposable daemon created inside
+# an isolated network namespace; this shim also makes every new container
+# networkless. It deliberately exposes no build/pull/push/login operation.
+set -eu
+
+real_docker=${HERMES_TEST_REAL_DOCKER:-/usr/bin/docker}
+case "${1:-}" in
+  run)
+    shift
+    exec "$real_docker" run --network none "$@"
+    ;;
+  info|version|inspect|logs|exec|rm|restart|volume)
+    exec "$real_docker" "$@"
+    ;;
+  *)
+    echo "Hermes hermetic-test guard blocked Docker operation: ${1:-<missing>}" >&2
+    exit 125
+    ;;
+esac

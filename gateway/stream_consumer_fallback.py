@@ -49,6 +49,9 @@ class StreamFallbackMixin:
 
     def _continuation_text(self, final_text: str) -> str:
         """Return only the part of final_text the user has not already seen."""
+        tail_override, self._fallback_tail_override = self._fallback_tail_override, ""
+        if tail_override:
+            return tail_override
         prefix = self._fallback_prefix or self._visible_prefix()
         if prefix and final_text.startswith(prefix):
             return final_text[len(prefix):].lstrip()

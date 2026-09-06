@@ -1877,6 +1877,12 @@ class BasePlatformAdapter(ABC):
     splits_long_messages: bool = False
     # Prefix users can always TYPE for Hermes commands ("!" where the client eats a leading "/").
     typed_command_prefix: str = "/"
+    # Button-less conversational surface (iMessage, SMS): approval prompts are worded in plain
+    # language ("reply yes") instead of advertising `/approve`, because a slash command reads as
+    # operating a machine in a text thread. The slash forms keep working either way — this only
+    # changes what we TELL the user to send. Adapters with interactive buttons leave this False and
+    # never reach the text fallback. Read generically via getattr() at the call site.
+    conversational_approval: bool = False
     # ``in_channel`` continuable-cron surface: job delivered FLAT, plain replies continue it via
     # the whole-channel bucket ``(platform, chat_id, None)``; needs a flat-reply outbound gate too
     # (Slack ``reply_in_thread: false``). False fails SAFE -> ``thread``.
@@ -3686,12 +3692,12 @@ class BasePlatformAdapter(ABC):
         replacement adapter live, trigger another redelivery sweep (the watcher's may have run
         before this failure landed; atomic claiming keeps it idempotent)."""
         try:
-            from gateway.delivery_ledger import mark_delivered, mark_failed
+            from gateway.delivery_ledger import mark_delivered, mark_failed_from_result
             if getattr(result, "success", False):
                 await asyncio.to_thread(mark_delivered, obligation_id)
                 return
             error = str(getattr(result, "error", "") or "")
-            await asyncio.to_thread(mark_failed, obligation_id, error)
+            await asyncio.to_thread(mark_failed_from_result, obligation_id, result, error)
             if error == "send_path_degraded":
                 redeliver = getattr(
                     self.gateway_runner, "_redeliver_failed_obligations_for_platform", None)
@@ -4134,6 +4140,13 @@ class BasePlatformAdapter(ABC):
         """Format a message for this platform (override for e.g. Telegram
         MarkdownV2); default returns content as-is."""
         return content
+
+    def fit_bubbles(self, bubbles: List[str]) -> List[str]:
+        """Per-message iMessage-style delivery: each bubble is one message, so only a bubble
+        that is itself over ``MAX_MESSAGE_LENGTH`` gets split (fence-aware), never merged."""
+        return [chunk for bubble in bubbles for chunk in (
+            [bubble] if len(bubble) <= self.MAX_MESSAGE_LENGTH
+            else self.truncate_message(bubble, self.MAX_MESSAGE_LENGTH))]
 
     @staticmethod
     def truncate_message(content: str, max_length: int = 4096,

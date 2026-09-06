@@ -186,6 +186,18 @@ def mark_failed(obligation_id: str, error: str = "") -> None:
     _update_state(obligation_id, "failed", error=error)
 
 
+def mark_failed_from_result(obligation_id: str, result: Any, error: str = "") -> None:
+    """Mark failed; when the adapter delivered a prefix and reports the owed tail as
+    ``raw_response["undelivered_content"]`` (multi-bubble sends), keep only that tail so a
+    later redelivery cannot re-send what already landed."""
+    raw = getattr(result, "raw_response", None)
+    undelivered = raw.get("undelivered_content") if isinstance(raw, dict) else None
+    if isinstance(undelivered, str) and undelivered:
+        _update_state(obligation_id, "failed", error=error, content=undelivered)
+    else:
+        _update_state(obligation_id, "failed", error=error)
+
+
 def release_runtime_claim(obligation_id: str, error: str = "") -> bool:
     """Return an unsent runtime claim to ``failed`` without spending an attempt.
 
@@ -207,13 +219,17 @@ def release_runtime_claim(obligation_id: str, error: str = "") -> bool:
     return bool(cursor.rowcount)
 
 
-def _update_state(obligation_id: str, state: str, error: str = "") -> None:
+def _update_state(obligation_id: str, state: str, error: str = "", content: Optional[str] = None) -> None:
+    set_content = ", content=?" if content is not None else ""
+    params = [state, time.time(), error[:500] if error else None]
+    if content is not None:
+        params.append(content)
     with _DB_LOCK, _transaction() as conn:
         conn.execute(
-            """UPDATE delivery_obligations
-               SET state=?, updated_at=?, last_error=?
+            f"""UPDATE delivery_obligations
+               SET state=?, updated_at=?, last_error=?{set_content}
                WHERE obligation_id=?""",
-            (state, time.time(), error[:500] if error else None, obligation_id))
+            (*params, obligation_id))
 
 
 def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts, profile, *,

@@ -306,7 +306,7 @@ class GatewayStartupMixin:
         if not claimed:
             return 0
         try:
-            from gateway.delivery_ledger import RECOVERED_MARKER, mark_delivered, mark_failed
+            from gateway.delivery_ledger import RECOVERED_MARKER, mark_delivered, mark_failed_from_result
         except Exception:
             logger.debug("delivery ledger import failed", exc_info=True)
             return 0
@@ -334,8 +334,8 @@ class GatewayStartupMixin:
                     )
                 else:
                     await asyncio.to_thread(
-                        mark_failed, row["obligation_id"], str(getattr(result, "error", "") or "send failed")
-                    )
+                        mark_failed_from_result, row["obligation_id"], result,
+                        str(getattr(result, "error", "") or "send failed"))
         return redelivered
 
     async def _obligation_adapter(self, row: dict):

@@ -346,6 +346,35 @@ def split_markdown_atoms(text: str) -> "list[str]":
     return atoms
 
 
+def split_markdown_paragraphs(text: str) -> "list[str]":
+    """Split on blank lines outside fenced code blocks.
+
+    Unlike :func:`split_markdown_atoms`, adjacent prose, fences, and tables stay
+    together unless the source contains an actual blank-line boundary.
+    """
+    paragraphs: "list[str]" = []
+    current_lines: "list[str]" = []
+    in_fence = False
+
+    def _flush_current() -> None:
+        paragraph = "\n".join(current_lines).strip()
+        if paragraph:
+            paragraphs.append(paragraph)
+        current_lines.clear()
+
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            current_lines.append(line)
+        elif not stripped and not in_fence:
+            _flush_current()
+        else:
+            current_lines.append(line)
+    _flush_current()
+    return paragraphs
+
+
 def infer_block_separator(prev_chunk: str, next_chunk: str) -> str:
     """``'\\n'`` when the boundary sits at a code fence or a continued table, else ``'\\n\\n'``."""
     prev_trimmed = prev_chunk.rstrip()

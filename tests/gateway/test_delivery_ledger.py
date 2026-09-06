@@ -131,6 +131,43 @@ class TestStateMachine:
         _record()
         assert _row("ob-1")["state"] == "pending"
 
+    def test_partial_failure_persists_only_undelivered_suffix(self):
+        _record(content="first\n\nsecond")
+
+        from gateway.platforms.base import SendResult
+
+        dl.mark_failed_from_result(
+            "ob-1",
+            SendResult(success=False, error="connection reset",
+                       raw_response={"undelivered_content": "second"}),
+            "connection reset")
+
+        row = _row("ob-1")
+        assert row is not None
+        assert row["state"] == "failed"
+        assert row["content"] == "second"
+        assert row["last_error"] == "connection reset"
+
+    @pytest.mark.asyncio
+    async def test_adapter_finalizer_persists_only_partial_send_suffix(self):
+        from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
+
+        _record(content="first\n\nsecond")
+        adapter = MagicMock(spec=BasePlatformAdapter)
+        result = SendResult(
+            success=False,
+            error="connection reset",
+            raw_response={"undelivered_content": "second"},
+        )
+
+        await BasePlatformAdapter._finalize_delivery_obligation(
+            adapter, "ob-1", result, MagicMock(spec=MessageEvent), adapter)
+
+        row = _row("ob-1")
+        assert row is not None
+        assert row["state"] == "failed"
+        assert row["content"] == "second"
+
 
 class TestObligationId:
     def test_stable_and_distinct(self):
@@ -530,7 +567,7 @@ class TestGatewayRedeliverySweep:
 
     @pytest.mark.parametrize(
         ("send_success", "ledger_method"),
-        [(True, "mark_delivered"), (False, "mark_failed")],
+        [(True, "mark_delivered"), (False, "mark_failed_from_result")],
     )
     @pytest.mark.asyncio
     async def test_slow_state_update_does_not_block_event_loop(

@@ -599,6 +599,7 @@ export function applySessionControlUpdate(sessionId: string, rawSnapshot: unknow
   })
 }
 
+/** Drops one runtime session's entry when the session record is closed/deleted. */
 export function clearSessionControl(sessionId: string): void {
   if (!sessionId) {
     return
@@ -615,34 +616,13 @@ export function clearSessionControl(sessionId: string): void {
   $sessionControlBySession.set(remaining)
 }
 
-/** Lets an explicitly rebound gateway probe backends that were unsupported on its predecessor. */
-export function resetSessionControlAfterGatewayRebind(): void {
-  const entries = $sessionControlBySession.get()
-  let changed = false
-  const nextEntries: Record<string, SessionControlEntry> = {}
-
-  for (const [sessionId, entry] of Object.entries(entries)) {
-    advanceVersion(sessionId)
-
-    const nextEntry: SessionControlEntry = {
-      ...entry,
-      capability: entry.capability === 'unsupported' ? 'unknown' : entry.capability,
-      error: null,
-      loading: false,
-      pendingAction: null
-    }
-
-    nextEntries[sessionId] = nextEntry
-    changed ||= !sameEntry(entry, nextEntry)
-  }
-
-  if (changed) {
-    $sessionControlBySession.set(nextEntries)
-  }
-}
-
-/** Narrow reset seam for tests; production reconnect behavior remains explicitly owned by its caller. */
-export function resetSessionControlForTests(): void {
+/**
+ * Wipes every entry — the gateway-switch seam. Entries are keyed by runtime
+ * session id and a different backend mints new ids, so nothing here can be
+ * reused; in-flight reads/actions from the old backend are invalidated by the
+ * version bump so a late response cannot repopulate the map.
+ */
+export function clearAllSessionControl(): void {
   for (const sessionId of new Set([...versions.keys(), ...Object.keys($sessionControlBySession.get())])) {
     advanceVersion(sessionId)
   }

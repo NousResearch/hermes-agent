@@ -2793,6 +2793,9 @@ export const en: Translations = {
       copySuccess: 'Criterion copied to clipboard',
       copyFailure: 'Failed to copy criterion to clipboard',
       continuationFailed: 'Failed to submit goal continuation',
+      continuationQueued: 'Goal resumed — continuation queued until the current turn finishes',
+      continuationBusy: 'Goal resumed — session busy, /interrupt the current turn to continue',
+      controlUnavailable: msg => `Session controls unavailable: ${msg}`,
       dismissError: 'Dismiss error',
       add: 'Add'
     },

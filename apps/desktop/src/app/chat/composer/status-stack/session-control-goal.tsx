@@ -1,5 +1,6 @@
 import { memo, useCallback, useState } from 'react'
 
+import { queueKickoffIfSessionBusy } from '@/app/session/hooks/use-prompt-actions/queue-if-busy'
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { StatusSection } from '@/components/chat/status-section'
 import { Button } from '@/components/ui/button'
@@ -85,6 +86,22 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
             return false
           }
 
+          // The backend has already resumed the goal; if a turn is running the
+          // kickoff must queue (same as a typed `/goal resume`, slash.ts), not
+          // read as a failure.
+          const queued = queueKickoffIfSessionBusy({
+            displayText: dispatch.display ?? undefined,
+            sessionId,
+            text: dispatch.message
+          })
+
+          if (queued !== 'idle') {
+            const copy = queued === 'queued' ? ctrl.continuationQueued : ctrl.continuationBusy
+            onFeedback(queued === 'queued' ? null : copy, queued === 'queued' ? copy : null)
+
+            return queued === 'queued'
+          }
+
           const submitted = await onSubmit(dispatch.message, {
             displayKind: 'hidden',
             sessionId
@@ -146,12 +163,12 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
     goal.last_verdict === 'blocked'
       ? s.goalBlocked
       : visibleState === 'waiting'
-      ? s.goalWaiting
-      : visibleState === 'paused'
-        ? s.goalPaused
-        : visibleState === 'done'
-          ? s.goalDone
-          : s.goalActive
+        ? s.goalWaiting
+        : visibleState === 'paused'
+          ? s.goalPaused
+          : visibleState === 'done'
+            ? s.goalDone
+            : s.goalActive
 
   const headerLabel =
     visibleState === 'done'

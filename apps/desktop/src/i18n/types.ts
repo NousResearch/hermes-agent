@@ -2387,6 +2387,9 @@ export interface Translations {
       copySuccess: string
       copyFailure: string
       continuationFailed: string
+      continuationQueued: string
+      continuationBusy: string
+      controlUnavailable: (msg: string) => string
       dismissError: string
       add: string
     }

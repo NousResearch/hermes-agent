@@ -2957,6 +2957,9 @@ export const zh: Translations = {
       copySuccess: '已将条件复制到剪贴板',
       copyFailure: '复制条件到剪贴板失败',
       continuationFailed: '提交目标后续内容失败',
+      continuationQueued: '目标已恢复 — 后续内容已排队，将在当前回合结束后发送',
+      continuationBusy: '目标已恢复 — 会话正忙，请 /interrupt 当前回合以继续',
+      controlUnavailable: msg => `会话控制不可用: ${msg}`,
       dismissError: '关闭错误',
       add: '添加'
     },

@@ -2078,6 +2078,9 @@ export const ar = defineLocale({
       copySuccess: 'تم نسخ المعيار إلى الحافظة',
       copyFailure: 'فشل نسخ المعيار إلى الحافظة',
       continuationFailed: 'فشل إرسال متابعة الهدف',
+      continuationQueued: 'تم استئناف الهدف — المتابعة في قائمة الانتظار حتى انتهاء الدور الحالي',
+      continuationBusy: 'تم استئناف الهدف — الجلسة مشغولة، نفّذ /interrupt للدور الحالي للمتابعة',
+      controlUnavailable: msg => `عناصر تحكم الجلسة غير متاحة: ${msg}`,
       dismissError: 'تجاهل الخطأ',
       add: 'إضافة'
     },

@@ -2325,6 +2325,7 @@ export const zhHant = defineLocale({
       heartbeatEveryHours: hours => `每 ${hours} 小時`,
       heartbeatEverySeconds: seconds => `每 ${seconds} 秒`,
       heartbeatNext: time => `下次 ${time}`,
+      heartbeatDueWaitingForIdle: '已到期 — 等待會話閒置',
       heartbeatActions: '活動訊號操作',
       pauseHeartbeat: '暫停活動訊號',
       resumeHeartbeat: '繼續活動訊號',
@@ -2337,6 +2338,9 @@ export const zhHant = defineLocale({
       copySuccess: '已將條件複製到剪貼板',
       copyFailure: '複製條件到剪貼板失敗',
       continuationFailed: '提交目標延續內容失敗',
+      continuationQueued: '目標已恢復 — 延續內容已排隊，將在目前回合結束後送出',
+      continuationBusy: '目標已恢復 — 會話忙碌中，請 /interrupt 目前回合以繼續',
+      controlUnavailable: msg => `會話控制無法使用: ${msg}`,
       dismissError: '關閉錯誤',
       add: '新增'
     },

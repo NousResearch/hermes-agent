@@ -2405,6 +2405,7 @@ export const ja = defineLocale({
       heartbeatEveryHours: hours => `${hours}時間ごと`,
       heartbeatEverySeconds: seconds => `${seconds}秒ごと`,
       heartbeatNext: time => `次回 ${time}`,
+      heartbeatDueWaitingForIdle: '期限到来 — アイドル待ち',
       heartbeatActions: 'ハートビートのアクション',
       pauseHeartbeat: 'ハートビートを一時停止',
       resumeHeartbeat: 'ハートビートを再開',
@@ -2417,6 +2418,9 @@ export const ja = defineLocale({
       copySuccess: '基準をクリップボードにコピーしました',
       copyFailure: '基準のコピーに失敗しました',
       continuationFailed: 'ゴールの継続送信に失敗しました',
+      continuationQueued: 'ゴールを再開しました — 継続は現在のターン終了後に送信されます',
+      continuationBusy: 'ゴールを再開しました — セッションが実行中です。続行するには /interrupt してください',
+      controlUnavailable: msg => `セッション制御を利用できません: ${msg}`,
       dismissError: 'エラーを閉じる',
       add: '追加'
     },

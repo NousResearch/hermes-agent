@@ -33,7 +33,9 @@ export const SessionControlSections = memo(function SessionControlSections({
     setFeedbackSuccess(success)
   }, [])
 
-  const storeError = entry.error ? ctrl.actionFailed(entry.error) : null
+  // Action failures arrive through onFeedback (which wins below); a store
+  // error with no feedback is a read/hydration failure, not a failed action.
+  const storeError = entry.error ? ctrl.controlUnavailable(entry.error) : null
   const displayError = feedbackError ?? (entry.error === dismissedStoreError ? null : storeError)
 
   const handleDismissError = useCallback(() => {

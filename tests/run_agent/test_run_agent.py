@@ -2948,13 +2948,19 @@ class TestHandleMaxIterations:
         agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
         agent._cached_system_prompt = "You are helpful."
         messages = [
-            {"role": "user", "content": "do stuff"},
+            {"role": "user", "content": "do stuff", "name": "sylvain"},
             {
                 "role": "assistant",
                 "tool_calls": [{"id": "call_1", "function": {"name": "execute_code", "arguments": "{}"}}],
                 "codex_reasoning_items": [{"id": "rs_1"}],
             },
-            {"role": "tool", "tool_call_id": "call_1", "content": "result", "tool_name": "execute_code"},
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "result",
+                "tool_name": "execute_code",
+                "name": "execute_code",
+            },
             {"role": "assistant", "content": "Done.", "_empty_recovery_synthetic": True},
         ]
 
@@ -2967,8 +2973,15 @@ class TestHandleMaxIterations:
             assert "codex_reasoning_items" not in m, m
             assert "codex_message_items" not in m, m
             assert not any(isinstance(k, str) and k.startswith("_") for k in m), m
+            # ``name`` is schema-foreign on tool results only (aki.io rejects
+            # it with "contains item with unknown key name"); it stays valid
+            # on user/assistant messages.
+            if m.get("role") == "tool":
+                assert "name" not in m, m
+        assert [m for m in sent_msgs if m.get("role") == "user"][0]["name"] == "sylvain"
         # Internal history is untouched — the path copies each message.
         assert messages[2]["tool_name"] == "execute_code"
+        assert messages[2]["name"] == "execute_code"
         assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
 
 

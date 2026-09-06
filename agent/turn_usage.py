@@ -15,6 +15,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
+from agent.image_token_cost import calibrate_from_usage
 from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 
@@ -119,6 +120,9 @@ def record_response_usage(
     # transcript (main-loop ONLY; MoA uses pre-fold aggregator usage). The display meter
     # anchors on the turn's FIRST response: later same-turn responses inflate
     # prompt_tokens with replayed thinking. Display-only; compression math uses real usage.
+    # The provider just priced this request exactly: if the delta since the previous anchor
+    # introduced images, the residual is their real per-image cost (learned before re-anchoring).
+    calibrate_from_usage(agent, messages, aggregator_usage.prompt_tokens)
     _new_anchor = capture_usage_anchor(
         aggregator_usage.prompt_tokens, aggregator_usage.output_tokens, messages
     )

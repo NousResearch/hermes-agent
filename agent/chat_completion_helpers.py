@@ -2224,6 +2224,11 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         agent._copy_reasoning_content_for_api(msg, api_msg)
         for key in _SUMMARY_FOREIGN_MESSAGE_KEYS:
             api_msg.pop(key, None)
+        # Mirror of the transport's role-qualified strip: ``name`` is
+        # schema-foreign on tool results only (strict providers reject with
+        # "contains item with unknown key name"); it stays on user/assistant.
+        if api_msg.get("role") == "tool":
+            api_msg.pop("name", None)
         # api_content holds the exact bytes the main loop sent; substituting (not popping)
         # keeps the summary's prefix identical instead of re-prefilling the largest context.
         # Strict OpenAI-compatible gateways (Fireworks-backed OpenCode Go, Mistral, Moonshot/Kimi) reject

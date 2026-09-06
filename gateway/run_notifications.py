@@ -1042,6 +1042,23 @@ class GatewayNotificationsMixin:
         """
         claim = self._CompletionClaim()
         evt_type = evt.get("type")
+        if evt_type not in {"async_delegation", "completion"}:
+            return claim
+        is_durable_completion = (
+            evt_type == "completion"
+            or (evt_type == "async_delegation" and not evt.get("task_failure_notice"))
+        )
+        session_key = str(evt.get("session_key") or "").strip()
+        if is_durable_completion and session_key:
+            try:
+                target = await getattr(self, "async_session_store").lookup_by_session_key(session_key)
+            except Exception:
+                logger.debug("Completion pre-flight session lookup failed for %s", session_key, exc_info=True)
+                target = None
+            if target is not None and getattr(target, "suspended", False) is True:
+                logger.info("Retaining completion for suspended session %s", session_key)
+                claim.proceed, claim.early_result = False, False
+                return claim
         # An interim per-task notice shares the batch's delegation_id but is not the durable
         # completion; claiming that row here would acknowledge the FINAL result before it exists.
         if evt_type == "async_delegation" and not evt.get("task_failure_notice"):

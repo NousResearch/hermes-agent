@@ -132,6 +132,53 @@ def test_unroutable_async_event_is_not_requeued_forever(
     assert isolated.empty()
 
 
+def test_suspended_completion_remains_retryable_before_adapter_acceptance():
+    """A delayed child result cannot be consumed while its controller is suspended."""
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    runner._async_session_store = SimpleNamespace(
+        _store=runner.session_store,
+        lookup_by_session_key=AsyncMock(
+            return_value=SimpleNamespace(session_key="controller-key", suspended=True)
+        ),
+    )
+    runner._session_db = SimpleNamespace(
+        get_session=AsyncMock(
+            return_value={"session_id": "controller", "source": "telegram", "ended_at": None}
+        )
+    )
+    event = _async_event("deleg_suspended")
+    event.update(parent_session_id="controller")
+
+    result = asyncio.run(runner._deliver_completion_notification("completion", event))
+
+    assert result is False
+    adapter.handle_message.assert_not_awaited()
+    assert runner._completion_deliveries_delivered == {}
+    assert event.get("_consumer_acknowledges_completion") is None
+
+
+def test_suspended_interim_failure_notice_keeps_upstream_preflight_semantics():
+    """An interim notice is not the durable completion and must bypass its suspension guard."""
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    lookup = AsyncMock(
+        return_value=SimpleNamespace(session_key="controller-key", suspended=True)
+    )
+    runner._async_session_store = SimpleNamespace(
+        _store=runner.session_store,
+        lookup_by_session_key=lookup,
+    )
+    event = _async_event("deleg_interim_failure")
+    event["task_failure_notice"] = True
+
+    claim = asyncio.run(runner._preflight_completion_delivery(event))
+
+    assert claim.proceed is True
+    assert claim.early_result is None
+    assert claim.claim_id == ""
+    lookup.assert_not_awaited()
+
+
 def test_concurrent_claims_share_the_same_narrow_delivery_seam():
     """Concurrent consumers in one runner cannot both enter the adapter."""
     entered = asyncio.Event()

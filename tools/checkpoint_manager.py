@@ -222,9 +222,12 @@ def _repair_bare_repo_dirs(store: Path) -> None:
 
 
 def _run_git(args: List[str], store: Path, working_dir: str, timeout: int = _GIT_TIMEOUT,
-             allowed_returncodes: Optional[Set[int]] = None, index_file: Optional[Path] = None) -> Tuple[bool, str, str]:
+             allowed_returncodes: Optional[Set[int]] = None, index_file: Optional[Path] = None,
+             strip_output: bool = True) -> Tuple[bool, str, str]:
     """Run git against the shared store -> (ok, stdout, stderr).  ``allowed_returncodes`` suppresses
-    error logging for expected non-zero exits (``diff --cached --quiet`` -> 1); ``ok`` stays rc == 0."""
+    error logging for expected non-zero exits (``diff --cached --quiet`` -> 1); ``ok`` stays rc == 0.
+    ``strip_output=False`` preserves the raw stdout/stderr (needed for NUL-delimited ``-z`` output
+    where leading/trailing whitespace is significant, e.g. filenames with leading spaces)."""
     wd = _normalize_path(working_dir)
     cmd = ["git"] + list(args)
     if not wd.is_dir():
@@ -251,7 +254,7 @@ def _run_git(args: List[str], store: Path, working_dir: str, timeout: int = _GIT
         return False, "", str(exc)
 
     ok = result.returncode == 0
-    stdout, stderr = result.stdout.strip(), result.stderr.strip()
+    stdout, stderr = (result.stdout.strip(), result.stderr.strip()) if strip_output else (result.stdout, result.stderr)
     if not ok and result.returncode not in (allowed_returncodes or set()):
         logger.error("Git command failed: %s (rc=%d) stderr=%s",
                      " ".join(cmd), result.returncode, stderr)
@@ -531,7 +534,8 @@ def _diff_staged_tree(p: _ProjectRefs, *diff_args: List[str]) -> List[Tuple[bool
     """Stage the working tree (so new files show), run each ``git diff`` variant,
     then point the index back at the ref so it doesn't drift."""
     _stage_all(p)
-    results = [_run_git(args, p.store, p.abs_dir, index_file=p.index_file) for args in diff_args]
+    results = [_run_git(args, p.store, p.abs_dir, index_file=p.index_file,
+                        strip_output=("-z" not in args)) for args in diff_args]
     _run_git(["read-tree", p.ref], p.store, p.abs_dir, index_file=p.index_file, allowed_returncodes={128})
     return results
 
@@ -596,7 +600,11 @@ class CheckpointManager:
         if err:
             return err
 
-        (ok, names_out, err), = _diff_staged_tree(p, ["diff", "--name-only", commit_hash, "--cached"])
+        # Use -z for NUL-delimited output: Git quotes non-ASCII names by default (octal escapes)
+        # when using --name-only without -z, and splitlines()+strip() corrupts both quoted names
+        # and leading-space filenames. NUL-separated output preserves literal paths.
+        # See https://github.com/NousResearch/hermes-agent/issues/103995
+        (ok, names_out, err), = _diff_staged_tree(p, ["diff", "--name-only", "-z", commit_hash, "--cached"])
         if not ok:
             return {"success": False, "error": f"Could not compute changed files: {err}"}
 
@@ -604,7 +612,8 @@ class CheckpointManager:
         if not ledger:
             return {"success": True, "restore": [], "skipped": [], "ledger_empty": True}
         out: Dict[str, List[str]] = {"restore": [], "skipped": []}
-        for rel in filter(None, (line.strip() for line in names_out.splitlines())):
+        # NUL-separated; preserve literal filenames (no strip — leading/trailing spaces are significant)
+        for rel in (n for n in names_out.split("\x00") if n):
             abs_path = Path(p.abs_dir) / rel
             entry = ledger.get(str(abs_path))
             recorded = entry.get("sha256") if isinstance(entry, dict) else None
@@ -853,9 +862,10 @@ class CheckpointManager:
         """Unstage files larger than ``max_file_size_mb`` (datasets, weights, videos)."""
         if self.max_file_size_mb <= 0:
             return
-        ok, stdout, _ = _run_git(["ls-files", "--cached", "-z"], store, working_dir, index_file=index_file)
+        # strip_output=False: leading-space filenames must not be stripped
+        ok, stdout, _ = _run_git(["ls-files", "--cached", "-z"], store, working_dir, index_file=index_file,
+                                 strip_output=False)
         abs_workdir = _normalize_path(working_dir)
-        # NUL-separated; _run_git's strip() leaves NULs alone.
         oversize = [rel for rel in (stdout if ok else "").split("\x00") if rel and self._exceeds_size_cap(abs_workdir / rel)]
         if not oversize:
             return

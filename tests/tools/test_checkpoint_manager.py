@@ -574,6 +574,98 @@ class TestSafeRestore:
 
 
 # =========================================================================
+# Issue #103995: non-ASCII and leading-space filenames
+# =========================================================================
+class TestSafeRestoreFilenames:
+    """Safe restore must handle non-ASCII and leading-space filenames correctly.
+
+    Git quotes non-ASCII names by default (octal escapes) when using --name-only
+    without -z. Leading-space filenames get corrupted by splitlines()+strip().
+    Both cases require NUL-delimited (-z) output to preserve literal paths.
+    """
+
+    def _setup_files_before_checkpoint(self, mgr, work_dir):
+        """Create files BEFORE the checkpoint so they exist in the snapshot."""
+        files = {
+            "plain.txt": "plain before",
+            "报告.txt": "chinese before",
+            " leading.txt": "leading before",
+        }
+        for name, content in files.items():
+            (work_dir / name).write_text(content)
+        # Take checkpoint with all files present
+        assert mgr.ensure_checkpoint(str(work_dir), "initial") is True
+        mgr.new_turn()
+        return files
+
+    def _agent_modify_and_record(self, mgr, file_path, new_content):
+        """Simulate agent writing to a file and recording the write."""
+        file_path.write_text(new_content)
+        mgr.record_agent_write(str(file_path))
+
+    def test_safe_restore_reverts_non_ascii_filename(self, mgr, work_dir):
+        """Chinese filename must be restored, not skipped as 'user edit'."""
+        self._setup_files_before_checkpoint(mgr, work_dir)
+
+        chinese_file = work_dir / "报告.txt"
+        self._agent_modify_and_record(mgr, chinese_file, "agent edit")
+
+        result = mgr.restore(str(work_dir), mgr.list_checkpoints(str(work_dir))[0]["hash"], safe=True)
+        assert result["success"] is True
+        assert chinese_file.read_text() == "chinese before"
+        assert "报告.txt" in result["restored_files"]
+        assert "报告.txt" not in result["skipped_user_edits"]
+
+    def test_safe_restore_reverts_leading_space_filename(self, mgr, work_dir):
+        """Filename with leading space must be restored, not skipped."""
+        self._setup_files_before_checkpoint(mgr, work_dir)
+
+        leading_space_file = work_dir / " leading.txt"
+        self._agent_modify_and_record(mgr, leading_space_file, "agent edit")
+
+        result = mgr.restore(str(work_dir), mgr.list_checkpoints(str(work_dir))[0]["hash"], safe=True)
+        assert result["success"] is True
+        assert leading_space_file.read_text() == "leading before"
+        assert " leading.txt" in result["restored_files"]
+        assert " leading.txt" not in result["skipped_user_edits"]
+
+    def test_safe_restore_leading_space_file_respects_size_cap(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """Leading-space file must be excluded by max_file_size_mb just like any other."""
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        m = CheckpointManager(enabled=True, max_snapshots=50, max_file_size_mb=1)
+
+        big_file = work_dir / " oversized.bin"
+        big_file.write_bytes(b"\0" * (2 * 1024 * 1024))  # 2 MB
+
+        assert m.ensure_checkpoint(str(work_dir), "initial") is True
+
+        store = _store_path(checkpoint_base)
+        ok, files, _ = _run_git(
+            ["ls-tree", "-r", "--name-only", _ref_name(_project_hash(str(work_dir)))],
+            store, str(work_dir),
+        )
+        assert ok
+        names = set(files.splitlines())
+        assert " oversized.bin" not in names  # excluded by size cap
+
+    def test_safe_restore_mixed_ascii_and_non_ascii(self, mgr, work_dir):
+        """Mix of ASCII, non-ASCII, and leading-space files all restored correctly."""
+        originals = self._setup_files_before_checkpoint(mgr, work_dir)
+
+        for name in originals:
+            f = work_dir / name
+            self._agent_modify_and_record(mgr, f, "agent edit")
+
+        result = mgr.restore(str(work_dir), mgr.list_checkpoints(str(work_dir))[0]["hash"], safe=True)
+        assert result["success"] is True
+        for name, original in originals.items():
+            assert (work_dir / name).read_text() == original, f"{name} not restored"
+            assert name in result["restored_files"], f"{name} not in restored_files"
+
+
+# =========================================================================
 # CheckpointManager — working dir resolution
 # =========================================================================
 

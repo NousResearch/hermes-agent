@@ -127,7 +127,7 @@ FEISHU_WEBHOOK_PORT=8765         # default: 8765
 FEISHU_WEBHOOK_PATH=/feishu/webhook  # default: /feishu/webhook
 ```
 
-When Feishu sends a URL verification challenge (`type: url_verification`), the webhook responds automatically so you can complete the subscription setup in the Feishu developer console. The challenge response is gated on `FEISHU_VERIFICATION_TOKEN` when set — challenge requests with a missing or mismatched token are rejected so an unauthenticated remote cannot prove endpoint control by echoing attacker-controlled challenge data.
+When Feishu sends a URL verification challenge (`type: url_verification`), the webhook responds automatically so you can complete the subscription setup in the Feishu developer console. URL verification requires `FEISHU_VERIFICATION_TOKEN` to be configured — challenge requests with a missing or mismatched token are rejected so an unauthenticated remote cannot prove endpoint control by echoing attacker-controlled challenge data.
 
 ## Step 3: Configure Hermes
 
@@ -454,13 +454,15 @@ Messages within the same chat are processed serially (one at a time) to maintain
 
 ## Rate Limiting (Webhook Mode)
 
-In webhook mode, the adapter enforces per-IP rate limiting to protect against abuse:
+In webhook mode, the adapter enforces a per-IP authenticated-delivery quota after a request passes the configured authentication checks. Requests rejected before authentication do not consume this quota:
 
-- **Window:** 60-second sliding window
-- **Limit:** 120 requests per window per (app_id, path, IP) triple
+- **Window:** 60-second fixed window starting with the first authenticated request for the (app_id, path, IP) triple
+- **Limit:** 120 authenticated requests per window per (app_id, path, IP) triple
 - **Tracking cap:** Up to 4096 unique keys tracked (prevents unbounded memory growth)
 
-Requests that exceed the limit receive HTTP 429 (Too Many Requests).
+Authenticated requests that exceed the limit receive HTTP 429 (Too Many Requests). If the webhook endpoint is exposed to the network, configure request and concurrency limits at the ingress or reverse proxy to protect against unauthenticated network abuse.
+
+A separate pre-authentication limit permits 600 requests per IP per 60-second fixed window before JSON parsing. Its table is also capped at 4096 sources. This bounds unauthenticated parser work; ingress request and concurrency limits remain necessary.
 
 ### Webhook Anomaly Tracking
 

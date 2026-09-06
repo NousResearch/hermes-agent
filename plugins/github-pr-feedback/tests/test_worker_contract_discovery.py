@@ -82,10 +82,31 @@ def test_worker_readiness_rejects_user_override_without_completion_hooks(tmp_pat
     (plugin / "plugin.yaml").write_text(
         "name: github-pr-feedback\ndescription: stale user override\n"
     )
-    (plugin / "__init__.py").write_text("def register(ctx):\n    return None\n")
+    (plugin / "__init__.py").write_text(
+        "from pathlib import Path\n"
+        "Path(__file__).with_name('executed').write_text('unsafe')\n"
+        "def register(ctx):\n    return None\n"
+    )
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     assert worker_contract_enabled(tmp_path, "worker") is False
+    assert not (plugin / "executed").exists()
+
+
+def test_worker_readiness_accepts_manifest_declared_hooks_without_importing_worker(tmp_path):
+    from github_pr_feedback.worker_contract import worker_contract_enabled
+
+    worker = tmp_path / "profiles/worker"
+    plugin = worker / "plugins/github-pr-feedback"
+    plugin.mkdir(parents=True)
+    (worker / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": ["github-pr-feedback"], "disabled": []}}))
+    (plugin / "plugin.yaml").write_text(yaml.safe_dump({
+        "name": "github-pr-feedback", "provides_hooks": ["pre_tool_call", "pre_kanban_complete"]
+    }))
+    (plugin / "__init__.py").write_text("raise AssertionError('worker code imported')\n")
+
+    assert worker_contract_enabled(tmp_path, "worker") is True
 
 
 @pytest.mark.parametrize("managed,raw,expected", [

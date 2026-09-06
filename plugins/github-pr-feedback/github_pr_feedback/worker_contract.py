@@ -1,7 +1,6 @@
 """Read worker opt-in state without loading another profile's plugins or secrets."""
+import json
 from pathlib import Path
-import shutil
-import tempfile
 
 import yaml
 
@@ -26,6 +25,43 @@ def configured_assignees(policy):
     return names
 
 
+def _declared_hooks(plugin_dir: Path) -> set[str] | None:
+    """Read a plugin manifest without importing the plugin package."""
+    for filename, loader in (("plugin.yaml", yaml.safe_load), ("plugin.yml", yaml.safe_load),
+                             ("plugin.json", json.loads)):
+        manifest = plugin_dir / filename
+        try:
+            data = loader(manifest.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError, yaml.YAMLError):
+            continue
+        if not isinstance(data, dict) or data.get("name") != _PLUGIN_NAME:
+            return None
+        hooks = data.get("provides_hooks")
+        if not isinstance(hooks, list) or not all(isinstance(item, str) for item in hooks):
+            return None
+        return set(hooks)
+    return None
+
+
+def _resolved_declared_hooks(home: Path) -> set[str] | None:
+    """Resolve the worker plugin contract from manifests only.
+
+    A profile-local manifest wins over the trusted bundled manifest, matching the
+    plugin discovery precedence without executing profile-owned code.
+    """
+    user_plugins = home / "plugins"
+    candidates = [user_plugins / _PLUGIN_NAME]
+    try:
+        categories = tuple(path for path in user_plugins.iterdir() if path.is_dir())
+    except OSError:
+        categories = ()
+    candidates.extend(category / _PLUGIN_NAME for category in categories)
+    for candidate in candidates:
+        if candidate.exists():
+            return _declared_hooks(candidate)
+    return _declared_hooks(Path(__file__).resolve().parents[1])
+
+
 def worker_contract_enabled(root: Path, assignee: str) -> bool:
     if not assignee or assignee in {".", ".."} or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_." for c in assignee):
         return False
@@ -48,27 +84,5 @@ def worker_contract_enabled(root: Path, assignee: str) -> bool:
             or _PLUGIN_NAME in disabled):
         return False
 
-    manager = None
-    try:
-        from hermes_cli.plugins import PluginManager
-
-        with tempfile.TemporaryDirectory(prefix="worker-contract-") as probe_dir:
-            probe_home = Path(probe_dir)
-            shutil.copy2(home / "config.yaml", probe_home / "config.yaml")
-            user_plugins = home / "plugins"
-            if user_plugins.is_dir():
-                shutil.copytree(user_plugins, probe_home / "plugins", symlinks=True)
-            manager = PluginManager(scope_key=str(probe_home))
-            manager.discover_and_load()
-            selected = manager._plugins.get(_PLUGIN_NAME)
-            return bool(
-                selected is not None
-                and selected.enabled
-                and selected.error is None
-                and _REQUIRED_HOOKS <= set(selected.hooks_registered)
-            )
-    except (OSError, RuntimeError, TypeError, ValueError):
-        return False
-    finally:
-        if manager is not None:
-            manager.unload()
+    hooks = _resolved_declared_hooks(home)
+    return hooks is not None and _REQUIRED_HOOKS <= hooks

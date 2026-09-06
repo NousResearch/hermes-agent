@@ -87,7 +87,6 @@ afterEach(() => {
 })
 
 async function renderModelSettings(scopeProfile?: string) {
-  const { ModelSettings } = await import('./model-settings')
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   return render(
@@ -100,6 +99,10 @@ async function renderModelSettings(scopeProfile?: string) {
     </MemoryRouter>
   )
 }
+
+// Load stable modules during collection, after mock fixtures are initialized.
+// Cold transforms must not consume a behavioral test or hook deadline.
+const { ModelSettings } = await import('./model-settings')
 
 describe('ModelSettings profile scope', () => {
   // #90549: the API helpers treat `null` as "deliberately target the

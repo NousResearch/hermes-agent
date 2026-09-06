@@ -99,14 +99,19 @@ def _python_preflight_supported() -> bool:
         return False
 
 
-def _python_source_error(tool_name: str, args: Any) -> Optional[tuple[Exception, str]]:
+def _python_source_error(agent: Any, tool_name: str, args: Any) -> Optional[tuple[Exception, str]]:
     """Return a local compile error for direct or tool-search-bridged execute_code."""
     if not isinstance(args, dict):
         return None
     if tool_name == "tool_call":
-        if args.get("name") != "execute_code" or not isinstance(args.get("arguments"), dict):
+        from agent.tool_executor import _unwrap_tool_search_call
+
+        resolved_name, resolved_args, scope_block = _unwrap_tool_search_call(
+            agent, tool_name, args
+        )
+        if resolved_name != "execute_code" or scope_block is not None:
             return None
-        args = args["arguments"]
+        args = resolved_args
     elif tool_name != "execute_code":
         return None
     source = args.get("code")
@@ -291,7 +296,7 @@ def validate_tool_calls(
             for tc, args in parsed_args:
                 if _mixed_invalid_batch and tc.function.name not in valid_names:
                     continue
-                error = _python_source_error(tc.function.name, args)
+                error = _python_source_error(agent, tc.function.name, args)
                 if error is not None:
                     python_errors.append((tc, *error))
 

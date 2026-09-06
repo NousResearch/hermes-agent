@@ -77,6 +77,13 @@ def _agent(*tool_names: str) -> AIAgent:
             "tool_call",
             json.dumps({"name": "execute_code", "arguments": {"code": "if True:\n"}}),
         ),
+        (
+            "tool_call",
+            json.dumps({
+                "name": "execute_code",
+                "arguments": json.dumps({"code": "if True:\n"}),
+            }),
+        ),
     ],
 )
 def test_incomplete_payload_recovers_without_partial_batch_side_effects(
@@ -108,7 +115,10 @@ def test_incomplete_payload_recovers_without_partial_batch_side_effects(
     monkeypatch.setattr("model_tools.handle_function_call", _dispatch)
     with patch("tools.terminal_tool._get_env_config", return_value={"env_type": "local"}), patch(
         "tools.code_execution_tool._get_execution_mode", return_value="strict"
-    ):
+    ), patch(
+        "tools.tool_search.load_config_readonly",
+        return_value=SimpleNamespace(effective_defer_tools=frozenset({"execute_code"})),
+    ), patch("agent.tool_executor._tool_search_scoped_names", return_value={"execute_code"}):
         result = agent.run_conversation("write it")
 
     assert result["completed"] is True
@@ -201,3 +211,39 @@ def test_python_preflight_defers_to_remote_interpreter(monkeypatch):
 
     assert result["completed"] is True
     assert [name for name, _ in dispatched] == ["execute_code"]
+
+
+def test_python_preflight_does_not_block_out_of_scope_bridge_sibling(monkeypatch):
+    agent = _agent("tool_call", "write_file")
+    responses = iter(
+        (
+            _response(
+                _tool_call(
+                    "tool_call",
+                    json.dumps({"name": "execute_code", "arguments": {"code": "if True:"}}),
+                    "scoped-out",
+                ),
+                _tool_call("write_file", json.dumps({"path": "valid", "content": "x"}), "valid"),
+            ),
+            _response(content="done", finish_reason="stop"),
+        )
+    )
+    dispatched = []
+    agent._interruptible_api_call = lambda api_kwargs: next(responses)
+    monkeypatch.setattr("agent.tool_executor._tool_search_scoped_names", lambda agent: frozenset())
+    monkeypatch.setattr(
+        "model_tools.handle_function_call",
+        lambda name, args, *positional, **kwargs: dispatched.append((name, args))
+        or json.dumps({"success": True}),
+    )
+
+    with patch("tools.terminal_tool._get_env_config", return_value={"env_type": "local"}), patch(
+        "tools.code_execution_tool._get_execution_mode", return_value="strict"
+    ), patch(
+        "tools.tool_search.load_config_readonly",
+        return_value=SimpleNamespace(effective_defer_tools=frozenset({"execute_code"})),
+    ):
+        result = agent.run_conversation("write it")
+
+    assert result["completed"] is True
+    assert [name for name, _ in dispatched] == ["write_file"]

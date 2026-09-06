@@ -14,6 +14,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any, Dict, List, Optional, Tuple
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.message_sanitization import (
@@ -893,18 +894,26 @@ def _apply_primary_runtime_fields(agent, rt: Dict[str, Any]) -> None:
     agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
     agent.request_overrides = dict(rt.get("request_overrides") or {})
     agent._client_kwargs = dict(rt["client_kwargs"])
+    from agent.runtime_bundle import ResolvedRuntime
+    agent._resolved_runtime = ResolvedRuntime.from_mapping(rt)
 
 
 def _build_anthropic_client_from_runtime(agent, rt: Dict[str, Any]) -> None:
-    """Rebuild the native Anthropic client from a ``_primary_runtime`` snapshot."""
-    from agent.anthropic_adapter import build_anthropic_client
-    agent._anthropic_api_key = rt["anthropic_api_key"]
-    agent._anthropic_base_url = rt["anthropic_base_url"]
-    agent._anthropic_client = build_anthropic_client(
-        rt["anthropic_api_key"], rt["anthropic_base_url"],
+    """Rebuild the Anthropic wire from the immutable runtime snapshot."""
+    from agent.runtime_bundle import ResolvedRuntime, build_client_bundle
+
+    runtime = ResolvedRuntime.from_mapping(rt).with_updates(
+        api_key=rt.get("anthropic_api_key", rt.get("api_key", "")),
+        base_url=rt.get("anthropic_base_url", rt.get("base_url", "")),
+    )
+    bundle = build_client_bundle(
+        runtime,
         timeout=get_provider_request_timeout(agent.provider, agent.model),
     )
-    agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
+    agent._anthropic_api_key = bundle.anthropic_api_key
+    agent._anthropic_base_url = bundle.anthropic_base_url
+    agent._anthropic_client = bundle.anthropic_client
+    agent._is_anthropic_oauth = bundle.is_anthropic_oauth
     agent.client = None
 
 
@@ -923,7 +932,16 @@ def _rebuild_primary_client(agent, rt: Dict[str, Any], *, reason: str) -> None:
     elif agent.api_mode == "anthropic_messages":
         _build_anthropic_client_from_runtime(agent, rt)
     else:
-        agent.client = agent._create_openai_client(dict(rt["client_kwargs"]), reason=reason, shared=True)
+        from agent.runtime_bundle import ResolvedRuntime, build_client_bundle
+
+        runtime = ResolvedRuntime.from_mapping(rt)
+        bundle = build_client_bundle(
+            runtime,
+            openai_builder=lambda kwargs: agent._create_openai_client(
+                kwargs, reason=reason, shared=True, runtime=runtime
+            ),
+        )
+        agent.client = bundle.client
 
 
 def try_recover_primary_transport(
@@ -963,7 +981,7 @@ def try_recover_primary_transport(
             from agent.moa_loop import build_moa_facade
             agent.client = build_moa_facade(agent, agent.model)
         else:
-            agent.client = agent._create_openai_client(dict(rt["client_kwargs"]), reason="primary_recovery", shared=True)
+            _rebuild_primary_client(agent, rt, reason="primary_recovery")
         wait_time = min(3 + retry_count, 8)
         agent._vprint(
             f"{agent.log_prefix}🔁 Transient {error_type} on {agent.provider} — "
@@ -1058,7 +1076,7 @@ def _primary_reset_gate_blocks(agent, rt, primary_provider, primary_runtime_base
 def _restore_runtime_capabilities(agent, rt: Dict[str, Any]) -> None:
     # ``capabilities`` is the legacy key from the initial capability propagation patch.
     raw = rt["runtime_capabilities"] if "runtime_capabilities" in rt else rt.get("capabilities")
-    if isinstance(raw, dict):
+    if isinstance(raw, Mapping):
         agent.runtime_capabilities = dict(raw)
     elif "runtime_capabilities" in rt:
         logger.warning("Ignoring malformed runtime capabilities snapshot")
@@ -1579,7 +1597,7 @@ def anthropic_prompt_cache_policy(
     return False, False
 
 
-def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
+def _provider_supplied_client(agent, client_kwargs: dict, *, provider: Optional[str] = None) -> Any | None:
     """Ask the registered ProviderProfile for a custom client, if any. Resolves by provider name,
     then by ``base_url`` prefix so a URL-only runtime (``acp://…``) still reaches its profile.
     A profile that raises is logged and skipped: a third-party plugin must not be able to take
@@ -1589,7 +1607,7 @@ def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
     except Exception:
         return None
     profile = None
-    provider_name = (getattr(agent, "provider", "") or "").strip()
+    provider_name = (provider if provider is not None else getattr(agent, "provider", "") or "").strip()
     if provider_name:
         try:
             profile = get_provider_profile(provider_name)
@@ -1666,7 +1684,7 @@ def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: s
     return client
 
 
-def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
+def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool, runtime=None) -> Any:
     from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
     from agent.ssl_verify import resolve_httpx_verify
     # Treat client_kwargs as read-only: callers pass agent._client_kwargs, and in-place mutation
@@ -1685,9 +1703,15 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # a `_moa_prepared_request` TypeError (#78382) or, when _client_kwargs carry an unrelated relay
     # base_url, leaks the request to a foreign gateway. Rebuild the facade instead (build_moa_facade also
     # re-wires the reference relay, see #53802).
-    if (getattr(agent, "provider", "") or "").strip().lower() == "moa":
+    runtime_provider = (
+        getattr(runtime, "provider", "") if runtime is not None else getattr(agent, "provider", "")
+    ) or ""
+    runtime_model = (
+        getattr(runtime, "model", "") if runtime is not None else getattr(agent, "model", "")
+    ) or ""
+    if runtime_provider.strip().lower() == "moa":
         from agent.moa_loop import build_moa_facade
-        return build_moa_facade(agent, getattr(agent, "model", None) or "default")
+        return build_moa_facade(agent, runtime_model or "default")
     ssl_ca_cert = client_kwargs.pop("ssl_ca_cert", None)
     ssl_verify_cfg = client_kwargs.pop("ssl_verify", None)
     httpx_verify = resolve_httpx_verify(ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify_cfg)
@@ -1698,14 +1722,14 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # before the built-in ladder so a profile registered from ~/.hermes/plugins/ or a pip entry
     # point can ship a transport without editing this function (what makes an out-of-tree ACP
     # provider possible). None (the default) falls through, so existing providers are unaffected.
-    provider_client = _provider_supplied_client(agent, client_kwargs)
+    provider_client = _provider_supplied_client(agent, client_kwargs, provider=runtime_provider)
     if provider_client is not None:
         _ra().logger.info(
             "%s client created from provider profile (%s, shared=%s) %s",
             agent.provider, reason, shared, agent._client_log_context(),
         )
         return provider_client
-    if agent.provider == "gemini":
+    if runtime_provider.strip().lower() == "gemini":
         client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
         if client is not None:
             return client
@@ -1741,7 +1765,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     _ensure_copilot_headers(client_kwargs)
     # OpenCode Free is served anonymously: any unrecognized bearer is a 401, so an empty
     # Authorization default_header overrides the SDK's "Bearer <api_key>".
-    if agent.provider == "opencode-free":
+    if runtime_provider.strip().lower() == "opencode-free":
         from hermes_cli.models import opencode_zen_free_headers
         client_kwargs["default_headers"] = {**(client_kwargs.get("default_headers") or {}), **opencode_zen_free_headers()}
     # All primary construction and recovery paths must identify Hermes to the official Codex
@@ -1788,7 +1812,7 @@ _SWITCH_SNAPSHOT_FIELDS = (
     "model", "provider", "requested_provider", "base_url", "api_mode", "api_key", "client",
     "_anthropic_client", "_anthropic_api_key", "_anthropic_base_url", "_is_anthropic_oauth",
     "_config_context_length", "_reasoning_echo_flag", "runtime_capabilities",
-    "_credential_pool", "_credential_pool_entry_id",
+    "_credential_pool", "_credential_pool_entry_id", "_resolved_runtime",
 )
 _MISSING = object()
 
@@ -1847,8 +1871,10 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
     return api_mode, base_url, destination_capabilities
 
 
-def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new_norm) -> None:
-    """Build the client for the switched-to destination (MoA facade / native Anthropic / OpenAI wire)."""
+def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new_norm):
+    """Build a complete client bundle for the switched-to destination."""
+    from agent.runtime_bundle import ClientBundle, ResolvedRuntime, build_client_bundle
+
     if new_norm == "moa":
         from agent.moa_loop import build_moa_facade
         # MoA speaks only chat.completions via the MoAClient facade; the aggregator's real transport
@@ -1858,11 +1884,17 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
         agent.api_key = api_key or "moa-virtual-provider"
         agent.base_url = "moa://local"
         agent._client_kwargs = {}
-        agent.client = build_moa_facade(agent, agent.model)
-        return
+        runtime = ResolvedRuntime.from_mapping({
+            "provider": new_provider,
+            "requested_provider": new_provider,
+            "model": agent.model,
+            "api_mode": agent.api_mode,
+            "api_key": agent.api_key,
+            "base_url": agent.base_url,
+        })
+        return ClientBundle(runtime=runtime, client=build_moa_facade(agent, agent.model))
     if api_mode == "anthropic_messages":
-        from agent.anthropic_adapter import build_anthropic_client
-        from agent.anthropic_credentials import resolve_anthropic_token, _is_oauth_token
+        from agent.anthropic_credentials import resolve_anthropic_token
         # Only fall back to ANTHROPIC_TOKEN for native Anthropic; other anthropic_messages providers
         # must never receive Anthropic credentials.
         is_native_anthropic = new_provider == "anthropic"
@@ -1878,16 +1910,30 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
                     "MiniMax OAuth: failed to install per-request token provider "
                     "on switch (%s); using static bearer.", _mm_exc,
                 )
-        agent.api_key = agent._anthropic_api_key = effective_key
-        agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
-        agent._anthropic_client = build_anthropic_client(
-            effective_key, agent._anthropic_base_url,
-            timeout=get_provider_request_timeout(agent.provider, agent.model),
+        effective_base = base_url or getattr(agent, "_anthropic_base_url", None) or agent.base_url
+        runtime_fields = {
+            "provider": new_provider,
+            "requested_provider": agent.requested_provider,
+            "model": agent.model,
+            "api_mode": api_mode,
+            "api_key": effective_key,
+            "base_url": effective_base or "",
+        }
+        with contextlib.suppress(Exception):
+            from hermes_cli.config import (
+                get_compatible_custom_providers, get_custom_provider_extra_headers,
+                load_config_readonly,
+            )
+            _headers = get_custom_provider_extra_headers(
+                effective_base or "", get_compatible_custom_providers(load_config_readonly())
+            )
+            if _headers:
+                runtime_fields["extra_headers"] = _headers
+        runtime = ResolvedRuntime.from_mapping(runtime_fields)
+        return build_client_bundle(
+            runtime,
+            timeout=get_provider_request_timeout(new_provider, agent.model),
         )
-        agent._is_anthropic_oauth = bool(is_native_anthropic and isinstance(effective_key, str) and _is_oauth_token(effective_key))
-        agent.client = None
-        agent._client_kwargs = {}
-        return
     effective_base = base_url or agent.base_url
     agent._client_kwargs = {"api_key": api_key or agent.api_key, "base_url": effective_base}
     try:
@@ -1912,7 +1958,21 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
     # Reapply provider headers (OpenRouter HTTP-Referer/X-Title) lost when _client_kwargs was
     # rebuilt; otherwise attribution shows "Unknown".
     agent._apply_client_headers_for_base_url(effective_base)
-    agent.client = agent._create_openai_client(dict(agent._client_kwargs), reason="switch_model", shared=True)
+    runtime = ResolvedRuntime.from_mapping({
+        "provider": new_provider,
+        "requested_provider": agent.requested_provider,
+        "model": agent.model,
+        "api_mode": api_mode,
+        "api_key": agent._client_kwargs.get("api_key", ""),
+        "base_url": effective_base,
+        "client_kwargs": dict(agent._client_kwargs),
+    })
+    return build_client_bundle(
+        runtime,
+        openai_builder=lambda kwargs: agent._create_openai_client(
+            kwargs, reason="switch_model", shared=True, runtime=runtime
+        ),
+    )
 
 
 def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_mode, old_provider, old_norm, new_norm) -> None:
@@ -1954,7 +2014,8 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
                 "switch_model: credential pool reload failed for %s (%s); "
                 "continuing without pool rotation this turn", new_provider, _pool_exc,
             )
-    _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new_norm)
+    bundle = _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new_norm)
+    agent.install_runtime(bundle, reason="switch_model")
     sync_credential_pool_entry_id(agent)
 
 
@@ -2021,7 +2082,7 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
         raise
 
 
-def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
+def _build_primary_runtime_snapshot(agent, api_mode):
     """The ``_primary_runtime`` record that persists a switch across turns."""
     cc = getattr(agent, "context_compressor", None) or None
     rt = {
@@ -2055,6 +2116,17 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
             "anthropic_base_url": agent._anthropic_base_url,
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
+    # Preserve resolver-owned transport fields when a switch becomes the new
+    # primary.  They are part of the route identity, not transient client
+    # construction details.
+    resolved = getattr(agent, "_resolved_runtime", None)
+    if resolved is not None:
+        for key in ("source", "extra_headers", "ssl_ca_cert", "ssl_verify"):
+            if key in resolved:
+                rt[key] = resolved[key]
+    # ``_primary_runtime`` is a legacy compatibility snapshot: callers have
+    # historically amended it before a restore.  Keep that surface mutable;
+    # client construction still normalizes it into an immutable runtime.
     return rt
 
 
@@ -2156,6 +2228,8 @@ def switch_model(
     from agent.chat_completion_helpers import _reset_stale_streak
     _reset_stale_streak(agent)
     agent._primary_runtime = _build_primary_runtime_snapshot(agent, api_mode)
+    from agent.runtime_bundle import ResolvedRuntime
+    agent._resolved_runtime = ResolvedRuntime.from_mapping(agent._primary_runtime)
     _finish_switch(agent, new_provider, old_norm, new_norm)
     logger.info(
         "Model switched in-place: %s (%s) -> %s (%s)",

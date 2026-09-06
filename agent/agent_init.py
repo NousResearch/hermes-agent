@@ -682,7 +682,6 @@ def _print_key_banner(key, label: str, warn_missing: bool = False) -> None:
 
 def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     """anthropic_messages: native Anthropic SDK (or AnthropicBedrock for Bedrock+Claude)."""
-    from agent.anthropic_adapter import build_anthropic_client
     from agent.anthropic_credentials import resolve_anthropic_token
     agent.client = None
     agent._client_kwargs = {}
@@ -718,17 +717,37 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
                 _mm_exc,
             )
 
-    agent.api_key = effective_key
-    agent._anthropic_api_key = effective_key
     # OAuth only for native Anthropic: third-party anthropic_messages providers must never
     # trip OAuth paths — those inject Claude-Code identity headers → 401/403.
     # Only mark the session as OAuth-authenticated when the token genuinely belongs to native Anthropic.
     # Third-party providers (MiniMax, Kimi, GLM, LiteLLM proxies) that accept the Anthropic protocol must
     # never trip OAuth code paths — doing so injects Claude-Code identity headers and system prompts that
     # cause 401/403 on their endpoints. See #1739.
-    from agent.anthropic_credentials import _is_oauth_token as _is_oat
-    agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
-    agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+    # Build the complete wire client before touching the live agent.  The
+    # provider-entry header layer must travel with the runtime; rebuilding a
+    # fallback from only key + URL is what originally dropped gateway auth.
+    from agent.runtime_bundle import ResolvedRuntime, build_client_bundle
+    runtime_fields = {
+        "provider": agent.provider,
+        "requested_provider": agent.requested_provider,
+        "model": agent.model,
+        "api_mode": agent.api_mode,
+        "api_key": effective_key,
+        "base_url": base_url or "",
+    }
+    with suppress(Exception):
+        from hermes_cli.config import (
+            get_compatible_custom_providers, get_custom_provider_extra_headers,
+            load_config_readonly,
+        )
+        _headers = get_custom_provider_extra_headers(
+            base_url or "", get_compatible_custom_providers(load_config_readonly())
+        )
+        if _headers:
+            runtime_fields["extra_headers"] = _headers
+    runtime = ResolvedRuntime.from_mapping(runtime_fields)
+    bundle = build_client_bundle(runtime, timeout=_provider_timeout)
+    agent.install_runtime(bundle, reason="agent_init")
     if not agent.quiet_mode:
         print(f"🤖 AI Agent initialized with model: {agent.model} (Anthropic native)")
         _print_key_banner(effective_key, "token")
@@ -914,14 +933,36 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
         if agent.provider == "bedrock" and "bedrock-mantle." in str(client_kwargs.get("base_url", "")):
             raise
 
-    agent._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
+    agent._client_kwargs = client_kwargs  # temporary policy input; install_runtime owns the committed copy
     _apply_openai_header_policy(agent, client_kwargs)
     agent.api_key = client_kwargs.get("api_key", "")
     agent.base_url = client_kwargs.get("base_url", agent.base_url)
     try:
         from agent.ssl_guard import verify_ca_bundle
         verify_ca_bundle()
-        agent.client = agent._create_openai_client(client_kwargs, reason="agent_init", shared=True)
+        if agent.provider == "bedrock":
+            # Bedrock Mantle keeps its SigV4-aware path until that special wire
+            # is migrated behind runtime_bundle.
+            agent.api_key = client_kwargs.get("api_key", "")
+            agent.base_url = client_kwargs.get("base_url", agent.base_url)
+            agent.client = agent._create_openai_client(client_kwargs, reason="agent_init", shared=True)
+        else:
+            from agent.runtime_bundle import ResolvedRuntime, build_client_bundle
+
+            runtime = ResolvedRuntime.from_mapping({
+                "provider": agent.provider,
+                "requested_provider": agent.requested_provider,
+                "model": agent.model,
+                "api_mode": agent.api_mode,
+                **client_kwargs,
+            })
+            bundle = build_client_bundle(
+                runtime,
+                openai_builder=lambda kwargs: agent._create_openai_client(
+                    kwargs, reason="agent_init", shared=True, runtime=runtime
+                ),
+            )
+            agent.install_runtime(bundle, reason="agent_init")
         if not agent.quiet_mode:
             print(f"🤖 AI Agent initialized with model: {agent.model}")
             if base_url:
@@ -2079,7 +2120,7 @@ def _snapshot_primary_runtime(agent):
     # Per-turn restoration snapshot: after a fallback, the next turn restores these so the
     # preferred model gets a fresh attempt.
     _cc = agent.context_compressor
-    agent._primary_runtime = {
+    runtime = {
         "model": agent.model,
         "provider": agent.provider,
         "requested_provider": agent.requested_provider,
@@ -2098,13 +2139,20 @@ def _snapshot_primary_runtime(agent):
         "compressor_provider": getattr(_cc, "provider", agent.provider),
         "compressor_context_length": _cc.context_length,
         "compressor_threshold_tokens": _cc.threshold_tokens,
+        "compressor_api_mode": getattr(_cc, "api_mode", agent.api_mode),
+        "runtime_capabilities": dict(getattr(agent, "runtime_capabilities", {}) or {}),
+        "reasoning_config": dict(getattr(agent, "reasoning_config", {}) or {}) or None,
     }
     if agent.api_mode == "anthropic_messages":
-        agent._primary_runtime.update({
+        runtime.update({
             "anthropic_api_key": agent._anthropic_api_key,
             "anthropic_base_url": agent._anthropic_base_url,
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
+    # Keep this historical turn snapshot mutable for plugin/test compatibility.
+    # The authoritative live route is the immutable ``agent._resolved_runtime``
+    # installed by the client bundle.
+    agent._primary_runtime = runtime
 
 
 def _init_usage_state(agent):

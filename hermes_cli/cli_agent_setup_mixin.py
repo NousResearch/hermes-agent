@@ -312,7 +312,8 @@ class CLIAgentSetupMixin:
                 explicit_base_url=self._explicit_base_url)
         except Exception:
             return False
-        if not isinstance(runtime, dict):
+        from collections.abc import Mapping
+        if not isinstance(runtime, Mapping):
             return False
         api_key = runtime.get("api_key")
         base_url = runtime.get("base_url")

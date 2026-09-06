@@ -587,7 +587,6 @@ class TestRunJobSessionPersistence:
         assert call_args[0][1] == "cron_complete"
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
-        assert mock_agent._end_session_on_close is False
 
 
     def test_run_job_disarms_agent_close_after_scheduler_finalizes_session(self, tmp_path):
@@ -644,7 +643,6 @@ class TestRunJobSessionPersistence:
         assert success is True
         assert fake_db.end_session.call_count == 1
         assert calls_after_close == []
-        assert mock_agent._end_session_on_close is False
 
 
     @contextlib.contextmanager

@@ -761,6 +761,7 @@ export function TreeSplit({
             {partner >= 0 && (
               <Sash
                 disabled={minimized || tracks[partner].minimized}
+                editMode={editMode}
                 horizontal={horizontal}
                 onDoubleClick={() => resetBoundary(partner, i)}
                 onPointerDown={e => startSash(partner, i, e)}
@@ -785,11 +786,13 @@ export function TreeSplit({
 
 function Sash({
   disabled,
+  editMode,
   horizontal,
   onDoubleClick,
   onPointerDown
 }: {
   disabled?: boolean
+  editMode?: boolean
   horizontal: boolean
   onDoubleClick?: () => void
   onPointerDown: (e: ReactPointerEvent<HTMLDivElement>) => void
@@ -797,7 +800,11 @@ function Sash({
   return (
     <div
       className={cn(
-        'group absolute z-20 [-webkit-app-region:no-drag]',
+        'group absolute [-webkit-app-region:no-drag]',
+        // The edit-mode veil paints over the pane body at z-50; the sash must
+        // sit above it (z-60) so the divider stays grabbable while arranging —
+        // otherwise resize dies in edit mode and the editor can't adjust sizes.
+        editMode ? 'z-[60]' : 'z-20',
         // Asymmetric grab band: only 1px reaches into the leading pane so its
         // edge-hugging 4px scrollbar stays clickable (the old centered 9px band
         // swallowed it entirely — the pointer got col-resize instead of the

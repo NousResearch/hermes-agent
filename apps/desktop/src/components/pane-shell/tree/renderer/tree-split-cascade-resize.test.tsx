@@ -4,6 +4,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { registry } from '@/contrib/registry'
 import { $paneStates, setPaneWidthLock } from '@/store/panes'
 
+import { $layoutEditMode } from '../../edit-mode'
 import { group, split, type SplitNode } from '../model'
 import { $hiddenTreePanes, $layoutTree, markCollapsePane, setTreeGroupMinimized } from '../store'
 
@@ -55,6 +56,7 @@ afterEach(() => {
   cleanup()
   $layoutTree.set(null)
   $paneStates.set({})
+  $layoutEditMode.set(false)
   disposers.splice(0).forEach(dispose => dispose())
 })
 
@@ -483,5 +485,27 @@ describe('TreeSplit axis locking', () => {
 
     // The component must re-render with the new locked basis.
     expect(browserEl.style.flex).toContain('350px')
+  })
+})
+
+describe('TreeSplit sash in edit mode', () => {
+  it('raises the sash above the edit veil so dividers stay grabbable', () => {
+    const tree = split('row', [group(['chat'], { id: 'chat-zone' }), group(['browser'], { id: 'browser-zone' })], [1, 1], 'root-row')
+    $layoutTree.set(tree)
+
+    // Edit mode OFF: the sash sits at its normal z-20.
+    render(<TreeSplit node={tree} root rootRow />)
+    const sash = document.querySelectorAll('[role="separator"]')[0]!
+    expect(sash.className).toContain('z-20')
+    expect(sash.className).not.toContain('z-[60]')
+    cleanup()
+
+    // Edit mode ON: the veil paints z-50 over the pane body, so the sash must
+    // climb to z-60 to stay reachable while arranging.
+    $layoutEditMode.set(true)
+    render(<TreeSplit node={tree} root rootRow />)
+    const editSash = document.querySelectorAll('[role="separator"]')[0]!
+    expect(editSash.className).toContain('z-[60]')
+    expect(editSash.className).not.toContain('z-20')
   })
 })

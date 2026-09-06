@@ -1178,3 +1178,12 @@ class TestValueAwareGatingCorpus:
         result = redact_sensitive_text(block, force=True)
         assert prose_line in result
         assert "A9f3kZq7Lm2Xw8Rt4Yv6" not in result
+
+
+@pytest.mark.parametrize("key", ["X-Amz-Signature", "x_amz_signature", "X%2dAmz%2dSignature"])
+def test_strict_url_redaction_normalizes_both_query_and_policy_names(key):
+    url = f"https://images.example/x.png?{key}=opaqueImageCredential&width=1024"
+    assert redact_sensitive_text(url, force=True, redact_url_credentials=True) == (
+        f"https://images.example/x.png?{key}=***&width=1024"
+    )
+    assert redact_sensitive_text(url, force=True) == url

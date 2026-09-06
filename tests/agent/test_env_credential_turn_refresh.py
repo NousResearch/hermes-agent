@@ -362,3 +362,23 @@ class TestPrimaryRuntimeSnapshotFollowsAdoption:
         assert recovered is True
         assert created["reason"] == "primary_recovery"
         assert created["base_url"] == LOCAL_BASE
+
+    def test_adoption_during_fallback_keeps_primary_snapshot(self, env):
+        """Mid-fallback token re-mints must NOT sync the snapshot: the fallback's
+        identity lives on the agent, the snapshot preserves the primary. Syncing
+        here would let the next restore_primary_runtime promote the fallback to
+        primary permanently."""
+        from agent.agent_runtime_helpers import _build_primary_runtime_snapshot, sync_primary_runtime_credentials
+
+        agent = _make_agent()
+        agent._primary_runtime = _build_primary_runtime_snapshot(agent, agent.api_mode)
+        primary_endpoint = agent._primary_runtime["base_url"]
+        agent._fallback_activated = True  # fallback swapped identity in place:
+        agent.provider = agent.requested_provider = "nous-fallback"
+        agent.api_key, agent.base_url = "fb-key", "https://fallback.example/v1"
+        agent._client_kwargs = {"base_url": agent.base_url, "api_key": agent.api_key}
+
+        sync_primary_runtime_credentials(agent)
+
+        assert agent._primary_runtime["base_url"] == primary_endpoint
+        assert agent._primary_runtime["provider"] == "openai-api"

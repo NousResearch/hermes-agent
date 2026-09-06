@@ -1447,6 +1447,9 @@ def run_conversation(
     except PreflightCompressionTimedOut as _preflight_timeout_exc:
         return _preflight_timeout_result(agent, _preflight_timeout_exc, conversation_history)
 
+    # Bind detached results to this foreground turn, never a later conversation turn.
+    agent._active_turn_id = _ctx.turn_id
+
     # Per-turn agent state (the gateway caches agents across turns, so none of this may
     # leak into the next message): interim-commentary dedup spans the whole turn but not
     # the next; a SessionDB append failure (and its classified cause) halts only this turn;

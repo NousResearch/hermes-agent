@@ -1985,6 +1985,11 @@ export const ar = defineLocale({
   statusStack: {
     agents: 'الوكلاء',
     background: count => `${count} في الخلفية`,
+    goalActive: 'الهدف نشط',
+    goalBlocked: 'الهدف متعذر',
+    goalDone: 'اكتمل الهدف',
+    goalPaused: 'الهدف متوقف مؤقتًا',
+    goalWaiting: 'الهدف قيد الانتظار',
     subagents: count => `${count} ${count === 1 ? 'وكيل فرعي' : 'وكيل فرعي'}`,
     todos: (done, total) => `المهام ${done}/${total}`,
     running: 'قيد التشغيل',

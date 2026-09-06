@@ -1,4 +1,4 @@
-import { memo, useCallback, useState } from 'react'
+import { memo, useCallback, useEffect, useState } from 'react'
 
 import { StatusSection } from '@/components/chat/status-section'
 import { Button } from '@/components/ui/button'
@@ -27,13 +27,30 @@ import {
   type SessionControlHeartbeat
 } from '@/store/session-control'
 
-import { type ConfirmState, formatApproximateTime, formatHeartbeatInterval } from './session-control-utils'
+import { type ConfirmState, formatHeartbeatCountdown, formatHeartbeatInterval } from './session-control-utils'
 
 interface HeartbeatSectionProps {
   heartbeat: SessionControlHeartbeat
   sessionId: string
   pendingAction: SessionControlAction | null
   onFeedback: (error: string | null, success: string | null) => void
+}
+
+function useHeartbeatClock(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!active) {
+      return
+    }
+
+    const tick = () => setNow(Date.now())
+    const interval = window.setInterval(tick, 1_000)
+
+    return () => window.clearInterval(interval)
+  }, [active])
+
+  return now
 }
 
 export const SessionControlHeartbeatSection = memo(function SessionControlHeartbeatSection({
@@ -70,13 +87,19 @@ export const SessionControlHeartbeatSection = memo(function SessionControlHeartb
   )
 
   const stateLabel = heartbeat.status === 'paused' ? ctrl.heartbeatPaused : ctrl.heartbeatActive
-
+  const now = useHeartbeatClock(heartbeat.status === 'active')
   const intervalLabel = formatHeartbeatInterval(heartbeat.interval_seconds, t)
-
   const nextDueTimestamp = (heartbeat.last_fired_at || heartbeat.created_at) + heartbeat.interval_seconds
+  const nextDueMs = nextDueTimestamp > 1e11 ? nextDueTimestamp : nextDueTimestamp * 1_000
+  const isDue = heartbeat.status === 'active' && nextDueMs <= now
 
   const nextRunLabel =
-    heartbeat.status === 'active' ? ` · ${ctrl.heartbeatNext(formatApproximateTime(nextDueTimestamp))}` : ''
+    heartbeat.status === 'active'
+      ? ` · ${isDue ? ctrl.heartbeatDueWaitingForIdle : ctrl.heartbeatNext(formatHeartbeatCountdown(nextDueTimestamp, now))}`
+      : ''
+
+  const iconClass =
+    heartbeat.status === 'paused' ? 'text-red-500' : isDue ? 'text-amber-500' : 'text-emerald-500'
 
   const headerLabel = `${stateLabel} · ${intervalLabel}${nextRunLabel}`
 
@@ -163,7 +186,7 @@ export const SessionControlHeartbeatSection = memo(function SessionControlHeartb
                 </DropdownMenu>
               }
               defaultCollapsed={true}
-              icon={<Codicon className="text-muted-foreground/70" name="pulse" size="0.8rem" />}
+              icon={<Codicon className={iconClass} name="pulse" size="0.8rem" />}
               label={headerLabel}
             >
               <div className="space-y-1 px-1 py-1 text-xs">

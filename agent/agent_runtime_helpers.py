@@ -890,6 +890,11 @@ def _apply_primary_runtime_fields(agent, rt: Dict[str, Any]) -> None:
     if hasattr(agent, "_transport_cache"):
         agent._transport_cache.clear()
     agent.api_key = rt["api_key"]
+    # Reinstate the explicit context-length pin the fallback cleared; the
+    # snapshot describes the primary runtime, so the pin is in-scope here.
+    # Absent key (hand-built snapshots) leaves the live value alone.
+    if "config_context_length" in rt:
+        agent._config_context_length = rt["config_context_length"]
     agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
     agent.request_overrides = dict(rt.get("request_overrides") or {})
     agent._client_kwargs = dict(rt["client_kwargs"])

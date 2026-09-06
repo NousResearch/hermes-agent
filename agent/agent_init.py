@@ -2086,6 +2086,10 @@ def _snapshot_primary_runtime(agent):
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
+        # Explicit model.context_length pin (None when unset/mismatched):
+        # fallback clears the live value, restore must bring it back or the
+        # primary runs auto-detected for the rest of the session.
+        "config_context_length": getattr(agent, "_config_context_length", None),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,

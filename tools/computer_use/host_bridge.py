@@ -143,7 +143,11 @@ class _MCPMethodEndpoint:
 class _NoStoreHeaderEndpoint:
     """Stamp `Cache-Control: no-store` on every bridge response.
 
-    MCP responses carry session-scoped, desktop-derived payloads (screenshots,
+    Placed OUTERMOST in the protected-endpoint middleware stack so it wraps every
+    downstream layer — method filter, transport security, bearer auth, and the
+    session manager — and stamps `no-store` on ALL responses the bridge emits,
+    including 405/421/401 rejections produced by that outer middleware. MCP
+    responses carry session-scoped, desktop-derived payloads (screenshots,
     window state); no intermediary or browser may cache them.
     """
 
@@ -214,21 +218,26 @@ def create_host_bridge_app(
         allowed_origins=origins,
     )
 
-    # Order: method filter → transport security → bearer auth → session manager.
-    # Transport security runs BEFORE auth so a DNS-rebinding probe (wrong Host,
-    # typically no credentials) is classified and logged as a transport violation
-    # (421) rather than surfacing as auth noise (401); a correct-host request with
-    # a bad token is still a clean 401.
-    protected_endpoint = _MCPMethodEndpoint(
-        _TransportSecurityEndpoint(
-            AuthenticationMiddleware(
-                RequireAuthMiddleware(
-                    _NoStoreHeaderEndpoint(_SessionManagerEndpoint(manager_ref)),
-                    required_scopes=[CUA_HOST_SCOPE],
+    # Order: no-store → method filter → transport security → bearer auth → session manager.
+    # The no-store wrapper is OUTERMOST so it stamps Cache-Control: no-store on EVERY
+    # response the bridge emits — including 405/421/401 rejections produced by the outer
+    # method/transport/auth middleware, which sit downstream of it. Transport security
+    # still runs BEFORE auth so a DNS-rebinding probe (wrong Host, typically no
+    # credentials) is classified and logged as a transport violation (421) rather than
+    # surfacing as auth noise (401); a correct-host request with a bad token is still a
+    # clean 401.
+    protected_endpoint = _NoStoreHeaderEndpoint(
+        _MCPMethodEndpoint(
+            _TransportSecurityEndpoint(
+                AuthenticationMiddleware(
+                    RequireAuthMiddleware(
+                        _SessionManagerEndpoint(manager_ref),
+                        required_scopes=[CUA_HOST_SCOPE],
+                    ),
+                    backend=BearerAuthBackend(verifier),
                 ),
-                backend=BearerAuthBackend(verifier),
-            ),
-            security_settings,
+                security_settings,
+            )
         )
     )
 

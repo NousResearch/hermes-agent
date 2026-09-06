@@ -136,7 +136,30 @@ def test_initialize_response_is_marked_no_store():
         )
         assert response.status_code == 200
         assert "result" in response.json()
-        # Rejections (401/405/421) are produced by outer middleware, upstream
-        # of the innermost no-store wrapper mandated by the layering; the
-        # session-manager payloads that must not be cached are stamped here.
+        assert response.headers["cache-control"] == "no-store"
+
+
+# --- L2: no-store must stamp ALL responses (outermost wrapper) -------------
+# 401/405/421 are produced by middleware upstream of the session manager; the
+# no-store wrapper must sit OUTERMOST so these rejections are stamped too.
+
+
+def test_unauthorized_response_is_marked_no_store():
+    with TestClient(_build_app(), base_url="http://localhost:8765") as client:
+        response = client.get("/mcp")
+        assert response.status_code == 401
+        assert response.headers["cache-control"] == "no-store"
+
+
+def test_method_not_allowed_response_is_marked_no_store():
+    with TestClient(_build_app(), base_url="http://localhost:8765") as client:
+        response = client.put("/mcp", headers={"Authorization": f"Bearer {_VALID_TOKEN}"})
+        assert response.status_code == 405
+        assert response.headers["cache-control"] == "no-store"
+
+
+def test_transport_rejection_response_is_marked_no_store():
+    with TestClient(_build_app(), base_url="http://evil.example.com:8765") as client:
+        response = client.get("/mcp", headers={"Authorization": f"Bearer {_VALID_TOKEN}"})
+        assert response.status_code == 421
         assert response.headers["cache-control"] == "no-store"

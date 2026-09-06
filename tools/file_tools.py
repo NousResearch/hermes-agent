@@ -453,7 +453,7 @@ def _special_file_kind(path) -> str | None:
                 "a special (non-regular) file")
 
 
-def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str) -> str | None:
+def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str, *, line_numbers: bool = True) -> str | None:
     """Render an extractable document (.docx/.xlsx/.pdf/...) as paginated text.
 
     Returns the JSON result, a tool_error for an actionable extraction failure
@@ -701,7 +701,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         if block_error:
             return tool_error(block_error)
 
-        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id)
+        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id, line_numbers=line_numbers)
         if extracted is not None:
             return extracted
 
@@ -828,8 +828,8 @@ def read_file_programmatic_tool(
         return tool_error("read_file returned an invalid programmatic result")
     if not isinstance(payload, dict):
         return tool_error("read_file returned an invalid programmatic result")
-    payload.pop("_warning", None)
-    payload.pop("_hint", None)
+    payload.setdefault("content", "")
+    payload.setdefault("success", not bool(payload.get("error")))
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -1392,7 +1392,13 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid)
+    read = read_file_programmatic_tool if _programmatic_read.get() else read_file_tool
+    return read(
+        path=args.get("path", ""),
+        offset=args.get("offset", 1),
+        limit=args.get("limit", DEFAULT_READ_LIMIT),
+        task_id=tid,
+    )
 
 
 def _handle_write_file(args, **kw):

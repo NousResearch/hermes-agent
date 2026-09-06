@@ -127,6 +127,10 @@ def _context_route_mismatch(
         configured_provider = configured_provider.lower()
         active_provider = active_provider.lower()
     with suppress(Exception):
+        from hermes_cli.auth import resolve_provider as resolve_auth_provider
+        configured_provider = resolve_auth_provider(configured_provider)
+        active_provider = resolve_auth_provider(active_provider)
+    with suppress(Exception):
         from hermes_cli.providers import normalize_provider as normalize_registry_provider
         configured_provider = normalize_registry_provider(configured_provider)
         active_provider = normalize_registry_provider(active_provider)

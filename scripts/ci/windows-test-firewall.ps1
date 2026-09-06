@@ -126,7 +126,7 @@ if ($Mode -eq "Run") {
     $process = Start-Process -FilePath $python `
         -ArgumentList @("`"$entry`"", $encoded) `
         -WorkingDirectory $repo -Credential $credential `
-        -LoadUserProfile -Wait -PassThru -NoNewWindow
+        -LoadUserProfile -Wait -PassThru
     exit $process.ExitCode
 }
 

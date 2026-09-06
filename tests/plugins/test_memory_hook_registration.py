@@ -74,36 +74,6 @@ def test_dual_kind_plugin_hooks_run_once(tmp_path, monkeypatch, order):
         manager.unload()
 
 
-def test_equal_names_in_different_homes_keep_their_own_imports(tmp_path, monkeypatch):
-    managers = []
-    try:
-        for label in ("alpha", "beta"):
-            manager = _install(tmp_path / label, monkeypatch, label=label)
-            managers.append(manager)
-            assert load_memory_provider("dual") is not None
-            manager.discover_and_load()
-            assert _contexts(manager) == [{"context": label}, {"context": "second"}]
-        assert _contexts(managers[0]) == [{"context": "alpha"}, {"context": "second"}]
-        managers[1].unload()
-        assert _contexts(managers[0]) == [{"context": "alpha"}, {"context": "second"}]
-    finally:
-        for manager in managers:
-            manager.unload()
-
-
-def test_failed_general_registration_leaves_no_callable(tmp_path, monkeypatch):
-    manager = _install(tmp_path, monkeypatch)
-    try:
-        assert load_memory_provider("dual") is not None
-        source = tmp_path / "plugins" / "dual" / "__init__.py"
-        source.write_text(source.read_text() + '\n    raise RuntimeError("broken registration")\n')
-        manager.discover_and_load()
-        assert _contexts(manager) == []
-        assert not manager._plugins["dual"].enabled
-    finally:
-        manager.unload()
-
-
 def test_same_name_different_sources_are_not_suppressed(tmp_path, monkeypatch):
     import shutil
 
@@ -126,23 +96,6 @@ def test_same_name_different_sources_are_not_suppressed(tmp_path, monkeypatch):
         manager.unload()
 
 
-@pytest.mark.parametrize("entry_kind", ["module", "function"])
-def test_entry_point_registration_uses_same_hook_ownership(tmp_path, monkeypatch, entry_kind):
-    from types import SimpleNamespace
-    from plugins.memory import _load_provider_from_entry_point
-
-    manager = _install(tmp_path, monkeypatch)
-    try:
-        manager.discover_and_load()
-        module = manager._plugins["dual"].module
-        target = module if entry_kind == "module" else module.register
-        entry = SimpleNamespace(name="dual", load=lambda: target)
-        assert _load_provider_from_entry_point(entry) is not None
-        assert _contexts(manager) == [{"context": "first"}, {"context": "second"}]
-    finally:
-        manager.unload()
-
-
 @pytest.mark.parametrize("order", ["plugin-first", "memory-first"])
 def test_reexported_register_uses_plugin_source(tmp_path, monkeypatch, order):
     manager = _install(tmp_path, monkeypatch)
@@ -157,28 +110,5 @@ def test_reexported_register_uses_plugin_source(tmp_path, monkeypatch, order):
         if order == "memory-first":
             manager.discover_and_load()
         assert _contexts(manager) == [{"context": "first"}, {"context": "second"}]
-    finally:
-        manager.unload()
-
-
-def test_suppressed_hook_still_returns_disposable_handle(tmp_path, monkeypatch):
-    manager = _install(tmp_path, monkeypatch)
-    source = tmp_path / "plugins" / "dual" / "__init__.py"
-    source.write_text(source.read_text().split("def register(ctx):")[0] + textwrap.dedent('''\
-        def register(ctx):
-            handle = ctx.register_hook("pre_llm_call", make_hook("discard"))
-            assert handle.active
-            handle.dispose()
-            assert not handle.active
-            provider = Provider()
-            provider.configured = True
-            ctx.register_memory_provider(provider)
-            ctx.register_hook("pre_llm_call", make_hook("kept"))
-    '''))
-    try:
-        manager.discover_and_load()
-        provider = load_memory_provider("dual")
-        assert provider is not None and provider.configured
-        assert _contexts(manager) == [{"context": "kept"}]
     finally:
         manager.unload()

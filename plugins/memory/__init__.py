@@ -9,11 +9,13 @@ must never shadow a shipped provider. Changing this order is a breaking change.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.metadata
 import importlib.util
 import logging
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import List, Optional, Tuple, TYPE_CHECKING
 
 from hermes_cli.config import cfg_get
@@ -70,8 +72,6 @@ def _module_name(provider_dir: Path, name: str) -> str:
     if _is_bundled(provider_dir):
         return f"plugins.memory.{name}"
     # Separate package trees, including relative imports, across homes/sources.
-    import hashlib
-
     digest = hashlib.sha256(str(provider_dir.resolve()).encode()).hexdigest()[:16]
     return f"{_USER_NAMESPACE}.{name}__source_{digest}"
 
@@ -297,40 +297,21 @@ class _ProviderCollector:
         self._hook_source = None
 
     def collect(self, register, *, source=None):
-        """General discovery owns hooks; memory-only activation supplies a fallback.
+        """Run ``register`` with this collector; hooks it registers form the fallback group that
+        general discovery of the same source replaces (see ``PluginLedgerMixin``)."""
+        from hermes_cli.plugins_ledger import _hook_source_of
 
-        Replace a whole registration group, not callbacks by name or identity:
-        a register function may deliberately create several distinct closures.
-        """
         module = sys.modules.get(getattr(register, "__module__", ""))
-        source = source or getattr(module, "__file__", None)
-        if source:
-            self._hook_source = (self.name, str(Path(source).resolve()))
+        self._hook_source = _hook_source_of(self.name, SimpleNamespace(__file__=source) if source else module)
         manager = self._plugin_context()._manager
         with manager._discovery_lock:
-            if self._hook_source is not None:
-                for handle in manager._memory_hook_registrations.pop(self._hook_source, []):
-                    handle.dispose()
+            manager._drop_fallback_hooks(self._hook_source)
             register(self)
 
     def register_hook(self, hook_name, callback):
         context = self._plugin_context()
-        manager = context._manager
-        with manager._discovery_lock:
-            if self._hook_source is not None:
-                for loaded in manager._plugins.values():
-                    source = getattr(loaded.module, "__file__", None)
-                    if (loaded.enabled and source and
-                            (loaded.manifest.name, str(Path(source).resolve())) == self._hook_source):
-                        # Preserve the disposable-handle contract without leasing
-                        # the general plugin's callback to this provider instance.
-                        handle = context._track("hook", hook_name, lambda: None)
-                        manager._memory_hook_registrations.setdefault(self._hook_source, []).append(handle)
-                        return handle
-            handle = context.register_hook(hook_name, callback)
-            if self._hook_source is not None:
-                manager._memory_hook_registrations.setdefault(self._hook_source, []).append(handle)
-            return handle
+        with context._manager._discovery_lock:
+            return context._manager._register_fallback_hook(context, self._hook_source, hook_name, callback)
 
     def register_memory_provider(self, provider):
         self.provider = provider

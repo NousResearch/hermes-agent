@@ -414,10 +414,18 @@ def _drop_run_transport(self, run_id: str) -> None:
 async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Response":
     """POST /v1/runs — start an agent run, return run_id immediately."""
     _openai_error = _api_server._openai_error
+    credential_owner = self._credential_owner()
     # Long-term memory scope header (see chat_completions for details).
     gateway_session_key, key_err = self._parse_session_key_header(request)
     if key_err is not None:
         return key_err
+    if credential_owner is not None and gateway_session_key is not None:
+        return _json_error(
+            _openai_error,
+            "X-Hermes-Session-Key is not available to this credential",
+            code="credential_operation_forbidden",
+            status=403,
+        )
     try:
         body = await request.json()
     except Exception:
@@ -450,7 +458,6 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         user_message = raw_input[-1].get("content", "") if isinstance(raw_input, list) else ""
     if not user_message:
         return _json_error(_openai_error, "No user message found in input", status=400)
-    credential_owner = self._credential_owner()
     if credential_owner is not None and body.get("previous_response_id"):
         return _json_error(
             _openai_error, "previous_response_id is not available to this credential",

@@ -56,10 +56,7 @@ async def test_credential_run_requires_explicit_preexisting_owned_session_before
         response = await client.post(
             "/v1/runs",
             json={"input": "hello"},
-            headers={
-                "Authorization": "Bearer credential",
-                "X-Hermes-Session-Key": "declared-but-not-a-session-id",
-            },
+            headers={"Authorization": "Bearer credential"},
         )
         body = await response.json()
 
@@ -116,6 +113,34 @@ async def test_credential_run_allows_explicit_in_memory_store_for_tests(monkeypa
 
     assert adapter._run_idempotency_store.durability_state == "memory"
     assert response.status == 202
+
+
+@pytest.mark.asyncio
+async def test_credential_run_rejects_client_supplied_gateway_session_key(monkeypatch):
+    principal = _principal(APIServerOperation.RUNS_CREATE)
+    adapter = _adapter(Authorizer(lambda _request: principal))
+    session_id = _create_owned_session(adapter, principal)
+    monkeypatch.setattr(
+        adapter,
+        "_create_agent",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("credential run must reject before agent creation")
+        ),
+    )
+
+    async with TestClient(TestServer(_credential_app(adapter))) as client:
+        response = await client.post(
+            "/v1/runs",
+            json={"input": "hello", "session_id": session_id},
+            headers={
+                "Authorization": "Bearer credential",
+                "X-Hermes-Session-Key": "caller-controlled-memory-scope",
+            },
+        )
+        body = await response.json()
+
+    assert response.status == 403
+    assert body["error"]["code"] == "credential_operation_forbidden"
 
 @pytest.mark.asyncio
 async def test_credential_run_compression_preserves_owner_for_effective_session_and_second_run(

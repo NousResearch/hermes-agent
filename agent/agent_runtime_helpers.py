@@ -640,16 +640,24 @@ def sync_primary_runtime_credentials(agent) -> None:
     not the snapshot, so the next transport recovery or turn-start restore
     resurrects the pre-adoption key/endpoint from it — the exact resurrection
     class #75091's snapshot comment warns about, via the adoption paths.
+
+    Skipped while a fallback is active: mid-fallback token re-mints adopt the
+    FALLBACK's identity onto the agent, and the snapshot exists precisely to
+    preserve the primary identity across the fallback. Syncing there would let
+    the next restore_primary_runtime promote the fallback to primary permanently.
+
     Best-effort: agents without a snapshot (init-time tests, partial fixtures)
     are left untouched; a build failure keeps the old snapshot rather than
     killing the adoption that already succeeded.
     """
     if getattr(agent, "_primary_runtime", None) is None:
         return
+    if getattr(agent, "_fallback_activated", False):
+        return
     try:
         agent._primary_runtime = _build_primary_runtime_snapshot(agent, getattr(agent, "api_mode", "chat_completions"))
     except Exception:
-        logger.debug("sync_primary_runtime_credentials snapshot rebuild failed", exc_info=True)
+        logger.warning("sync_primary_runtime_credentials snapshot rebuild failed", exc_info=True)
 
 
 def sync_credential_pool_entry_id(agent) -> None:

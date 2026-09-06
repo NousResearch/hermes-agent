@@ -94,6 +94,26 @@ the peak-concurrency window). The tracking issue quotes the second and says so.
 | `review_probes/rewrite_hint_probe.py` | #103551 | remote backend: no host-derived hint; FIFO: returns; 460 KB repeated-line file: skipped, not 22 s |
 | `review_probes/finalizer_schedule_probe.py` | #103507 | pytest plugin: `-p evals.postmortem.review_probes.finalizer_schedule_probe --finalizer-probe=consumer-first` on `tests/e2e/test_relay_native_openai_stream.py` → 2 passed |
 
+## Cache concurrency probe (`live_ab/cache_concurrency_probe.py`)
+
+The instrument behind #104284 / #104421 and NousResearch/api#227. N concurrent real `AIAgent`
+sessions run the same growing tool loop against a route; every call's cache_read / cache_creation,
+response id, upstream provider and prefix shas are logged, and consecutive pairs are classified
+`ideal` / `stuck` (previous write not visible: routing) / `collapse` (whole context re-written).
+
+```bash
+# ~$50 per 20x6 arm on Fable 5.1 at the 5m tier
+python -m evals.postmortem.live_ab.cache_concurrency_probe --repo . --provider nous --workers 20 --calls 6 --out /tmp/p.jsonl
+python -m evals.postmortem.live_ab.cache_concurrency_probe --repo . --provider nous --wire native --workers 20 --calls 6 --out /tmp/p.jsonl
+python -m evals.postmortem.live_ab.cache_concurrency_probe --repo . --provider openrouter --pin anthropic --workers 20 --calls 6 --out /tmp/p.jsonl
+```
+
+Reference results (2026-09-05/06): Nous native wire 13.9% stuck (14–20% over 4 runs, unchanged by the
+portal's provider pin or a 2 s settle); Nous chat wire 0/320; OpenRouter pinned 0/161; OpenRouter
+unpinned 9.8% collapse. Use this to clear a new upstream before flipping
+`agent/nous_wire.py::GMI_NATIVE_WIRE_CLEARED`. `--ttl 1h` reproduces the 2× write price
+(#104168). The `.summary.json` carries the bad pairs with both response ids for the provider's logs.
+
 ## What is NOT here, and why
 
 - **The trajectories themselves.** The run's `state.db` contains 51,956 absolute home paths, 5,341

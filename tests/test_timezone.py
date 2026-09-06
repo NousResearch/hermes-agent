@@ -108,6 +108,32 @@ class TestGetTimezone:
         monkeypatch.setenv("HERMES_HOME", str(first_home))
         assert str(hermes_time.get_timezone()) == "Asia/Tokyo"
 
+    def test_unresolved_result_self_heals_once_config_is_written(
+        self, tmp_path, monkeypatch
+    ):
+        """A call that finds no timezone yet must not pin server-local forever.
+
+        Regression for #103904: a gateway process whose very first resolve races
+        config.yaml being written (fresh install, container/service startup) landed
+        on server-local and, because that miss was cached like a hit, never noticed
+        the config later gaining a ``timezone`` key — silently drifting a recurring
+        cron job by the local UTC offset for the rest of the process lifetime.
+        """
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        # config.yaml does not exist yet — first resolve finds nothing.
+        assert hermes_time.get_timezone() is None
+
+        # config.yaml now lands with a configured zone, same process, no restart.
+        (home / "config.yaml").write_text("timezone: Europe/Warsaw\n", encoding="utf-8")
+        tz = hermes_time.get_timezone()
+        assert tz is not None and str(tz) == "Europe/Warsaw", (
+            f"expected Europe/Warsaw once config.yaml was written, got {tz}"
+        )
+
     def test_concurrent_profile_resolution_never_mixes_zones(
         self, tmp_path, monkeypatch
     ):

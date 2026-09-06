@@ -24,12 +24,13 @@ import contextlib
 import logging
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, cast
 
 from hermes_state_common import stat_db_file_identity as _stat_db_file_identity
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard, typed only
     from hermes_state import SessionDB
+    from hermes_state_provider import SessionDBProvider
 
 logger = logging.getLogger(__name__)
 
@@ -58,10 +59,14 @@ _opening: Dict[Path, threading.Event] = {}
 
 
 def _open_session_db(path: Path) -> "SessionDB":
-    """Construct the SessionDB for *path* (call-time import avoids cycles; tests patch this)."""
+    """Construct the session-store provider for *path* through the sessiondb.provider
+    factory (call-time import avoids cycles; tests patch this seam). The registry's
+    generation/sidecar machinery is SQLite-specific, and the factory's config gate rejects
+    every non-sqlite provider name — the result is always a SessionDB in Phase 1."""
     from hermes_state import SessionDB
+    from hermes_state_provider import get_session_db_provider
 
-    return SessionDB(db_path=path)
+    return cast("SessionDB", get_session_db_provider(db_path=path))
 
 
 def _teardown(db: "SessionDB") -> None:

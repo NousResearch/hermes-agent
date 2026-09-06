@@ -1479,6 +1479,15 @@ class ScanController:
         skipped: Counter[str] = Counter()
         updated = 0
         for repository, target, pull_requests in self._label_batches:
+            try:
+                can_label = self._github.can_label_repository(repository)
+            except GitHubClientError as error:
+                skipped["agent_label_permission_unavailable"] += 1
+                self._agent_label_errors.append({"repository": repository, "code": error.code})
+                continue
+            if not can_label:
+                skipped["agent_label_permission_denied"] += 1
+                continue
             candidates: list[tuple[PullRequest, str]] = []
             for pull_request in pull_requests:
                 desired_label = label_policy.label_for_branch(

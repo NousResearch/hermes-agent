@@ -205,6 +205,9 @@ class FakeGitHub:
         if number == self.current.number:
             self.current = self.current_by_number[number]
 
+    def can_label_repository(self, repository):
+        return True
+
     def ensure_issue_label(
         self, repository: str, label: str, *, color: str, description: str, preserve_existing: bool = False
     ) -> None:
@@ -4418,4 +4421,18 @@ def test_metadata_labels_add_all_matching_areas_without_claiming_readiness(tmp_p
         before = list(github.label_calls)
         controller.reconcile_labels("acme/widgets")
         assert github.label_calls == before
+    ledger.close()
+
+
+def test_label_reconciliation_skips_read_only_repository_before_writes(tmp_path):
+    local_path, sha = initialized_repository(tmp_path)
+    policy = configured_policy(local_path, not_before="2026-08-24T00:00:00Z", agent_labels=True)
+    github = FakeGitHub(admitted_pull_request(sha), ())
+    github.can_label_repository = lambda _repository: False
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    controller = ScanController(policy, ledger, github, RecordingKanban(), RecordingLocalGit())
+    result = controller.reconcile_labels("acme/widgets")
+    assert result["skipped"] == {"agent_label_permission_denied": 1}
+    assert github.label_calls == []
+    assert github.ensure_label_calls == []
     ledger.close()

@@ -684,6 +684,13 @@ class GitHubClient:
         row = self._read_object(f"repos/{repository}/pulls/{number}")
         return _pull_request(row, expected_repository=repository, expected_number=number)
 
+    def can_label_repository(self, repository: str) -> bool:
+        repository = _validated_repository(repository)
+        permissions = self._read_object(f"repos/{repository}").get("permissions", {})
+        return isinstance(permissions, dict) and any(
+            permissions.get(name) is True for name in ("triage", "push", "maintain", "admin")
+        )
+
     def get_pull_request_metadata(self, repository: str, number: int):
         repository = _validated_repository(repository)
         number = _positive_number(number)

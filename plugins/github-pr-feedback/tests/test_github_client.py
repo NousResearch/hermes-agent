@@ -1439,3 +1439,12 @@ def feedback_responses(body: str) -> dict[tuple[str, ...], object]:
             "repos/acme/widgets/pulls/17/reviews?per_page=100",
         ): [[]],
     }
+
+
+@pytest.mark.parametrize("permissions,allowed", [({},False),({"pull":True},False),({"triage":True},True),({"push":True},True),({"admin":"true"},False)])
+def test_label_permission_requires_explicit_write_capability(permissions, allowed):
+    class Runner:
+        def run(self, argv):
+            assert argv == ["gh", "api", "repos/acme/widgets"]
+            return json.dumps({"permissions":permissions})
+    assert GitHubClient(Runner()).can_label_repository("acme/widgets") is allowed

@@ -71,9 +71,9 @@ def _tool_definition():
 
 @pytest.mark.parametrize(
     ("prompt_tokens", "expected_compactions", "provider_recovery"),
-    [(50, 2, False), (150, 1, False), (50, 2, True)],
+    [(50, 1, False), (150, 1, False), (50, 2, True)],
     ids=[
-        "pressure-cleared-rearms",
+        "pressure-cleared-anchored-no-recompaction",
         "pressure-still-high-stays-capped",
         "pressure-cleared-rearms-after-provider-recovery",
     ],
@@ -83,11 +83,21 @@ def test_pre_api_compression_budget_rearms_only_after_pressure_clears(
     expected_compactions: int,
     provider_recovery: bool,
 ):
-    """Only provider-confirmed headroom starts a new pressure episode."""
+    """Only provider-confirmed headroom starts a new pressure episode.
+
+    Usage-anchored accounting update: once the provider reports
+    ``prompt_tokens=50`` for the full transcript, later pre-API checks anchor
+    on that real reading plus a delta estimate of the few appended messages —
+    the scripted whole-history rough estimate (200) no longer drives the
+    decision, so the pressure-cleared case performs exactly ONE compaction
+    (the pre-anchor one). The budget-rearm mechanics remain covered by the
+    provider-recovery variant, whose first response carries no usage (no
+    anchor) and therefore still compacts on the rough estimate.
+    """
     with (
-        patch("run_agent.get_tool_definitions", return_value=[_tool_definition()]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=[_tool_definition()]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
         patch("agent.model_metadata.get_model_context_length", return_value=256_000),
         patch("agent.context_compressor.get_model_context_length", return_value=256_000),
     ):
@@ -188,7 +198,7 @@ def test_pre_api_compression_budget_rearms_only_after_pressure_clears(
             return_value=10,
         ),
         patch(
-            "agent.conversation_loop.estimate_messages_tokens_rough",
+            "agent.model_metadata.estimate_messages_tokens_rough",
             side_effect=_next_estimate,
         ),
         patch(

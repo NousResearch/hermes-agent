@@ -254,3 +254,310 @@ class TestUnfurlDisablesDraftStreaming:
             transport=_CaptureTransport(),
         )
         assert a.supports_draft_streaming() is False
+
+
+class TestFreshFinalForForceOnUnfurl:
+    """Slack evaluates unfurls ONLY at chat.postMessage (live-probed
+    2026-08-28: an edit that introduces a URL never previews, stamped or
+    not). Force-on hints must therefore route streamed finals through the
+    consumer's fresh-final path; false-only hints must NOT (suppression
+    rides the placeholder post and inherits through edits)."""
+
+    def _adapter(self, slack_extra):
+        return RelayAdapter(
+            PlatformConfig(extra={"slack": slack_extra}),
+            make_desc(
+                platform="slack",
+                supports_draft_streaming=True,
+                supported_ops=("send", "draft"),
+            ),
+            transport=_CaptureTransport(),
+        )
+
+    def test_force_on_with_link_prefers_fresh_final(self):
+        a = self._adapter({"unfurl_links": True, "unfurl_media": True})
+        assert (
+            a.prefers_fresh_final_streaming("see https://studiotwin.ai") is True
+        )
+
+    def test_force_on_string_true_prefers_fresh_final(self):
+        # hermes config set / Railway knobs persist YAML strings.
+        a = self._adapter({"unfurl_links": "true"})
+        assert a.prefers_fresh_final_streaming("see https://x.dev") is True
+
+    def test_force_on_mrkdwn_link_prefers_fresh_final(self):
+        a = self._adapter({"unfurl_links": True})
+        assert (
+            a.prefers_fresh_final_streaming("see <https://x.dev|x.dev>") is True
+        )
+
+    def test_force_on_without_link_keeps_edit_lane(self):
+        # No URL => nothing to unfurl; a fresh final would only duplicate
+        # the preview (relay contract v1 has no delete op).
+        a = self._adapter({"unfurl_links": True})
+        assert a.prefers_fresh_final_streaming("plain text answer") is False
+
+    def test_false_only_hints_keep_edit_lane(self):
+        # Enterprise fail-closed posture: suppression is decided at the
+        # placeholder post; the edit lane preserves it. No UX change.
+        a = self._adapter({"unfurl_links": False, "unfurl_media": False})
+        assert (
+            a.prefers_fresh_final_streaming("see https://studiotwin.ai") is False
+        )
+
+    def test_unconfigured_keeps_edit_lane(self):
+        a = self._adapter({})
+        assert (
+            a.prefers_fresh_final_streaming("see https://studiotwin.ai") is False
+        )
+
+    def test_non_slack_platform_keeps_edit_lane(self):
+        a = RelayAdapter(
+            PlatformConfig(extra={"slack": {"unfurl_links": True}}),
+            make_desc(
+                platform="telegram",
+                supports_draft_streaming=True,
+                supported_ops=("send", "draft"),
+            ),
+            transport=_CaptureTransport(),
+        )
+        assert (
+            a.prefers_fresh_final_streaming("see https://studiotwin.ai") is False
+        )
+
+
+class _RecordingTransport(_CaptureTransport):
+    """Capture EVERY outbound action in order, not just the last."""
+
+    def __init__(self):
+        super().__init__()
+        self.actions = []
+
+    async def send_outbound(self, action, *, platform=None):
+        self.actions.append(action)
+        self.sent = action
+        self.sent_platform = platform
+        return {"success": True, "message_id": f"m{len(self.actions)}"}
+
+
+class TestConsumerRoutesForceOnFinalAsFreshSend:
+    """End-to-end consumer contract (the lane the live regression hid in):
+    an edit-streamed turn whose URL only exists in the FINAL text must
+    finalize via a fresh `send` op carrying the unfurl stamps — not via an
+    `edit` op, which Slack never re-evaluates for previews."""
+
+    @pytest.mark.asyncio
+    async def test_url_arriving_late_finalizes_as_stamped_fresh_send(self):
+        from gateway.stream_consumer import (
+            GatewayStreamConsumer,
+            StreamConsumerConfig,
+        )
+
+        transport = _RecordingTransport()
+        a = RelayAdapter(
+            PlatformConfig(extra={"slack": {"unfurl_links": True, "unfurl_media": True}}),
+            make_desc(platform="slack", supports_edit=True),
+            transport=transport,
+        )
+        consumer = GatewayStreamConsumer(
+            adapter=a,
+            chat_id="D1",
+            config=StreamConsumerConfig(),
+        )
+        # Frame 1: placeholder posts WITHOUT any URL (the task-card /
+        # early-frame shape from the live regression).
+        await consumer._send_or_edit("Working on it…")
+        # Final: the URL exists only now.
+        await consumer._send_or_edit(
+            "see https://studiotwin.ai", finalize=True
+        )
+
+        ops = [x.get("op") for x in transport.actions]
+        # Placeholder went out as a send; the FINAL must be a fresh send
+        # too (not an edit) so Slack evaluates the preview with the URL
+        # present.
+        assert ops[0] == "send"
+        assert ops[-1] == "send", f"final left as {ops[-1]!r}; ops={ops}"
+        final = transport.actions[-1]
+        assert final["content"] == "see https://studiotwin.ai"
+        assert final["metadata"]["unfurl_links"] is True
+        assert final["metadata"]["unfurl_media"] is True
+
+    @pytest.mark.asyncio
+    async def test_false_only_hints_finalize_via_edit_unchanged(self):
+        from gateway.stream_consumer import (
+            GatewayStreamConsumer,
+            StreamConsumerConfig,
+        )
+
+        transport = _RecordingTransport()
+        a = RelayAdapter(
+            PlatformConfig(extra={"slack": {"unfurl_links": False, "unfurl_media": False}}),
+            make_desc(platform="slack", supports_edit=True),
+            transport=transport,
+        )
+        consumer = GatewayStreamConsumer(
+            adapter=a,
+            chat_id="D1",
+            config=StreamConsumerConfig(),
+        )
+        await consumer._send_or_edit("Working on it…")
+        await consumer._send_or_edit("see https://studiotwin.ai", finalize=True)
+
+        ops = [x.get("op") for x in transport.actions]
+        # Fail-closed posture keeps the edit lane: placeholder send (which
+        # carries the false stamps at post time) + finalize edit.
+        assert ops[0] == "send"
+        assert transport.actions[0]["metadata"]["unfurl_links"] is False
+        assert ops[-1] == "edit", f"ops={ops}"
+
+
+class TestMultiplexPerChatFreshFinalSeam:
+    """The consumer must resolve the fresh-final decision through the CHAT's
+    negotiated platform, not the relay's primary identity (the scalar-vs-
+    per-chat descriptor seam).  Two failure directions:
+
+    - Slack PRIMARY + force-on unfurl: a fronted TELEGRAM chat must keep the
+      edit lane — its descriptor advertises no ``delete`` op, so a fresh
+      final would deliver the answer twice (orphaned preview).
+    - Non-Slack primary: a fronted SLACK chat must still get the fresh
+      stamped final, or the shipped feature is dark on exactly the chats it
+      was built for.
+    """
+
+    class _MultiplexTransport(_RecordingTransport):
+        def __init__(self):
+            super().__init__()
+            self.descriptors = {
+                "telegram": make_desc(
+                    platform="telegram",
+                    supports_edit=True,
+                    supported_ops=("send", "edit", "typing"),
+                ),
+                "slack": make_desc(
+                    platform="slack",
+                    supports_edit=True,
+                    supported_ops=("send", "edit", "typing", "delete"),
+                ),
+            }
+
+        def descriptor_for_platform(self, platform):
+            return self.descriptors.get(platform)
+
+    def _consumer(self, adapter, chat_id):
+        from gateway.stream_consumer import (
+            GatewayStreamConsumer,
+            StreamConsumerConfig,
+        )
+
+        return GatewayStreamConsumer(
+            adapter=adapter, chat_id=chat_id, config=StreamConsumerConfig(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_telegram_chat_on_slack_primary_keeps_edit_lane(self):
+        transport = self._MultiplexTransport()
+        a = RelayAdapter(
+            PlatformConfig(extra={"slack": {"unfurl_links": True}}),
+            make_desc(platform="slack", supports_edit=True),  # Slack PRIMARY
+            transport=transport,
+        )
+        # Relay learned this chat is Telegram from inbound traffic.
+        a._platform_by_chat["TG1"] = "telegram"
+
+        consumer = self._consumer(a, "TG1")
+        await consumer._send_or_edit("Working on it…")
+        await consumer._send_or_edit("see https://studiotwin.ai", finalize=True)
+
+        ops = [x.get("op") for x in transport.actions]
+        assert ops[-1] == "edit", (
+            f"telegram chat misrouted through fresh-final: ops={ops}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_slack_chat_on_telegram_primary_gets_fresh_final(self):
+        transport = self._MultiplexTransport()
+        a = RelayAdapter(
+            PlatformConfig(extra={"slack": {"unfurl_links": True}}),
+            make_desc(platform="telegram", supports_edit=True),  # non-Slack primary
+            transport=transport,
+        )
+        a._platform_by_chat["D1"] = "slack"
+
+        consumer = self._consumer(a, "D1")
+        await consumer._send_or_edit("Working on it…")
+        await consumer._send_or_edit("see https://studiotwin.ai", finalize=True)
+
+        ops = [x.get("op") for x in transport.actions]
+        # Fresh stamped final followed by cleanup of the sealed preview
+        # (Slack's descriptor advertises delete) — no duplicate.
+        assert "delete" in ops, f"preview not cleaned up: ops={ops}"
+        sends = [x for x in transport.actions if x.get("op") == "send"]
+        assert len(sends) == 2, f"slack chat on non-slack primary left dark: ops={ops}"
+        final = sends[-1]
+        assert final["content"] == "see https://studiotwin.ai"
+        assert final["metadata"]["unfurl_links"] is True
+
+
+class TestDeleteOpForFreshFinalCleanup:
+    """Relay delete_message: emitted only when the negotiated descriptor
+    advertises the additive `delete` op; older connectors degrade to the
+    leave-the-preview-behind behavior (return False, no wire traffic)."""
+
+    @pytest.mark.asyncio
+    async def test_delete_emitted_when_advertised(self):
+        transport = _RecordingTransport()
+        a = RelayAdapter(
+            PlatformConfig(extra={"slack": {"unfurl_links": True}}),
+            make_desc(
+                platform="slack",
+                supported_ops=("send", "edit", "delete"),
+            ),
+            transport=transport,
+        )
+        ok = await a.delete_message("D1", "1700000000.000200")
+        assert ok is True
+        assert transport.actions[-1]["op"] == "delete"
+        assert transport.actions[-1]["message_id"] == "1700000000.000200"
+
+    @pytest.mark.asyncio
+    async def test_delete_refused_when_not_advertised(self):
+        transport = _RecordingTransport()
+        a = RelayAdapter(
+            PlatformConfig(extra={"slack": {"unfurl_links": True}}),
+            make_desc(platform="slack", supported_ops=("send", "edit")),
+            transport=transport,
+        )
+        ok = await a.delete_message("D1", "1700000000.000200")
+        assert ok is False
+        assert transport.actions == []  # no wire traffic for old connectors
+
+    @pytest.mark.asyncio
+    async def test_consumer_fresh_final_deletes_preview_when_supported(self):
+        from gateway.stream_consumer import (
+            GatewayStreamConsumer,
+            StreamConsumerConfig,
+        )
+
+        transport = _RecordingTransport()
+        a = RelayAdapter(
+            PlatformConfig(extra={"slack": {"unfurl_links": True, "unfurl_media": True}}),
+            make_desc(
+                platform="slack",
+                supports_edit=True,
+                supported_ops=("send", "edit", "delete"),
+            ),
+            transport=transport,
+        )
+        consumer = GatewayStreamConsumer(
+            adapter=a, chat_id="D1", config=StreamConsumerConfig()
+        )
+        await consumer._send_or_edit("Working on it…")
+        await consumer._send_or_edit("see https://studiotwin.ai", finalize=True)
+
+        ops = [x.get("op") for x in transport.actions]
+        # send (placeholder) ... send (fresh final) ... delete (preview)
+        assert ops[-1] == "delete", f"ops={ops}"
+        deleted = transport.actions[-1]["message_id"]
+        # The deleted message must be the FIRST send's id (m1), not the final.
+        assert deleted == "m1"

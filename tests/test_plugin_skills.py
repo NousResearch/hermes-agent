@@ -139,6 +139,22 @@ class TestPluginContextRegisterSkill:
         with pytest.raises(FileNotFoundError):
             ctx.register_skill("foo", tmp_path / "nonexistent.md")
 
+    def test_accepts_string_path(self, ctx, tmp_path):
+        skill_md = tmp_path / "skills" / "demo" / "SKILL.md"
+        skill_md.parent.mkdir(parents=True)
+        skill_md.write_text("---\nname: demo\n---\nContent.\n")
+
+        ctx.register_skill("demo", str(skill_md), "A demo skill")
+        assert ctx._manager.find_plugin_skill("testplugin:demo") == skill_md
+
+    def test_string_missing_path_is_filenotfound(self, ctx, tmp_path):
+        with pytest.raises(FileNotFoundError, match="SKILL.md not found"):
+            ctx.register_skill("demo", str(tmp_path / "missing.md"))
+
+    def test_invalid_path_type_is_clear_error(self, ctx):
+        with pytest.raises(ValueError, match="Invalid skill path"):
+            ctx.register_skill("demo", 123)  # type: ignore[arg-type]
+
     def test_duplicate_qualified_name_is_rejected(self, ctx, tmp_path):
         ctx.manifest.portable = True
         first = tmp_path / "first" / "SKILL.md"

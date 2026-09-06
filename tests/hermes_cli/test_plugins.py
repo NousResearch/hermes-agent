@@ -462,6 +462,34 @@ class TestPluginLoading:
 
         assert "hermes_plugins.ns_plugin" in sys.modules
 
+    def test_load_survives_register_skill_string_path(self, tmp_path, monkeypatch):
+        """A plugin that passes a str skill path must load, not AttributeError."""
+        hermes_home = tmp_path / "hermes_test"
+        plugins_dir = hermes_home / "plugins"
+        plugin_dir = plugins_dir / "string-skill"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "SKILL.md").write_text("---\nname: demo\n---\nDemo.\n")
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.dump({"name": "string-skill", "version": "0.1.0", "description": "str path"})
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "from pathlib import Path\n"
+            "def register(ctx):\n"
+            "    ctx.register_skill('demo', str(Path(__file__).parent / 'SKILL.md'), 'demo')\n"
+        )
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["string-skill"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        loaded = mgr._plugins["string-skill"]
+        assert loaded.enabled, loaded.error
+        assert loaded.error is None
+        assert mgr.find_plugin_skill("string-skill:demo") is not None
+
     def test_user_memory_plugin_auto_coerced_to_exclusive(self, tmp_path, monkeypatch):
         """User-installed memory plugins must NOT be loaded by the general
         PluginManager — they belong to plugins/memory discovery.

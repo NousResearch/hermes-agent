@@ -345,6 +345,15 @@ class TestProxyModeIsolation(unittest.TestCase):
         gr = _make_runner(_make_adapter())
         self.assertFalse(gr._proxy_delegation_allowed(restored))
 
+    def test_absent_adapter_denies_proxy_delegation_for_email(self):
+        """An email source whose adapter is not (yet) registered must never
+        delegate: the adapter is the only authority on the outbound policy, so
+        its absence cannot default to a tool-bearing proxy turn."""
+        gr = _make_runner(None)
+        self.assertFalse(gr._proxy_delegation_allowed(_email_source()))
+        restored = SessionSource.from_dict(_email_source().to_dict())
+        self.assertFalse(gr._proxy_delegation_allowed(restored))
+
     def test_raising_adapter_denies_proxy_delegation(self):
         adapter = _make_adapter()
         adapter.toolsets_for_source = lambda source: (_ for _ in ()).throw(

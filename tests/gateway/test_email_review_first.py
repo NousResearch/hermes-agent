@@ -181,15 +181,73 @@ class TestReviewFirstRouting(_DeliveryHarness):
         self.assertEqual(disposition, "drafted")
         smtp.send_message.assert_not_called()
 
-    def test_thread_context_anchor_fallback(self):
-        """Send paths without reply_to resolve the anchor from thread context."""
+    def test_metadata_anchor_resolves_like_explicit_reply_to(self):
+        """Send paths without a reply_to parameter carry the anchor in metadata
+        (stamped by the gateway's thread metadata) and resolve identically."""
+        adapter = _make_adapter()
+        adapter._record_message_trust(ARMEN, "<meta@gmail.com>", True)
+        smtp, _, (_, disposition) = self._deliver(
+            adapter, ARMEN, metadata={"reply_to_message_id": "<meta@gmail.com>"}
+        )
+        self.assertEqual(disposition, "sent")
+
+    def test_thread_context_never_supplies_the_anchor(self):
+        """Per-sender thread context tracks the sender's NEWEST message, so it must
+        never stand in for a missing anchor: a trusted record reachable only via
+        thread context drafts (fail-closed), never sends."""
         adapter = _make_adapter()
         adapter._record_message_trust(ARMEN, "<ctx@gmail.com>", True)
         adapter._thread_context[ARMEN] = {
             "subject": "s", "message_id": "<ctx@gmail.com>",
         }
         smtp, _, (_, disposition) = self._deliver(adapter, ARMEN)
-        self.assertEqual(disposition, "sent")
+        self.assertEqual(disposition, "drafted")
+        smtp.send_message.assert_not_called()
+
+    def test_attachment_send_binds_to_explicit_anchor_not_ctx_race(self):
+        """The wrongful-send race: thread context was overwritten by a NEWER trusted
+        message while the turn replying to an untrusted one was in flight. The
+        attachment path must bind to its own (metadata) anchor — drafting — and a
+        metadata anchor to the trusted message must send."""
+        import tempfile
+
+        adapter = _make_adapter()
+        adapter._record_message_trust(ARMEN, "<forged@gmail.com>", False)
+        adapter._record_message_trust(ARMEN, "<real@gmail.com>", True)
+        adapter._thread_context[ARMEN] = {
+            "subject": "s", "message_id": "<real@gmail.com>",  # newest = trusted
+        }
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(b"\x89PNG")
+            path = f.name
+        try:
+            for anchor, expected in (
+                ("<forged@gmail.com>", "drafted"),  # the in-flight forged turn
+                ("<real@gmail.com>", "sent"),
+                (None, "drafted"),                  # anchor-less: ctx grants nothing
+            ):
+                smtp = MagicMock()
+                imap = _mock_imap()
+                metadata = {"reply_to_message_id": anchor} if anchor else None
+                with patch.dict(os.environ, _BASE_ENV, clear=False), \
+                     patch("imaplib.IMAP4_SSL", return_value=imap), \
+                     patch("smtplib.SMTP", return_value=smtp):
+                    _, disposition = adapter._send_email_with_attachments(
+                        ARMEN, "here you go", [path], metadata
+                    )
+                self.assertEqual(disposition, expected, f"anchor={anchor}")
+        finally:
+            os.unlink(path)
+
+    def test_gateway_thread_metadata_carries_email_anchor(self):
+        """The gateway side of the contract: _thread_metadata_for_source stamps the
+        reply anchor into metadata for email sources."""
+        from gateway.platforms.base import _thread_metadata_for_source
+        from gateway.session import Platform as SessionPlatform, SessionSource
+
+        src = SessionSource(platform=SessionPlatform.EMAIL, chat_id=ARMEN, chat_type="dm")
+        meta = _thread_metadata_for_source(src, "<anchor@gmail.com>")
+        self.assertEqual(meta.get("reply_to_message_id"), "<anchor@gmail.com>")
 
     def test_gateway_internal_send_to_allowlisted_home_sends(self):
         adapter = _make_adapter()
@@ -568,6 +626,44 @@ class TestStrictAuthservPinning(unittest.TestCase):
             ("Received", self.RECEIVED),
         ])
         self.assertFalse(ok)
+
+    def test_dmarc_pass_for_misaligned_domain_never_authenticates(self):
+        """DMARC vouches only for the identity it evaluated (header.from). A
+        legitimately-passing message for evil.example must not authenticate a
+        gmail.com From: — in strict OR legacy mode."""
+        headers = [
+            ("Authentication-Results",
+             "purelymail.com; dmarc=pass header.from=evil.example"),
+            ("Received", self.RECEIVED),
+        ]
+        ok, _ = self._verify(headers)
+        self.assertFalse(ok)
+        ok_legacy, _ = self._verify(headers, strict=False)
+        self.assertFalse(ok_legacy)
+
+    def test_dmarc_pass_without_recorded_header_from_fails_strict_only(self):
+        """Strict mode requires the evaluated identity to be recorded and aligned;
+        legacy keeps accepting servers that omit header.from."""
+        headers = [
+            ("Authentication-Results", "purelymail.com; dmarc=pass"),
+            ("Received", self.RECEIVED),
+        ]
+        ok, _ = self._verify(headers)
+        self.assertFalse(ok)
+        ok_legacy, _ = self._verify(headers, strict=False)
+        self.assertTrue(ok_legacy)
+
+    def test_display_name_spoof_parses_to_real_sender(self):
+        """'"x <victim>" <attacker>' must extract the attacker's real address —
+        parseaddr semantics, not first-angle-bracket regex."""
+        from plugins.platforms.email.adapter import _extract_email_address
+
+        self.assertEqual(
+            _extract_email_address(f'"attacker <{ARMEN}>" <evil@evil.example>'),
+            "evil@evil.example",
+        )
+        self.assertEqual(_extract_email_address(f"Armen <{ARMEN}>"), ARMEN)
+        self.assertEqual(_extract_email_address(ARMEN), ARMEN)
 
 
 class TestUntrustedAbuseLimits(unittest.TestCase):

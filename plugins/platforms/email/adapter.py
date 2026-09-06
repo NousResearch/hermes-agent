@@ -18,7 +18,7 @@ from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
-from email.utils import formatdate
+from email.utils import formatdate, parseaddr
 from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -238,7 +238,13 @@ def _strip_html(html: str) -> str:
 
 
 def _extract_email_address(raw: str) -> str:
-    """Extract bare email address from 'Name <addr>' format."""
+    """Extract the bare email address from 'Name <addr>' format via RFC 2822 parsing.
+    parseaddr honors quoting, so a display name containing an angle-bracketed address
+    ('"x <victim@a>" <attacker@b>') can never shadow the real sender the way a first-match
+    regex could; the regex remains only as a fallback for garbage parseaddr rejects."""
+    parsed = parseaddr(raw or "")[1].strip().lower()
+    if parsed:
+        return parsed
     match = re.search(r"<([^>]+)>", raw)
     return (match.group(1) if match else raw).strip().lower()
 
@@ -257,7 +263,6 @@ def _domains_aligned(a: str, b: str) -> bool:
 
 def _normalize_addr(addr: Any) -> str:
     """Normalize one email address for comparison: parse, strip, lowercase."""
-    from email.utils import parseaddr
     return parseaddr(str(addr or ""))[1].strip().lower()
 
 
@@ -346,8 +351,19 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
         return False, "no Authentication-Results from trusted authserv-id"
     methods = {m.lower(): r.lower() for m, r in _AUTH_METHOD_RE.findall(trusted)}
     props = {p.lower(): v.strip().strip('"') for p, v in _AUTH_PROP_RE.findall(trusted)}
-    if methods.get("dmarc") == "pass":  # DMARC already enforces From alignment
-        return True, "dmarc=pass"
+    if methods.get("dmarc") == "pass":
+        # DMARC enforces alignment only for the identity it evaluated (header.from) — that
+        # domain must itself align with the parsed From: domain, or a legitimately-passing
+        # third-party message whose From: was mis-extracted (display-name spoof) would be
+        # trusted. Strict mode requires the recorded header.from; legacy accepts a server
+        # that did not record one, but a recorded misaligned domain never authenticates —
+        # aligned SPF/DKIM below may still vouch for the actual From: domain.
+        hf = props.get("header.from", "")
+        dmarc_domain = _domain_of(hf) if "@" in hf else hf
+        if dmarc_domain and _domains_aligned(dmarc_domain, from_domain):
+            return True, "dmarc=pass"
+        if not dmarc_domain and not strict:
+            return True, "dmarc=pass"
     if methods.get("spf") == "pass":  # envelope/MAIL FROM domain must align with From
         spf_domain = _domain_of(props.get("smtp.mailfrom", "")) or props.get("smtp.from", "") or props.get("envelope-from", "")
         if _domains_aligned(_domain_of(spf_domain) if "@" in spf_domain else spf_domain, from_domain):
@@ -894,20 +910,23 @@ class EmailAdapter(BasePlatformAdapter):
         while len(self._msg_trust) > self._msg_trust_max:
             self._msg_trust.popitem(last=False)
 
-    def _resolve_reply_anchor(self, to_addr: str, reply_to_msg_id: Optional[str]) -> Optional[str]:
-        """Inbound Message-ID this outbound replies to: the explicit per-turn anchor (the gateway's
-        final-reply path passes it as ``reply_to``), else thread context (send paths without a
-        ``reply_to`` parameter). ``None`` = not a reply to any tracked inbound message."""
-        return reply_to_msg_id or self._thread_context.get(to_addr, {}).get("message_id") or None
+    @staticmethod
+    def _explicit_reply_anchor(reply_to_msg_id: Optional[str], metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+        """Inbound Message-ID this outbound replies to: the explicit per-turn ``reply_to``, else the
+        ``reply_to_message_id`` the gateway's thread metadata carries for send paths without a
+        ``reply_to`` parameter (attachment batches). Deliberately NO thread-context fallback: that
+        per-sender state tracks the sender's NEWEST message, so a reply to one message could resolve
+        to another's trust record — the delivery decision only ever binds to an explicit anchor."""
+        return reply_to_msg_id or str((metadata or {}).get("reply_to_message_id") or "") or None
 
     def _decide_disposition(self, to_addr: str, reply_to_msg_id: Optional[str] = None,
                             metadata: Optional[Dict[str, Any]] = None) -> str:
         """Sent or drafted, for one outbound message. Legacy ``direct`` always sends. Under
         ``review_first``: gateway-internal sends (gateway-stamped metadata, never message content)
-        send only to the auto-send allowlist; a reply sends only when its anchored inbound message
-        carries a live authenticated trust record AND the recipient is allowlisted (a missing or
-        ambiguous record — including after a restart — drafts; permission is never inferred from the
-        recipient address alone); any other anchor-less in-process send drafts unconditionally (the
+        send only to the auto-send allowlist; a reply sends only when its EXPLICIT anchor's inbound
+        message carries a live authenticated trust record AND the recipient is allowlisted (a missing
+        or ambiguous record — including after a restart — drafts; permission is never inferred from
+        the recipient address alone); any anchor-less in-process send drafts unconditionally (the
         ``agent_initiated_sends`` toggle applies only to out-of-process standalone sends)."""
         if self._outbound_policy != "review_first":
             return DISPOSITION_SENT
@@ -919,7 +938,7 @@ class EmailAdapter(BasePlatformAdapter):
                 return DISPOSITION_SENT
             logger.info("[Email] Gateway-internal send to non-allowlisted recipient %s drafts under review_first", to_addr)
             return DISPOSITION_DRAFTED
-        if (anchor := self._resolve_reply_anchor(to_addr, reply_to_msg_id)) is not None:
+        if (anchor := self._explicit_reply_anchor(reply_to_msg_id, metadata)) is not None:
             if self._msg_trust.get((to_norm, anchor)) is True and to_norm in self._auto_send_allowlist:
                 return DISPOSITION_SENT
             return DISPOSITION_DRAFTED
@@ -950,6 +969,7 @@ class EmailAdapter(BasePlatformAdapter):
     def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None,
                     metadata: Optional[Dict[str, Any]] = None) -> Tuple[str, str]:
         """Build a plain-text reply and deliver it (executor thread). Returns ``(message_id, disposition)``."""
+        reply_to_msg_id = self._explicit_reply_anchor(reply_to_msg_id, metadata)
         msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True)
         disposition = self._deliver_message(msg, to_addr, subject=subject, reply_to_msg_id=reply_to_msg_id, metadata=metadata)
         return msg_id, disposition
@@ -958,6 +978,7 @@ class EmailAdapter(BasePlatformAdapter):
                          reply_to_msg_id: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> Tuple[str, str]:
         """Build a reply with attachments and deliver it; *lenient* logs-and-skips unattachable files
         instead of raising. Returns ``(message_id, disposition)``."""
+        reply_to_msg_id = self._explicit_reply_anchor(reply_to_msg_id, metadata)
         msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id)
         for path, name in files:
             try:
@@ -1003,7 +1024,8 @@ class EmailAdapter(BasePlatformAdapter):
     def _send_email_with_attachments(self, to_addr: str, body: str, file_paths: List[str],
                                      metadata: Optional[Dict[str, Any]] = None) -> Tuple[str, str]:
         """Deliver an email with multiple attachments (unattachable files are skipped). No ``reply_to``
-        on this path — the delivery decision resolves the anchor from thread context, staying fail-closed."""
+        parameter on this path — the anchor rides in ``metadata["reply_to_message_id"]`` (stamped by the
+        gateway's thread metadata); without one the send is anchor-less and drafts, staying fail-closed."""
         msg_id, disposition = self._send_with_files(
             to_addr, body, [(Path(f), Path(f).name) for f in file_paths], lenient=True, metadata=metadata)
         logger.info("[Email] Multi-attachment email to %s (%d files): %s", to_addr, len(file_paths), disposition)

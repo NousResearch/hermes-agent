@@ -2096,9 +2096,14 @@ class GatewayTurnMixin:
         """False when this source's turn must run tool-free (email review_first): a proxy agent's
         toolset cannot be constrained from here, so resolve the EFFECTIVE toolsets — which covers
         restored/deserialized sources that lost the wire-invisible ``email_zero_tools`` flag — and
-        refuse delegation when they resolve to zero. Fails closed on any error."""
+        refuse delegation when they resolve to zero. An email source with NO live adapter is also
+        refused: the adapter is the only authority on the outbound policy, so its absence must not
+        default to delegation. Fails closed on any error."""
         try:
             if getattr(source, "email_zero_tools", False):
+                return False
+            from gateway.config import Platform
+            if source.platform == Platform.EMAIL and self._adapter_for_source(source) is None:
                 return False
             from gateway.run import _load_gateway_config, _platform_config_key
             return self._resolve_enabled_toolsets_for_source(

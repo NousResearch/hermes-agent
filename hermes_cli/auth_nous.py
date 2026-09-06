@@ -343,7 +343,7 @@ def _merge_shared_nous_oauth_state(state: Dict[str, Any]) -> bool:
     shared = _read_shared_nous_state() or {}
     shared_refresh = shared.get("refresh_token")
     if not _nonempty_str(shared_refresh):
-        return False
+        return False  # a free-tier identity has no refresh token; nothing to merge into an OAuth state
     shared_access_exp = _parse_iso_timestamp(shared.get("expires_at")) or 0.0
     local_access_exp = _parse_iso_timestamp(state.get("expires_at")) or 0.0
     refresh_changed = shared_refresh.strip() != str(state.get("refresh_token") or "").strip()
@@ -1443,8 +1443,11 @@ def _offer_shared_nous_import(timeout_seconds: float) -> Optional[Dict[str, Any]
     auth state when the user accepted and the import succeeded, else None.
     """
     from hermes_cli.auth import _prompt_yes_no, _read_shared_nous_state
+    from hermes_cli.anon_auth import is_guest_state
     shared = _read_shared_nous_state()
-    if not shared:
+    if not shared or is_guest_state(shared):
+        # A free-tier identity is not an OAuth credential to import; a real sign-in replaces it
+        # (persist_nous_credentials overwrites the singleton and the shared store).
         return None
     try:
         shared_path = _nous_shared_store_path()

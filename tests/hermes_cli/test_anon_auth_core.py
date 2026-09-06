@@ -87,6 +87,10 @@ def portal(monkeypatch, tmp_path):
     anon_auth._background_started = False
     anon_auth._mint_failed = False
     anon_auth._forced_new_done = False
+    # resolve_nous_access_token memoises the last token for 5 s across the process; a token minted
+    # by an earlier test must not be served to this one.
+    from hermes_cli import auth as auth_mod
+    monkeypatch.setattr(auth_mod, "_RESOLVE_TOKEN_CACHE", None)
     return fake
 
 

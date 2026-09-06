@@ -49,8 +49,9 @@ def nous_runner(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
     monkeypatch.delenv("HERMES_FORCE_GUEST", raising=False)
-    # The gateway's resolved provider is what gates the line; the runtime ladder itself is out of scope.
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"provider": "nous"})
+    # Provider precedence gates the line and is answered from persisted state only (no network at boot).
+    for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NOUS_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
     runner, adapter = make_restart_runner()
     runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
         platform=Platform.TELEGRAM, chat_id="home-1", name="Home")
@@ -94,7 +95,7 @@ async def test_signed_in_account_keeps_the_plain_online_notice(nous_runner):
 async def test_non_nous_provider_never_mentions_the_free_tier(nous_runner, monkeypatch):
     runner, adapter = nous_runner
     _seed_nous(_guest_state())  # identity exists for connectors, but inference is elsewhere
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"provider": "openrouter"})
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")  # an explicit key wins provider precedence
 
     message = await _startup_message(runner, adapter)
 

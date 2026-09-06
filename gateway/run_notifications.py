@@ -747,9 +747,11 @@ class GatewayNotificationsMixin:
 
         Best-effort: a resolution failure (no provider, auth error) must not block the online notice."""
         try:
-            from gateway.run import _resolve_runtime_agent_kwargs
+            # Persisted state only: provider precedence is answered by the resolver WITHOUT touching
+            # the network (no token refresh at boot), and the free-tier check reads auth.json.
+            from hermes_cli.auth import resolve_provider
             from hermes_cli.anon_auth import guest_carries_inference
-            if (_resolve_runtime_agent_kwargs().get("provider") or "") != "nous":
+            if resolve_provider("auto") != "nous":
                 return None
             if not guest_carries_inference():
                 return None

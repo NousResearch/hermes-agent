@@ -1372,5 +1372,25 @@ test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#11
     ])
 
     assert.equal(grandStrays.trim(), '', 'watchdog killed the launcher’s grandchild too')
-  }
+  }  }
+)
+
+test('exec wraps POSIX payloads in sh -c so a fish login shell never parses them', async () => {
+  const spawnFn = scriptedSpawn((args: any) =>
+    args.at(-1) === 'uname -s' ? { code: 0, stdout: 'Linux\n' } : { code: 0, stdout: 'OK\n' }
+  )
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
+  await conn.exec('help="$(true)"; echo "${X:-y}"')
+  const cmd = spawnFn.calls[1].at(-1)
+  assert.match(cmd, /^sh -c '/)
+  assert.match(cmd, /help="\$\(true\)"/)
+})
+
+test('exec leaves Windows PowerShell payloads unwrapped', async () => {
+  const spawnFn = scriptedSpawn((args: any) =>
+    args.at(-1) === 'uname -s' ? { code: 1, stderr: 'uname: command not found' } : { code: 0 }
+  )
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
+  await conn.exec('powershell.exe -NoProfile -Command "echo hi"')
+  assert.equal(spawnFn.calls[1].at(-1), 'powershell.exe -NoProfile -Command "echo hi"')
 })

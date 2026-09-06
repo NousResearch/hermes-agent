@@ -1,19 +1,11 @@
 """Per-session event sequencing + bounded replay for WS reconnects.
 
-Every gateway event frame that flows through :func:`server.write_json` (and
-therefore ``_emit``) is stamped with a per-session monotonic ``seq`` and
-appended to a small ring buffer keyed by session id. A reconnecting client
-calls the ``session.events.since`` RPC with its last observed seq; the server
-replays everything newer from the buffer, then live events resume seamlessly.
-
-Design constraints honored:
-- stdio TUI path unaffected: frames gain a ``seq`` field only on event frames;
-  Ink ignores unknown params keys.
-- Thread safety: a single module lock guards counters + buffers; write_json
-  already serializes per-transport writes, so stamping under the lock cannot
-  reorder frames relative to each other.
-- Memory bound: _REPLAY_BUFFER_MAX events / _REPLAY_SESSIONS_MAX sessions,
-  oldest session evicted FIFO.
+Every event frame through :func:`server.write_json` (hence ``_emit``) gets a per-session monotonic
+``seq`` and lands in a small ring per session; a reconnecting client calls ``session.events.since``
+with its last seen seq and gets everything newer. Invariants: stdio TUI unaffected (``seq`` only on
+event frames; Ink ignores unknown keys); one lock guards counters + buffers, and write_json already
+serializes per-transport writes so stamping cannot reorder frames; memory bound =
+_REPLAY_BUFFER_MAX events x _REPLAY_SESSIONS_MAX sessions, oldest session evicted FIFO.
 """
 
 from __future__ import annotations
@@ -22,24 +14,19 @@ import threading
 import uuid
 from collections import OrderedDict, deque
 
-# Process identity for the replay contract. Seq counters live in-process, so
-# a gateway restart silently resets them to 1 while clients still hold high
-# watermarks — events_since(sid, 97) then returns [] with truncated=False and
-# the client believes it missed nothing (and its stale watermark makes every
-# future replay empty too). The epoch lets clients detect the restart and
-# reset their watermarks.
+# Seq counters live in-process, so a restart resets them to 1 while clients hold high
+# watermarks — events_since(sid, 97) would return [] with truncated=False forever. The
+# epoch lets clients detect the restart and reset their watermarks.
 _REPLAY_EPOCH = uuid.uuid4().hex
 
-# Replay ring per session. A long turn emits ~hundreds of token events; this
-# covers several minutes of streaming plus all control events.
+# A long turn emits ~hundreds of token events; 512 covers minutes of streaming plus
+# all control events. Desktop users rarely exceed a dozen live chats.
 _REPLAY_BUFFER_MAX = 512
-# Distinct sessions remembered. Desktop users rarely exceed a dozen live chats.
 _REPLAY_SESSIONS_MAX = 64
 
 _replay_lock = threading.Lock()
-# sid -> deque of (seq, event_object) where event_object is the frame's
-# ``params`` dict (bare event: type/session_id/seq/payload) — the exact shape
-# the client's dispatch path consumes.
+# sid -> deque of (seq, params dict) — the bare event (type/session_id/seq/payload),
+# the exact shape the client's dispatch path consumes.
 _replay_buffers: "OrderedDict[str, deque]" = OrderedDict()
 _replay_next_seq: dict[str, int] = {}
 
@@ -58,8 +45,7 @@ def _stamp_event(obj: dict) -> None:
         return
     sid = params.get("session_id") or ""
     if not sid:
-        # Session-less global events (skin.changed etc.) are re-fetchable via
-        # their own RPCs; no replay contract for them.
+        # Session-less global events (skin.changed etc.) are re-fetchable via their own RPCs.
         return
     with _replay_lock:
         seq = _replay_next_seq.get(sid, 0) + 1
@@ -67,8 +53,7 @@ def _stamp_event(obj: dict) -> None:
         params["seq"] = seq
         buf = _replay_buffers.get(sid)
         if buf is None:
-            buf = deque(maxlen=_REPLAY_BUFFER_MAX)
-            _replay_buffers[sid] = buf
+            buf = _replay_buffers[sid] = deque(maxlen=_REPLAY_BUFFER_MAX)
             while len(_replay_buffers) > _REPLAY_SESSIONS_MAX:
                 _oldest_sid, _oldest_buf = _replay_buffers.popitem(last=False)
                 _replay_next_seq.pop(_oldest_sid, None)
@@ -76,30 +61,22 @@ def _stamp_event(obj: dict) -> None:
 
 
 def events_since(sid: str, last_seen: int) -> list[dict]:
-    """Return recorded EVENT OBJECTS with seq > last_seen for *sid*, in order.
+    """Recorded EVENT OBJECTS (each frame's ``params`` dict) with seq > last_seen for *sid*.
 
-    Shape contract: each element is the frame's ``params`` dict — a bare event
-    object with top-level ``type`` / ``session_id`` / ``seq`` — because that is
-    exactly what the client's dispatch path consumes. Returning the full
-    JSON-RPC envelope here would make every replayed event fail the client's
-    ``event.type`` gate and be silently dropped.
+    Returning the full JSON-RPC envelope would make every replayed event fail the
+    client's ``event.type`` gate and be silently dropped.
     """
     with _replay_lock:
         buf = _replay_buffers.get(sid or "")
-        if not buf:
-            return []
-        return [event for seq, event in buf if seq > last_seen]
+        return [event for seq, event in buf if seq > last_seen] if buf else []
 
 
 def is_truncated(sid: str, last_seen: int) -> bool:
-    """True when events between *last_seen* and the ring's oldest retained
-    seq were evicted — the client must refetch history instead of trusting
-    the replay to be gap-free."""
+    """True when events between *last_seen* and the ring's oldest retained seq were
+    evicted — the client must refetch history instead of trusting the replay."""
     with _replay_lock:
         buf = _replay_buffers.get(sid or "")
-        if not buf:
-            return False
-        return last_seen + 1 < buf[0][0]
+        return bool(buf) and last_seen + 1 < buf[0][0]
 
 
 def latest_seq(sid: str) -> int:
@@ -121,5 +98,4 @@ def replay_stats() -> dict:
         return {
             "sessions": len(_replay_buffers),
             "events": sum(len(b) for b in _replay_buffers.values()),
-            "max_per_session": _REPLAY_BUFFER_MAX,
-        }
+            "max_per_session": _REPLAY_BUFFER_MAX}

@@ -94,7 +94,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         })
 
         if (sessionId === activeSessionIdRef.current) {
-          requestScrollToBottom()
+          requestScrollToBottom(sessionId)
         }
       }
 
@@ -142,7 +142,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         })
 
         if (sessionId === activeSessionIdRef.current) {
-          requestScrollToBottom()
+          requestScrollToBottom(sessionId)
         }
       }
 

@@ -93,9 +93,9 @@ def _quiet_compressor() -> MagicMock:
 @pytest.fixture()
 def agent():
     with (
-        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",
@@ -126,7 +126,7 @@ def _run_tool_loop(agent, n_tool_iterations: int):
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
         patch(
-            "run_agent.handle_function_call",
+            "model_tools.handle_function_call",
             lambda name, args, task_id=None, **kwargs: json.dumps({"ok": True}),
         ),
     ):
@@ -145,7 +145,7 @@ class TestProactivePruneLoopWiring:
         with (
             patch.object(agent, "_compress_context", side_effect=_compress) as compress,
             patch(
-                "agent.conversation_loop.conversation_history_after_compression",
+                "agent.conversation_compression.conversation_history_after_compression",
                 return_value=[],
             ),
         ):
@@ -188,6 +188,32 @@ class TestProactivePruneLoopWiring:
         tool_rows = [m for m in result["messages"] if m.get("role") == "tool"]
         assert tool_rows, "expected tool rows in the final transcript"
         assert all(m["content"] == marker for m in tool_rows)
+
+    def test_should_compress_true_but_skipped_is_warned(self, agent):
+        """``should_compress_info`` says RUN (``(True, None)``) yet this branch
+        was taken — the per-turn compression budget is spent. Over threshold
+        with no reclamation running must not be swallowed silently (#101889).
+
+        Faithful to the real engine: ``should_compress()`` is
+        ``should_compress_info()[0]``, so the only way into this branch with
+        ``(True, None)`` is an exhausted per-turn budget."""
+        agent.max_compression_attempts = 0  # budget already spent this turn
+        agent.context_compressor.should_compress.return_value = True
+        agent.context_compressor.should_compress_info.return_value = (True, None)
+        agent.context_compressor.prune_tool_results_only = (
+            lambda messages, current_tokens=None: (messages, 0)
+        )
+        warned = []
+        with patch.object(
+            agent,
+            "_warn_context_overflow_blocked",
+            side_effect=lambda reason, tokens, threshold: warned.append(reason),
+        ):
+            result = _run_tool_loop(agent, n_tool_iterations=1)
+
+        assert result["completed"] is True
+        assert warned, "over-threshold turn with no compaction ran silently"
+        assert all(r.startswith("attempts_exhausted") for r in warned)
 
     def test_noop_input_object_commits_nothing(self, agent):
         """Engine returns the INPUT object with a (bogus) non-zero count —

@@ -2,7 +2,7 @@
 
 [project]
 name = "hermes-agent"
-version = "0.20.6"
+version = "0.21.0"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
 # Upper bound is load-bearing, not cosmetic. uv resolves the project's
@@ -161,13 +161,13 @@ dependencies = [
   # Hence the ``sys_platform == 'win32'`` marker: the dep (and its portalocker
   # / pywin32 tree) ships only where it's actually used.
   "concurrent-log-handler==0.9.29; sys_platform == 'win32'",
-  # First-party lifecycle and shared-metrics runtime. Relay 0.6 is the minimum
-  # lossless provider-codec contract. Managed calls pass request/response data
-  # through this native module in-process; shared metrics installs no network
-  # exporter and consumes only its bounded projection. Relay publishes wheels
-  # only (no sdist), so this marker must stay false anywhere no wheel tag can
-  # match — otherwise installing Python dependencies fails resolution outright
-  # instead of falling back to the no-op Relay host (#76469, Termux).
+  # First-party lifecycle and shared-metrics runtime. Relay 0.8 is the supported
+  # native runtime and provider-codec baseline. Managed calls pass request and
+  # response data through this native module in-process; shared metrics installs
+  # no network exporter and consumes only its bounded projection. This marker
+  # must stay false anywhere no compatible native wheel tag can match; otherwise
+  # installing Python dependencies fails instead of falling back to the no-op
+  # Relay host (#76469, Termux).
   # Termux Python reports plain linux/aarch64 but runs on Bionic
   # libc, which satisfies neither manylinux nor musllinux, hence the
   # `'android' not in platform_release` guard on the linux arms: Android GKI
@@ -175,7 +175,7 @@ dependencies = [
   # 738 CPython reports sys_platform == 'android' and never matched.) Pre-GKI
   # devices can still slip through; they get the same resolution failure as
   # before, worked around by installing with `--no-deps` or an older release.
-  "nemo-relay>=0.7.1,<0.8; (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64' and 'android' not in platform_release) or (sys_platform == 'linux' and platform_machine == 'aarch64' and 'android' not in platform_release) or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')",
+  "nemo-relay>=0.8.3,<0.9; (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64' and 'android' not in platform_release) or (sys_platform == 'linux' and platform_machine == 'aarch64' and 'android' not in platform_release) or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')",
 ]
 
 [project.optional-dependencies]
@@ -381,7 +381,11 @@ all = [
 ]
 
 [build-system]
-requires = ["setuptools==83.0.0"]
+# setuptools.build_meta + our setup.py bdist_wheel guard import wheel during
+# PEP 517 isolated builds (uv sync / uv pip install -e .). Without wheel in
+# requires, the isolation sandbox only gets setuptools and Windows installer
+# fails with ModuleNotFoundError: wheel.cli (#96488).
+requires = ["setuptools==83.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]
@@ -419,7 +423,7 @@ exclude-newer = "14 days"
 # risk — their newest releases are years old — and unbricks resolvers that
 # cannot see upload dates.
 #
-# setuptools, pillow, mcp: exact-pinned bricks (#78227, #75992, #76020). uv
+# setuptools, wheel, pillow, mcp: build/core pin bricks (#78227, #75992, #76020, #96488). uv
 # applies exclude-newer to build-system.requires and core deps too; when a
 # resolver cannot see an upload date (old uv, mirror index, stale HTTP cache)
 # it filters the pinned version and the package cannot even BUILD
@@ -433,38 +437,137 @@ exclude-newer = "14 days"
 # firecrawl-anydoc: same exact-pin shape (==0.2.4, hosted-OCR wiring PR).
 # The pin bump WAS the review; exclude-newer adds zero float protection to
 # an exact pin and would only delay the reviewed version 14 days.
-exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, h2 = false, aiohttp = false, cryptography = false, defusedxml = false, python-olm = false, unpaddedbase64 = false, setuptools = false, pillow = false, mcp = false, firecrawl-anydoc = false }
+#
+# Every other exact-pinned package below: the release-day brick shape
+# (observed 2026-08-29 updating three long-running installs v0.20.0 ->
+# v0.20.6 — one Termux, two Linux servers). Each release exact-pins at least
+# one dependency to a version published days before the release (v0.20.6
+# pinned snowballstemmer==3.1.1 and psutil==7.2.2 in core, plus fastapi /
+# uvicorn / python-telegram-bot pins across extras). For two weeks after
+# release the cutoff filters those versions out, so any venv that predates
+# the release bricks on `hermes update` ("no version of
+# snowballstemmer==3.1.1") until the window passes. Same zero-float-
+# protection logic as setuptools/pillow/mcp above; enforced for every exact
+# pin by
+# tests/test_packaging_metadata.py::test_exact_pinned_deps_exempt_from_exclude_newer.
+#
+# maturin, setuptools-rust: build-system.requires of the cryptography pin
+# above. cryptography itself is exempted, but on wheel-less platforms
+# (Termux/Android) it must build from sdist, and the isolated build
+# environment resolves under the same cutoff ("Failed to resolve
+# requirements from build-system.requires ... maturin>=1.9,<2").
+[tool.uv.exclude-newer-package]
+agent-client-protocol = false
+ai-edge-litert = false
+aiohttp = false
+aiohttp-socks = false
+aiosqlite = false
+alibabacloud-dingtalk = false
+anthropic = false
+asyncpg = false
+azure-identity = false
+boto3 = false
+brotlicffi = false
+certifi = false
+concurrent-log-handler = false
+croniter = false
+cryptography = false
+daytona = false
+debugpy = false
+defusedxml = false
+dingtalk-stream = false
+discord-py = false
+edge-tts = false
+elevenlabs = false
+exa-py = false
+fal-client = false
+fastapi = false
+faster-whisper = false
+fire = false
+firecrawl-anydoc = false
+firecrawl-py = false
+google-api-python-client = false
+google-auth = false
+google-auth-httplib2 = false
+google-auth-oauthlib = false
+h2 = false
+hindsight-client = false
+honcho-ai = false
+httplib2 = false
+httpx = false
+httpx2 = false
+huggingface_hub = false
+jinja2 = false
+lark-oapi = false
+markdown = false
+maturin = false
+mautrix = false
+mcp = false
+mem0ai = false
+microsoft-teams-apps = false
+mistralai = false
+modal = false
+nemo-relay = false
+numpy = false
+onnxruntime = false
+openai = false
+opentelemetry-exporter-otlp-proto-http = false
+opentelemetry-sdk = false
+openwakeword = false
+packaging = false
+parallel-web = false
+pathspec = false
+pillow = false
+prompt-toolkit = false
+psutil = false
+pvporcupine = false
+pyasn1 = false
+pydantic = false
+pyjwt = false
+pytest = false
+pytest-asyncio = false
+python-dotenv = false
+python-multipart = false
+python-olm = false
+python-telegram-bot = false
+pyyaml = false
+qrcode = false
+requests = false
+rich = false
+ruamel-yaml = false
+ruff = false
+sentencepiece = false
+setuptools = false
+setuptools-rust = false
+wheel = false
+sherpa-onnx = false
+slack-bolt = false
+slack-sdk = false
+snowballstemmer = false
+sounddevice = false
+starlette = false
+supermemory = false
+tenacity = false
+ty = false
+tzdata = false
+unpaddedbase64 = false
+uvicorn = false
+vercel = false
+websockets = false
+youtube-transcript-api = false
+
 
 [tool.setuptools]
-# Top-level single-file modules (not packages). Without this, uv2nix's
-# sealed venv is missing hermes_constants, run_agent, etc.
-py-modules = [
-  "run_agent",
-  "registration_lifecycle",
-  "model_tools",
-  "toolsets",
-  "batch_runner",
-  "trajectory_compressor",
-  "toolset_distributions",
-  "cli",
-  "hermes_bootstrap",
-  "hermes_constants",
-  "hermes_state",
-  "hermes_state_common",
-  "hermes_state_portability",
-  "hermes_state_schema",
-  "hermes_state_search",
-  "hermes_time",
-  "hermes_logging",
-  "utils",
-  "mcp_serve",
-]
+# Root single-file modules are derived by setup.py at build time from the
+# source tree (see the ``_root_py_modules`` helper there). A static
+# ``py-modules`` list here drifted from the tree each time the layout changed,
+# and the drift broke installed wheels. Do not add the list back.
 
 [tool.setuptools.packages.find]
 include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
 
 [tool.setuptools.package-data]
-hermes_cli = ["observability/schemas/*.json", "data/*.json"]
+hermes_cli = ["observability/schemas/*.json", "data/*.json", "local_runtime/*.json"]
 # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
 # screenshot. Without this, sealed venvs (uv2nix) silently lose both —
 # status phrases fall back to the tiny hardcoded set and the Telegram
@@ -545,6 +648,7 @@ select = ["PLW1514", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251"]
 # process (no wait), an accepted momentary spawn cost pending a dedicated
 # async-subprocess sweep.
 "gateway/run.py" = ["ASYNC220"]
+"gateway/run_shutdown.py" = ["ASYNC220"]
 "gateway/slash_commands.py" = ["ASYNC220"]
 # Off-loop sweep for these routers is in flight (PR #84376).
 "hermes_cli/web_routers/profiles.py" = ["ASYNC220", "ASYNC221"]

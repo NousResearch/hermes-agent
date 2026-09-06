@@ -1037,6 +1037,31 @@ def dispatch_tool_search(args: Dict[str, Any],
     return json.dumps(result, ensure_ascii=False)
 
 
+def _bridge_override() -> PlatformOverride:
+    """Override used by the BRIDGE DISPATCH sites, not by classification.
+
+    A tool deferred for one platform must still be reachable through
+    tool_search / tool_describe / tool_call when that platform's session asks
+    for it — but the dispatch sites do not know which platform assembled the
+    current array. This unions every configured platform's ``defer`` set, so
+    the dispatch check is permissive across platforms.
+
+    That is safe: the real scoping gate is membership of the session's own
+    pre-assembly tool defs (see ``scoped_deferrable_names``), which is
+    unaffected. Without this, configuring ``defer`` makes a tool invisible AND
+    unreachable — the model sees it in the catalog and gets
+    "'x' is not a deferrable tool" when it tries to call it.
+    """
+    try:
+        cfg = load_config()
+    except Exception:
+        return _EMPTY_OVERRIDE
+    names: set = set()
+    for _, override in cfg.platforms:
+        names |= set(override.defer)
+    return PlatformOverride(defer=frozenset(names)) if names else _EMPTY_OVERRIDE
+
+
 def dispatch_tool_describe(args: Dict[str, Any],
                            *,
                            current_tool_defs: List[Dict[str, Any]]) -> str:
@@ -1044,12 +1069,13 @@ def dispatch_tool_describe(args: Dict[str, Any],
     name = str(args.get("name") or "").strip()
     if not name:
         return tool_error("name is required")
-    if not is_deferrable_tool_name(name):
+    _bridge = _bridge_override()
+    if not is_deferrable_tool_name(name, _bridge):
         return tool_error(
             f"'{name}' is not a deferrable tool. If you see it in the tools list "
             "already, call it directly; otherwise check the spelling against tool_search."
         )
-    _, deferrable = classify_tools(current_tool_defs)
+    _, deferrable = classify_tools(current_tool_defs, _bridge)
     for td in deferrable:
         fn = td.get("function") or {}
         if fn.get("name") == name:
@@ -1075,10 +1101,11 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
     ``tool_executor`` unwrap so a restricted-toolset session can never invoke
     an out-of-scope tool via the bridge.
     """
+    _bridge = _bridge_override()
     names: set[str] = set()
     for td in tool_defs:
         name = (td.get("function") or {}).get("name", "")
-        if name and is_deferrable_tool_name(name):
+        if name and is_deferrable_tool_name(name, _bridge):
             names.add(name)
     return frozenset(names)
 
@@ -1161,7 +1188,7 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
             return None, {}, f"tool_call 'arguments' is not valid JSON: {e}"
     if not isinstance(raw_args, dict):
         return None, {}, "tool_call 'arguments' must be an object"
-    if not is_deferrable_tool_name(name):
+    if not is_deferrable_tool_name(name, _bridge_override()):
         return None, {}, (
             f"'{name}' is not a deferrable tool. If it appears in the model-facing tools "
             "list already, call it directly instead of via tool_call."

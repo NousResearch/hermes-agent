@@ -119,3 +119,22 @@ def test_malformed_platforms_are_ignored_not_raised(raw):
 def test_scalar_string_is_accepted_as_a_single_name():
     ov = _cfg({"defer": "session_search"}).override_for("telegram")
     assert ov.defer == frozenset({"session_search"})
+
+# ── 5. bridge reachability ──────────────────────────────────────────────
+def test_a_deferred_tool_is_still_reachable_through_the_bridge(monkeypatch):
+    """Regression: defer must not make a tool invisible AND uncallable.
+
+    The bridge dispatch sites (tool_describe / tool_call / scoped_deferrable_
+    names) re-check deferrability without knowing which platform assembled the
+    array. Before _bridge_override() they used the unmodified core set, so a
+    tool moved out of core by config was rejected with "not a deferrable tool"
+    — the model could see it in the catalog and never call it.
+    """
+    from tools import registry as reg_mod
+    from tools.tool_search import _bridge_override
+    monkeypatch.setattr(reg_mod.registry, "get_entry", _fake_registry())
+    monkeypatch.setattr(
+        "tools.tool_search.load_config",
+        lambda: ToolSearchConfig.from_raw({"platforms": {"telegram": {"defer": ["todo"]}}}),
+    )
+    assert is_deferrable_tool_name("todo", _bridge_override()) is True

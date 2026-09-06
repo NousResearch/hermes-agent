@@ -156,6 +156,85 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
         **(_no_prompt_git_kwargs() if network else {}))
 
 
+
+_REFLOG_LOOKBACK_LIMIT = 50
+
+
+def _head_came_from_upstream(git_cmd, cwd, branch: str) -> bool:
+    """True when HEAD is reachable from a past value of origin/<branch>."""
+    reflog = subprocess.run(
+        git_cmd + ["reflog", "show", "--format=%H", f"origin/{branch}"],
+        cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    if reflog.returncode != 0:
+        return False
+    entries = len([line for line in reflog.stdout.splitlines() if line.strip()])
+    for step in range(min(entries, _REFLOG_LOOKBACK_LIMIT) + 1):
+        contained = subprocess.run(
+            git_cmd + ["merge-base", "--is-ancestor", "HEAD", f"origin/{branch}@{{{step}}}"],
+            cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        if contained.returncode == 0:
+            return True
+    return False
+
+
+def _plan_diverged_target_update(git_cmd, cwd, branch: str):
+    """Decide merge vs reset when HEAD and origin/<branch> have diverged on the target branch.
+
+    git cherry alone cannot tell a force-push from genuine local work. If HEAD is
+    contained in a previous origin/<branch> reflog value, resetting loses nothing.
+    """
+    cherry = subprocess.run(
+        git_cmd + ["cherry", f"origin/{branch}"],
+        cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    if cherry.returncode != 0:
+        return "merge", 0
+    local_only = [line for line in cherry.stdout.splitlines() if line.startswith("+")]
+    if not local_only:
+        return "reset", 0
+    if _head_came_from_upstream(git_cmd, cwd, branch):
+        return "reset", 0
+    return "merge", len(local_only)
+
+
+def _recover_diverged_checkout(git_cmd, cwd, branch: str) -> str:
+    """Production recovery used when ``git merge --ff-only`` fails on the target branch.
+
+    Returns ``"merged"`` or ``"reset"``. On merge conflict, abort and raise SystemExit(1)
+    without touching the pre-update checkout.
+    """
+    action, local_commits = _plan_diverged_target_update(git_cmd, cwd, branch)
+    if action == "merge":
+        print(
+            f"  ⚠ Fast-forward not possible — HEAD carries {local_commits} "
+            f"local commit(s) not upstream. Merging origin/{branch} so that "
+            "work survives..."
+        )
+        subprocess.run(
+            git_cmd + ["tag", f"pre-update-{_time.strftime('%Y%m%d-%H%M%S')}"],
+            cwd=cwd, capture_output=True, text=True,
+        )
+        merge = subprocess.run(
+            git_cmd + ["merge", "--no-edit", f"origin/{branch}"],
+            cwd=cwd, capture_output=True, text=True,
+        )
+        if merge.returncode != 0:
+            subprocess.run(git_cmd + ["merge", "--abort"], cwd=cwd, capture_output=True, text=True)
+            print("✗ Merge conflict between local commits and upstream — update stopped, nothing was changed.")
+            print("  Resolve the conflicts, or move local work to a branch and re-run.")
+            print("  Your previous HEAD is unchanged.")
+            raise SystemExit(1)
+        return "merged"
+    print("  ⚠ Fast-forward not possible (history diverged), resetting to match remote...")
+    subprocess.run(
+        git_cmd + ["reset", "--hard", f"origin/{branch}"],
+        cwd=cwd, capture_output=True, text=True, check=True,
+    )
+    return "reset"
+
+
 def _capture_head_sha(git_cmd, cwd) -> str | None:
     """Return the current HEAD SHA, or None if it can't be resolved."""
     try:
@@ -673,7 +752,24 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha) -> None:
             print("  Then re-run the update. Local work is untouched.")
             sys.exit(1)
         return
-    # Same branch: a true upstream force-push/rebase; local changes are stashed, so reset.
+    # Same branch: preserve unique local commits via merge; reset only when HEAD
+    # has nothing that origin/<branch> does not already contain.
+    _action, _local_commits = _plan_diverged_target_update(git_cmd, _m().PROJECT_ROOT, branch)
+    if _action == "merge":
+        print(
+            f"  ⚠ Fast-forward not possible — HEAD carries {_local_commits} "
+            f"local commit(s) not upstream. Merging origin/{branch} so that "
+            "work survives..."
+        )
+        _git_run(git_cmd, ["tag", f"pre-update-{_time.strftime('%Y%m%d-%H%M%S')}"])
+        if _git_run(git_cmd, ["merge", "--no-edit", f"origin/{branch}"]).returncode != 0:
+            _git_run(git_cmd, ["merge", "--abort"])
+            print("✗ Merge conflict between local commits and upstream — update stopped, nothing was changed.")
+            print("  Resolve the conflicts, or move local work to a branch and re-run.")
+            print("  Your previous HEAD is unchanged.")
+            sys.exit(1)
+        return
+    # Same branch, nothing unique locally: true upstream force-push/rebase.
     # Orphan divergence (no common ancestor: corrupted HEAD, re-init) would lose the whole
     # local graph, so park pre_pull_sha behind a rescue ref first.
     merge_base_result = _git_run(git_cmd, ["merge-base", "HEAD", f"origin/{branch}"])

@@ -126,3 +126,18 @@ def test_full_compress_keeps_current_assignment_from_summarized_window(monkeypat
 
     assert len(result) < len(messages)
     assert receipt in json.dumps(result)
+
+
+@pytest.mark.parametrize("task_id_argument", [None, ""])
+def test_assignment_summary_defaults_null_or_empty_task_id_to_worker_task(monkeypatch, task_id_argument):
+    task_id = "t_12345678"
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    assignment = json.dumps({
+        "task": {"id": task_id, "title": "Current card", "body": "Finish repair"},
+    })
+    messages = [{"role": "tool", "tool_call_id": "assignment", "content": assignment}]
+    calls = {"assignment": ("kanban_show", json.dumps({"task_id": task_id_argument}))}
+
+    ContextCompressor._demote_tool_result_at(messages, 0, calls, 0)
+
+    assert json.loads(messages[0]["content"])["task"]["id"] == task_id

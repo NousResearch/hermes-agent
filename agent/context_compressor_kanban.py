@@ -15,8 +15,7 @@ def _assignment(message, calls):
     if not isinstance(payload, dict) or not isinstance(arguments, dict):
         return None
     task = payload.get("task")
-    task_id = (arguments["task_id"] if "task_id" in arguments
-               else os.environ.get("HERMES_KANBAN_TASK"))
+    task_id = arguments.get("task_id") or os.environ.get("HERMES_KANBAN_TASK")
     if not isinstance(task, dict) or not isinstance(task_id, str) or not task_id or len(task_id) > 128 or task.get("id") != task_id:
         return None
     if not isinstance(task.get("title"), str) or not isinstance(task.get("body"), str):

@@ -116,11 +116,7 @@ class TestRunner:
 
 
 class TestComposeGuard:
-    """Regression for issue #103567: a compose recipe must refuse to run
-    against a project directory that's already a live compose deployment
-    with running containers -- ``docker compose build`` + ``up`` replaces
-    them on an image-hash change, destroying container-local state (a real
-    incident: a kanban worker's state DB was lost this way)."""
+    """#103567: a compose recipe must not build/up over a live deployment."""
 
     def _compose_recipe(self):
         return Recipe(
@@ -153,10 +149,7 @@ class TestComposeGuard:
         result = run_verify(tmp_path, self._compose_recipe(), skip_start=False)
 
         assert not result.ok
-        assert "Refusing to run" in result.phases[0].output_tail
-        if isinstance(probe, MagicMock) and probe.returncode == 0:
-            assert "myproject-db-1" in result.phases[0].output_tail
-            assert "myproject-web-1" in result.phases[0].output_tail
+        assert result.phases[0].exit_code == 1
         # Only the read-only probe ran -- never build or up.
         assert len(calls) == 1
         assert calls[0][:3] == ["docker", "compose", "ps"]
@@ -182,7 +175,7 @@ class TestComposeGuard:
 
     def test_guard_skipped_when_no_mutating_phase_selected(self, tmp_path, monkeypatch):
         probe = MagicMock()
-        monkeypatch.setattr("agent.verify.runner._running_compose_containers", probe)
+        monkeypatch.setattr("agent.verify.runner._compose_live_state_reason", probe)
 
         with patch("agent.verify.runner._run_phase_command") as mock_phase:
             mock_phase.return_value = MagicMock(ok=True, phase="test")

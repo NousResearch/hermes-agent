@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
@@ -351,3 +352,183 @@ def mark_guest_notice_shown() -> bool:
             _store_section(source_store, "providers")["nous"] = state
             _save_auth_store(source_store, target_path=source_path)
     return True
+
+
+# --- ``hermes auth upgrade``: sign the guest into a real Nous account, keeping its connectors ---------
+#
+# Wire: the normal device-code flow, with a promotion intent registered on NAS BETWEEN the code
+# request and the token poll (``POST /api/anonymous/promotion-intent {token, user_code, device_code}``).
+# NAS then transfers the guest's connectors into whichever account approves that device code. We
+# watch ``POST /api/anonymous/promotion-status {claim_code}`` until it leaves ``pending``; only a
+# ``completed`` promotion is followed by the token grant, which ``persist_nous_credentials`` writes
+# over the guest singleton and the shared store. The server never reports expiry: our own
+# ``expires_in`` clock ends the wait. User-facing copy never says guest / anonymous / claim.
+
+UPGRADE_START = "Sign in to keep your connectors and unlock more."
+UPGRADE_ALREADY_SIGNED_IN = "Already signed in."
+UPGRADE_DO_NOT_SHARE = "Do not share this code."
+UPGRADE_TIMED_OUT = "Sign-in timed out; run the command again."
+UPGRADE_NOT_COMPLETED = "Sign-in did not complete; run the command again."
+UPGRADE_UNAVAILABLE = "The free tier is not available right now; run `hermes auth add nous` to sign in."
+UPGRADE_REASON_COPY = {
+    "user_declined": "Sign-in was rejected in the browser.",
+    "superseded": "A newer sign-in code replaced this one.",
+    "account_retired": "This free-tier identity was already used or expired; a new one is set up on next use.",
+    "account_not_anonymous": "This free-tier identity was already used or expired; a new one is set up on next use.",
+    "account_busy": "The transfer could not run; run the command again.",
+}
+_RETIRED_REASONS = frozenset({"account_retired", "account_not_anonymous"})
+UPGRADED_AUTH_METHOD = "oauth_device_code"
+
+
+def register_promotion_intent(
+    client: httpx.Client, portal_base_url: str, anon_token: str, *, user_code: str, device_code: str,
+) -> Dict[str, Any]:
+    """``POST /api/anonymous/promotion-intent`` -> ``{claim_code, claim_url, expires_in, interval}``."""
+    response = client.post(
+        f"{portal_base_url.rstrip('/')}/api/anonymous/promotion-intent", headers=_anon_headers(),
+        json={"token": anon_token, "user_code": user_code, "device_code": device_code})
+    payload = _raise_for_anon_status(response, action="sign-in")
+    if not isinstance(payload.get("claim_code"), str) or not payload["claim_code"]:
+        raise _anon_err("Nous free tier sign-in returned no transfer code.", "anon_server_error")
+    return payload
+
+
+def _retry_after_seconds(response: httpx.Response, default: float) -> float:
+    raw = (response.headers.get("retry-after") or "").strip()
+    try:
+        return max(0.0, float(raw)) if raw else default
+    except ValueError:
+        return default
+
+
+def wait_for_promotion(
+    client: httpx.Client, portal_base_url: str, claim_code: str, *, expires_in: int, interval: int,
+) -> Dict[str, Any]:
+    """Poll ``POST /api/anonymous/promotion-status`` until it leaves ``pending`` or our clock runs out.
+
+    Returns the final status payload; ``{"status": "timeout"}`` when ``expires_in`` elapsed. 429 honours
+    ``Retry-After``; other non-2xx statuses raise through :func:`_raise_for_anon_status`.
+    """
+    deadline = time.monotonic() + max(1, int(expires_in))
+    wait = max(0, int(interval))
+    while time.monotonic() < deadline:
+        response = client.post(
+            f"{portal_base_url.rstrip('/')}/api/anonymous/promotion-status", headers=_anon_headers(),
+            json={"claim_code": claim_code})
+        if response.status_code == 429:
+            time.sleep(min(_retry_after_seconds(response, default=max(1, wait)), max(0.0, deadline - time.monotonic())))
+            continue
+        payload = _raise_for_anon_status(response, action="sign-in")
+        if str(payload.get("status") or "unknown") != "pending":
+            return payload
+        time.sleep(wait)
+    return {"status": "timeout"}
+
+
+def _account_state_from_token(
+    token_data: Dict[str, Any], *, portal_base_url: str, client_id: str, scope: Optional[str], verify: Any,
+    timeout_seconds: float,
+) -> Dict[str, Any]:
+    """The ``providers.nous`` shape for the signed-in account (same fields the device-code login writes)."""
+    from hermes_cli.auth import PROVIDER_REGISTRY, _coerce_ttl_seconds, _optional_base_url, _tls_state_from_verify
+    from hermes_cli.auth_nous import _NOUS_EMPTY_AGENT_KEY_FIELDS, _iso_after, refresh_nous_oauth_from_state
+    now = datetime.now(timezone.utc)
+    ttl = _coerce_ttl_seconds(token_data.get("expires_in", 0))
+    inference_url = (
+        _optional_base_url(token_data.get("inference_base_url"))
+        or PROVIDER_REGISTRY["nous"].inference_base_url.rstrip("/"))
+    state = {
+        "portal_base_url": portal_base_url, "inference_base_url": inference_url,
+        "client_id": client_id, "scope": token_data.get("scope") or scope,
+        "token_type": token_data.get("token_type", "Bearer"),
+        "access_token": token_data["access_token"], "refresh_token": token_data.get("refresh_token"),
+        "obtained_at": now.isoformat(), "expires_at": _iso_after(now, ttl), "expires_in": ttl,
+        "tls": _tls_state_from_verify(verify), **_NOUS_EMPTY_AGENT_KEY_FIELDS}
+    state = refresh_nous_oauth_from_state(state, timeout_seconds=timeout_seconds, force_refresh=False)
+    state["auth_method"] = UPGRADED_AUTH_METHOD
+    return state
+
+
+def _print_promotion_outcome(outcome: Dict[str, Any]) -> None:
+    status = str(outcome.get("status") or "unknown")
+    reason = str(outcome.get("reason") or "")
+    if status == "timeout":
+        print(UPGRADE_TIMED_OUT)
+        return
+    print(UPGRADE_REASON_COPY.get(reason, UPGRADE_NOT_COMPLETED))
+    if reason in _RETIRED_REASONS:
+        clear_dead_guest("retired")
+
+
+def upgrade_guest(args) -> int:
+    """``hermes auth upgrade``: sign in with a Nous account, transferring the free tier's connectors.
+
+    Returns 0 on success (or when already signed in), 1 otherwise. Never persists anything unless the
+    promotion completed AND the token grant succeeded.
+    """
+    from hermes_cli.auth import PROVIDER_REGISTRY, _resolve_verify
+    from hermes_cli.auth_device_flow import (
+        _is_remote_session, _poll_for_token, _print_device_code_instructions, _request_device_code)
+    from hermes_cli.auth_nous import _nous_http_client, persist_nous_credentials
+    timeout_seconds = float(getattr(args, "timeout", None) or 15.0)
+    open_browser = not getattr(args, "no_browser", False) and not _is_remote_session()
+    state = current_nous_state()
+    if state and not is_guest_state(state):
+        print(UPGRADE_ALREADY_SIGNED_IN)
+        return 0
+    if not state:
+        try:
+            state = ensure_portal_identity(blocking=True, timeout_seconds=timeout_seconds)
+        except AuthError as exc:
+            print(f"{UPGRADE_UNAVAILABLE} ({exc})")
+            return 1
+        if not is_guest_state(state):
+            print(UPGRADE_UNAVAILABLE)
+            return 1
+    anon_token = str(state.get("anon_token") or "")
+    portal = (state.get("portal_base_url") or _portal_base_url()).rstrip("/")
+    pconfig = PROVIDER_REGISTRY["nous"]
+    client_id, scope = pconfig.client_id, pconfig.scope
+    verify = _resolve_verify(insecure=None, ca_bundle=None, auth_state=None)
+    print(UPGRADE_START)
+    try:
+        with _nous_http_client(timeout_seconds, verify) as client:
+            device = _request_device_code(client, portal, client_id, scope)
+            intent = register_promotion_intent(
+                client, portal, anon_token, user_code=str(device["user_code"]),
+                device_code=str(device["device_code"]))
+            _print_device_code_instructions(
+                str(device["verification_uri_complete"]), str(device["user_code"]), open_browser=open_browser,
+                swallow_open_errors=True)
+            print(f"  {UPGRADE_DO_NOT_SHARE}")
+            expires_in = min(int(device["expires_in"]), int(intent.get("expires_in") or device["expires_in"]))
+            interval = int(intent.get("interval") or device.get("interval") or 5)
+            print("Waiting for sign-in...")
+            outcome = wait_for_promotion(client, portal, intent["claim_code"], expires_in=expires_in, interval=interval)
+            if str(outcome.get("status")) != "completed":
+                _print_promotion_outcome(outcome)
+                return 1
+            token_data = _poll_for_token(
+                client=client, portal_base_url=portal, client_id=client_id,
+                device_code=str(device["device_code"]), expires_in=max(1, expires_in), poll_interval=interval)
+        account_state = _account_state_from_token(
+            token_data, portal_base_url=portal, client_id=client_id, scope=scope, verify=verify,
+            timeout_seconds=timeout_seconds)
+    except AnonCredentialDead:
+        print(UPGRADE_REASON_COPY["account_retired"])
+        clear_dead_guest("retired")
+        return 1
+    except TimeoutError:
+        print(UPGRADE_TIMED_OUT)
+        return 1
+    except KeyboardInterrupt:
+        print("\nSign-in cancelled.")
+        return 130
+    except Exception as exc:
+        print(f"Sign-in failed: {exc}")
+        return 1
+    persist_nous_credentials(account_state)
+    email = str(outcome.get("account_email") or "").strip()
+    print(f"Signed in as {email}. Your connectors are kept." if email else "Signed in. Your connectors are kept.")
+    return 0

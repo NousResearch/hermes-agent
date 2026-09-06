@@ -1953,33 +1953,9 @@ def _inject_context_engine_tools(agent):
     # context engine tools follow the same gating pattern as memory provider tools — without the gate,
     # `platform_toolsets: telegram: []` would still leak lcm_* tools into the tool surface and incur the
     # same local-model latency penalty.
-    agent._context_engine_tool_names: set = set()
-    if (
-        agent.context_compressor
-        and agent.tools is not None
-        and (agent.enabled_toolsets is None or "context_engine" in agent.enabled_toolsets)
-    ):
-        _existing_tool_names = {
-            t.get("function", {}).get("name") for t in agent.tools if isinstance(t, dict)
-        }
-        from agent.memory_manager import normalize_tool_schema
-        for _raw_schema in agent.context_compressor.get_tool_schemas():
-            _schema = normalize_tool_schema(_raw_schema)
-            if _schema is None:
-                # A nameless tool makes strict providers 400 and disables the whole toolset.
-                _ra().logger.warning(
-                    # Skip it. See #47707.
-                    "Context engine returned a tool schema with no resolvable "
-                    "name; skipping to avoid poisoning the request (%r)",
-                    _raw_schema,
-                )
-                continue
-            _tname = _schema["name"]
-            if _tname in _existing_tool_names:
-                continue  # already registered via plugin/cache path
-            agent.tools.append({"type": "function", "function": _schema})
-            for _names in (agent.valid_tool_names, agent._context_engine_tool_names, _existing_tool_names):
-                _names.add(_tname)
+    from agent.context_engine import inject_context_engine_tools
+
+    inject_context_engine_tools(agent)
 
     if agent.context_compressor:
         try:

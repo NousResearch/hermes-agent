@@ -67,7 +67,8 @@ def _publish_tool_snapshot(
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
         # Same NAME set: no change for MCP-reload callers. Content-aware callers
         # (compaction boundary) also diff serialized bytes.
-        if new_names == current and not (content_aware and _tool_defs_content_changed(agent, new_defs)):
+        engine_changed = staged_engine_names != (getattr(agent, "_context_engine_tool_names", None) or set())
+        if new_names == current and not engine_changed and not (content_aware and _tool_defs_content_changed(agent, new_defs)):
             return None
         agent.tools = new_defs
         agent.valid_tool_names = new_names
@@ -113,6 +114,9 @@ def refresh_agent_mcp_tools(
     if preserve_prefix:
         try:
             prefix_registered = {entry.name for entry in registry.get_all_entries()}
+            # Carry-forward applies only to registry-owned schemas; a fresh selected
+            # definition is required to transfer an engine name to the registry.
+            prefix_registered.difference_update(getattr(agent, "_context_engine_tool_names", None) or ())
         except Exception:  # noqa: BLE001
             pass  # fail open to the plain rebuild
     added = _publish_tool_snapshot(
@@ -244,9 +248,14 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
     staged_engine_names: set = set()
     try:
         get_schemas = _schema_getter("context_compressor", "get_tool_schemas")
-        if (enabled is None or "context_engine" in enabled) and get_schemas is not None:
-            # Claim the routing name only when WE appended the schema.
-            staged_engine_names.update(s["name"] for s in get_schemas() if _add(s))
+        from agent.context_engine import context_engine_tool_family_enabled, effective_context_engine_tool_schemas
+        disabled = getattr(agent, "disabled_toolsets", None)
+        if get_schemas is not None and context_engine_tool_family_enabled(enabled, disabled):
+            schemas = effective_context_engine_tool_schemas(
+                get_schemas(), enabled_toolsets=enabled, disabled_toolsets=disabled,
+            )
+            # Claim routing only when this rebuild appended the schema.
+            staged_engine_names.update(s["name"] for s in schemas if _add(s))
     except Exception:
         logger.debug("Context-engine tool re-injection skipped", exc_info=True)
     return staged_engine_names

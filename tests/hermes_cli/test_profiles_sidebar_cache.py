@@ -128,6 +128,30 @@ class SidebarCacheTests(unittest.TestCase):
         self.assertEqual(scan(), {"ok": True})
         self.assertEqual(calls, 2)
 
+    def test_does_not_cache_payloads_that_carry_profile_errors(self):
+        # A 200 with a non-empty errors[] is how a failed profile scan is
+        # reported. Caching it for the TTL keeps the empty recents page in
+        # front of a store that has already recovered.
+        calls = 0
+
+        @profiles._sidebar_singleflight_cache
+        def scan():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return {
+                    "errors": [{"profile": "default", "error": "disk I/O error"}],
+                    "recents": {"sessions": []},
+                }
+            return {"errors": [], "recents": {"sessions": [{"id": "yesterday"}]}}
+
+        first = scan()
+        second = scan()
+
+        self.assertEqual(first["errors"][0]["error"], "disk I/O error")
+        self.assertEqual(second["recents"]["sessions"], [{"id": "yesterday"}])
+        self.assertEqual(calls, 2)
+
     def test_can_be_disabled(self):
         calls = 0
 

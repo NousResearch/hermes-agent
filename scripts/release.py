@@ -254,6 +254,8 @@ LEGACY_AUTHOR_MAP = {
     "dale@dalenguyen.me": "dalenguyen",  # PR #53678 salvage (strip VIRTUAL_ENV/CONDA_PREFIX from terminal subprocess env; #23473)
     "prashantjain25@gmail.com": "prashantjain25",  # PR #80740 salvage (custom-endpoint /v1/models disk cache; #72762)
     "liruixinch@outlook.com": "HexLab98",  # PR #53863 salvage (env-only proxy policy for auxiliary OpenAI clients on macOS; #53702)
+    "fangliquan@qq.com": "fangliquanflq",  # PR #99265 (linear lowercase env-assignment redaction; #99255) - merged directly by maintainer
+    "devops@sycamore.group": "sycamoregroupltd",  # PR #97779 salvage (estop fleet-root sentinel for profile gateways)
     "blaryx@gmail.com": "Blaryxoff",  # PR #32602 salvage (deep-merge PUT /api/config to preserve unrelated sections; #13396)
     "diamondeyesfox@gmail.com": "DiamondEyesFox",  # PR #53351 salvage (rebaseline in-place compression flushes to prevent duplicate compacted rows; #9096)
     "piyrw9754@gmail.com": "rlaope",  # PR #35075 salvage (align cron invisible-unicode set with install-time scanner; #35075)
@@ -2204,6 +2206,11 @@ def update_version_files(semver: str, calver_date: str):
         r'^version\s*=\s*"[^"]+"',
         f'version = "{semver}"',
         pyproject,
+        # Turn-end file-mutation verifier footer appended by run_agent.py
+        # (``_format_file_mutation_failure_footer``). It's a UI affordance — reading "warning file mutation
+        # verifier, 2 files were NOT modified..." aloud is noise (#40772). The footer is a ``⚠️
+        # File-mutation verifier:`` header line followed by indented ``•`` bullet lines; strip the whole
+        # block.
         flags=re.MULTILINE,
     )
     PYPROJECT_FILE.write_text(pyproject, encoding="utf-8")

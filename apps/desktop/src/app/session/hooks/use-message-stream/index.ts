@@ -744,7 +744,13 @@ export function useMessageStream({
         shouldHydrate =
           !completionError &&
           !hasInlineError &&
-          !unresolvedUserTail &&
+          // A visible user message with no reply after the terminal frame
+          // means this window never rendered the turn's output. When the
+          // frame also carries no text, the reply only exists in stored
+          // history — hydrate to catch up instead of leaving the transcript
+          // blank until restart (#88036). A non-empty frame still settles
+          // locally, so the user-tail guard keeps applying there.
+          (!unresolvedUserTail || !finalText) &&
           !(localVisibleText && !finalText) &&
           (state.adoptedRunningTurn || !state.sawAssistantPayload || !finalText)
 

@@ -265,14 +265,19 @@ discovery is one call for both, and the durable `data-tour` handles above name
 targets for either. One tip is on screen at a time; a new one replaces the last.
 
 The app can also show its own, walking a built-in catalog of app features in
-order. That half is on by default and switched off in Settings → Appearance,
-and it is paced like a game's loading-screen tips rather than a notification: a
-few minutes into a launch at the earliest, then at most one every six hours, and
-only at a genuinely idle moment. Closing one of its tips with the ✕ retires that
-tip for good, and the same settings row brings them back. The tool is not behind
-that switch — like `tour`, it runs in answer to the conversation rather than at
-idle. It does share the cooldown, so a tip from Hermes also buys the user six
-hours of quiet from the rotation.
+order, paced like a game's loading-screen tips rather than a notification: a few
+minutes into a launch at the earliest, then at most one every six hours, and
+only at a genuinely idle moment. A tip from Hermes shares that cooldown, so it
+also buys the user six hours of quiet from the rotation. Closing a rotation tip
+with the ✕ retires that tip for good, and the settings row brings them back.
+
+Both tips and tours are on by default and switched off in Settings → Appearance
+(`display.in_app_tips`, `display.in_app_tours`). Off covers Hermes as well as
+the app: the switch reaches the connected gateway's config and the tool leaves
+the model's schema, so the agent is never told about a surface it isn't allowed
+to use. Like every schema change, that lands on the next session — a running
+conversation keeps the toolset it started with, and the app declines the call in
+the meantime.
 
 ## `todo` toolset
 
@@ -315,8 +320,8 @@ The single `video_generate` tool covers both modalities — pass `image_url` to 
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `web_search` | Search the web for information. Returns up to 5 results by default with titles, URLs, and descriptions. Accepts an optional `limit` (1-100, default 5). The query is passed through to the configured backend, so operators such as `site:domain`, `filetype:pdf`, `intitle:word`, `-term`, and `"exact phrase"` may work when the backend supports them. | EXA_API_KEY or PARALLEL_API_KEY or FIRECRAWL_API_KEY or TAVILY_API_KEY |
-| `web_extract` | Extract content from web page URLs. Returns clean page content in markdown/text (no LLM summarization — fast). Also works with PDF URLs (arxiv papers, documents) — pass the PDF link directly. Pages within the char budget (default 15000) return whole; larger pages return a head+tail window with a footer pointing at the full text saved on disk. Max 5 URLs per call. | EXA_API_KEY or PARALLEL_API_KEY or FIRECRAWL_API_KEY or TAVILY_API_KEY |
+| `web_search` | Search the web for information. Returns up to 5 results by default with titles, URLs, and descriptions. Accepts an optional `limit` (1-100, default 5). The query is passed through to the configured backend, so operators such as `site:domain`, `filetype:pdf`, `intitle:word`, `-term`, and `"exact phrase"` may work when the backend supports them. | EXA_API_KEY or PARALLEL_API_KEY or FIRECRAWL_API_KEY or TAVILY_API_KEY or PERPLEXITY_API_KEY or KEENABLE_API_KEY |
+| `web_extract` | Extract content from web page URLs. Returns clean page content in markdown/text (no LLM summarization — fast). Also works with PDF URLs (arxiv papers, documents) — pass the PDF link directly. Pages within the char budget (default 15000) return whole; larger pages return a head+tail window with a footer pointing at the full text saved on disk. Max 5 URLs per call. | EXA_API_KEY or PARALLEL_API_KEY or FIRECRAWL_API_KEY or TAVILY_API_KEY or PERPLEXITY_API_KEY or KEENABLE_API_KEY |
 
 ## `x_search` toolset
 

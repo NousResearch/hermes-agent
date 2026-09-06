@@ -1,6 +1,7 @@
 import type { MutableRefObject } from 'react'
 
-import { followActiveSessionCwd, resolveNewSessionCwd } from '@/store/projects'
+import { pinNewChatProfile } from '@/store/profile'
+import { followActiveSessionCwd, projectProfile, resolveNewSessionCwd } from '@/store/projects'
 import {
   $newChatWorkspaceTargetGeneration,
   type NewChatWorkspaceTarget,
@@ -26,6 +27,16 @@ export function startWorkspaceSession({
   requestGateway,
   startFreshSessionDraft
 }: WorkspaceSessionOptions): void {
+  // The project tree is rendered under one profile; the "+" belongs to it.
+  // Pin that intent now — otherwise desktopSessionCreateParams falls back to
+  // $activeGatewayProfile, which a still-settling profile swap can move
+  // between this click and Send (#79005). All-profiles view has no owner.
+  const profile = projectProfile()
+
+  if (profile) {
+    pinNewChatProfile(profile)
+  }
+
   // Home's "+" passes path=null on purpose ("no folder"). That must stay
   // detached — do NOT fall through to resolveNewSessionCwd(), which can still
   // return a default/remembered project folder and re-attach the last repo

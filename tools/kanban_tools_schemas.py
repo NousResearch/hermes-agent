@@ -194,6 +194,15 @@ KANBAN_BLOCK_SCHEMA = _schema(
                 "Omit only if none apply."
             ),
         },
+        "semantic_fingerprint": _prop("string", (
+            "Advanced (kanban.access_units.semantic_recurrence, default off): "
+            "structured episode fingerprint built from "
+            "outcome/unit/actor/action/provider/reason. Sequential guided-"
+            "session steps (provider_login -> provider_consent -> "
+            "masked_entry) each pass a DIFFERENT action so the loop breaker "
+            "reads them as progress; repeat the SAME fingerprint only when "
+            "the identical unresolved situation recurs."
+        )),
     },
     ["reason"],
 )
@@ -419,6 +428,25 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "exists, return that task's id instead of creating "
                 "a duplicate. Useful for retry-safe automation."
         )),
+        "access_outcome_key": _prop("string", (
+                "Advanced (kanban.access_units.outcome_keys, default off): "
+                "stable access outcome key 'profile|provider|target|"
+                "access_class'. When the key already has an ACTIVE unit, "
+                "that task id is returned instead of creating a duplicate "
+                "access lane."
+        )),
+        "access_continuation_of": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 3,
+            "maxItems": 3,
+            "description": (
+                "Advanced (kanban.access_units.continuation_keys, default "
+                "off): [outcome_key, unit_digest, predecessor_task_id] — "
+                "one active continuation per tuple; duplicates converge "
+                "on the active card."
+            ),
+        },
         "max_runtime_seconds": _prop("integer", (
                 "Per-task runtime cap. When exceeded, the "
                 "dispatcher SIGTERMs the worker and re-queues the "

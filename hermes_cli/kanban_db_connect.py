@@ -871,6 +871,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # Same ordering rule as the ``tasks`` indexes above: index after column.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_events_run ON task_events(run_id, id)")
 
+    # Access-unit registry (default-off feature; hermes_cli/kanban_access_units).
+    # Additive on legacy boards; the partial unique index is the one-active-unit
+    # invariant. Same IF NOT EXISTS shape as every other migration step, so a
+    # restart mid-migration re-runs this pass safely (idempotent).
+    from hermes_cli.kanban_access_units import ACCESS_UNITS_SCHEMA_SQL
+    conn.executescript(ACCESS_UNITS_SCHEMA_SQL)
+
     if _table_exists(conn, "kanban_notify_subs"):
         notify_cols = _column_names(conn, "kanban_notify_subs")
         for name, ddl in _NOTIFY_SUB_COLUMNS:

@@ -1738,6 +1738,30 @@ DEFAULT_CONFIG = {
         # On boards that never archive, the notifier GC purges subscriptions for tasks done with no
         # activity for this many days so stale rows aren't scanned forever. 0 = off.
         "done_sub_retention_days": 30,
+        # Access-unit lifecycle repairs (default-off; hermes_cli/kanban_access_units).
+        # Each flag gates ONE behaviour so layers can be enabled and rolled back
+        # independently. All default False: an unconfigured install keeps its
+        # exact pre-change behaviour.
+        "access_units": {
+            # create_task(access_outcome_key=...) atomically registers the
+            # stable outcome key; duplicate creators converge on the active unit.
+            "outcome_keys": False,
+            # request_review / create_access_review_task key reviews on
+            # (artifact digest, rubric digest, review class) — one active review.
+            "review_keys": False,
+            # create_task(access_continuation_of=...) keys continuations —
+            # one active continuation per (outcome, unit, predecessor).
+            "continuation_keys": False,
+            # block_task(semantic_fingerprint=...) distinguishes progress
+            # (login -> consent -> masked entry) from true repeats.
+            "semantic_recurrence": False,
+            # The dispatcher's active-PR guard fires only on declared
+            # repository/resource overlap and writes ONE durable wait event.
+            "narrow_pr_guards": False,
+            # Completion of a registered unit releases its key and runs the
+            # idempotent stale-card reconciliation (history preserved).
+            "stale_reconciliation": False,
+        },
     },
     # Bot Mode cross-connection relay (tools/bot_relay.py): envelopes queued by message_agent for
     # agents on other connections wait in an on-disk outbox until the Desktop drains them.

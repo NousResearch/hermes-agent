@@ -670,7 +670,7 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 | `PUT` | `/orchestration` | Update one or more of the three orchestration keys in `config.yaml`. Validates that non-empty profile names actually exist. |
 | `POST` | `/links` | Add a dependency (`parent_id` → `child_id`) |
 | `DELETE` | `/links?parent_id=…&child_id=…` | Remove a dependency |
-| `POST` | `/dispatch?max=…&dry_run=…` | Nudge the dispatcher — skip the 60 s wait |
+| `POST` | `/dispatch?max=…&dry_run=…` | Nudge the dispatcher — skip the 60 s wait. `dry_run=true` is a read-only preview: the reclaim/crash/timeout/promotion sweeps are skipped and the response carries `dry_run: true` |
 | `GET` | `/config` | Read `dashboard.kanban` preferences from `config.yaml` — `default_tenant`, `lane_by_profile`, `include_archived_by_default`, `render_markdown` |
 | `WS` | `/events?since=<event_id>` | Live stream of `task_events` rows |
 
@@ -764,7 +764,7 @@ hermes kanban watch [--assignee P] [--tenant T]        # live stream ALL events 
 hermes kanban heartbeat <id> [--note "..."]            # worker liveness signal for long ops
 hermes kanban runs <id> [--json]                       # attempt history (one row per run)
 hermes kanban assignees [--json]                       # profiles on disk + per-assignee task counts
-hermes kanban dispatch [--dry-run] [--max N]           # one-shot pass
+hermes kanban dispatch [--dry-run] [--max N]           # one-shot pass (--dry-run: read-only preview)
         [--failure-limit N] [--json]
 hermes kanban daemon --force                           # DEPRECATED — standalone dispatcher (use `hermes gateway start` instead)
         [--failure-limit N] [--pidfile PATH] [-v]
@@ -784,6 +784,8 @@ hermes kanban gc [--event-retention-days N]            # workspaces + old events
 ```
 
 All commands are also available as a slash command in the interactive CLI and in the messaging gateway (see [`/kanban` slash command](#kanban-slash-command) below).
+
+`dispatch --dry-run` is read-only. It reports what a tick would spawn but skips the reclaim, crash, timeout and promotion sweeps, so `Reclaimed` / `Crashed` / `Promoted` come back empty because they did not run, not because the board is healthy; `--json` (and the dashboard's `POST /dispatch?dry_run=true`) carry `dry_run: true` so scripts can tell the two apart. Because the sweeps are skipped, the preview can under-report: a cap filled by dead claims that a real tick would reclaim first still counts against the spawn budget. Run `hermes kanban dispatch` without the flag to reclaim.
 
 `--max-retries` is a per-task circuit-breaker override for the dispatcher. `--max-retries 1` blocks the task on the first non-successful attempt, while `--max-retries 3` allows two retries and blocks on the third failure. Omit it to use `kanban.failure_limit` from `config.yaml`, then the built-in default.
 

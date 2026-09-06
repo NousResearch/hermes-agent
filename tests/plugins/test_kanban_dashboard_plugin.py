@@ -512,8 +512,10 @@ def test_dispatch_dry_run(client):
     r = client.post("/api/plugins/kanban/dispatch?dry_run=true&max=4")
     assert r.status_code == 200
     body = r.json()
-    # DispatchResult is serialized as a dataclass dict.
+    # DispatchResult is serialized as a dataclass dict, and a preview says so:
+    # its reclaim counters are empty because the sweeps did not run.
     assert isinstance(body, dict)
+    assert body["dry_run"] is True
 
 
 # ---------------------------------------------------------------------------

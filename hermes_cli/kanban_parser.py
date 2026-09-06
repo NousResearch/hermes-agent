@@ -337,7 +337,9 @@ _SPECS = [
     ], help="Archive one or more tasks"),
     _cmd("tail", [_TASK_ID, _arg("--interval", type=float, default=1.0)], help="Follow a task's event stream"),
     _cmd("dispatch", [
-        _arg("--dry-run", action="store_true", help="Don't actually spawn processes; just print what would happen"),
+        _arg("--dry-run", action="store_true",
+             help="Read-only: report what would spawn; skips the reclaim/crash/timeout "
+                  "sweeps and writes nothing"),
         _arg("--max", type=int, help="Cap number of spawns this pass"),
         _arg("--failure-limit", type=int, default=kbd.DEFAULT_FAILURE_LIMIT,
              help=f"Auto-block a task after this many consecutive non-success attempts "

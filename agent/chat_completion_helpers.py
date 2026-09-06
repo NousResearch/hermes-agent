@@ -2130,6 +2130,61 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 _SUMMARY_FOREIGN_MESSAGE_KEYS = ("reasoning", "finish_reason", "tool_name", "codex_reasoning_items",
     "codex_message_items", "timestamp", "platform_message_id")
 _EMPTY_SUMMARY_RESPONSE = "I reached the iteration limit and couldn't generate a summary."
+_TOOL_CHOICE_WITHOUT_TOOLS_RE = re.compile(
+    r"tool_choice.*no tools|no tools were specified",
+    re.IGNORECASE,
+)
+
+
+def sanitize_iteration_summary_kwargs(kwargs: dict) -> dict:
+    """Drop tool_choice/tools pairing that xAI 400s on a no-tools summary call."""
+    clean = dict(kwargs)
+    tools = clean.get("tools")
+    if not tools:
+        clean.pop("tools", None)
+        clean.pop("tool_choice", None)
+        clean.pop("parallel_tool_calls", None)
+        extra = clean.get("extra_body")
+        if isinstance(extra, dict):
+            extra = dict(extra)
+            extra.pop("tools", None)
+            extra.pop("tool_choice", None)
+            extra.pop("parallel_tool_calls", None)
+            if extra:
+                clean["extra_body"] = extra
+            else:
+                clean.pop("extra_body", None)
+    return clean
+
+
+def _is_tool_choice_without_tools_error(exc: BaseException) -> bool:
+    return bool(_TOOL_CHOICE_WITHOUT_TOOLS_RE.search(str(exc)))
+
+
+def offline_iteration_recap(messages: list) -> str:
+    """Last-resort recap from in-session assistant text when the summary API 400s."""
+    from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
+
+    snippets: list[str] = []
+    for msg in reversed(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str):
+            continue
+        text = content.strip()
+        if not text or text == MAX_ITERATIONS_SUMMARY_REQUEST:
+            continue
+        snippets.append(text)
+        if len(snippets) >= 3:
+            break
+    if not snippets:
+        return ""
+    recap = "\n\n".join(reversed(snippets))
+    return (
+        "Reached the tool-call iteration limit. Summary from work already in this session:\n\n"
+        + recap
+    )
 
 
 def _iteration_summary_api_messages(agent, messages: list) -> list:
@@ -2186,13 +2241,35 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
 
 def _managed_summary_call(agent, api_request_id: str, request, callback, *, retry_count: int):
     from agent import relay_llm
-    return relay_llm.execute_current(
-        request, callback,
-        name=str(getattr(agent, "provider", "") or "provider"), model_name=str(getattr(agent, "model", "") or ""),
-        metadata={"api_mode": str(getattr(agent, "api_mode", "") or "chat_completions"),
-            "api_request_id": api_request_id, "call_role": "iteration_summary", "retry_count": retry_count},
-        defer_logical_completion=True,
-    )
+
+    request = sanitize_iteration_summary_kwargs(dict(request))
+
+    def _run(payload, count):
+        return relay_llm.execute_current(
+            payload, callback,
+            name=str(getattr(agent, "provider", "") or "provider"),
+            model_name=str(getattr(agent, "model", "") or ""),
+            metadata={
+                "api_mode": str(getattr(agent, "api_mode", "") or "chat_completions"),
+                "api_request_id": api_request_id,
+                "call_role": "iteration_summary",
+                "retry_count": count,
+            },
+            defer_logical_completion=True,
+        )
+
+    try:
+        return _run(request, retry_count)
+    except Exception as exc:
+        if retry_count == 0 and _is_tool_choice_without_tools_error(exc):
+            stripped = sanitize_iteration_summary_kwargs(dict(request))
+            stripped.pop("extra_body", None)
+            logger.warning(
+                "Iteration summary 400ed on tool_choice without tools; retrying stripped: %s",
+                exc,
+            )
+            return _run(stripped, 1)
+        raise
 
 
 def _iteration_summary_chat_kwargs(agent, api_messages: list) -> dict:
@@ -2250,7 +2327,7 @@ def _iteration_summary_chat_kwargs(agent, api_messages: list) -> dict:
                 extra_body["plugins"] = [{"id": "pareto-router", "min_coding_score": _ps}]
     if extra_body:
         summary_kwargs["extra_body"] = extra_body
-    return summary_kwargs
+    return sanitize_iteration_summary_kwargs(summary_kwargs)
 
 
 def _summary_text(agent, response, **normalize_kwargs) -> str:
@@ -2332,7 +2409,16 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
     except Exception as e:
         logger.warning("Failed to get summary response: %s", e)
-        final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
+        recap = offline_iteration_recap(messages)
+        if recap:
+            final_response = recap
+            summary_call_outcome = "success"
+            append_message(messages, {"role": "assistant", "content": final_response})
+        else:
+            final_response = (
+                f"I reached the maximum iterations ({agent.max_iterations}) "
+                f"but couldn't summarize. Error: {str(e)}"
+            )
     finally:
         from agent import relay_llm
         relay_llm.complete_logical_call(summary_api_request_id, outcome=summary_call_outcome)

@@ -2843,6 +2843,64 @@ class TestHandleMaxIterations:
         assert messages[2]["tool_name"] == "execute_code"
         assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
 
+    def test_summary_strips_injected_tool_choice_without_tools(self, agent):
+        """xAI/Grok 400s if tool_choice is sent with no tools on the
+        iteration-limit summary path (chat.completions.create bypasses
+        the transport sweeper)."""
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Summary"
+        )
+        agent._cached_system_prompt = "You are helpful."
+        fake_profile = MagicMock()
+        fake_profile.build_extra_body.return_value = {
+            "tool_choice": "auto",
+            "session_id": "sess-1",
+        }
+        with patch("providers.get_provider_profile", return_value=fake_profile):
+            result = agent._handle_max_iterations(
+                [{"role": "user", "content": "do stuff"}], 60
+            )
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert "tool_choice" not in kwargs
+        assert "tools" not in kwargs
+        extra = kwargs.get("extra_body") or {}
+        assert "tool_choice" not in extra
+        assert extra.get("session_id") == "sess-1"
+
+    def test_summary_retries_tool_choice_without_tools_400(self, agent):
+        agent._cached_system_prompt = "You are helpful."
+        err = Exception(
+            "Invalid request content: A tool_choice was set on the request "
+            "but no tools were specified."
+        )
+        agent.client.chat.completions.create.side_effect = [
+            err,
+            _mock_response(content="Recovered summary"),
+        ]
+        result = agent._handle_max_iterations(
+            [{"role": "user", "content": "do stuff"}], 60
+        )
+        assert result == "Recovered summary"
+        assert agent.client.chat.completions.create.call_count == 2
+
+    def test_summary_offline_recap_when_tool_choice_400_exhausts(self, agent):
+        agent._cached_system_prompt = "You are helpful."
+        agent.client.chat.completions.create.side_effect = Exception(
+            "Invalid request content: A tool_choice was set on the request "
+            "but no tools were specified."
+        )
+        messages = [
+            {"role": "user", "content": "transcribe the video"},
+            {
+                "role": "assistant",
+                "content": "Wrote KEY-INSIGHTS.md and created the skill.",
+            },
+        ]
+        result = agent._handle_max_iterations(messages, 60)
+        assert "KEY-INSIGHTS.md" in result
+        assert "couldn't summarize" not in result.lower()
+
 
 
 

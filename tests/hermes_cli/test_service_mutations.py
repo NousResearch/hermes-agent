@@ -73,10 +73,43 @@ def test_service_actions_reject_incomplete_intent_before_spawning(service_client
 
 
 @pytest.mark.parametrize("action", ["gateway-restart", "hermes-update"])
-@pytest.mark.parametrize("scenario", ["retry", "different-key", "other-action", "profile", "completed", "spawn-failure", "unsupported", "concurrent-same", "concurrent-other"])
+@pytest.mark.parametrize("scenario", ["retry", "different-key", "other-action", "profile", "completed", "spawn-failure", "unsupported", "concurrent-same", "concurrent-other", "status-respawn"])
 def test_service_intents_bind_retries_and_conflicts_to_the_running_action(service_client, monkeypatch, action, scenario):
     ctx = service_client
     url = endpoint(action)
+    if scenario == "status-respawn":
+        first = ctx.client.post(url, json=intent(action))
+        assert first.status_code == 200
+        old = ctx.spawned[0]
+        old.returncode = 0
+        entered = threading.Event()
+        resume = threading.Event()
+
+        def wait_old(*_args, **_kwargs):
+            entered.set()
+            assert resume.wait(5)
+            return 0
+
+        old.wait = wait_old
+        if action == "gateway-restart":
+            started_at, proc, command = ctx.server._LAST_GATEWAY_RESTART
+            monkeypatch.setattr(ctx.server, "_LAST_GATEWAY_RESTART", (started_at - 11, proc, command))
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            status = pool.submit(ctx.client.get, f"/api/actions/{action}/status")
+            try:
+                assert entered.wait(5)
+                second = ctx.client.post(url, json=intent(action, "replacement-request-12345"))
+                assert second.status_code == 200
+                assert len(ctx.spawned) == 2
+            finally:
+                resume.set()
+            assert status.result(timeout=5).status_code == 200
+        retry = ctx.client.post(url, json=intent(action, "replacement-request-12345"))
+        assert retry.status_code == 200
+        assert retry.json()["pid"] == second.json()["pid"]
+        assert len(ctx.spawned) == 2
+        assert ctx.gateway._ACTION_PROCS[action] is ctx.spawned[-1]
+        return
     if scenario.startswith("concurrent"):
         original_spawn = ctx.gateway.subprocess.Popen
         start = threading.Barrier(2)

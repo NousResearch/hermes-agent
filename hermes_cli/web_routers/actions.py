@@ -117,12 +117,17 @@ _UPDATE_REFUSAL_ERROR_CODES = {
 }
 
 
-def _finish_action(name: str, exit_code: Optional[int], pid: Optional[int]) -> None:
-    """Record a terminal result and drop the live-process registries for ``name``."""
-    _SERVICE_MUTATION_INTENTS.pop(name, None)
-    _ACTION_RESULTS[name] = {"exit_code": exit_code, "pid": pid}
-    for registry in (_ACTION_PROCS, _ACTION_COMMANDS, _ACTION_IDS):
-        registry.pop(name, None)
+def _finish_action(
+    name: str, exit_code: Optional[int], pid: Optional[int], *, expected_proc: Optional[subprocess.Popen] = None,
+) -> None:
+    """Retire the observed process without deleting a newer service action."""
+    with _SERVICE_MUTATION_LOCK:
+        if expected_proc is not None and _ACTION_PROCS.get(name) is not expected_proc:
+            return
+        _SERVICE_MUTATION_INTENTS.pop(name, None)
+        _ACTION_RESULTS[name] = {"exit_code": exit_code, "pid": pid}
+        for registry in (_ACTION_PROCS, _ACTION_COMMANDS, _ACTION_IDS):
+            registry.pop(name, None)
 
 
 def _record_completed_action(name: str, message: str, exit_code: int = 1) -> None:
@@ -431,7 +436,7 @@ async def get_action_status(name: str, lines: int = 200):
         if exit_code is not None:
             with contextlib.suppress(Exception):
                 proc.wait(timeout=1)
-            _finish_action(name, exit_code, pid)
+            _finish_action(name, exit_code, pid, expected_proc=proc)
 
     response = {"name": name, "running": running, "exit_code": exit_code, "pid": pid, "lines": tail}
     if durable_update_action_id:

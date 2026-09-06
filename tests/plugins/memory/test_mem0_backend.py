@@ -761,6 +761,23 @@ class TestDirectOpenAIResilience:
             adapter.generate_response([{"role": "user", "content": "remember tea"}])
         assert calls["n"] == 1  # no retry for client errors
 
+    def test_local_programmer_error_raises_immediately(self, monkeypatch):
+        # A status-less local bug (e.g. bad params) must not be masked by the
+        # transport-retry path (which also sees status None).
+        state, adapter = self._adapter(monkeypatch)
+        calls = {"n": 0}
+        client = state.clients[0]
+
+        def buggy_create(**params):
+            calls["n"] += 1
+            raise TypeError("bad params")
+
+        client.chat.completions.create = buggy_create
+
+        with pytest.raises(TypeError, match="bad params"):
+            adapter.generate_response([{"role": "user", "content": "remember tea"}])
+        assert calls["n"] == 1  # no retry for local programmer errors
+
 
 class TestOSSBackendKeysAndDims:
     """OSSBackend must resolve keys per vendor and confine embedder dims to the store."""

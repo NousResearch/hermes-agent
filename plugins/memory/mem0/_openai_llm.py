@@ -22,6 +22,12 @@ _OPTIONAL_FIELDS = ("reasoning_effort", "is_reasoning_model")
 # Some 402s remedy with "wait for in-flight requests to settle" — honor
 # Retry-After (capped) exactly as the provider asks.
 _RETRYABLE_STATUS_CODES = {402, 408, 409, 429, 500, 502, 503, 504}
+# Transport-class failures carry no HTTP status; retry those, but never mask
+# local programmer errors (TypeError/ValueError carry no status either).
+_TRANSPORT_ERROR_NAMES = frozenset({
+    "APIConnectionError", "APITimeoutError", "ConnectError", "ConnectionError",
+    "ReadTimeout", "RemoteProtocolError",
+})
 _MAX_RETRY_ATTEMPTS = 3
 _MAX_RETRY_WAIT_SECS = 120
 
@@ -88,7 +94,14 @@ class DirectOpenAILLM(OpenAILLM):
                 break
             except Exception as exc:
                 status = getattr(exc, "status_code", None)
-                is_retryable = status in _RETRYABLE_STATUS_CODES or status is None  # network-level failure
+                if status in _RETRYABLE_STATUS_CODES:
+                    is_retryable = True
+                elif status is None:
+                    # Transport-class failures have no HTTP status; retry those,
+                    # but never mask local programmer errors (no status either).
+                    is_retryable = type(exc).__name__ in _TRANSPORT_ERROR_NAMES
+                else:
+                    is_retryable = False
                 if not is_retryable or attempt > _MAX_RETRY_ATTEMPTS:
                     raise
                 wait = min(_retry_wait_seconds(exc), _MAX_RETRY_WAIT_SECS)

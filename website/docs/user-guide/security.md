@@ -141,6 +141,43 @@ Like the rest of the approval config, changes take effect immediately (the confi
 Deny rules are a guardrail against an honest-but-wrong agent, the same threat model as the dangerous-pattern detector. They are not a sandbox against a deliberately adversarial process — for that, use an isolated backend (Docker, Modal) or an egress-restricted environment.
 :::
 
+#### Example: block `hermes config set` / `hermes config unset`
+
+`hermes config set` / `hermes config unset` are not currently on the dangerous-pattern list, so nothing prompts before the agent rewrites its own `config.yaml` or `.env` — including `approvals.mode` and this deny list itself. If you want a hard floor today rather than waiting on a gating decision, add a deny rule:
+
+```yaml
+approvals:
+  deny:
+    - "*hermes*config set*"
+    - "*hermes*config unset*"
+```
+
+or, narrower, to only block the security-relevant keys:
+
+```yaml
+approvals:
+  deny:
+    - "*hermes*config set*approvals*"
+    - "*hermes*config unset*approvals*"
+```
+
+Why the patterns look like this: `unset` is as security-relevant as `set` — `hermes config unset approvals.deny` deletes this rule, and the mtime-keyed cache picks that up on the next command — so the narrow variant must carry both verbs. The `*` between `hermes` and `config`, and between the verb and `approvals`, is what lets the rule survive the CLI's own valid spellings: `hermes -p work config set ...`, `hermes --profile=work config unset ...`, `hermes config set --force approvals.mode off`, and `python -m hermes_cli.main config set ...` all match, while `hermes config get` / `hermes config show` do not.
+
+The flip side of that leading `*hermes*`: the broad pair matches **any** command whose text contains `hermes` somewhere before `config set` / `config unset`, not just the CLI. `cd ~/hermes-agent && gh config set git_protocol ssh`, `git -C ~/hermes-agent config set user.email ...`, and `grep -rn "hermes config set" website/` are all blocked, and the BLOCKED error tells the agent not to retry, so it abandons the task. If the agent works inside a checkout or path named `hermes`, use the narrow pair, which only trips when `approvals` also appears after the verb. Anchoring the glob instead (`"hermes *config set*"`) is not a fix: it stops matching `cd /tmp && hermes config set ...`, `HERMES_HOME=/x hermes config set ...`, and `~/.local/bin/hermes config set ...`.
+
+If you run `--yolo` or `approvals.mode: off`, also cover direct writes to the files. The dangerous-pattern rules for `sed -i`, `tee`, `cp`, and `>` on `~/.hermes/config.yaml` / `~/.hermes/.env` only *prompt*, and under yolo the prompt never fires — `sed -i 's/mode: manual/mode: off/' ~/.hermes/config.yaml` goes straight through. Adding the paths as deny globs closes that:
+
+```yaml
+approvals:
+  deny:
+    - "*.hermes/config.yaml*"
+    - "*.hermes/.env*"
+```
+
+An absolute `HERMES_HOME` path is folded to `~/.hermes/` before matching, so these two globs cover it; a path spelled with the variable itself (`$HERMES_HOME/config.yaml`) is matched as text and needs `"*hermes_home*/config.yaml*"` alongside. These globs also block *reads* of the two files (`cat ~/.hermes/config.yaml`); the agent can still inspect settings with `hermes config get` / `hermes config show`.
+
+Limits, same as any deny rule above: it matches command **text**, so an invocation that does not contain the literal `config set` — extra whitespace between `config` and `set`, `python -c 'from hermes_cli.config import set_config_value; ...'`, or another subcommand that writes `config.yaml` (`hermes fallback`, for example) — needs its own pattern. And the deny list is only consulted by the terminal guard: a `terminal()` call made from inside an `execute_code` script goes through the same guard stack and is blocked, but `subprocess.run(["hermes", "config", "set", ...])` or `os.system(...)` inside the script never reaches it.
+
 ### Approval Timeout
 
 When a dangerous command prompt appears, the user has a configurable amount of time to respond. If no response is given within the timeout, the command is **denied** by default (fail-closed).

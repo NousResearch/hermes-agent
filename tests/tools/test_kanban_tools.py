@@ -399,6 +399,27 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_complete_runs_governed_ci_gate_at_kanban_boundary(monkeypatch, worker_env):
+    """The worker boundary enforces CI receipts without plugin discovery."""
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(
+        "tools.kanban_ci_guard.completion_block",
+        lambda task_id=None: "CI completion rejected by the control ledger",
+    )
+
+    out = json.loads(kt._handle_complete({"summary": "invented CI output"}))
+    assert out["error"] == "CI completion rejected by the control ledger"
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        assert kb.latest_run(conn, worker_env).outcome is None
+    finally:
+        conn.close()
+
+
 def test_verifier_cannot_complete_with_pytest_usage_failure(
     monkeypatch, worker_env,
 ):

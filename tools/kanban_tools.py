@@ -445,6 +445,23 @@ def _worker_guard(tool_name: str, args: dict) -> str:
     return tid
 
 
+def _enforce_governed_ci_completion(args: dict) -> None:
+    """Apply the local-CI receipt gate even when the feedback plugin is disabled.
+
+    Kanban workers run with their assignee profile, while the governed feedback
+    plugin is normally enabled only in the control profile. ``kanban_complete``
+    is the always-loaded mutation boundary, so keep the safety check here as
+    well as in the compatibility lifecycle hook.
+    """
+    if not os.environ.get("HERMES_KANBAN_TASK"):
+        return
+    from tools.kanban_ci_guard import completion_block
+
+    message = completion_block(args.get("task_id"))
+    if message:
+        raise _Reject(message)
+
+
 def _require_orchestrator_tool(tool_name: str) -> None:
     """The check_fn already hides orchestrator tools from workers; this catches
     a stale registration or test harness routing a worker here anyway."""
@@ -879,6 +896,7 @@ def _handle_list(args: dict, **kw) -> str:
 def _handle_complete(args: dict, **kw) -> str:
     """Mark the current task done with a structured handoff."""
     tid = _worker_guard("kanban_complete", args)
+    _enforce_governed_ci_completion(args)
     summary = _redact_opt(args.get("summary"))
     result = _redact_opt(args.get("result"))
     metadata = args.get("metadata")

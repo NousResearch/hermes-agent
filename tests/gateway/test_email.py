@@ -1125,3 +1125,80 @@ class TestSenderAuthentication(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestExplicitOutboundSubject(unittest.TestCase):
+    """Metadata subjects (cron/scheduled reports) are honored verbatim as fresh conversations."""
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        return adapter
+
+    def test_explicit_subject_used_verbatim_no_re(self):
+        adapter = self._make_adapter()
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            adapter._send_email("user@test.com", "Nightly backup report", None,
+                                explicit_subject="Cronjob Response: hermes-nightly-backup")
+            sent = mock_server.send_message.call_args[0][0]
+            self.assertEqual(sent["Subject"], "Cronjob Response: hermes-nightly-backup")
+            self.assertNotIn("In-Reply-To", sent)
+            self.assertNotIn("References", sent)
+
+    def test_explicit_subject_wins_over_thread_context(self):
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {
+            "subject": "Floor plans",
+            "message_id": "<orig@test.com>",
+        }
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            adapter._send_email("user@test.com", "Nightly report", None,
+                                explicit_subject="Cronjob Response: nightly")
+            sent = mock_server.send_message.call_args[0][0]
+            self.assertEqual(sent["Subject"], "Cronjob Response: nightly")
+            self.assertNotIn("In-Reply-To", sent)
+
+    def test_send_honors_metadata_subject(self):
+        import asyncio
+        adapter = self._make_adapter()
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            result = asyncio.run(adapter.send(
+                "user@test.com", "Weekly report",
+                metadata={"job_id": "weekly", "subject": "Cronjob Response: weekly-report"}))
+            self.assertTrue(result.success)
+            sent = mock_server.send_message.call_args[0][0]
+            self.assertEqual(sent["Subject"], "Cronjob Response: weekly-report")
+
+    def test_reply_still_uses_thread_context_without_explicit_subject(self):
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {
+            "subject": "Project question",
+            "message_id": "<original@test.com>",
+        }
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            adapter._send_email("user@test.com", "Here is the answer.", None)
+            sent = mock_server.send_message.call_args[0][0]
+            self.assertEqual(sent["Subject"], "Re: Project question")
+            self.assertEqual(sent["In-Reply-To"], "<original@test.com>")
+
+    def test_splits_long_messages_declared(self):
+        adapter = self._make_adapter()
+        self.assertTrue(adapter.splits_long_messages)
+
+    def test_format_tool_event_suppressed(self):
+        adapter = self._make_adapter()
+        self.assertIsNone(adapter.format_tool_event(None))

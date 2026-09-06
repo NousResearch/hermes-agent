@@ -328,6 +328,8 @@ def _attach_file(msg: MIMEMultipart, path: Path, filename: str) -> None:
 class EmailAdapter(BasePlatformAdapter):
     """Email gateway adapter using IMAP (receive) and SMTP (send)."""
 
+    splits_long_messages = True  # email has no practical length cap; the gateway must not truncate long sends
+
     # Per-account seen-UID snapshot surviving adapter recreation: the reconnect watcher builds a FRESH
     # adapter per retry; without this connect(is_reconnect=True) would re-mark the mailbox seen and skip
     # mail that arrived during the outage. Keyed by address (multiplex runs several accounts); same-process only.
@@ -659,21 +661,38 @@ class EmailAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Send an email reply to the given address."""
-        return await self._run_send(self._send_email, (chat_id, content, reply_to), "[Email] Send failed to %s: %s", chat_id)
+        """Send an email reply to the given address.
+
+        ``metadata["subject"]`` (set by the delivery router for cron/scheduled
+        reports) is honored verbatim as a fresh-conversation subject — no Re:
+        prefix, no References/In-Reply-To headers.
+        """
+        explicit_subject = (metadata or {}).get("subject") if metadata else None
+        return await self._run_send(self._send_email, (chat_id, content, reply_to, explicit_subject), "[Email] Send failed to %s: %s", chat_id)
 
     def _message_id_domain(self) -> str:
         """Domain for generated Message-IDs; ``localhost`` when EMAIL_ADDRESS lacks ``@``."""
         return (self._address.rsplit("@", 1)[-1] if "@" in self._address else "") or "localhost"
 
     def _new_reply(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None, *,
-                   attach_empty_body: bool = False) -> Tuple[MIMEMultipart, str, str]:
-        """Build a threaded reply skeleton. Returns ``(msg, msg_id, subject)``."""
-        msg, ctx = MIMEMultipart(), self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
-            subject = f"Re: {subject}"
-        original_msg_id = reply_to_msg_id or ctx.get("message_id")
+                   attach_empty_body: bool = False, explicit_subject: Optional[str] = None) -> Tuple[MIMEMultipart, str, str]:
+        """Build a threaded reply skeleton. Returns ``(msg, msg_id, subject)``.
+
+        *explicit_subject* (a metadata subject from cron/scheduled deliveries) is
+        used verbatim as a fresh-conversation subject: no ``Re:`` prefix and no
+        thread-context ``References``/``In-Reply-To`` headers, so the message can
+        never be threaded into a prior conversation.
+        """
+        msg = MIMEMultipart()
+        if explicit_subject:
+            subject = explicit_subject
+            original_msg_id = reply_to_msg_id
+        else:
+            ctx = self._thread_context.get(to_addr, {})
+            subject = ctx.get("subject", "Hermes Agent")
+            if not subject.startswith("Re:"):
+                subject = f"Re: {subject}"
+            original_msg_id = reply_to_msg_id or ctx.get("message_id")
         threading = (("In-Reply-To", original_msg_id), ("References", original_msg_id)) if original_msg_id else ()
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
         for key, value in (("From", self._address), ("To", to_addr), ("Subject", subject), *threading,
@@ -695,16 +714,19 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception:
                 smtp.close()
 
-    def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None) -> str:
+    def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None,
+                    explicit_subject: Optional[str] = None) -> str:
         """Send an email via SMTP. Runs in executor thread."""
-        msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True)
+        msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True,
+                                               explicit_subject=explicit_subject)
         self._smtp_send(msg)
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
         return msg_id
 
-    def _send_with_files(self, to_addr: str, body: str, files: List[Tuple[Path, str]], *, lenient: bool) -> str:
+    def _send_with_files(self, to_addr: str, body: str, files: List[Tuple[Path, str]], *, lenient: bool,
+                         explicit_subject: Optional[str] = None) -> str:
         """Send a reply with attachments; *lenient* logs-and-skips unattachable files instead of raising."""
-        msg, msg_id, _ = self._new_reply(to_addr, body)
+        msg, msg_id, _ = self._new_reply(to_addr, body, explicit_subject=explicit_subject)
         for path, name in files:
             try:
                 _attach_file(msg, path, name)
@@ -717,8 +739,8 @@ class EmailAdapter(BasePlatformAdapter):
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Send an image URL as part of an email body (``metadata`` unused)."""
-        return await self.send(chat_id, f"{caption or ''}\n\nImage: {image_url}".strip(), reply_to)
+        """Send an image URL as part of an email body (``metadata`` subject honored)."""
+        return await self.send(chat_id, f"{caption or ''}\n\nImage: {image_url}".strip(), reply_to, metadata)
 
     async def send_multiple_images(self, chat_id: str, images: List[Tuple[str, str]],
                                    metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
@@ -739,26 +761,49 @@ class EmailAdapter(BasePlatformAdapter):
         if not local_paths and not body_parts:
             return SendResult(success=False, error="no valid images in batch")
         try:
-            message_id = await asyncio.get_running_loop().run_in_executor(None, self._send_email_with_attachments, chat_id, "\n\n".join(body_parts), local_paths)
+            explicit_subject = (metadata or {}).get("subject") if metadata else None
+            message_id = await asyncio.get_running_loop().run_in_executor(
+                None, self._send_email_with_attachments, chat_id, "\n\n".join(body_parts), local_paths,
+                explicit_subject)
         except Exception as e:
             logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
             return await super().send_multiple_images(chat_id, images, metadata, human_delay)
         return SendResult(success=True, message_id=message_id)
 
-    def _send_email_with_attachments(self, to_addr: str, body: str, file_paths: List[str]) -> str:
+    def _send_email_with_attachments(self, to_addr: str, body: str, file_paths: List[str],
+                                     explicit_subject: Optional[str] = None) -> str:
         """Send an email with multiple file attachments via SMTP (unattachable files are skipped)."""
-        msg_id = self._send_with_files(to_addr, body, [(Path(f), Path(f).name) for f in file_paths], lenient=True)
+        msg_id = self._send_with_files(to_addr, body, [(Path(f), Path(f).name) for f in file_paths],
+                                       lenient=True, explicit_subject=explicit_subject)
         logger.info("[Email] Sent multi-attachment email to %s (%d files)", to_addr, len(file_paths))
         return msg_id
 
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,
                             file_name: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
-        """Send a file as an email attachment."""
-        return await self._run_send(self._send_email_with_attachment, (chat_id, caption or "", file_path, file_name), "[Email] Send document failed: %s")
+        """Send a file as an email attachment (``metadata`` subject honored verbatim)."""
+        _meta = (kwargs or {}).get("metadata") or {}
+        explicit_subject = _meta.get("subject")
+        return await self._run_send(self._send_email_with_attachment,
+                                    (chat_id, caption or "", file_path, file_name, explicit_subject),
+                                    "[Email] Send document failed: %s")
 
-    def _send_email_with_attachment(self, to_addr: str, body: str, file_path: str, file_name: Optional[str] = None) -> str:
+    def _send_email_with_attachment(self, to_addr: str, body: str, file_path: str, file_name: Optional[str] = None,
+                                    explicit_subject: Optional[str] = None) -> str:
         """Send an email with a single file attachment via SMTP (raises if unattachable)."""
-        return self._send_with_files(to_addr, body, [(Path(file_path), file_name or Path(file_path).name)], lenient=False)
+        return self._send_with_files(to_addr, body, [(Path(file_path), file_name or Path(file_path).name)],
+                                     lenient=False, explicit_subject=explicit_subject)
+
+    def format_tool_event(self, event: Any, *, mode: str = "all",
+                          preview_max_len: int = 40) -> None:
+        """Suppress tool-progress chrome for email delivery.
+
+        Email is a plain-text, non-editable medium — there is no way to
+        update a previously sent message, so emitting a separate email per
+        tool call would spam the user's inbox. Return None to drop all
+        tool-progress events; the final assistant response is the only
+        message sent (#27804).
+        """
+        return None
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about the email chat."""

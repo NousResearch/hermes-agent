@@ -1417,14 +1417,18 @@ def _parse_toolset_arg(raw: Optional[str], label: str) -> Optional[List[str]]:
 
 def _save_sample_trajectory(agent: "AIAgent", result: dict, user_query: str, model: str) -> None:
     """``--save_sample``: write one trajectory (same format as batch_runner) to a UUID-named JSON file."""
-    sample_filename = f"sample_{str(uuid.uuid4())[:8]}.json"
+    from agent.trajectory import default_trajectory_path
+    from hermes_cli.config import artifact_file_mode, secure_artifact_dir
+    from utils import atomic_json_write
+
     entry = {
         "conversations": agent._convert_to_trajectory_format(result['messages'], user_query, result['completed']),
         "timestamp": datetime.now().isoformat(), "model": model, "completed": result['completed'], "query": user_query,
     }
     try:
-        with open(sample_filename, "w", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False, indent=2))
+        sample_filename = default_trajectory_path(result['completed']).parent / f"sample_{str(uuid.uuid4())[:8]}.json"
+        secure_artifact_dir(sample_filename.parent, tighten_existing=True)
+        atomic_json_write(sample_filename, entry, mode=artifact_file_mode())
         print(f"\n💾 Sample trajectory saved to: {sample_filename}")
     except Exception as e:
         print(f"\n⚠️ Failed to save sample: {e}")

@@ -11,12 +11,22 @@ the absolute path plus the resume hint for the live session.
 from __future__ import annotations
 
 import json
-import sys
+import os
+import stat
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+
+posix_only = pytest.mark.skipif(
+    os.name != "posix", reason="POSIX permission bits are advisory on Windows"
+)
+
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
 
 
 @pytest.fixture
@@ -25,10 +35,7 @@ def hermes_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    # Clear any cached hermes_home computation
-    import hermes_constants
-    if hasattr(hermes_constants, "_hermes_home_cache"):
-        hermes_constants._hermes_home_cache = None
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
     return home
 
 
@@ -48,10 +55,6 @@ def test_save_conversation_writes_under_hermes_home(hermes_home, tmp_path, monke
     work = tmp_path / "somewhere-else"
     work.mkdir()
     monkeypatch.chdir(work)
-
-    # Import fresh to pick up the HERMES_HOME fixture
-    for mod in [m for m in sys.modules if m.startswith("cli") or m == "hermes_constants"]:
-        sys.modules.pop(mod, None)
 
     import cli  # noqa: F401  (module under test)
 
@@ -73,7 +76,7 @@ def test_save_conversation_writes_under_hermes_home(hermes_home, tmp_path, monke
     files = list(saved_dir.glob("hermes_conversation_*.json"))
     assert len(files) == 1, files
 
-    payload = json.loads(files[0].read_text())
+    payload = json.loads(files[0].read_text(encoding="utf-8"))
     assert payload["model"] == "test-model"
     # /save now emits the canonical export_session shape: the session id
     # lives under "id" (was "session_id" in the legacy snapshot format).
@@ -90,8 +93,6 @@ def test_save_conversation_writes_under_hermes_home(hermes_home, tmp_path, monke
 
 
 def test_save_conversation_empty_history_does_nothing(hermes_home, capsys):
-    for mod in [m for m in sys.modules if m.startswith("cli") or m == "hermes_constants"]:
-        sys.modules.pop(mod, None)
     import cli
 
     stub = _make_stub_cli([])
@@ -105,8 +106,6 @@ def test_save_conversation_empty_history_does_nothing(hermes_home, capsys):
 
 def test_save_conversation_bare_shows_usage(hermes_home, capsys):
     """Bare /save prints the usage card and writes nothing."""
-    for mod in [m for m in sys.modules if m.startswith("cli") or m == "hermes_constants"]:
-        sys.modules.pop(mod, None)
     import cli
 
     stub = _make_stub_cli([{"role": "user", "content": "hi"}])
@@ -121,8 +120,6 @@ def test_save_conversation_bare_shows_usage(hermes_home, capsys):
 
 
 def test_save_conversation_bad_format_shows_usage(hermes_home, capsys):
-    for mod in [m for m in sys.modules if m.startswith("cli") or m == "hermes_constants"]:
-        sys.modules.pop(mod, None)
     import cli
 
     stub = _make_stub_cli([{"role": "user", "content": "hi"}])
@@ -132,3 +129,59 @@ def test_save_conversation_bad_format_shows_usage(hermes_home, capsys):
     assert not saved_dir.exists() or not list(saved_dir.iterdir())
     out = capsys.readouterr().out
     assert "Usage:" in out
+
+
+@posix_only
+@pytest.mark.parametrize("fmt", ["json", "md", "html"])
+def test_save_conversation_fresh_artifact_is_owner_only(
+    hermes_home, tmp_path, monkeypatch, fmt
+):
+    monkeypatch.chdir(tmp_path)
+    import cli
+
+    stub = _make_stub_cli([{"role": "user", "content": "hi"}])
+    old_umask = os.umask(0o022)
+    try:
+        cli.HermesCLI.save_conversation(stub, f"/save {fmt}")
+    finally:
+        os.umask(old_umask)
+
+    saved_dir = hermes_home / "sessions" / "saved"
+    files = list(saved_dir.glob(f"hermes_conversation_*.{fmt}"))
+    assert len(files) == 1
+    assert not _mode(saved_dir) & 0o077
+    assert _mode(files[0]) == 0o600
+
+
+@posix_only
+def test_save_conversation_retightens_existing_snapshot(
+    hermes_home, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    import cli
+
+    frozen = datetime(2026, 1, 1, 12, 0, 0)
+    monkeypatch.setattr(cli, "datetime", SimpleNamespace(now=lambda: frozen))
+    saved_dir = hermes_home / "sessions" / "saved"
+    saved_dir.mkdir(parents=True)
+    path = saved_dir / "hermes_conversation_20260101_120000.json"
+    path.write_text("{}", encoding="utf-8")
+    os.chmod(path, 0o644)
+
+    history = [{"role": "user", "content": "hi"}]
+    cli.HermesCLI.save_conversation(_make_stub_cli(history), "/save json")
+    assert _mode(path) == 0o600
+    assert json.loads(path.read_text(encoding="utf-8"))["messages"] == history
+
+
+@posix_only
+def test_explicit_save_preserves_existing_output_permissions(hermes_home, tmp_path):
+    import cli
+
+    path = tmp_path / "shared.json"
+    path.write_text("{}", encoding="utf-8")
+    path.chmod(0o644)
+    history = [{"role": "user", "content": "hi"}]
+    cli.HermesCLI.save_conversation(_make_stub_cli(history), f"/save json {path}")
+    assert _mode(path) == 0o644
+    assert json.loads(path.read_text(encoding="utf-8"))["messages"] == history

@@ -300,10 +300,13 @@ def divert_session_transcript_jsonl(session_id: str, messages) -> "Optional[Path
     sid = str(session_id or "").strip()
     if not sid or not messages:
         return None
+    from hermes_cli.config import artifact_file_mode, secure_artifact_dir
+    from utils import open_private_append
+
     sessions_dir = get_hermes_home() / "sessions"
-    sessions_dir.mkdir(parents=True, exist_ok=True)
+    secure_artifact_dir(sessions_dir, tighten_existing=True)
     path = sessions_dir / f"{sid}.jsonl"
-    with path.open("a", encoding="utf-8") as handle:
+    with open_private_append(path, mode=artifact_file_mode(), tighten_existing=True) as handle:
         for msg in messages:
             if msg is not None:
                 record = msg if isinstance(msg, dict) else {"content": str(msg)}

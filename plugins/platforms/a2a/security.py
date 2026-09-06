@@ -208,9 +208,12 @@ def audit(direction: str, peer: str, task_id: str, summary: str) -> None:
     """Append an audit record (direction: inbound | outbound | push). Never raises."""
     try:
         from .protocol import _hermes_home
+        from hermes_cli.config import artifact_file_mode, secure_artifact_dir
+        from utils import open_private_append
+
         rec = {"ts": time.time(), "direction": direction, "peer": peer, "task_id": task_id, "summary": (summary or "")[:500]}
-        _hermes_home().mkdir(parents=True, exist_ok=True)
-        with (_hermes_home() / "a2a_audit.jsonl").open("a", encoding="utf-8") as fh:
+        secure_artifact_dir(_hermes_home())
+        with open_private_append(_hermes_home() / "a2a_audit.jsonl", mode=artifact_file_mode(), tighten_existing=True) as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
         logger.debug("A2A: audit write failed", exc_info=True)

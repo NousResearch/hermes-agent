@@ -455,7 +455,9 @@ class SessionPersistenceMixin:
                 "system_prompt": redact_sensitive_text(self._cached_system_prompt or ""), "tools": self.tools or [],
                 "message_count": len(cleaned), "messages": cleaned,
             }
-            atomic_json_write(log_file, entry, indent=2, default=str)
+            from hermes_cli.config import artifact_file_mode
+
+            atomic_json_write(log_file, entry, indent=2, mode=artifact_file_mode(), default=str)
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to save session log: {e}")

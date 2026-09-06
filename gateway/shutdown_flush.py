@@ -35,9 +35,44 @@ def _get_flush_dir():
     """Return the pending-messages flush directory under the active HERMES_HOME."""
     from hermes_constants import get_hermes_home
     flush_dir = get_hermes_home() / "pending_messages"
+    try:
+        from hermes_cli.config import is_managed
+
+        managed = is_managed()
+    except Exception:
+        managed = False
+
+    if managed:
+        try:
+            flush_dir.mkdir(parents=True, exist_ok=True)
+        except FileExistsError:
+            if not flush_dir.is_dir():
+                raise
+        if os.name == "posix":
+            try:
+                fd = os.open(flush_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    inherited = os.fstat(fd).st_mode & 0o7000
+                    os.fchmod(fd, inherited | 0o770)
+                finally:
+                    os.close(fd)
+            except OSError as exc:
+                # A legacy directory may belong to the other managed UID.
+                # Keep the recovery path best-effort; payload writes below
+                # still report their own failure and never get discarded here.
+                logger.debug("Could not upgrade managed pending-message directory: %s", exc)
+        return flush_dir
+
     flush_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     if os.name == "posix":
-        os.chmod(flush_dir, 0o700)
+        try:
+            from hermes_cli.config import _secure_dir
+
+            _secure_dir(flush_dir)
+        except Exception as exc:
+            logger.debug(
+                "Could not reconcile pending-message directory mode: %s", exc
+            )
     return flush_dir
 
 

@@ -12,6 +12,7 @@ Verifies:
 
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
@@ -77,12 +78,39 @@ class TestTrajectoryWriteDurability:
         output_files = list(tmp_path.glob("*.jsonl"))
         assert len(output_files) >= 1
         for f in output_files:
-            lines = f.read_text().strip().split("\n")
+            lines = f.read_text(encoding="utf-8").strip().split("\n")
             for line in lines:
                 if line:
                     entry = json.loads(line)
                     assert "conversations" in entry
                     assert "completed" in entry
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits are advisory on Windows")
+    def test_fresh_batch_artifact_is_private_and_existing_mode_is_preserved(
+        self, tmp_path, monkeypatch
+    ):
+        prompt_result = {
+            "success": True,
+            "trajectory": [{"role": "assistant", "content": "x"}],
+            "reasoning_stats": {"has_any_reasoning": True},
+            "tool_stats": {},
+            "metadata": {},
+            "completed": True,
+            "api_calls": 1,
+            "toolsets_used": [],
+        }
+        monkeypatch.setattr("batch_runner._process_single_prompt", lambda *a, **kw: prompt_result)
+        old_umask = os.umask(0o022)
+        try:
+            _process_batch_worker((1, [(0, {"prompt": "hi"})], tmp_path, set(), {"verbose": False}))
+        finally:
+            os.umask(old_umask)
+        path = tmp_path / "batch_1.jsonl"
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+        os.chmod(path, 0o640)
+        _process_batch_worker((1, [(1, {"prompt": "again"})], tmp_path, set(), {"verbose": False}))
+        assert stat.S_IMODE(path.stat().st_mode) == 0o640
 
 
 # =========================================================================

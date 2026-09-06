@@ -287,7 +287,10 @@ def _process_single_prompt(
 
 def _append_jsonl(path: Path, row: Dict[str, Any]) -> None:
     """Append one JSON row and fsync so a crash never loses an acknowledged prompt."""
-    with open(path, 'a', encoding='utf-8') as f:
+    from hermes_cli.config import artifact_file_mode
+    from utils import open_private_append
+
+    with open_private_append(path, mode=artifact_file_mode()) as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
         f.flush()
         os.fsync(f.fileno())
@@ -701,7 +704,11 @@ class BatchRunner:
         batch_files_found = 0
         all_batch_files = sorted(self.output_dir.glob("batch_*.jsonl"))
 
-        with open(combined_file, 'w', encoding='utf-8') as outfile:
+        from hermes_cli.config import artifact_file_mode
+        from utils import open_private_append
+
+        with open_private_append(combined_file, mode=artifact_file_mode()) as outfile:
+            outfile.truncate(0)
             for batch_file in all_batch_files:
                 batch_files_found += 1
                 batch_num = batch_file.stem.split("_")[1]  # Extract batch number for logging

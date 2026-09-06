@@ -672,7 +672,9 @@ class CLISessionMixin:
 
         saved_dir = get_hermes_home() / "sessions" / "saved"
         try:
-            saved_dir.mkdir(parents=True, exist_ok=True)
+            from hermes_cli.config import secure_artifact_dir
+
+            secure_artifact_dir(saved_dir, tighten_existing=True)
         except Exception as e:
             print(f"(x_x) Failed to create save directory {saved_dir}: {e}")
             return
@@ -685,9 +687,12 @@ class CLISessionMixin:
             path = saved_dir / f"hermes_conversation_{timestamp}.{fmt}"
 
         try:
+            from hermes_cli.config import artifact_file_mode
+            from utils import atomic_write_text
+
             content = render_session_for_save(session_data, fmt)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
+            atomic_write_text(path, content, preserve_mode=bool(filename),
+                              mode=None if filename else artifact_file_mode())
             label = {"json": "JSON", "md": "Markdown", "html": "HTML"}[fmt]
             print(f"(^_^)v Conversation saved to: {path} ({label})")
             # #76354 review F5: the worker thread also rebound the session ContextVar inside its own

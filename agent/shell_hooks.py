@@ -42,7 +42,7 @@ _DEFAULT_BLOCK_MESSAGE = "Blocked by shell hook."
 # Exit code that signals "block this action" independent of stdout (Claude Code / Cursor).
 BLOCK_EXIT_CODE = 2
 # Events whose block directive is honored downstream; exit-2 blocking and fail_closed only apply here.
-_BLOCKING_EVENTS = frozenset({"pre_tool_call"})
+_BLOCKING_EVENTS = frozenset({"pre_tool_call", "pre_kanban_complete"})
 _TOOL_EVENTS = frozenset({"pre_tool_call", "post_tool_call"})
 _STDERR_MESSAGE_LIMIT = 400
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -403,6 +403,14 @@ def _parse_pre_tool_call(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _parse_pre_kanban_complete(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Completion policies use the same block/decision dialect as tool guards."""
+    action = str(data.get("action") or data.get("decision") or "").strip().lower()
+    if action == "block":
+        return {"action": "block", "message": _block_message(data.get("message"), data.get("reason"))}
+    return None
+
+
 def _parse_pre_verify(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     # "continue" (Hermes) / "block" (Claude-Code Stop) both mean keep going; no message is a no-op.
     action = str(data.get("action") or data.get("decision") or "").strip().lower()
@@ -417,7 +425,11 @@ def _parse_context(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return {"context": context} if isinstance(context, str) and context.strip() else None
 
 
-_RESPONSE_PARSERS: Dict[str, Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = {"pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify}
+_RESPONSE_PARSERS: Dict[str, Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = {
+    "pre_tool_call": _parse_pre_tool_call,
+    "pre_kanban_complete": _parse_pre_kanban_complete,
+    "pre_verify": _parse_pre_verify,
+}
 
 
 def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:

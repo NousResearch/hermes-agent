@@ -125,8 +125,6 @@ def test_completion_policy_failure_does_not_mark_done(tmp_path, monkeypatch, fai
             assert kb.get_task(connection, tid).status != "done"
     finally:
         release.set()
-
-
 def test_review_completion_policy_receives_redacted_summary(tmp_path, monkeypatch):
     from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
 
@@ -151,3 +149,35 @@ def test_review_completion_policy_receives_redacted_summary(tmp_path, monkeypatc
 
     assert seen
     assert secret not in seen[0]
+
+
+def test_dispatched_worker_uses_control_plane_policy_without_profile_plugin(tmp_path, monkeypatch):
+    """A worker profile need not opt in to the control-plane feedback plugin."""
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
+    from tools import kanban_tools
+
+    control = tmp_path / "control"
+    worker = tmp_path / "worker"
+    control.mkdir()
+    worker.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(worker))
+    monkeypatch.setenv("HERMES_CONTROL_HOME", str(control))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    with kbc.connect() as connection:
+        tid = kb.create_task(connection, title="Repair feedback", assignee="worker")
+        kb.claim_task(connection, tid)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    ledger = FeedbackLedger(control / "github-pr-feedback" / "ledger.sqlite3")
+    now = datetime.now(UTC)
+    receipt = FeedbackReceipt("acme/repo", 1, "review_comment", "comment-1", "a" * 40)
+    claim = ledger.claim(receipt, owner="test", claimed_at=now, stale_before=now - timedelta(minutes=5))
+    ledger.finalize(receipt, tid, claim)
+    try:
+        result = json.loads(kanban_tools._handle_complete({"task_id": tid, "summary": "Local tests passed"}))
+        assert result.get("ok") is not True
+        assert "unacknowledged feedback dispatch" in result["error"]
+        with kbc.connect() as connection:
+            assert kb.get_task(connection, tid).status != "done"
+    finally:
+        ledger.close()

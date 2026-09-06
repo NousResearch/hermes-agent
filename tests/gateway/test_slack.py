@@ -16,7 +16,7 @@ import os
 import socket
 import sys
 import time
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
@@ -890,6 +890,7 @@ class TestSlackProxyBehavior:
                 # (so the User-Agent prefix sticks on ``self._app.client``).
                 # Fall back to building our own fake client when not provided.
                 self.client = client if client is not None else FakeWebClient(token)
+                self.kwargs = _kwargs
                 self.registered_events = []
                 self.registered_commands = []
                 self.registered_actions = []
@@ -959,6 +960,21 @@ class TestSlackProxyBehavior:
         assert adapter._handler is not None
         assert adapter._handler.proxy == "http://proxy.example.com:3128"
         assert adapter._handler.client.proxy == "http://proxy.example.com:3128"
+        # The resolved proxy must also reach the client bolt builds per inbound
+        # request: connect() hands the URL to the before_authorize middleware,
+        # which re-applies it once that client exists.
+        pin_proxy = created_apps[0].kwargs.get("before_authorize")
+        assert callable(pin_proxy)
+        per_request_client = SimpleNamespace(proxy="reloaded-from-env")
+        continued = False
+
+        async def _continue():
+            nonlocal continued
+            continued = True
+
+        await pin_proxy(client=per_request_client, next_=_continue)
+        assert per_request_client.proxy == "http://proxy.example.com:3128"
+        assert continued is True
         assert "hermes_feedback" in created_apps[0].registered_actions
         assert "hermes_clarify_other" in created_apps[0].registered_actions
         clarify_choice_patterns = [
@@ -974,6 +990,70 @@ class TestSlackProxyBehavior:
             pattern.fullmatch("hermes_clarify_choice")
             for pattern in clarify_choice_patterns
         )
+
+    @pytest.mark.asyncio
+    async def test_before_authorize_clears_env_proxy_per_request(self, monkeypatch):
+        """The client bolt builds per request must keep the proxy decision.
+
+        ``AsyncApp._init_context`` constructs a fresh ``AsyncWebClient`` for
+        every inbound request with ``proxy=app.client.proxy``, and slack_sdk
+        turns a ``None`` proxy *argument* back into ``HTTP(S)_PROXY`` — NO_PROXY
+        never enters that decision. Exercised against the real bolt objects so
+        the kwargs injection and the middleware ordering are the ones bolt
+        actually uses.
+        """
+        async_app_mod = pytest.importorskip("slack_bolt.async_app")
+        if getattr(async_app_mod, "AsyncApp", MagicMock) is MagicMock:
+            pytest.skip("real slack-bolt is not installed")
+        from slack_bolt.middleware.authorization.async_single_team_authorization import (
+            AsyncSingleTeamAuthorization,
+        )
+        from slack_bolt.request.async_request import AsyncBoltRequest
+        from slack_bolt.response import BoltResponse
+
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example.com:3128")
+        monkeypatch.setenv("NO_PROXY", "slack.com")
+
+        app_client = _slack_mod.AsyncWebClient(token="xoxb-fake")
+        _slack_mod._apply_slack_proxy(app_client, None)
+        app = async_app_mod.AsyncApp(
+            token="xoxb-fake",
+            client=app_client,
+            signing_secret="secret",
+            before_authorize=_slack_mod._slack_per_request_proxy_middleware(None),
+        )
+
+        request = AsyncBoltRequest(body={"type": "event_callback"}, mode="socket_mode")
+        app._init_context(request)
+        # The bug this guards: NO_PROXY covers the endpoint and the app client
+        # goes direct, yet the per-request client came back proxied.
+        assert request.context.client.proxy == "http://proxy.example.com:3128"
+
+        continued = False
+
+        async def _continue():
+            nonlocal continued
+            continued = True
+            return BoltResponse(status=200, body="")
+
+        await app._async_before_authorize.async_process(
+            req=request, resp=BoltResponse(status=200, body=""), next=_continue
+        )
+
+        assert continued is True
+        assert request.context.client.proxy is None
+        # base_url rides along from app.client, so the request-scoped client
+        # still talks to the same endpoint.
+        assert request.context.client.base_url == app_client.base_url
+        # ...and the pinning runs before the middleware that spends that client
+        # on auth.test.
+        middleware = app._async_middleware_list
+        authorization_index = next(
+            index
+            for index, item in enumerate(middleware)
+            if isinstance(item, AsyncSingleTeamAuthorization)
+        )
+        assert middleware.index(app._async_before_authorize) < authorization_index
 
 
 # ---------------------------------------------------------------------------
@@ -1099,6 +1179,30 @@ class TestStandaloneSendUserDmResolution:
         assert result["success"] is True
         assert session.post.call_count == 1
         assert "chat.postMessage" in session.post.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_channel_delivery_honors_unfurl_config(self):
+        _slack_mod._slack_dm_cache.clear()
+        post_resp = self._mock_resp({"ok": True, "ts": "123.456"})
+        session = self._mock_session(post_resp)
+        config = PlatformConfig(
+            enabled=True,
+            token="«redacted:xox…»",
+            extra={"unfurl_links": False, "unfurl_media": False},
+        )
+
+        with patch.object(_slack_mod.aiohttp, "ClientSession", return_value=session):
+            result = await _slack_mod._standalone_send(
+                config,
+                "C123",
+                "[Hermes](https://example.com/hermes)",
+            )
+
+        assert result["success"] is True
+        payload = session.post.call_args.kwargs["json"]
+        assert payload["text"] == "<https://example.com/hermes|Hermes>"
+        assert payload["unfurl_links"] is False
+        assert payload["unfurl_media"] is False
 
 
     @pytest.mark.asyncio
@@ -3392,6 +3496,71 @@ class TestMessageSplitting:
         assert sent_text.startswith("> quoted text")
         assert "normal text" in sent_text
 
+
+    @pytest.mark.asyncio
+    async def test_send_passes_explicit_unfurl_options(self, adapter):
+        adapter.config.extra["unfurl_links"] = False
+        adapter.config.extra["unfurl_media"] = False
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["unfurl_links"] is False
+        assert kwargs["unfurl_media"] is False
+
+    @pytest.mark.asyncio
+    async def test_send_preserves_default_unfurl_behavior(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "unfurl_links" not in kwargs
+        assert "unfurl_media" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_send_coerces_string_unfurl_options(self, adapter):
+        """`hermes config set` / Railway persist YAML booleans as strings.
+
+        Relay-plane parity: string "false"/"true" must coerce instead of
+        being silently dropped (which would leave previews on with no error).
+        """
+        adapter.config.extra["unfurl_links"] = "false"
+        adapter.config.extra["unfurl_media"] = "true"
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["unfurl_links"] is False
+        assert kwargs["unfurl_media"] is True
+
+    @pytest.mark.asyncio
+    async def test_send_drops_junk_unfurl_values(self, adapter):
+        """Unrecognized values keep Slack's default rather than suppressing."""
+        adapter.config.extra["unfurl_links"] = "maybe"
+        adapter.config.extra["unfurl_media"] = 0
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "unfurl_links" not in kwargs
+        assert "unfurl_media" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_send_passes_unfurl_options_to_every_chunk(self, adapter):
+        adapter.config.extra["unfurl_links"] = False
+        adapter.config.extra["unfurl_media"] = False
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com/" + "x" * 45000)
+
+        assert adapter._app.client.chat_postMessage.call_count >= 2
+        for call in adapter._app.client.chat_postMessage.call_args_list:
+            assert call.kwargs["unfurl_links"] is False
+            assert call.kwargs["unfurl_media"] is False
 
     @pytest.mark.asyncio
     async def test_send_does_not_double_escape_entities(self, adapter):

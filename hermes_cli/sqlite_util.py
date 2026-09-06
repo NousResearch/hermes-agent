@@ -1,9 +1,4 @@
-"""Shared SQLite primitives for the small per-profile / board stores.
-
-The projects and kanban stores open WAL SQLite files with the same two
-primitives — an idempotent column-add migration and an IMMEDIATE write
-transaction. One definition here keeps the two stores from drifting.
-"""
+"""Shared SQLite primitives for the small per-profile / board stores."""
 
 from __future__ import annotations
 
@@ -12,12 +7,11 @@ import sqlite3
 
 
 def add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> bool:
-    """``ALTER TABLE <table> ADD COLUMN <ddl>``, idempotent across races.
+    """``ALTER TABLE <table> ADD COLUMN <ddl>``, idempotent across races: True when this call added
+    it, False on the ``duplicate column name`` a concurrent migrator caused.
 
-    Returns ``True`` when this call added the column. Swallows the
-    ``duplicate column name`` error a concurrent migrator may have run first
-    (issue #21708). ``column`` is the human-readable name for the call site;
-    ``ddl`` carries the actual definition.
+    ``column`` is the human-readable name for the call site; ``ddl`` carries the actual definition. See
+    #21708.
     """
     try:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
@@ -30,12 +24,8 @@ def add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, ddl
 
 @contextlib.contextmanager
 def write_txn(conn: sqlite3.Connection):
-    """An IMMEDIATE write transaction: at most one concurrent writer wins.
-
-    The explicit ROLLBACK is guarded so a SQLite auto-rollback (no active
-    transaction left under EIO / lock contention / corruption) cannot shadow
-    the original exception with a spurious rollback error.
-    """
+    """An IMMEDIATE write transaction. The explicit ROLLBACK is guarded so a SQLite auto-rollback
+    (no transaction left under EIO / contention / corruption) cannot shadow the original error."""
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn

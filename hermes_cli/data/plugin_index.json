@@ -66,7 +66,7 @@
     },
     {
       "name": "researchcraft",
-      "description": "ResearchCraft scientific research plugin — literature search (Consensus/Parallel/Scite Smart Citations), paper download (Unpaywall), LaTeX compile, lab notebook, scientific file inspection (chem/structure/mass spec/imaging/anndata), PDF-to-Markdown, scientific image generation, Modal and Runpod remote compute, 330+ workflow templates, 100+ domain skills.",
+      "description": "ResearchCraft — literature search, PDFs, LaTeX, lab notebook.",
       "author": "ResearchCraft",
       "tags": ["research", "literature", "latex", "ai", "papers", "scite", "consensus", "notebook", "pdf", "image-gen", "modal", "runpod", "workflow", "skills", "science", "bioinformatics", "genomics"],
       "repo": "raktim-mondol/hermes-plugin-researchcraft",

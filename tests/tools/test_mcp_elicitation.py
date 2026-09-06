@@ -250,7 +250,7 @@ class TestElicitationHandlerContextBridge:
         )
 
     def test_missing_captured_context_falls_back_to_direct_call(self):
-        """Without a call_context (or one whose task hasn't entered a tool
+        """With the default call_context (or one whose task has not entered a tool
         call) the handler must still invoke the consent router -- just
         without the contextvar replay. Otherwise CLI/TUI sessions, which
         don't set HERMES_SESSION_PLATFORM, would break."""

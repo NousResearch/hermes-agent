@@ -452,6 +452,17 @@ def _run_install_with_heartbeat(
     t = threading.Thread(target=_heartbeat, daemon=True)
     t.start()
     try:
+        if _is_termux_env(env):
+            # Termux: prefer bionic PATH + arch-aware uv --python-platform so
+            # Android wheel-tag rejects and glibc-first PATH breakages don't
+            # strand updates (bare "linux" is x86_64 on uv 0.12+).
+            from hermes_cli._early_recovery import (
+                prefer_termux_bionic_path,
+                with_uv_termux_python_platform,
+            )
+
+            env = prefer_termux_bionic_path(env)
+            cmd = with_uv_termux_python_platform(cmd, env)
         subprocess.run(cmd, cwd=PROJECT_ROOT, check=True, env=env)
     finally:
         done.set()

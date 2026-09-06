@@ -178,7 +178,25 @@ python -m pip install -e '.[termux]' -c constraints-termux.txt
 
 ### `uv pip install` 在 Android 上失败
 
-改用标准库 venv + `pip` 的 Termux 路径：
+`hermes update` 与中断安装恢复会在 Termux 上自动传入**按架构区分**的
+`--python-platform`（例如 arm64 设备上的 `aarch64-unknown-linux-gnu`），
+以便接受本地构建的 `linux_*` wheel（例如 `markupsafe`）。
+
+不要在 uv 0.12+ 上使用裸的 `--python-platform linux`：该标签会解析为
+**x86_64** manylinux，即使在 aarch64 Android 上也会装上无法加载的原生扩展
+（症状：`No module named 'pydantic_core._pydantic_core'`）。优先使用
+`~/bin/opk-hermes-update.sh --repair-python`，或加上匹配架构的参数：
+
+```bash
+# aarch64 Termux / Android
+uv pip install -e '.[termux-all]' --python-platform aarch64-unknown-linux-gnu
+```
+
+若手动使用 uv 并看到兼容性拒绝，请使用同一架构参数（或设置
+`HERMES_UV_PYTHON_PLATFORM`）。在少见的非 aarch64/x86_64 Termux 主机上，
+Hermes 会跳过注入 `--python-platform`，而不是写入裸的 `linux`。
+
+或改用标准库 venv + `pip` 的 Termux 路径：
 
 ```bash
 python -m venv venv
@@ -187,6 +205,18 @@ export ANDROID_API_LEVEL="$(getprop ro.build.version.sdk)"
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e '.[termux]' -c constraints-termux.txt
 ```
+
+### npm 后出现 `tsc: not found` / `bad interpreter: /usr/bin/env`
+
+当缺少 `/usr/bin/env`（glibc-runner 下 termux-exec 未生效时常见）时，
+npm 脚本 shebang 会失效。`hermes update` 在 Node 刷新与每次 web 构建前
+会通过 `termux-fix-shebang` 重写。修复现有树：
+
+```bash
+find node_modules -type f -exec grep -l '^#!/usr/bin/env' {} + | xargs -r termux-fix-shebang
+```
+
+同时确保 PATH 优先使用 Termux bionic 工具（`$PREFIX/bin` 在前）。
 
 ### `jiter` / `maturin` 报错提示缺少 `ANDROID_API_LEVEL`
 

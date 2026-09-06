@@ -1225,6 +1225,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always restore stdio even on
     ``sys.exit``. Self-lock deferral deliberately does NOT run here (pre-fetch it stranded users
     on the OLD checkout in an exit-2 loop); it runs right before the dependency sync."""
+    if _m()._is_termux_env():
+        # Termux under glibc-runner often puts $PREFIX/glibc/bin first; child
+        # builds then pick broken glibc bash/dirname. Prefer bionic tools for
+        # the whole update process (also applied per-subprocess where we pass env).
+        from hermes_cli._early_recovery import prefer_termux_bionic_path
+
+        os.environ["PATH"] = prefer_termux_bionic_path()["PATH"]
+
     opts = _resolve_update_options(args, gateway_mode)
     gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
 

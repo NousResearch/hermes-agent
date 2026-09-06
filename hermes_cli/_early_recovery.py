@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -102,6 +103,165 @@ def _should_skip_external_secret_sources() -> bool:
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
+
+
+def _is_termux_env(env: dict | None = None) -> bool:
+    """Stdlib Termux probe — shared with ``_install_repair``.
+
+    Matches ``hermes_cli.main._is_termux_startup_environment`` without
+    importing main (this module stays stdlib-only).
+
+    Intentionally tighter than the old ``_install_repair`` probe (any
+    PREFIX containing ``com.termux``): require ``com.termux/files/usr`` in
+    PREFIX, a ``/data/data/com.termux/`` prefix, or ``TERMUX_VERSION``.
+    Relocated / exotic PREFIX layouts without those markers are untreated.
+    """
+    check = env if env is not None else os.environ
+    try:
+        prefix = str(check.get("PREFIX", ""))
+        return bool(
+            check.get("TERMUX_VERSION")
+            or "com.termux/files/usr" in prefix
+            or prefix.startswith("/data/data/com.termux/")
+        )
+    except Exception:
+        return False
+
+
+def termux_uv_python_platform(env: dict | None = None) -> str:
+    """Return a uv ``--python-platform`` value for this Termux host.
+
+    Bare ``linux`` is wrong on uv 0.12+: it resolves to **x86_64** manylinux
+    even on aarch64 Android, which installs unloadable native wheels (symptom:
+    ``No module named 'pydantic_core._pydantic_core'``). Use an arch-specific
+    GNU/Linux tag so locally built ``linux_aarch64`` wheels are accepted.
+
+    Unknown architectures return ``""`` so callers skip injection and keep
+    today's uv default instead of forcing the broken bare ``linux`` tag.
+
+    Override with ``HERMES_UV_PYTHON_PLATFORM`` when needed.
+    """
+    base = env if env is not None else os.environ
+    override = (base.get("HERMES_UV_PYTHON_PLATFORM") or "").strip()
+    if override:
+        return override
+    machine = (base.get("HOSTTYPE") or platform.machine() or "").lower()
+    machine = machine.replace("arm64", "aarch64")
+    if machine == "aarch64":
+        return "aarch64-unknown-linux-gnu"
+    if machine in ("x86_64", "amd64"):
+        return "x86_64-unknown-linux-gnu"
+    return ""
+
+
+def with_uv_termux_python_platform(
+    cmd: list[str], env: dict | None = None
+) -> list[str]:
+    """On Termux, inject arch-aware ``uv pip install --python-platform …``.
+
+    uv builds wheels tagged ``linux_*`` on Android/Termux, then rejects them
+    as incompatible with "Python on Android aarch64". Passing an arch-specific
+    ``--python-platform`` (see :func:`termux_uv_python_platform`) makes uv
+    accept those local builds so ``hermes update`` / interrupted-install
+    recovery can finish. No-op when not Termux, not an ``uv pip install``,
+    when the flag is already present, or when the arch is unknown (empty
+    platform — avoid injecting bare ``linux``).
+    """
+    if not _is_termux_env(env):
+        return cmd
+    if len(cmd) < 3:
+        return cmd
+    prog = Path(cmd[0]).name.lower()
+    if prog not in ("uv", "uv.exe") or cmd[1] != "pip":
+        return cmd
+    if "--python-platform" in cmd:
+        return cmd
+    py_platform = termux_uv_python_platform(env)
+    if not py_platform:
+        return cmd
+    try:
+        install_idx = cmd.index("install")
+    except ValueError:
+        return cmd
+    out = list(cmd)
+    out[install_idx + 1 : install_idx + 1] = [
+        "--python-platform",
+        py_platform,
+    ]
+    return out
+
+
+def prefer_termux_bionic_path(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Put Termux's bionic ``$PREFIX/bin`` first on PATH.
+
+    Sessions under ``glibc-runner`` (e.g. Cursor Agent on Termux) often put
+    ``$PREFIX/glibc/bin`` ahead of ``$PREFIX/bin``. Child processes that are
+    *not* under the glibc runner then pick glibc ``bash``/``dirname``/``curl``
+    and fail with missing ``libdl.so``, which breaks clang wrappers and npm
+    scripts mid-``hermes update``. Prefacing PATH with the bionic bin keeps
+    native Termux tools preferred without removing glibc tools entirely.
+    """
+    base = dict(env if env is not None else os.environ)
+    if not _is_termux_env(base):
+        return base
+    prefix = (
+        base.get("PREFIX")
+        or base.get("TERMUX__PREFIX")
+        or "/data/data/com.termux/files/usr"
+    )
+    termux_bin = str(Path(prefix) / "bin")
+    parts = [p for p in base.get("PATH", "").split(":") if p and p != termux_bin]
+    base["PATH"] = ":".join([termux_bin, *parts])
+    return base
+
+
+def fix_termux_node_shebangs(project_root: Path) -> None:
+    """Rewrite ``#!/usr/bin/env`` node bins when Termux has no ``/usr/bin/env``.
+
+    Under glibc-runner / disabled termux-exec, npm scripts fail with
+    ``tsc: not found`` because the kernel cannot resolve ``/usr/bin/env``.
+    ``termux-fix-shebang`` rewrites them to ``$PREFIX/bin/env``. Best-effort
+    and silent when the helper or files are missing.
+    """
+    if not _is_termux_env():
+        return
+    if Path("/usr/bin/env").exists():
+        return
+    fixer = shutil.which("termux-fix-shebang")
+    if not fixer:
+        return
+    node_modules = Path(project_root) / "node_modules"
+    if not node_modules.is_dir():
+        return
+    # npm CLI wrappers live under ``*/bin/`` / ``.bin/``. Scoping there (and
+    # skipping files >4 KiB) avoids reading every package asset on large trees.
+    _shebang_max_bytes = 4096
+    targets: list[str] = []
+    for path in node_modules.rglob("*"):
+        if not path.is_file():
+            continue
+        parts = path.parts
+        if "bin" not in parts and ".bin" not in parts:
+            continue
+        try:
+            if path.stat().st_size > _shebang_max_bytes:
+                continue
+            with path.open("rb") as handle:
+                head = handle.read(24)
+        except OSError:
+            continue
+        if head.startswith(b"#!/usr/bin/env"):
+            targets.append(str(path))
+    if not targets:
+        return
+    for i in range(0, len(targets), 64):
+        subprocess.run(
+            [fixer, *targets[i : i + 64]],
+            cwd=str(project_root),
+            check=False,
+            capture_output=True,
+        )
+
 
 
 def _load_pyproject_project(root: Path) -> dict | None:
@@ -328,8 +488,11 @@ def _run_repair_install(specs: list[str], project_root: Path) -> bool:
             env = {**os.environ, "VIRTUAL_ENV": str(project_root / "venv")}
             env.pop("PYTHONHOME", None)
             env.pop("PYTHONPATH", None)
-            return _run_installer("uv", [uv, "pip", "install", "--force-reinstall", *specs],
-                                  project_root, env)
+            repair_cmd = [uv, "pip", "install", "--force-reinstall", *specs]
+            if _is_termux_env(env):
+                env = prefer_termux_bionic_path(env)
+                repair_cmd = with_uv_termux_python_platform(repair_cmd, env)
+            return _run_installer("uv", repair_cmd, project_root, env)
         print("  ⚠ Base interpreter is externally managed and no uv binary was "
               "found; retrying repair via pip with PEP 668 override.", file=sys.stderr)
     _run_ensurepip(project_root)

@@ -540,6 +540,17 @@ def _repair_node_deps_on_current_checkout(
     return bool(print_completion(completion_message))
 
 
+
+def _fix_termux_node_shebangs(project_root: Path) -> None:
+    """Rewrite ``#!/usr/bin/env`` node bins when Termux has no ``/usr/bin/env``.
+
+    Delegates to :func:`hermes_cli._early_recovery.fix_termux_node_shebangs`.
+    """
+    from hermes_cli._early_recovery import fix_termux_node_shebangs
+
+    fix_termux_node_shebangs(project_root)
+
+
 def _update_node_dependencies() -> list[str]:
     """Refresh Node deps for ui-tui and web. Returns labels whose npm install failed (empty on
     success) so the caller reports a partial update instead of ``Update complete!``.
@@ -604,6 +615,10 @@ def _update_node_dependencies() -> list[str]:
 
     from hermes_constants import with_hermes_node_path
     nixos_env = with_hermes_node_path(_m()._nixos_build_env())
+    if _m()._is_termux_env():
+        from hermes_cli._early_recovery import prefer_termux_bionic_path
+
+        nixos_env = prefer_termux_bionic_path(nixos_env)
 
     # capture_output=False is deliberate: postinstall scripts print download progress and
     # capturing makes a long download look hung.
@@ -612,6 +627,8 @@ def _update_node_dependencies() -> list[str]:
     result = _m()._run_npm_install_deterministic(
         npm, _m().PROJECT_ROOT, extra_args=tuple(install_args), capture_output=False, env=nixos_env)
     if result.returncode == 0:
+        if _m()._is_termux_env():
+            _fix_termux_node_shebangs(_m().PROJECT_ROOT)
         _record_npm_lockfile_hash(shared_hermes_root)
         print("  ✓ ui-tui, web workspaces installed (desktop skipped)")
         return []

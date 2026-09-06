@@ -191,7 +191,10 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         # display_kind="hidden": model-facing scaffolding the "[System:" sniff does not catch.
         if role not in _HISTORY_ROLES or m.get("display_kind") == "hidden":
             continue
-        content_text = _coerce_message_text(m.get("content"))
+        projected = _sanitize_tool_display_value(m.get("content")) if role != "user" else m.get("content")
+        content_text = _coerce_message_text(projected)
+        if role == "user":
+            content_text = sanitize_context_for_transcript(content_text)
         if _is_display_hidden_marker(role, content_text):
             continue
         if role == "assistant" and m.get("tool_calls"):
@@ -199,7 +202,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
                 fn, tc_id = tc.get("function", {}), tc.get("id", "")
                 if tc_id and fn.get("name"):
                     try:
-                        args = json.loads(fn.get("arguments", "{}"))
+                        args = _sanitize_tool_display_value(json.loads(fn.get("arguments", "{}")))
                     except (json.JSONDecodeError, TypeError):
                         args = {}
                     tool_call_args[tc_id] = (fn["name"], args)
@@ -232,7 +235,8 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if invocation:
             msg.update(text=invocation, display_kind="skill_invocation")
         if role == "assistant":
-            msg.update((key, m[key]) for key in _HISTORY_ASSISTANT_DETAIL_KEYS if m.get(key) is not None)
+            msg.update((key, _sanitize_tool_display_value(m[key]))
+                       for key in _HISTORY_ASSISTANT_DETAIL_KEYS if m.get(key) is not None)
         # Display-only timeline metadata (model switches, delegation events).
         display_kind = m.get("display_kind") or _legacy_display_kind(role, content_text)
         if display_kind:

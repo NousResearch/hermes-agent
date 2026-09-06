@@ -311,7 +311,7 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
             sid, session, raw, confirm_expensive_model=True, pin_session_override=False,
             persist_override=False)
     except Exception as e:
-        _emit("error", sid, {"message": f"Could not switch to configured model {model}: {e}"})
+        _emit("error", sid, {"message": f"Could not switch to configured model {model}: {sanitize_context(str(e))}"})
 
 
 def _pending_switch_selection_warning(model: str, provider: str) -> str | None:

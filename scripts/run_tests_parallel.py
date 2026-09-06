@@ -419,8 +419,13 @@ def _sandboxed_test_command(
                 home_filter_parts.append(
                     f'(require-not (subpath "{escaped}"))'
                 )
+        # Permit path metadata so pytest can traverse a repository nested
+        # beneath the account home (GitHub macOS uses ~/work/<repo>/<repo>).
+        # Contents and extended attributes remain unreadable everywhere under
+        # the real home except the exact repository/interpreter allowlist;
+        # credential and Hermes roots below retain the stronger file-read* ban.
         rules.append(
-            "(deny file-read* (require-all "
+            "(deny file-read-data file-read-xattr (require-all "
             + " ".join(home_filter_parts)
             + "))"
         )

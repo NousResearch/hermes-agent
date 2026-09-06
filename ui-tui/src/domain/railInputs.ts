@@ -15,7 +15,9 @@ export interface RailInputs {
 
 export type ParsedRailInputs = Omit<RailInputs, 'mtimeMs' | 'projectRoot' | 'sourceFile'>
 
-const MAX_RAIL_INPUT_BYTES = 64 * 1024
+// Context files can contain the full project guide; keep parsing bounded without
+// hiding normal guides that are larger than a single screen of instructions.
+const MAX_RAIL_INPUT_BYTES = 128 * 1024
 const SECTION_RE = /^##\s+Context rail inputs\s*$/i
 const NEXT_SECTION_RE = /^##\s/
 const TOP_LEVEL_RE = /^-\s+([A-Za-z][A-Za-z0-9_-]*):\s?(.*)$/

@@ -44,6 +44,20 @@ def bedrock_model_routable_from_region(model_id: str, region_name: str) -> bool:
     return matched_geo == geo
 
 
+def _allowlisted_curated_bedrock_ids(model_list):
+    """(curated ids projected through ``bedrock.discovery.model_allowlist``, whether one is set).
+    The curated table names the very ids an allowlist is usually written to hide, so neither
+    wizard branch may offer it unfiltered while an allowlist is configured. The pool is the same
+    one ``models_bedrock._bedrock_catalog`` projects (curated ids plus the Mantle ids the control
+    plane never lists), so the two surfaces cannot diverge for a Mantle-only allowlist."""
+    from agent.bedrock_adapter import (configured_bedrock_model_allowlist, filter_bedrock_model_ids,
+                                       merge_bedrock_openai_model_ids)
+    allowlist = configured_bedrock_model_allowlist()
+    if not allowlist:
+        return list(model_list), False
+    return filter_bedrock_model_ids(merge_bedrock_openai_model_ids(list(model_list)), allowlist), True
+
+
 def _model_flow_bedrock_api_key(config, region, current_model=""):
     """Bedrock API Key mode on the OpenAI-compatible bedrock-mantle endpoint — for developers
     without an AWS account who received a Bedrock API Key from their AWS admin."""
@@ -72,8 +86,11 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
         print("  ✓ API key saved.")
     print()
 
-    # Static list — mantle doesn't need boto3 for discovery
-    model_list = _PROVIDER_MODELS.get("bedrock", [])
+    # Static list — mantle doesn't need boto3 for discovery; the allowlist still applies to it.
+    model_list, _allowlist_in_force = _allowlisted_curated_bedrock_ids(_PROVIDER_MODELS.get("bedrock", []))
+    if not model_list:
+        print("  No models match bedrock.discovery.model_allowlist.")
+        return
     print(f"  Showing {len(model_list)} curated models")
     selected = _pick_model_or_prompt(
         model_list, "  Model ID: ", current_model=current_model, confirm_provider="custom",
@@ -190,9 +207,14 @@ def _model_flow_bedrock(config, current_model=""):
         model_list = _bedrock_text_model_ids(live_models, region)
         print(f"  Found {len(model_list)} text model(s) (filtered from {len(live_models)} total)")
     else:
-        model_list = _PROVIDER_MODELS.get("bedrock", [])
+        # An empty live catalog under an allowlist is usually the allowlist matching nothing
+        # (discover_bedrock_models honors bedrock.discovery.model_allowlist). Substituting the
+        # whole curated list would re-admit the very ids it hides, so the fallback is intersected;
+        # with the allowlist unset the historical curated fallback is unchanged.
+        model_list, allowlist_in_force = _allowlisted_curated_bedrock_ids(_PROVIDER_MODELS.get("bedrock", []))
         if not model_list:
-            print("  No models found. Check IAM permissions for bedrock:ListFoundationModels.")
+            print("  No models match bedrock.discovery.model_allowlist in this region." if allowlist_in_force
+                  else "  No models found. Check IAM permissions for bedrock:ListFoundationModels.")
             return
         print(f"  Using {len(model_list)} curated models (live discovery unavailable)")
 

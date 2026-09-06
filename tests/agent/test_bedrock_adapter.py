@@ -10,6 +10,7 @@ Covers:
 """
 
 import json
+import logging
 from contextlib import contextmanager
 from types import ModuleType
 from unittest.mock import MagicMock, patch
@@ -844,6 +845,117 @@ class TestDiscoverBedrockModels:
             models = discover_bedrock_models("us-east-1")
 
         assert models == []
+
+
+# ---------------------------------------------------------------------------
+# bedrock.discovery.model_allowlist
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def _allowlist_config(value):
+    """Patch the config read ``configured_bedrock_model_allowlist()`` performs."""
+    with patch("hermes_cli.config.load_config_readonly",
+               return_value={"bedrock": {"discovery": {"model_allowlist": value}}}):
+        yield
+
+
+def _control_client(*model_ids, profiles=()):
+    """Mock Bedrock control-plane client listing *model_ids* and inference *profiles*."""
+    client = MagicMock()
+    client.list_foundation_models.return_value = {"modelSummaries": [
+        {"modelId": mid, "modelName": mid, "providerName": mid.split(".")[0].title(),
+         "inputModalities": ["TEXT"], "outputModalities": ["TEXT"],
+         "responseStreamingSupported": True, "modelLifecycle": {"status": "ACTIVE"}}
+        for mid in model_ids]}
+    client.list_inference_profiles.return_value = {"inferenceProfileSummaries": [
+        {"inferenceProfileId": pid, "inferenceProfileName": pid, "status": "ACTIVE",
+         "models": [{"modelArn": f"arn:aws:bedrock:us-east-1::foundation-model/{pid}"}]}
+        for pid in profiles]}
+    return client
+
+
+class TestBedrockModelAllowlist:
+    """ListFoundationModels answers "what exists in this region", never "what this account may
+    invoke" (an SCP or a missing Marketplace agreement denies a subset), so the invokable set can
+    only come from config: ``bedrock.discovery.model_allowlist``."""
+
+    def test_reader_normalizes_and_tolerates_bad_shapes(self):
+        """Lowercase/strip, empties dropped, a bare string accepted; an unreadable config or a
+        non-list value (``hermes config set ... true`` stores a real bool) reads as unset instead
+        of raising in front of the wizard."""
+        from agent.bedrock_adapter import configured_bedrock_model_allowlist
+
+        with _allowlist_config(["  US.Anthropic.Claude-Sonnet-4-6 ", "", "   ", "deepseek.v3.2"]):
+            assert configured_bedrock_model_allowlist() == frozenset(
+                {"us.anthropic.claude-sonnet-4-6", "deepseek.v3.2"})
+        with _allowlist_config("openai.gpt-5.6-sol"):
+            assert configured_bedrock_model_allowlist() == frozenset({"openai.gpt-5.6-sol"})
+        with patch("hermes_cli.config.load_config_readonly", side_effect=OSError("unreadable")):
+            assert configured_bedrock_model_allowlist() == frozenset()
+        with patch("hermes_cli.config.load_config_readonly", return_value={}):
+            assert configured_bedrock_model_allowlist() == frozenset()
+        for not_a_list in (True, 5, {"a": 1}):
+            with _allowlist_config(not_a_list):
+                assert configured_bedrock_model_allowlist() == frozenset(), repr(not_a_list)
+
+    def test_discover_keeps_exactly_the_allowlisted_ids_per_policy(self):
+        """Foundation models and inference profiles both obey the allowlist, case-insensitively and
+        by exact id (a prefix entry matches nothing: it would silently re-admit newly published
+        ids). The allowlist is part of the in-memory cache key, so a policy edit re-lists instead
+        of serving the previous projection for the TTL; with the allowlist unset discovery is the
+        identity (positive control)."""
+        from agent.bedrock_adapter import discover_bedrock_models, reset_discovery_cache
+        reset_discovery_cache()
+
+        client = _control_client("anthropic.claude-v2", "deepseek.v3.2", "openai.gpt-oss-120b-1:0",
+                                 profiles=("us.anthropic.claude-sonnet-4-6",))
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=client):
+            with _allowlist_config(["ANTHROPIC.CLAUDE-V2", " us.anthropic.claude-sonnet-4-6 ",
+                                    "openai.gpt-oss-120b"]):  # last one is a prefix, not an id
+                kept = discover_bedrock_models("us-east-1")
+                cached = discover_bedrock_models("us-east-1")
+            assert client.list_foundation_models.call_count == 1, "same policy: served from cache"
+            with _allowlist_config(["deepseek.v3.2"]):
+                narrowed = discover_bedrock_models("us-east-1")
+            assert client.list_foundation_models.call_count == 2, "policy edit: re-listed"
+            with _allowlist_config([]):
+                unfiltered = discover_bedrock_models("us-east-1")
+
+        assert {m["id"] for m in kept} == {"anthropic.claude-v2", "us.anthropic.claude-sonnet-4-6"}
+        assert [m["id"] for m in cached] == [m["id"] for m in kept]
+        assert [m["id"] for m in narrowed] == ["deepseek.v3.2"]
+        assert {m["id"] for m in unfiltered} == {"anthropic.claude-v2", "deepseek.v3.2",
+                                                 "openai.gpt-oss-120b-1:0",
+                                                 "us.anthropic.claude-sonnet-4-6"}
+
+    def test_model_ids_or_none_applies_the_allowlist_after_the_mantle_merge(self, caplog):
+        """The Mantle ids are appended unconditionally (discovery never lists them), so the
+        allowlist has to be applied again after the merge. Zero match -> None (the static-fallback
+        contract) plus exactly one warning naming the region and the discovered count; an
+        allowlist naming only Mantle ids is not a zero match the user can act on (the catalog
+        fallback offers them), so it must not warn."""
+        from agent.bedrock_adapter import bedrock_model_ids_or_none, reset_discovery_cache
+        reset_discovery_cache()
+
+        client = _control_client("anthropic.claude-v2", "deepseek.v3.2")
+        with caplog.at_level(logging.WARNING, logger="agent.bedrock_adapter"), \
+             patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=client), \
+             patch("agent.bedrock_adapter.resolve_bedrock_runtime_region", return_value="us-west-2"):
+            with _allowlist_config(["anthropic.claude-v2", "openai.gpt-5.6-sol"]):
+                ids = bedrock_model_ids_or_none()
+            assert ids == ["anthropic.claude-v2", "openai.gpt-5.6-sol"]
+            assert not [r for r in caplog.records if "model_allowlist" in r.getMessage()]
+
+            with _allowlist_config(["us.anthropic.claude-typo"]):
+                assert bedrock_model_ids_or_none() is None
+            warned = [r.getMessage() for r in caplog.records if "model_allowlist" in r.getMessage()]
+            assert len(warned) == 1
+            assert "matched none of 2 discovered ids in us-west-2" in warned[0]
+
+            caplog.clear()
+            with _allowlist_config(["OpenAI.GPT-5.6-Sol"]):
+                assert bedrock_model_ids_or_none() is None
+            assert not [r for r in caplog.records if "model_allowlist" in r.getMessage()]
 
 
 class TestExtractProviderFromArn:

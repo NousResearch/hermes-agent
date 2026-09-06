@@ -273,6 +273,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes_async,
     cache_audio_from_url,
     cache_audio_from_bytes,
+    cache_audio_from_bytes_async,
     cache_document_from_bytes,
     cache_document_from_bytes_async,
     SUPPORTED_DOCUMENT_TYPES,

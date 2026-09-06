@@ -27,6 +27,7 @@ import threading
 import atexit
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
+from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
 

@@ -29,6 +29,7 @@ HTTPX_AVAILABLE = httpx is not None
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import cache_document_from_bytes_async, cache_image_from_bytes_async
 from utils import env_float
 
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret

@@ -18,7 +18,8 @@ import re
 import time
 from contextlib import suppress
 from gateway.log_redaction import (
-    log_safe_gateway_identity, session_key_for_log,
+    log_safe_gateway_error, log_safe_gateway_exc_info, log_safe_gateway_identity,
+    log_safe_gateway_payload, session_key_for_log,
 )
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
@@ -1428,12 +1429,12 @@ class GatewayInboundMixin:
             )
             vision_runtime = {**(runtime_kwargs or {}), "model": turn_model}
         except Exception:
-            logger.debug("vision enrichment: session runtime resolution failed", exc_info=True)
+            logger.debug("vision enrichment: session runtime resolution failed", exc_info=log_safe_gateway_exc_info(source.platform))
 
         from agent.auxiliary_client import scoped_runtime_main
 
         with scoped_runtime_main(vision_runtime):
-            return await self._enrich_message_with_vision(message_text, image_paths)
+            return await self._enrich_message_with_vision(message_text, image_paths, platform=source.platform)
 
     async def _echo_stt_transcripts(
         self, adapter, source: SessionSource, transcripts: List[str], *, metadata=None, log_context: str = "Transcript"
@@ -1443,13 +1444,13 @@ class GatewayInboundMixin:
             try:
                 await adapter.send(source.chat_id, f'🎙️ "{tx}"', metadata=metadata)
             except Exception as echo_exc:
-                logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
+                logger.debug("%s echo failed (non-fatal): %s", log_context, log_safe_gateway_error(source.platform, echo_exc))
 
     async def _enrich_inbound_voice(
         self, event: MessageEvent, source: SessionSource, message_text: str, audio_paths: list[str]
     ) -> str:
         message_text, _successful_transcripts = await self._enrich_message_with_transcription(
-            message_text, audio_paths,
+            message_text, audio_paths, platform=source.platform,
         )
         # Echo each successful transcript back immediately when configured so users can verify STT
         # quality in real time. On transcription failure do NOT send a hardcoded notice: that
@@ -1899,7 +1900,7 @@ class GatewayInboundMixin:
             logger.debug("image_routing: decision failed, falling back to text — %s", exc)
             return "text"
 
-    async def _enrich_message_with_vision(self, user_text: str, image_paths: List[str]) -> str:
+    async def _enrich_message_with_vision(self, user_text: str, image_paths: List[str], *, platform=None) -> str:
         """Auto-analyze user-attached images with the vision tool and prepend the descriptions.
         Description *and* local cache path are injected so the model understands the image without
         a tool call and can re-examine it with vision_analyze."""
@@ -1916,7 +1917,7 @@ class GatewayInboundMixin:
         enriched_parts = []
         for path in image_paths:
             try:
-                logger.debug("Auto-analyzing user image: %s", path)
+                logger.debug("Auto-analyzing user image: %s", log_safe_gateway_payload(platform, path))
                 result = json.loads(await vision_analyze_tool(image_url=path, user_prompt=analysis_prompt))
                 if result.get("success"):
                     description = sanitize_context(result.get("analysis", ""))
@@ -1932,7 +1933,7 @@ class GatewayInboundMixin:
                         f"with vision_analyze using image_url: {path}]"
                     )
             except Exception as e:
-                logger.error("Vision auto-analysis error: %s", e)
+                logger.error("Vision auto-analysis error: %s", log_safe_gateway_error(platform, e))
                 note = (
                     f"[The user sent an image but something went wrong when I "
                     f"tried to look at it~ You can try examining it yourself "
@@ -1961,16 +1962,16 @@ class GatewayInboundMixin:
         agent_path = to_agent_visible_cache_path(os.path.abspath(path))
         return f"[voice message could not be transcribed automatically; the audio is available at: {agent_path}]"
 
-    async def _transcribe_one_clip(self, path: str, transcribe_audio, transcribe_audio_local_fallback) -> Tuple[Optional[str], str]:
+    async def _transcribe_one_clip(self, path: str, transcribe_audio, transcribe_audio_local_fallback, *, platform=None) -> Tuple[Optional[str], str]:
         """``(transcript_or_None, note)`` for one clip via configured STT with local fallback."""
         result = await asyncio.to_thread(transcribe_audio, path, None, "gateway")
         if not result.get("success"):
             fallback = await asyncio.to_thread(transcribe_audio_local_fallback, path)
             if fallback.get("success"):
-                logger.info("Configured STT failed for %s; recovered with local STT", path)
+                logger.info("Configured STT failed for %s; recovered with local STT", log_safe_gateway_payload(platform, path))
                 result = fallback
         if not result["success"]:
-            logger.info("Voice transcription failed for %s: %s", path, result.get("error", "unknown error"))
+            logger.info("Voice transcription failed for %s: %s", log_safe_gateway_payload(platform, path), log_safe_gateway_error(platform, result.get("error", "unknown error")))
             return None, self._untranscribed_audio_note(path)
         transcript = result["transcript"]
         # STT may return success=True with an empty/whitespace transcript (silence, cut-off);
@@ -1988,7 +1989,7 @@ class GatewayInboundMixin:
         return transcript, f'"{transcript}"'
 
     async def _enrich_message_with_transcription(
-        self, user_text: str, audio_paths: List[str]
+        self, user_text: str, audio_paths: List[str], *, platform=None
     ) -> tuple[str, List[str]]:
         """Transcribe voice clips with the configured STT provider and prepend the transcripts →
         ``(enriched_text, successful_transcripts)``; the transcripts (input order; empty if every clip
@@ -2009,22 +2010,22 @@ class GatewayInboundMixin:
                 transcribe_audio, transcribe_audio_local_fallback
             )
         except ModuleNotFoundError as e:
-            logger.error("Transcription module unavailable: %s", e)
+            logger.error("Transcription module unavailable: %s", log_safe_gateway_error(platform, e))
             return self._prepend_media_prefix("[voice message could not be transcribed]", user_text), []
 
         enriched_parts = []
         successful_transcripts: List[str] = []
         for path in audio_paths:
             try:
-                logger.debug("Transcribing user voice: %s", path)
+                logger.debug("Transcribing user voice: %s", log_safe_gateway_payload(platform, path))
                 transcript, note = await self._transcribe_one_clip(
-                    path, transcribe_audio, transcribe_audio_local_fallback,
+                    path, transcribe_audio, transcribe_audio_local_fallback, platform=platform,
                 )
                 if transcript is not None:
                     successful_transcripts.append(transcript)
                 enriched_parts.append(note)
             except Exception as e:
-                logger.error("Transcription error: %s", e)
+                logger.error("Transcription error: %s", log_safe_gateway_error(platform, e))
                 enriched_parts.append(self._untranscribed_audio_note(path))
 
         if enriched_parts:
@@ -2050,7 +2051,7 @@ class GatewayInboundMixin:
         if not audio_paths:
             return user_text if user_text is not None else (getattr(event, "text", None) or None), []
         text = user_text if user_text is not None else (getattr(event, "text", "") or "")
-        enriched_text, successful_transcripts = await self._enrich_message_with_transcription(text, audio_paths)
+        enriched_text, successful_transcripts = await self._enrich_message_with_transcription(text, audio_paths, platform=getattr(getattr(event, "source", None), "platform", None))
         event._gateway_pending_stt_text = enriched_text
         event._gateway_pending_stt_transcripts = list(successful_transcripts)
         return enriched_text, successful_transcripts
@@ -2088,5 +2089,5 @@ class GatewayInboundMixin:
             )
             return enriched_text or text, transcripts
         except Exception as trans_exc:
-            logger.warning("%s transcription failed: %s", log_context, trans_exc)
+            logger.warning("%s transcription failed: %s", log_context, log_safe_gateway_error(source.platform, trans_exc))
             return text, []

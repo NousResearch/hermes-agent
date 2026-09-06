@@ -20,7 +20,7 @@ from agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.log_redaction import (
-    log_safe_gateway_identity, session_exc_info_for_log, session_key_for_log,
+    log_safe_gateway_error, log_safe_gateway_identity, session_exc_info_for_log, session_key_for_log,
 )
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
@@ -2218,9 +2218,9 @@ class GatewayTurnMixin:
             ]
             if image_paths:
                 try:
-                    enriched_prompt = await self._enrich_message_with_vision(prompt, image_paths)
+                    enriched_prompt = await self._enrich_message_with_vision(prompt, image_paths, platform=source.platform)
                 except Exception as e:
-                    logger.warning("Background task vision enrichment failed: %s", e)
+                    logger.warning("Background task vision enrichment failed: %s", log_safe_gateway_error(source.platform, e))
 
             def run_sync():
                 agent = AIAgent(

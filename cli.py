@@ -3299,20 +3299,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
 
     def _run_plugin_slash_command(self, base_cmd: str, user_args: str) -> None:
         from hermes_cli.plugins import (
-            _get_plugin_command_entry, _invoke_plugin_command_handler, resolve_plugin_command_result,
+            _dispatch_plugin_command, resolve_plugin_command_result,
         )
 
-        plugin_entry = _get_plugin_command_entry(base_cmd.lstrip("/"))
-        if not plugin_entry:
-            return
         try:
-            result = resolve_plugin_command_result(
-                _invoke_plugin_command_handler(plugin_entry, user_args, context=None)
+            dispatched = resolve_plugin_command_result(
+                _dispatch_plugin_command(base_cmd.lstrip("/"), user_args)
             )
-            if result:
-                _cprint(str(result))
-        except Exception as e:
-            _cprint(f"\033[1;31mPlugin command error: {e}{_RST}")
+            if dispatched.failed:
+                _cprint(f"\033[1;31m{dispatched.error_message}{_RST}")
+            elif dispatched.denied:
+                _cprint(f"\033[1;31mPlugin command denied: {dispatched.denial_message}{_RST}")
+            elif dispatched.output:
+                _cprint(str(dispatched.output))
+        except Exception:
+            _cprint(f"\033[1;31mPlugin command failed.{_RST}")
 
     def _queue_skill_message(self, msg) -> None:
         if hasattr(self, '_pending_input'):

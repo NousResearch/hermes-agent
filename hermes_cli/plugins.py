@@ -1976,9 +1976,24 @@ def get_plugin_context_engine():
 
 
 def get_plugin_command_handler(name: str) -> Optional[Callable]:
-    """Return the handler for a plugin-registered slash command, or ``None``."""
+    """Return a compatibility wrapper routed through host-owned dispatch.
+
+    The wrapper has no gateway admission source, so authenticated commands are
+    denied rather than exposing their raw handler through this legacy API.
+    """
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
-    return entry["handler"] if entry else None
+    if entry is None:
+        return None
+
+    async def dispatch(raw_args: str) -> Any:
+        result = await _dispatch_plugin_command(name, raw_args)
+        if result.denied:
+            raise PermissionError(result.denial_message)
+        if result.failed:
+            raise RuntimeError(result.error_message)
+        return result.output
+
+    return dispatch
 
 
 def _get_plugin_command_entry(name: str) -> Optional[dict]:
@@ -1998,6 +2013,79 @@ async def _invoke_plugin_command_handler(
     if inspect.isawaitable(result):
         return await result
     return result
+
+
+@dataclass(frozen=True, slots=True)
+class PluginCommandDispatchResult:
+    """Outcome from the single host-owned plugin command dispatch path."""
+
+    found: bool
+    output: Any = None
+    denial_message: Optional[str] = None
+    error_message: Optional[str] = None
+
+    @property
+    def denied(self) -> bool:
+        return self.denial_message is not None
+
+    @property
+    def failed(self) -> bool:
+        return self.error_message is not None
+
+
+_AUTHENTICATED_COMMAND_GATEWAY_ONLY = (
+    "This command requires an authenticated gateway request."
+)
+
+
+async def _dispatch_plugin_command(
+    name: str,
+    raw_args: str,
+    *,
+    authorize: Optional[Callable[[str], Optional[str]]] = None,
+    context_factory: Optional[Callable[[], PluginCommandContext]] = None,
+) -> PluginCommandDispatchResult:
+    """Look up, authorize, and invoke one plugin slash command.
+
+    Gateway callers provide both ``authorize`` and ``context_factory``. The
+    authorization gate runs before authenticated identity is built or exposed
+    to a plugin. CLI and TUI callers omit both; legacy commands remain usable,
+    while commands opting into authenticated context fail closed.
+    """
+    try:
+        entry = _get_plugin_command_entry(name)
+        if entry is None:
+            return PluginCommandDispatchResult(found=False)
+
+        if authorize is not None:
+            denial = authorize(name)
+            if denial is not None:
+                return PluginCommandDispatchResult(found=True, denial_message=str(denial))
+
+        authenticated = bool(entry.get("authenticated_context"))
+        if authenticated and context_factory is None:
+            return PluginCommandDispatchResult(
+                found=True, denial_message=_AUTHENTICATED_COMMAND_GATEWAY_ONLY
+            )
+
+        if authenticated:
+            assert context_factory is not None  # narrowed by the fail-closed branch above
+            context = context_factory()
+        else:
+            context = None
+        if authenticated and not isinstance(context, PluginCommandContext):
+            return PluginCommandDispatchResult(
+                found=True, denial_message=_AUTHENTICATED_COMMAND_GATEWAY_ONLY
+            )
+
+        output = await _invoke_plugin_command_handler(entry, raw_args, context=context)
+        return PluginCommandDispatchResult(found=True, output=output)
+    except Exception as exc:
+        # Fail closed even when command discovery is uncertain: classifying the
+        # command as absent would route its raw text into another command path.
+        # Do not include exception text: discovery and handlers may touch secrets.
+        logger.warning("Plugin command /%s failed (%s)", name, type(exc).__name__)
+        return PluginCommandDispatchResult(found=True, error_message="Plugin command failed.")
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0

@@ -978,28 +978,32 @@ class GatewayInboundMixin:
         # underscored autocomplete form matches plugin commands registered with hyphens.
         if command:
             try:
-                from hermes_cli.plugins import (
-                    PluginCommandContext, _get_plugin_command_entry, _invoke_plugin_command_handler,
-                )
-                plugin_entry = _get_plugin_command_entry(command.replace("_", "-"))
-                if plugin_entry:
-                    _denied = self._check_slash_access(source, command)
-                    if _denied is not None:
-                        return True, _denied, command
-                    plugin_context = PluginCommandContext(
+                from hermes_cli.plugins import PluginCommandContext, _dispatch_plugin_command
+
+                dispatched = await _dispatch_plugin_command(
+                    command.replace("_", "-"),
+                    event.get_command_args().strip(),
+                    authorize=lambda _name: self._check_slash_access(source, command),
+                    context_factory=lambda: PluginCommandContext(
                         platform=source.platform.value,
                         user_id=source.user_id,
                         chat_id=source.chat_id,
                         chat_type=source.chat_type,
                         scope_id=source.scope_id,
                         profile=source.profile,
-                    )
-                    result = await _invoke_plugin_command_handler(
-                        plugin_entry, event.get_command_args().strip(), context=plugin_context,
-                    )
-                    return True, str(result) if result else None, command
-            except Exception as e:
-                logger.warning("Plugin command dispatch failed: %s", e)
+                    ),
+                )
+                if dispatched.found:
+                    if dispatched.failed:
+                        return True, dispatched.error_message, command
+                    if dispatched.denied:
+                        return True, dispatched.denial_message, command
+                    return True, str(dispatched.output) if dispatched.output else None, command
+            except Exception as exc:
+                logger.warning(
+                    "Plugin command dispatch infrastructure failed (%s)", type(exc).__name__
+                )
+                return True, "Plugin command failed.", command
         return False, None, command
 
     def _hm_bundle_slash_rewrite(

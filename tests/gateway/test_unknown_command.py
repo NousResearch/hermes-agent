@@ -308,3 +308,30 @@ def test_plugin_command_dispatch_checks_slash_access_before_handler(monkeypatch)
 
     assert (handled, result, command) == (True, "not allowed", "probe")
     assert seen == []
+
+
+def test_plugin_registry_failure_is_handled_without_detail_or_fallthrough(monkeypatch, caplog):
+    runner = _make_runner()
+    runner._draining = False
+    runner._hm_quick_commands = lambda: {}
+
+    def broken_lookup(_name):
+        raise RuntimeError("sensitive registry detail")
+
+    monkeypatch.setattr("hermes_cli.plugins._get_plugin_command_entry", broken_lookup)
+    source = SessionSource(
+        platform=Platform.SLACK,
+        user_id="staff-user",
+        chat_id="direct-chat",
+        chat_type="dm",
+        scope_id="firm-workspace",
+        profile="lilly",
+    )
+    event = MessageEvent(text="/possibly-secure secret args", source=source, message_id="m-fail")
+
+    handled, result, command = asyncio.run(
+        runner._hm_dispatch_quick_and_plugin_commands(event, source, "possibly-secure")
+    )
+
+    assert (handled, result, command) == (True, "Plugin command failed.", "possibly-secure")
+    assert "sensitive registry detail" not in caplog.text

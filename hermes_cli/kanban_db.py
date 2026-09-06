@@ -4315,6 +4315,7 @@ _PLUGIN_COMPAT_LAZY = {
     'remove_notify_sub': ('hermes_cli.kanban_db_notify', 'remove_notify_sub'),
     'repair_db': ('hermes_cli.kanban_db_connect', 'repair_db'),
     'resolve_max_in_progress': ('hermes_cli.kanban_db_dispatch', 'resolve_max_in_progress'),
+    '_ensure_git_worktree': ('hermes_cli.kanban_db_workspace', '_ensure_git_worktree'),
     'resolve_workspace': ('hermes_cli.kanban_db_workspace', 'resolve_workspace'),
     'review_dispatch_enabled': ('hermes_cli.kanban_db_dispatch', 'review_dispatch_enabled'),
     'rewind_notify_cursor': ('hermes_cli.kanban_db_notify', 'rewind_notify_cursor'),

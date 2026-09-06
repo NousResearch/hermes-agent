@@ -2758,15 +2758,28 @@ _BUNDLED_RESOURCE_ENV_VARS = (
 )
 
 
-def _bundled_resource_env_pairs() -> list[tuple[str, str]]:
-    """Return ``(name, value)`` for each bundled-resource env var currently set.
+def _bundled_resource_env_pairs(fallback: dict[str, str] | None = None) -> list[tuple[str, str]]:
+    """Return ``(name, value)`` for each bundled-resource env var to bake in.
 
-    Empty on a standard pip/uv install where the wrapper isn't involved, so the
-    generated unit is byte-for-byte unchanged for those deployments.
+    The live wrapper environment wins; for any var the wrapper did not export,
+    fall back to ``fallback`` — the pointers parsed from the unit already on
+    disk. ``generate_*`` is called on every ordinary start (via the
+    ``refresh_*_if_needed`` / ``*_is_current`` chokepoints), not just first
+    install, so without this a Homebrew/Nix user who installs through the
+    wrapper (vars present) and later starts the gateway from a context where the
+    wrapper isn't in the environment — venv python invoked directly, a GUI/
+    desktop launch, a supervised restart — would get the unit rewritten with the
+    ``HERMES_BUNDLED_*`` pointers silently stripped, and #85357 comes back with
+    no error. Carrying the on-disk values forward makes regeneration idempotent
+    for those pointers instead.
+
+    Empty on a standard pip/uv install with no prior unit, so the generated unit
+    is byte-for-byte unchanged for those deployments.
     """
+    fallback = fallback or {}
     pairs: list[tuple[str, str]] = []
     for name in _BUNDLED_RESOURCE_ENV_VARS:
-        value = os.environ.get(name, "").strip()
+        value = os.environ.get(name, "").strip() or fallback.get(name, "").strip()
         if value:
             pairs.append((name, value))
     return pairs
@@ -2789,15 +2802,86 @@ def _systemd_env_value_escape(value: str) -> str:
     )
 
 
+def _systemd_env_value_unescape(value: str) -> str:
+    """Inverse of :func:`_systemd_env_value_escape`.
+
+    Undoes the escapes in reverse order (``%%``→``%``, ``\\"``→``"``,
+    ``\\\\``→``\\``) so a value we previously wrote round-trips exactly when it
+    is parsed back out of an on-disk unit for the merge-forward fallback.
+    """
+    return (
+        value.replace("%%", "%")
+        .replace('\\"', '"')
+        .replace("\\\\", "\\")
+    )
+
+
+def _read_bundled_env_from_launchd_plist(text: str) -> dict[str, str]:
+    """Parse already-propagated ``HERMES_BUNDLED_*`` pointers from an on-disk plist.
+
+    Uses ``plistlib`` so XML entities are unescaped robustly; returns ``{}`` for
+    a malformed/absent ``EnvironmentVariables`` dict rather than raising.
+    """
+    import plistlib
+
+    try:
+        data = plistlib.loads(text.encode("utf-8"))
+    except Exception:
+        return {}
+    env = data.get("EnvironmentVariables") if isinstance(data, dict) else None
+    if not isinstance(env, dict):
+        return {}
+    found: dict[str, str] = {}
+    for name in _BUNDLED_RESOURCE_ENV_VARS:
+        raw = env.get(name)
+        if isinstance(raw, str) and raw.strip():
+            found[name] = raw.strip()
+    return found
+
+
+def _read_bundled_env_from_systemd_unit(text: str) -> dict[str, str]:
+    """Parse already-propagated ``HERMES_BUNDLED_*`` pointers from an on-disk unit."""
+    prefixes = {name: f'Environment="{name}=' for name in _BUNDLED_RESOURCE_ENV_VARS}
+    found: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        for name, prefix in prefixes.items():
+            if line.startswith(prefix) and line.endswith('"'):
+                value = _systemd_env_value_unescape(line[len(prefix):-1]).strip()
+                if value:
+                    found[name] = value
+    return found
+
+
+def _prior_bundled_launchd_env() -> dict[str, str]:
+    """``HERMES_BUNDLED_*`` pointers from the installed plist, or ``{}``."""
+    path = get_launchd_plist_path()
+    with contextlib.suppress(OSError):
+        if path.exists():
+            return _read_bundled_env_from_launchd_plist(path.read_text(encoding="utf-8"))
+    return {}
+
+
+def _prior_bundled_systemd_env(system: bool = False) -> dict[str, str]:
+    """``HERMES_BUNDLED_*`` pointers from the installed systemd unit, or ``{}``."""
+    path = get_systemd_unit_path(system=system)
+    with contextlib.suppress(OSError):
+        if path.exists():
+            return _read_bundled_env_from_systemd_unit(path.read_text(encoding="utf-8"))
+    return {}
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
     venv_dir = _service_venv_dir()
     # Propagate the wrapper's bundled-resource pointers (empty → no-op). Rendered
     # as extra ``Environment=`` lines appended after HERMES_SUPERVISED_CHILD below.
+    # Carry forward any pointers already in the on-disk unit so an ordinary start
+    # from a non-wrapper environment doesn't strip them (see #85357).
     bundled_env_block = "".join(
         f'\nEnvironment="{name}={_systemd_env_value_escape(value)}"'
-        for name, value in _bundled_resource_env_pairs()
+        for name, value in _bundled_resource_env_pairs(_prior_bundled_systemd_env(system=system))
     )
 
     path_entries = _build_service_path_dirs()
@@ -3708,9 +3792,11 @@ def generate_launchd_plist() -> str:
     # launchd-supervised gateway (which starts the venv python directly, not the
     # wrapper) can still find bundled plugins/skills/locales. Empty → no-op. See
     # #85357. Rendered as extra <key>/<string> pairs inside EnvironmentVariables.
+    # Carry forward any pointers already in the on-disk plist so an ordinary start
+    # from a non-wrapper environment doesn't strip them.
     bundled_env_xml = "".join(
         f"\n        <key>{name}</key>\n        <string>{_xml_escape(value)}</string>"
-        for name, value in _bundled_resource_env_pairs()
+        for name, value in _bundled_resource_env_pairs(_prior_bundled_launchd_env())
     )
 
     # Persist the configured RLIMIT_NOFILE floor: launchd defaults to soft 256, and every plist

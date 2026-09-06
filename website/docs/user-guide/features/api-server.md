@@ -677,6 +677,20 @@ gateway:
 
 `port`, `key`, `host`, `cors_origins`, `model_name`, and `openwebui_compact_event` are automatically bridged into the platform's `extra` settings. Environment variables take precedence over `config.yaml` values where an environment-variable counterpart exists. The block is also accepted under `gateway.platforms.api_server:` or a top-level `platforms.api_server:` section.
 
+### Open WebUI compaction status
+
+Set `gateway.api_server.openwebui_compact_event: true` to expose context
+compaction progress to Open WebUI during streaming `/v1/responses` requests.
+Hermes emits a `hermes.context_compaction` SSE event when compaction starts and
+a second event with `done: true` when it completes or fails. A failed event
+also contains `error: true`.
+
+This option defaults to `false`. The event is a Hermes extension rather than
+part of the OpenAI Responses specification, so it is not emitted for generic
+clients unless explicitly enabled. It does not affect non-streaming requests,
+and compaction statuses are not stored in response output or conversation
+history. Changing the option requires restarting the gateway.
+
 ### Concurrent-run cap
 
 The API server limits how many agent runs may execute at once across the OpenAI-compatible and Runs endpoints. The cap is read from `gateway.api_server.max_concurrent_runs` (default **10**; `0` disables the limit, negative values clamp to 0). When the cap is reached, new run-starting requests are rejected with **HTTP 429** `Too many concurrent runs (max N)` — clients should back off and retry.

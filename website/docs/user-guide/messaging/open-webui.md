@@ -177,7 +177,10 @@ gateway:
 The option defaults to `false` because `hermes.context_compaction` is a custom
 SSE event, not part of the OpenAI Responses specification. It only affects
 streaming `/v1/responses` requests and does not persist the status in response
-output or conversation history.
+output or conversation history. Hermes sends one temporary status when
+compaction starts and closes it with `done: true` after successful or failed
+compaction; failures also carry `error: true`. Restart the gateway after
+changing this setting.
 
 :::note
 Open WebUI currently manages conversation history client-side even in Responses mode — it sends the full message history in each request rather than using `previous_response_id`. The main advantage of Responses mode today is the structured event stream: text deltas, `function_call`, and `function_call_output` items arrive as OpenAI Responses SSE events instead of Chat Completions chunks.

@@ -1031,6 +1031,255 @@ def test_run_codex_stream_returns_terminal_response_when_post_terminal_drain_fai
     )
 
 
+def test_run_codex_stream_does_not_replay_after_visible_partial_delivery(monkeypatch):
+    """A dropped Codex stream is no longer replayable after visible output."""
+    import httpx
+
+    agent = _build_agent(monkeypatch)
+    delivered = []
+    agent.stream_delta_callback = delivered.append
+
+    class _MidStreamDrop(_FakeCreateStream):
+        def __iter__(self):
+            yield SimpleNamespace(type="response.created")
+            yield SimpleNamespace(
+                type="response.output_text.delta",
+                delta="Partial answer",
+            )
+            raise httpx.RemoteProtocolError("connection dropped mid-response")
+
+    completed_events = [
+        SimpleNamespace(type="response.output_text.delta", delta="Complete answer"),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(
+                status="completed",
+                usage=None,
+                id="resp_replayed",
+            ),
+        ),
+    ]
+    streams = iter([
+        _MidStreamDrop([]),
+        _FakeCreateStream(completed_events),
+    ])
+    calls = {"count": 0}
+
+    def _fake_create(**kwargs):
+        calls["count"] += 1
+        return next(streams)
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert calls["count"] == 1
+    assert delivered == ["Partial answer"]
+    assert response.output_text == "Partial answer"
+    assert response.status == "incomplete"
+    assert response.incomplete_details.reason == "stream_error"
+    assert response._stream_no_retry is True
+
+
+@pytest.mark.parametrize("error_type", ["RemoteProtocolError", "ReadTimeout"])
+def test_run_codex_stream_retirement_during_drop_preserves_timeout(monkeypatch, error_type):
+    """Retirement can occur between the final delta and a socket exception."""
+    import httpx
+
+    agent = _build_agent(monkeypatch)
+    agent._active_codex_stream_request_token = object()
+    delivered = []
+    agent.stream_delta_callback = delivered.append
+    calls = []
+
+    class _RetiredDrop(_FakeCreateStream):
+        def __iter__(self):
+            yield SimpleNamespace(type="response.created")
+            yield SimpleNamespace(type="response.output_text.delta", delta="Visible prefix")
+            agent._active_codex_stream_request_token = None
+            raise getattr(httpx, error_type)("retired socket closed")
+
+    def _create(**kwargs):
+        calls.append(kwargs)
+        return _RetiredDrop([])
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_create))
+    with pytest.raises(TimeoutError, match="retired"):
+        agent._run_codex_stream(_codex_request_kwargs())
+    assert len(calls) == 1
+    assert delivered == ["Visible prefix"]
+
+
+def test_run_codex_stream_retries_midstream_drop_before_visible_delivery(monkeypatch):
+    """A transport drop remains retryable until any visible delta is accepted."""
+    import httpx
+
+    agent = _build_agent(monkeypatch)
+
+    class _PreDeliveryDrop(_FakeCreateStream):
+        def __iter__(self):
+            yield SimpleNamespace(type="response.created")
+            raise httpx.RemoteProtocolError("connection dropped before output")
+
+    completed_events = [
+        SimpleNamespace(type="response.output_text.delta", delta="Recovered answer"),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(
+                status="completed",
+                usage=None,
+                id="resp_recovered",
+            ),
+        ),
+    ]
+    streams = iter([
+        _PreDeliveryDrop([]),
+        _FakeCreateStream(completed_events),
+    ])
+    calls = {"count": 0}
+
+    def _fake_create(**kwargs):
+        calls["count"] += 1
+        return next(streams)
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert calls["count"] == 2
+    assert response.output_text == "Recovered answer"
+    assert response.status == "completed"
+
+
+def test_run_conversation_returns_partial_codex_stream_without_retry(monkeypatch):
+    """The loop preserves a delivered Codex partial as a non-failed turn."""
+    agent = _build_agent(monkeypatch)
+    calls = {"count": 0}
+    partial = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="incomplete",
+                content=[SimpleNamespace(type="output_text", text="Partial answer")],
+            )
+        ],
+        output_text="Partial answer",
+        usage=None,
+        status="incomplete",
+        id=None,
+        model="gpt-5-codex",
+        incomplete_details=SimpleNamespace(reason="stream_error"),
+        error=None,
+        _stream_no_retry=True,
+    )
+
+    def _partial_api_call(api_kwargs):
+        calls["count"] += 1
+        return partial
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _partial_api_call)
+    outcomes = []
+    monkeypatch.setattr(
+        "agent.relay_llm.complete_logical_call",
+        lambda request_id, *, outcome: outcomes.append(outcome),
+    )
+
+    result = agent.run_conversation("Explain the issue")
+    assert outcomes == ["failed"]
+
+    assert calls["count"] == 1
+    assert result["final_response"] == "Partial answer"
+    assert result["completed"] is False
+    assert result["partial"] is True
+    assert result["failed"] is False
+    assert result["error"] == "network_stream_interrupted_after_partial_response"
+    assert result["messages"][-1]["content"] == "Partial answer"
+    assert result["messages"][-1]["finish_reason"] == "incomplete"
+
+
+def test_run_conversation_does_not_retry_stream_partial_with_open_scratchpad(monkeypatch):
+    """Already-delivered text must outrank scratchpad recovery retries."""
+    agent = _build_agent(monkeypatch)
+    text = "Visible answer prefix <REASONING_SCRATCHPAD>unfinished"
+    partial = SimpleNamespace(
+        output=[SimpleNamespace(
+            type="message", role="assistant", status="incomplete",
+            content=[SimpleNamespace(type="output_text", text=text)],
+        )],
+        output_text=text, usage=None, status="incomplete", id=None,
+        model="gpt-5-codex", error=None,
+        incomplete_details=SimpleNamespace(reason="stream_error"),
+        _stream_no_retry=True,
+    )
+    calls = []
+
+    def _api_call(api_kwargs):
+        calls.append(api_kwargs)
+        return partial if len(calls) == 1 else _codex_message_response("Replayed answer")
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _api_call)
+    result = agent.run_conversation("Explain the issue")
+
+    assert len(calls) == 1
+    assert result["completed"] is False
+    assert result["partial"] is True
+    assert result["failed"] is False
+    assert result["error"] == "network_stream_interrupted_after_partial_response"
+    assert "Visible answer prefix" in result["final_response"]
+    assert result["messages"][-1]["content"] == "Visible answer prefix unfinished"
+    assert result["messages"][-1]["finish_reason"] == "incomplete"
+
+
+def test_run_conversation_separates_length_fragment_from_stream_partial(monkeypatch):
+    """A later Codex stream partial must not glue to an earlier length fragment."""
+    from tests.run_agent.test_run_agent import _mock_response
+
+    agent = _build_agent(monkeypatch)
+    agent.api_mode = "chat_completions"
+    partial = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="incomplete",
+                content=[SimpleNamespace(type="output_text", text="Stream partial")],
+            )
+        ],
+        output_text="Stream partial",
+        usage=None,
+        status="incomplete",
+        id=None,
+        model="gpt-5-codex",
+        incomplete_details=SimpleNamespace(reason="stream_error"),
+        error=None,
+        _stream_no_retry=True,
+    )
+    calls = {"count": 0}
+
+    def _api_call(api_kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return _mock_response(content="Length fragment", finish_reason="length")
+        agent.api_mode = "codex_responses"
+        return partial
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _api_call)
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_streaming_api_call",
+        lambda api_kwargs, **_kwargs: _api_call(api_kwargs),
+    )
+
+    result = agent.run_conversation("Explain the issue")
+
+    assert calls["count"] == 2
+    assert result["completed"] is False
+    assert result["partial"] is True
+    assert result["failed"] is False
+    assert result["final_response"] == "Length fragment\nStream partial"
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))

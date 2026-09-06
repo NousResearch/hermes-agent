@@ -202,7 +202,9 @@ def check_api_response(
             pass
     from agent import relay_llm
 
-    relay_llm.complete_logical_call(api_request_id, outcome="success")
+    # Logical completion is one-shot; a delivered stream partial is not success.
+    stream_partial = agent.api_mode == "codex_responses" and getattr(response, "_stream_no_retry", False)
+    relay_llm.complete_logical_call(api_request_id, outcome="failed" if stream_partial else "success")
     agent._touch_activity(f"API call #{api_call_count} completed")
     return _verdict("break")
 

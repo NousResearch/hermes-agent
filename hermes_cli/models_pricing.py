@@ -230,7 +230,7 @@ def fetch_models_with_pricing(
 
     # Same document the reasoning-capability fetch would pull — mirror it so a later hot-path
     # lookup (and the next process) has an answer without its own round-trip.
-    _seed_reasoning_caps(url, payload.get("data"))
+    _seed_reasoning_caps(url, payload.get("data") if isinstance(payload, dict) else None)
 
     result: dict[str, dict[str, Any]] = {}
     for item in ((payload.get("data") or []) if isinstance(payload, dict) else []):

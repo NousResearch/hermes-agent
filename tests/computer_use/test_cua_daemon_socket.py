@@ -27,11 +27,12 @@ def test_configured_daemon_socket_is_appended(monkeypatch):
     assert args == ["mcp", "--socket", endpoint]
 
 
-def test_configured_daemon_socket_is_used_by_cli_fallback(monkeypatch):
+def test_resolved_primary_socket_is_used_by_cli_fallback(monkeypatch):
     from tools.computer_use import cua_backend, cua_backend_driver, cua_backend_session
 
-    endpoint = r"\\.\pipe\cua-driver"
-    monkeypatch.setattr(cua_backend, "_computer_use_cfg", lambda: {"daemon_socket": endpoint})
+    configured = r"\\.\pipe\configured"
+    resolved = r"\\.\pipe\manifest"
+    monkeypatch.setattr(cua_backend, "_computer_use_cfg", lambda: {"daemon_socket": configured})
     monkeypatch.setattr(cua_backend_driver, "resolve_cua_driver_cmd", lambda: "/resolved/cua-driver")
 
     captured = {}
@@ -42,6 +43,7 @@ def test_configured_daemon_socket_is_used_by_cli_fallback(monkeypatch):
 
     monkeypatch.setattr(cua_backend_session, "_cli_run_json", fake_cli_run_json)
     session = object.__new__(cua_backend_session._CuaDriverSession)
+    session._transport_socket = resolved
 
     result = session._call_tool_via_cli("list_windows", {}, timeout=5.0)
 
@@ -52,7 +54,7 @@ def test_configured_daemon_socket_is_used_by_cli_fallback(monkeypatch):
         "list_windows",
         "{}",
         "--socket",
-        endpoint,
+        resolved,
     ]
 
 
@@ -77,6 +79,24 @@ def test_manifest_socket_is_not_overridden(monkeypatch):
     _command, args = cua_backend_driver._resolve_mcp_invocation("cua-driver")
 
     assert args == ["mcp", "--socket", advertised]
+
+
+def test_embedded_daemon_replaces_other_socket():
+    from tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
+
+    configured = r"\\.\pipe\configured"
+    private = "/tmp/hermes-cua-private.sock"
+    daemon = object.__new__(_EmbeddedCuaDaemon)
+    daemon._running = True
+    daemon._command = "cua-driver"
+    daemon._mcp_args = ["mcp", "--socket", configured]
+    daemon.socket_path = private
+
+    command, args = daemon.proxy_invocation()
+
+    assert command == "cua-driver"
+    assert args == ["mcp", "--embedded", "--socket", private]
+    assert args.count("--socket") == 1
 
 
 def test_invalid_daemon_socket_fails_to_disabled(monkeypatch):

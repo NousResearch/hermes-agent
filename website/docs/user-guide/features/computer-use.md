@@ -103,7 +103,9 @@ computer_use:
 
 The endpoint is used only when configured. Hermes does not discover or connect
 to an ambient daemon automatically. A driver-provided MCP endpoint remains
-authoritative.
+authoritative, and the same resolved endpoint is used by the replay-safe CLI
+fallback. Private embedded modes replace external endpoints and emit exactly
+one socket selector.
 
 or add `computer_use` to your enabled toolsets in `~/.hermes/config.yaml`.
 

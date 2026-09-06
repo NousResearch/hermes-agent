@@ -125,6 +125,35 @@ def _mcp_args_with_configured_socket(args: List[str]) -> List[str]:
     socket = _cb()._cua_daemon_socket()
     return [*args, "--socket", socket] if socket else list(args)
 
+
+def _mcp_args_without_socket(args: List[str]) -> List[str]:
+    """Remove every socket selector so a private runtime can bind exactly one endpoint."""
+    result: List[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--socket":
+            index += 2
+            continue
+        if arg.startswith("--socket="):
+            index += 1
+            continue
+        result.append(arg)
+        index += 1
+    return result
+
+
+def _mcp_socket_from_args(args: List[str]) -> Optional[str]:
+    """Return the endpoint selected by a resolved MCP invocation, if any."""
+    for index, arg in enumerate(args):
+        if arg == "--socket" and index + 1 < len(args):
+            value = args[index + 1].strip()
+            return value or None
+        if arg.startswith("--socket="):
+            value = arg.partition("=")[2].strip()
+            return value or None
+    return None
+
 @functools.lru_cache(maxsize=1)
 def _cua_driver_supports_no_overlay(driver_cmd: str) -> bool:
     """True if ``<driver> --help`` mentions ``--no-overlay`` (probed once); older drivers reject unknown flags, which

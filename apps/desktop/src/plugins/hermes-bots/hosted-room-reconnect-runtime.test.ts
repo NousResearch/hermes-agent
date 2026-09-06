@@ -491,7 +491,7 @@ describe('hosted Group Chat runtime', () => {
     await loaded.runtime.startHostedRoomRuntime(scriptedStorage(loaded.storage).storage)
 
     expect(loaded.chat.$groupChats.get().Release).toMatchObject({
-      continuityIssue: 'Could not reconnect this Bot. Check its gateway and try again.',
+      continuityIssue: 'Could not reconnect this Bot. Check that its device is online, then try again.',
       hostedStatus: {
         canRetry: true,
         canStop: false,

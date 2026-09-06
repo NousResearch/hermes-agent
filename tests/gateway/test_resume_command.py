@@ -987,3 +987,93 @@ class TestSameMatrixRoomThreadScoping:
         caller = self._msrc(thread_id="thread-a")
         victim_origin = self._msrc(thread_id="thread-b")
         assert runner._same_matrix_room(caller, victim_origin) is False
+
+
+@pytest.fixture
+def feishu_session(tmp_path):
+    """A real titled transcript; the gateway store remains the existing test double."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "privacy.db")
+
+    def create(command, chat_type="group", platform=Platform.FEISHU, *, already_on=False):
+        event = _make_event(text=command, platform=platform, chat_id="chat")
+        event.source.chat_type = chat_type
+        lane = _session_key_for_event(event)
+        current = "sess_sensitive" if already_on else "current_session_001"
+        for sid in dict.fromkeys(["sess_sensitive", current]):
+            db.create_session(sid, platform.value, session_key=lane, user_id="12345",
+                              chat_id="chat", chat_type=chat_type)
+        db.set_session_title("sess_sensitive", "Sensitive acquisition roadmap")
+        db.append_message("sess_sensitive", "user", "first message leaks project delta")
+        return _make_runner(session_db=db, current_session_id=current, event=event), event
+
+    yield create
+    db.close()
+
+
+@pytest.mark.parametrize("command", ["/resume", "/sessions"])
+@pytest.mark.parametrize("chat_type,hidden", [
+    ("group", True), ("forum", True), ("topic_group", True),
+    ("dm", False), ("private", False), ("p2p", False),
+])
+@pytest.mark.asyncio
+async def test_feishu_session_lists_hide_only_shared_details(feishu_session, command, chat_type, hidden):
+    runner, event = feishu_session(command, chat_type)
+    handler = runner._handle_resume_command if command == "/resume" else runner._handle_sessions_command
+    result = await handler(event)
+    assert ("Sensitive acquisition roadmap" in result) is not hidden
+    assert ("project delta" in result) is not hidden
+    if hidden:
+        assert "Session 1" in result
+    if command == "/resume":
+        assert "/resume 1" in result
+    else:
+        assert "sess_sensitive" in result
+
+
+@pytest.mark.parametrize("command", ["/resume 1", "/sessions 1", "/resume sess_sensitive",
+                                     "/resume Sensitive acquisition roadmap"])
+@pytest.mark.asyncio
+async def test_feishu_group_resume_preserves_selection(feishu_session, command):
+    runner, event = feishu_session(command)
+    handler = runner._handle_sessions_command if command.startswith("/sessions") else runner._handle_resume_command
+    result = await handler(event)
+    assert "Resumed" in result
+    assert "Sensitive acquisition roadmap" not in result
+    assert "project delta" not in result
+    runner.session_store.switch_session.assert_called_once()
+    assert runner.session_store.switch_session.call_args.args[1] == "sess_sensitive"
+
+
+@pytest.mark.parametrize("case", ["not_found", "already_on", "denied"])
+@pytest.mark.asyncio
+async def test_feishu_group_resume_errors_do_not_echo_titles(feishu_session, case):
+    title = "Sensitive acquisition roadmap" if case != "not_found" else "Missing confidential title"
+    runner, event = feishu_session("/resume " + title, already_on=(case == "already_on"))
+    if case == "denied":
+        runner._resume_target_allowed = AsyncMock(return_value=False)
+    result = await runner._handle_resume_command(event)
+    assert title not in result
+    assert "selected session" in result
+    runner.session_store.switch_session.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_feishu_group_sessions_search_hides_query_and_results(feishu_session):
+    runner, event = feishu_session("/sessions search acquisition")
+    result = await runner._handle_sessions_command(event)
+    assert "acquisition" not in result
+    assert "project delta" not in result
+    assert "Session 1" in result
+    assert "sess_sensitive" in result
+
+
+@pytest.mark.parametrize("command", ["/resume", "/sessions"])
+@pytest.mark.asyncio
+async def test_other_platform_group_lists_keep_existing_details(feishu_session, command):
+    runner, event = feishu_session(command, platform=Platform.TELEGRAM)
+    handler = runner._handle_resume_command if command == "/resume" else runner._handle_sessions_command
+    result = await handler(event)
+    assert "Sensitive acquisition roadmap" in result
+    assert "project delta" in result

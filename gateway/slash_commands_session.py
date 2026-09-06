@@ -99,6 +99,11 @@ def _branch_row(msg: dict) -> dict:
     return row
 
 
+def _hide_feishu_group_session_details(source: SessionSource) -> bool:
+    return (source.platform == Platform.FEISHU
+            and str(source.chat_type or "").strip().lower() in {"group", "forum", "topic_group"})
+
+
 def _strip_resume_name(parts: list[str]) -> str:
     """Join the non-flag /resume tokens; strip literal ``<...>``/``[...]``/quotes typed from the
     usage hint (mirrors the CLI)."""
@@ -838,6 +843,7 @@ class GatewaySessionCommandsMixin:
 
     async def _resolve_resume_target(self, source, session_key: str, name: str, allow_all: bool):
         """``(target_id, name)`` for a numbered choice, session id or title; else the error reply."""
+        hide_details = _hide_feishu_group_session_details(source)
         if name.isdigit():
             try:
                 titled = await self._list_titled_sessions(source, session_key, allow_all)
@@ -848,10 +854,13 @@ class GatewaySessionCommandsMixin:
             if index < 1 or index > len(titled):
                 return t("gateway.resume.out_of_range", index=index)
             target = titled[index - 1]
-            target_id, name = target.get("id"), target.get("title") or name
+            target_id = target.get("id")
+            name = f"Session {index}" if hide_details else target.get("title") or name
         else:  # session id first, then title
             session = await self._session_db.get_session(name)
             target_id = session["id"] if session else await self._session_db.resolve_session_by_title(name)
+            if hide_details:
+                name = "selected session"
         if not target_id:
             return t("gateway.resume.not_found", name=name)
         # Follow compression continuations to the live transcript (matches CLI /resume).
@@ -921,7 +930,8 @@ class GatewaySessionCommandsMixin:
         # Evict so the next turn rebuilds with the right session_id — the cached AIAgent's memory
         # provider cached _session_id at initialize() and would keep writing to the wrong session.
         self._evict_cached_agent(session_key)
-        title = await self._session_db.get_session_title(target_id) or name
+        title = (name if _hide_feishu_group_session_details(source)
+                 else await self._session_db.get_session_title(target_id) or name)
         try:
             history = await self.async_session_store.load_transcript(target_id)
         except TranscriptReadError:
@@ -950,13 +960,14 @@ class GatewaySessionCommandsMixin:
             base = t("gateway.resume.no_named_sessions")
             return f"{base}\n{scope_note}" if scope_note else base
         lines = [t("gateway.resume.list_header")]
+        hide_details = _hide_feishu_group_session_details(source)
         for idx, s in enumerate(titled[:10], start=1):
-            title = s["title"]
+            title = f"Session {idx}" if hide_details else s["title"]
             if source.platform == Platform.MATRIX and allow_all:
                 origin = self._gateway_session_origin_for_id(str(s.get("id") or ""))
                 if origin:
                     title = f"{title} — {origin.chat_name or origin.chat_id}"
-            preview = (s.get("preview") or "")[:40]
+            preview = "" if hide_details else (s.get("preview") or "")[:40]
             preview_part = t("gateway.resume.list_preview_suffix", preview=preview) if preview else ""
             lines.append(t("gateway.resume.list_item_numbered", index=idx, title=title, preview_part=preview_part))
         if scope_note:
@@ -1004,6 +1015,11 @@ class GatewaySessionCommandsMixin:
             title = f"Sessions matching “{search_query}”"
         else:
             title = "Sessions" if include_unnamed else "Named Sessions"
+        if _hide_feishu_group_session_details(source):
+            rows = [{**row, "title": f"Session {idx}", "preview": ""}
+                    for idx, row in enumerate(rows, start=1)]
+            if search_query:
+                title = "Matching Sessions"
         return format_gateway_session_listing(rows, include_source=cross_origin, title=title,
                                               notice=scope_notice)
 

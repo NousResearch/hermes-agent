@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import collections
 import json
 import logging
 import mimetypes
@@ -259,6 +260,11 @@ class QQAdapter(BasePlatformAdapter):
         # Request/response correlation
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._seen_messages: Dict[str, float] = {}
+        # Track sent message IDs to detect platform echoes (QQ C2C echo fix).
+        # QQ Bot echoes bot-sent C2C messages back via WebSocket as
+        # C2C_MESSAGE_CREATE events, which would otherwise be treated as new
+        # inbound user messages (e.g. heartbeat notices triggering recursion).
+        self._sent_msg_ids: "collections.OrderedDict[str, float]" = collections.OrderedDict()
 
         # Last inbound message ID per chat — used by send_typing
         self._last_msg_id: Dict[str, str] = {}
@@ -1252,6 +1258,11 @@ class QQAdapter(BasePlatformAdapter):
         if not user_openid:
             return
         if not self._is_dm_intake_allowed(user_openid):
+            return
+
+        # Skip platform echoes of our own outbound messages (QQ C2C echo fix).
+        if msg_id and msg_id in self._sent_msg_ids:
+            logger.debug("[%s] ignoring self-echo msg_id=%s", self._log_tag, msg_id)
             return
 
         text = content
@@ -2572,6 +2583,10 @@ class QQAdapter(BasePlatformAdapter):
 
         data = await self._api_request("POST", f"/v2/users/{openid}/messages", body)
         msg_id = str(data.get("id", uuid.uuid4().hex[:12]))
+        # Record sent ID for echo detection (bounded for memory safety).
+        self._sent_msg_ids[msg_id] = time.monotonic()
+        while len(self._sent_msg_ids) > 500:
+            self._sent_msg_ids.popitem(last=False)
         return SendResult(success=True, message_id=msg_id, raw_response=data)
 
     async def _send_group_text(

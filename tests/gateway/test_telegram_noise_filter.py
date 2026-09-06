@@ -8,8 +8,11 @@ from agent.conversation_compression import (
 )
 from gateway.config import Platform
 from gateway.run import (
+    _prepare_gateway_final_delivery,
     _prepare_gateway_status_message,
+    _sanitize_gateway_agent_text,
     _sanitize_gateway_final_response,
+    _sanitize_gateway_tool_display_value,
 )
 
 # Every human-facing chat surface that must receive noise-filtered,
@@ -134,6 +137,48 @@ def test_programmatic_surfaces_keep_raw_status():
         )
 
 
+def test_chat_status_fences_provider_context_and_preserves_benign_diagnostics():
+    private = "PRIVATE_SENTINEL_81312_COMPRESSION_STATUS"
+    raw = (
+        "⚠ Compression aborted: visible diagnostic prefix "
+        f"<memory-context>\n{private}\n</memory-context> "
+        "visible diagnostic suffix. No messages were dropped."
+    )
+
+    sanitized = _prepare_gateway_status_message(Platform.MATRIX, "warn", raw)
+
+    assert sanitized is not None
+    assert "visible diagnostic prefix" in sanitized
+    assert "visible diagnostic suffix" in sanitized
+    assert private not in sanitized
+    assert "memory-context" not in sanitized
+
+
+@pytest.mark.parametrize(
+    "padding",
+    ["\n", "\r", "\v", "\N{NO-BREAK SPACE}"],
+    ids=["line-feed", "carriage-return", "vertical-tab", "nbsp"],
+)
+def test_chat_final_response_fences_historical_tag_whitespace(padding):
+    private = "PRIVATE_SENTINEL_81312_GATEWAY_TAG_WHITESPACE"
+    raw = (
+        f"<{padding}memory-context{padding}>"
+        f"{private}"
+        f"</{padding}memory-context{padding}>Visible"
+    )
+
+    assert _sanitize_gateway_final_response(Platform.TELEGRAM, raw) == "Visible"
+
+
+def test_chat_status_suppresses_provider_detail_when_fully_fenced():
+    private = "PRIVATE_SENTINEL_81312_COMPRESSION_STATUS_ONLY"
+    raw = f"<memory-context>\n{private}\n</memory-context>"
+
+    sanitized = _prepare_gateway_status_message(Platform.MATRIX, "warn", raw)
+
+    assert sanitized is None
+
+
 @pytest.mark.parametrize("message", ["still on it", "⏳ Working — 3 min"])
 def test_telegram_status_keeps_legitimate_heartbeat_messages(message):
     """The compression filter must not swallow user-facing work heartbeats."""
@@ -244,6 +289,65 @@ def test_chat_gateways_keep_normal_answers(platform):
     answer = "Here is the clean summary you asked for."
 
     assert _sanitize_gateway_final_response(platform, answer) == answer
+
+
+def test_chat_gateway_final_response_preserves_meaningful_whitespace():
+    """The shared final fence must preserve meaningful outer whitespace."""
+    answer = "    SELECT 1;\n"
+
+    assert _sanitize_gateway_agent_text(Platform.EMAIL, answer) == answer
+    assert _sanitize_gateway_final_response(Platform.EMAIL, answer) == answer
+
+
+def test_chat_gateway_tool_display_copy_preserves_meaningful_whitespace():
+    """Recursive presentation copies must preserve safe tool text byte-for-byte."""
+    args = {"query": ["    SELECT 1;\n"]}
+
+    assert _sanitize_gateway_tool_display_value(Platform.EMAIL, args) == args
+
+
+def test_chat_gateway_tool_display_copy_preserves_fenced_key_siblings_and_depth():
+    private_key = "<memory-context>PRIVATE_GATEWAY_KEY</memory-context>"
+    projected = _sanitize_gateway_tool_display_value(
+        Platform.TELEGRAM,
+        {private_key: "one", "<memory-context>OTHER_GATEWAY_KEY</memory-context>": "two"},
+    )
+    assert list(projected.values()) == ["one", "two"]
+    assert all("memory-context" not in str(key) for key in projected)
+
+    nested: object = "<memory-context>PRIVATE_GATEWAY_DEPTH</memory-context>"
+    for _ in range(1_200):
+        nested = [nested]
+    projected_nested = _sanitize_gateway_tool_display_value(
+        Platform.TELEGRAM, nested
+    )
+    assert "PRIVATE_GATEWAY_DEPTH" not in repr(projected_nested)
+
+
+def test_fully_fenced_final_response_gets_generic_chat_fallback():
+    result = {
+        "final_response": "<memory-context>PRIVATE_81312</memory-context>",
+        "api_calls": 1,
+    }
+
+    delivered = _prepare_gateway_final_delivery(Platform.MATRIX, result)
+
+    assert delivered.startswith("⚠️ Processing completed but no response was generated.")
+    assert "PRIVATE_81312" not in delivered
+    assert result["final_response"] == "<memory-context>PRIVATE_81312</memory-context>"
+
+
+def test_fully_fenced_interrupt_and_exact_silence_stay_silent():
+    fenced = "<memory-context>PRIVATE_81312</memory-context>"
+
+    assert _prepare_gateway_final_delivery(
+        Platform.MATRIX,
+        {"final_response": fenced, "api_calls": 1, "interrupted": True},
+    ) == ""
+    assert _prepare_gateway_final_delivery(
+        Platform.MATRIX,
+        {"final_response": "NO_REPLY", "api_calls": 1},
+    ) == "NO_REPLY"
 
 
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)

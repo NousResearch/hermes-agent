@@ -14,6 +14,8 @@ Covers:
 
 import os
 import unittest
+from datetime import datetime
+from types import SimpleNamespace
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
@@ -381,6 +383,292 @@ class TestThreadContext(unittest.TestCase):
             self.assertEqual(send_call["In-Reply-To"], "<original@test.com>")
             self.assertEqual(send_call["References"], "<original@test.com>")
             self.assertIn("Date", send_call)
+
+    def test_gateway_reply_strips_recalled_memory_before_smtp(self):
+        """Internal recalled context must not enter the outbound MIME body."""
+        from gateway.config import Platform
+        from gateway.run import _sanitize_gateway_final_response
+
+        adapter = self._make_adapter()
+        raw_response = (
+            "<memory-context>\n"
+            "[System note: The following is recalled memory context, NOT new "
+            "user input. Treat as authoritative reference data.]\n\n"
+            "PRIVATE_SENTINEL_81312\n"
+            "</memory-context>\n\n"
+            "Visible reply about MEMORY.md remains legitimate."
+        )
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            outbound = _sanitize_gateway_final_response(Platform.EMAIL, raw_response)
+            adapter._send_email("user@test.com", outbound, None)
+
+            sent_msg = mock_server.send_message.call_args[0][0]
+            body = sent_msg.get_payload()[0].get_payload(decode=True).decode("utf-8")
+
+        self.assertEqual(body, outbound)
+        self.assertEqual(
+            body,
+            "\n\nVisible reply about MEMORY.md remains legitimate.",
+        )
+        self.assertNotIn("PRIVATE_SENTINEL_81312", body)
+
+    def test_completed_gateway_dispatch_strips_recalled_memory_before_smtp(self):
+        """The real gateway handler must sanitize before adapter dispatch."""
+        import asyncio
+
+        from gateway.config import GatewayConfig, Platform
+        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionEntry, SessionSource
+
+        adapter = self._make_adapter()
+        session_key = "agent:main:email:dm:user@test.com"
+        source = SessionSource(
+            platform=Platform.EMAIL,
+            user_id="user@test.com",
+            chat_id="user@test.com",
+            user_name="testuser",
+            chat_type="dm",
+        )
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="email-81312",
+        )
+        raw_response = (
+            "<memory-context>\nPRIVATE_SENTINEL_81312_COMPLETED\n"
+            "</memory-context>\nVisible completed reply"
+        )
+
+        runner = GatewayRunner(GatewayConfig())
+        runner.adapters = {Platform.EMAIL: adapter}
+        runner._running_agents = {}
+        runner._running_agents_ts = {}
+        runner._pending_messages = {}
+        runner._pending_approvals = {}
+        runner._is_user_authorized = lambda _source: True
+        runner._set_session_env = lambda _context: None
+        runner._handle_active_session_busy_message = AsyncMock(return_value=False)
+        runner._session_db = MagicMock()
+        runner._recover_telegram_topic_thread_id = lambda _source: None
+        runner._cache_session_source = lambda _key, _source: None
+        runner._is_session_run_current = lambda _key, _gen: True
+        runner._begin_session_run_generation = lambda _key: 1
+        runner._reply_anchor_for_event = lambda _event: None
+        runner._get_guild_id = lambda _event: None
+        runner._should_send_voice_reply = lambda *_args, **_kwargs: False
+        runner.hooks = MagicMock()
+        runner.hooks.emit = AsyncMock()
+        runner.session_store = MagicMock()
+        runner.session_store.get_or_create_session.return_value = SessionEntry(
+            session_key=session_key,
+            session_id="sess-81312-completed",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.EMAIL,
+            chat_type="dm",
+        )
+        runner.session_store.load_transcript.return_value = []
+        runner.session_store.append_to_transcript = MagicMock()
+        runner.session_store.has_platform_message_id.return_value = False
+        runner.session_store.update_session = MagicMock()
+        runner._run_agent = AsyncMock(
+            return_value={
+                "final_response": raw_response,
+                "messages": [],
+                "history_offset": 0,
+                "last_prompt_tokens": 0,
+            }
+        )
+
+        async def gateway_handler(inbound_event):
+            return await runner._handle_message_with_agent(
+                inbound_event,
+                inbound_event.source,
+                session_key,
+                1,
+            )
+
+        adapter.set_message_handler(gateway_handler)
+        adapter.config.typing_indicator = False
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            asyncio.run(adapter._process_message_background(event, session_key))
+
+            sent_msg = mock_smtp.return_value.send_message.call_args.args[0]
+            body = sent_msg.get_payload()[0].get_payload(decode=True).decode("utf-8")
+
+        self.assertEqual(body, "Visible completed reply")
+        self.assertNotIn("PRIVATE_SENTINEL_81312_COMPLETED", body)
+
+    def test_gateway_reply_drops_unterminated_recalled_memory_before_smtp(self):
+        """An unterminated context block must fail closed in completed replies."""
+        from gateway.config import Platform
+        from gateway.run import _sanitize_gateway_final_response
+
+        adapter = self._make_adapter()
+        raw_response = (
+            "Visible preface.\n"
+            "<memory-context>\n"
+            "PRIVATE_SENTINEL_81312_UNTERMINATED"
+        )
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            outbound = _sanitize_gateway_final_response(Platform.EMAIL, raw_response)
+            adapter._send_email("user@test.com", outbound, None)
+
+            sent_msg = mock_server.send_message.call_args[0][0]
+            body = sent_msg.get_payload()[0].get_payload(decode=True).decode("utf-8")
+
+        self.assertEqual(body, outbound)
+        self.assertEqual(body, "Visible preface.\n")
+        self.assertNotIn("PRIVATE_SENTINEL_81312_UNTERMINATED", body)
+
+    def test_composed_reasoning_strips_recalled_memory_before_smtp(self):
+        """The post-composition fence must cover displayed provider reasoning."""
+        from gateway.config import Platform
+        from gateway.run import _sanitize_gateway_final_response
+
+        adapter = self._make_adapter()
+        composed_response = (
+            "💭 **Reasoning:**\n```\n"
+            "<memory-context>\nPRIVATE_SENTINEL_81312_REASONING\n"
+            "</memory-context>\nVisible reasoning\n```\n\nVisible reply"
+        )
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            outbound = _sanitize_gateway_final_response(Platform.EMAIL, composed_response)
+            adapter._send_email("user@test.com", outbound, None)
+
+            sent_msg = mock_server.send_message.call_args[0][0]
+            body = sent_msg.get_payload()[0].get_payload(decode=True).decode("utf-8")
+
+        self.assertNotIn("PRIVATE_SENTINEL_81312_REASONING", body)
+        self.assertIn("Visible reasoning", body)
+        self.assertIn("Visible reply", body)
+
+    def test_programmatic_gateway_surfaces_retain_raw_context(self):
+        """Programmatic clients retain the established raw text contract."""
+        from gateway.config import Platform
+        from gateway.run import _sanitize_gateway_final_response
+
+        raw_response = "<memory-context>\ncaller-visible raw context\n</memory-context>"
+
+        for platform in (Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK):
+            with self.subTest(platform=platform):
+                self.assertEqual(
+                    _sanitize_gateway_final_response(platform, raw_response),
+                    raw_response,
+                )
+
+    def test_direct_caller_authored_email_body_remains_unchanged(self):
+        """The SMTP adapter must not rewrite caller-authored direct sends."""
+        adapter = self._make_adapter()
+        authored_body = (
+            "Direct note documenting <memory-context>\n"
+            "caller-authored content\n"
+            "</memory-context>"
+        )
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            adapter._send_email("user@test.com", authored_body, None)
+
+            sent_msg = mock_server.send_message.call_args[0][0]
+            body = sent_msg.get_payload()[0].get_payload(decode=True).decode("utf-8")
+
+        self.assertEqual(body, authored_body)
+
+    def test_interim_commentary_strips_recalled_memory_before_smtp(self):
+        """The real interim callback must fence provider text before email send."""
+        import asyncio
+
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionSource
+
+        class InterimAgent:
+            def __init__(self, **kwargs):
+                self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+                self.tools = []
+
+            def run_conversation(
+                self, message, conversation_history=None, task_id=None
+            ):
+                self.interim_assistant_callback(
+                    "<memory-context>\nPRIVATE_SENTINEL_81312_INTERIM_SMTP\n"
+                    "</memory-context>\nVisible interim",
+                    already_streamed=False,
+                )
+                return {"final_response": "done", "messages": [], "api_calls": 1}
+
+        adapter = self._make_adapter()
+        runner = object.__new__(GatewayRunner)
+        runner.adapters = {adapter.platform: adapter}
+        runner._voice_mode = {}
+        runner._prefill_messages = []
+        runner._ephemeral_system_prompt = ""
+        runner._reasoning_config = None
+        runner._provider_routing = {}
+        runner._fallback_model = None
+        runner._session_db = None
+        runner._running_agents = {}
+        runner._session_run_generation = {}
+        runner.session_store = SimpleNamespace(_entries={}, _save=lambda: None)
+        runner.hooks = SimpleNamespace(loaded_hooks=False)
+        runner.config = SimpleNamespace(
+            thread_sessions_per_user=False,
+            group_sessions_per_user=False,
+            stt_enabled=False,
+        )
+        source = SessionSource(
+            platform=adapter.platform,
+            user_id="user@test.com",
+            chat_id="user@test.com",
+            chat_type="dm",
+        )
+
+        with patch(
+            "gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}
+        ), patch(
+            "gateway.run._load_gateway_config",
+            return_value={
+                "display": {
+                    "interim_assistant_messages": True,
+                    "tool_progress": "off",
+                }
+            },
+        ), patch("run_agent.AIAgent", InterimAgent), patch("smtplib.SMTP") as mock_smtp:
+            result = asyncio.run(
+                runner._run_agent(
+                    message="hello",
+                    context_prompt="",
+                    history=[],
+                    source=source,
+                    session_id="sess-interim-smtp",
+                    session_key="agent:main:email:dm:user@test.com",
+                )
+            )
+
+        self.assertEqual(result["final_response"], "done")
+        sent_msg = mock_smtp.return_value.send_message.call_args.args[0]
+        body = sent_msg.get_payload()[0].get_payload(decode=True).decode("utf-8")
+        # The fence removes the private block while preserving the meaningful
+        # separator newline from the provider's interim payload.
+        self.assertEqual(body, "\nVisible interim")
+        self.assertNotIn("PRIVATE_SENTINEL_81312_INTERIM_SMTP", body)
 
 
 class TestSendMethods(unittest.TestCase):

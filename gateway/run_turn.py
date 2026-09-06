@@ -1042,7 +1042,7 @@ class GatewayTurnMixin:
     ):
         """Adopt a finished hygiene compression, rebind the session + turn lease, record
         streak/cooldown, and warn the user on abort."""
-        from gateway.run import _reset_hygiene_failure_streak, hygiene_compaction_recovered
+        from gateway.run import _reset_hygiene_failure_streak, hygiene_compaction_recovered, _sanitize_gateway_provider_detail
         _hyg_rotated, _hyg_in_place, _new_count, _new_tokens = await self._hmwa_hygiene_adopt_transcript(
             attempt, _compressed, history, plan, session_entry=session_entry, source=source,
             _quick_key=_quick_key, run_generation=run_generation,
@@ -1077,8 +1077,7 @@ class GatewayTurnMixin:
             )
             if not _hyg_fence_cancelled:
                 # Force-redact: provider exception text may contain credentials; this reaches users.
-                from agent.redact import redact_sensitive_text
-                _err = redact_sensitive_text(getattr(_comp, "_last_summary_error", None) or "unknown error", force=True)
+                _err = _sanitize_gateway_provider_detail(source.platform, getattr(_comp, "_last_summary_error", None))
                 await self._hmwa_hygiene_notify(
                     source, attempt.meta, "⚠️ Context compression aborted "
                     f"({_err}). No messages were dropped — "
@@ -1088,8 +1087,8 @@ class GatewayTurnMixin:
                 )
         # Configured aux model failed, recovered on the main model: only the user can fix that config.
         elif _comp is not None and getattr(_comp, "_last_aux_model_failure_model", None):
-            _aux_model = getattr(_comp, "_last_aux_model_failure_model", "")
-            _aux_err = getattr(_comp, "_last_aux_model_failure_error", None) or "unknown error"
+            _aux_model = _sanitize_gateway_provider_detail(source.platform, getattr(_comp, "_last_aux_model_failure_model", ""), fallback="configured model")
+            _aux_err = _sanitize_gateway_provider_detail(source.platform, getattr(_comp, "_last_aux_model_failure_error", None))
             await self._hmwa_hygiene_notify(
                 source, attempt.meta, f"ℹ️ Configured compression model `{_aux_model}` "
                 f"failed ({_aux_err}). Recovered using your main "
@@ -1404,7 +1403,8 @@ class GatewayTurnMixin:
         # Fix for #18765.
         if not _intentional_silence:
             response = _normalize_empty_agent_response(agent_result, response, history_len=len(history))
-            response = _sanitize_gateway_final_response(source.platform, response)
+            from gateway.run import _prepare_gateway_final_delivery
+            response = _prepare_gateway_final_delivery(source.platform, {**agent_result, "final_response": response}, history_len=len(history))
 
         # The agent thread already updated the contextvar; propagate to SessionEntry + _save() only
         # if the binding still points at the session this run was launched against.
@@ -1451,6 +1451,10 @@ class GatewayTurnMixin:
         if not (_show_reasoning_effective and response and not _intentional_silence and last_reasoning):
             return response
         from gateway.stream_consumer_fences import escape_code_fences_for_display
+        from gateway.run import _sanitize_gateway_agent_text, _sanitize_gateway_final_response
+        last_reasoning = _sanitize_gateway_agent_text(source.platform, str(last_reasoning)).strip()
+        if not last_reasoning:
+            return response
         # Collapse long reasoning to keep messages readable
         lines = last_reasoning.strip().splitlines()
         if len(lines) > 15:
@@ -1469,10 +1473,10 @@ class GatewayTurnMixin:
         if _quote:
             header, prefix, empty = _quote
             _quoted = "\n".join(f"{prefix}{ln}" if ln else empty for ln in display_reasoning.splitlines())
-            return f"{header}\n{_quoted}\n\n{response}"
+            return _sanitize_gateway_final_response(source.platform, f"{header}\n{_quoted}\n\n{response}") or response
         # Escape ``` inside reasoning so inner fences don't break the outer code block.
         display_reasoning = escape_code_fences_for_display(display_reasoning)
-        return f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+        return _sanitize_gateway_final_response(source.platform, f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}") or response
 
     def _hmwa_runtime_footer_line(self, agent_result, source, _turn_seconds):
         """Runtime-metadata footer for the FINAL message of the turn; off by default
@@ -2198,6 +2202,8 @@ class GatewayTurnMixin:
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):
                 response = f"Error: {result['error']}"
+            from gateway.run import _prepare_gateway_final_delivery
+            response = _prepare_gateway_final_delivery(source.platform, {**(result or {}), "final_response": response})
             # Fresh conversation, so history_offset=0: every message in the run belongs to this turn.
             if response:
                 response = repair_explicit_computer_use_media_paths(response, result.get("messages", []))
@@ -2241,10 +2247,12 @@ class GatewayTurnMixin:
                         await sender(chat_id=source.chat_id, metadata=_thread_metadata, **{key: media_path})
 
         except Exception as e:
+            from gateway.run import _sanitize_gateway_provider_detail
             logger.exception("Background task %s failed", task_id)
             with suppress(Exception):
                 await adapter.send(
-                    chat_id=source.chat_id, content=f"❌ Background task {task_id} failed: {e}",
+                    chat_id=source.chat_id, content=f"❌ Background task {task_id} failed" +
+                    (f": {detail}" if (detail := _sanitize_gateway_provider_detail(source.platform, e, fallback="")) else ""),
                     metadata=_thread_metadata,
                 )
 
@@ -3383,12 +3391,14 @@ class GatewayTurnMixin:
                 logger.debug("Stream consumer wait before queued message failed: %s", e)
         # Delivery uses the finalized task result (empty/failure normalization), not raw ``result``.
         _delivery_result = response if isinstance(response, dict) else (result or {})
-        first_response = _delivery_result.get("final_response", "")
+        from gateway.run import _prepare_gateway_final_delivery
+        raw_first_response = _delivery_result.get("final_response", "")
+        first_response = _prepare_gateway_final_delivery(turn_ctx.source.platform, _delivery_result, history_len=len(turn_ctx.history))
         _already_streamed = self._run_agent_stream_confirmed_final_delivery(
             _sc, first_response, previewed=bool(_delivery_result.get("response_previewed")),
         )
         # Same silence predicate as the normal path, else this branch leaks the literal marker.
-        if self._is_intentional_silence(_delivery_result, first_response):
+        if self._is_intentional_silence(_delivery_result, raw_first_response):
             logger.info(
                 "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                 session_key or "?",
@@ -3614,7 +3624,8 @@ class GatewayTurnMixin:
         _sc, source, session_key = turn_ctx.stream_consumer_holder[0], turn_ctx.source, turn_ctx.session_key
         if not isinstance(response, dict) or response.get("failed"):
             return
-        _final = response.get("final_response") or ""
+        from gateway.run import _prepare_gateway_final_delivery
+        _final = _prepare_gateway_final_delivery(source.platform, response, history_len=len(turn_ctx.history))
         _is_empty_sentinel = not _final or _final == "(empty)"
         # response_previewed: only suppress if that EXACT text was delivered, not unrelated commentary.
         # Unrelated commentary/progress must not be mistaken for the final response (#14238).
@@ -3674,7 +3685,7 @@ class GatewayTurnMixin:
             # Transformed after streaming: edit the streamed message instead of sending a duplicate.
             if _sc.message_id:
                 await self._run_agent_edit_streamed_message(
-                    _sc, source, response, response["final_response"], _sk=_sk,
+                    _sc, source, response, _final, _sk=_sk,
                     ok=("Edited streamed message %s for session %s to include plugin-transformed content.", _sc.message_id, _sk),
                     fail_result=None, fail_exc="Failed to edit streamed message for session %s: %s",
                 )

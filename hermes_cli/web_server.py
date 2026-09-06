@@ -363,6 +363,30 @@ _DESKTOP_ATTACHMENT_WS_MAX_BYTES = 384 * 1024 * 1024
 
 # CORS: localhost origins only — allow_origins=["*"] on 0.0.0.0 would let any
 # website read/modify config and secrets.
+_CORS_ALLOW_ORIGIN_RE = re.compile(r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$", re.IGNORECASE)
+
+def _cors_headers_for_request(request: Request) -> dict:
+    """CORS headers for a localhost origin, or {}.
+
+    Replicates the CORSMiddleware allow-list so auth 401s (which short-circuit
+    before CORSMiddleware) still expose CORS headers. The browser needs them to
+    surface the real error instead of a generic ``TypeError: Failed to fetch``,
+    and preflight (OPTIONS) must see them to proceed at all (#104069).
+    """
+    origin = request.headers.get("origin", "")
+    if origin and _CORS_ALLOW_ORIGIN_RE.match(origin):
+        # Mirror CORSMiddleware with allow_headers=["*"], allow_methods=["*"].
+        req_headers = request.headers.get("access-control-request-headers", "")
+        allow_headers = req_headers if req_headers else "*"
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": allow_headers,
+            "Vary": "Origin",
+        }
+    return {}
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
@@ -628,6 +652,11 @@ async def auth_middleware(request: Request, call_next):
     (``token_authenticated``) and when the OAuth gate is active — cookie auth is
     then authoritative and the loopback-only token path must not override it.
     """
+    # CORS preflight (OPTIONS) must never be gated: browsers send it without
+    # custom headers (X-Hermes-Session-Token), so every token-gated POST would
+    # otherwise 401 its preflight and lose the CORS headers (#104069).
+    if request.method == "OPTIONS":
+        return await call_next(request)
     path = request.url.path
     if (
         not getattr(request.state, "token_authenticated", False)
@@ -638,7 +667,11 @@ async def auth_middleware(request: Request, call_next):
         and not _has_valid_session_token(request)
         and not _has_valid_query_token(request, path)
     ):
-        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Unauthorized"},
+            headers=_cors_headers_for_request(request),
+        )
     return await call_next(request)
 
 

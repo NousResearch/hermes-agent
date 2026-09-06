@@ -10,6 +10,7 @@ otherwise 401, or 503 when a provider's backing store was unreachable. Fails clo
 from __future__ import annotations
 
 import logging
+import re as _re
 import threading
 from typing import Awaitable, Callable, Optional, Tuple
 
@@ -21,6 +22,21 @@ from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import ProviderError, TokenPrincipal
 from hermes_cli.dashboard_auth.request_utils import (
     client_ip as _client_ip, extract_bearer as extract_bearer_token, unreachable_response)
+
+_CORS_RE = _re.compile(r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$", _re.IGNORECASE)
+
+
+def _cors_headers(request: Request) -> dict:
+    origin = request.headers.get("origin", "")
+    if origin and _CORS_RE.match(origin):
+        req_headers = request.headers.get("access-control-request-headers", "")
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": req_headers if req_headers else "*",
+            "Vary": "Origin",
+        }
+    return {}
 
 _log = logging.getLogger(__name__)
 
@@ -76,6 +92,8 @@ async def token_auth_middleware(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
     """Pass-through for unregistered paths; for a token route, valid token -> attach principal +
     flag, unreachable -> 503, else 401."""
+    if request.method == "OPTIONS":
+        return await call_next(request)
     path = request.url.path
     if not is_token_route(path):
         return await call_next(request)
@@ -88,9 +106,13 @@ async def token_auth_middleware(
         audit_log(
             AuditEvent.TOKEN_AUTH_FAILURE, provider=unreachable, reason="provider_unreachable",
             path=path, ip=_client_ip(request))
-        return unreachable_response(unreachable)
+        resp = unreachable_response(unreachable)
+        for k, v in _cors_headers(request).items():
+            resp.headers[k] = v
+        return resp
 
     audit_log(
         AuditEvent.TOKEN_AUTH_FAILURE, reason="no_provider_recognises_token", path=path,
         ip=_client_ip(request))
-    return JSONResponse({"error": "unauthenticated", "detail": "Unauthorized"}, status_code=401)
+    return JSONResponse({"error": "unauthenticated", "detail": "Unauthorized"}, status_code=401,
+                        headers=_cors_headers(request))

@@ -10,6 +10,7 @@ redirected to ``/login``; ``/api/*`` routes get a 401 JSON envelope.
 from __future__ import annotations
 
 import logging
+import re as _re
 from typing import Awaitable, Callable
 from urllib.parse import quote
 
@@ -18,6 +19,22 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from hermes_cli.dashboard_auth import list_session_providers
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
+_CORS_RE = _re.compile(r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$", _re.IGNORECASE)
+
+
+def _cors_headers(request: Request) -> dict:
+    origin = request.headers.get("origin", "")
+    if origin and _CORS_RE.match(origin):
+        req_headers = request.headers.get("access-control-request-headers", "")
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": req_headers if req_headers else "*",
+            "Vary": "Origin",
+        }
+    return {}
+
+
 from hermes_cli.dashboard_auth.base import ProviderError, RefreshExpiredError
 from hermes_cli.dashboard_auth.cookies import (
     clear_session_cookies, clear_sso_attempt_cookie, detect_https, read_session_cookies,
@@ -71,7 +88,8 @@ def _unauth_response(request: Request, *, reason: str) -> Response:
         expired = reason == "invalid_or_expired_session"
         return JSONResponse(
             {"error": "session_expired" if expired else "unauthenticated", "detail": "Unauthorized",
-             "reason": reason, "login_url": login_url}, status_code=401)
+             "reason": reason, "login_url": login_url}, status_code=401,
+            headers=_cors_headers(request))
     return RedirectResponse(url=login_url, status_code=302)
 
 
@@ -148,6 +166,8 @@ def _session_expired_response(request: Request) -> Response:
 async def gated_auth_middleware(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
     """Engaged only when ``app.state.auth_required is True``."""
+    if request.method == "OPTIONS":
+        return await call_next(request)
     if not getattr(request.app.state, "auth_required", False):
         return await call_next(request)
     # Already authenticated by the token-auth seam (service caller on a registered token
@@ -163,7 +183,10 @@ async def gated_auth_middleware(
         try:
             bearer_session = _verify_access_token(request, access_token=bearer, audit=False)
         except ProviderError as e:
-            return unreachable_response(str(e))
+            resp = unreachable_response(str(e))
+            for k, v in _cors_headers(request).items():
+                resp.headers[k] = v
+            return resp
         if bearer_session is not None:
             request.state.session = bearer_session
             return await call_next(request)
@@ -182,7 +205,10 @@ async def gated_auth_middleware(
         try:
             session = _verify_access_token(request, access_token=at, provider_hint=provider_hint)
         except ProviderError as e:
-            return unreachable_response(str(e))
+            resp = unreachable_response(str(e))
+            for k, v in _cors_headers(request).items():
+                resp.headers[k] = v
+            return resp
     if session is None:
         # Rotate via the refresh token before forcing re-login; on success the request is
         # served transparently with the rotated cookies re-set.
@@ -190,7 +216,10 @@ async def gated_auth_middleware(
             refreshed = _attempt_refresh(request, refresh_token=_rt, provider_hint=provider_hint)
         except ProviderError as e:
             # Uncertain (provider unreachable), not rejected: keep the cookies.
-            return unreachable_response(str(e))
+            resp = unreachable_response(str(e))
+            for k, v in _cors_headers(request).items():
+                resp.headers[k] = v
+            return resp
         if refreshed is None:
             return _session_expired_response(request)
         return await _serve_refreshed(request, call_next, *refreshed)

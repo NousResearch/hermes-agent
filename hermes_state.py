@@ -424,7 +424,7 @@ class SessionDB(
         except Exception as exc:
             logger.warning("%s close failed for %s: %s", label, self.db_path, exc)
 
-    def __init__(self, db_path: Path = None, read_only: bool = False,
+    def __init__(self, db_path: Optional[Path] = None, read_only: bool = False,
                  conn_factory: Optional[Callable[[], sqlite3.Connection]] = None):
         self.db_path = db_path or _default_db_path()
         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
@@ -470,7 +470,7 @@ class SessionDB(
         # (Pytest yields temporary schemas through it); _test_force_sigkill arms a one-shot
         # mid-transaction crash in _execute_write. Neither is public surface.
         self._conn_factory = conn_factory
-        self._pre_commit_hooks: List[Callable[[sqlite3.Connection], None]] = []
+        self._pre_commit_hooks: List[Callable[[Any], None]] = []
         self._post_write_hooks: List[Callable[[], None]] = []
         self._test_force_sigkill = False
         # Async token accounting; distinct from self._lock so enqueue/flush never contends with writes.

@@ -350,14 +350,28 @@ class TestNoDowngradeUnderConcurrentOpeners:
         finally:
             check.close()
 
-    def test_nfs_fallback_reraises_when_mode_unreadable(self, tmp_path, monkeypatch):
-        """The filesystem-incompat fallback must not downgrade when the on-disk
-        mode cannot be verified (possible concurrent openers)."""
+    def test_probe_unreadable_touches_nothing(self, tmp_path, monkeypatch, caplog):
+        """#104596: when the on-disk mode cannot be verified (possible
+        concurrent openers — same-process siblings holding live -wal/-shm
+        sidecars), the WAL path must not emit the set-pragma at all.
+
+        Previously it fell through to ``PRAGMA journal_mode=WAL``; on an
+        incompatible filesystem that raised, but on a WAL DB whose sidecars
+        a sibling connection still holds, WAL-init silently unlinked them ->
+        two -shm generations -> split-brain corruption (btreeInitPage error
+        11). The guard now refuses to touch anything while ownership is
+        unproven: it assumes the configured WAL mode, logs one warning per
+        database, and returns without issuing the set-pragma — strictly more
+        conservative than the old raise (which still required emitting the
+        dangerous pragma first).
+        """
+        import logging
+
         monkeypatch.setattr(
             hermes_state_wal, "is_sqlite_wal_reset_vulnerable",
             lambda version_info=None: False,
         )
-        hermes_state_wal._wal_fallback_warned_paths.clear()
+        hermes_state_wal._wal_probe_unknown_paths.clear()
 
         class _LockedProbeConnection(sqlite3.Connection):
             def execute(self, sql, *args, **kwargs):  # type: ignore[override]
@@ -372,8 +386,15 @@ class TestNoDowngradeUnderConcurrentOpeners:
             str(tmp_path / "nfs.db"), factory=_LockedProbeConnection
         )
         try:
-            with pytest.raises(sqlite3.OperationalError, match="locking protocol"):
-                apply_wal_with_fallback(conn, db_label="nfs.db")
+            with caplog.at_level(logging.WARNING, logger="hermes_state_wal"):
+                result = apply_wal_with_fallback(conn, db_label="nfs.db")
+            # The set-pragma never ran (it would have raised "locking
+            # protocol" above); the configured WAL mode is assumed instead.
+            assert result == "wal"
+            assert any(
+                "could not verify the on-disk journal mode" in r.getMessage()
+                for r in caplog.records
+            )
         finally:
             conn.close()
 

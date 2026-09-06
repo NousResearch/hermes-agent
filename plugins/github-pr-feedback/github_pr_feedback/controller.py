@@ -45,13 +45,6 @@ MAX_ADMISSIONS_PER_SCAN = 128
 # a long queue of already-stale snapshots behind the shared request gate.
 MAX_PARALLEL_PR_READS = 2
 LOCAL_CI_FEEDBACK_ID = "local-ci-audit-v2"
-# CI audit and repair workers execute repository-owned commands and must not
-# spend a remote model turn before the egress firewall rejects their payload.
-# Keep this route explicit on the durable task so it survives profile/global
-# config drift; the provider/model are the operator's configured loopback
-# route in the active Hermes installation.
-LOCAL_CI_WORKER_PROVIDER = "ollama-launch"
-LOCAL_CI_WORKER_MODEL = "qwen3.5:4b"
 # Additional venv roots trusted as "governed" besides a repository's own
 # tree. This repo's worktrees deliberately symlink .venv to one shared,
 # operator-owned install (see repo CLAUDE.md and scripts/bootstrap_agent_
@@ -3203,9 +3196,7 @@ def _ci_failure_task(
         # the focused fix.  Keep the exact-head lease authoritative instead of
         # killing valid work at the old 15-minute wall.
         max_runtime_seconds=60 * 60 if policy.auto_dispatch else None,
-        model_override=LOCAL_CI_WORKER_MODEL,
-        provider_override=LOCAL_CI_WORKER_PROVIDER,
-        reasoning_effort="none",
+        # Inherit the assigned profile's benchmark-qualified model and effort.
     )
 
 
@@ -3300,9 +3291,7 @@ def _local_ci_task(
         # exact-head CI lease prevents duplicate restarts while the real
         # supervisor PID is alive; give the full lane sequence an 8h envelope.
         max_runtime_seconds=8 * 60 * 60,
-        model_override=LOCAL_CI_WORKER_MODEL,
-        provider_override=LOCAL_CI_WORKER_PROVIDER,
-        reasoning_effort="none",
+        # Inherit the assigned profile's benchmark-qualified model and effort.
     )
 
 

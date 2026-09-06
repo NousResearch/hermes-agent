@@ -69,6 +69,53 @@ def test_capability_consent_preserves_raw_profile_settings(tmp_path, monkeypatch
     assert actual["plugins"]["entries"]["example"]["allow_tool_override"] is True
 
 
+def test_capability_consent_is_atomic_when_later_gate_is_managed(tmp_path, monkeypatch):
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(config, "is_managed", lambda: False)
+    path = home / "config.yaml"
+    path.write_text(yaml.safe_dump({"plugins": {"entries": {"example": {"keep": True}}}}))
+    before = path.read_bytes()
+
+    def reject_legacy_gate(key, action):
+        if key.endswith("allow_tool_override"):
+            raise SystemExit("managed legacy gate")
+
+    monkeypatch.setattr(config, "_exit_if_key_managed", reject_legacy_gate)
+    from hermes_cli.plugin_capabilities import record_consent
+
+    with pytest.raises(SystemExit, match="managed legacy gate"):
+        record_consent("example", ["tools.override"], ["tools.override"])
+
+    assert path.read_bytes() == before
+
+
+def test_capability_consent_is_atomic_when_consent_write_fails(tmp_path, monkeypatch):
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(config, "is_managed", lambda: False)
+    path = home / "config.yaml"
+    path.write_text(yaml.safe_dump({"plugins": {"entries": {"example": {"keep": True}}}}))
+    before = path.read_bytes()
+    real_atomic_write = config.atomic_yaml_write
+
+    def fail_when_consent_is_present(config_path, data, **kwargs):
+        entry = data["plugins"]["entries"]["example"]
+        if "capabilities_consent" in entry:
+            raise OSError("synthetic consent write failure")
+        return real_atomic_write(config_path, data, **kwargs)
+
+    monkeypatch.setattr(config, "atomic_yaml_write", fail_when_consent_is_present)
+    from hermes_cli.plugin_capabilities import record_consent
+
+    with pytest.raises(OSError, match="synthetic consent write failure"):
+        record_consent("example", ["tools.override"], ["tools.override"])
+
+    assert path.read_bytes() == before
+
+
 def test_raw_config_write_refreshes_last_known_good_fallback(tmp_path, monkeypatch):
     home = tmp_path / "profile"
     home.mkdir()

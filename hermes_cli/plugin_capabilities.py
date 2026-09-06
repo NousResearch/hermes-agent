@@ -158,30 +158,33 @@ def _child_dict(parent: dict, key: str) -> dict:
     return child
 
 
-def _write_raw_config_value(path: Tuple[str, ...], value: Any) -> None:
-    """Change one setting without canonicalizing unrelated user configuration."""
+def _write_raw_config_values(updates: Mapping[Tuple[str, ...], Any]) -> None:
+    """Change several settings in one locked, atomic raw-config mutation."""
     from hermes_cli import config as config_mod
 
     with config_mod._CONFIG_LOCK:
         if config_mod.is_managed():
             config_mod.managed_error("save configuration")
             return
-        config_mod._exit_if_key_managed(".".join(path), "set")
+        # Validate every destination before mutating the raw document so a later managed
+        # leaf cannot leave an earlier capability or consent write behind.
+        for path in updates:
+            config_mod._exit_if_key_managed(".".join(path), "set")
         config_path = config_mod.get_config_path()
         raw = config_mod.require_readable_config_before_write(config_path)
-        entry = raw
-        for segment in path[:-1]:
-            entry = _child_dict(entry, segment)
         loaded = config_mod.load_config()
-        loaded_entry = loaded
-        for segment in path:
-            if not isinstance(loaded_entry, dict):
-                loaded_entry = None
-                break
-            loaded_entry = loaded_entry.get(segment)
-        value = config_mod._preserve_env_ref_templates(
-            value, entry.get(path[-1]), loaded_entry)
-        entry[path[-1]] = value
+        for path, value in updates.items():
+            entry = raw
+            for segment in path[:-1]:
+                entry = _child_dict(entry, segment)
+            loaded_entry = loaded
+            for segment in path:
+                if not isinstance(loaded_entry, dict):
+                    loaded_entry = None
+                    break
+                loaded_entry = loaded_entry.get(segment)
+            entry[path[-1]] = config_mod._preserve_env_ref_templates(
+                value, entry.get(path[-1]), loaded_entry)
         config_mod._write_user_config(config_path, raw)
         config_mod._secure_file(config_path)
         config_mod._RAW_CONFIG_CACHE.pop(str(config_path), None)
@@ -189,39 +192,42 @@ def _write_raw_config_value(path: Tuple[str, ...], value: Any) -> None:
         config_mod._LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = config_mod.load_config()
 
 
+def _write_raw_config_value(path: Tuple[str, ...], value: Any) -> None:
+    """Change one setting without canonicalizing unrelated user configuration."""
+    _write_raw_config_values({path: value})
+
+
 def record_consent(plugin_id: str, granted: Iterable[str], declared: Iterable[str]) -> None:
     """Persist a consent decision: ``granted_capabilities`` (union with prior grants), the consent
     record (hash of the declared set the user saw + UTC timestamp), and the legacy ``allow_*`` key
     for each grant so existing enforcement sites keep working unchanged."""
-    from hermes_cli.config import load_config
-    config = load_config()
-    entry = _child_dict(_child_dict(_child_dict(config, "plugins"), "entries"), plugin_id)
-    previous = entry.get(GRANTED_KEY)
-    merged = (list(previous) if isinstance(previous, list) else []) + _known(granted)
-    entry[GRANTED_KEY] = sorted(_known(c for c in merged if isinstance(c, str)))
-    entry[CONSENT_KEY] = {
-        "hash": capability_set_hash(_known(declared)),
-        "granted_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-    }
-    # Bridge: mirror each grant into its legacy gate (enforcement sites still read allow_*).
-    for cap in entry[GRANTED_KEY]:
-        *parents, leaf = CAPABILITY_REGISTRY[cap].legacy_path
-        node = entry
-        for part in parents:
-            node = _child_dict(node, part)
-        node[leaf] = True
+    from hermes_cli import config as config_mod
 
-    _write_raw_config_value(
-        ("plugins", "entries", plugin_id, GRANTED_KEY), entry[GRANTED_KEY])
-    _write_raw_config_value(
-        ("plugins", "entries", plugin_id, CONSENT_KEY), entry[CONSENT_KEY])
-    for cap in entry[GRANTED_KEY]:
-        *parents, leaf = CAPABILITY_REGISTRY[cap].legacy_path
-        _write_raw_config_value(
-            ("plugins", "entries", plugin_id, *parents, leaf), True)
+    with config_mod._CONFIG_LOCK:
+        config = config_mod.load_config()
+        entry = _child_dict(_child_dict(_child_dict(config, "plugins"), "entries"), plugin_id)
+        previous = entry.get(GRANTED_KEY)
+        merged = (list(previous) if isinstance(previous, list) else []) + _known(granted)
+        granted_capabilities = sorted(_known(c for c in merged if isinstance(c, str)))
+        consent = {
+            "hash": capability_set_hash(_known(declared)),
+            "granted_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+
+        updates: Dict[Tuple[str, ...], Any] = {
+            ("plugins", "entries", plugin_id, GRANTED_KEY): granted_capabilities,
+            ("plugins", "entries", plugin_id, CONSENT_KEY): consent,
+        }
+        # Bridge: mirror each grant into its legacy gate (enforcement sites still read allow_*).
+        for cap in granted_capabilities:
+            *parents, leaf = CAPABILITY_REGISTRY[cap].legacy_path
+            updates[("plugins", "entries", plugin_id, *parents, leaf)] = True
+
+        _write_raw_config_values(updates)
+
     logger.info(
         "capability_consent plugin=%s granted=%s declared_hash=%s", plugin_id,
-        ",".join(entry[GRANTED_KEY]) or "(none)", entry[CONSENT_KEY]["hash"][:12])
+        ",".join(granted_capabilities) or "(none)", consent["hash"][:12])
 
 
 def consent_hash(plugin_id: str, config: Optional[Mapping[str, Any]] = None) -> Optional[str]:

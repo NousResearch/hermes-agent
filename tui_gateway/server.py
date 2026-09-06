@@ -1201,7 +1201,7 @@ def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session
                 browser_control_principal = _methods_browser_control._principal_digest(identity)
                 browser_control_transport_family = _methods_browser_control._CLOUD_TRANSPORT_FAMILY
         return set_session_vars(
-            session_key=session_key, session_id=session_id, source=source,
+            platform=source, session_key=session_key, session_id=session_id, source=source,
             browser_control_principal=browser_control_principal,
             browser_control_transport_family=browser_control_transport_family, cwd=resolved,
             ui_session_id=ui_session_id, cron_session="")

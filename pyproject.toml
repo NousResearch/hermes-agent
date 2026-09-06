@@ -665,9 +665,7 @@ select = ["PLW1514", "S110", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251"]
 # Detached restart watchers: Popen of a fully-detached, fire-and-forget
 # process (no wait), an accepted momentary spawn cost pending a dedicated
 # async-subprocess sweep.
-"gateway/run.py" = ["ASYNC220"]
 "gateway/run_shutdown.py" = ["ASYNC220"]
-"gateway/slash_commands.py" = ["ASYNC220"]
 # Off-loop sweep for these routers is in flight (PR #84376).
 "hermes_cli/web_routers/profiles.py" = ["ASYNC220", "ASYNC221"]
 # Legacy blocking spawn sites in platform adapters, pending their own fixes.

@@ -2803,6 +2803,40 @@ def _reanchor_stale_cron(d: _DueJob) -> bool:
     return False
 
 
+def _already_completed_occurrence(d: _DueJob) -> bool:
+    """True when the occurrence at ``next_run`` already ran to completion.
+
+    Guard for the recurring fast-forward: a stale ``next_run_at`` can be a
+    past instant that already ran (a process-handoff write race re-arming an
+    old value), not merely a missed one. The occurrence is identified by the
+    dispatch stamp's ``scheduled_at`` being string-exact with the stored
+    ``next_run_at`` (the scheduler's own dispatch-stamp discipline — a
+    deliberately re-armed ``next_run_at`` is always a fresh timestamp), and by
+    the latest ledger row being a completion claimed within a tight window of
+    the scheduled instant (a bare ``>=`` would over-suppress a genuinely
+    missed round when ``next_run_at`` rolls back many rounds). Fails open on
+    any ledger/parse error so the scheduler is never wedged (#104312).
+    """
+    ld = d.job.get("last_dispatch")
+    if not isinstance(ld, dict):
+        return False
+    if ld.get("scheduled_at") != d.next_run:
+        return False
+    try:
+        from cron.executions import latest_execution
+
+        latest = latest_execution(d.job.get("id", ""))
+    except Exception:
+        return False
+    if not latest or latest.get("status") != "completed":
+        return False
+    claimed_dt = _parse_aware(latest.get("claimed_at") or "")
+    if claimed_dt is None:
+        return False
+    tol = timedelta(seconds=_LATE_DISPATCH_TOLERANCE_SECONDS)
+    return (d.next_run_dt - tol) <= claimed_dt <= (d.next_run_dt + tol)
+
+
 def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> None:
     """Recurring job past its grace window: skip the accumulated misses, fire once now.
 
@@ -2917,6 +2951,18 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
         return False
     grace = _compute_grace_seconds(d.schedule)
     if not manual_run and recurring:
+        # #104312: a stale next_run_at can be a past instant that ALREADY ran
+        # (process-handoff write race) — fast-forwarding would re-fire it. If
+        # this exact occurrence completed, re-anchor and skip the tick.
+        if _already_completed_occurrence(d):
+            new_next = d.recompute_next()
+            if new_next:
+                logger.info(
+                    "Job '%s' occurrence %s already ran to completion — "
+                    "re-anchoring to %s without re-firing (#104312)",
+                    d.label, d.next_run, new_next)
+                d.scan.persist(d.job["id"], next_run_at=new_next)
+            return False
         _fast_forward_missed_recurring(d, grace)
     if kind == "once":
         if _retire_expired_oneshot(d) or _oneshot_dispatch_limit_reached(job, scan):

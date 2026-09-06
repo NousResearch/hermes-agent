@@ -22,6 +22,44 @@ from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missi
 from pathlib import Path
 from typing import Any
 from typing import Optional
+import os as _os
+import sys as _sys
+import logging as _logging
+
+_log = _logging.getLogger(__name__)
+_IS_WINDOWS = _sys.platform == "win32"
+
+
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    """Local fallback: integer env override without reaching through ``_kb``.
+
+    Split kanban modules must not depend on private ``kanban_db._env_int``
+    via ``_kb`` — after a partial ``hermes update`` the loaded
+    ``kanban_db`` may be stale and lack the helper (issue #104217), which
+    turns every probe into ``AttributeError: module 'hermes_cli.kanban_db'
+    has no attribute '_env_int'``.  Keep a self-contained copy here.
+    """
+    raw = _os.environ.get(name, "").strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            return default
+        if parsed >= minimum:
+            return parsed
+    return default
+
+
+def _assert_not_delegated_child_mutation() -> None:  # noqa: D401
+    """Local fallback for the delegated-child guard (see ``kanban_db``)."""
+    try:
+        from agent.delegation_context import is_delegated_child_process_context
+
+        delegated = is_delegated_child_process_context()
+    except Exception:
+        delegated = bool(_os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"))
+    if delegated:
+        raise PermissionError("delegate_task child contexts cannot mutate Kanban tasks or boards")
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +89,7 @@ def _resolve_busy_timeout_ms() -> int:
     shared cross-profile dispatch bus, so worker stampedes are expected; a
     long timeout lets WAL serialize writers instead of surfacing transient
     ``database is locked`` failures."""
-    return _kb._env_int("HERMES_KANBAN_BUSY_TIMEOUT_MS", DEFAULT_BUSY_TIMEOUT_MS, minimum=1)
+    return _env_int("HERMES_KANBAN_BUSY_TIMEOUT_MS", DEFAULT_BUSY_TIMEOUT_MS, minimum=1)
 
 
 def _sqlite_connect(path: Path) -> sqlite3.Connection:
@@ -84,7 +122,7 @@ def _sqlite_connect(path: Path) -> sqlite3.Connection:
 def _try_lock_nb(handle) -> bool:
     """One non-blocking exclusive lock attempt on ``handle``; False when held elsewhere.
     Windows: 1-byte ``msvcrt.locking`` range at offset 0; POSIX: ``flock``."""
-    if _kb._IS_WINDOWS:
+    if _IS_WINDOWS:
         import msvcrt
 
         handle.seek(0)
@@ -101,7 +139,7 @@ def _try_lock_nb(handle) -> bool:
 
 def _unlock(handle) -> None:
     """Release a lock taken by :func:`_try_lock_nb` (same byte range / flock)."""
-    if _kb._IS_WINDOWS:
+    if _IS_WINDOWS:
         import msvcrt
 
         handle.seek(0)
@@ -141,7 +179,7 @@ def _cross_process_init_lock(path: Path):
                 break
             time.sleep(_INIT_LOCK_POLL_SECONDS)
         if not acquired:
-            _kb._log.warning(
+            _log.warning(
                 "kanban init lock for %s not acquired within %.0fs — proceeding "
                 "without the cross-process lock (in-process lock + idempotent "
                 "init are the correctness backstop). A stuck holder is no longer "
@@ -239,13 +277,13 @@ def _maybe_checkpoint_wal(conn: sqlite3.Connection, db_path: Path) -> None:
         _LAST_WAL_CHECKPOINT[key] = now
     try:
         row = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
-        _kb._log.debug(
+        _log.debug(
             "kanban WAL checkpoint (PASSIVE) on %s -> %s "
             "(busy, wal_frames, checkpointed_frames)",
             key, tuple(row) if row is not None else None,
         )
     except sqlite3.Error as exc:
-        _kb._log.debug("kanban WAL checkpoint on %s skipped: %s", key, exc)
+        _log.debug("kanban WAL checkpoint on %s skipped: %s", key, exc)
 
 
 def _looks_like_tls_record_at(data: bytes, offset: int) -> bool:
@@ -363,7 +401,7 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     from hermes_cli.sqlite_safe_read import has_live_connection
 
     if has_live_connection(resolved):
-        _kb._log.error(
+        _log.error(
             "refusing to quarantine %s: a connection to it is still open in "
             "this process, and fingerprinting the file would cancel that "
             "connection's POSIX locks. Close all connections first.",
@@ -531,14 +569,14 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     backup = _backup_corrupt_db(resolved)
     index_names = _repairable_index_names(messages or [])
     if index_names:
-        _kb._log.warning(
+        _log.warning(
             "kanban DB %s failed integrity_check with index-only errors "
             "(%s); pre-repair backup at %s — attempting REINDEX auto-repair.",
             resolved, ", ".join(index_names), _backup_label(backup),
         )
         repaired, post = _attempt_index_reindex_repair(resolved, index_names)
         if repaired:
-            _kb._log.warning(
+            _log.warning(
                 "kanban DB %s auto-repaired via REINDEX (%s); "
                 "integrity_check now clean. Pre-repair copy kept at %s.",
                 resolved, ", ".join(index_names), _backup_label(backup),
@@ -693,7 +731,7 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
             # Drop the stale cache entry and fall through to the full init path, which re-runs the header
             # and integrity probes and the schema script under the cross-process lock. See #83445.
             _INITIALIZED_PATHS.discard(resolved)
-        _kb._log.warning(
+        _log.warning(
             "kanban DB %s lost its schema after this process initialized it "
             "(deleted or replaced externally); re-initializing.",
             path,
@@ -1048,7 +1086,7 @@ def _rebuild_drifted_tables(conn: sqlite3.Connection) -> None:
         for table in drifted:
             create_sql, index_sqls = _REBUILD_SPECS[table]
             old_cols = [c["name"] for c in conn.execute(f"PRAGMA table_info({table})")]
-            _kb._log.info("kanban migration: rebuilding %s to match current schema", table)
+            _log.info("kanban migration: rebuilding %s to match current schema", table)
             conn.execute(f"ALTER TABLE {table} RENAME TO {table}_legacy")
             conn.execute(create_sql)
             new_cols = _column_names(conn, table)
@@ -1142,7 +1180,7 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
     (``complete_task`` & co.) must never run under an open outer transaction,
     since those side effects would fire while the outer txn can still roll back.
     """
-    _kb._assert_not_delegated_child_mutation()
+    _assert_not_delegated_child_mutation()
     if getattr(conn, "in_transaction", False):
         if not allow_nested:
             raise RuntimeError(

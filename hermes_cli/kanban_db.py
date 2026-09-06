@@ -4273,10 +4273,97 @@ _PLUGIN_COMPAT_LAZY = {
 
 def __getattr__(name):  # PEP 562 — lazy so no import cycles
     target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
+    if target is not None:
+        import importlib
+        from hermes_cli.plugin_compat import warn_once
+        warn_once(__name__, name, *target)
+        return getattr(importlib.import_module(target[0]), target[1])
+    # Private-helper fallback for split modules that late-bind via ``_kb`` (#104217).
+    # After ``hermes update`` the dashboard/gateway may still run with a stale
+    # ``kanban_db`` pycache where private helpers like ``_env_int`` appear
+    # missing.  Split modules reach them as ``_kb._env_int`` etc.; without a
+    # fallback the periodic probe ``_sqlite_connect -> _resolve_busy_timeout_ms
+    # -> _kb._env_int`` crashes every Kanban tick (HTTP 500 + dispatcher
+    # ``tick failed``).  Provide self-contained fallbacks here so any
+    # ``_kb.<private>`` resolves even when the originating attribute is absent
+    # from the loaded module dict.
+    if name == "_env_int":
+        import os as _os_fb
+
+        def _env_int_fb(name: str, default: int, *, minimum: int = 0) -> int:
+            raw = _os_fb.environ.get(name, "").strip()
+            if raw:
+                try:
+                    parsed = int(raw)
+                except ValueError:
+                    return default
+                if parsed >= minimum:
+                    return parsed
+            return default
+
+        return _env_int_fb
+    if name == "_row_get":
+        return _row_get
+    if name == "_json_or":
+        return _json_or
+    if name == "_json_dict":
+        return _json_dict
+    if name == "_git_out":
+        return _git_out
+    if name == "_relative_age":
+        return _relative_age
+    if name == "_IS_WINDOWS":
+        return _IS_WINDOWS
+    if name == "_log":
+        return _log
+    if name == "_assert_not_delegated_child_mutation":
+        return _assert_not_delegated_child_mutation
+    if name == "_host_prefix":
+        return _host_prefix
+    if name == "_opt_int":
+        return _opt_int
+    if name == "_append_event":
+        return _append_event
+    if name == "_current_run_id":
+        return _current_run_id
+    if name == "_end_run":
+        return _end_run
+    if name == "_insert_comment":
+        return _insert_comment
+    if name == "_retry_status_for_run":
+        return _retry_status_for_run
+    if name == "_fire_kanban_lifecycle_hook":
+        return _fire_kanban_lifecycle_hook
+    if name == "_fire_dispatch_tick_hook":
+        return _fire_dispatch_tick_hook
+    if name == "_fire_worker_spawned_hook":
+        return _fire_worker_spawned_hook
+    if name == "_kanban_observer_consumed":
+        return _kanban_observer_consumed
+    if name == "_resolve_crash_grace_seconds":
+        return _resolve_crash_grace_seconds
+    if name == "_resolve_rate_limit_cooldown_seconds":
+        return _resolve_rate_limit_cooldown_seconds
+    if name == "_resolve_claim_ttl_seconds":
+        return _resolve_claim_ttl_seconds
+    if name == "_terminate_reclaimed_worker":
+        try:
+            from hermes_cli.kanban_db_dispatch import _terminate_reclaimed_worker as _t
+            return _t
+        except Exception:
+            pass
+    if name == "_pid_alive":
+        try:
+            from hermes_cli.kanban_db_dispatch import _pid_alive as _p
+
+            return _p
+        except Exception:
+            pass
+    if name == "_clear_failure_counter":
+        try:
+            from hermes_cli.kanban_db_dispatch import _clear_failure_counter as _c
+            return _c
+        except Exception:
+            pass
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 # ---- END PLUGIN-COMPAT ----

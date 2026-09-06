@@ -300,34 +300,19 @@ def test_successful_command_boundary_receipt_without_fleet_does_not_retrigger(
 
 
 @pytest.mark.parametrize(
-    "receipt",
+    ("receipt", "unfinished"),
     [
-        {"outcome": "success", "exit_code": 0, "stop_reason": "sys.exit(0)"},
-        {"outcome": "success", "stop_reason": "KeyboardInterrupt: "},
-        {"exit_code": 0, "stop_reason": "sys.exit(0)"},
+        pytest.param({"outcome": "success", "exit_code": 0, "stop_reason": "sys.exit(0)"}, False, id="success-sys-exit-0"),
+        pytest.param({"outcome": "success", "stop_reason": "KeyboardInterrupt: "}, False, id="success-no-exit-code"),
+        pytest.param({"exit_code": 0, "stop_reason": "sys.exit(0)"}, False, id="exit-0-no-outcome"),
+        # update_contract writes {"outcome": "refused", "stop_reason": <code>} with no exit_code;
+        # the stop_reason clause is what keeps that receipt unfinished.
+        pytest.param({"outcome": "refused", "stop_reason": "not_updatable_in_place"}, True, id="refused-stop-reason-only"),
+        pytest.param({"outcome": "failed", "exit_code": 1, "stop_reason": "KeyboardInterrupt: "}, True, id="failed-interrupt"),
     ],
 )
-def test_successful_non_boundary_stop_reasons_are_finished(receipt):
-    """Successful sys.exit(0)/KeyboardInterrupt must not look unfinished."""
-    assert update_cmd._receipt_looks_unfinished(receipt) is False
-
-
-def test_refused_receipt_with_only_a_stop_reason_is_unfinished():
-    # update_contract writes {"outcome": "refused", "stop_reason": <code>} with no exit_code;
-    # the stop_reason clause is what keeps that receipt unfinished.
-    assert update_cmd._receipt_looks_unfinished(
-        {"outcome": "refused", "stop_reason": "not_updatable_in_place"}
-    ) is True
-
-
-def test_failed_interrupt_stop_reason_is_unfinished():
-    assert update_cmd._receipt_looks_unfinished(
-        {
-            "outcome": "failed",
-            "exit_code": 1,
-            "stop_reason": "KeyboardInterrupt: ",
-        }
-    ) is True
+def test_stop_reason_only_marks_unfinished_when_nothing_vouches_for_success(receipt, unfinished):
+    assert update_cmd._receipt_looks_unfinished(receipt) is unfinished
 
 
 def test_stale_fleet_matrix_on_latest_receipt_is_pending(monkeypatch):

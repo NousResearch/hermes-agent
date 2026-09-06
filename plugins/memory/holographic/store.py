@@ -74,8 +74,18 @@ _HELPFUL_DELTA, _UNHELPFUL_DELTA = 0.05, -0.10
 
 # Entity extraction patterns, applied in order: capitalized multi-word phrases ("John Doe"), double-quoted terms,
 # single-quoted terms, then "X aka Y" (both sides).
-_RE_SINGLE_ENTITY = (re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b'), re.compile(r'"([^"]+)"'), re.compile(r"'([^']+)'"))
+_RE_CAPS_ENTITY = re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b')
+_RE_DOUBLE_QUOTED = re.compile(r'"([^"\n]+)"')
+_RE_SINGLE_QUOTED = re.compile(r"(?<!\w)'([^'\n]+)'(?!\w)")
+_RE_SINGLE_ENTITY = (_RE_CAPS_ENTITY, _RE_DOUBLE_QUOTED, _RE_SINGLE_QUOTED)
 _RE_AKA = re.compile(r'(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?:\s+\w+)*)', re.IGNORECASE)
+
+_ENTITY_LEADING_STOP = frozenset({
+    "The", "A", "An", "So", "Using", "My", "This", "That", "Our", "It", "We",
+    "They", "I", "You", "When", "What", "How", "Where", "Why", "Because", "Also",
+    "If", "After", "Before", "While", "Since", "Verify", "Check", "Ensure", "Note",
+    "For", "With", "From", "About", "Just", "Then", "There", "Here",
+})
 _ENTITY_NAMES_SQL = "SELECT e.name FROM entities e JOIN fact_entities fe ON fe.entity_id = e.entity_id WHERE fe.fact_id = ?"
 # Entity lookup order: exact name, then aliases (comma-separated; wrapped in commas for whole-alias matching).
 _ENTITY_LOOKUPS = ("SELECT entity_id FROM entities WHERE name LIKE ?",
@@ -214,12 +224,23 @@ class MemoryStore:
 
     def _extract_entities(self, text: str) -> list[str]:
         """Regex entity candidates (see the pattern table), deduplicated case-insensitively in first-seen order."""
-        raw = [m.group(1) for pattern in _RE_SINGLE_ENTITY for m in pattern.finditer(text)]
+        raw: list[str] = []
+        for m in _RE_CAPS_ENTITY.finditer(text):
+            candidate = m.group(1).strip()
+            first_word = candidate.split()[0]
+            if first_word not in _ENTITY_LEADING_STOP:
+                raw.append(candidate)
+        for m in _RE_DOUBLE_QUOTED.finditer(text):
+            raw.append(m.group(1).strip())
+        for m in _RE_SINGLE_QUOTED.finditer(text):
+            raw.append(m.group(1).strip())
         for m in _RE_AKA.finditer(text):
-            raw += [m.group(1), m.group(2)]
+            raw.append(m.group(1).strip())
+            raw.append(m.group(2).strip())
         uniq: dict[str, str] = {}  # lower-cased key -> first-seen spelling, insertion-ordered
-        for name in filter(None, (n.strip() for n in raw)):
-            uniq.setdefault(name.lower(), name)
+        for name in filter(None, raw):
+            if len(name) <= 60 and "\n" not in name:
+                uniq.setdefault(name.lower(), name)
         return list(uniq.values())
 
     def _link_entities(self, fact_id: int, content: str) -> None:

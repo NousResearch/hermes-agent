@@ -225,3 +225,45 @@ class TestProviderShutdown:
         assert provider._store is None
         assert MemoryStore._shared == {}
 
+
+class TestEntityExtraction:
+    """Entity extraction patterns must extract genuine named entities without
+    minting junk from contractions or sentence-starting phrases (#104005)."""
+
+    def test_contractions_do_not_mint_junk_entities(self, db_path):
+        with MemoryStore(db_path) as store:
+            assert store._extract_entities("uv's job, not brew)") == []
+            assert store._extract_entities("I don't think it's the user's fault") == []
+            assert store._extract_entities("that's how we'll handle it") == []
+
+    def test_sentence_initial_stopwords_discarded(self, db_path):
+        with MemoryStore(db_path) as store:
+            assert store._extract_entities("So Apple contains the export") == []
+            assert store._extract_entities("Verify Apple contains the export") == []
+            assert store._extract_entities("Using Python for development") == []
+            assert store._extract_entities("The Playwright tests passed") == []
+
+    def test_valid_entities_extracted(self, db_path):
+        with MemoryStore(db_path) as store:
+            entities = store._extract_entities("Jane Doe works at Hermes Agent")
+            assert entities == ["Jane Doe", "Hermes Agent"]
+
+            quoted = store._extract_entities("'Jane Doe' and \"Smith & Co\"")
+            assert quoted == ["Jane Doe", "Smith & Co"]
+
+            aka = store._extract_entities("TaskMaster aka task tracker")
+            assert aka == ["TaskMaster", "task tracker"]
+
+            locations = store._extract_entities("Offices in New York and San Francisco")
+            assert locations == ["New York", "San Francisco"]
+
+    def test_linked_entities_exclude_contractions_and_starters(self, db_path):
+        with MemoryStore(db_path) as store:
+            fact_id = store.add_fact("uv's job, not brew)")
+            rows = store._conn.execute(
+                "SELECT e.name FROM entities e JOIN fact_entities fe ON fe.entity_id = e.entity_id WHERE fe.fact_id = ?",
+                (fact_id,),
+            ).fetchall()
+            assert rows == []
+
+

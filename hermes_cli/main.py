@@ -1043,6 +1043,14 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
         except Exception:
             pass
 
+    # Nothing explicit anywhere: the Nous free tier counts as configured once its identity exists.
+    # Setting it up here (blocking, short timeout) is the first-run path for a fresh install; any
+    # failure means "not configured" and the setup guard takes over as before.
+    try:
+        from hermes_cli.anon_auth import ensure_portal_identity
+        return ensure_portal_identity(blocking=True) is not None
+    except Exception as exc:
+        logger.debug("free tier setup on first run skipped: %s", exc)
     return False
 
 
@@ -1604,26 +1612,6 @@ def _start_chat_background_prefetch() -> None:
         ).start()
 
 
-def _setup_free_tier_blocking() -> bool:
-    """Fresh install with nothing configured: set up the Nous free tier (blocking, 5 s hard cap).
-
-    True when an identity now exists (the resolver will find ``active_provider: nous``); False on
-    any failure so the caller falls through to today's setup guard. Failure of a fallback is not
-    an error, so it is logged at DEBUG only.
-    """
-    from hermes_cli.anon_auth import ensure_portal_identity, guest_enabled
-    if not guest_enabled():
-        return False
-    print("Setting up free inference…", end="", flush=True)
-    try:
-        state = ensure_portal_identity(blocking=True)
-    except Exception as exc:
-        logging.getLogger(__name__).debug("free tier setup failed: %s", exc)
-        state = None
-    print("\r" + " " * 32 + "\r", end="", flush=True)
-    return state is not None
-
-
 def _first_run_setup_guard(args) -> None:
     """No provider configured: offer `hermes setup` (TTY) or exit 1 with guidance."""
     print()
@@ -1709,9 +1697,8 @@ def cmd_chat(args):
 
     # First-run guard: check if any provider is configured before launching
     if not _has_any_provider_configured():
-        if not _setup_free_tier_blocking():
-            _first_run_setup_guard(args)
-            return
+        _first_run_setup_guard(args)
+        return
 
     _start_chat_background_prefetch()
 

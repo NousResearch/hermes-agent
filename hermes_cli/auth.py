@@ -1494,6 +1494,15 @@ def resolve_provider(
             return "bedrock"
     except ImportError:
         pass  # boto3 not installed
+    # Nothing configured at all: set up the Nous free tier (blocking, short timeout). Success writes
+    # ``active_provider: nous``, which the OAuth rung above then picks up on every later call;
+    # failure of this fallback is not an error and falls through to the guidance below.
+    try:
+        from hermes_cli.anon_auth import ensure_portal_identity
+        if ensure_portal_identity(blocking=True) is not None:
+            return "nous"
+    except Exception as exc:
+        logger.debug("free tier setup during provider resolution skipped: %s", exc)
     raise AuthError(
         "No inference provider configured. Run 'hermes model' to choose a "
         "provider and model, or set an API key (OPENROUTER_API_KEY, "

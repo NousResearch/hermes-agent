@@ -1938,6 +1938,66 @@ def test_sync_anthropic_entry_clears_all_error_fields(tmp_path, monkeypatch):
     assert synced.last_error_reset_at is None
 
 
+def _make_anthropic_pkce_pool(tmp_path, monkeypatch, *, access_token, refresh_token, expires_at_ms=9_999_999_999_000):
+    """Helper: load an Anthropic pool seeded with a single hermes_pkce entry."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: pid == "anthropic")
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.read_claude_code_credentials",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.read_hermes_oauth_credentials",
+        lambda: {"accessToken": access_token, "refreshToken": refresh_token, "expiresAt": expires_at_ms},
+    )
+    from agent.credential_pool import load_pool
+    pool = load_pool("anthropic")
+    entry = pool.select()
+    assert entry is not None
+    assert entry.source == "hermes_pkce"
+    return pool, entry
+
+
+def test_resync_revives_exhausted_pkce_entry(tmp_path, monkeypatch):
+    """A re-auth written to ~/.hermes/.anthropic_oauth.json must revive a
+    frozen EXHAUSTED hermes_pkce row on the selection path, like claude_code."""
+    from dataclasses import replace as dc_replace
+    from agent.credential_pool import STATUS_EXHAUSTED
+
+    pool, entry = _make_anthropic_pkce_pool(
+        tmp_path, monkeypatch,
+        access_token="stale-access",
+        refresh_token="stale-refresh",
+    )
+
+    now = time.time()
+    exhausted = dc_replace(
+        entry,
+        last_status=STATUS_EXHAUSTED,
+        last_status_at=now,
+        last_error_code=401,
+        last_error_reason="token_expired",
+        last_error_message="Access token has expired",
+        last_error_reset_at=now + 300,
+    )
+    pool._replace_entry(entry, exhausted)
+
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.read_hermes_oauth_credentials",
+        lambda: {"accessToken": "fresh-access", "refreshToken": "fresh-refresh", "expiresAt": 9_999_999_999_000},
+    )
+
+    synced = pool._resync_stale_entry(exhausted)
+
+    assert synced is not exhausted
+    assert synced.access_token == "fresh-access"
+    assert synced.last_status is None
+
+
 def _load_two_ok_pool(tmp_path, monkeypatch):
     """A pool with two OK anthropic entries, current = cred-1."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

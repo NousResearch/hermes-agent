@@ -1137,28 +1137,48 @@ class CredentialPool:
             return entry
         try:
             from agent.anthropic_credentials import read_claude_code_credentials
-            creds = read_claude_code_credentials()
-            if not creds:
-                return entry
-            file_refresh = creds.get("refreshToken", "")
-            file_access = creds.get("accessToken", "")
-            # Access tokens can be re-issued without a new refresh token, so
-            # checking only refresh_token leaves a stale access_token in the
-            # pool -> 401 on every request until the exhausted TTL expires.
-            if (file_access or file_refresh) and (
-                (file_access and file_access != (entry.access_token or ""))
-                or (file_refresh and file_refresh != (entry.refresh_token or ""))
-            ):
-                logger.debug("Pool entry %s: syncing tokens from credentials file (tokens changed)", entry.id)
-                return self._adopt(
-                    entry,
-                    access_token=file_access or entry.access_token,
-                    refresh_token=file_refresh or entry.refresh_token,
-                    expires_at_ms=creds.get("expiresAt", 0) or entry.expires_at_ms,
-                    **_CLEAR_STATUS,
-                )
+            return self._sync_singleton_oauth_file(
+                entry, read_claude_code_credentials(), "~/.claude/.credentials.json")
         except Exception as exc:
             logger.debug("Failed to sync from credentials file: %s", exc)
+        return entry
+
+    def _sync_hermes_pkce_entry_from_oauth_file(self, entry: PooledCredential) -> PooledCredential:
+        """Sync a hermes_pkce entry from ~/.hermes/.anthropic_oauth.json if tokens differ."""
+        if self.provider != "anthropic" or entry.source != "hermes_pkce":
+            return entry
+        try:
+            from agent.anthropic_credentials import read_hermes_oauth_credentials
+            return self._sync_singleton_oauth_file(
+                entry, read_hermes_oauth_credentials(), "~/.hermes/.anthropic_oauth.json")
+        except Exception as exc:
+            logger.debug("Failed to sync from Hermes OAuth file: %s", exc)
+        return entry
+
+    def _sync_singleton_oauth_file(self, entry: PooledCredential, creds, source_label: str) -> PooledCredential:
+        """Adopt changed access/refresh tokens from a singleton OAuth file.
+
+        Shared by the claude_code and hermes_pkce resync paths: access tokens
+        can be re-issued without a new refresh token, so checking only
+        refresh_token leaves a stale access_token in the pool -> 401 on every
+        request until the exhausted TTL expires.
+        """
+        if not creds:
+            return entry
+        file_refresh = creds.get("refreshToken", "")
+        file_access = creds.get("accessToken", "")
+        if (file_access or file_refresh) and (
+            (file_access and file_access != (entry.access_token or ""))
+            or (file_refresh and file_refresh != (entry.refresh_token or ""))
+        ):
+            logger.debug("Pool entry %s: syncing tokens from %s (tokens changed)", entry.id, source_label)
+            return self._adopt(
+                entry,
+                access_token=file_access or entry.access_token,
+                refresh_token=file_refresh or entry.refresh_token,
+                expires_at_ms=creds.get("expiresAt", 0) or entry.expires_at_ms,
+                **_CLEAR_STATUS,
+            )
         return entry
 
     def _sync_entry_from_pool_store(self, entry: PooledCredential) -> PooledCredential:
@@ -1803,7 +1823,11 @@ class CredentialPool:
         Claude Code CLI, another profile) leaving fresh tokens on disk while
         the pool entry is frozen behind ``last_error_reset_at``.
         """
-        if entry.source != _RESYNC_SOURCE.get(self.provider) or entry.last_status not in {STATUS_EXHAUSTED, STATUS_DEAD}:
+        if entry.last_status not in {STATUS_EXHAUSTED, STATUS_DEAD}:
+            return entry
+        if self.provider == "anthropic" and entry.source == "hermes_pkce":
+            return self._sync_hermes_pkce_entry_from_oauth_file(entry)
+        if entry.source != _RESYNC_SOURCE.get(self.provider):
             return entry
         if self.provider == "anthropic":
             return self._sync_anthropic_entry_from_credentials_file(entry)

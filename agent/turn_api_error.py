@@ -117,6 +117,16 @@ def handle_api_error(
         classified.retryable, classified.should_compress,
         classified.should_rotate_credential, classified.should_fallback,
     )
+    if classified.reason is FailoverReason.server_error:
+        # Wedged-child signal (issue #104050): HTTP 500-class from inference.
+        # Counting lives here (not on transport errors) so slow-but-healthy
+        # giants never trip the watchdog; the live probe confirms anyway.
+        try:
+            from agent.conversation_loop import _note_managed_inference_result
+
+            _note_managed_inference_result(agent, False)
+        except Exception:  # noqa: BLE001 — the helper already swallows; belt and braces
+            logger.debug("child-watchdog failure note failed", exc_info=True)
     agent._invoke_api_request_error_hook(
         task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
         api_call_count=api_call_count, api_start_time=api_start_time, api_kwargs=api_kwargs,

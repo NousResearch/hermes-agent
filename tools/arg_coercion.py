@@ -18,7 +18,7 @@ from tools.schema_sanitizer import resolve_local_schema_ref
 logger = logging.getLogger("model_tools")
 
 
-def project_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+def project_tool_args(tool_name: str, args: dict[str, Any], *, schema: dict | None = None) -> dict[str, Any]:
     """Strip arguments not declared in the tool's registered schema.
 
     Prevents hidden control-plane parameters (e.g. ``force`` on the terminal
@@ -26,11 +26,17 @@ def project_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
     call arguments.  Schemas that explicitly set ``additionalProperties: true``
     on the top-level parameters object are respected — unknown arguments are
     preserved for tools that intentionally accept them.
+
+    When *schema* is supplied (e.g. from a scope-resolved ``ToolEntry``) it is
+    used directly, avoiding a second bare-name registry lookup that could
+    resolve against a different profile/registration than the one that
+    selected the handler.
     """
     if not args or not isinstance(args, dict):
         return args
 
-    schema = registry.get_schema(tool_name)
+    if schema is None:
+        schema = registry.get_schema(tool_name)
     if not schema:
         return args
 

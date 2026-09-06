@@ -8,14 +8,15 @@ to download, cache, and optionally inject text from non-image/audio files.
 import os
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import MessageType
+from gateway.config import GatewayConfig, PlatformConfig
+from gateway.platforms.base import MessageType, merge_pending_message_event
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +59,10 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 import plugins.platforms.discord.adapter as discord_platform  # noqa: E402
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import (  # noqa: E402
+    DiscordAdapter,
+    _discord_attachment_name_requires_path_only,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +166,28 @@ def _mock_aiohttp_download(raw_bytes: bytes):
 
 class TestIncomingDocumentHandling:
 
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            ".env", ".env.production", ".netrc", ".git-credentials", "id_ed25519",
+            "server-private-key.pem", "api-key.txt", "service-auth.txt",
+            "client-credentials.json", "oauth-token.txt", "database_password.md",
+            "shared.secret.txt",
+        ],
+    )
+    def test_credential_like_filename_requires_path_only(self, filename):
+        assert _discord_attachment_name_requires_path_only(filename) is True
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "monkey.txt", "hockey.txt", "keynote.txt", "authentication-guide.md",
+            "tokenizer-notes.txt", "secretary-agenda.txt", "ordinary-notes.txt", "readme.md",
+        ],
+    )
+    def test_ordinary_filename_remains_inline_eligible(self, filename):
+        assert _discord_attachment_name_requires_path_only(filename) is False
+
 
     @pytest.mark.asyncio
     async def test_txt_content_injected(self, adapter):
@@ -181,6 +207,64 @@ class TestIncomingDocumentHandling:
         assert "summarize this" in event.text
         # injection prepended before caption
         assert event.text.index("[Content of") < event.text.index("summarize this")
+
+    @pytest.mark.asyncio
+    async def test_credential_attachment_body_absent_from_constructed_prompt(self, adapter):
+        from gateway.run import GatewayRunner
+
+        sentinel = "SYNTHETIC_CREDENTIAL_BODY_MUST_NOT_ENTER_PROMPT"
+        with _mock_aiohttp_download(sentinel.encode()):
+            msg = make_message(
+                attachments=[make_attachment(filename="service-token.txt", content_type="text/plain")],
+                content="inspect the saved file",
+            )
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args.args[0]
+        saved_path = event.media_urls[0]
+        assert Path(saved_path).read_text(encoding="utf-8") == sentinel
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig()
+        runner.adapters = {}
+        runner._has_setup_skill = lambda: False
+        prompt = await runner._prepare_inbound_message_text(event=event, source=event.source, history=[])
+        assert sentinel not in prompt
+        assert saved_path in prompt
+        assert "content was not automatically inlined" in prompt
+
+    @pytest.mark.asyncio
+    async def test_queued_credential_followup_keeps_path_only_context(self, adapter):
+        from gateway.run import GatewayRunner
+
+        with _mock_aiohttp_download(b"ordinary body"):
+            await adapter._handle_message(make_message(
+                attachments=[make_attachment(filename="notes.txt", content_type="text/plain")],
+                content="first",
+            ))
+        existing = adapter.handle_message.call_args.args[0]
+
+        sentinel = "QUEUED_CREDENTIAL_BODY_MUST_NOT_ENTER_PROMPT"
+        adapter.handle_message.reset_mock()
+        with _mock_aiohttp_download(sentinel.encode()):
+            await adapter._handle_message(make_message(
+                attachments=[make_attachment(filename="service-token.txt", content_type="text/plain")],
+                content="second",
+            ))
+        incoming = adapter.handle_message.call_args.args[0]
+        credential_path = incoming.media_urls[0]
+        pending = {"session": existing}
+        merge_pending_message_event(pending, "session", incoming)
+        merged = pending["session"]
+        assert credential_path in merged.metadata["discord_path_only_attachment_paths"]
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig()
+        runner.adapters = {}
+        runner._has_setup_skill = lambda: False
+        prompt = await runner._prepare_inbound_message_text(event=merged, source=merged.source, history=[])
+        assert sentinel not in prompt
+        assert credential_path in prompt
+        assert "content was not automatically inlined" in prompt
 
     @pytest.mark.asyncio
     async def test_md_content_injected(self, adapter):
@@ -349,5 +433,4 @@ class TestAllowAnyAttachment:
 
         event = adapter.handle_message.call_args[0][0]
         assert len(event.media_urls) == 1
-
 

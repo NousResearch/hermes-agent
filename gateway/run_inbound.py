@@ -1457,6 +1457,11 @@ class GatewayInboundMixin:
 
         _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
         inline_flags = getattr(event, "media_text_inlined", None) or []
+        path_only_attachment_paths = set(
+            (getattr(event, "metadata", None) or {}).get(
+                "discord_path_only_attachment_paths", []
+            )
+        )
         for i, path in enumerate(event.media_urls):
             # A document mixed into a PHOTO/VOICE message (message-level type != DOCUMENT) still
             # reaches the agent; only genuine non-media files get a note.
@@ -1472,6 +1477,7 @@ class GatewayInboundMixin:
             inline_flag = inline_flags[i] if i < len(inline_flags) else None
             context_note = _build_document_context_note(
                 display_name, agent_path, mtype, content_inlined=inline_flag is not False,
+                filename_requires_path_only=path in path_only_attachment_paths,
             )
             message_text = f"{context_note}\n\n{message_text}"
         return message_text

@@ -590,6 +590,24 @@ display:
       reasoning_style: subtext   # code | blockquote | subtext
 ```
 
+#### `display.platforms.discord.notifications`
+
+**Type:** string — **Default:** `"all"` — **Values:** `all`, `important`
+
+Controls native Discord push notifications without hiding Hermes activity:
+
+- `all` — Legacy behavior. Every Discord message is sent normally and can generate a push notification.
+- `important` — Reasoning, tool activity, progress, status, and other intermediate messages remain visible but are sent with Discord's silent-message flag. A completed response can generate one normal notification, from its last Discord message only. If Discord splits the response, all earlier chunks are silent.
+
+```yaml
+display:
+  platforms:
+    discord:
+      notifications: important
+```
+
+Hermes uses runtime delivery metadata to distinguish intermediate activity from notification-worthy output. It does not infer finality from message text. Interactive approval, clarification, and picker prompts remain notification-capable because they use Discord's dedicated prompt path.
+
 ## Slash Command Access Control
 
 By default, every allowed user can run every slash command. To split your allowlist into **admins** (full slash command access) and **regular users** (only commands you explicitly enable), add `allow_admin_from` and `user_allowed_commands` to the Discord platform's `extra` block:

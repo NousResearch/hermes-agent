@@ -31,6 +31,14 @@ from urllib.parse import quote, urljoin
 
 from agent.async_utils import (consume_detached_task_result as _consume_background_task_result)
 from agent.display import ToolPreview
+from plugins.platforms.discord.notifications import (
+    NOTIFICATIONS_ALL,
+    NOTIFICATIONS_IMPORTANT,
+    normalize_notification_mode,
+    notification_kwargs as discord_notification_kwargs,
+    resolve_notification_mode,
+    with_suppress_notifications_flag,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1077,6 +1085,9 @@ class DiscordAdapter(BasePlatformAdapter):
         self._dedup = MessageDeduplicator()
         # Reply threading mode: "off", "first" (default; first chunk only), "all" (every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
+        self._set_notifications_mode(
+            self.config.extra.get("notifications", NOTIFICATIONS_ALL)
+        )
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
         # Bot's last message ID per channel: lets history backfill skip the full channel.history() scan.
         self._last_self_message_id: Dict[str, str] = {}
@@ -2806,6 +2817,42 @@ class DiscordAdapter(BasePlatformAdapter):
         kept.append(notice)
         return kept
 
+    def _notification_kwargs(
+        self,
+        metadata: Optional[Dict[str, Any]] = None,
+        *,
+        final_chunk: bool = True,
+    ) -> Dict[str, Any]:
+        """Return discord.py kwargs for one physical outbound message."""
+        return discord_notification_kwargs(
+            mode=getattr(self, "_notifications_mode", NOTIFICATIONS_ALL),
+            metadata=metadata,
+            final_chunk=final_chunk,
+        )
+
+    def _set_notifications_mode(self, value: Any) -> None:
+        """Apply notification mode and its edit-stream finalization contract together."""
+        self._notifications_mode = normalize_notification_mode(value)
+        # A silent preview cannot gain a Discord push through an edit. Important
+        # mode therefore requires a finalization pass that replaces it with a
+        # fresh notification-capable message.
+        self.REQUIRES_EDIT_FINALIZE = (
+            self._notifications_mode == NOTIFICATIONS_IMPORTANT
+        )
+
+    @property
+    def notify_only_last_final_delivery(self) -> bool:
+        """Put final-turn ``notify`` metadata only on the last logical delivery."""
+        return getattr(self, "_notifications_mode", NOTIFICATIONS_ALL) == NOTIFICATIONS_IMPORTANT
+
+    def prefers_fresh_final_streaming(
+        self,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Replace a silent streaming preview so the completed response can notify."""
+        return self.notify_only_last_final_delivery
+
     async def send(
         self,
         chat_id: str,
@@ -2843,7 +2890,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=f"Channel {chat_id} not found")
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
-                result = await self._send_to_forum(channel, content)
+                result = await self._send_to_forum(channel, content, metadata=metadata)
                 return await self._record_response_async(reply_to, result, content, final_delivery)
             formatted = self.format_message(content)
             chunks = self._cap_split_chunks(
@@ -2856,8 +2903,16 @@ class DiscordAdapter(BasePlatformAdapter):
                     chunk_reference = reference
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
+                notification_kwargs = self._notification_kwargs(
+                    metadata,
+                    final_chunk=i == len(chunks) - 1,
+                )
                 try:
-                    msg = await channel.send(content=chunk, reference=chunk_reference)
+                    msg = await channel.send(
+                        content=chunk,
+                        reference=chunk_reference,
+                        **notification_kwargs,
+                    )
                 except Exception as e:
                     if chunk_reference is not None and self._is_reply_reference_rejected(e):
                         logger.warning(
@@ -2865,7 +2920,11 @@ class DiscordAdapter(BasePlatformAdapter):
                             self.name, reply_to,
                         )
                         reference = None
-                        msg = await channel.send(content=chunk, reference=None)
+                        msg = await channel.send(
+                            content=chunk,
+                            reference=None,
+                            **notification_kwargs,
+                        )
                     else:
                         raise
                 message_ids.append(str(msg.id))
@@ -2904,7 +2963,12 @@ class DiscordAdapter(BasePlatformAdapter):
         message_id = str(getattr(starter_msg, "id", thread_id)) if starter_msg else thread_id
         return thread_channel, thread_id, starter_msg, message_id
 
-    async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
+    async def _send_to_forum(
+        self,
+        forum_channel: Any,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
         """Create a forum thread post with the message as starter (forum channels reject direct
         sends; name from the first line). Chunk failures land in ``raw_response['warnings']``."""
         formatted = self.format_message(content)
@@ -2912,16 +2976,26 @@ class DiscordAdapter(BasePlatformAdapter):
         thread_name = _derive_forum_thread_name(content)
         starter_content = chunks[0] if chunks else thread_name
         try:
-            thread = await forum_channel.create_thread(name=thread_name, content=starter_content)
+            thread = await forum_channel.create_thread(
+                name=thread_name,
+                content=starter_content,
+                **self._notification_kwargs(metadata, final_chunk=len(chunks) <= 1),
+            )
         except Exception as e:
             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
             return SendResult(success=False, error=f"Forum thread creation failed: {e}")
         thread_channel, thread_id, starter_msg, message_id = self._forum_thread_parts(thread)
         message_ids = [message_id]
         warnings: list[str] = []
-        for chunk in chunks[1:]:
+        for index, chunk in enumerate(chunks[1:], start=1):
             try:
-                msg = await thread_channel.send(content=chunk)
+                msg = await thread_channel.send(
+                    content=chunk,
+                    **self._notification_kwargs(
+                        metadata,
+                        final_chunk=index == len(chunks) - 1,
+                    ),
+                )
                 message_ids.append(str(msg.id))
             except Exception as e:
                 warning = f"Failed to send follow-up chunk to forum thread {thread_id}: {e}"
@@ -2935,6 +3009,7 @@ class DiscordAdapter(BasePlatformAdapter):
     async def _forum_post_file(
         self, forum_channel: Any, *, thread_name: Optional[str] = None, content: str = "",
         file: Any = None, files: Optional[list] = None,
+        metadata: Optional[Dict[str, Any]] = None, final_chunk: bool = True,
     ) -> SendResult:
         """Create a forum thread whose starter message carries file attachments."""
         if not thread_name:
@@ -2952,6 +3027,7 @@ class DiscordAdapter(BasePlatformAdapter):
             kwargs["file"] = file
         if files:
             kwargs["files"] = files
+        kwargs.update(self._notification_kwargs(metadata, final_chunk=final_chunk))
         try:
             thread = await forum_channel.create_thread(**kwargs)
         except Exception as e:
@@ -3012,7 +3088,9 @@ class DiscordAdapter(BasePlatformAdapter):
             # Pre-flight oversize: final edits split-and-deliver; streaming edits truncate in place.
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
                 if finalize:
-                    return await self._edit_overflow_split(channel, msg, message_id, content)
+                    return await self._edit_overflow_split(
+                        channel, msg, message_id, content, metadata=metadata,
+                    )
                 formatted = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)[0]
                 _saturated_preview = True
                 # Saturated-preview dedup: past the cap every edit is the same text; skip until finalize.
@@ -3031,7 +3109,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Reactive split: format_message inflation can exceed 2,000 (50035) even after pre-flight.
                 if self._is_length_overflow_error(edit_err):
                     if finalize:
-                        return await self._edit_overflow_split(channel, msg, message_id, content)
+                        return await self._edit_overflow_split(
+                            channel, msg, message_id, content, metadata=metadata,
+                        )
                     truncated = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)[0]
                     if self._last_overflow_preview.get(_preview_key) == truncated:
                         # Saturated-preview dedup (see pre-flight path above).
@@ -3067,6 +3147,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def _edit_overflow_split(
         self, channel: Any, msg: Any, message_id: str, content: str,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Deliver an oversized final edit: edit ``message_id`` with chunk 1, send chunks 2..N as
         replies to the previous. Returns ``message_id=<last-id>`` + ``continuation_message_ids``.
@@ -3088,7 +3169,7 @@ class DiscordAdapter(BasePlatformAdapter):
         continuation_ids: list[str] = []
         delivered = 1
         prev_msg = msg
-        for chunk in chunks[1:]:
+        for index, chunk in enumerate(chunks[1:], start=1):
             reference = None
             if hasattr(prev_msg, "to_reference"):
                 try:
@@ -3098,8 +3179,13 @@ class DiscordAdapter(BasePlatformAdapter):
             elif getattr(prev_msg, "id", None):
                 # Prior message without to_reference (duck-typed): build the reference from ids.
                 reference = self._message_reference_from_ids(prev_msg.id, channel)
+            notification_kwargs = self._notification_kwargs(
+                metadata, final_chunk=index == len(chunks) - 1,
+            )
             try:
-                sent = await channel.send(content=chunk, reference=reference)
+                sent = await channel.send(
+                    content=chunk, reference=reference, **notification_kwargs,
+                )
             except Exception as send_err:
                 # Drop the reply anchor and retry once: deleted anchor (10008) / system message (50035).
                 logger.warning(
@@ -3107,7 +3193,9 @@ class DiscordAdapter(BasePlatformAdapter):
                     self.name, send_err,
                 )
                 try:
-                    sent = await channel.send(content=chunk, reference=None)
+                    sent = await channel.send(
+                        content=chunk, reference=None, **notification_kwargs,
+                    )
                 except Exception as retry_err:
                     logger.warning(
                         "[%s] Overflow split: stopped at %d/%d chunks delivered: %s",
@@ -3142,6 +3230,7 @@ class DiscordAdapter(BasePlatformAdapter):
     async def _send_file_attachment(
         self, chat_id: str, file_path: str, caption: Optional[str] = None,
         file_name: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local file as a Discord attachment (forum channels get a new thread). Path-based
         ``discord.File`` only: the open-handle form can race the multipart encoder after an image
@@ -3165,10 +3254,14 @@ class DiscordAdapter(BasePlatformAdapter):
         discord_file = discord.File(file_path, filename=filename)
         if self._is_forum_parent(channel):
             result = await self._forum_post_file(
-                channel, content=(caption or "").strip(), files=[discord_file],
+                channel, content=(caption or "").strip(), files=[discord_file], metadata=metadata,
             )
             return result
-        msg = await channel.send(content=caption if caption else None, files=[discord_file])
+        msg = await channel.send(
+            content=caption if caption else None,
+            files=[discord_file],
+            **self._notification_kwargs(metadata),
+        )
         attachments = getattr(msg, "attachments", None) or []
         if not attachments:
             # Discord accepted the message but attached nothing: fail loud instead of a silent drop.
@@ -3185,22 +3278,40 @@ class DiscordAdapter(BasePlatformAdapter):
             )
         return SendResult(success=True, message_id=str(msg.id))
 
+    async def _send_multiple_images_individually(
+        self, chat_id: str, images: List[Tuple[str, str]],
+        metadata: Optional[Dict[str, Any]], human_delay: float, *, final_chunk: bool,
+    ) -> None:
+        """Fallback to one image per message while keeping only the last actual send notify-worthy."""
+        for index, image in enumerate(images):
+            image_metadata = self._metadata_for_final_delivery(
+                metadata,
+                is_last=final_chunk and index == len(images) - 1,
+            )
+            await super().send_multiple_images(
+                chat_id, [image], image_metadata, human_delay=human_delay,
+            )
+
     async def send_multiple_images(
         self, chat_id: str, images: List[Tuple[str, str]],
         metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0,
     ) -> None:
-        """Send images as one Discord message (<=10 attachments): URLs are downloaded and uploaded
-        inline (bare links don't render); on chunk failure the remainder uses the per-image loop."""
-        if not self._client:
-            return
-        if not images:
+        """Send images in actual <=10-file Discord batches.
+
+        Missing, unsafe, or failed downloads are removed before batching, so the final
+        *delivered* batch receives the only notification. A failed batch falls back to
+        per-image sends with the same last-message invariant.
+        """
+        if not self._client or not images:
             return
         try:
             import discord as _discord_mod
             import io as _io
             from urllib.parse import unquote as _unquote
         except Exception:  # pragma: no cover
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            await self._send_multiple_images_individually(
+                chat_id, images, metadata, human_delay, final_chunk=True,
+            )
             return
         try:
             channel = await self._resolve_channel(chat_id)
@@ -3209,79 +3320,104 @@ class DiscordAdapter(BasePlatformAdapter):
                 return
         except Exception as e:
             logger.warning("[%s] Failed to resolve channel for multi-image send: %s", self.name, e)
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            await self._send_multiple_images_individually(
+                chat_id, images, metadata, human_delay, final_chunk=True,
+            )
             return
-        CHUNK = 10
-        chunks = [images[i:i + CHUNK] for i in range(0, len(images), CHUNK)]
+
+        prepared: List[Tuple[Any, str, Tuple[str, str]]] = []
+        aiohttp_session = None
+        try:
+            for image_url, alt_text in images:
+                discord_file = None
+                if image_url.startswith("file://"):
+                    local_path = _unquote(image_url[7:])
+                    if not os.path.exists(local_path):
+                        logger.warning("[%s] Skipping missing image: %s", self.name, local_path)
+                        continue
+                    discord_file = _discord_mod.File(
+                        local_path, filename=os.path.basename(local_path),
+                    )
+                else:
+                    if not is_safe_url(image_url):
+                        logger.warning("[%s] Blocked unsafe image URL in batch", self.name)
+                        continue
+                    try:
+                        import aiohttp as _aiohttp
+                        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+                        _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
+                        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+                        if aiohttp_session is None:
+                            aiohttp_session = _aiohttp.ClientSession(**_sess_kw)
+                        status, data, headers = await _read_url_image_with_redirect_guard(
+                            aiohttp_session, image_url,
+                            timeout=_aiohttp.ClientTimeout(total=30), request_kwargs=_req_kw,
+                        )
+                        if status != 200:
+                            logger.warning(
+                                "[%s] Failed to download image (HTTP %d) in batch: %s",
+                                self.name, status, image_url[:80],
+                            )
+                            continue
+                        ext = _image_ext_from_content_type(
+                            headers.get("content-type", "image/png"),
+                        )
+                        discord_file = _discord_mod.File(
+                            _io.BytesIO(data), filename=f"image_{len(prepared)}.{ext}",
+                        )
+                    except Exception as dl_err:
+                        logger.warning(
+                            "[%s] Download failed for %s: %s",
+                            self.name, image_url[:80], dl_err,
+                        )
+                        continue
+                prepared.append((discord_file, alt_text, (image_url, alt_text)))
+        finally:
+            if aiohttp_session is not None:
+                try:
+                    await aiohttp_session.close()
+                except Exception:
+                    pass
+
+        if not prepared:
+            return
+        chunk_size = 10
+        chunks = [prepared[i:i + chunk_size] for i in range(0, len(prepared), chunk_size)]
         for chunk_idx, chunk in enumerate(chunks):
             if human_delay > 0 and chunk_idx > 0:
                 await asyncio.sleep(human_delay)
-            files: List[Any] = []
-            captions: List[str] = []
-            aiohttp_session = None
+            files = [entry[0] for entry in chunk]
+            captions = [entry[1] for entry in chunk if entry[1]]
+            originals = [entry[2] for entry in chunk]
+            content = captions[0] if captions else None
+            final_chunk = chunk_idx == len(chunks) - 1
+            logger.info(
+                "[%s] Sending %d image(s) as single Discord message (chunk %d/%d)",
+                self.name, len(files), chunk_idx + 1, len(chunks),
+            )
             try:
-                for image_url, alt_text in chunk:
-                    if alt_text:
-                        captions.append(alt_text)
-                    if image_url.startswith("file://"):
-                        local_path = _unquote(image_url[7:])
-                        if not os.path.exists(local_path):
-                            logger.warning("[%s] Skipping missing image: %s", self.name, local_path)
-                            continue
-                        files.append(_discord_mod.File(local_path, filename=os.path.basename(local_path)))
-                    else:
-                        if not is_safe_url(image_url):
-                            logger.warning("[%s] Blocked unsafe image URL in batch", self.name)
-                            continue
-                        # Download to BytesIO so it renders inline
-                        try:
-                            import aiohttp as _aiohttp
-                            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-                            _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
-                            _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
-                            if aiohttp_session is None:
-                                aiohttp_session = _aiohttp.ClientSession(**_sess_kw)
-                            status, data, headers = await _read_url_image_with_redirect_guard(
-                                aiohttp_session, image_url,
-                                timeout=_aiohttp.ClientTimeout(total=30), request_kwargs=_req_kw,
-                            )
-                            if status != 200:
-                                logger.warning(
-                                    "[%s] Failed to download image (HTTP %d) in batch: %s",
-                                    self.name, status, image_url[:80],
-                                )
-                                continue
-                            ext = _image_ext_from_content_type(headers.get("content-type", "image/png"))
-                            files.append(_discord_mod.File(_io.BytesIO(data), filename=f"image_{len(files)}.{ext}"))
-                        except Exception as dl_err:
-                            logger.warning("[%s] Download failed for %s: %s", self.name, image_url[:80], dl_err)
-                            continue
-                if not files:
-                    continue
-                # Use the first caption if any (Discord only has one message body for the group)
-                content = captions[0] if captions else None
-                logger.info(
-                    "[%s] Sending %d image(s) as single Discord message (chunk %d/%d)",
-                    self.name, len(files), chunk_idx + 1, len(chunks),
-                )
                 if self._is_forum_parent(channel):
                     await self._forum_post_file(
-                        channel, content=(content or "").strip(), files=files,
+                        channel,
+                        content=(content or "").strip(),
+                        files=files,
+                        metadata=metadata,
+                        final_chunk=final_chunk,
                     )
                 else:
-                    await channel.send(content=content, files=files)
+                    await channel.send(
+                        content=content,
+                        files=files,
+                        **self._notification_kwargs(metadata, final_chunk=final_chunk),
+                    )
             except Exception as e:
                 logger.warning(
                     "[%s] Multi-image Discord send failed (chunk %d/%d), falling back to per-image: %s",
                     self.name, chunk_idx + 1, len(chunks), e, exc_info=True,
                 )
-                await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
-            finally:
-                if aiohttp_session is not None:
-                    try:
-                        await aiohttp_session.close()
-                    except Exception:
-                        pass
+                await self._send_multiple_images_individually(
+                    chat_id, originals, metadata, human_delay, final_chunk=final_chunk,
+                )
 
     async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:
         """Play auto-TTS audio: in the guild's VC if joined, else as a file attachment."""
@@ -3312,8 +3448,12 @@ class DiscordAdapter(BasePlatformAdapter):
             if self._is_forum_parent(channel):
                 forum_file = discord.File(io.BytesIO(file_data), filename=filename)
                 return await self._forum_post_file(
-                    channel, content=(caption or "").strip(), file=forum_file,
+                    channel,
+                    content=(caption or "").strip(),
+                    file=forum_file,
+                    metadata=metadata,
                 )
+            notification_kwargs = self._notification_kwargs(metadata)
             # Try sending as a native voice message via raw API (flags=8192).
             try:
                 import base64
@@ -3323,7 +3463,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 except Exception:
                     duration_secs = max(1.0, len(file_data) / 2000.0)
                 payload_data = {
-                    "flags": 8192,
+                    "flags": with_suppress_notifications_flag(
+                        8192, silent=bool(notification_kwargs.get("silent")),
+                    ),
                     "attachments": [{
                         "id": "0", "filename": "voice-message.ogg", "duration_secs": round(duration_secs, 2),
                         "waveform": base64.b64encode(bytes([128] * 256)).decode(),
@@ -3347,10 +3489,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 logger.debug("Voice message flag failed, falling back to file: %s", voice_err)
                 file = discord.File(io.BytesIO(file_data), filename=filename)
                 try:
-                    msg = await channel.send(file=file, reference=reference)
+                    msg = await channel.send(
+                        file=file, reference=reference, **notification_kwargs,
+                    )
                 except Exception as send_err:
                     if reference is not None and self._is_reply_reference_rejected(send_err):
-                        msg = await channel.send(file=file, reference=None)
+                        msg = await channel.send(
+                            file=file, reference=None, **notification_kwargs,
+                        )
                     else:
                         raise
                 return SendResult(success=True, message_id=str(msg.id))
@@ -3763,7 +3909,10 @@ class DiscordAdapter(BasePlatformAdapter):
             ch = self._client.get_channel(text_ch_id)
             if ch:
                 try:
-                    await ch.send("Left voice channel (inactivity timeout).")
+                    await ch.send(
+                        "Left voice channel (inactivity timeout).",
+                        **self._notification_kwargs(),
+                    )
                 except Exception:
                     pass
 
@@ -4155,10 +4304,15 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.debug("[Discord] Admin notify via %s failed: %s", target, e)
 
-    async def _send_local_file(self, chat_id, path, caption, *, file_name=None, not_found: str, kind: str, fallback):
+    async def _send_local_file(
+        self, chat_id, path, caption, *, file_name=None, not_found: str,
+        kind: str, fallback, metadata: Optional[Dict[str, Any]] = None,
+    ):
         """Native attachment upload for a local file; missing file -> error, other failure -> base adapter."""
         try:
-            return await self._send_file_attachment(chat_id, path, caption, file_name=file_name)
+            return await self._send_file_attachment(
+                chat_id, path, caption, file_name=file_name, metadata=metadata,
+            )
         except FileNotFoundError:
             return SendResult(success=False, error=f"{not_found}: {path}")
         except Exception as e:  # pragma: no cover - defensive logging
@@ -4173,6 +4327,7 @@ class DiscordAdapter(BasePlatformAdapter):
         return await self._send_local_file(
             chat_id, image_path, caption, not_found="Image file not found", kind="local image",
             fallback=lambda: super(DiscordAdapter, self).send_image_file(chat_id, image_path, caption, reply_to, metadata=metadata),
+            metadata=metadata,
         )
 
     async def _send_url_media(
@@ -4202,8 +4357,17 @@ class DiscordAdapter(BasePlatformAdapter):
                 import io
                 file = discord.File(io.BytesIO(data), filename=filename_for(headers))
                 if self._is_forum_parent(channel):
-                    return await self._forum_post_file(channel, content=(caption or "").strip(), file=file)
-                msg = await channel.send(content=caption if caption else None, file=file)
+                    return await self._forum_post_file(
+                        channel,
+                        content=(caption or "").strip(),
+                        file=file,
+                        metadata=metadata,
+                    )
+                msg = await channel.send(
+                    content=caption if caption else None,
+                    file=file,
+                    **self._notification_kwargs(metadata),
+                )
                 return SendResult(success=True, message_id=str(msg.id))
         except ImportError:
             logger.warning("[%s] aiohttp not installed, falling back to URL. Run: pip install aiohttp", self.name, exc_info=True)
@@ -4221,7 +4385,7 @@ class DiscordAdapter(BasePlatformAdapter):
             chat_id, image_url, caption, kind="image",
             filename_for=lambda h: f"image.{_image_ext_from_content_type(h.get('content-type', 'image/png'))}",
             fallback=lambda md: super(DiscordAdapter, self).send_image(chat_id, image_url, caption, reply_to, metadata=md),
-            metadata=metadata, error_metadata=None,
+            metadata=metadata, error_metadata=metadata,
         )
 
     async def send_animation(
@@ -4243,6 +4407,7 @@ class DiscordAdapter(BasePlatformAdapter):
         return await self._send_local_file(
             chat_id, video_path, caption, not_found="Video file not found", kind="local video",
             fallback=lambda: super(DiscordAdapter, self).send_video(chat_id, video_path, caption, reply_to, metadata=metadata),
+            metadata=metadata,
         )
 
     async def send_document(
@@ -4254,6 +4419,7 @@ class DiscordAdapter(BasePlatformAdapter):
         return await self._send_local_file(
             chat_id, file_path, caption, file_name=file_name, not_found="File not found", kind="document",
             fallback=lambda: super(DiscordAdapter, self).send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata),
+            metadata=metadata,
         )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
@@ -5263,12 +5429,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 name=name, auto_archive_duration=auto_archive_duration, reason=reason,
             )
             if starter_message:
-                await thread.send(starter_message)
+                await thread.send(starter_message, **self._notification_kwargs())
             return self._thread_created(thread, name)
         except Exception as direct_error:
             try:
                 seed_content = starter_message or f"\U0001f9f5 Thread created by Hermes: **{name}**"
-                seed_msg = await parent_channel.send(seed_content)
+                seed_msg = await parent_channel.send(
+                    seed_content, **self._notification_kwargs()
+                )
                 thread = await seed_msg.create_thread(
                     name=name, auto_archive_duration=auto_archive_duration, reason=reason,
                 )
@@ -5337,7 +5505,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 last_direct_error = direct_error
                 try:
                     seed_msg = await message.channel.send(
-                        f"\U0001f9f5 Thread created by Hermes: **{thread_name}**"
+                        f"\U0001f9f5 Thread created by Hermes: **{thread_name}**",
+                        **self._notification_kwargs(),
                     )
                     thread = await seed_msg.create_thread(name=thread_name, auto_archive_duration=1440, reason=reason)
                     return self._stamp_auto_thread_name(thread, thread_name)
@@ -5441,7 +5610,10 @@ class DiscordAdapter(BasePlatformAdapter):
             send = getattr(parent, "send", None)
             if send is None:
                 return None
-            seed_msg = await send(f"\U0001f9f5 Hermes handoff: **{thread_name}**")
+            seed_msg = await send(
+                f"\U0001f9f5 Hermes handoff: **{thread_name}**",
+                **self._notification_kwargs(),
+            )
             thread = await seed_msg.create_thread(
                 name=thread_name, auto_archive_duration=1440, reason=reason,
             )
@@ -7321,7 +7493,9 @@ def _is_connected(config) -> bool:
 
 def _build_adapter(config):
     """Factory wrapper that constructs DiscordAdapter from a PlatformConfig."""
-    return DiscordAdapter(config)
+    adapter = DiscordAdapter(config)
+    adapter._set_notifications_mode(resolve_notification_mode(config))
+    return adapter
 
 
 def register(ctx) -> None:

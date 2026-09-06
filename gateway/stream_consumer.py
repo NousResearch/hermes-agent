@@ -723,8 +723,15 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             chunks = self._split_text_chunks(self._accumulated, self._safe_limit, self._len_fn)
         reply_to = self._initial_reply_to_id
         heads_delivered = len(chunks) > 1
+        notify_last_only = (
+            getattr(self.adapter, "notify_only_last_final_delivery", False) is True
+        )
         for chunk in chunks[:-1]:
-            new_id = await self._send_new_chunk(chunk, reply_to, final=tick.got_done)
+            new_id = await self._send_new_chunk(
+                chunk,
+                reply_to,
+                final=tick.got_done and not notify_last_only,
+            )
             if new_id is None or new_id == reply_to:
                 heads_delivered = False  # keep the full text intact for the gateway fallback
                 break
@@ -732,9 +739,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
         if heads_delivered:
             self._accumulated = chunks[-1]
-            # Flag BEFORE the tail send: fresh-final replaces every tracked preview
-            # with one message, which is only valid while the active message holds
-            # the whole answer — deleting sealed heads drops delivered text.
+            # These ids are sealed heads, not previews of the active tail. Keep
+            # them in the turn-wide ledger but exclude them from segment cleanup.
+            self._segment_preview_message_ids = set()
+            # Flag BEFORE the tail send so fresh-final cleanup is segment-scoped
+            # and cannot delete those sealed heads.
             self._turn_split_delivery = True
         # Heads are sealed (or a later head failed): never edit a sealed message with
         # the unsplit payload — the tail is sent fresh, or the fallback path retries.
@@ -782,6 +791,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             if self._fallback_final_send or not ok:
                 break  # keep the full text intact for the fallback final send
             self._accumulated = self._accumulated[split_at:].lstrip("\n")
+            # The finalized head must survive any fresh replacement of the tail.
+            self._segment_preview_message_ids = set()
             self._message_id = None
             self._last_sent_text = ""
             self._turn_split_delivery = True

@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { isMac } from '../lib/platform.js'
 import { clarifyBatchRevisitState } from '../lib/text.js'
 import type { Theme } from '../theme.js'
-import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
+import type { ApprovalReq, ClarifyReq, ConfirmReq, UserInputReq } from '../types.js'
 
 import { chipRowProps } from './overlayPrimitives.js'
 import { TextInput } from './textInput.js'
@@ -414,6 +414,156 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
   )
 }
 
+export function UserInputPrompt({ cols = 80, onAnswer, onCancel, req, t }: UserInputPromptProps) {
+  const firstUnanswered = req.questions.findIndex(question => !question.defaultValue)
+  const [active, setActive] = useState(Math.max(0, firstUnanswered))
+
+  const [answers, setAnswers] = useState<Record<string, string>>(() =>
+    Object.fromEntries(req.questions.flatMap(question => question.defaultValue ? [[question.id, question.defaultValue]] : []))
+  )
+
+  const [custom, setCustom] = useState(() => req.questions[Math.max(0, firstUnanswered)]?.defaultValue ?? '')
+  const [sel, setSel] = useState(0)
+  const [submitting, setSubmitting] = useState(false)
+  const [typing, setTyping] = useState(() => !(req.questions[Math.max(0, firstUnanswered)]?.options.length))
+  const question = req.questions[active]
+  const choices = question?.options ?? []
+
+  useEffect(() => {
+    const next = req.questions.findIndex(item => !item.defaultValue)
+    const index = Math.max(0, next)
+    setActive(index)
+    setAnswers(Object.fromEntries(req.questions.flatMap(item => item.defaultValue ? [[item.id, item.defaultValue]] : [])))
+    setCustom(req.questions[index]?.defaultValue ?? '')
+    setSel(0)
+    setSubmitting(false)
+    setTyping(!(req.questions[index]?.options.length))
+  }, [req.questions, req.requestId])
+
+  const moveActive = (delta: number) => {
+    if (!req.questions.length) {return}
+    const next = (active + delta + req.questions.length) % req.questions.length
+    setActive(next)
+    setSel(0)
+    setCustom(answers[req.questions[next]?.id ?? ''] ?? req.questions[next]?.defaultValue ?? '')
+    setTyping(!(req.questions[next]?.options.length))
+  }
+
+  const submitAnswer = (value: string) => {
+    if (!question || submitting || !value.trim()) {return}
+    const nextAnswers = { ...answers, [question.id]: value.trim() }
+    const next = req.questions.findIndex(item => !nextAnswers[item.id])
+
+    if (next < 0) {
+      setSubmitting(true)
+      void onAnswer(req.requestId, nextAnswers).then(accepted => {
+        if (!accepted) {setSubmitting(false)}
+      }).catch(() => setSubmitting(false))
+
+      return
+    }
+
+    setAnswers(nextAnswers)
+    setActive(next)
+    setSel(0)
+    setCustom(req.questions[next]?.defaultValue ?? '')
+    setTyping(!(req.questions[next]?.options.length))
+  }
+
+  useInput((ch, key) => {
+    if (key.escape) {
+      if (typing) {
+        setTyping(false)
+      } else {
+        onCancel()
+      }
+
+      return
+    }
+
+    if (typing || submitting || !question) {return}
+
+    if (key.tab) {
+      moveActive(key.shift ? -1 : 1)
+
+      return
+    }
+
+    if (key.upArrow) {setSel(value => Math.max(0, value - 1))}
+
+    if (key.downArrow) {setSel(value => Math.min(choices.length, value + 1))}
+
+    if (key.return) {
+      if (sel === choices.length) {setTyping(true)}
+      else if (choices[sel]) {submitAnswer(choices[sel]!)}
+
+      return
+    }
+
+    const number = parseInt(ch, 10)
+
+    if (number >= 1 && number <= choices.length) {submitAnswer(choices[number - 1]!)}
+
+    if (number === choices.length + 1) {setTyping(true)}
+  })
+
+  if (!question) {return null}
+
+  const answeredCount = Object.keys(answers).length
+
+  const heading = (
+    <Text bold>
+      <Text color={t.color.accent}>input</Text>
+      <Text color={t.color.text}> {req.questions.length} question{req.questions.length === 1 ? '' : 's'}</Text>
+    </Text>
+  )
+
+  return (
+    <Box borderColor={t.color.accent} borderStyle="double" flexDirection="column" paddingX={1}>
+      {heading}
+      {req.context ? <Text color={t.color.muted}>{req.context}</Text> : null}
+      {req.questions.map((item, index) => (
+        <Text key={item.id}>
+          <Text color={index === active ? t.color.text : t.color.muted}>
+            {answers[item.id] ? '✓' : index === active ? '▸' : '·'} {item.text}
+            {answers[item.id] ? `: ${answers[item.id]}` : ''}
+          </Text>
+        </Text>
+      ))}
+      {typing ? (
+        <Box paddingLeft={2}>
+          <Text color={t.color.label}>{'> '}</Text>
+          <TextInput
+            color={t.color.text}
+            columns={Math.max(20, cols - 8)}
+            onChange={setCustom}
+            onSubmit={submitAnswer}
+            value={custom}
+          />
+        </Box>
+      ) : (
+        <Box flexDirection="column" paddingLeft={2}>
+          {choices.map((choice, index) => (
+            <Text key={choice}>
+              <Text color={t.color.muted} {...chipRowProps(t, sel === index)}>
+                {sel === index ? '▸ ' : '  '}{index + 1}. {choice}
+              </Text>
+            </Text>
+          ))}
+          <Text>
+            <Text color={t.color.muted} {...chipRowProps(t, sel === choices.length)}>
+              {sel === choices.length ? '▸ ' : '  '}{choices.length + 1}. Other (type an answer)
+            </Text>
+          </Text>
+        </Box>
+      )}
+      <Text color={t.color.muted}>
+        {submitting ? 'sending…' : `${answeredCount}/${req.questions.length} answered · Enter confirm · Tab switch question · Esc leave pending`}
+      </Text>
+    </Box>
+  )
+}
+
 export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProps) {
   const [sel, setSel] = useState(0)
 
@@ -490,6 +640,14 @@ interface ClarifyPromptProps {
   /** Batch mode: lock one question's answer (clarify.respond + question_id). */
   onQuestionAnswer?: (qid: string, s: string) => void
   req: ClarifyReq
+  t: Theme
+}
+
+interface UserInputPromptProps {
+  cols?: number
+  onAnswer: (requestId: string, answers: Record<string, string>) => Promise<boolean>
+  onCancel: () => void
+  req: UserInputReq
   t: Theme
 }
 

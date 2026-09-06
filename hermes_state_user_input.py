@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 
 _USER_INPUT_STATUSES = frozenset({"pending", "answered", "expired", "cancelled"})
+MAX_TEXT_CHARS = 2000
 
 
 def _json_load(raw: Any, default: Any = None) -> Any:
@@ -52,6 +53,58 @@ def _default_answers(questions: Any) -> Dict[str, Any]:
         if question_id:
             answers[question_id] = _question_default(question, index)
     return answers
+
+
+def _normalize_user_input_answer(
+    questions: Any, answer: Any,
+) -> tuple[Optional[Dict[str, str]], Optional[str]]:
+    """Validate and normalize an answer against the stored question definition.
+
+    This is intentionally state-owned and dependency-light: every acceptance
+    surface reaches this policy through :meth:`answer_pending_user_input`.
+    Callers must run it while holding the write transaction so the question
+    definition and the following CAS cannot be observed from different states.
+    """
+    if not isinstance(answer, dict):
+        return None, "answer must be an object"
+    if not isinstance(questions, list) or not questions:
+        return None, "pending question definition is invalid"
+
+    question_by_id: Dict[str, Dict[str, Any]] = {}
+    for question in questions:
+        if not isinstance(question, dict):
+            return None, "pending question definition is invalid"
+        question_id = question.get("id")
+        if not isinstance(question_id, str) or not question_id or question_id in question_by_id:
+            return None, "pending question definition is invalid"
+        options = question.get("options", [])
+        if options is None:
+            options = []
+        if not isinstance(options, list) or any(not isinstance(option, str) for option in options):
+            return None, "pending question definition is invalid"
+        question_by_id[question_id] = question
+
+    if set(answer) != set(question_by_id):
+        return None, "answer keys must match pending question ids"
+
+    normalized: Dict[str, str] = {}
+    for question_id, question in question_by_id.items():
+        value = answer[question_id]
+        if isinstance(value, float) and not math.isfinite(value):
+            return None, "answer values must be finite strings"
+        if not isinstance(value, str):
+            return None, "answer values must be nonblank strings"
+        normalized_value = value.strip()
+        if not normalized_value:
+            return None, "answer values must be nonblank strings"
+        if len(normalized_value) > MAX_TEXT_CHARS:
+            return None, f"answer values cannot exceed {MAX_TEXT_CHARS} characters"
+
+        options = question.get("options") or []
+        if options and question.get("allow_free_text") is not True and normalized_value not in options:
+            return None, "answer does not match a pending option"
+        normalized[question_id] = normalized_value
+    return normalized, None
 
 
 class SessionUserInputMixin:
@@ -237,8 +290,6 @@ class SessionUserInputMixin:
         session_id = _clean_text(session_id, max_chars=self._USER_INPUT_MAX_SESSION_ID)
         if not request_id or not session_id:
             return {"status": "not_found", "accepted": False}
-        if not isinstance(answer, dict):
-            return {"status": "invalid", "accepted": False, "error": "answer must be an object"}
         now_value = time.time() if now is None else float(now)
         expected_turn_id = _clean_text(turn_id, max_chars=self._USER_INPUT_MAX_TURN_ID) if turn_id is not None else None
 
@@ -257,11 +308,16 @@ class SessionUserInputMixin:
                 return {"status": "not_found", "accepted": False}
             if str(row["status"] or "") != "pending":
                 return self._user_input_status_record(row, accepted=False)
+            normalized_answer, validation_error = _normalize_user_input_answer(
+                _json_load(row["questions"], []), answer,
+            )
+            if validation_error is not None:
+                return {"status": "invalid", "accepted": False, "error": validation_error}
             cur = conn.execute(
                 """UPDATE pending_user_inputs
                    SET status = 'answered', answer = ?, answered_at = ?
                  WHERE request_id = ? AND session_id = ? AND status = 'pending'""",
-                (_json_dump(answer), now_value, request_id, session_id),
+                (_json_dump(normalized_answer), now_value, request_id, session_id),
             )
             accepted = int(cur.rowcount or 0) == 1
             final_row = conn.execute(
@@ -293,4 +349,4 @@ class SessionUserInputMixin:
         return self._execute_write(_do, patience_s=self._ACTIVITY_WRITE_PATIENCE_S)
 
 
-__all__ = ["SessionUserInputMixin"]
+__all__ = ["MAX_TEXT_CHARS", "SessionUserInputMixin"]

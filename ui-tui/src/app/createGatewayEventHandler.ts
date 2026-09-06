@@ -23,7 +23,7 @@ import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '..
 import { formatAbandonedClarify, formatAbandonedClarifyBatch, formatToolCall, stripAnsi } from '../lib/text.js'
 import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
-import type { Msg, SubagentProgress, SubagentStatus, Usage } from '../types.js'
+import type { Msg, SubagentProgress, SubagentStatus, Usage, UserInputReq } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
@@ -1260,6 +1260,61 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         })
         setStatus('waiting for input…')
         ringPromptBell()
+
+        return
+      }
+
+      case 'user_input.request': {
+        const sessionId = String(ev.payload.session_id ?? ev.session_id ?? getUiState().sid ?? '').trim()
+
+        const questions = ev.payload.questions
+          .filter(question => typeof question.id === 'string' && question.id.trim() && typeof question.text === 'string' && question.text.trim())
+          .map(question => ({
+            allowFreeText: question.allow_free_text === true,
+            ...(typeof question.default === 'string' || typeof question.default === 'number' || typeof question.default === 'boolean'
+              ? { defaultValue: String(question.default) }
+              : {}),
+            id: question.id.trim(),
+            options: (question.options ?? []).filter(option => typeof option === 'string' && option.trim()).map(option => option.trim()),
+            text: question.text.trim()
+          }))
+
+        if (sessionId && ev.payload.request_id && questions.length) {
+          const request: UserInputReq = {
+            context: String(ev.payload.context ?? '').trim(),
+            expiresAt: Number.isFinite(ev.payload.expires_at) ? ev.payload.expires_at! : 0,
+            questions,
+            requestId: String(ev.payload.request_id).trim(),
+            sessionId
+          }
+
+          patchOverlayState({ userInput: request })
+          setStatus('waiting for user input…')
+          ringPromptBell()
+        }
+
+        return
+      }
+
+      case 'user_input.answer': {
+        const current = getOverlayState().userInput
+        const eventSessionId = String(ev.session_id ?? '').trim()
+
+        if (!current || current.requestId !== ev.payload.request_id || (eventSessionId && current.sessionId !== eventSessionId)) {
+          return
+        }
+
+        patchOverlayState({ userInput: null })
+
+        const status = ev.payload.status === 'expired'
+          ? 'user-input request expired'
+          : ev.payload.status === 'cancelled'
+            ? 'user-input request cancelled'
+            : ev.payload.delivery === 'deferred'
+              ? 'answer recorded; resume not confirmed'
+              : 'running…'
+
+        setStatus(status)
 
         return
       }

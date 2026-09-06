@@ -18,10 +18,10 @@ import type {
   SetupStatusResponse
 } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
-import type { Msg, PanelSection, SessionInfo, Usage } from '../types.js'
+import type { Msg, PanelSection, SessionInfo, Usage, UserInputReq } from '../types.js'
 
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
-import { patchOverlayState } from './overlayStore.js'
+import { getOverlayState, patchOverlayState } from './overlayStore.js'
 import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
@@ -41,6 +41,61 @@ const statusFromLiveSession = (status?: string, running = false) => {
   }
 
   return running || status === 'working' ? 'running…' : 'ready'
+}
+
+export const pendingUserInputFromResponse = (raw: unknown, sessionId: string): UserInputReq | null => {
+  const payload = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+  const rows = Array.isArray(payload.requests) ? payload.requests : Array.isArray(payload.data) ? payload.data : []
+  const key = String(sessionId || '').trim()
+
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') {continue}
+    const value = row as Record<string, unknown>
+
+    if (String(value.status ?? 'pending').trim().toLowerCase() !== 'pending') {continue}
+    const requestId = String(value.request_id ?? value.requestId ?? '').trim()
+    const rowSessionId = String(value.session_id ?? value.sessionId ?? key).trim()
+
+    if (!requestId || !key || rowSessionId !== key || !Array.isArray(value.questions)) {continue}
+
+    const questions = value.questions
+      .slice(0, 5)
+      .filter(question => question && typeof question === 'object')
+      .map(question => {
+        const item = question as Record<string, unknown>
+        const id = String(item.id ?? '').trim()
+        const text = String(item.text ?? item.question ?? '').trim()
+
+        const options = Array.isArray(item.options)
+          ? item.options.slice(0, 4).filter(option => typeof option === 'string' && option.trim()).map(option => option.trim())
+          : []
+
+        const defaultValue = item.default
+
+        return {
+          allowFreeText: item.allow_free_text === true || item.allowFreeText === true,
+          ...(typeof defaultValue === 'string' || typeof defaultValue === 'number' || typeof defaultValue === 'boolean'
+            ? { defaultValue: String(defaultValue) }
+            : {}),
+          id,
+          options,
+          text
+        }
+      })
+      .filter(question => question.id && question.text)
+
+    if (!questions.length) {continue}
+
+    return {
+      context: String(value.context ?? '').trim(),
+      expiresAt: Number.isFinite(value.expires_at) ? Number(value.expires_at) : 0,
+      questions,
+      requestId,
+      sessionId: key
+    }
+  }
+
+  return null
 }
 
 export const writeActiveSessionFile = (sessionId: null | string, file = process.env.HERMES_TUI_ACTIVE_SESSION_FILE) => {
@@ -164,6 +219,37 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       cancelResumeScrollRef.current = null
     },
     []
+  )
+
+  const replayPendingUserInput = useCallback(
+    async (sessionId: string) => {
+      const key = String(sessionId || '').trim()
+
+      if (!key) {return}
+
+      try {
+        const raw = await gw.request<Record<string, unknown>>('user_input.pending', { session_id: key })
+
+        if (getUiState().sid !== key) {return}
+        const request = pendingUserInputFromResponse(raw, key)
+
+        if (request) {
+          patchOverlayState({ userInput: request })
+          patchUiState({ status: 'waiting for user input…' })
+
+          return
+        }
+
+        if (getOverlayState().userInput?.sessionId === key) {
+          patchOverlayState({ userInput: null })
+        }
+      } catch (error: unknown) {
+        if (getUiState().sid === key) {
+          sys(`warning: failed to replay user input: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+    },
+    [gw, sys]
   )
 
   const resetVisibleHistory = useCallback(
@@ -315,6 +401,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             usage: usageFrom(info)
           })
           hydrateLiveSessionInflight(r.inflight)
+          void replayPendingUserInput(r.session_id)
           cancelResumeScrollRef.current?.()
           cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
         })
@@ -323,7 +410,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           patchUiState({ status: 'ready' })
         })
     },
-    [gw, resetSession, scrollRef, setHistoryItems, setSessionStartedAt, sys]
+    [gw, replayPendingUserInput, resetSession, scrollRef, setHistoryItems, setSessionStartedAt, sys]
   )
 
   const resumeById = useCallback(
@@ -369,6 +456,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               usage: usageFrom(info)
             })
             hydrateLiveSessionInflight(r.inflight)
+            void replayPendingUserInput(r.session_id)
             cancelResumeScrollRef.current?.()
             cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
 
@@ -382,7 +470,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           })
       })
     },
-    [closeSession, colsRef, gw, panel, resetSession, rpc, scrollRef, setHistoryItems, setSessionStartedAt, sys]
+    [closeSession, colsRef, gw, panel, replayPendingUserInput, resetSession, rpc, scrollRef, setHistoryItems, setSessionStartedAt, sys]
   )
 
   const guardBusySessionSwitch = useCallback(

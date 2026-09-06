@@ -51,7 +51,7 @@ import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
-import { $overlayState, patchOverlayState } from './overlayStore.js'
+import { $overlayState, getOverlayState, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
 import { turnController } from './turnController.js'
@@ -1052,6 +1052,44 @@ export function useMainApp(gw: GatewayClient) {
     [overlay.secret, respondWith]
   )
 
+  const answerUserInput = useCallback(
+    async (requestId: string, answers: Record<string, string>) => {
+      const sessionId = ui.sid
+
+      if (!sessionId) {
+        return false
+      }
+
+      try {
+        const result = await rpc<{ accepted?: boolean; delivery?: string; status?: string }>('user_input.respond', {
+          answers,
+          request_id: requestId,
+          session_id: sessionId
+        })
+
+        const terminal = result?.accepted === true || ['answered', 'cancelled', 'expired'].includes(result?.status ?? '')
+        const current = getOverlayState().userInput
+
+        if (terminal && current?.requestId === requestId && current.sessionId === sessionId) {
+          patchOverlayState({ userInput: null })
+          patchUiState({ status: result?.delivery === 'deferred' ? 'answer recorded; resume not confirmed' : 'running…' })
+
+          return true
+        }
+
+        patchUiState({ status: 'input response rejected; request remains pending' })
+
+        return false
+      } catch (error: unknown) {
+        sys(`error: ${error instanceof Error ? error.message : String(error)}`)
+        patchUiState({ status: 'input response failed; request remains pending' })
+
+        return false
+      }
+    },
+    [rpc, sys, ui.sid]
+  )
+
   const onModelSelect = useCallback((value: string) => {
     patchOverlayState({ modelPicker: false })
     slashRef.current(`/model ${value}`)
@@ -1162,6 +1200,7 @@ export function useMainApp(gw: GatewayClient) {
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
+      answerUserInput,
       clearSelection,
       newLiveSession: () => session.newLiveSession(),
       newPromptSession,
@@ -1185,6 +1224,7 @@ export function useMainApp(gw: GatewayClient) {
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
+      answerUserInput,
       clearSelection,
       closeLiveSession,
       newPromptSession,

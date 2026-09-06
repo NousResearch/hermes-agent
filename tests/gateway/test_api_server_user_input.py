@@ -12,6 +12,7 @@ from gateway.platforms.api_server import (
     APIServerAdapter,
     _STATIC_FEATURE_FLAGS,
 )
+from hermes_state import SessionDB
 
 
 class _SessionDB:
@@ -33,6 +34,28 @@ def _app(adapter: APIServerAdapter) -> web.Application:
         adapter._handle_session_user_input_answer,
     )
     return app
+
+
+def test_session_user_input_broadcast_is_scoped_to_the_owning_session():
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    session_a = MagicMock()
+    session_b = MagicMock()
+    adapter._session_event_queues = {
+        "session-a": {session_a},
+        "session-b": {session_b},
+    }
+
+    adapter._broadcast_session_event(
+        "session-a",
+        "user_input.answer",
+        {"request_id": "request-a", "status": "answered"},
+    )
+
+    session_a.enqueue.assert_called_once_with(
+        "user_input.answer",
+        {"request_id": "request-a", "status": "answered"},
+    )
+    session_b.enqueue.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -108,6 +131,7 @@ async def test_answer_endpoint_delivers_structured_answers_to_matching_live_turn
     live_agent = SimpleNamespace(session_id="session-1", _current_turn_id="turn-1")
     adapter._active_run_agents = {"run-1": live_agent}
     captured = {}
+    adapter._broadcast_session_event = MagicMock()
 
     def answer(request_id, answers, **kwargs):
         captured.update(request_id=request_id, answers=answers, **kwargs)
@@ -136,6 +160,18 @@ async def test_answer_endpoint_delivers_structured_answers_to_matching_live_turn
     assert captured["session_id"] == "session-1"
     assert captured["agent"] is live_agent
     assert captured["turn_id"] == "turn-1"
+    adapter._broadcast_session_event.assert_called_once_with(
+        "session-1",
+        "user_input.answer",
+        {
+            "request_id": "request-1",
+            "status": "answered",
+            "answer": {"choice": "a"},
+            "accepted": True,
+            "delivery": "queued",
+            "turn_id": "turn-1",
+        },
+    )
 
 
 @pytest.mark.asyncio
@@ -161,6 +197,38 @@ async def test_answer_endpoint_rejects_non_object_answers(monkeypatch):
     assert response.status == 400
     assert payload["error"]["code"] == "invalid_user_input_answer"
     assert called is False
+
+
+@pytest.mark.asyncio
+async def test_answer_endpoint_rejects_invalid_answer_without_mutating_request(tmp_path):
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("session-1", source="api_server")
+    db.create_pending_user_input(
+        request_id="request-invalid",
+        session_id="session-1",
+        questions=[
+            {"id": "choice", "text": "Pick one", "options": ["a", "b"], "allow_free_text": False},
+        ],
+    )
+    adapter._session_db = db
+
+    try:
+        async with TestClient(TestServer(_app(adapter))) as client:
+            response = await client.post(
+                "/api/sessions/session-1/user-input/request-invalid/answer",
+                json={"answers": {"choice": "unsupported"}},
+            )
+            payload = await response.json()
+
+        assert response.status == 400
+        assert payload["error"]["code"] == "invalid_user_input_answer"
+        # The real SessionDB acceptance boundary must leave invalid requests pending.
+        pending = db.get_pending_user_input("request-invalid", session_id="session-1")
+        assert pending["status"] == "pending"
+        assert pending["answer"] is None
+    finally:
+        db.close()
 
 
 def test_capabilities_and_route_table_advertise_user_input():

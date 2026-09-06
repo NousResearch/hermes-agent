@@ -29,7 +29,8 @@ import type {
   SessionInfo,
   SlashCatalog,
   SudoReq,
-  Usage
+  Usage,
+  UserInputReq
 } from '../types.js'
 
 export interface StateSetter<T> {
@@ -301,6 +302,7 @@ export interface OverlayState {
   skillsHub: boolean
   subscription: SubscriptionOverlayState | null
   sudo: null | SudoReq
+  userInput: null | UserInputReq
 }
 
 export interface PagerState {
@@ -567,6 +569,7 @@ export interface AppLayoutActions {
   answerClarifyQuestion: (qid: string, answer: string) => void
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
+  answerUserInput: (requestId: string, answers: Record<string, string>) => Promise<boolean>
   clearSelection: () => void
   activateLiveSession: (id: string) => void
   closeLiveSession: (id: string) => Promise<null | SessionCloseResponse>
@@ -641,6 +644,7 @@ export interface AppOverlaysProps {
   onResumeSelect: (sessionId: string) => void
   onSecretSubmit: (value: string) => void
   onSudoSubmit: (pw: string) => void
+  onUserInputAnswer: (requestId: string, answers: Record<string, string>) => Promise<boolean>
   pagerPageSize: number
 }
 

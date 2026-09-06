@@ -240,6 +240,14 @@ function SecretDialog({ sessionId }: { sessionId: string | null }) {
   )
 }
 
+export function UserInputDock({ sessionId }: { sessionId: string | null }) {
+  return (
+    <div className="flex justify-end px-[5px] pb-2">
+      <UserInputCard sessionId={sessionId} />
+    </div>
+  )
+}
+
 /** Mid-turn prompt surfaces for ONE session. Mounted by both the primary chat
  *  and each tile with its own session id, so a background/tiled session's
  *  blocking prompt renders instead of silently stalling. */
@@ -247,7 +255,6 @@ export function PromptOverlays({ sessionId }: { sessionId: string | null }) {
   return (
     <>
       <PendingApprovalFallback />
-      <UserInputCard sessionId={sessionId} />
       <SudoDialog sessionId={sessionId} />
       <SecretDialog sessionId={sessionId} />
     </>

@@ -4,6 +4,11 @@ import { markSessionGone } from './runtime-gone'
 import { $activeSessionId } from './session'
 import { ambientRequestFor, isSessionGoneForBackgroundPolling } from './session-gone-latch'
 import { requestForOwnedSession } from './session-states'
+import { createUserInputReplayGuard } from './user-input-replay'
+import {
+  classifyUserInputResult,
+  type UserInputAcknowledgement
+} from './user-input-result'
 
 export interface UserInputQuestion {
   allowFreeText: boolean
@@ -32,6 +37,7 @@ interface UserInputGateway {
 const emptyRequests: Record<string, UserInputRequest[]> = {}
 
 export const $userInputRequests = atom<Record<string, UserInputRequest[]>>(emptyRequests)
+const userInputReplayGuard = createUserInputReplayGuard()
 export const $activeUserInputRequests: ReadableAtom<UserInputRequest[]> = computed(
   [$userInputRequests, $activeSessionId],
   (all, activeSessionId) => (activeSessionId ? all[activeSessionId] ?? [] : [])
@@ -89,10 +95,17 @@ export function normalizeUserInputRequest(value: unknown, sessionIdOverride?: st
   }
 }
 
+export function invalidatePendingUserInputReplay(sessionId: string | null | undefined): void {
+  const key = text(sessionId).trim()
+
+  if (key) {userInputReplayGuard.invalidate(key)}
+}
+
 export function setUserInputRequest(request: UserInputRequest | unknown): UserInputRequest | null {
   const normalized = normalizeUserInputRequest(request)
 
   if (!normalized) {return null}
+  invalidatePendingUserInputReplay(normalized.sessionId)
   const all = $userInputRequests.get()
   const current = all[normalized.sessionId] ?? []
   const next = current.filter(item => item.requestId !== normalized.requestId)
@@ -109,6 +122,7 @@ export function clearUserInputRequest(sessionId: string | null | undefined, requ
   const id = text(requestId).trim()
 
   if (!key || !id) {return}
+  invalidatePendingUserInputReplay(key)
   const all = $userInputRequests.get()
   const current = all[key]
 
@@ -155,6 +169,7 @@ export async function replayPendingUserInput(
   const key = text(sessionId).trim()
 
   if (!gateway || !key) {return}
+  const replayToken = userInputReplayGuard.begin(key, gateway)
   let rawResult: unknown
 
   try {
@@ -162,6 +177,8 @@ export async function replayPendingUserInput(
       session_id: key
     })
   } catch (error) {
+    if (!userInputReplayGuard.isCurrent(replayToken)) {return}
+
     if (isSessionGoneForBackgroundPolling(error)) {
       markSessionGone(key)
 
@@ -177,6 +194,7 @@ export async function replayPendingUserInput(
     ? result.requests
     : Array.isArray(result.data) ? result.data : []
 
+  if (!userInputReplayGuard.isCurrent(replayToken)) {return}
   replaceUserInputRequests(key, requests)
 }
 
@@ -184,26 +202,39 @@ export async function respondUserInput(
   gateway: UserInputGateway | null,
   request: UserInputRequest,
   answers: Record<string, unknown>
-): Promise<Record<string, unknown>> {
+): Promise<UserInputAcknowledgement> {
   if (!gateway) {throw new Error('Hermes gateway is disconnected.')}
 
-  const result = await requestForOwnedSession<Record<string, unknown>>(
-    request.sessionId,
-    ambientRequestFor(gateway),
-    'user_input.respond',
-    {
-      answers,
-      request_id: request.requestId,
-      session_id: request.sessionId
-    }
-  )
+  let rawResult: unknown
 
-  if (result?.status === 'not_found') {
-    clearUserInputRequest(request.sessionId, request.requestId)
-    throw new Error('This Hermes input request is no longer pending.')
+  try {
+    rawResult = await requestForOwnedSession(
+      request.sessionId,
+      ambientRequestFor(gateway),
+      'user_input.respond',
+      {
+        answers,
+        request_id: request.requestId,
+        session_id: request.sessionId
+      }
+    )
+  } catch (error) {
+    const acknowledgement = classifyUserInputResult(null, 0, error)
+
+    if (acknowledgement.clear) {
+      clearUserInputRequest(request.sessionId, request.requestId)
+
+      return acknowledgement
+    }
+
+    throw error
   }
 
-  if (result?.accepted !== false) {clearUserInputRequest(request.sessionId, request.requestId)}
+  const acknowledgement = classifyUserInputResult(rawResult)
 
-  return result ?? {}
+  if (acknowledgement.clear) {
+    clearUserInputRequest(request.sessionId, request.requestId)
+  }
+
+  return acknowledgement
 }

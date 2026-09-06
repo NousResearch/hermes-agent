@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 
@@ -141,6 +142,28 @@ def test_expiry_is_settled_durably_and_uses_question_defaults(db):
     assert json.loads(row[1]) == {"api_version": "v1 (stable)"}
 
 
+def test_request_tool_allows_closed_choice_without_optional_default(monkeypatch, db):
+    from tools import user_input_tool
+
+    monkeypatch.setattr(user_input_tool, "_shared_session_db", db)
+    result = json.loads(
+        user_input_tool.request_user_input(
+            questions=[
+                {
+                    "id": "drink",
+                    "text": "Which drink?",
+                    "options": ["Coffee", "Tea"],
+                    "allow_free_text": False,
+                }
+            ],
+            session_id="session-1",
+        )
+    )
+
+    assert result["status"] == "pending"
+    assert result["questions"][0]["default"] == ""
+
+
 def test_request_tool_validates_shape_and_returns_immediately(monkeypatch, db):
     from tools import user_input_tool
 
@@ -244,3 +267,127 @@ def test_agent_runtime_executor_passes_session_db_to_user_input_handler(monkeypa
     assert result["status"] == "pending"
     assert db.get_pending_user_input(result["request_id"], session_id="session-1") is not None
     assert user_input_tool._shared_session_db is sentinel
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {},
+        {"api_version": "v1 (stable)", "unexpected": "value"},
+        {"api_version": ""},
+        {"api_version": "   "},
+        {"api_version": ["v1 (stable)"]},
+        {"api_version": {"value": "v1 (stable)"}},
+        {"api_version": None},
+        {"api_version": math.nan},
+        {"api_version": math.inf},
+        {"api_version": "not-an-option"},
+        {"api_version": "x" * 2001},
+        {"api_version": 42},
+        {"api_version": False},
+    ],
+)
+def test_invalid_answer_is_rejected_without_settling_request(db, answer):
+    db.create_pending_user_input(
+        request_id="request-invalid",
+        session_id="session-1",
+        questions=QUESTIONS,
+        expires_at=time.time() + 60,
+    )
+
+    result = db.answer_pending_user_input(
+        "request-invalid", answer, session_id="session-1"
+    )
+
+    assert result["status"] == "invalid"
+    assert result["accepted"] is False
+    assert result["error"]
+    pending = db.get_pending_user_input("request-invalid", session_id="session-1")
+    assert pending["status"] == "pending"
+    assert pending["answer"] is None
+
+
+def test_valid_answer_is_normalized_and_tool_delivers_canonical_answer(db):
+    from types import SimpleNamespace
+
+    from tools.user_input_tool import answer_user_input
+
+    questions = [
+        {
+            "id": "choice",
+            "text": "Which target?",
+            "options": ["stable", "beta"],
+            "allow_free_text": False,
+        },
+        {
+            "id": "notes",
+            "text": "Any notes?",
+            "options": [],
+            "allow_free_text": False,
+        },
+    ]
+    db.create_pending_user_input(
+        request_id="request-canonical",
+        session_id="session-1",
+        questions=questions,
+        expires_at=time.time() + 60,
+        turn_id="turn-1",
+    )
+    delivered = []
+    agent = SimpleNamespace(
+        _current_turn_id="turn-1",
+        _executing_tools=True,
+        steer=lambda text: delivered.append(text) or True,
+    )
+
+    result = answer_user_input(
+        "request-canonical",
+        {"choice": " beta ", "notes": "  free text  "},
+        session_id="session-1",
+        session_db=db,
+        agent=agent,
+    )
+
+    assert result["status"] == "answered"
+    assert result["accepted"] is True
+    assert result["answer"] == {"choice": "beta", "notes": "free text"}
+    assert delivered == [json.dumps(result["answer"], ensure_ascii=False)]
+
+
+def test_invalid_and_valid_answers_race_without_invalid_writer_acceptance(db):
+    db.create_pending_user_input(
+        request_id="request-race",
+        session_id="session-1",
+        questions=QUESTIONS,
+        expires_at=time.time() + 60,
+    )
+    barrier = threading.Barrier(3)
+    results = []
+
+    def answer(payload):
+        barrier.wait()
+        results.append(
+            db.answer_pending_user_input(
+                "request-race", payload, session_id="session-1"
+            )
+        )
+
+    invalid = threading.Thread(
+        target=answer,
+        args=({"api_version": "v2 (beta)", "unexpected": "value"},),
+    )
+    valid = threading.Thread(
+        target=answer,
+        args=({"api_version": "v2 (beta)"},),
+    )
+    invalid.start()
+    valid.start()
+    barrier.wait()
+    invalid.join()
+    valid.join()
+
+    assert all(result["status"] in {"answered", "invalid"} for result in results)
+    assert sum(bool(result.get("accepted")) for result in results) == 1
+    stored = db.get_pending_user_input("request-race", session_id="session-1")
+    assert stored["status"] == "answered"
+    assert stored["answer"] == {"api_version": "v2 (beta)"}

@@ -12,11 +12,11 @@ import math
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
+from hermes_state_user_input import MAX_TEXT_CHARS
 from tools.registry import registry, tool_error
 
 MAX_QUESTIONS = 5
 MAX_OPTIONS = 4
-MAX_TEXT_CHARS = 2000
 MAX_TIMEOUT_SECONDS = 7 * 24 * 60 * 60
 DEFAULT_TIMEOUT_SECONDS = 3600.0
 
@@ -84,7 +84,7 @@ def normalize_questions(questions: Any) -> List[Dict[str, Any]]:
             default = ""
         if not isinstance(default, (str, int, float, bool, list, dict)):
             raise ValueError(f"questions[{index}].default must be JSON-compatible")
-        if options and not allow_free_text and default not in options:
+        if options and not allow_free_text and default != "" and default not in options:
             raise ValueError(f"questions[{index}].default must match one of its options")
         normalized.append({
             "id": question_id,
@@ -247,7 +247,9 @@ def answer_user_input(
         request_id, answer, session_id=session_id, turn_id=turn_id
     )
     if result.get("accepted") and agent is not None:
-        result["delivery"] = deliver_answer_to_agent(agent, result.get("turn_id", turn_id or ""), answer)
+        result["delivery"] = deliver_answer_to_agent(
+            agent, result.get("turn_id", turn_id or ""), result.get("answer", answer)
+        )
     return result
 
 

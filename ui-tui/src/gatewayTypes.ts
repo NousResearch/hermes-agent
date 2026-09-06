@@ -736,6 +736,34 @@ export type GatewayEvent =
       session_id?: string
       type: 'approval.request'
     }
+  | {
+      payload: {
+        context?: string
+        expires_at?: number
+        questions: {
+          allow_free_text?: boolean
+          default?: unknown
+          id: string
+          options?: string[]
+          text: string
+        }[]
+        request_id: string
+        session_id?: string
+      }
+      session_id?: string
+      type: 'user_input.request'
+    }
+  | {
+      payload: {
+        accepted?: boolean
+        answer?: Record<string, unknown>
+        delivery?: string
+        request_id: string
+        status?: string
+      }
+      session_id?: string
+      type: 'user_input.answer'
+    }
   | { payload: { request_id: string }; session_id?: string; type: 'sudo.request' }
   | { payload: { env_var: string; prompt: string; request_id: string }; session_id?: string; type: 'secret.request' }
   | { payload: { request_id: string }; session_id?: string; type: 'secret.expire' | 'sudo.expire' }

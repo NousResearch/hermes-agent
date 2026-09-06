@@ -130,6 +130,22 @@ export interface ClarifyReq {
   answers?: Record<string, string>
 }
 
+export interface UserInputQuestion {
+  allowFreeText: boolean
+  defaultValue?: string
+  id: string
+  options: string[]
+  text: string
+}
+
+export interface UserInputReq {
+  context: string
+  expiresAt: number
+  questions: UserInputQuestion[]
+  requestId: string
+  sessionId: string
+}
+
 export interface Msg {
   info?: SessionInfo
   kind?: 'diff' | 'event' | 'intro' | 'panel' | 'slash' | 'trail'

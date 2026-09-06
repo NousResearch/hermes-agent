@@ -170,3 +170,35 @@ def test_user_input_request_is_emitted_on_the_session_event_rail(monkeypatch, db
     assert event[2]["status"] == "pending"
     assert event[2]["questions"] == QUESTIONS
     assert event[2]["expires_at"] == pytest.approx(200.0)
+
+
+def test_user_input_respond_rejects_invalid_answer_without_delivery(monkeypatch, db):
+    from tui_gateway import server
+
+    db.create_pending_user_input(
+        request_id="uir_tui_invalid",
+        session_id="tui-session",
+        questions=[
+            {"id": "version", "text": "Version?", "options": ["stable", "beta"], "allow_free_text": False},
+        ],
+        expires_at=time.time() + 60,
+        turn_id="turn-tui-1",
+    )
+    _session, delivered = _install_session(monkeypatch, server, db)
+
+    response = server.handle_request({
+        "jsonrpc": "2.0",
+        "id": "rpc-invalid",
+        "method": "user_input.respond",
+        "params": {
+            "session_id": "tui-sid",
+            "request_id": "uir_tui_invalid",
+            "answers": {"version": "unsupported"},
+        },
+    })
+
+    assert response["error"]["code"] == 4004
+    assert delivered == []
+    pending = db.get_pending_user_input("uir_tui_invalid", session_id="tui-session")
+    assert pending["status"] == "pending"
+    assert pending["answer"] is None

@@ -1146,6 +1146,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
+        self._session_event_queues: Dict[str, set[_SessionEventQueue]] = {}
         _api_runs._initialize_run_state(self, store_factory=RunIdempotencyStore)
         self._session_db: Optional[Any] = None  # explicit override (tests/manual wiring)
         self._session_dbs: Dict[str, Any] = {}  # per-profile-home SessionDB cache
@@ -3122,6 +3123,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         message_id = f"msg_{uuid.uuid4().hex}"
         run_id = f"run_{uuid.uuid4().hex}"
         events = _SessionEventQueue(session_id, run_id)
+        self._register_session_event_queue(events)
         queue, _event_payload = events.queue, events.payload
         # Claim ownership inside the request's profile scope before any run-keyed state
         # exists, so /v1/runs/{id}* control is confined to the starting profile.
@@ -3223,6 +3225,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             raise
         except Exception as exc:
             logger.debug("[api_server] session SSE stream error: %s", exc)
+        finally:
+            self._unregister_session_event_queue(events)
         return response
 
     async def _drain_session_stream_task_on_disconnect(
@@ -3269,6 +3273,29 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 continue
             return agent
         return None
+
+    def _register_session_event_queue(self, events: _SessionEventQueue) -> None:
+        session_id = str(events.session_id or '').strip()
+        if not session_id:
+            return
+        self._session_event_queues.setdefault(session_id, set()).add(events)
+
+    def _unregister_session_event_queue(self, events: _SessionEventQueue) -> None:
+        session_id = str(events.session_id or '').strip()
+        queues = self._session_event_queues.get(session_id)
+        if not queues:
+            return
+        queues.discard(events)
+        if not queues:
+            self._session_event_queues.pop(session_id, None)
+
+    def _broadcast_session_event(
+        self, session_id: str, name: str, payload: Dict[str, Any]
+    ) -> None:
+        """Publish a scoped terminal event to currently open session streams only."""
+        queues = tuple(self._session_event_queues.get(str(session_id or '').strip(), ()))
+        for events in queues:
+            events.enqueue(name, dict(payload))
 
     @_require_auth
     async def _handle_session_user_input_pending(self, request: "web.Request") -> "web.Response":
@@ -3357,6 +3384,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return _error_response(
                 result.get("error", "Invalid user-input answer"), 400,
                 code="invalid_user_input_answer")
+        event_payload = {
+            key: result[key]
+            for key in ("request_id", "status", "answer", "accepted", "delivery", "turn_id")
+            if key in result
+        }
+        self._broadcast_session_event(session_id, "user_input.answer", event_payload)
         return web.json_response(result)
 
     @_require_auth
@@ -4065,6 +4098,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         files, #37011).
         """
         self._mark_disconnected()
+        self._session_event_queues.clear()
         if self._response_store is not None:
             try:
                 self._response_store.close()

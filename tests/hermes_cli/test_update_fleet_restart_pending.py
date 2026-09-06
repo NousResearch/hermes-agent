@@ -604,3 +604,114 @@ def test_startup_warn_silent_when_nothing_pending(capsys):
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out == ""
+
+
+def _write_owing_receipt(disk_sha: str, old_sha: str):
+    """A failed receipt with an empty fleet — the shape that owes a restart."""
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "started_at": "T0",
+                "exit_code": 1,
+                "stop_reason": "sys.exit(1)",
+                "outcome": "failed",
+                "fleet": [],
+                "plan": {
+                    "expected_sha": disk_sha,
+                    "runtimes": [
+                        {"kind": "gateway", "profile": "default",
+                         "pid": 4242, "code_sha": old_sha}
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _patch_sha_seams(monkeypatch, sha):
+    """Patch where production reads: the catch-up late-imports update_cmd;
+    helpers use update_cmd_fleet's own module-level binding."""
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: sha)
+
+
+def test_catchup_discharges_without_restart_when_fleet_already_current(monkeypatch):
+    """Probe-first: a live fleet already on the checkout SHA means the
+    obligation is factually discharged — clear it WITHOUT a redundant
+    restart (issue #98022 question 2). Proven red on base: without the
+    discharge, the fleet is restarted and the obligation survives."""
+    import hermes_cli.update_receipt as update_receipt
+
+    disk_sha = "1" * 40
+    old_sha = "2" * 40
+    _patch_sha_seams(monkeypatch, disk_sha)
+    restarts = []
+    monkeypatch.setattr(
+        update_cmd, "_run_pending_fleet_restart",
+        lambda: restarts.append(1) or True,
+    )
+    monkeypatch.setattr(
+        update_receipt, "collect_fleet_versions",
+        lambda **kw: [{"profile": "default", "pid": 7,
+                       "code_sha": disk_sha, "state": "current"}],
+    )
+
+    update_cmd._write_fleet_restart_pending_marker()
+    _write_owing_receipt(disk_sha, old_sha)
+    assert update_cmd_fleet._pending_fleet_restart_needed() is True
+
+    update_cmd_fleet._apply_pending_fleet_restart_catchup()
+
+    assert restarts == []  # no redundant restart
+    assert update_cmd_fleet._pending_fleet_restart_needed() is False
+
+
+def test_catchup_restarts_then_discharges_when_fleet_stale(monkeypatch):
+    """A stale probe row keeps the restart — but the successful catch-up
+    must then discharge the receipt, not just the marker."""
+    import hermes_cli.update_receipt as update_receipt
+
+    disk_sha = "3" * 40
+    old_sha = "4" * 40
+    _patch_sha_seams(monkeypatch, disk_sha)
+    restarts = []
+    monkeypatch.setattr(
+        update_cmd, "_run_pending_fleet_restart",
+        lambda: restarts.append(1) or True,
+    )
+    monkeypatch.setattr(
+        update_receipt, "collect_fleet_versions",
+        lambda **kw: [{"profile": "default", "pid": 7,
+                       "code_sha": old_sha, "state": "stale"}],
+    )
+
+    update_cmd._write_fleet_restart_pending_marker()
+    _write_owing_receipt(disk_sha, old_sha)
+    assert update_cmd_fleet._pending_fleet_restart_needed() is True
+
+    update_cmd_fleet._apply_pending_fleet_restart_catchup()
+
+    assert restarts == [1]  # restart still happens when actually stale
+    assert update_cmd_fleet._pending_fleet_restart_needed() is False
+
+
+def test_catchup_resolution_is_rearmed_by_a_later_pull(monkeypatch):
+    """A resolution is scoped to the SHA it discharged, not forever."""
+    from hermes_cli.update_receipt import record_fleet_resolution
+
+    disk_sha = "5" * 40
+    old_sha = "6" * 40
+    newer_sha = "7" * 40
+    _patch_sha_seams(monkeypatch, disk_sha)
+
+    _write_owing_receipt(disk_sha, old_sha)
+    assert record_fleet_resolution(
+        [{"state": "current", "code_sha": disk_sha}], disk_sha
+    ) is True
+    assert update_cmd_fleet._pending_fleet_restart_needed() is False
+
+    _patch_sha_seams(monkeypatch, newer_sha)
+    assert update_cmd_fleet._pending_fleet_restart_needed() is True

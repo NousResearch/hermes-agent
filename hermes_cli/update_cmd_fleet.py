@@ -119,6 +119,14 @@ def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
     if not expected_sha:
         return False
 
+    # An out-of-band catch-up discharge records the SHA it settled the
+    # obligation against. Honour it: without this the empty-``fleet`` +
+    # unfinished receipt below falls back to a pre-pull plan SHA that can
+    # never match HEAD, so the warning re-fires forever even after the
+    # fleet was verifiably current.
+    if str(receipt.get("fleet_restart_resolved_sha") or "") == str(expected_sha):
+        return False
+
     def _sha_mismatch(code_sha) -> bool:
         return bool(code_sha) and str(code_sha) != str(expected_sha)
 
@@ -292,6 +300,60 @@ def _run_pending_fleet_restart() -> bool:
         return False
 
 
+def _live_fleet_already_current(expected_sha: str) -> bool:
+    """True only when a live probe PROVES every gateway serves current code.
+
+    Any ``stale``/``down``/``unknown`` row — or an empty/failed probe — is
+    not proof, so the caller falls back to the real restart. Conservative
+    by construction: False never skips a restart that is actually owed.
+    """
+    try:
+        from hermes_cli.update_receipt import collect_fleet_versions
+
+        rows = collect_fleet_versions()
+    except Exception as exc:
+        logger.debug("Catch-up fleet probe failed: %s", exc)
+        return False
+    if not rows:
+        return False
+    return all(
+        isinstance(row, dict)
+        and row.get("state") == "current"
+        and str(row.get("code_sha") or "") == str(expected_sha)
+        for row in rows
+    )
+
+
+def _record_catchup_fleet_resolution() -> None:
+    """Tell the owing receipt that the catch-up discharged the obligation.
+
+    ``_clear_fleet_restart_pending_marker()`` only removes the breadcrumb
+    file. ``_pending_fleet_restart_needed()`` ALSO consults the receipt, and
+    a receipt with an empty ``fleet`` and a failed/partial ``outcome`` falls
+    back to ``plan.runtimes[].code_sha`` — captured before the pull, so it
+    can never match the post-pull checkout. Recording the resolution against
+    the current HEAD is what actually discharges the obligation. Never
+    raises: a failure here costs one redundant restart, not a broken update.
+    """
+    try:
+        from hermes_cli.update_receipt import (
+            collect_fleet_versions,
+            record_fleet_resolution,
+        )
+
+        expected_sha = _current_checkout_sha()
+        if not expected_sha:
+            return
+        try:
+            fleet = collect_fleet_versions()
+        except Exception as exc:
+            logger.debug("Catch-up fleet probe failed: %s", exc)
+            fleet = None
+        record_fleet_resolution(fleet, expected_sha)
+    except Exception as exc:
+        logger.debug("Could not record catch-up fleet resolution: %s", exc)
+
+
 def _apply_pending_fleet_restart_catchup() -> None:
     """On an already-up-to-date ``hermes update``, finish a skipped restart.
 
@@ -302,10 +364,21 @@ def _apply_pending_fleet_restart_catchup() -> None:
     if not _pending_fleet_restart_needed():
         return
     print()
+    # Probe first (#98022 question 2): a live fleet already on the checkout
+    # SHA means the obligation is factually discharged — stamp it and skip
+    # the redundant restart entirely.
+    expected_sha = _current_checkout_sha()
+    if expected_sha and _live_fleet_already_current(expected_sha):
+        print("→ Live fleet already on current code — discharging the stale obligation without a restart...")
+        _clear_fleet_restart_pending_marker()
+        _record_catchup_fleet_resolution()
+        print("  ✓ Pending fleet obligation discharged (fleet verified current).")
+        return
     _warn_pending_fleet_restart()
     print("→ Running the pending fleet restart...")
     if _run_pending_fleet_restart():
         _clear_fleet_restart_pending_marker()
+        _record_catchup_fleet_resolution()
         return
     print("  ⚠ Fleet restart incomplete. Recover with: hermes gateway restart")
     sys.exit(1)

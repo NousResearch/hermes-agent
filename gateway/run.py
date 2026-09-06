@@ -2027,7 +2027,7 @@ from gateway.run_voice import GatewayVoiceMixin
 from gateway.run_adapters import GatewayAdapterLifecycleMixin
 from gateway.run_topics import GatewayTopicThreadsMixin
 from gateway.run_turn import GatewayTurnMixin
-from gateway.run_shutdown import GatewayShutdownMixin
+from gateway.run_shutdown import GatewayShutdownMixin, _exit_with_failure_verdict, _resolve_gateway_exit_verdict
 from gateway.run_busy import GatewayBusySessionMixin
 from gateway.run_config_loaders import GatewayConfigLoadersMixin
 from gateway.run_startup import GatewayStartupMixin
@@ -2046,8 +2046,7 @@ from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
-    DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
-    GATEWAY_SERVICE_RESTART_EXIT_CODE as _GATEWAY_SERVICE_RESTART_EXIT_CODE)
+    DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT)
 
 
 logger = logging.getLogger(__name__)
@@ -5088,38 +5087,6 @@ def _start_gateway_start_cron_and_housekeeping(runner):
     return cron_stop, cron_provider, cron_thread, housekeeping_thread
 
 
-def _exit_with_failure_verdict(runner) -> bool:
-    """True (after logging the reason) when the runner asked for a failure exit."""
-    if not runner.should_exit_with_failure:
-        return False
-    if runner.exit_reason:
-        logger.error("Gateway exiting with failure: %s", runner.exit_reason)
-    return True
-
-
-def _resolve_gateway_exit_verdict(runner, signal_initiated_shutdown: bool) -> bool:
-    """Resolve the process verdict after either startup abort or normal shutdown."""
-    if _exit_with_failure_verdict(runner):
-        return False
-    if runner.exit_code is not None:
-        raise SystemExit(runner.exit_code)
-    if signal_initiated_shutdown and not runner._restart_requested:
-        logger.info(
-            "Exiting with code 1 (signal-initiated shutdown without restart "
-            "request) so the service manager can revive the gateway."
-        )
-        return False
-    # Older restart paths may not set ``runner.exit_code``; retain the service-restart fallback.
-    if runner._restart_via_service:
-        logger.info(
-            "Exiting with code %d (service-restart requested) so the service "
-            "manager relaunches the gateway.",
-            _GATEWAY_SERVICE_RESTART_EXIT_CODE,
-        )
-        raise SystemExit(_GATEWAY_SERVICE_RESTART_EXIT_CODE)
-    return True
-
-
 async def _start_gateway_shutdown_tail(
     runner, _control_server, cron_stop: threading.Event, cron_provider,
     cron_thread: threading.Thread, housekeeping_thread: threading.Thread,
@@ -5139,6 +5106,8 @@ async def _start_gateway_shutdown_tail(
         stop_nous_auth_keepalive()
 
     _best_effort(_stop_keepalive)
+    if _exit_with_failure_verdict(runner):
+        return False
 
     # Never join(): an in-flight cron delivery is a coroutine on THIS loop; a sync join would drop it.
     # Stop cron scheduler + housekeeping cleanly. These MUST be awaited cooperatively, not join()ed. A cron

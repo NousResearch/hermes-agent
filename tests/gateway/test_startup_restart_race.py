@@ -167,6 +167,18 @@ async def test_startup_aborts_when_restart_begins_during_platform_connect(tmp_pa
     )
 
 
+def _patch_aborted_startup(monkeypatch, runner_cls):
+    """Run start_gateway() against a runner that aborts before running mode."""
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: True)
+    monkeypatch.setattr("gateway.status.write_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", lambda: None)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: None)
+    monkeypatch.setattr("gateway.run.GatewayRunner", runner_cls)
+
+
 @pytest.mark.asyncio
 async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -199,14 +211,7 @@ async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path,
         nonlocal cron_started
         cron_started = True
 
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
-    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: True)
-    monkeypatch.setattr("gateway.status.write_pid_file", lambda: None)
-    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
-    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", lambda: None)
-    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
-    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: None)
-    monkeypatch.setattr("gateway.run.GatewayRunner", AbortedStartupRunner)
+    _patch_aborted_startup(monkeypatch, AbortedStartupRunner)
     monkeypatch.setattr("gateway.run._start_cron_ticker", fail_if_cron_starts)
     monkeypatch.setattr("tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda: None)
 
@@ -248,14 +253,7 @@ async def test_start_gateway_preserves_service_restart_fallback_after_aborted_st
         nonlocal cron_started
         cron_started = True
 
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
-    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: True)
-    monkeypatch.setattr("gateway.status.write_pid_file", lambda: None)
-    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
-    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", lambda: None)
-    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
-    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: None)
-    monkeypatch.setattr("gateway.run.GatewayRunner", AbortedStartupRunner)
+    _patch_aborted_startup(monkeypatch, AbortedStartupRunner)
     monkeypatch.setattr("gateway.run._start_cron_ticker", fail_if_cron_starts)
     monkeypatch.setattr("tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda: None)
 
@@ -311,14 +309,7 @@ async def test_start_gateway_classifies_startup_signal_exit(
         nonlocal cron_started
         cron_started = True
 
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
-    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: True)
-    monkeypatch.setattr("gateway.status.write_pid_file", lambda: None)
-    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
-    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", lambda: None)
-    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
-    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: None)
-    monkeypatch.setattr("gateway.run.GatewayRunner", AbortedStartupRunner)
+    _patch_aborted_startup(monkeypatch, AbortedStartupRunner)
     monkeypatch.setattr(
         "gateway.run._start_gateway_make_shutdown_signal_handler", capture_signal_state
     )

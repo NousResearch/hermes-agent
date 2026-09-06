@@ -221,21 +221,24 @@ def test_dashboard_plugin_toggle_refuses_managed_scope_before_writes(tmp_path, m
     assert path.read_text() == original
 
 
-def test_tui_plugin_toggle_translates_managed_scope_error(monkeypatch):
-    from types import SimpleNamespace
+def test_tui_plugin_toggle_translates_managed_scope_error(tmp_path, monkeypatch):
+    home = tmp_path / "profile"
+    plugin_dir = home / "plugins" / "example"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text("name: example\n", encoding="utf-8")
+    config_path = home / "config.yaml"
+    config_path.write_text("plugins:\n  enabled: []\n", encoding="utf-8")
+    before = config_path.read_bytes()
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text("plugins:\n  enabled: []\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
 
+    from hermes_cli import managed_scope
     from tui_gateway import methods_tools
 
-    monkeypatch.setattr(
-        methods_tools,
-        "_tools_mod",
-        lambda _: SimpleNamespace(
-            dashboard_set_agent_plugin_enabled=lambda name, enabled: {
-                "ok": False,
-                "error": "Cannot change plugin enablement: plugins.disabled is managed by your administrator.",
-            }
-        ),
-    )
+    managed_scope.invalidate_managed_cache()
     monkeypatch.setattr(
         methods_tools,
         "_err",
@@ -248,5 +251,6 @@ def test_tui_plugin_toggle_translates_managed_scope_error(monkeypatch):
     assert result == {
         "rid": "request-1",
         "code": 5026,
-        "error": "Cannot change plugin enablement: plugins.disabled is managed by your administrator.",
+        "error": "Cannot change plugin enablement: plugins.enabled is managed by your administrator.",
     }
+    assert config_path.read_bytes() == before

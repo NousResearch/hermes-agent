@@ -51,3 +51,31 @@ def test_navigation_checks_observed_peer(monkeypatch, peer, allowed, success):
 def test_reported_peer_uses_shared_ip_policy(peer, private, blocked):
     from tools.url_safety import ip_address_block_reason
     assert bool(ip_address_block_reason(peer, allow_private=private)) is blocked
+
+
+@pytest.mark.parametrize('blank_raises', [False, True])
+def test_command_exception_cannot_release_observed_private_content(monkeypatch, blank_raises):
+    records = []
+    supervisor = SimpleNamespace(
+        snapshot=lambda: SimpleNamespace(network_responses=tuple(records)),
+        start_network_response_window=lambda: tuple(records),
+        flush_network_events=lambda: True,
+        retain_network_violation=lambda ip, url: None,
+    )
+    monkeypatch.setattr(bs.SUPERVISOR_REGISTRY, 'get', lambda _: supervisor)
+    monkeypatch.setattr(bt, '_is_camofox_mode', lambda: False)
+    monkeypatch.setattr(bt, '_last_session_key', lambda task: task)
+    monkeypatch.setattr(cloud, '_is_local_backend', lambda: False)
+    monkeypatch.setattr(cloud, '_allow_private_urls', lambda: False)
+    def command(task, action, args, **kwargs):
+        if action == 'open':
+            if blank_raises:
+                raise RuntimeError('blank navigation failed')
+            return {'success': True}
+        records.append(SimpleNamespace(remote_ip='127.0.0.1', url='https://public.example'))
+        raise RuntimeError('PRIVATE_RESPONSE_BODY')
+    monkeypatch.setattr(session, '_run_browser_command', command)
+    result = json.loads(bt.browser_scroll('down', 'exception-peer'))
+    assert result['success'] is False
+    assert 'private/internal address' in result['error']
+    assert 'PRIVATE_RESPONSE_BODY' not in json.dumps(result)

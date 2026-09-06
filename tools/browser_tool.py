@@ -693,9 +693,26 @@ def _block_network_peer(task_id: str, violation) -> str:
     return _dumps(_err(f"Blocked: {message}"))
 
 
-def _guard_network_peer(task_id: str) -> Optional[str]:
-    violation = _network_peer_violation(task_id)
+def _guard_network_peer(task_id: str, *, rotate: bool = False) -> Optional[str]:
+    violation = _network_peer_violation(task_id, rotate=rotate)
     return _block_network_peer(task_id, violation) if violation else None
+
+
+def _peer_checked_command(task_id: str, command: str, args: list, **kwargs) -> Dict[str, Any]:
+    """Check the prior observation window and the result of one browser action."""
+    blocked = _guard_network_peer(task_id, rotate=True)
+    if blocked is None:
+        try:
+            result = _session._run_browser_command(task_id, command, args, **kwargs)
+        except Exception:
+            blocked = _guard_network_peer(task_id)
+            if blocked is None:
+                raise
+        else:
+            blocked = _guard_network_peer(task_id)
+        if blocked is None:
+            return result
+    return {**json.loads(blocked), "_peer_blocked": True}
 
 
 def _post_redirect_block(nav_session_key: str, url: str, final_url: str, auto_local_this_nav: bool) -> Optional[str]:
@@ -855,7 +872,7 @@ def browser_snapshot(
     if _is_camofox_mode():
         return _camofox("camofox_snapshot", full, task_id)
     effective_task_id = _last_session_key(task_id or "default")
-    result = _session._run_browser_command(effective_task_id, "snapshot", [] if full else ["-c"])
+    result = _peer_checked_command(effective_task_id, "snapshot", [] if full else ["-c"])
     if not result.get("success"):
         return _failed_response(result, "Failed to get snapshot")
 
@@ -909,7 +926,7 @@ def _guarded_action(task_id: Optional[str], action: str, command: str, args: lis
     blocked = _blocked_private_page_action(effective_task_id, action)
     if blocked is not None:
         return blocked
-    return _tool_response(_session._run_browser_command(effective_task_id, command, args), ok, err)
+    return _tool_response(_peer_checked_command(effective_task_id, command, args), ok, err)
 
 
 def _at_ref(ref: str) -> str:
@@ -933,7 +950,7 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     if blocked is not None:
         return blocked
     ref = _at_ref(ref)
-    result = _session._run_browser_command(effective_task_id, "fill", [ref, text])
+    result = _peer_checked_command(effective_task_id, "fill", [ref, text])
     from agent.display import redact_browser_typed_text_for_display, redact_tool_args_for_display
     # Typed text goes through the secret-pattern redactor so API keys / tokens don't
     # leak into tool progress or chat history (the raw value already went to the browser).
@@ -953,7 +970,7 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
     if _is_camofox_mode():  # Camofox REST API has no pixel argument; use repeated calls
         return [_camofox("camofox_scroll", direction, task_id) for _ in range(5)][-1]
     effective_task_id = _last_session_key(task_id or "default")
-    result = _session._run_browser_command(effective_task_id, "scroll", [direction, str(_SCROLL_PIXELS)])
+    result = _peer_checked_command(effective_task_id, "scroll", [direction, str(_SCROLL_PIXELS)])
     return _tool_response(result, {"scrolled": direction}, f"Failed to scroll {direction}")
 
 
@@ -962,7 +979,7 @@ def browser_back(task_id: Optional[str] = None) -> str:
     if _is_camofox_mode():
         return _camofox("camofox_back", task_id)
     effective_task_id = _last_session_key(task_id or "default")
-    result = _session._run_browser_command(effective_task_id, "back", [])
+    result = _peer_checked_command(effective_task_id, "back", [])
     if result.get("success"):
         # History can land on a private/internal/metadata address the navigate
         # preflight never saw (earlier redirect chain, manipulated client-side history).
@@ -1004,7 +1021,8 @@ _EVAL_NAVIGATED_WHY = "This may have been caused by a JavaScript navigation via 
 def _blocked_private_page_content(effective_task_id: str) -> Optional[str]:
     """Content-returning tools (snapshot/vision/eval/get_images): after an eval that may
     have moved ``location.href`` to a private address, returning content would expose it."""
-    return _blocked_private_page(effective_task_id, _EVAL_NAVIGATED_WHY)
+    blocked = _blocked_private_page(effective_task_id, _EVAL_NAVIGATED_WHY)
+    return _guard_network_peer(effective_task_id) or blocked
 
 
 def browser_console(clear: bool = False, expression: Optional[str] = None, task_id: Optional[str] = None) -> str:
@@ -1025,8 +1043,12 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
         return blocked
 
     clear_args = ["--clear"] if clear else []
-    console_result = _session._run_browser_command(effective_task_id, "console", clear_args)
-    errors_result = _session._run_browser_command(effective_task_id, "errors", clear_args)
+    console_result = _peer_checked_command(effective_task_id, "console", clear_args)
+    if console_result.get("_peer_blocked"):
+        return _failed_response(console_result, "Browser peer blocked")
+    errors_result = _peer_checked_command(effective_task_id, "errors", clear_args)
+    if errors_result.get("_peer_blocked"):
+        return _failed_response(errors_result, "Browser peer blocked")
 
     messages = [
         {"type": msg.get("type", "log"), "text": _snapshot._redact_browser_output(msg.get("text", "")), "source": "console"}
@@ -1082,6 +1104,9 @@ def _eval_supervisor_fast_path(effective_task_id: str, expression: str) -> Optio
         if supervisor is None:
             return None
         sup_result = supervisor.evaluate_runtime(expression)
+        blocked = _guard_network_peer(effective_task_id)
+        if blocked is not None:
+            return blocked
         if sup_result.get("ok"):
             return _eval_result_or_blocked(
                 effective_task_id, _parse_eval_value(sup_result.get("result")), {}, method="cdp_supervisor")
@@ -1133,11 +1158,14 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     if _is_camofox_mode():
         return _camofox_eval(expression, task_id)
 
+    blocked = _guard_network_peer(effective_task_id, rotate=True)
+    if blocked is not None:
+        return blocked
     fast = _eval_supervisor_fast_path(effective_task_id, expression)
     if fast is not None:
         return fast
 
-    result = _session._run_browser_command(effective_task_id, "eval", [expression])
+    result = _peer_checked_command(effective_task_id, "eval", [expression])
     if not result.get("success"):
         return _eval_failure_response(result)
     return _eval_result_or_blocked(effective_task_id, _parse_eval_value(result.get("data", {}).get("result")), result)
@@ -1220,7 +1248,7 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         return _camofox("camofox_get_images", task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
-    result = _session._run_browser_command(effective_task_id, "eval", [_GET_IMAGES_JS])
+    result = _peer_checked_command(effective_task_id, "eval", [_GET_IMAGES_JS])
     if not result.get("success"):
         return _failed_response(result, "Failed to get images")
 
@@ -1244,6 +1272,7 @@ from tools import browser_tool_vision as _vision
 
 def _capture_vision_screenshot(effective_task_id: str, annotate: bool, screenshot_path: Path, lp_prerouted: bool):
     """Take (or adopt the pre-routed) screenshot; returns ``(result, path, error_json_or_None)``."""
+    requested_path = screenshot_path
     if lp_prerouted and screenshot_path.exists():
         result = _lp._annotate_lightpanda_fallback(
             {"success": True, "data": {"path": str(screenshot_path)}}, _LP_VISION_FALLBACK_REASON)
@@ -1251,8 +1280,22 @@ def _capture_vision_screenshot(effective_task_id: str, annotate: bool, screensho
         screenshot_args = (["--annotate"] if annotate else []) + ["--full", str(screenshot_path)]
         # A failed Lightpanda pre-route forces Chrome so _run_browser_command
         # doesn't trigger a redundant LP fallback.
-        result = _session._run_browser_command(effective_task_id, "screenshot", screenshot_args,
-                                      _engine_override="auto" if lp_prerouted else None)
+        try:
+            result = _session._run_browser_command(effective_task_id, "screenshot", screenshot_args,
+                                          _engine_override="auto" if lp_prerouted else None)
+        except Exception as exc:
+            result = _err(str(exc))
+    blocked = _guard_network_peer(effective_task_id)
+    if blocked is not None:
+        paths = {requested_path}
+        if actual := result.get("data", {}).get("path"):
+            paths.add(Path(actual))
+        for path in paths:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Could not remove a blocked browser screenshot")
+        return result, requested_path, blocked
     if not result.get("success"):
         return result, screenshot_path, _json_with_fallback(_err(
             f"Failed to take screenshot ({_vision._vision_mode_label()} mode): {result.get('error', 'Unknown error')}"

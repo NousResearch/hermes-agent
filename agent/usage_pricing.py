@@ -151,6 +151,7 @@ _ANTHROPIC_URL = "https://platform.claude.com/docs/en/about-claude/pricing"
 _GOOGLE_URL = "https://ai.google.dev/pricing"
 _OPUS = ("5.00", "25.00", "0.50", "6.25")
 _SONNET = ("3.00", "15.00", "0.30", "3.75")
+_SONNET_5 = ("2.00", "10.00", "0.20", "2.50")
 _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     # OpenAI GPT-5.6 (Sol/Terra/Luna). Cache write = 1.25x input, cache read =
     # 0.10x input. "-pro" high-effort modes bill at the same per-token rates
@@ -174,10 +175,10 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     ("anthropic", "https://openrouter.ai/anthropic/claude-opus-4.8-fast", "anthropic-pricing-2026-05", {
         "claude-opus-4-8-fast": ("10.00", "50.00", "1.00", "12.50"),
     }),
-    # Claude Sonnet 5: introductory $2/$10 through 2026-08-31, then $3/$15
-    # (matching Sonnet 4.6). Update this entry when the intro window closes.
+    # Claude Sonnet 5: the launch rate is now the standard rate (the scheduled
+    # 2026-09-01 increase to Sonnet 4.6's rate was cancelled); no update due.
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-06-intro", {
-        "claude-sonnet-5": ("2.00", "10.00", "0.20", "2.50"),
+        "claude-sonnet-5": _SONNET_5,
     }),
     ("openai", "https://openai.com/api/pricing/", "openai-pricing-2026-03-16", {
         "gpt-4o": ("2.50", "10.00", "1.25"), "gpt-4o-mini": ("0.15", "0.60", "0.075"),
@@ -208,7 +209,16 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     ("bedrock", _BEDROCK_URL, "anthropic-list-2026-07", {
         ("anthropic.claude-opus-4-8", "anthropic.claude-opus-4-7", "anthropic.claude-opus-4-6"): _OPUS,
     }),
-    ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-06", {"anthropic.claude-sonnet-5": _SONNET}),
+    # Claude 5 rows read from the AWS pricing page on 2026-09-06 (global
+    # cross-region endpoint). Sonnet 5 shares _SONNET_5 with the first-party
+    # row, not _SONNET: the scheduled 2026-09-01 increase to Sonnet 4.6's rate
+    # was cancelled and the launch rate is standard. In-region/geo profiles
+    # bill 10% above the global rate.
+    ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-09", {
+        "anthropic.claude-opus-5": _OPUS,
+        "anthropic.claude-sonnet-5": _SONNET_5,
+        "anthropic.claude-fable-5": ("10.00", "50.00", "1.00", "12.50"),
+    }),
     ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-04", {
         ("anthropic.claude-sonnet-4-6", "anthropic.claude-sonnet-4-5"): _SONNET,
         "anthropic.claude-haiku-4-5": ("0.80", "4.00", "0.08", "1.00"),
@@ -253,7 +263,7 @@ _OFFICIAL_DOCS_PRICING[("google", "gemini-2.5-pro")] = _snap(
     tier_threshold_tokens=200_000, input_cost_per_million_above=Decimal("2.50"),
     output_cost_per_million_above=Decimal("15.00"),
 )
-del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET
+del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET, _SONNET_5
 
 # GPT-5.6 "-pro" high-effort variants bill at the base tier's per-token rates
 # (more tokens per task, not a higher rate); the Hermes-side "-900k" Codex

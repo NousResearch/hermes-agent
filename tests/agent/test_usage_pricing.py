@@ -195,8 +195,9 @@ def test_bedrock_claude_rows_all_carry_cache_pricing():
 
 
 def test_bedrock_current_gen_claude_rows_resolve():
-    """Current-gen Claude models (Opus 4.8/4.7, Sonnet 5) must have Bedrock
-    pricing rows so cached sessions report a dollar cost, not ``unknown``.
+    """Current-gen Claude models (Opus 4.8/4.7, Opus 5, Sonnet 5, Fable 5)
+    must have Bedrock pricing rows so cached sessions report a dollar cost,
+    not ``unknown``.
     Assert each resolves via the bare id and a cross-region inference profile
     (us./global. prefix), that every id for a given model resolves to the same
     entry, and that the row carries the cache fields a Bedrock Claude session
@@ -210,7 +211,9 @@ def test_bedrock_current_gen_claude_rows_resolve():
     for bare in (
         "anthropic.claude-opus-4-8",
         "anthropic.claude-opus-4-7",
+        "anthropic.claude-opus-5",
         "anthropic.claude-sonnet-5",
+        "anthropic.claude-fable-5",
     ):
         ref = get_pricing_entry(bare, provider="bedrock", base_url=url)
         assert ref is not None, bare
@@ -231,6 +234,59 @@ def test_bedrock_current_gen_claude_rows_resolve():
             assert entry.output_cost_per_million == ref.output_cost_per_million, mid
 
 
+
+
+def test_bedrock_sonnet_5_is_not_priced_at_sonnet_4_6_rates():
+    """Regression guard for the row this change corrects: Bedrock Sonnet 5 was
+    sharing Sonnet 4.6's rate tuple, overstating every Sonnet 5 session. AWS
+    lists Sonnet 5 below Sonnet 4.6 on both input and output, so the two rows
+    must differ in that direction."""
+    sonnet_5 = get_pricing_entry("anthropic.claude-sonnet-5", provider="bedrock")
+    sonnet_4_6 = get_pricing_entry("anthropic.claude-sonnet-4-6", provider="bedrock")
+    assert sonnet_5 is not None and sonnet_4_6 is not None
+    assert sonnet_5.input_cost_per_million < sonnet_4_6.input_cost_per_million
+    assert sonnet_5.output_cost_per_million < sonnet_4_6.output_cost_per_million
+
+
+def test_bedrock_sonnet_5_matches_first_party_sonnet_5_rates():
+    """Bedrock bills Sonnet 5 at Anthropic's own rate, so the two rows share
+    one tuple (``_SONNET_5``); if a future edit changes one row and not the
+    other, the two snapshots drift apart and this catches it."""
+    bedrock = get_pricing_entry("anthropic.claude-sonnet-5", provider="bedrock")
+    anthropic = get_pricing_entry("claude-sonnet-5", provider="anthropic")
+    assert bedrock is not None and anthropic is not None
+    for field in (
+        "input_cost_per_million",
+        "output_cost_per_million",
+        "cache_read_cost_per_million",
+        "cache_write_cost_per_million",
+    ):
+        assert getattr(bedrock, field) == getattr(anthropic, field), field
+
+
+def test_bedrock_opus_5_cached_session_estimates_cost_not_unknown():
+    """A cached Opus 5 session on Bedrock must price in dollars. Without the
+    row, the ``(provider, model)`` lookup finds nothing for the normalized
+    ``anthropic.claude-opus-5`` key and the session reports ``unknown`` (the
+    #50295 symptom)."""
+    bedrock_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+    usage = SimpleNamespace(
+        input_tokens=55,
+        output_tokens=7113,
+        cache_read_input_tokens=1369379,
+        cache_creation_input_tokens=42135,
+    )
+    canonical = normalize_usage(usage, provider="bedrock", api_mode="anthropic_messages")
+
+    result = estimate_usage_cost(
+        "us.anthropic.claude-opus-5",
+        canonical,
+        provider="bedrock",
+        base_url=bedrock_url,
+    )
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    assert result.amount_usd > 0
 
 
 def test_bedrock_versioned_inference_profile_resolves_to_bare_pricing():

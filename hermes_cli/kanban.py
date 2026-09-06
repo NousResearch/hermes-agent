@@ -2600,7 +2600,7 @@ def _cmd_archive(args: argparse.Namespace) -> int:
 
 def _cmd_tail(args: argparse.Namespace) -> int:
     last_id = 0
-    print(f"Tailing events for {args.task_id}. Ctrl-C to stop.")
+    print(f"Tailing events for {args.task_id}. Ctrl-C to stop.", flush=True)
     try:
         while True:
             with kb.connect_closing() as conn:
@@ -2612,7 +2612,7 @@ def _cmd_tail(args: argparse.Namespace) -> int:
                     last_id = e.id
             time.sleep(max(0.1, args.interval))
     except KeyboardInterrupt:
-        print("\n(stopped)")
+        print("\n(stopped)", flush=True)
         return 0
 
 
@@ -2913,7 +2913,7 @@ def _cmd_watch(args: argparse.Namespace) -> int:
                 )
             time.sleep(max(0.1, args.interval))
     except KeyboardInterrupt:
-        print("\n(stopped)")
+        print("\n(stopped)", flush=True)
         return 0
 
 

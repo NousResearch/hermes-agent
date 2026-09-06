@@ -5,6 +5,7 @@ from pathlib import Path
 import yaml
 
 from hermes_cli.managed_scope import apply_managed_overlay
+from utils import env_var_enabled
 
 
 _PLUGIN_NAME = "github-pr-feedback"
@@ -53,7 +54,7 @@ def _resolved_declared_hooks(
     """
     user_plugins = home / "plugins"
     candidates: list[tuple[Path, str]] = []
-    if project_root is not None:
+    if project_root is not None and env_var_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
         candidates.append((
             Path(project_root) / ".hermes" / "plugins" / _PLUGIN_NAME,
             _PLUGIN_NAME,

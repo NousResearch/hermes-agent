@@ -113,6 +113,30 @@ def test_worker_readiness_rejects_portable_manifest_hooks(tmp_path, monkeypatch)
     assert worker_contract.worker_contract_enabled(tmp_path, "worker") is False
 
 
+@pytest.mark.parametrize(("project_enabled", "expected"), [(False, True), (True, False)])
+def test_worker_readiness_applies_project_plugin_opt_in(
+    tmp_path, monkeypatch, project_enabled, expected
+):
+    import github_pr_feedback.worker_contract as worker_contract
+
+    worker = tmp_path / "profiles/worker"
+    worker.mkdir(parents=True)
+    (worker / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": ["github-pr-feedback"], "disabled": []}}))
+    project_plugin = tmp_path / "project/.hermes/plugins/github-pr-feedback"
+    project_plugin.mkdir(parents=True)
+    (project_plugin / "plugin.yaml").write_text(yaml.safe_dump({
+        "name": "github-pr-feedback",
+        "provides_hooks": ["pre_tool_call", "pre_kanban_complete"],
+    }))
+    monkeypatch.setattr(worker_contract, "_entrypoint_override_present", lambda: False)
+    monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "1" if project_enabled else "")
+
+    assert worker_contract.worker_contract_enabled(
+        tmp_path, "worker", project_root=tmp_path / "project"
+    ) is expected
+
+
 def test_worker_readiness_rejects_entrypoint_override_without_completion_hooks(tmp_path, monkeypatch):
     from github_pr_feedback.worker_contract import worker_contract_enabled
 

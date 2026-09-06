@@ -1,7 +1,7 @@
 """Tool result persistence -- preserves large outputs instead of truncating. Layers against
 context overflow: (1) per-tool caps inside each tool; (2) ``maybe_persist_tool_result`` —
 output over the tool's threshold is persisted and replaced by a preview + path; canonical home
-is ALWAYS host-side ``$HERMES_HOME/cache/spillover/{id}.txt`` (works for sessions that never
+is ALWAYS host-side ``$HERMES_HOME/cache/spillover/tool-results/{id}.txt`` (works for sessions that never
 ran a terminal), remote backends get the translated in-sandbox path (probed for readability)
 else a copy in the sandbox temp dir; (3) ``enforce_turn_budget``."""
 
@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import shlex
+import stat
 import tempfile
 import threading
 import time
@@ -21,6 +22,7 @@ PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
 STORAGE_DIR = os.path.join(tempfile.gettempdir(), "hermes-results")
 SPILLOVER_SUBDIR = "cache/spillover"
+PERSISTED_SPILLOVER_SUBDIR = "tool-results"
 SPILLOVER_MAX_AGE_HOURS = 24
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -30,10 +32,15 @@ _spillover_prune_lock = threading.Lock()
 _spillover_pruned_homes: set = set()  # profile home keys already swept this process
 
 
-def get_spillover_dir():
-    """Return $HERMES_HOME/cache/spillover as a Path (not created)."""
+def get_spillover_root():
+    """Return the shared ``$HERMES_HOME/cache/spillover`` root."""
     from hermes_constants import get_hermes_home
     return get_hermes_home() / SPILLOVER_SUBDIR
+
+
+def get_spillover_dir():
+    """Return the private tool-result spill directory (not created)."""
+    return get_spillover_root() / PERSISTED_SPILLOVER_SUBDIR
 
 
 def cleanup_spillover_cache(max_age_hours: int = SPILLOVER_MAX_AGE_HOURS) -> int:
@@ -41,13 +48,33 @@ def cleanup_spillover_cache(max_age_hours: int = SPILLOVER_MAX_AGE_HOURS) -> int
     contract as the ``cleanup_*_cache`` helpers the gateway housekeeping loop runs hourly)."""
     cutoff = time.time() - (max_age_hours * 3600)
     removed = 0
+    entries = []
+    spillover_root = get_spillover_root()
     try:
-        entries = list(get_spillover_dir().iterdir())
+        root_stat = os.lstat(spillover_root)
     except OSError:
         return 0
+    if not stat.S_ISDIR(root_stat.st_mode):
+        return 0
+    for directory in (spillover_root, get_spillover_dir()):
+        try:
+            directory_stat = os.lstat(directory)
+            if not stat.S_ISDIR(directory_stat.st_mode):
+                continue
+            entries.extend(directory.iterdir())
+        except OSError:
+            continue
     for f in entries:
         try:
-            if f.is_file() and f.stat().st_mtime < cutoff:
+            # Inspect the directory entry itself. ``Path.is_file()`` and
+            # ``Path.stat()`` follow symlinks, which both leaves dangling
+            # result aliases behind forever and applies retention using the
+            # target's timestamp rather than the artifact's timestamp.
+            entry_stat = os.lstat(f)
+            is_result_artifact = stat.S_ISREG(entry_stat.st_mode) or stat.S_ISLNK(
+                entry_stat.st_mode
+            )
+            if is_result_artifact and entry_stat.st_mtime < cutoff:
                 f.unlink()
                 removed += 1
         except OSError:
@@ -92,13 +119,22 @@ def _write_to_spillover(content: str, filename: str):
     truncation instead of referencing an archive that silently lost bytes.
     """
     data = content.encode("utf-8", errors="replace")
+    if os.path.basename(filename) != filename:
+        logger.warning("Spillover write refused unsafe filename: %s", filename)
+        return None
     try:
-        spill_dir = get_spillover_dir()
-        spill_dir.mkdir(parents=True, exist_ok=True)
+        from tools.spill_safety import ensure_spill_dir, open_exclusive
+
+        spill_root = ensure_spill_dir(get_spillover_root(), private=False)
+        spill_dir = ensure_spill_dir(
+            spill_root / PERSISTED_SPILLOVER_SUBDIR,
+            private=True,
+        )
         path = spill_dir / filename
-        path.write_bytes(data)
+        with open_exclusive(path, private=True, overwrite=True) as handle:
+            handle.buffer.write(data)
         persisted_size = os.stat(path).st_size
-    except OSError as exc:
+    except Exception as exc:
         logger.warning("Spillover write failed for %s: %s", filename, exc)
         return None
     if persisted_size != len(data):
@@ -142,14 +178,18 @@ def _sandbox_visible_spillover_path(host_path: str, env) -> str | None:
 
 def _resolve_storage_dir(env) -> str:
     """Return the best temp-backed storage dir for this environment."""
-    get_temp_dir = getattr(env, "get_temp_dir", None)
-    temp_dir = None
-    if callable(get_temp_dir):
-        try:
-            temp_dir = get_temp_dir()
-        except Exception as exc:
-            logger.debug("Could not resolve env temp dir: %s", exc)
-    return f"{temp_dir.rstrip('/') or '/'}/hermes-results" if temp_dir else STORAGE_DIR
+    if env is not None:
+        get_temp_dir = getattr(env, "get_temp_dir", None)
+        if callable(get_temp_dir):
+            try:
+                temp_dir = get_temp_dir()
+            except Exception as exc:
+                logger.debug("Could not resolve env temp dir: %s", exc)
+            else:
+                if isinstance(temp_dir, str) and temp_dir:
+                    temp_dir = temp_dir.rstrip("/") or "/"
+                    return f"{temp_dir}/hermes-results"
+    return STORAGE_DIR
 
 
 def _safe_result_filename(tool_use_id: str) -> str:
@@ -183,7 +223,35 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     truncation on payload backends). A measured mismatch removes the archive and fails closed;
     an unprobeable backend (no ``wc``, exec error, unparseable output) stays best-effort success."""
     storage_dir = os.path.dirname(remote_path)
-    cmd = f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)}"
+    quoted_dir = shlex.quote(storage_dir)
+    quoted_path = shlex.quote(remote_path)
+    # Persisted results can contain credentials or private session history.
+    # Create them under a private directory with a restrictive umask, and
+    # remove the target before a retry so an older permissive mode cannot
+    # survive shell redirection. On systems with NFSv4-style ACLs (notably
+    # macOS), chmod alone does not revoke inherited grants, so strip those
+    # ACLs before applying and verifying the private mode. POSIX ACLs are
+    # constrained by the mode bits, and setfacl removes any residual entries
+    # where available. Reject a symlinked or foreign-owned leaf directory
+    # before writing beneath a shared temp root.
+    cmd = (
+        "umask 077 && "
+        f"[ ! -L {quoted_dir} ] && mkdir -p {quoted_dir} && "
+        f"[ -O {quoted_dir} ] && "
+        f"if [ \"$(uname -s 2>/dev/null)\" = Darwin ]; then "
+        f"chmod -N {quoted_dir}; "
+        "elif command -v setfacl >/dev/null 2>&1; then "
+        f"setfacl -b -k {quoted_dir}; fi && "
+        f"chmod 700 {quoted_dir} && "
+        f"rm -f {quoted_path} && cat > {quoted_path} && "
+        f"if [ \"$(uname -s 2>/dev/null)\" = Darwin ]; then "
+        f"chmod -N {quoted_path}; "
+        "elif command -v setfacl >/dev/null 2>&1; then "
+        f"setfacl -b {quoted_path}; fi && "
+        f"chmod 600 {quoted_path} && "
+        f"mode=$(stat -c '%a' {quoted_path} 2>/dev/null || "
+        f"stat -f '%Lp' {quoted_path} 2>/dev/null) && [ \"$mode\" = 600 ]"
+    )
     if env.execute(cmd, timeout=30, stdin_data=content).get("returncode", 1) != 0:
         return False
 

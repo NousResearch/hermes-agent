@@ -265,7 +265,7 @@ class TestMaybePersistToolResult:
             threshold=30_000,
         )
         cmd = env.execute.call_args_list[1][0][0]
-        target = cmd.split("cat > ", 1)[1].split(" <<", 1)[0]
+        target = cmd.split("cat > ", 1)[1].split(" &&", 1)[0]
 
         from tools.tool_result_storage import STORAGE_DIR
 

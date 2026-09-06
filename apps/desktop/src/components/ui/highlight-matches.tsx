@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-import { normalize } from '@/lib/text'
+import { normalize, searchFold } from '@/lib/text'
 import { cn } from '@/lib/utils'
 
 /**
@@ -13,9 +13,14 @@ import { cn } from '@/lib/utils'
  * The query must mirror the surface's OWN filter semantics, or the emphasis
  * lies about why a row matched:
  * - a string for literal-substring filters (the model pickers) — spaces and
- *   all, exactly what `.includes()` saw;
+ *   all, exactly what the filter saw, after the shared `searchFold` runs on
+ *   BOTH sides (separators -_. and case stop mattering, mirroring
+ *   `foldIncludes` — a hyphen query must light up the spaced label);
  * - a string[] for per-term AND matchers (the command palette) — every term
  *   is marked wherever it occurs, overlapping/adjacent ranges merged.
+ *
+ * The fold is length-preserving, so ranges found in the folded text index
+ * the original unchanged — marks slice the original characters.
  */
 export function HighlightMatches({
   className,
@@ -32,7 +37,7 @@ export function HighlightMatches({
     return <>{text}</>
   }
 
-  const ranges = matchRanges(text.toLowerCase(), terms)
+  const ranges = matchRanges(searchFold(text), terms.map(searchFold))
 
   if (ranges.length === 0) {
     // No occurrence (the row matched on its id/slug/keywords, not this label).

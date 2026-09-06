@@ -2929,18 +2929,12 @@ def _try_fast_serve_launch() -> bool:
     if os.environ.get("HERMES_DISABLE_FAST_SERVE_LAUNCH") == "1":
         return False
 
-    # =========================================================================
-    # feature command — feature pipeline management
-    # =========================================================================
-    from hermes_cli.feature import build_parser as _build_feature_parser
-
-    feature_parser = _build_feature_parser(subparsers)
-    feature_parser.set_defaults(func=cmd_feature)
-
-    # =========================================================================
-    # project command — named, multi-folder workspaces
-    # =========================================================================
-    from hermes_cli.projects_cmd import build_parser as _build_project_parser
+    # KENSEI CUSTOM (restored): upstream's serve-guard was lost in the merge — without it
+    # the fast path ran for EVERY invocation and referenced out-of-scope names. Also
+    # removed a misplaced feature-parser fragment that referenced undefined `subparsers`.
+    argv = sys.argv[1:]
+    if not argv or argv[0] != "serve" or "-h" in argv or "--help" in argv:
+        return False
 
     # Container routing is top-level policy and must run before host dispatch.
     try:

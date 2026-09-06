@@ -3432,6 +3432,8 @@ export const ru = defineLocale({
     unlockHeight: 'Unlock height',
     lockColumnWidth: 'Lock column width',
     unlockColumnWidth: 'Unlock column width',
+    lockPane: 'Lock pane',
+    unlockPane: 'Unlock pane',
     closeRunningTitle: 'Закрыть работающую вкладку?',
     closeRunningBody:
       'Этот чат ещё работает (или ждёт вашего ввода). Закрытие вкладки скроет его — сеанс сохранит прогресс и можно будет открыть снова из боковой панели.',

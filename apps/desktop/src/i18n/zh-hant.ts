@@ -2925,6 +2925,8 @@ export const zhHant = defineLocale({
     unlockHeight: 'Unlock height',
     lockColumnWidth: 'Lock column width',
     unlockColumnWidth: 'Unlock column width',
+    lockPane: 'Lock pane',
+    unlockPane: 'Unlock pane',
     reload: '重新載入',
     closeOthers: '關閉其他',
     closeToRight: '關閉右側',

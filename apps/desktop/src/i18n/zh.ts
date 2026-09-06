@@ -3573,6 +3573,8 @@ export const zh: Translations = {
     unlockHeight: 'Unlock height',
     lockColumnWidth: 'Lock column width',
     unlockColumnWidth: 'Unlock column width',
+    lockPane: 'Lock pane',
+    unlockPane: 'Unlock pane',
     closeRunningTitle: '关闭正在运行的标签？',
     closeRunningBody: '此对话仍在运行（或正在等待你的输入）。关闭标签只会隐藏它——会话将保留进度，可从侧边栏重新打开。',
     closeRunningConfirm: '关闭标签',

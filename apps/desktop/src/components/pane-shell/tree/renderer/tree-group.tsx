@@ -30,7 +30,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
-import { getPaneStateSnapshot, setPaneHeightLock, setPaneWidthLock } from '@/store/panes'
+import { $paneState, getPaneStateSnapshot, setPaneHeightLock, setPaneWidthLock } from '@/store/panes'
 import { closeAllOpenSessionTiles } from '@/store/session-states'
 
 import { $layoutEditMode } from '../../edit-mode'
@@ -547,6 +547,57 @@ export function TreeGroup({
   // the zone and take the tab with it.
   const toggleCollapse = () => (node.minimized ? restoreTreePane(activeId) : collapseTreePane(activeId))
 
+  // The edit-veil lock toggle — one corner button that pins/unpins the pane's
+  // lockable axes (row ancestor → width, column ancestor → height; a
+  // column-within-row pane locks both). Same axis contract as the zone menu,
+  // but a single icon so a lone chromeless pane (the chat) still gets a lock
+  // handle that doesn't depend on a visible tab strip.
+  const lockableAxes = {
+    width: Boolean(lockAxisRow),
+    height: Boolean(lockAxisColumn)
+  }
+
+  const lockable = lockableAxes.width || lockableAxes.height
+  const paneLock = useStore($paneState(activeId))
+  const lockedWidth = Boolean(paneLock?.lockWidth)
+  const lockedHeight = Boolean(paneLock?.lockHeight)
+  const isLocked = (lockableAxes.width && lockedWidth) || (lockableAxes.height && lockedHeight)
+
+  const togglePaneLock = () => {
+    const targetId = activeId
+    const zoneEl = document.querySelector<HTMLElement>(`[data-tree-group="${node.id}"]`)
+    const next = !isLocked
+
+    if (lockableAxes.width) {
+      // Shared-column width lock: lock the column's width for every zone in it
+      // so the column keeps one width and neither child overrides the other.
+      const sharedColumn = parentAxis === 'column'
+      const columnPaneIds = sharedColumn ? columnPaneIdsForGroup(node.id) : null
+
+      if (columnPaneIds) {
+        const colSplitEl = zoneEl?.closest<HTMLElement>('[data-tree-split]')
+
+        const fixedWidth = colSplitEl
+          ? colSplitEl.getBoundingClientRect().width
+          : zoneEl
+            ? zoneEl.getBoundingClientRect().width
+            : undefined
+
+        for (const pid of columnPaneIds) {
+          setPaneWidthLock(pid, next, fixedWidth)
+        }
+      } else {
+        const fixedWidth = zoneEl ? zoneEl.getBoundingClientRect().width : undefined
+        setPaneWidthLock(targetId, next, fixedWidth)
+      }
+    }
+
+    if (lockableAxes.height) {
+      const fixedHeight = zoneEl ? zoneEl.getBoundingClientRect().height : undefined
+      setPaneHeightLock(targetId, next, fixedHeight)
+    }
+  }
+
   // Same menu on the header strip and the edit veil — one prop bag.
   const zoneMenu = {
     closable,
@@ -891,6 +942,21 @@ export function TreeGroup({
               <Codicon className="shrink-0" name="gripper" size="0.8125rem" />
               <span className="min-w-0 truncate">{active?.title ?? activeId}</span>
             </span>
+            {lockable && (
+              <button
+                aria-label={isLocked ? t.zones.unlockPane : t.zones.lockPane}
+                className="absolute right-2 top-2 grid size-6 place-items-center rounded-md text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground"
+                onClick={e => {
+                  e.stopPropagation()
+                  togglePaneLock()
+                }}
+                onPointerDown={e => e.stopPropagation()}
+                title={isLocked ? t.zones.unlockPane : t.zones.lockPane}
+                type="button"
+              >
+                <Codicon name={isLocked ? 'lock' : 'unlock'} size="0.875rem" />
+              </button>
+            )}
           </div>
         </ZoneMenu>
       )}

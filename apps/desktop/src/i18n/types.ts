@@ -2967,6 +2967,8 @@ export interface Translations {
     unlockHeight: string
     lockColumnWidth: string
     unlockColumnWidth: string
+    lockPane: string
+    unlockPane: string
     closeRunningTitle: string
     closeRunningBody: string
     closeRunningConfirm: string

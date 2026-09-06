@@ -3030,6 +3030,8 @@ export const ja = defineLocale({
     unlockHeight: 'Unlock height',
     lockColumnWidth: 'Lock column width',
     unlockColumnWidth: 'Unlock column width',
+    lockPane: 'Lock pane',
+    unlockPane: 'Unlock pane',
     reload: '再読み込み',
     closeOthers: '他を閉じる',
     closeToRight: '右側を閉じる',

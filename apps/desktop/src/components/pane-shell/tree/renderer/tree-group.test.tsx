@@ -7,6 +7,7 @@ import { registry } from '@/contrib/registry'
 import { $paneStates, getPaneStateSnapshot } from '@/store/panes'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
+import { $layoutEditMode } from '../../edit-mode'
 import type { GroupNode } from '../model'
 import { group, split } from '../model'
 import { $layoutTree, $treeDragging, declareDefaultTree, NEW_SESSION_DRAG, SESSION_TILE_DRAG } from '../store'
@@ -63,6 +64,7 @@ afterEach(() => {
   disposers.splice(0).forEach(d => d())
   $paneStates.set({})
   $layoutTree.set(null)
+  $layoutEditMode.set(false)
   root = null
   container = null
   disposePane = null
@@ -280,6 +282,85 @@ describe('TreeGroup', () => {
       const snap = getPaneStateSnapshot('sidebar')
       expect(snap?.lockWidth).toBe(true)
       expect(snap?.lockedWidth).toBe(420)
+    })
+  })
+
+  describe('edit-mode veil lock toggle', () => {
+    const sidebarGroup = (): GroupNode => ({
+      active: 'sidebar',
+      id: 'sidebar-zone',
+      minimized: false,
+      panes: ['sidebar'],
+      tabStrip: 'always',
+      type: 'group'
+    })
+
+    it('renders a lock button on a lockable pane in edit mode', async () => {
+      vi.stubGlobal('CSS', { escape: (value: string) => value })
+      disposers.push(
+        registry.register({
+          area: 'panes',
+          data: { width: '237px' },
+          id: 'sidebar',
+          render: () => <div>Sidebar</div>,
+          title: 'Sidebar'
+        })
+      )
+      declareDefaultTree(split('row', [group(['sidebar'], { id: 'sidebar-zone' })]))
+      $layoutEditMode.set(true)
+      render(<TreeGroup lockAxisRow node={sidebarGroup()} parentAxis="row" />)
+
+      expect(await screen.findByRole('button', { name: /lock pane/i })).toBeTruthy()
+    })
+
+    it('does not render a lock button on a pane with no lockable axis', async () => {
+      vi.stubGlobal('CSS', { escape: (value: string) => value })
+      disposers.push(
+        registry.register({
+          area: 'panes',
+          data: { width: '237px' },
+          id: 'sidebar',
+          render: () => <div>Sidebar</div>,
+          title: 'Sidebar'
+        })
+      )
+      declareDefaultTree(group(['sidebar'], { id: 'sidebar-zone' }))
+      $layoutEditMode.set(true)
+      render(<TreeGroup node={sidebarGroup()} />)
+
+      expect(screen.queryByRole('button', { name: /lock pane/i })).toBeNull()
+    })
+
+    it('toggles the width lock when the corner button is clicked', async () => {
+      vi.stubGlobal('CSS', { escape: (value: string) => value })
+      disposers.push(
+        registry.register({
+          area: 'panes',
+          data: { width: '237px' },
+          id: 'sidebar',
+          render: () => <div>Sidebar</div>,
+          title: 'Sidebar'
+        })
+      )
+      declareDefaultTree(split('row', [group(['sidebar'], { id: 'sidebar-zone' })]))
+      $layoutEditMode.set(true)
+      render(<TreeGroup lockAxisRow node={sidebarGroup()} parentAxis="row" />)
+
+      const zoneEl = document.querySelector<HTMLElement>('[data-tree-group="sidebar-zone"]')!
+      Object.defineProperty(zoneEl, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({ height: 600, width: 420, ...{ toJSON: () => ({}) } })
+      })
+
+      fireEvent.click(await screen.findByRole('button', { name: /lock pane/i }))
+
+      expect(getPaneStateSnapshot('sidebar')?.lockWidth).toBe(true)
+      expect(getPaneStateSnapshot('sidebar')?.lockedWidth).toBe(420)
+
+      // The button flips to the unlock action.
+      fireEvent.click(await screen.findByRole('button', { name: /unlock pane/i }))
+
+      expect(getPaneStateSnapshot('sidebar')?.lockWidth).toBeUndefined()
     })
   })
 

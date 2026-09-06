@@ -61,6 +61,18 @@ beforeEach(() => {
 })
 
 describe('opening a room', () => {
+  it('gives member replies a bordered assistant flashcard distinct from user prompts', async () => {
+    const room = await loadRoom()
+    const agent = room.view.groupMessageCardPresentation(false)
+    const user = room.view.groupMessageCardPresentation(true)
+
+    expect(agent.slot).toBe('bot-group-agent-card')
+    expect(agent.className).toContain('border-l-4')
+    expect(agent.className).toContain('ui-chat-bubble-opaque-background')
+    expect(user.slot).toBe('bot-group-user-card')
+    expect(user.className).not.toContain('border-l-4')
+  })
+
   it('follows the main-window tab open and close', async () => {
     const room = await loadRoom()
     let onClose: () => void = () => undefined

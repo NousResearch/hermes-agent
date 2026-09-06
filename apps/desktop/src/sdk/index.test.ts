@@ -4,6 +4,44 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import { host } from '@/sdk'
 import { setActiveSessionId, setAwaitingResponse, setBusy } from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
+import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
+
+describe('host.agentActivity', () => {
+  afterEach(() => $subagentsBySession.set({}))
+
+  it('namespaces plugin work in the shared Agents store and clears only that scope', () => {
+    upsertSubagent('native-session', {
+      goal: 'native work',
+      status: 'running',
+      subagent_id: 'native-1'
+    })
+
+    host.agentActivity.update('bot-group:leadership', {
+      goal: 'ceo → cto · Leadership',
+      id: 'handoff-1',
+      status: 'running',
+      text: 'cto started work'
+    })
+
+    const scope = 'plugin:bot-group:leadership'
+    expect($subagentsBySession.get()[scope]?.[0]).toMatchObject({
+      goal: 'ceo → cto · Leadership',
+      status: 'running'
+    })
+
+    host.agentActivity.update('bot-group:leadership', {
+      createIfMissing: false,
+      id: 'handoff-1',
+      status: 'completed',
+      summary: 'Replied in Leadership'
+    })
+    expect($subagentsBySession.get()[scope]?.[0]?.status).toBe('completed')
+
+    host.agentActivity.clear('bot-group:leadership')
+    expect($subagentsBySession.get()[scope]).toBeUndefined()
+    expect($subagentsBySession.get()['native-session']).toHaveLength(1)
+  })
+})
 
 describe('host.state turn flags', () => {
   afterEach(() => {

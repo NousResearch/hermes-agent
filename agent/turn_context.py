@@ -839,6 +839,15 @@ def build_turn_context(
     bind_image_token_cost(agent)
     # Append the user message now that close persistence is safe.
     append_message(messages, user_msg)
+    
+    # Fold pending async-delegation completions for stateless clients (#104582).
+    # Persistent platforms (TUI/CLI/Desktop) already see completions via conversation_history;
+    # stateless API endpoints derive session from fingerprint but build context from body messages
+    # each turn. The repair belt merges DB delivery rows into `messages` so the model sees them.
+    from agent.turn_context_delivery_repair import _fold_pending_delegation_completions
+    
+    _fold_pending_delegation_completions(agent, messages, agent.session_id)
+    
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
 

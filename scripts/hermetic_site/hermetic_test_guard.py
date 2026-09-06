@@ -1070,6 +1070,17 @@ def _install_process_guards() -> None:
         numeric_sig = int(sig)
         if numeric_sig == 0:
             return real_kill(pid, sig, *args, **kwargs)
+        if (
+            os.environ.get("HERMES_TEST_OS_SANDBOX") == "linux-bwrap"
+            and numeric_pid > 1
+        ):
+            # The private PID namespace is the authoritative boundary here:
+            # every visible positive PID except namespace init is test-owned.
+            # Permit the kernel call even when the target exited between the
+            # caller's liveness check and os.kill(); that race must surface as
+            # ProcessLookupError rather than a false hermetic violation. PID 1
+            # remains reserved for the deliberate foreign-PID regression.
+            return real_kill(pid, sig, *args, **kwargs)
         if numeric_pid > 0 and _is_test_process(numeric_pid):
             return real_kill(pid, sig, *args, **kwargs)
         if numeric_pid == 0 and os.getpgrp() == _root_pid():

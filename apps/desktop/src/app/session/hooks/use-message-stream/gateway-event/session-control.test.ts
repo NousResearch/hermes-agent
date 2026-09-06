@@ -1,10 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import {
-  $sessionControlBySession,
-  resetSessionControlForTests,
-  type SessionControlSnapshot
-} from '@/store/session-control'
+import { $sessionControlBySession, clearAllSessionControl, type SessionControlSnapshot } from '@/store/session-control'
 
 import { handleControlEvent } from './session-control'
 import type { GatewayEventContext } from './types'
@@ -34,7 +30,7 @@ function context(overrides: Partial<GatewayEventContext> = {}): GatewayEventCont
 
 describe('handleControlEvent', () => {
   afterEach(() => {
-    resetSessionControlForTests()
+    clearAllSessionControl()
   })
 
   it('does not claim non-control events', () => {

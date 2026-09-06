@@ -3147,9 +3147,25 @@ def _requeue_pending_steer(agent, steer_text: str) -> None:
 
 
 def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:
-    """Append pending /steer text to the last ``role:"tool"`` message of this batch (bounded by
-    ``num_tool_msgs``), marked as user-origin. Modifies existing content only, so role
-    alternation is preserved."""
+    """Persist any pending /steer text as a standalone user message.
+
+    Called at the end of a tool-call batch, before the next API call.
+
+    The steer is emitted as a NEW ``role:"user"`` message appended after the
+    last tool result (marker text included), so:
+
+    - the model still sees the self-describing out-of-band marker (same text,
+      same provenance semantics);
+    - message-role alternation stays legal — ``assistant(tool_calls) → tool →
+      user`` is the documented "user jumped in mid-run" pattern that
+      ``repair_message_sequence`` deliberately keeps;
+    - the appended dict carries no ``_DB_PERSISTED_MARKER`` yet, so the next
+      ``_flush_messages_to_session_db`` writes it to the session store — the
+      steer text finally becomes part of the durable transcript instead of
+      being smeared onto an already-persisted tool row that append-only
+      persistence never rewrites (replayed histories then diverge from the
+      live request bytes and break the provider prompt cache).
+    """
     if num_tool_msgs <= 0 or not messages:
         return
     steer_text = agent._drain_pending_steer()
@@ -3159,22 +3175,17 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     tail = range(len(messages) - 1, max(len(messages) - num_tool_msgs - 1, -1), -1)
     target = next((messages[j] for j in tail if isinstance(messages[j], dict) and messages[j].get("role") == "tool"), None)
     if target is None:
-        # No tool result in this batch (e.g. all skipped by interrupt).
+        # No tool result in this batch (e.g. all skipped by interrupt);
+        # requeue so the fallback path delivers it as a normal next-turn
+        # user message (which persists like any other user turn).
         _requeue_pending_steer(agent, steer_text)
         return
     marker = format_steer_marker(steer_text)
-    existing_content = target.get("content", "")
-    if isinstance(existing_content, str):
-        target["content"] = existing_content + marker
-    else:
-        # Anthropic multimodal content blocks: preserve them and append a text block.
-        try:
-            target["content"] = [*(existing_content or []), {"type": "text", "text": marker.lstrip()}]
-        except Exception:
-            # Fall back to string replacement if content shape is unexpected.
-            target["content"] = f"{existing_content}{marker}"
+    # Append a standalone user message instead of rewriting the persisted
+    # tool row's content.
+    messages.append({"role": "user", "content": marker})
     _ra().logger.info(
-        "Delivered /steer to agent after tool batch (%d chars): %s", len(steer_text),
+        "Delivered /steer to agent after tool batch (%d chars) as new user message: %s", len(steer_text),
         steer_text[:120] + ("..." if len(steer_text) > 120 else ""),
     )
 

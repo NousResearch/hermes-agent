@@ -562,7 +562,13 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     started = time.time()
     try:
         proc = subprocess.run(
+            # encoding pinned to UTF-8 on both pipes: the browser-use CLI speaks UTF-8 (stdin code in,
+            # output out), and text=True without encoding would decode under the Windows ANSI code page
+            # (cp1252/cp936) — crashing the reader thread on any non-ASCII byte (#87152) and crashing the
+            # CLI itself when GBK-encoded code reaches its UTF-8 stdin (#103973). install_cli below already
+            # pins the same pair.
             cmd, input=code, capture_output=True, text=True, timeout=timeout, env=env,
+            encoding="utf-8", errors="replace",
             **_windows_popen_kwargs(),
         )
     except subprocess.TimeoutExpired:

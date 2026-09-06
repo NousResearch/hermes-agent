@@ -612,6 +612,10 @@ def summarize_background_review_actions(
 
         if verbose:
             action = detail.get("action", "")
+            # For batch skill_manage, action lives inside each operation item
+            if not action and operations:
+                first_op = operations[0] if isinstance(operations[0], dict) else {}
+                action = first_op.get('action', '')
             content = detail.get("content", "")
             old_text = detail.get("old_text", "")
             skill_name = detail.get("name", "")

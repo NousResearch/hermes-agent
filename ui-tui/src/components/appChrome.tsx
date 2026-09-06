@@ -120,11 +120,13 @@ export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean):
 }
 
 function FaceTicker({
+  active = true,
   color,
   startedAt,
   style,
   verbOverride
 }: {
+  active?: boolean
   color: string
   startedAt?: null | number
   style: IndicatorStyle
@@ -152,7 +154,10 @@ function FaceTicker({
     // is revealed again and re-seeds `now` from the wall clock, so the elapsed
     // read-out resumes live rather than frozen at the moment it was covered.
     // See `$isStatusRuleOccluded` for why this is NOT `$isBlocked`.
-    if (isOccluded) {
+    // Paused when inactive too (idle turn unmounts us, but this also guards
+    // programmatic renders) so the glyph, 1s clock, and 2.5s verb timers
+    // never tick in the background.
+    if (!active || isOccluded) {
       return
     }
 
@@ -173,7 +178,7 @@ function FaceTicker({
         clearInterval(verb)
       }
     }
-  }, [displayVerb, freezeVerb, intervalMs, isOccluded])
+  }, [active, displayVerb, freezeVerb, intervalMs, isOccluded])
 
   const { frame } = renderIndicator(style, tick)
   const verb = verbOverride ?? VERBS[verbTick % VERBS.length] ?? ''
@@ -682,6 +687,7 @@ export function StatusRule({
           ) : null}
           {busy ? (
             <FaceTicker
+              active={busy}
               color={statusColor}
               startedAt={turnStartedAt}
               style={indicatorStyle}

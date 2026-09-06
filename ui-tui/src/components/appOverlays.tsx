@@ -381,9 +381,30 @@ export function FloatingOverlays({
     })
   }
 
+  // Small-terminal overflow guard: stacked floating panels overdraw and push
+  // content off-screen. Render only the topmost overlay by priority and let
+  // the rest wait their turn.
+  // Priority (highest first): pager > skills-hub > plugins-hub >
+  // model-picker > pet-picker > sessions (covers the old picker/agentList) >
+  // completions.
+  const topmost = pager
+    ? 'pager'
+    : overlay.skillsHub
+      ? 'skills-hub'
+      : overlay.pluginsHub
+        ? 'plugins-hub'
+        : overlay.modelPicker
+          ? 'model-picker'
+          : overlay.petPicker
+            ? 'pet-picker'
+            : overlay.sessions
+              ? 'sessions'
+              : 'completions'
+  const visibleWidgets = widgets.filter(w => w.id === topmost)
+
   return (
     <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
-      <WidgetGrid cols={cols} columns={1} gap={0} paddingX={0} paddingY={0} rowGap={0} widgets={widgets} />
+      <WidgetGrid cols={cols} columns={1} gap={0} paddingX={0} paddingY={0} rowGap={0} widgets={visibleWidgets} />
     </Box>
   )
 }

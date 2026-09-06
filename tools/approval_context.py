@@ -8,7 +8,7 @@ gate in :mod:`tools.approval`.
 import contextvars
 import logging
 import os
-from hermes_cli.config import cfg_get
+import time
 from utils import env_var_enabled, is_truthy_value
 
 logger = logging.getLogger("tools.approval")
@@ -196,6 +196,12 @@ def _should_fall_through_to_cli_approval(*, is_cli: bool, approval_callback, not
 
 _VALID_MODES = ("manual", "smart", "off")
 
+# mtime/TTL cache for the approvals config block (~5s). Avoids a YAML
+# parse per terminal command; load_config_readonly() itself is mtime-cached
+# but this skips even the merge/copy on hot paths.
+_APPROVAL_CONFIG_TTL_S = 5.0
+_APPROVAL_CONFIG_CACHE: dict = {"key": None, "at": 0.0, "value": {}}
+
 
 def _normalize_approval_mode(mode) -> str:
     """Normalize approval mode values loaded from YAML/config. YAML 1.1 parses a
@@ -216,10 +222,29 @@ def _normalize_approval_mode(mode) -> str:
 
 def _get_approval_config() -> dict:
     """Read the approvals config block: the LIVE config-cache sub-dict
-    (load_config_readonly contract) — callers must not mutate it or any nested structure."""
+    (load_config_readonly contract) — callers must not mutate it or any nested structure.
+
+    mtime/size + ~5s TTL cached so per-terminal-command checks don't re-parse
+    YAML every call. Returns a copy; callers must not mutate the result."""
+    global _APPROVAL_CONFIG_CACHE
     try:
         from hermes_cli.config import load_config_readonly
-        return load_config_readonly().get("approvals", {}) or {}
+        from hermes_constants import get_hermes_home
+        now = time.monotonic()
+        cached = _APPROVAL_CONFIG_CACHE
+        try:
+            st = (get_hermes_home() / "config.yaml").stat()
+            cfg_key = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            cfg_key = None
+        if (isinstance(cached.get("value"), dict) and cached.get("key") == cfg_key
+                and cfg_key is not None and (now - cached.get("at", 0.0)) < _APPROVAL_CONFIG_TTL_S):
+            return dict(cached["value"])
+        value = load_config_readonly().get("approvals", {}) or {}
+        if not isinstance(value, dict):
+            value = {}
+        _APPROVAL_CONFIG_CACHE = {"key": cfg_key, "at": now, "value": dict(value)}
+        return dict(value)
     except Exception as e:
         logger.warning("Failed to load approval config: %s", e)
         return {}
@@ -260,8 +285,7 @@ def _get_approval_timeout() -> int:
 def _binary_approval_mode(key: str) -> str:
     """Read ``approvals.<key>`` as 'approve' or 'deny' (default deny)."""
     try:
-        from hermes_cli.config import load_config_readonly
-        mode = str(cfg_get(load_config_readonly(), "approvals", key, default="deny")).lower().strip()
+        mode = str(_get_approval_config().get(key, "deny")).lower().strip()
         return "approve" if mode in {"approve", "off", "allow", "yes"} else "deny"
     except Exception:
         return "deny"

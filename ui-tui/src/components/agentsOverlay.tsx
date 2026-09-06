@@ -316,9 +316,20 @@ function Field({ name, t, value }: { name: string; t: Theme; value: ReactNode })
   )
 }
 
+// Max rows rendered for Tool calls / Output tails before collapsing
+// behind a "show more" toggle (ScrollBox layout blowup guard).
+const DETAIL_LIST_CAP = 50
+
 function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) {
   const { aggregate: agg, item } = node
   const { color, glyph } = statusGlyph(item, t)
+
+  // ScrollBox blowup guard: cap long tool/output tails (see DETAIL_LIST_CAP).
+  const [showAllLists, setShowAllLists] = useState(false)
+
+  useEffect(() => {
+    setShowAllLists(false)
+  }, [node.item.id])
 
   const inputTokens = item.inputTokens ?? 0
   const outputTokens = item.outputTokens ?? 0
@@ -332,6 +343,11 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
   // that stream is often empty even when tool_count > 0, so fall back to
   // the tool names captured in outputTail at subagent.complete time.
   const toolLines = item.tools.length > 0 ? item.tools : outputTail.map(e => e.tool).filter(Boolean)
+
+  const shownTools = showAllLists ? toolLines : toolLines.slice(0, DETAIL_LIST_CAP)
+  const shownOutput = showAllLists ? outputTail : outputTail.slice(0, DETAIL_LIST_CAP)
+  const hiddenTools = toolLines.length - shownTools.length
+  const hiddenOutput = outputTail.length - shownOutput.length
 
   const filesOverflow = Math.max(0, filesRead.length - 8) + Math.max(0, filesWritten.length - 8)
 
@@ -396,17 +412,26 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
 
       {toolLines.length > 0 ? (
         <OverlaySection count={toolLines.length} defaultOpen t={t} title="Tool calls">
-          {toolLines.map((line, i) => (
+          {shownTools.map((line, i) => (
             <Text color={t.color.text} key={i} wrap="wrap">
               <Text color={t.color.muted}>·</Text> {line}
             </Text>
           ))}
+          {hiddenTools > 0 ? (
+            <Box onClick={() => setShowAllLists(true)}>
+              <Text color={t.color.muted}>…+{hiddenTools} more — show more</Text>
+            </Box>
+          ) : showAllLists && toolLines.length > DETAIL_LIST_CAP ? (
+            <Box onClick={() => setShowAllLists(false)}>
+              <Text color={t.color.muted}>show less</Text>
+            </Box>
+          ) : null}
         </OverlaySection>
       ) : null}
 
       {outputTail.length > 0 ? (
         <OverlaySection count={outputTail.length} defaultOpen t={t} title="Output">
-          {outputTail.map((entry, i) => (
+          {shownOutput.map((entry, i) => (
             <Text color={entry.isError ? t.color.error : t.color.text} key={i} wrap="wrap">
               <Text bold color={entry.isError ? t.color.error : t.color.accent}>
                 {entry.tool}
@@ -414,6 +439,15 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
               {entry.preview}
             </Text>
           ))}
+          {hiddenOutput > 0 ? (
+            <Box onClick={() => setShowAllLists(true)}>
+              <Text color={t.color.muted}>…+{hiddenOutput} more — show more</Text>
+            </Box>
+          ) : showAllLists && outputTail.length > DETAIL_LIST_CAP ? (
+            <Box onClick={() => setShowAllLists(false)}>
+              <Text color={t.color.muted}>show less</Text>
+            </Box>
+          ) : null}
         </OverlaySection>
       ) : null}
 

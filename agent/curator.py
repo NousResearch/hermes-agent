@@ -93,41 +93,71 @@ def _load_config() -> Dict[str, Any]:
     return _read_config_section("curator", label="curator")
 
 
-def _config_number(key: str, default, cast):
+@contextlib.contextmanager
+def _single_config_load():
+    """Memoize _load_config() for one gate so N getters cost one YAML read.
+
+    Zero-arg call convention is preserved (tests patch getters/_load_config
+    with zero-arg lambdas); nesting is safe (inner memo wraps the outer one,
+    still a single real read)."""
+    sentinel = object()
+    cached: Any = sentinel
+    real_load = _load_config
+
+    def _once() -> Dict[str, Any]:
+        nonlocal cached
+        if cached is sentinel:
+            cached = real_load()
+        return cached
+
+    glob = globals()
+    prev = glob.get("_load_config", real_load)
+    glob["_load_config"] = _once
     try:
-        return cast(_load_config().get(key, default))
+        yield
+    finally:
+        glob["_load_config"] = prev
+
+
+def _config_number(key: str, default, cast, cfg: Optional[Dict[str, Any]] = None):
+    cfg = cfg if isinstance(cfg, dict) else _load_config()
+    try:
+        return cast(cfg.get(key, default))
     except (TypeError, ValueError):
         return default
 
 
-def is_enabled() -> bool:  # default ON when no config says otherwise
-    return bool(_load_config().get("enabled", True))
+def is_enabled(cfg: Optional[Dict[str, Any]] = None) -> bool:  # default ON when no config says otherwise
+    cfg = cfg if isinstance(cfg, dict) else _load_config()
+    return bool(cfg.get("enabled", True))
 
 
-def get_interval_hours() -> int:
-    return _config_number("interval_hours", DEFAULT_INTERVAL_HOURS, int)
+def get_interval_hours(cfg: Optional[Dict[str, Any]] = None) -> int:
+    return _config_number("interval_hours", DEFAULT_INTERVAL_HOURS, int, cfg)
 
 
-def get_min_idle_hours() -> float:
-    return _config_number("min_idle_hours", DEFAULT_MIN_IDLE_HOURS, float)
+def get_min_idle_hours(cfg: Optional[Dict[str, Any]] = None) -> float:
+    return _config_number("min_idle_hours", DEFAULT_MIN_IDLE_HOURS, float, cfg)
 
 
-def get_stale_after_days() -> int:
-    return _config_number("stale_after_days", DEFAULT_STALE_AFTER_DAYS, int)
+def get_stale_after_days(cfg: Optional[Dict[str, Any]] = None) -> int:
+    return _config_number("stale_after_days", DEFAULT_STALE_AFTER_DAYS, int, cfg)
 
 
-def get_archive_after_days() -> int:
-    return _config_number("archive_after_days", DEFAULT_ARCHIVE_AFTER_DAYS, int)
+def get_archive_after_days(cfg: Optional[Dict[str, Any]] = None) -> int:
+    return _config_number("archive_after_days", DEFAULT_ARCHIVE_AFTER_DAYS, int, cfg)
 
 
-def get_prune_builtins() -> bool:
+def get_prune_builtins(cfg: Optional[Dict[str, Any]] = None) -> bool:
     """Bundled built-ins are curation candidates (ON by default); a suppression list keeps them archived across `hermes update` re-seeds. Hub skills are never pruned."""
-    return bool(_load_config().get("prune_builtins", True))
+    cfg = cfg if isinstance(cfg, dict) else _load_config()
+    return bool(cfg.get("prune_builtins", True))
 
 
-def get_consolidate() -> bool:
+def get_consolidate(cfg: Optional[Dict[str, Any]] = None) -> bool:
     """LLM consolidation pass — OFF by default (prune only, no aux-model fork); ``hermes curator run --consolidate`` overrides per invocation."""
-    return bool(_load_config().get("consolidate", DEFAULT_CONSOLIDATE))
+    cfg = cfg if isinstance(cfg, dict) else _load_config()
+    return bool(cfg.get("consolidate", DEFAULT_CONSOLIDATE))
 
 
 # --- Idle / interval check ---
@@ -143,22 +173,23 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
     """Gates: curator.enabled, not paused, ``last_run_at`` present AND older than interval_hours. First observation seeds
     ``last_run_at`` to now and defers one interval, so a fresh install/update never mutates the library on its first tick.
     ``hermes curator run`` bypasses this; the idle check is the caller's."""
-    if not is_enabled() or is_paused():
-        return False
-    state = load_state()
-    last = _parse_iso(state.get("last_run_at"))
-    now = now or datetime.now(timezone.utc)
-    if last is None:
-        try:
-            state["last_run_at"] = now.isoformat()
-            state["last_run_summary"] = "deferred first run — curator seeded, will run after one interval; use `hermes curator run --dry-run` to preview now"
-            save_state(state)
-        except Exception as e:  # pragma: no cover — best-effort persistence
-            logger.debug("Failed to seed curator last_run_at: %s", e)
-        return False
-    if last.tzinfo is None:
-        last = last.replace(tzinfo=timezone.utc)
-    return (now - last) >= timedelta(hours=get_interval_hours())
+    with _single_config_load():  # one YAML read for is_enabled + get_interval_hours
+        if not is_enabled() or is_paused():
+            return False
+        state = load_state()
+        last = _parse_iso(state.get("last_run_at"))
+        now = now or datetime.now(timezone.utc)
+        if last is None:
+            try:
+                state["last_run_at"] = now.isoformat()
+                state["last_run_summary"] = "deferred first run — curator seeded, will run after one interval; use `hermes curator run --dry-run` to preview now"
+                save_state(state)
+            except Exception as e:  # pragma: no cover — best-effort persistence
+                logger.debug("Failed to seed curator last_run_at: %s", e)
+            return False
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        return (now - last) >= timedelta(hours=get_interval_hours())
 
 
 # --- Automatic state transitions (pure function, no LLM) ---
@@ -195,8 +226,9 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
     from tools import skill_usage as _u
 
     now = now or datetime.now(timezone.utc)
-    stale_cutoff = now - timedelta(days=get_stale_after_days())
-    archive_cutoff = now - timedelta(days=get_archive_after_days())
+    with _single_config_load():  # one YAML read for both cutoffs
+        stale_cutoff = now - timedelta(days=get_stale_after_days())
+        archive_cutoff = now - timedelta(days=get_archive_after_days())
     # Cron-referenced skills are in use by definition (usage only bumps when a
     # job fires, so paused/rare jobs would age them out). Treat as pinned.
     protected = _cron_referenced_skills()
@@ -1076,9 +1108,10 @@ def maybe_run_curator(*, idle_for_seconds: Optional[float] = None, on_summary: O
     """Best-effort: run a curator pass if all gates pass. Returns the result dict if a pass was started, else None. Never raises."""
     try:
         # Idle gating: only enforce when the caller provided a measurement.
-        if not should_run_now() or (idle_for_seconds is not None and idle_for_seconds < get_min_idle_hours() * 3600.0):
-            return None
-        return run_curator_review(on_summary=on_summary)
+        with _single_config_load():  # one YAML read for should_run_now + get_min_idle_hours
+            if not should_run_now() or (idle_for_seconds is not None and idle_for_seconds < get_min_idle_hours() * 3600.0):
+                return None
+            return run_curator_review(on_summary=on_summary)
     except Exception as e:
         logger.debug("maybe_run_curator failed: %s", e, exc_info=True)
         return None

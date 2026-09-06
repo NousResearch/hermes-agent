@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -17,6 +18,12 @@ logger = logging.getLogger(__name__)
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 _skill_commands_platform: Optional[str] = None
 _skill_commands_home: Optional[str] = None
+# mtime/TTL validity cache for the SKILL.md rescan: within the TTL *and* with
+# unchanged scan-root mtimes, get_skill_commands() returns the cached map
+# instead of re-walking every SKILL.md on disk.
+_SKILL_COMMANDS_TTL_S = 30.0
+_skill_commands_scanned_at: float = 0.0
+_skill_commands_dir_key: Any = None
 # Guards the (map, platform-tag, home-tag) triple so publication and the
 # freshness lookup always see a consistent snapshot. Scanning stays outside.
 _publish_lock = threading.Lock()
@@ -323,6 +330,39 @@ def _scaffold_header(
 _SCAN_SKIP_PARTS = {'.git', '.github', '.hub', '.archive'}
 
 
+def _skill_scan_dir_key() -> Any:
+    """Cheap fingerprint of skill scan roots (path + dir mtime + cwd).
+
+    Project roots depend on the cwd, so it joins the key: a ``cd`` forces a
+    rescan. File *edits* don't bump dir mtime — the TTL bounds that
+    staleness. None when the roots can't be determined (fail-safe: rescan).
+    """
+    try:
+        from tools.skills_tool import _skills_dir
+        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
+        roots = []
+        try:
+            skills_dir = _skills_dir()
+            if skills_dir.exists():
+                roots.append(skills_dir)
+        except Exception:
+            pass
+        roots.extend(get_external_skills_dirs())
+        try:
+            roots.extend(get_project_skills_dirs())
+        except Exception:
+            pass
+        key = [os.getcwd()]
+        for d in roots:
+            try:
+                key.append((str(d), Path(d).stat().st_mtime_ns))
+            except OSError:
+                key.append((str(d), -1))
+        return tuple(key)
+    except Exception:
+        return None
+
+
 def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dict[str, Dict[str, Any]], resolve_command) -> None:
     """Register one SKILL.md in *commands* (no-op when filtered or colliding)."""
     from tools.skills_tool import _parse_frontmatter, skill_matches_platform, skill_matches_environment
@@ -366,6 +406,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     global exposed partial results to overlapping scans, which then logged
     bogus "already claimed" collisions against their own incumbents."""
     global _skill_commands, _skill_commands_platform, _skill_commands_home
+    global _skill_commands_scanned_at, _skill_commands_dir_key
     platform = _resolve_skill_commands_platform()
     home = _resolve_skill_commands_home()
     # Build into a local map and publish once, at the end. Writing straight into the global made a scan's
@@ -410,6 +451,8 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         _skill_commands = commands
         _skill_commands_platform = platform
         _skill_commands_home = home
+        _skill_commands_scanned_at = time.monotonic()
+        _skill_commands_dir_key = _skill_scan_dir_key()
     return commands
 
 
@@ -426,6 +469,16 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     with _publish_lock:
         commands = _skill_commands
         is_fresh = bool(commands) and (_skill_commands_platform, _skill_commands_home) == (current_platform, current_home)
+        if is_fresh:
+            try:
+                fresh = (time.monotonic() - _skill_commands_scanned_at) < _SKILL_COMMANDS_TTL_S
+            except Exception:
+                fresh = False
+            # Within the TTL with unchanged scan-root mtimes the cached map is
+            # returned without re-walking SKILL.md files.
+            if fresh and (dir_key := _skill_scan_dir_key()) is not None and dir_key == _skill_commands_dir_key:
+                return commands
+            is_fresh = False
     # Scan outside the lock — file I/O and deferred imports; concurrent scans
     # are safe since each builds its own map.
     return commands if is_fresh else scan_skill_commands()

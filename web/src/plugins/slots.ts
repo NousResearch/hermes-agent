@@ -194,7 +194,34 @@ export function PluginSlot({ name, fallback }: PluginSlotProps) {
     Fragment,
     null,
     ...entries.map((entry) =>
-      React.createElement(entry.component, { key: entry.plugin }),
+      React.createElement(
+        SlotErrorBoundary,
+        { key: entry.plugin, plugin: entry.plugin },
+        React.createElement(entry.component),
+      ),
     ),
   );
+}
+
+/** Isolates one bad plugin so a throw in its slot component can't crash
+ *  the whole shell — the slot renders nothing (and logs) instead. */
+class SlotErrorBoundary extends React.Component<
+  { children?: React.ReactNode; plugin: string },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: unknown): void {
+    // eslint-disable-next-line no-console
+    console.error(`[plugins] slot component crashed: ${this.props.plugin}`, error);
+  }
+
+  render(): React.ReactNode {
+    if (this.state.failed) return null;
+    return this.props.children ?? null;
+  }
 }

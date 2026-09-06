@@ -68,6 +68,24 @@ _tool_loop = None          # persistent loop for the main (CLI) thread
 _tool_loop_lock = threading.Lock()
 _worker_thread_local = threading.local()  # per-worker-thread persistent loops
 
+# Shared executor for sync->async bridging when a loop is already running
+# (gateway / RL env). Reused across calls instead of a fresh
+# ThreadPoolExecutor(max_workers=1) per tool call.
+_ASYNC_BRIDGE_EXECUTOR = None
+_ASYNC_BRIDGE_EXECUTOR_LOCK = threading.Lock()
+
+
+def _get_async_bridge_executor():
+    """Return the shared bridge executor (created once, never shut down)."""
+    global _ASYNC_BRIDGE_EXECUTOR
+    with _ASYNC_BRIDGE_EXECUTOR_LOCK:
+        if _ASYNC_BRIDGE_EXECUTOR is None:
+            import concurrent.futures
+            _ASYNC_BRIDGE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+                max_workers=8, thread_name_prefix="hermes-async-bridge",
+            )
+        return _ASYNC_BRIDGE_EXECUTOR
+
 
 def _get_tool_loop():
     """Long-lived event loop for async tool handlers on the main thread."""
@@ -95,9 +113,11 @@ def _run_async(coro):
     except RuntimeError:
         loop = None
     if loop and loop.is_running():
-        # Inside a running loop: run in a fresh thread whose loop we keep a
-        # reference to, so on timeout we can cancel the task inside it
-        # (ThreadPoolExecutor.cancel() is a no-op on a running worker).
+        # Inside a running loop: run in a worker thread of the SHARED bridge
+        # executor (not a fresh ThreadPoolExecutor(max_workers=1) per call)
+        # whose loop we keep a reference to, so on timeout we can cancel the
+        # task inside it (ThreadPoolExecutor.cancel() is a no-op on a running
+        # worker).
         import concurrent.futures
         worker_loop: Optional[asyncio.AbstractEventLoop] = None
         loop_ready = threading.Event()
@@ -120,7 +140,7 @@ def _run_async(coro):
                     pass
                 worker_loop.close()
 
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        pool = _get_async_bridge_executor()
         # Carry profile + approval/sudo context so get_hermes_home() resolves correctly.
         from tools.thread_context import propagate_context_to_thread
         future = pool.submit(propagate_context_to_thread(_run_in_worker))
@@ -135,8 +155,8 @@ def _run_async(coro):
                 except RuntimeError:
                     pass  # loop already closed
             raise
-        finally:
-            pool.shutdown(wait=False)  # never block the caller on a stuck coroutine
+        # NOTE: shared executor — never shut down here. The previous
+        # per-call pool.shutdown(wait=False) is gone with the per-call pool.
 
     if threading.current_thread() is not threading.main_thread():
         return _get_worker_loop().run_until_complete(coro)

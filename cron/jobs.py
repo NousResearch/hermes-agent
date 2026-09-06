@@ -1276,10 +1276,42 @@ def load_jobs() -> List[Dict[str, Any]]:
     return jobs
 
 
+# Read-path TTL for the peek cache below: bounds how long a corrupt-None
+# (or a stamp that somehow survives a replace) can be served; the stamp
+# itself is the correctness key.
+_PEEK_JOBS_CACHE_TTL_S = 2.0
+_PEEK_JOBS_CACHE: Dict[str, Any] = {"stamp": None, "at": 0.0, "jobs": None}
+
+
 def _peek_jobs_unlocked() -> Optional[List[Dict[str, Any]]]:
     """Repair-free read under ``_jobs_lock()``: ``[]`` if missing, ``None`` if corrupt (never
-    shrink-merge against an unknown baseline). Never saves — that would recurse."""
+    shrink-merge against an unknown baseline). Never saves — that would recurse.
+
+    Stamp-keyed + TTL read cache: every writer uses mkstemp+rename so a stamp
+    of (mtime_ns, size, ino) provably identifies the bytes; a match skips the
+    re-parse on the merge/verify hot path. Invalidated (never refreshed) on
+    save, mirroring the load-stamp rule."""
+    global _PEEK_JOBS_CACHE
     jobs_file = _current_cron_store().jobs_file
+    stamp = _jobs_file_stamp(jobs_file)
+    cached = _PEEK_JOBS_CACHE
+    if (stamp is not None and cached.get("stamp") == stamp
+            and (time.monotonic() - cached.get("at", 0.0)) < _PEEK_JOBS_CACHE_TTL_S):
+        found = cached.get("jobs", _MISSING)
+        return list(found) if isinstance(found, list) else found
+    result = _peek_jobs_uncached(jobs_file)
+    _PEEK_JOBS_CACHE = {"stamp": stamp, "at": time.monotonic(), "jobs": result}
+    return list(result) if isinstance(result, list) else result
+
+
+def _invalidate_peek_cache() -> None:
+    """Drop the peek cache (invalidate, never refresh: a refresh would let a
+    nested save certify disk against an OUTER caller's stale payload)."""
+    global _PEEK_JOBS_CACHE
+    _PEEK_JOBS_CACHE = {"stamp": None, "at": 0.0, "jobs": _MISSING}
+
+
+def _peek_jobs_uncached(jobs_file: Path) -> Optional[List[Dict[str, Any]]]:
     if not jobs_file.exists():
         return []
     try:
@@ -1422,9 +1454,11 @@ def _save_jobs_unlocked(
             # Invalidate (never refresh) the stamp: a refresh would let a nested save certify disk
             # against an OUTER caller's stale payload. Later saves take the full merge (fail-safe).
             _record_load_stamp(None)
+            _invalidate_peek_cache()
             return
     except BaseException:
         _unlink_quiet(tmp_path)
+        _invalidate_peek_cache()
         raise
 
 

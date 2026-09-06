@@ -528,6 +528,16 @@ CREATE INDEX IF NOT EXISTS idx_sessions_system_prompt_hash
 -- a small candidate set before compression-chain and preview hydration.
 CREATE INDEX IF NOT EXISTS idx_sessions_effective_activity
     ON sessions(COALESCE(last_activity_at, started_at) DESC, started_at DESC);
+-- Prune-path covering index: prune_sessions() filters on started_at range +
+-- ended_at IS NOT NULL (+ optional source). Range head on started_at.
+-- Post-reconcile: pre-reconcile tables on old DBs may lack the columns.
+CREATE INDEX IF NOT EXISTS idx_sessions_prune ON sessions(started_at, ended_at, source);
+-- Ghost-prune partial index for prune_empty_ghost_sessions() (source + title
+-- IS NULL + ended_at IS NOT NULL): title is reconciler-added, so this must
+-- live post-reconcile, not in SCHEMA_SQL. Startup-safe: IF NOT EXISTS.
+CREATE INDEX IF NOT EXISTS idx_sessions_ghost_prune
+    ON sessions(source, started_at)
+    WHERE title IS NULL AND ended_at IS NOT NULL;
 """
 
 

@@ -282,14 +282,24 @@ class SessionMaintenanceMixin:
                                 if self._write_guards_reject(conn, sid, allow_closed_compression_parent=True)}
             if not session_ids:
                 return 0
-            conn.execute(f"UPDATE sessions SET parent_session_id = NULL "
-                         f"WHERE parent_session_id IN ({_placeholders(session_ids)})", list(session_ids))
-            for sid in session_ids:
-                conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
-                conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
-                removed_ids.append(sid)
+            # Orphan any sessions whose parent is about to be deleted
+            # (chunked IN-lists: SQLite caps bound variables), then batched
+            # set-based deletes instead of one DELETE per session.
+            ids = list(session_ids)
+            _CHUNK = 500
+            for i in range(0, len(ids), _CHUNK):
+                chunk = ids[i:i + _CHUNK]
+                conn.execute(f"UPDATE sessions SET parent_session_id = NULL "
+                             f"WHERE parent_session_id IN ({_placeholders(chunk)})", chunk)
+            for i in range(0, len(ids), _CHUNK):
+                chunk = ids[i:i + _CHUNK]
+                conn.execute(f"DELETE FROM messages WHERE session_id IN ({_placeholders(chunk)})", chunk)
+            for i in range(0, len(ids), _CHUNK):
+                chunk = ids[i:i + _CHUNK]
+                conn.execute(f"DELETE FROM sessions WHERE id IN ({_placeholders(chunk)})", chunk)
+                removed_ids.extend(chunk)
             self._delete_unreferenced_system_prompts(conn)
-            return len(session_ids)
+            return len(ids)
         count = self._execute_write(_do)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)

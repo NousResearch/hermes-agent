@@ -8,7 +8,7 @@ import os
 import time
 import uuid
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, List, Optional
 
 try:
@@ -90,6 +90,10 @@ def _initialize_run_state(self, *, store_factory) -> None:
     self._run_idempotency_ids: set[str] = set()
     self._run_stream_subscribers: set[str] = set()
     self._stopping_run_ids: set[str] = set()
+    # Queued next-turn prompts per run (POST /v1/runs/{id}/queue). Drained
+    # FIFO by the run worker after the current turn finishes, mirroring ACP
+    # queued_prompts.
+    self._run_queues: Dict[str, List[str]] = {}
     (
         self._run_owners, self._run_streams, self._run_streams_created, self._active_run_agents,
         self._active_run_tasks, self._run_statuses, self._run_approval_sessions,
@@ -102,6 +106,7 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
         ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
         ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
         ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
+        ("POST", "/v1/runs/{run_id}/queue", self._handle_queue_run),
         ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run)]
 
 
@@ -572,6 +577,45 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             None, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
         if not isinstance(result, dict):
             result = {}
+        # Drain POST /v1/runs/{id}/queue items FIFO as chained follow-up
+        # turns (mirrors ACP queued_prompts): each queued prompt runs as a
+        # new user turn with prior turns folded into history; usage
+        # accumulates across turns. Skipped when the turn failed or a stop
+        # landed, so a dead run never starts new work.
+        if not result.get("failed") and not (
+                run_id in self._stopping_run_ids and result.get("interrupted") is True):
+            current_message = run.user_message
+            current_history = list(run.conversation_history)
+            final_response = result.get("final_response", "")
+            while True:
+                pending = self._run_queues.get(run_id)
+                if not pending:
+                    break
+                next_prompt = pending.pop(0)
+                current_history = current_history + [
+                    {"role": "user", "content": current_message},
+                    {"role": "assistant", "content": final_response},
+                ]
+                current_message = next_prompt
+                self._set_run_status(run_id, "running", last_event="run.queued_turn_started")
+                run.put_event(_run_event(
+                    run_id, "run.queued_turn_started", depth_remaining=len(pending)))
+                followup = replace(
+                    run, user_message=current_message, conversation_history=current_history)
+                result, turn_usage = await loop.run_in_executor(
+                    None, lambda: _run_agent_sync(
+                        self, followup, agent, approval_notify, _api_server=_api_server))
+                if not isinstance(result, dict):
+                    result = {}
+                for key in ("input_tokens", "output_tokens", "total_tokens"):
+                    usage[key] = usage.get(key, 0) + turn_usage.get(key, 0)
+                final_response = result.get("final_response", "")
+                run.put_event(_run_event(
+                    run_id, "run.queued_turn_completed", output=final_response,
+                    depth_remaining=len(pending)))
+                if result.get("failed") or (
+                        run_id in self._stopping_run_ids and result.get("interrupted") is True):
+                    break
         if run_id in self._stopping_run_ids and result.get("interrupted") is True:
             _finish("cancelled")
         elif result.get("failed"):
@@ -595,6 +639,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         # On cancellation (/stop) the executor thread may still block on an approval
         # Event; unregistering releases it. Idempotent on normal completion.
         _unregister_approval_notify(run.approval_session_key)
+        # Pending /queue items are dropped on stop/failure with the run.
+        self._run_queues.pop(run_id, None)
         with suppress(Exception):
             run.put_event(None)  # sentinel: close the SSE stream
         _retire_live_run(self, run_id)
@@ -796,6 +842,38 @@ async def _handle_steer_run(self, request: "web.Request", *, _api_server) -> "we
             _openai_error, f"Run did not accept steer text: {run_id}", code="steer_not_accepted", status=409)
     _mark_run_event(self, run_id, "run.steered", accepted=True)
     return web.json_response({"object": "hermes.run.steer", "run_id": run_id, "accepted": True})
+
+
+async def _handle_queue_run(self, request: "web.Request", *, _api_server) -> "web.Response":
+    """POST /v1/runs/{run_id}/queue — queue a prompt as the next turn.
+
+    The prompt runs as a full follow-up turn after the current turn (and any
+    earlier queued items) finishes — FIFO, no merging, no interrupt. Drained
+    by the run worker; progress surfaces as ``run.queued_turn_started`` /
+    ``run.queued_turn_completed`` SSE events. See ``_handle_steer_run`` for
+    the mid-turn alternative.
+    """
+    _openai_error = _api_server._openai_error
+    run_id, _, agent, task, err = _load_owned_run(
+        self, request, _api_server=_api_server, permission=None, active_fallback=True)
+    if err is not None:
+        return err
+    if agent is None and task is None:
+        return _run_not_found(_openai_error, run_id)
+    body, err = await self._read_json_body(request)
+    if err:
+        return err
+    prompt = body.get("prompt", "")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return _json_error(
+            _openai_error, "Missing non-empty 'prompt' field; expected 'prompt'.",
+            code="invalid_queue_prompt", status=400)
+    prompt = prompt.strip()
+    self._run_queues.setdefault(run_id, []).append(prompt)
+    depth = len(self._run_queues[run_id])
+    return web.json_response({
+        "object": "hermes.run.queue", "run_id": run_id, "status": "queued",
+        "prompt": prompt, "depth": depth})
 
 
 async def _handle_stop_run(self, request: "web.Request", *, _api_server) -> "web.Response":

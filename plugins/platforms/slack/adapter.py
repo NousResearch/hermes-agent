@@ -3,6 +3,7 @@
 import asyncio
 import contextvars
 import functools
+import hashlib
 import inspect
 import json
 import logging
@@ -970,6 +971,10 @@ class SlackAdapter(BasePlatformAdapter):
         # start time is the grace window for the first ping/pong.
         self._app_token: Optional[str] = None
         self._proxy_url: Optional[str] = None
+        # Per bot-token lock identities (sha256 hex digests, never raw
+        # secrets) for multi-workspace. Released together with the
+        # app-token platform lock by _release_slack_locks().
+        self._bot_token_lock_identities: List[str] = []
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_handler_started_monotonic: Optional[float] = None
@@ -1631,6 +1636,32 @@ class SlackAdapter(BasePlatformAdapter):
             if not self._acquire_platform_lock("slack-app-token", app_token, "Slack app token"):
                 return False
             lock_acquired = True
+            # Drop the previous set first so a reconnect with rotated tokens
+            # never orphans locks (self-owned, so the reacquire below is instant).
+            self._release_bot_token_locks()
+            # Per bot-token lock for multi-workspace: every workspace token
+            # is a distinct bot identity. Prevents two local gateways from
+            # sharing any one workspace token. Identities are sha256-hashed
+            # before use — no secret material ever hits disk (cf. line adapter).
+            from gateway.status import acquire_scoped_lock
+            for _tok in bot_tokens:
+                _identity = hashlib.sha256(_tok.encode("utf-8")).hexdigest()[:16]
+                _acquired, _existing = acquire_scoped_lock(
+                    "slack-bot-token", _identity,
+                    metadata={"platform": self.platform.value},
+                )
+                if not _acquired:
+                    _owner = _existing.get("pid") if isinstance(_existing, dict) else None
+                    _msg = (
+                        "Slack bot token already in use"
+                        + (f" (PID {_owner})" if _owner else "")
+                        + ". Stop the other gateway first."
+                    )
+                    logger.error("[%s] %s", self.name, _msg)
+                    self._set_fatal_error("slack-bot-token_lock", _msg, retryable=False)
+                    self._release_bot_token_locks()
+                    return False
+                self._bot_token_lock_identities.append(_identity)
             self._running = False
             # Cancel AND await the old watchdog so it can't see _running=False,
             # exit, and leave no monitor behind.
@@ -1677,7 +1708,22 @@ class SlackAdapter(BasePlatformAdapter):
             return False
         finally:
             if lock_acquired and not self._running:
-                self._release_platform_lock()
+                self._release_slack_locks()
+
+    def _release_bot_token_locks(self) -> None:
+        """Release held per-bot-token locks (sha256 identities, no secrets)."""
+        from gateway.status import release_scoped_lock
+        for _held in getattr(self, "_bot_token_lock_identities", []):
+            try:
+                release_scoped_lock("slack-bot-token", _held)
+            except Exception:
+                logger.debug("[%s] Failed to release bot-token lock", self.name, exc_info=True)
+        self._bot_token_lock_identities = []
+
+    def _release_slack_locks(self) -> None:
+        """Release per-bot-token locks plus the app-token platform lock."""
+        self._release_bot_token_locks()
+        self._release_platform_lock()
 
     def _fatal_missing_env(self, env_name: str) -> None:
         """Log + record the permanent config error for a missing SLACK_* token."""
@@ -1750,7 +1796,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._app = self._app_token = self._proxy_url = self._bot_user_id = None
         self._team_clients, self._team_bot_user_ids = {}, {}
         self._channel_team, self._dm_conversation_cache = {}, {}
-        self._release_platform_lock()
+        self._release_slack_locks()
         logger.info("[Slack] Disconnected")
 
     @staticmethod

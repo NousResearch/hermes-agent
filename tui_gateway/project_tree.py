@@ -337,7 +337,7 @@ def _project_node(
     rows = sessions or []
     node = {
         "id": pid, "label": label, "path": path, "color": None, "icon": None,
-        "isAuto": False, "isNoProject": False,
+        "isAuto": False, "isNoProject": False, "isHome": False,
         "sessionCount": session_count, "lastActive": last_active,
         # Totals over the same sessions `sessionCount` counts (billed cost, else estimated).
         "totalTokens": sum(
@@ -351,12 +351,17 @@ def _project_node(
 
 def _auto_buckets(
     unowned: list[dict], resolve: Optional[Resolve], junk: Callable, junk_cwd: Callable,
-    exists: Callable) -> tuple[dict[str, dict], list[dict]]:
-    """Group leftover sessions by auto-project root (common git root, else the session cwd
-    for non-git workspaces); the rest go to the Home bucket."""
+    exists: Callable, home_root: Optional[str] = None) -> tuple[dict[str, dict], list[dict]]:
+    """Group leftover sessions by auto-project root, except the configured Home workspace."""
     by_auto_root: dict[str, dict] = {}
     homeless: list[dict] = []
     for session in unowned:
+        if home_root:
+            cwd_key = _path_key(str(_field(session, "cwd") or ""))
+            root_key = _path_key(home_root)
+            if cwd_key == root_key or cwd_key.startswith(root_key + "/"):
+                homeless.append(session)
+                continue
         root = _session_repo_root(session, resolve)
         if root:
             # Stricter repo policy for real git roots; a root gone from disk is stale and
@@ -377,24 +382,27 @@ def _auto_buckets(
     return by_auto_root, homeless
 
 
-def _home_project(homeless: list[dict], hydrate: bool, previews: list[dict]) -> dict:
-    """The synthetic Home bucket: no folder => no repo/lane structure, one lane carries the rows."""
+def _home_project(
+    homeless: list[dict], hydrate: bool, previews: list[dict], *, home_root: Optional[str] = None
+) -> dict:
+    """The synthetic Home bucket, optionally anchored at the configured workspace root."""
     lane = {
-        "id": NO_PROJECT_ID, "label": NO_PROJECT_LABEL, "path": None, "isMain": False,
+        "id": NO_PROJECT_ID, "label": NO_PROJECT_LABEL, "path": home_root, "isMain": False,
         "isKanban": False, "sessions": homeless if hydrate else []}
     home_repo = {
-        "id": NO_PROJECT_ID, "label": NO_PROJECT_LABEL, "path": None, "groups": [lane],
+        "id": NO_PROJECT_ID, "label": NO_PROJECT_LABEL, "path": home_root, "groups": [lane],
         "sessionCount": len(homeless)}
     return _project_node(
-        NO_PROJECT_ID, NO_PROJECT_LABEL, None, [home_repo], len(homeless), _last_active(homeless),
-        previews, homeless, isNoProject=True)
+        NO_PROJECT_ID, NO_PROJECT_LABEL, home_root, [home_repo], len(homeless), _last_active(homeless),
+        previews, homeless, isNoProject=True, isHome=bool(home_root))
 
 
 def build_tree(
     projects: list[dict], sessions: list[dict], discovered_repos: list[dict],
     resolve: Optional[Resolve] = None, *, preview_limit: int = 3, hydrate: bool = False,
     is_junk_root: Optional[Callable[[str], bool]] = None,
-    is_junk_cwd: Optional[Callable[[str], bool]] = None, exists: Optional[Exists] = None) -> dict:
+    is_junk_cwd: Optional[Callable[[str], bool]] = None, exists: Optional[Exists] = None,
+    home_root: Optional[str] = None) -> dict:
     """Build the authoritative project tree -> ``{"projects", "scoped_session_ids"}``.
 
     ``is_junk_root`` flags git roots that must never become an AUTO project; ``is_junk_cwd``
@@ -435,7 +443,7 @@ def build_tree(
             color=project.get("color"), icon=project.get("icon")))
 
     # Tier 2: auto projects from leftover sessions.
-    by_auto_root, homeless = _auto_buckets(unowned, resolve, _junk, _junk_cwd, _exists)
+    by_auto_root, homeless = _auto_buckets(unowned, resolve, _junk, _junk_cwd, _exists, home_root)
     seen: set[str] = set()
     for bucket in by_auto_root.values():
         auto_root, auto_sessions = bucket["root"], bucket["sessions"]
@@ -476,6 +484,6 @@ def build_tree(
     if homeless:
         homeless.sort(key=_session_time, reverse=True)
         _scope(homeless)
-        result.insert(0, _home_project(homeless, hydrate, _previews(homeless)))
+        result.insert(0, _home_project(homeless, hydrate, _previews(homeless), home_root=home_root))
 
     return {"projects": result, "scoped_session_ids": scoped_ids}

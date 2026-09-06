@@ -846,3 +846,60 @@ async def test_inbound_reaction_removal_human_from_client_cache_still_routes(ada
     source = adapter.handle_message.await_args.args[0].source
     assert source.is_bot is False
     assert source.user_name == "Jezza"
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_bot_reactor_denied_in_open_mode(adapter, monkeypatch):
+    """Open mode must not admit bot reactors.
+
+    The gateway's allow-all backstop returns before any bot check, so this adapter gate is the only
+    thing between an auto-react bot and an unbounded react/reply loop. Pinned explicitly so a future
+    refactor cannot reintroduce it.
+    """
+    monkeypatch.delenv("DISCORD_ALLOW_BOTS", raising=False)
+    monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")
+    adapter.handle_message = AsyncMock()
+    adapter._allowed_user_ids = set()
+    adapter._allowed_role_ids = set()
+    bot_reactor = SimpleNamespace(display_name="AutoReactBot", bot=True, roles=[])
+    _guild_channel_for_reactor(adapter, bot_reactor)
+
+    payload = _make_reaction_payload(user_id=555, member=bot_reactor, guild_id=999)
+    await adapter._handle_inbound_reaction(payload, "added")
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_human_still_routed_in_open_mode(adapter, monkeypatch):
+    """The bot gate must not have narrowed open mode for humans."""
+    monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")
+    adapter.handle_message = AsyncMock()
+    adapter._allowed_user_ids = set()
+    adapter._allowed_role_ids = set()
+    human = SimpleNamespace(display_name="Jezza", bot=False, roles=[])
+    _guild_channel_for_reactor(adapter, human)
+
+    payload = _make_reaction_payload(user_id=777, member=human, guild_id=999)
+    await adapter._handle_inbound_reaction(payload, "added")
+
+    adapter.handle_message.assert_awaited_once()
+    assert adapter.handle_message.await_args.args[0].source.is_bot is False
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_removal_unresolved_reactor_falls_back_to_user_id(adapter):
+    """A client-cache miss degrades to the raw user id; the allowlist still gates admission."""
+    adapter.handle_message = AsyncMock()
+    adapter._allowed_user_ids = {"42"}
+    adapter._allowed_role_ids = set()
+    _guild_channel_for_reactor(adapter, None)  # guild lookup misses
+    adapter._client.get_user = MagicMock(return_value=None)  # cache misses too
+
+    payload = _make_reaction_payload(user_id=42, member=None, guild_id=999)
+    await adapter._handle_inbound_reaction(payload, "removed")
+
+    adapter.handle_message.assert_awaited_once()
+    source = adapter.handle_message.await_args.args[0].source
+    assert source.is_bot is False
+    assert source.user_name == "42"

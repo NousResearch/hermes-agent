@@ -332,6 +332,10 @@ DEFAULT_CONFIG = {
         # default for images whose entrypoints must start as root (e.g. the bundled Hermes image,
         # which drops to `hermes` via s6-setuidgid). When on, SETUID/SETGID caps are omitted.
         "docker_run_as_host_user": False,
+        # Snap-packaged Docker under AppArmor (Ubuntu cloud images; LP#1908448) refuses to exec
+        # anything under `--init` or `--security-opt no-new-privileges` ("operation not
+        # permitted"). True drops those two flags; every other hardening stays. See #9730.
+        "docker_snap_compat": False,
         # Trusted profiles sharing one Docker container identity; empty = per-profile boundary.
         "docker_shared_container_key": "",
         # Keep a long-lived bash shell across execute() calls so cwd/env/shell variables survive.

@@ -394,17 +394,10 @@ def _call(tool_name, args):
 
 # ---- Remote execution support (file-based RPC via terminal backend) ----
 
-# execute_code's container_config keys (a subset of terminal_tool's; the create path fills the rest).
-_CONTAINER_CONFIG_DEFAULTS = (
-    ("container_cpu", 1), ("container_memory", 5120), ("container_disk", 51200), ("container_persistent", True),
-    ("vercel_runtime", ""), ("docker_volumes", []), ("docker_run_as_host_user", False), ("docker_network", True),
-)
-
-
 def _get_or_create_env(task_id: str):
     """``(env, env_type)`` — the environment the terminal/file tools share for *task_id*, created on
     first use (same double-checked per-task lock pattern as file_tools._get_file_ops)."""
-    from tools.terminal_tool_backends import _create_environment, _ssh_config_from_config
+    from tools.terminal_tool_backends import _container_config_from_config, _create_environment, _ssh_config_from_config
     from tools.terminal_tool import (
         _active_environments, _env_lock, _get_env_config, _last_activity,
         _start_cleanup_thread, _creation_locks, _creation_locks_lock, _task_env_overrides,
@@ -431,7 +424,9 @@ def _get_or_create_env(task_id: str):
         overrides = _task_env_overrides.get(effective_task_id, {})
         container_config = None
         if _is_container_backend(env_type):
-            container_config = {key: config.get(key, default) for key, default in _CONTAINER_CONFIG_DEFAULTS}
+            # Shared shaper: execute_code's own key subset dropped docker_extra_args / docker_forward_env /
+            # docker_env, so a sandbox created from this path lost the operator's configured settings.
+            container_config = _container_config_from_config(config)
         logger.info("Creating new %s environment for execute_code task %s...",
                      env_type, effective_task_id[:8])
         env = _create_environment(

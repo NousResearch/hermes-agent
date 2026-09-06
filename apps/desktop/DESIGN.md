@@ -63,9 +63,12 @@ one-off at the call site.
 - **Projects own workspace cwd.** Sidebar → Projects remains the browsing and
   organization surface. Opted-in profiles may select a registered project and
   checkout above a **new chat** input; the one-chat “Work in project…” action is
-  also available without changing profile settings. Keep the workspace row outside
-  the input border and draggable margin: two quiet native text buttons, project
-  name and checkout choice, with chevrons and no visible field prefixes. Draft and
+  also available without changing profile settings. The workspace row is the
+  composer surface's own header strip — inside the input border, inheriting its
+  fill and top radius, closed by the surface hairline — exactly where the classic
+  branch strip lives; it is never a floating dock sibling outside the frame. Two
+  quiet native text buttons, project name and checkout choice, with chevrons and
+  no visible field prefixes. Draft and
   bound states share `StatusRow` chrome, insets, line height and its `size-3.5`
   leading slot. The draft's tertiary folder/branch glyph is replaced in-place by
   a same-sized Loader during inspection/preparation; the bound glyph is green.

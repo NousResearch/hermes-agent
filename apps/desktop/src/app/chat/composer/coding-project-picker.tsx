@@ -7,6 +7,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { ErrorState } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
 import { useI18n } from '@/i18n'
+import { displayPath } from '@/lib/display-path'
 import { FolderOpen } from '@/lib/icons'
 import { type CodingWorkspaceOwner, listCodingWorkspaceProjects } from '@/store/coding-workspaces'
 import type { ProjectInfo } from '@/types/hermes'
@@ -55,7 +56,7 @@ export function CodingProjectPicker({ owner, path, disabled, onSelect, onBrowse 
       <DropdownMenuRadioGroup onValueChange={choose} value={path ?? ''}>
         <DropdownMenuRadioItem className={dropdownMenuRow} disabled={disabled} value="">{c.noProject}</DropdownMenuRadioItem>
         {matches.map(project => <DropdownMenuRadioItem className={dropdownMenuRow} disabled={disabled} key={project.id} value={project.primary_path!}>
-          <span className="min-w-0"><span className="block truncate">{project.name}</span><span className="block truncate text-(--ui-text-tertiary)" title={project.primary_path!}>{project.primary_path}</span></span>
+          <span className="min-w-0"><span className="block truncate">{project.name}</span><span className="block truncate text-(--ui-text-tertiary)" title={project.primary_path!}>{displayPath(project.primary_path)}</span></span>
         </DropdownMenuRadioItem>)}
       </DropdownMenuRadioGroup>
       {isPending && <Loader label={c.project} />}

@@ -7,6 +7,7 @@ import { StatusRow } from '@/components/chat/status-row'
 import type { CodingWorkspaceDraft } from '@/store/coding-workspaces'
 
 import { CodingWorkspaceControls } from './coding-workspace-controls'
+import { workspaceRowClassName } from './workspace-row'
 
 const mocks = vi.hoisted(() => ({ inspect: vi.fn(), set: vi.fn(), request: vi.fn(), register: vi.fn(), config: vi.fn((..._args: unknown[]) => ({ data: {} })) }))
 vi.mock('@/app/hooks/use-config-record', () => ({ useHermesConfigRecord: (...a: unknown[]) => mocks.config(...a) }))
@@ -43,7 +44,7 @@ function mount(draft?: any, onSelectFolder = vi.fn()) {
 
 describe('coding workspace controls', () => {
   it('shares bound StatusRow chrome and a fixed leading slot through inspection and preparation', () => {
-    const reference = render(<StatusRow className="coding-status-bar" leading={<span />}>Bound summary</StatusRow>)
+    const reference = render(<StatusRow className={workspaceRowClassName} leading={<span />}>Bound summary</StatusRow>)
     const chrome = reference.container.firstElementChild!
 
     const draft: CodingWorkspaceDraft = { owner, requestId: 'r', status: 'ready', intent: { path: '/repo', mode: 'worktree' },

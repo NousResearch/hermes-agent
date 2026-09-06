@@ -1232,26 +1232,6 @@ export function ChatBar({
             }
             sessionId={statusSessionId}
           />
-          {/* Workspace context stays outside both input chrome and the drag region. */}
-          <div className={cn(composerFloatingStrip, 'min-w-0 px-[5px] pb-1 empty:hidden')} data-slot="composer-workspace-row">
-            {codingWorkspace.visible && codingWorkspace.owner && <CodingWorkspaceControls draft={codingWorkspace.draft} onSelectFolder={path => void codingWorkspace.selectFolder(path)} owner={codingWorkspace.owner} />}
-                <CodingStatusRow
-                  onBranchOff={handleBranchOff}
-                  onConvertBranch={handleConvertBranch}
-                  onListBranches={handleListBranches}
-                  // A tile's rail reviews ITS worktree: pin the pane's scope to
-                  // this surface's cwd. Main keeps the classic follow-the-
-                  // active-session scope (null).
-                  onOpen={() => toggleReview(scope.target === 'main' ? null : (cwd ?? null), scope.target)}
-                  onOpenWorktree={openInWorktree}
-                  onSwitchBranch={handleSwitchBranch}
-                  // Blank in a bot chat: the row hides itself without a repo,
-                  // and stops probing git / GitHub for a surface that has no
-                  // branch to show. Cheaper than a second composer.
-                  repoPath={botChat ? undefined : cwd}
-                  sessionId={botChat ? undefined : sessionId}
-                />
-          </div>
           <ComposerPrimitive.Root
             className={cn(
               'group/composer relative w-full overflow-visible rounded-2xl',
@@ -1330,7 +1310,7 @@ export function ChatBar({
                   // track past the surface — and every `w-full` child (the fade,
                   // the input/controls row) laid out against that phantom width
                   // and got clipped by overflow-hidden, send button first.
-                  'group/composer-surface relative z-4 isolate grid grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr] overflow-hidden rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))]',
+                  'group/composer-surface relative z-4 isolate grid grid-cols-[minmax(0,1fr)] grid-rows-[auto_auto_1fr] overflow-hidden rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))]',
                   COMPOSER_DROP_FADE_CLASS,
                   dragActive && COMPOSER_DROP_ACTIVE_CLASS
                 )}
@@ -1345,9 +1325,39 @@ export function ChatBar({
                     composerSurfaceGlass
                   )}
                 />
+                {/* The "where am I working" strip is the surface's own header
+                    row: draft pickers before the first Send, the bound
+                    workspace summary after it. Same slot, same chrome, so
+                    sending never moves the row or changes its background. */}
+                {codingWorkspace.visible && codingWorkspace.owner && (
+                  <CodingWorkspaceControls
+                    draft={codingWorkspace.draft}
+                    onSelectFolder={path => void codingWorkspace.selectFolder(path)}
+                    owner={codingWorkspace.owner}
+                  />
+                )}
+                <CodingStatusRow
+                  onBranchOff={handleBranchOff}
+                  onConvertBranch={handleConvertBranch}
+                  onListBranches={handleListBranches}
+                  // A tile's rail reviews ITS worktree: pin the pane's scope to
+                  // this surface's cwd. Main keeps the classic follow-the-
+                  // active-session scope (null).
+                  onOpen={() => toggleReview(scope.target === 'main' ? null : (cwd ?? null), scope.target)}
+                  onOpenWorktree={openInWorktree}
+                  onSwitchBranch={handleSwitchBranch}
+                  // Blank in a bot chat: the row hides itself without a repo,
+                  // and stops probing git / GitHub for a surface that has no
+                  // branch to show. Cheaper than a second composer.
+                  repoPath={botChat ? undefined : cwd}
+                  sessionId={botChat ? undefined : sessionId}
+                />
                 <div
                   className={cn(
-                    'relative z-1 flex min-h-0 w-full flex-col gap-(--composer-row-gap) overflow-hidden rounded-[inherit] px-(--composer-surface-pad-x) py-(--composer-surface-pad-y) transition-opacity duration-200 ease-out',
+                    // Row 3 explicitly: the two header tracks above (draft pickers /
+                    // bound summary) collapse to zero when empty, so the input
+                    // still owns the 1fr track whether zero, one, or both render.
+                    'relative z-1 row-start-3 flex min-h-0 w-full flex-col gap-(--composer-row-gap) overflow-hidden rounded-[inherit] px-(--composer-surface-pad-x) py-(--composer-surface-pad-y) transition-opacity duration-200 ease-out',
                     scrolledUp
                       ? 'opacity-30 group-hover/composer:opacity-100 group-focus-within/composer-surface:opacity-100'
                       : 'opacity-100'

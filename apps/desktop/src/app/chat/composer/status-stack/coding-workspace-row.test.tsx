@@ -10,6 +10,8 @@ import { $connection, _resetSessionOwnerHintsForTests, setSessionOwnerHint } fro
 import { $sessionStates } from '@/store/session-states'
 import type { CodingWorkspaceBinding } from '@/types/hermes'
 
+import { workspaceRowClassName } from '../workspace-row'
+
 const probe = vi.hoisted(() => vi.fn())
 vi.mock('@/store/coding-status', () => ({
   registerRepoStatusCwd: (cwd?: string) => { probe(cwd) },
@@ -86,7 +88,9 @@ it.each([
   expect(screen.queryByText('This chat stays in its original workspace.')).toBeNull()
   expect(window.document.querySelector('[data-slot="coding-workspace-heading"]')).toBeNull()
   expect(screen.queryByText(label, { selector: '[data-slot="dropdown-menu-label"]' })).toBeNull()
-  expect(summary.closest('.coding-status-bar')?.classList.contains('border-b')).toBe(false)
+
+  // Same surface-header chrome as the pre-bind draft row and the classic branch strip.
+  for (const token of workspaceRowClassName.split(' ')) { expect(summary.closest('.coding-status-bar')?.classList.contains(token)).toBe(true) }
   expect(screen.queryByRole('menuitem', { name: /Switch to/ })).toBeNull()
   expect(screen.queryByRole('combobox')).toBeNull()
   fireEvent.click(screen.getByRole('menuitem', { name: 'Copy path' }))

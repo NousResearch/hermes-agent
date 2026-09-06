@@ -13,6 +13,7 @@ import type { ProjectInfo } from '@/types/hermes'
 
 import { CodingProjectPicker } from './coding-project-picker'
 import { selectCodingWorkspaceIntent } from './coding-workspace-selection'
+import { workspaceRowClassName } from './workspace-row'
 
 interface CodingWorkspaceControlsProps {
   owner: CodingWorkspaceOwner
@@ -54,8 +55,11 @@ export function CodingWorkspaceControls({ owner, draft, onSelectFolder }: Coding
   const selectProject = (project: ProjectInfo | null) => void update(project?.primary_path
     ? { projectId: project.id, path: project.primary_path, mode: defaultCheckout } : null)
 
-  return <div className="grid min-w-0 gap-1 text-xs text-(--ui-text-secondary)" data-slot="coding-workspace-controls">
-    <StatusRow className="coding-status-bar" leading={
+  // `rounded-t-[inherit]` so the header strip inside inherits the composer's
+  // top radius through this wrapper; the preparation error, when present,
+  // hangs under the strip in the same inset and closes with its own hairline.
+  return <div className="grid min-w-0 rounded-t-[inherit] text-xs text-(--ui-text-secondary)" data-slot="coding-workspace-controls">
+    <StatusRow className={workspaceRowClassName} leading={
       draft?.status === 'inspecting' || draft?.status === 'preparing'
         ? <Loader className="size-3.5 text-(--ui-text-tertiary)" label={draft.status === 'preparing' ? c.preparing : c.project} />
         : <Codicon className="text-(--ui-text-tertiary)" name={inspection?.repoRoot ? 'git-branch' : 'folder'} size="0.8rem" />
@@ -106,6 +110,6 @@ export function CodingWorkspaceControls({ owner, draft, onSelectFolder }: Coding
     </div>
     </StatusRow>
 
-    {draft?.error && <div className="flex items-start gap-2 text-destructive" role="alert"><ErrorIcon size="1rem" /><span>{draft.error}</span></div>}
+    {draft?.error && <div className="flex items-start gap-2 border-b border-(--ui-stroke-tertiary) px-3.5 py-1.5 text-destructive" role="alert"><ErrorIcon size="1rem" /><span>{draft.error}</span></div>}
   </div>
 }

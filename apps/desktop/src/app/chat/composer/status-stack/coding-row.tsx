@@ -26,6 +26,8 @@ import { $pullRequestsByBranch, branchPrKey, refreshPullRequests } from '@/store
 import { $connection } from '@/store/session'
 import { $sessionStates, knownOwnerForSession } from '@/store/session-states'
 
+import { workspaceRowClassName } from '../workspace-row'
+
 // Tiny uppercase section header, matching the composer "+" menu's labels.
 const MENU_SECTION = 'text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)'
 
@@ -300,8 +302,9 @@ export const CodingStatusRow = memo(function CodingStatusRow({
     <>
       <ActionsContextMenu contentClassName={workspace ? 'w-72 max-w-[calc(100vw-2rem)]' : 'w-60'} disabled={!workspace && !onBranchOff} items={renderBranchItems}>
         <StatusRow
-          // Workspace context is an external dock row, not an input toolbar.
-          className="coding-status-bar"
+          // The base "where am I working" strip is the composer surface's own
+          // header row, so it inherits the input's fill, width and top radius.
+          className={workspaceRowClassName}
           // Static branch glyph — never the loading spinner. This row only renders
           // once `status` exists, so a spinner here only ever fired on *refreshes*
           // of an already-loaded repo (window focus, turn settle), reading as an

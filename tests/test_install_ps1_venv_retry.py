@@ -22,10 +22,12 @@ pytestmark = pytest.mark.windows_only
 
 @pytest.mark.parametrize("failure", ["deps-fail", "import-fail"])
 def test_separate_stage_retry_restores_original_after_dependency_failure(install: Path, failure: str):
-    assert _stage(install, "venv")[0] == 0
+    code, output = _stage(install, "venv")
+    assert code == 0, output
     first_backup = install / _pending(install)
     assert _generation(first_backup) == ORIGINAL
-    assert _stage(install, "venv")[0] == 0
+    code, output = _stage(install, "venv")
+    assert code == 0, output
     assert _stage(install, "dependencies", failure)[0] != 0
     if failure == "import-fail":
         validation = (install.parent.parent / "validation-events.txt").read_text()

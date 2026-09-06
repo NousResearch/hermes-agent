@@ -195,7 +195,13 @@ async def preprocess_context_references_async(
     # Expand concurrently (each ref is independent; several @url: refs would otherwise
     # serialize web_extract round-trips). gather preserves order, so warnings/blocks
     # are assembled in ref order; the token-budget check runs once afterwards.
-    tasks = (_expand_reference(ref, cwd_path, url_fetcher=url_fetcher, allowed_root=allowed_root_path) for ref in refs)
+    hard_limit = max(1, int(context_length * 0.50))
+    soft_limit = max(1, int(context_length * 0.25))
+    tasks = (
+        _expand_reference(ref, cwd_path, url_fetcher=url_fetcher, allowed_root=allowed_root_path,
+                          max_inline_tokens=hard_limit)
+        for ref in refs
+    )
     expanded = await asyncio.gather(*tasks)
     warnings = [warning for warning, _ in expanded if warning]
     blocks = [block for _, block in expanded if block]
@@ -204,8 +210,6 @@ async def preprocess_context_references_async(
         message=message, original_message=message, references=refs, warnings=warnings, injected_tokens=injected_tokens
     )
 
-    hard_limit = max(1, int(context_length * 0.50))
-    soft_limit = max(1, int(context_length * 0.25))
     if injected_tokens > hard_limit:
         warnings.append(f"@ context injection refused: {injected_tokens} tokens exceeds the 50% hard limit ({hard_limit}).")
         result.blocked = True
@@ -235,11 +239,12 @@ _GIT_REFERENCE_ARGS: dict[str, Callable[[ContextReference], list[str]]] = {
 
 
 async def _expand_reference(
-    ref: ContextReference, cwd: Path, *, url_fetcher: UrlFetcher = None, allowed_root: Path | None = None
+    ref: ContextReference, cwd: Path, *, url_fetcher: UrlFetcher = None, allowed_root: Path | None = None,
+    max_inline_tokens: int | None = None,
 ) -> Expansion:
     try:
         if ref.kind in ("file", "folder"):
-            return _expand_path_reference(ref, cwd, allowed_root=allowed_root)
+            return _expand_path_reference(ref, cwd, allowed_root=allowed_root, max_inline_tokens=max_inline_tokens)
         if ref.kind in _GIT_REFERENCE_ARGS:
             git_args = _GIT_REFERENCE_ARGS[ref.kind](ref)
             return _expand_git_reference(ref, cwd, git_args, "git " + " ".join(git_args))
@@ -261,7 +266,8 @@ async def _expand_reference(
     return f"{ref.raw}: unsupported reference type", None
 
 
-def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Path | None = None) -> Expansion:
+def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Path | None = None,
+                           max_inline_tokens: int | None = None) -> Expansion:
     """``@file:`` / ``@folder:``: resolve, allow-check, then inline text / binary stub / listing."""
     is_folder = ref.kind == "folder"
     path = _resolve_path(cwd, ref.target, allowed_root=allowed_root)
@@ -281,7 +287,16 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
     if ref.line_start is not None:
         text = "\n".join(text.splitlines()[max(ref.line_start - 1, 0):ref.line_end or ref.line_start])
     lang = _FENCE_LANGUAGES.get(path.suffix.lower(), "")
-    return None, f"📄 {ref.raw} ({estimate_tokens_rough(text)} tokens)\n```{lang}\n{text}\n```"
+    text_tokens = estimate_tokens_rough(text)
+    # Check BEFORE building the fenced block: an oversized file is not going to be
+    # inlined, so don't build a second MB-scale string just to discard it.
+    if max_inline_tokens is not None and text_tokens > max_inline_tokens:
+        # One oversized file used to poison the aggregate check and refuse the whole
+        # turn (#61987); the file stays readable via the agent's tools instead. The
+        # block alone carries the message (same shape as the binary path) — a warning
+        # would duplicate it in "--- Context Warnings ---".
+        return None, _oversized_text_reference_block(ref, path, text_tokens)
+    return None, f"📄 {ref.raw} ({text_tokens} tokens)\n```{lang}\n{text}\n```"
 
 
 def _run_quiet(cmd: list[str], cwd: Path, timeout: int, env: dict | None = None) -> subprocess.CompletedProcess:
@@ -425,12 +440,7 @@ def _iter_visible_entries(path: Path, cwd: Path, limit: int) -> list[Path]:
     return output
 
 
-def _binary_reference_block(ref: ContextReference, path: Path) -> str:
-    mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    try:
-        size = format_bytes(path.stat().st_size)
-    except OSError:
-        size = "unknown size"
+def _agent_visible_path(path: Path) -> str:
     # Under a container backend the host path dangles inside the sandbox: translate staged
     # files to their auto-mounted cache path; fall back to the host path (local backend /
     # translation failure). Run the idempotent TERMINAL_ENV bridge first so in-process
@@ -439,14 +449,42 @@ def _binary_reference_block(ref: ContextReference, path: Path) -> str:
         from tools.terminal_tool import _ensure_terminal_env_bridged
         _ensure_terminal_env_bridged()
         from tools.credential_files import to_agent_visible_cache_path
-        visible = to_agent_visible_cache_path(str(path))
+        return to_agent_visible_cache_path(str(path))
     except Exception:
-        visible = str(path)
+        return str(path)
+
+
+def _on_disk_reference_block(ref: ContextReference, path: Path, descriptor: str, reason: str, guidance: str) -> str:
+    """Shared 📎 shape: the file was not inlined, but it IS on disk where the agent's
+    tools run — hand the model the path and a nudge instead of a dead-end warning."""
+    try:
+        size = format_bytes(path.stat().st_size)
+    except OSError:
+        size = "unknown size"
     return (
-        f"📎 {ref.raw} ({mime}, {size}) — binary file, not inlined as text. "
-        f"It is available on disk at `{visible}`. Use your tools to work with it "
-        f"(read or convert it, extract its text, or view/render it as needed); "
-        f"do not tell the user the file type is unsupported."
+        f"📎 {ref.raw} ({descriptor}, {size}) — {reason} "
+        f"It is available on disk at `{_agent_visible_path(path)}`. {guidance}"
+    )
+
+
+def _binary_reference_block(ref: ContextReference, path: Path) -> str:
+    mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return _on_disk_reference_block(
+        ref, path,
+        descriptor=mime,
+        reason="binary file, not inlined as text.",
+        guidance="Use your tools to work with it (read or convert it, extract its text, "
+                 "or view/render it as needed); do not tell the user the file type is unsupported.",
+    )
+
+
+def _oversized_text_reference_block(ref: ContextReference, path: Path, text_tokens: int) -> str:
+    return _on_disk_reference_block(
+        ref, path,
+        descriptor=f"text file, approximately {text_tokens} tokens",
+        reason="too large to inline safely.",
+        guidance="Use read_file with a narrow line range, search_files, or terminal/code tools "
+                 "to inspect only the relevant parts; do not load the entire file into context.",
     )
 
 

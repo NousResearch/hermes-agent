@@ -2206,6 +2206,11 @@ def update_version_files(semver: str, calver_date: str):
         r'^version\s*=\s*"[^"]+"',
         f'version = "{semver}"',
         pyproject,
+        # Turn-end file-mutation verifier footer appended by run_agent.py
+        # (``_format_file_mutation_failure_footer``). It's a UI affordance — reading "warning file mutation
+        # verifier, 2 files were NOT modified..." aloud is noise (#40772). The footer is a ``⚠️
+        # File-mutation verifier:`` header line followed by indented ``•`` bullet lines; strip the whole
+        # block.
         flags=re.MULTILINE,
     )
     PYPROJECT_FILE.write_text(pyproject, encoding="utf-8")

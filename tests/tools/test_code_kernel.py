@@ -18,9 +18,15 @@ tests patch ``_load_config`` directly, mirroring test_code_execution_modes.
 
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
+import textwrap
+import time
 import unittest
 from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -34,13 +40,7 @@ def _force_local_terminal(monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "local")
 
 
-from tools.code_execution_tool import (
-    DEFAULT_KERNEL_MODE,
-    KERNEL_MODES,
-    _get_kernel_mode,
-    build_execute_code_schema,
-    execute_code,
-)
+from tools.code_execution_tool import build_execute_code_schema, execute_code
 from tools.code_kernel import _KERNELS, shutdown_all_kernels
 
 
@@ -62,24 +62,6 @@ def _fresh_kernel_registry():
 
 def _run(code, **kwargs):
     return json.loads(execute_code(code, task_id="kernel-test", **kwargs))
-
-
-class TestKernelModeResolution(unittest.TestCase):
-    """kernel_mode is retired: session kernels are always on for local runs.
-
-    _get_kernel_mode() survives only as a compat shim; a leftover
-    kernel_mode key in user config (any value) must be ignored."""
-
-    def test_session_is_always_on(self):
-        self.assertEqual(DEFAULT_KERNEL_MODE, "session")
-        with patch("tools.code_execution_tool._load_config", return_value={}):
-            self.assertEqual(_get_kernel_mode(), "session")
-
-    def test_leftover_config_key_is_ignored(self):
-        for stale in ("per-call", "forever", "", None):
-            with patch("tools.code_execution_tool._load_config",
-                       return_value={"kernel_mode": stale}):
-                self.assertEqual(_get_kernel_mode(), "session")
 
 
 class TestSessionStatePersistence(unittest.TestCase):
@@ -121,6 +103,51 @@ class TestSessionStatePersistence(unittest.TestCase):
 
 
 class TestKernelLifecycle(unittest.TestCase):
+    def test_kernel_exits_when_its_backend_parent_dies(self):
+        """A kernel must not outlive the host that spawned it, even when the
+        host dies without cleanup (SIGKILL/OOM/crash). Windows: inherited
+        SYNCHRONIZE handle; POSIX: inherited death pipe. Both are proven the
+        same way — kill the host mid-cell, the kernel is gone within seconds."""
+        import psutil
+
+        repo_root = str(Path(__file__).resolve().parents[2])
+        host_src = textwrap.dedent(f"""
+            import json, os, sys, time
+            os.environ["HERMES_HOME"] = sys.argv[1]
+            sys.path.insert(0, {repo_root!r})
+            from tools.code_kernel import SessionKernel, _spawn
+            k = SessionKernel(("parent-death",))
+            _spawn(k, task_id="parent-death", child_python=sys.executable,
+                   child_cwd="", sandbox_tools=frozenset(), max_tool_calls=1)
+            cell = json.dumps({{"id": "x", "code": "import os, time\\n"
+                "assert 'HERMES_KERNEL_PARENT_PROCESS_HANDLE' not in os.environ\\n"
+                "assert 'HERMES_KERNEL_PARENT_DEATH_FD' not in os.environ\\n"
+                "time.sleep(300)"}}) + "\\n"
+            k.proc.stdin.write(cell.encode()); k.proc.stdin.flush()
+            print(k.proc.pid, flush=True)
+            time.sleep(600)
+        """)
+        with tempfile.TemporaryDirectory() as home:
+            host = subprocess.Popen(
+                [sys.executable, "-c", host_src, home],
+                stdout=subprocess.PIPE, text=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            try:
+                kernel = psutil.Process(int(host.stdout.readline()))
+                time.sleep(0.5)
+                self.assertTrue(kernel.is_running(), "kernel never came up")
+                host.kill()
+                host.wait(timeout=10)
+                try:
+                    kernel.wait(timeout=10)
+                except psutil.TimeoutExpired:
+                    kernel.kill()
+                    self.fail("session kernel survived its backend parent")
+            finally:
+                if host.poll() is None:
+                    host.kill()
+
     def test_timeout_kills_the_kernel_and_reports_state_loss(self):
         with _kernel_config(timeout=1):
             slow = _run("import time\ntime.sleep(30)")
@@ -189,7 +216,7 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
     """
 
     def _run_as(self, session_key, code, task_id, **kwargs):
-        from tools.approval import reset_current_session_key, set_current_session_key
+        from tools.approval_context import reset_current_session_key, set_current_session_key
 
         token = set_current_session_key(session_key)
         try:
@@ -306,6 +333,31 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
             self.assertNotIn(stale.key, _KERNELS)
             stale.proc.wait(timeout=10)
             self.assertFalse(stale.alive())
+
+    def test_parallel_cells_share_one_kernel_process(self):
+        """Parallel cells for one owner race the first spawn. Each racer
+        used to see proc=None as 'dead', replace the registry entry, and
+        orphan the winner's process — 110 live kernels under a 4-capped
+        process (Sep 2026). Every kernel process must stay registry-owned."""
+        import subprocess
+        import threading
+
+        results = []
+        with _kernel_config():
+            def _cell():
+                results.append(self._run_as("conv-a", "import time; time.sleep(0.3)", task_id="t"))
+            threads = [threading.Thread(target=_cell) for _ in range(6)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        self.assertEqual([r["status"] for r in results], ["success"] * 6)
+        self.assertEqual(len(_KERNELS), 1)
+        live = subprocess.run(
+            ["pgrep", "-fc", "-P", str(os.getpid()), "hermes_kernel_runner"],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        self.assertEqual(live, "1")
 
 
 class TestPerCellRpcAuthority(unittest.TestCase):

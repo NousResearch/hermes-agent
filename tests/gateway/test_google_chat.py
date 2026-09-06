@@ -135,9 +135,9 @@ from plugins.platforms.google_chat.adapter import (  # noqa: E402
     _is_google_owned_host,
     _mime_for_message_type,
     _redact_sensitive,
-    card_spec_to_cards_v2,
     check_google_chat_requirements,
 )
+from plugins.platforms.google_chat.cards import card_spec_to_cards_v2  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +269,61 @@ class TestEnvConfigLoading:
         # No subscription.
         cfg = load_gateway_config()
         assert _GC not in cfg.platforms
+
+    def test_multiplex_scoped_profile_never_borrows_process_env(
+        self, monkeypatch, tmp_path
+    ):
+        """Under multiplex a scoped profile sees ONLY its own Google Chat
+        settings, and the ADC branch fails closed instead of authenticating
+        as the default profile's service account (#73439)."""
+        from agent.secret_scope import (
+            build_profile_secret_scope,
+            set_multiplex_active,
+            set_secret_scope,
+        )
+
+        self._clean_env(monkeypatch)
+        monkeypatch.setenv("GOOGLE_CHAT_PROJECT_ID", "default-proj")
+        monkeypatch.setenv("GOOGLE_CHAT_SUBSCRIPTION_NAME", "default-sub")
+        monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/secrets/default.json")
+        monkeypatch.setenv("GOOGLE_CHAT_BOOTSTRAP_SPACES", "spaces/DEFAULT")
+        profile_home = tmp_path / "beta"
+        profile_home.mkdir()
+        (profile_home / ".env").write_text(
+            "GOOGLE_CHAT_PROJECT_ID=beta-proj\nGOOGLE_CHAT_SUBSCRIPTION_NAME=beta-sub\n"
+        )
+        set_multiplex_active(True)
+        token = set_secret_scope(build_profile_secret_scope(profile_home))
+        try:
+            seed = _gc_mod._env_enablement() or {}
+            beta = GoogleChatAdapter(
+                PlatformConfig(enabled=True, extra={"project_id": "beta-proj", "subscription_name": "beta-sub"})
+            )
+            with pytest.raises(ValueError, match="ADC skipped"):
+                beta._load_sa_credentials()
+        finally:
+            from agent.secret_scope import reset_secret_scope
+
+            reset_secret_scope(token)
+            set_multiplex_active(False)
+        assert seed["project_id"] == "beta-proj"
+        assert "service_account_json" not in seed
+        assert beta._bootstrap_spaces == ""
+
+    def test_multiplex_default_profile_constructs_unscoped(self, monkeypatch):
+        """The default profile's adapter is built OUTSIDE any scope while
+        multiplex is active (gateway startup/reconnect); it must keep reading
+        its own process env instead of raising UnscopedSecretError."""
+        from agent.secret_scope import set_multiplex_active
+
+        self._clean_env(monkeypatch)
+        monkeypatch.setenv("GOOGLE_CHAT_BOOTSTRAP_SPACES", "spaces/DEFAULT")
+        set_multiplex_active(True)
+        try:
+            default = GoogleChatAdapter(_base_config())
+        finally:
+            set_multiplex_active(False)
+        assert default._bootstrap_spaces == "spaces/DEFAULT"
 
 
 # ===========================================================================
@@ -1281,9 +1336,9 @@ class TestAttachmentSSRFGuard:
         monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
         from plugins.platforms.google_chat import adapter as gc_mod
         monkeypatch.setattr(
-            gc_mod, "cache_document_from_bytes",
-            lambda data, ext=None, filename=None: str(tmp_path / "out.pdf"),
-            raising=False,
+            gc_mod,
+            "cache_document_from_bytes_async",
+            AsyncMock(return_value=str(tmp_path / "out.pdf")),
         )
 
         path, mime = await adapter._download_attachment(attachment)
@@ -1680,7 +1735,7 @@ class TestCronSchedulerRegistry:
 
     def test_google_chat_is_known_delivery_platform(self):
         self._ensure_registered()
-        from cron.scheduler import _is_known_delivery_platform
+        from cron.scheduler_delivery import _is_known_delivery_platform
 
         assert _is_known_delivery_platform("google_chat") is True
 

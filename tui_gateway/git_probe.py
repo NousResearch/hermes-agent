@@ -1,26 +1,8 @@
-"""Git working-tree probing for the gateway: run git, resolve repo roots, fold
-linked worktrees under their common root.
-
-Probing runs where the gateway runs, so it resolves repos for both local and
-remote backends (unlike the desktop's electron probe, which only sees the local
-fs). Resolved roots are cached with a thread-safe, single-flight cache: the
-gateway's long handlers run on worker threads, so concurrent identical probes
-(e.g. two overlapping project-tree builds) share one `git` invocation instead of
-racing an unguarded dict.
-
-Positive results are cached for the process lifetime; negative results (a cwd
-that isn't a git repo, or a deleted/nonexistent dir) are cached only for a short
-TTL (`_NEG_TTL`). Caching negatives matters a lot for the desktop Projects tree:
-``project_tree.build_tree`` resolves a cwd once *per session* (not per distinct
-cwd), so a power user with hundreds of sessions in non-git/deleted dirs would
-otherwise re-spawn ``git`` hundreds of times on *every* sidebar open — the cause
-of the multi-second "Projects" load. The TTL keeps a not-yet-repo cwd
-re-probable (we `git init` a new project's folder on its first worktree, and a
-frozen "" would mislabel its main lane by the dir basename) — it just stops the
-same "not a repo" answer from being re-derived dozens of times within one build
-and across rapid re-opens. `invalidate()` drops everything after a known
-mutation.
-"""
+"""Git working-tree probing for the gateway: run git, resolve repo roots, fold linked worktrees.
+Probing runs where the gateway runs (covers remote backends). Roots go through a thread-safe
+single-flight cache so concurrent identical probes share one ``git`` spawn: positives live for the
+process, negatives (not a repo / deleted dir) for ``_NEG_TTL`` — hundreds of non-git session cwds
+would otherwise re-spawn ``git`` on every sidebar open, while the TTL keeps ``git init`` re-probable."""
 
 from __future__ import annotations
 
@@ -34,27 +16,20 @@ from hermes_cli._subprocess_compat import bounded_git_probe
 
 _GIT_TIMEOUT = 1.5
 _WARM_WORKERS = 8
-
-# How long a "not a git repo" answer stays cached before it's re-probed. Short
-# enough that a freshly `git init`-ed / newly-created folder shows correctly
-# within a few seconds; long enough to collapse the hundreds of redundant probes
-# a single project-tree build (and rapid re-opens) would otherwise fire.
-_NEG_TTL = 30.0
+_NEG_TTL = 30.0  # "not a git repo" TTL: a fresh `git init` shows within seconds
 
 
 def run_git(cwd: str, *args: str) -> str:
-    """``git -C <cwd> <args>`` → stripped stdout, or ``""`` on any failure.
+    """``git -C <cwd> <args>`` → stripped stdout, or ``""`` on any failure. ``bounded_git_probe``
+    bounds post-kill cleanup on Windows (a killed git's suspended descendant held the pipes).
 
-    Uses the shared :func:`bounded_git_probe` so the post-kill cleanup is bounded
-    on Windows — a plain ``subprocess.run(timeout=...)`` here deadlocked Desktop
-    session readiness when a killed git left a suspended descendant holding the
-    pipe handles (issue #68609).
+    Uses the shared :func:`bounded_git_probe` so the post-kill cleanup is bounded on Windows — a plain
+    ``subprocess.run(timeout=...)`` here deadlocked Desktop session readiness when a killed git left a
+    suspended descendant holding the pipe handles (issue #68609).
     """
+    # A missing dir can only fail at the price of a fork; deleted worktrees dominate a long
+    # session history's cwds, so the stat pays off.
     if not cwd or not os.path.isdir(cwd):
-        # `git -C` on a directory that no longer exists can only fail, and it
-        # fails at the price of a fork. Deleted worktrees dominate the cwds a
-        # long-lived session history hands us, so the stat pays for itself many
-        # times over on every project-tree build.
         return ""
     return bounded_git_probe(["git", "-C", cwd, *args], timeout=_GIT_TIMEOUT)
 
@@ -64,10 +39,8 @@ def branch(cwd: str) -> str:
 
 
 class _RootCache:
-    """Thread-safe, single-flight cache of git-root probes. Positive results are
-    cached for the process lifetime; negative ("not a repo") results are cached
-    only for ``_NEG_TTL`` seconds so a not-yet-repo cwd stays re-probable.
-    Followers wait on the leader's probe instead of duplicating it."""
+    """Thread-safe, single-flight cache of git-root probes: positives live for
+    the process, negatives for ``_NEG_TTL``; followers wait on the leader."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -84,31 +57,20 @@ class _RootCache:
     def resolve(self, key: str, probe) -> str:
         while True:
             with self._lock:
-                hit = self._roots.get(key)
-                if hit:
+                if hit := self._roots.get(key):
                     return hit
                 expiry = self._neg.get(key)
                 if expiry is not None:
                     if expiry > time.monotonic():
-                        # Recently probed as "not a repo" — trust it briefly
-                        # instead of re-spawning git for the same dead/non-repo
-                        # cwd on every session in the tree build.
-                        return ""
-                    # TTL elapsed: drop it and re-probe (it may be a repo now).
-                    del self._neg[key]
+                        return ""  # recent "not a repo": trust it briefly
+                    del self._neg[key]  # TTL elapsed: re-probe (may be a repo now)
                 gate = self._inflight.get(key)
-                if gate is None:
-                    gate = threading.Event()
-                    self._inflight[key] = gate
-                    leader = True
-                else:
-                    leader = False
-
-            if not leader:
-                # Another thread is probing this key — wait, then re-read.
+                leader = gate is None
+                if leader:
+                    gate = self._inflight[key] = threading.Event()
+            if not leader:  # another thread is probing this key — wait, then re-read
                 gate.wait(timeout=_GIT_TIMEOUT + 0.5)
                 continue
-
             value = ""
             try:
                 value = probe()
@@ -133,35 +95,17 @@ def invalidate() -> None:
 
 def repo_root(cwd: str) -> str:
     """Top-level git repo root for ``cwd`` (``""`` when not a repo)."""
-    if not cwd:
-        return ""
-    return _cache.resolve(cwd, lambda: run_git(cwd, "rev-parse", "--show-toplevel"))
+    return _cache.resolve(cwd, lambda: run_git(cwd, "rev-parse", "--show-toplevel")) if cwd else ""
 
 
 def common_repo_root(cwd: str) -> str:
-    """The MAIN (common) repo root for ``cwd``, folding linked worktrees.
-
-    ``--show-toplevel`` returns a linked worktree's OWN root, so grouping by it
-    splits every worktree into a separate "repo". The common ``.git`` dir
-    (``--git-common-dir``) is shared by a repo and all its worktrees, so its
-    parent is the one true repo root; fall back to the toplevel root otherwise.
-
-    The returned path is normalized to git's forward-slash spelling so it can be
-    compared against :func:`repo_root` (which returns raw ``--show-toplevel``
-    output). ``os.path.realpath`` rewrites separators to the platform's native
-    ``\\`` on Windows, so without this the SAME directory came back spelled two
-    ways and the repo's own checkout compared unequal to its common root — the
-    main checkout was then misread as a linked worktree and the desktop sidebar
-    rendered it twice (a dir-labeled lane plus a branch-labeled ``main`` lane).
-    """
-    if not cwd:
-        return ""
-
-    # No work tree, nothing to fold. Reading the (warmed, negative-cached)
-    # toplevel first spares every non-repo cwd a second `git` spawn — one the
-    # parallel warm can never absorb, since `resolve()` only reaches here for
-    # cwds that ARE repos.
-    if not repo_root(cwd):
+    """The MAIN (common) repo root for ``cwd``, folding linked worktrees: ``--show-toplevel`` is a
+    linked worktree's OWN root; the parent of the shared ``--git-common-dir`` is the one true root
+    (fallback: toplevel). Normalized to git's forward-slash spelling so it compares equal to
+    :func:`repo_root` (native ``\\`` on Windows made the main checkout look like a worktree)."""
+    # Checking the (warmed, negative-cached) toplevel first spares every non-repo cwd a second
+    # `git` spawn the parallel warm can't absorb.
+    if not cwd or not repo_root(cwd):
         return ""
 
     def _probe() -> str:
@@ -176,12 +120,8 @@ def common_repo_root(cwd: str) -> str:
 
 
 def resolve(cwd: str) -> dict | None:
-    """Inject-able resolver for ``project_tree.build_tree``.
-
-    Returns ``{"repo_root": <common root>, "worktree_root": <this checkout>}``
-    or ``None`` when ``cwd`` is not in a git repo. ``build_tree`` treats
-    ``worktree_root == repo_root`` as the main checkout.
-    """
+    """Inject-able resolver for ``project_tree.build_tree``: ``{repo_root: <common root>,
+    worktree_root: <this checkout>}`` or None outside a repo (equal roots = main checkout)."""
     worktree_root = repo_root(cwd)
     if not worktree_root:
         return None
@@ -190,13 +130,10 @@ def resolve(cwd: str) -> dict | None:
 
 def warm_roots(cwds: Iterable[str], max_workers: int = _WARM_WORKERS) -> None:
     """Pre-resolve many cwds' roots in parallel (bounded) so a cold first paint
-    doesn't serialize one git subprocess per session cwd. Single-flight dedupes
-    overlap; results land in the shared cache for the sequential consumers."""
+    doesn't serialize one git spawn per session cwd; results land in the cache."""
     pending = sorted({(cwd or "").strip() for cwd in cwds} - {""})
-    if not pending:
-        return
     if len(pending) == 1:
         resolve(pending[0])
-        return
-    with ThreadPoolExecutor(max_workers=min(max_workers, len(pending))) as pool:
-        list(pool.map(resolve, pending))
+    elif pending:
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(pending))) as pool:
+            list(pool.map(resolve, pending))

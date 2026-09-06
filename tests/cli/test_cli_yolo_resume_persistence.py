@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import tools.approval as approval_module
+from tools import approval_context
 from cli import HermesCLI
 from hermes_state import SessionDB
 
@@ -216,14 +217,14 @@ class TestEndToEndPersistAndRestore:
         HermesCLI._restore_session_yolo(cli_two, meta)
         assert approval_module.is_session_yolo_enabled(SESSION_ID) is True
 
-        token = approval_module.set_current_session_key(SESSION_ID)
+        token = approval_context.set_current_session_key(SESSION_ID)
         try:
             result = approval_module.check_all_command_guards(
                 "rm -rf /tmp/scratch-xyzzy", "local",
             )
             assert result["approved"] is True
         finally:
-            approval_module.reset_current_session_key(token)
+            approval_context.reset_current_session_key(token)
 
     def test_toggle_off_round_trip(self, db):
         """OFF must persist too — a resumed session must not resurrect a

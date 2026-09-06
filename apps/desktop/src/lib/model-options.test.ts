@@ -206,13 +206,7 @@ describe('modelOptionsQueryKey', () => {
     const sourceBKey = modelOptionsQueryKey('default', 'session-1', 'source-b')
     const queryClient = new QueryClient()
 
-    expect(sourceAKey).toEqual([
-      'model-options',
-      'default',
-      'session-1',
-      'owner',
-      'source-a'
-    ])
+    expect(sourceAKey).toEqual(['model-options', 'default', 'session-1', 'owner', 'source-a'])
     queryClient.setQueryData(sourceAKey, { providers: [{ models: ['a/model'], slug: 'a' }] })
     queryClient.setQueryData(sourceBKey, { providers: [{ models: ['b/model'], slug: 'b' }] })
 

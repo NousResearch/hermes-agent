@@ -10,8 +10,10 @@ import { MAIN_COMPOSER_SCOPE } from './composer/scope'
 const requestGatewayMock = vi.hoisted(() => vi.fn())
 
 const { $activeSessionId, $sessions, setSessions } = await import('@/store/session')
+
 const { $sessionStates, $sessionTiles, clearAllSessionStates, publishSessionState, setSessionTileDelegate } =
   await import('@/store/session-states')
+
 const { listTileSessionRow, useSessionTileActions } = await import('./session-tile-actions')
 
 const RUNTIME_SESSION_ID = 'rt-tile-current'

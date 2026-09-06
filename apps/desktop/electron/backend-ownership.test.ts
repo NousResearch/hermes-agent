@@ -178,6 +178,51 @@ test('startup reap preserves failed stops for the next launch', async () => {
   assert.deepEqual(parseBackendOwnership(store.value()), [entry])
 })
 
+test('startup reap stops at the deadline and preserves the unprocessed records', async () => {
+  const first = ownershipEntry({ pid: 60 })
+  const second = ownershipEntry({ pid: 61 })
+  const store = memoryStore(stored([first, second]))
+  const stop = vi.fn()
+
+  const ownership = createOwnership(store, {
+    // Each probe is slow enough to blow a 1ms budget after the first entry.
+    matchesIdentity: async () => {
+      await new Promise(resolve => setTimeout(resolve, 10))
+
+      return false
+    },
+    stop,
+    reapDeadlineMs: 1
+  })
+
+  assert.deepEqual(await ownership.reapOrphans(), [])
+  // The first entry was processed (dropped); the second was preserved for the
+  // next launch instead of stalling boot on a slow identity probe.
+  assert.deepEqual(parseBackendOwnership(store.value()), [second])
+})
+
+test('startup reap preserves would-be-reaped records when the budget runs out', async () => {
+  const first = ownershipEntry({ pid: 62 })
+  const second = ownershipEntry({ pid: 63 })
+  const store = memoryStore(stored([first, second]))
+  const stop = vi.fn()
+
+  const ownership = createOwnership(store, {
+    matchesIdentity: async () => {
+      await new Promise(resolve => setTimeout(resolve, 10))
+
+      return true
+    },
+    stop,
+    reapDeadlineMs: 1
+  })
+
+  assert.deepEqual(await ownership.reapOrphans(), [62])
+  // The second would have been reaped too, but the budget ran out — it is
+  // preserved so a later launch retries it.
+  assert.deepEqual(parseBackendOwnership(store.value()), [second])
+})
+
 test('startup reap never stops a backend whose parent Electron is still alive', async () => {
   const entry = { ...ownershipEntry({ pid: 54 }), parentPid: 100, parentStartMarker: 'os-start-parent' }
   const store = memoryStore(stored([entry]))

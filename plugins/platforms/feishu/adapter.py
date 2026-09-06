@@ -1,48 +1,19 @@
 """
 Feishu/Lark platform adapter.
 
-Supports:
-- WebSocket long connection and Webhook transport
-- Direct-message and group @mention-gated text receive/send
-- Inbound image/file/audio/media caching
-- Gateway allowlist integration via FEISHU_ALLOWED_USERS
-- Persistent dedup state across restarts
-- Per-chat serial message processing (matches openclaw createChatQueue)
-- Processing status reactions: Typing while working, removed on success,
-  swapped for CrossMark on failure
-- Reaction events routed as synthetic text events (matches openclaw)
-- Interactive card button-click events routed as synthetic COMMAND events
-- Webhook anomaly tracking (matches openclaw createWebhookAnomalyTracker)
-- Verification token validation as second auth layer (matches openclaw)
+Supports WebSocket + Webhook transports, DM/@mention-gated group text, inbound
+media caching, FEISHU_ALLOWED_USERS allowlisting, persistent dedup, per-chat
+serial processing, processing-status reactions (Typing while working, CrossMark
+on failure), reaction/card-button events as synthetic events, webhook anomaly
+tracking and verification-token validation (all mirroring openclaw).
 
-Feishu identity model
----------------------
-Feishu uses three user-ID tiers (official docs:
-https://open.feishu.cn/document/home/user-identity-introduction/introduction):
-
-  open_id  (ou_xxx)  — **App-scoped**.  The same person gets a different
-                        open_id under each Feishu app.  Always available in
-                        event payloads without extra permissions.
-  user_id  (u_xxx)   — **Tenant-scoped**.  Stable within a company but
-                        requires the ``contact:user.employee_id:readonly``
-                        scope.  May not be present.
-  union_id (on_xxx)  — **Developer-scoped**.  Same across all apps owned by
-                        one developer/ISV.  Best cross-app stable ID.
-
-For bots specifically:
-
-  app_id              — The application's canonical credential identifier.
-  bot open_id         — Returned by ``/bot/v3/info``.  This is the bot's own
-                        open_id *within its app context* and is what Feishu
-                        puts in ``mentions[].id.open_id`` when someone
-                        @-mentions the bot.  Used for mention gating only.
-
-In single-bot mode (what Hermes currently supports), open_id works as a
-de-facto unique user identifier since there is only one app context.
-
-Session-key participant isolation prefers ``union_id`` (via user_id_alt)
-over ``open_id`` (via user_id) so that sessions stay stable if the same
-user is seen through different apps in the future.
+Feishu identity model (https://open.feishu.cn/document/home/user-identity-introduction/introduction):
+  open_id  (ou_xxx) — app-scoped; differs per Feishu app; always in event payloads.
+  user_id  (u_xxx)  — tenant-scoped; needs ``contact:user.employee_id:readonly``; may be absent.
+  union_id (on_xxx) — developer-scoped; stable across one developer's apps.
+Bot: ``app_id`` is the credential; the bot's own open_id (from ``/bot/v3/info``) is
+what Feishu puts in ``mentions[].id.open_id`` — used for mention gating only.
+Session keys prefer union_id (user_id_alt) over open_id (user_id) for stability.
 """
 
 from __future__ import annotations
@@ -85,33 +56,24 @@ try:
 except ImportError:
     websockets = None  # type: ignore[assignment]
 
-# lark_oapi takes a noticeable amount of time to import.  Keep the gateway
-# configuration path responsive by importing it only when Feishu connects.
-lark = None  # type: ignore[assignment]
-GetApplicationRequest = None  # type: ignore[assignment]
-CreateFileRequest = None  # type: ignore[assignment]
-CreateFileRequestBody = None  # type: ignore[assignment]
-CreateImageRequest = None  # type: ignore[assignment]
-CreateImageRequestBody = None  # type: ignore[assignment]
-CreateMessageRequest = None  # type: ignore[assignment]
-CreateMessageRequestBody = None  # type: ignore[assignment]
-GetChatRequest = None  # type: ignore[assignment]
-GetMessageRequest = None  # type: ignore[assignment]
-GetMessageResourceRequest = None  # type: ignore[assignment]
-P2ImMessageMessageReadV1 = None  # type: ignore[assignment]
-ReplyMessageRequest = None  # type: ignore[assignment]
-ReplyMessageRequestBody = None  # type: ignore[assignment]
-UpdateMessageRequest = None  # type: ignore[assignment]
-UpdateMessageRequestBody = None  # type: ignore[assignment]
-AccessTokenType = None  # type: ignore[assignment]
-HttpMethod = None  # type: ignore[assignment]
-FEISHU_DOMAIN = None  # type: ignore[assignment]
-LARK_DOMAIN = None  # type: ignore[assignment]
-BaseRequest = None  # type: ignore[assignment]
-CallBackCard = None  # type: ignore[assignment]
-P2CardActionTriggerResponse = None  # type: ignore[assignment]
-EventDispatcherHandler = None  # type: ignore[assignment]
-FeishuWSClient = None  # type: ignore[assignment]
+# lark_oapi is slow to import; the SDK names below stay None until Feishu actually connects
+# (_load_lark_oapi binds every name in _LARK_SDK_IMPORTS plus ``lark`` and ``FeishuWSClient``).
+_LARK_SDK_IMPORTS = (
+    ("lark_oapi.api.application.v6", ("GetApplicationRequest",)),
+    ("lark_oapi.api.im.v1", (
+        "CreateFileRequest", "CreateFileRequestBody", "CreateImageRequest", "CreateImageRequestBody",
+        "CreateMessageRequest", "CreateMessageRequestBody", "GetChatRequest", "GetMessageRequest",
+        "GetMessageResourceRequest", "P2ImMessageMessageReadV1", "ReplyMessageRequest", "ReplyMessageRequestBody",
+        "UpdateMessageRequest", "UpdateMessageRequestBody",
+    )),
+    ("lark_oapi.core", ("AccessTokenType", "HttpMethod")),
+    ("lark_oapi.core.const", ("FEISHU_DOMAIN", "LARK_DOMAIN")),
+    ("lark_oapi.core.model", ("BaseRequest",)),
+    ("lark_oapi.event.callback.model.p2_card_action_trigger", ("CallBackCard", "P2CardActionTriggerResponse")),
+    ("lark_oapi.event.dispatcher_handler", ("EventDispatcherHandler",)),
+)
+lark = FeishuWSClient = None  # type: ignore[assignment]
+globals().update({name: None for _, names in _LARK_SDK_IMPORTS for name in names})
 FEISHU_AVAILABLE = False
 _lark_import_lock = threading.Lock()
 
@@ -120,51 +82,20 @@ FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
-    ProcessingOutcome,
-    SendResult,
-    SUPPORTED_DOCUMENT_TYPES,
-    cache_document_from_bytes,
-    cache_image_from_url,
-    cache_audio_from_bytes,
-    cache_image_from_bytes,
+    BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult,
+    SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
+    cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, env_float, env_int
 
-from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
-from agent.secret_scope import get_secret as _scoped_get_secret
-
-
-def _get_scoped_secret(name, default=None):
-    """Scope-aware credential read with the default-profile startup fallback.
-
-    Secondary profiles construct their adapters under a profile secret
-    scope -- the scope is authoritative and a scoped miss returns ``default``
-    (no cross-profile borrow from ``os.environ``, which may hold another
-    profile's value). The DEFAULT profile's adapter constructs and sends
-    *unscoped* under multiplexing, where a bare ``get_secret`` would raise
-    ``UnscopedSecretError`` and crash this path; there ``os.environ`` is that
-    profile's own value, so fall back to it. Same pattern as the Slack
-    ``SLACK_APP_TOKEN`` read (#59739) and
-    ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
-    """
-    try:
-        val = _scoped_get_secret(name, default)
-    except _UnscopedSecretError:
-        val = os.getenv(name)
-    return val if val is not None else default
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Regex patterns
-# ---------------------------------------------------------------------------
-
+# --- Regex patterns ---
 _MARKDOWN_HINT_RE = re.compile(
     # Pipe table: any header line + separator line both starting with '|'.
     r"(^\|.*\|\s*\n\|[-:|\s]+\|)"
@@ -183,18 +114,12 @@ _MARKDOWN_HINT_RE = re.compile(
     r"|(^>\s)",
     re.MULTILINE,
 )
-# Backwards-compatible alias retained because external callers reference it.
-_MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
-_MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
-# ---------------------------------------------------------------------------
-# Media type sets and upload constants
-# ---------------------------------------------------------------------------
-
+# --- Media type sets and upload constants ---
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 _AUDIO_EXTENSIONS = {".ogg", ".mp3", ".wav", ".m4a", ".aac", ".flac", ".opus", ".webm"}
 _VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".3gp"}
@@ -204,18 +129,9 @@ _FEISHU_FILE_UPLOAD_TYPE = "stream"
 _FEISHU_OPUS_UPLOAD_EXTENSIONS = {".ogg", ".opus"}
 _FEISHU_MEDIA_UPLOAD_EXTENSIONS = {".mp4", ".mov", ".avi", ".m4v"}
 _FEISHU_DOC_UPLOAD_TYPES = {
-    ".pdf": "pdf",
-    ".doc": "doc",
-    ".docx": "doc",
-    ".xls": "xls",
-    ".xlsx": "xls",
-    ".ppt": "ppt",
-    ".pptx": "ppt",
+    ".pdf": "pdf", ".doc": "doc", ".docx": "doc", ".xls": "xls", ".xlsx": "xls", ".ppt": "ppt", ".pptx": "ppt",
 }
-# ---------------------------------------------------------------------------
-# Connection, retry and batching tuning
-# ---------------------------------------------------------------------------
-
+# --- Connection, retry and batching tuning ---
 _MAX_TEXT_INJECT_BYTES = 100 * 1024
 _FEISHU_CONNECT_ATTEMPTS = 3
 _FEISHU_SEND_ATTEMPTS = 3
@@ -228,10 +144,7 @@ _DEFAULT_DEDUP_CACHE_SIZE = 2048
 _DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 _DEFAULT_WEBHOOK_PORT = 8765
 _DEFAULT_WEBHOOK_PATH = "/feishu/webhook"
-# ---------------------------------------------------------------------------
-# TTL, rate-limit and webhook security constants
-# ---------------------------------------------------------------------------
-
+# --- TTL, rate-limit and webhook security constants ---
 _FEISHU_DEDUP_TTL_SECONDS = 24 * 60 * 60          # 24 hours — matches openclaw
 _FEISHU_SENDER_NAME_TTL_SECONDS = 10 * 60          # 10 minutes sender-name cache
 _FEISHU_WEBHOOK_MAX_BODY_BYTES = 1 * 1024 * 1024   # 1 MB body limit
@@ -244,16 +157,10 @@ _FEISHU_WEBHOOK_ANOMALY_TTL_SECONDS = 6 * 60 * 60  # anomaly tracker TTL (6 hour
 _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS = 15 * 60    # card action token dedup window (15 min)
 
 _APPROVAL_CHOICE_MAP: Dict[str, str] = {
-    "approve_once": "once",
-    "approve_session": "session",
-    "approve_always": "always",
-    "deny": "deny",
+    "approve_once": "once", "approve_session": "session", "approve_always": "always", "deny": "deny",
 }
 _APPROVAL_LABEL_MAP: Dict[str, str] = {
-    "once": "Approved once",
-    "session": "Approved for session",
-    "always": "Approved permanently",
-    "deny": "Denied",
+    "once": "Approved once", "session": "Approved for session", "always": "Approved permanently", "deny": "Denied",
 }
 
 
@@ -268,7 +175,6 @@ async def _read_limited_feishu_webhook_body(request: Any, max_bytes: int) -> byt
     return body
 
 
-_FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
 
 # Feishu reactions render as prominent badges, unlike Discord/Telegram's
@@ -288,27 +194,18 @@ _ONBOARD_ACCOUNTS_URLS = {
     "feishu": "https://accounts.feishu.cn",
     "lark": "https://accounts.larksuite.com",
 }
-_ONBOARD_OPEN_URLS = {
-    "feishu": "https://open.feishu.cn",
-    "lark": "https://open.larksuite.com",
-}
+_ONBOARD_OPEN_URLS = {"feishu": "https://open.feishu.cn", "lark": "https://open.larksuite.com"}
 _REGISTRATION_PATH = "/oauth/v1/app/registration"
 _ONBOARD_REQUEST_TIMEOUT_S = 10
 
-# ---------------------------------------------------------------------------
-# Fallback display strings
-# ---------------------------------------------------------------------------
-
+# --- Fallback display strings ---
 FALLBACK_POST_TEXT = "[Rich text message]"
 FALLBACK_FORWARD_TEXT = "[Merged forward message]"
 FALLBACK_SHARE_CHAT_TEXT = "[Shared chat]"
 FALLBACK_INTERACTIVE_TEXT = "[Interactive message]"
 FALLBACK_IMAGE_TEXT = "[Image]"
 FALLBACK_ATTACHMENT_TEXT = "[Attachment]"
-# ---------------------------------------------------------------------------
-# Post/card parsing helpers
-# ---------------------------------------------------------------------------
-
+# --- Post/card parsing helpers ---
 _PREFERRED_LOCALES = ("zh_cn", "en_us")
 _MARKDOWN_SPECIAL_CHARS_RE = re.compile(r"([\\`*_{}\[\]()#+\-!|>~])")
 _MENTION_PLACEHOLDER_RE = re.compile(r"@_user_\d+")
@@ -316,37 +213,15 @@ _MENTION_BOUNDARY_CHARS = frozenset(" \t\n\r.,;:!?、，。；：！？()[]{}<>\
 _TRAILING_TERMINAL_PUNCT = frozenset(" \t\n\r.!?。！？")
 _WHITESPACE_RE = re.compile(r"\s+")
 _SUPPORTED_CARD_TEXT_KEYS = (
-    "title",
-    "text",
-    "content",
-    "label",
-    "value",
-    "name",
-    "summary",
-    "subtitle",
-    "description",
-    "placeholder",
-    "hint",
+    "title", "text", "content", "label", "value", "name", "summary", "subtitle", "description", "placeholder", "hint",
 )
+_RICH_BLOCK_TAGS = {
+    "plain_text", "lark_md", "markdown", "note", "div", "column_set", "column", "action", "button", "select_static",
+    "date_picker",
+}
 _SKIP_TEXT_KEYS = {
-    "tag",
-    "type",
-    "msg_type",
-    "message_type",
-    "chat_id",
-    "open_chat_id",
-    "share_chat_id",
-    "file_key",
-    "image_key",
-    "user_id",
-    "open_id",
-    "union_id",
-    "url",
-    "href",
-    "link",
-    "token",
-    "template",
-    "locale",
+    "tag", "type", "msg_type", "message_type", "chat_id", "open_chat_id", "share_chat_id", "file_key", "image_key",
+    "user_id", "open_id", "union_id", "url", "href", "link", "token", "template", "locale",
 }
 
 
@@ -403,7 +278,9 @@ class FeishuNormalizedMessage:
 
 @dataclass(frozen=True)
 class FeishuAdapterSettings:
-    app_id: str  # Canonical bot/app identifier (credential, not from event payloads)
+    """Every field is mirrored onto the adapter as ``self._<field>`` by ``_apply_settings``."""
+
+    app_id: str  # credential identifier, never taken from event payloads
     app_secret: str
     domain_name: str
     connection_mode: str
@@ -411,12 +288,8 @@ class FeishuAdapterSettings:
     verification_token: str
     group_policy: str
     allowed_group_users: frozenset[str]
-    # Bot's own open_id (app-scoped) — returned by /bot/v3/info.  Used only for
-    # @mention matching: Feishu puts this value in mentions[].id.open_id when
-    # a user @-mentions the bot in a group chat.
-    bot_open_id: str
-    # Bot's user_id (tenant-scoped) — optional, used as fallback mention match.
-    bot_user_id: str
+    bot_open_id: str  # app-scoped id from /bot/v3/info — what mentions[].id.open_id carries
+    bot_user_id: str  # tenant-scoped fallback for mention matching
     bot_name: str
     dedup_cache_size: int
     text_batch_delay_seconds: float
@@ -436,6 +309,7 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    allow_all_dm: bool = False  # resolved per-profile so multiplexed adapters honor their own .env
 
 
 @dataclass
@@ -455,18 +329,9 @@ class FeishuBatchState:
     counts: Dict[str, int] = field(default_factory=dict)
 
 
-# ---------------------------------------------------------------------------
-# Admission: policy types
-# ---------------------------------------------------------------------------
+# --- Admission: policy types ---
 
-
-RejectReason = Literal[
-    "self_echo",
-    "self_ids_unknown",
-    "bots_disabled",
-    "bot_not_mentioned",
-    "group_policy_rejected",
-]
+RejectReason = Literal["self_echo", "self_ids_unknown", "bots_disabled", "bot_not_mentioned", "group_policy_rejected"]
 
 
 def _is_bot_sender(sender: Any) -> bool:
@@ -479,20 +344,10 @@ def _sender_identity(sender: Any) -> frozenset:
     sid = getattr(sender, "sender_id", None)
     if sid is None:
         return frozenset()
-    return frozenset(
-        v for v in (
-            getattr(sid, "open_id", None),
-            getattr(sid, "user_id", None),
-            getattr(sid, "union_id", None),
-        )
-        if v
-    )
+    return frozenset(v for v in (getattr(sid, k, None) for k in ("open_id", "user_id", "union_id")) if v)
 
 
-# ---------------------------------------------------------------------------
-# Markdown rendering helpers
-# ---------------------------------------------------------------------------
-
+# --- Markdown rendering helpers ---
 
 def _escape_markdown_text(text: str) -> str:
     return _MARKDOWN_SPECIAL_CHARS_RE.sub(r"\\\1", text)
@@ -519,46 +374,33 @@ def _sanitize_fence_language(language: str) -> str:
     return language.strip().replace("\n", " ").replace("\r", " ")
 
 
+_TEXT_STYLE_WRAPPERS = (("bold", "**", "**"), ("italic", "*", "*"), ("underline", "<u>", "</u>"), ("strikethrough", "~~", "~~"))
+
+
 def _render_text_element(element: Dict[str, Any]) -> str:
     text = str(element.get("text", "") or "")
     style = element.get("style")
     style_dict = style if isinstance(style, dict) else None
-
     if _is_style_enabled(style_dict, "code"):
         return _wrap_inline_code(text)
-
     rendered = _escape_markdown_text(text)
     if not rendered:
         return ""
-    if _is_style_enabled(style_dict, "bold"):
-        rendered = f"**{rendered}**"
-    if _is_style_enabled(style_dict, "italic"):
-        rendered = f"*{rendered}*"
-    if _is_style_enabled(style_dict, "underline"):
-        rendered = f"<u>{rendered}</u>"
-    if _is_style_enabled(style_dict, "strikethrough"):
-        rendered = f"~~{rendered}~~"
+    for key, prefix, suffix in _TEXT_STYLE_WRAPPERS:  # order matters for nesting
+        if _is_style_enabled(style_dict, key):
+            rendered = f"{prefix}{rendered}{suffix}"
     return rendered
 
 
 def _render_code_block_element(element: Dict[str, Any]) -> str:
-    language = _sanitize_fence_language(
-        str(element.get("language", "") or "") or str(element.get("lang", "") or "")
-    )
-    code = (
-        str(element.get("text", "") or "") or str(element.get("content", "") or "")
-    ).replace("\r\n", "\n")
+    language = _sanitize_fence_language(str(element.get("language", "") or "") or str(element.get("lang", "") or ""))
+    code = (str(element.get("text", "") or "") or str(element.get("content", "") or "")).replace("\r\n", "\n")
     trailing_newline = "" if code.endswith("\n") else "\n"
     return f"```{language}\n{code}{trailing_newline}```"
 
 
 def _strip_markdown_to_plain_text(text: str) -> str:
-    """Strip markdown formatting to plain text for Feishu text fallbacks.
-
-    Delegates common markdown stripping to the shared helper and adds
-    Feishu-specific patterns (blockquotes, strikethrough, underline tags,
-    horizontal rules, \\r\\n normalisation).
-    """
+    """Plain-text fallback: shared strip_markdown plus Feishu extras (blockquote, ~~, <u>, hr, CRLF)."""
     from gateway.platforms.helpers import strip_markdown
     plain = text.replace("\r\n", "\n")
     plain = _MARKDOWN_LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2).strip()})", plain)
@@ -566,8 +408,7 @@ def _strip_markdown_to_plain_text(text: str) -> str:
     plain = re.sub(r"^\s*---+\s*$", "---", plain, flags=re.MULTILINE)
     plain = re.sub(r"~~([^~\n]+)~~", r"\1", plain)
     plain = re.sub(r"<u>([\s\S]*?)</u>", r"\1", plain)
-    plain = strip_markdown(plain)
-    return plain
+    return strip_markdown(plain)
 
 
 def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -> Optional[int]:
@@ -584,30 +425,18 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
     return default if parsed is None else parsed
 
 
-# ---------------------------------------------------------------------------
-# Post payload builders and parsers
-# ---------------------------------------------------------------------------
-
+# --- Post payload builders and parsers ---
 
 def _build_markdown_post_payload(content: str) -> str:
     rows = _build_markdown_post_rows(content)
-    return json.dumps(
-        {
-            "zh_cn": {
-                "content": rows,
-            }
-        },
-        ensure_ascii=False,
-    )
+    return json.dumps({"zh_cn": {"content": rows}}, ensure_ascii=False)
 
 
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
-    """Build Feishu post rows while isolating fenced code blocks.
+    """Build Feishu post rows, giving each fenced code block its own row.
 
-    Feishu's `md` renderer can swallow trailing content when a fenced code block
-    appears inside one large markdown element. Split the reply at real fence
-    lines so prose before/after the code block remains visible while code stays
-    in a dedicated row.
+    Feishu's `md` renderer can swallow trailing content when a fence sits inside one
+    large element; splitting at real fence lines keeps surrounding prose visible.
     """
     if not content:
         return [[{"tag": "md", "text": ""}]]
@@ -620,69 +449,47 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
 
     def _flush_current() -> None:
         nonlocal current
-        if not current:
-            return
         segment = "\n".join(current)
         if segment.strip():
             rows.append([{"tag": "md", "text": segment}])
         current = []
 
     for raw_line in content.splitlines():
-        stripped_line = raw_line.strip()
-        is_fence = bool(
-            _MARKDOWN_FENCE_CLOSE_RE.match(stripped_line)
-            if in_code_block
-            else _MARKDOWN_FENCE_OPEN_RE.match(stripped_line)
-        )
-
-        if is_fence:
-            if not in_code_block:
-                _flush_current()
-            current.append(raw_line)
-            in_code_block = not in_code_block
-            if not in_code_block:
-                _flush_current()
-            continue
-
+        fence_re = _MARKDOWN_FENCE_CLOSE_RE if in_code_block else _MARKDOWN_FENCE_OPEN_RE
+        is_fence = bool(fence_re.match(raw_line.strip()))
+        if is_fence and not in_code_block:  # opening fence: prose before it becomes its own row
+            _flush_current()
         current.append(raw_line)
-
+        if is_fence:
+            in_code_block = not in_code_block
+            if not in_code_block:  # closing fence: the code block becomes its own row
+                _flush_current()
     _flush_current()
     return rows or [[{"tag": "md", "text": content}]]
 
 
 def parse_feishu_post_payload(
-    payload: Any,
-    *,
-    mentions_map: Optional[Dict[str, FeishuMentionRef]] = None,
+    payload: Any, *, mentions_map: Optional[Dict[str, FeishuMentionRef]] = None,
 ) -> FeishuPostParseResult:
     resolved = _resolve_post_payload(payload)
     if not resolved:
         return FeishuPostParseResult(text_content=FALLBACK_POST_TEXT)
-
     image_keys: List[str] = []
     media_refs: List[FeishuPostMediaRef] = []
     parts: List[str] = []
-
     title = _normalize_feishu_text(str(resolved.get("title", "")).strip())
     if title:
         parts.append(title)
-
     for row in resolved.get("content", []) or []:
         if not isinstance(row, list):
             continue
         row_text = _normalize_feishu_text(
-            "".join(
-                _render_post_element(item, image_keys, media_refs, mentions_map)
-                for item in row
-            )
+            "".join(_render_post_element(item, image_keys, media_refs, mentions_map) for item in row)
         )
         if row_text:
             parts.append(row_text)
-
     return FeishuPostParseResult(
-        text_content="\n".join(parts).strip() or FALLBACK_POST_TEXT,
-        image_keys=image_keys,
-        media_refs=media_refs,
+        text_content="\n".join(parts).strip() or FALLBACK_POST_TEXT, image_keys=image_keys, media_refs=media_refs,
     )
 
 
@@ -692,12 +499,7 @@ def _resolve_post_payload(payload: Any) -> Dict[str, Any]:
         return direct
     if not isinstance(payload, dict):
         return {}
-
-    wrapped = payload.get("post")
-    wrapped_direct = _resolve_locale_payload(wrapped)
-    if wrapped_direct:
-        return wrapped_direct
-    return _resolve_locale_payload(payload)
+    return _resolve_locale_payload(payload.get("post")) or _resolve_locale_payload(payload)
 
 
 def _resolve_locale_payload(payload: Any) -> Dict[str, Any]:
@@ -706,13 +508,9 @@ def _resolve_locale_payload(payload: Any) -> Dict[str, Any]:
         return direct
     if not isinstance(payload, dict):
         return {}
-
-    for key in _PREFERRED_LOCALES:
-        candidate = _to_post_payload(payload.get(key))
-        if candidate:
-            return candidate
-    for value in payload.values():
-        candidate = _to_post_payload(value)
+    # Preferred locales first, then any locale that carries a content list.
+    preferred = (payload.get(key) for key in _PREFERRED_LOCALES)
+    for candidate in map(_to_post_payload, itertools.chain(preferred, payload.values())):
         if candidate:
             return candidate
     return {}
@@ -724,16 +522,14 @@ def _to_post_payload(candidate: Any) -> Dict[str, Any]:
     content = candidate.get("content")
     if not isinstance(content, list):
         return {}
-    return {
-        "title": str(candidate.get("title", "") or ""),
-        "content": content,
-    }
+    return {"title": str(candidate.get("title", "") or ""), "content": content}
+
+
+_STATIC_POST_TAGS = {"br": "\n", "hr": "\n\n---\n\n", "divider": "\n\n---\n\n"}
 
 
 def _render_post_element(
-    element: Any,
-    image_keys: List[str],
-    media_refs: List[FeishuPostMediaRef],
+    element: Any, image_keys: List[str], media_refs: List[FeishuPostMediaRef],
     mentions_map: Optional[Dict[str, FeishuMentionRef]] = None,
 ) -> str:
     if isinstance(element, str):
@@ -742,8 +538,12 @@ def _render_post_element(
         return ""
 
     tag = str(element.get("tag", "")).strip().lower()
+    if tag in _STATIC_POST_TAGS:
+        return _STATIC_POST_TAGS[tag]
     if tag == "text":
         return _render_text_element(element)
+    if tag in {"code_block", "pre"}:
+        return _render_code_block_element(element)
     if tag == "a":
         href = str(element.get("href", "")).strip()
         label = str(element.get("text", href) or "").strip()
@@ -752,20 +552,17 @@ def _render_post_element(
         escaped_label = _escape_markdown_text(label)
         return f"[{escaped_label}]({href})" if href else escaped_label
     if tag == "at":
-        # Post <at>.user_id is a placeholder ("@_user_N" or "@_all"); look up
-        # the real ref in mentions_map for the display name.
+        # <at>.user_id is a placeholder ("@_user_N" / "@_all"); mentions_map has the real ref.
         placeholder = str(element.get("user_id", "")).strip()
         if placeholder == "@_all":
-            # Feishu SDK sometimes omits @_all from the top-level mentions
-            # payload; record it here so the caller's mention list stays complete.
+            # The SDK sometimes omits @_all from top-level mentions; record it so callers see it.
             if mentions_map is not None and "@_all" not in mentions_map:
                 mentions_map["@_all"] = FeishuMentionRef(is_all=True)
             return "@all"
         ref = (mentions_map or {}).get(placeholder)
-        if ref is not None:
-            display_name = ref.name or ref.open_id or "user"
-        else:
-            display_name = str(element.get("user_name", "")).strip() or "user"
+        display_name = (ref.name or ref.open_id or "user") if ref is not None else (
+            str(element.get("user_name", "")).strip() or "user"
+        )
         return f"@{_escape_markdown_text(display_name)}"
     if tag in {"img", "image"}:
         image_key = str(element.get("image_key", "")).strip()
@@ -775,79 +572,46 @@ def _render_post_element(
         return f"[Image: {alt}]" if alt else "[Image]"
     if tag in {"media", "file", "audio", "video"}:
         file_key = str(element.get("file_key", "")).strip()
-        file_name = (
-            str(element.get("file_name", "")).strip()
-            or str(element.get("title", "")).strip()
-            or str(element.get("text", "")).strip()
-        )
+        names = (str(element.get(k, "")).strip() for k in ("file_name", "title", "text"))
+        file_name = next((n for n in names if n), "")
         if file_key:
-            media_refs.append(
-                FeishuPostMediaRef(
-                    file_key=file_key,
-                    file_name=file_name,
-                    resource_type=tag if tag in {"audio", "video"} else "file",
-                )
-            )
+            media_refs.append(FeishuPostMediaRef(
+                file_key=file_key, file_name=file_name, resource_type=tag if tag in {"audio", "video"} else "file",
+            ))
         return f"[Attachment: {file_name}]" if file_name else "[Attachment]"
     if tag in {"emotion", "emoji"}:
         label = str(element.get("text", "")).strip() or str(element.get("emoji_type", "")).strip()
         return f":{_escape_markdown_text(label)}:" if label else "[Emoji]"
-    if tag == "br":
-        return "\n"
-    if tag in {"hr", "divider"}:
-        return "\n\n---\n\n"
     if tag == "code":
         code = str(element.get("text", "") or "") or str(element.get("content", "") or "")
         return _wrap_inline_code(code) if code else ""
-    if tag in {"code_block", "pre"}:
-        return _render_code_block_element(element)
+    nested = (element.get(key) for key in ("text", "title", "content", "children", "elements"))
+    return _join_nested_posts(nested, image_keys, media_refs, mentions_map)
 
-    nested_parts: List[str] = []
-    for key in ("text", "title", "content", "children", "elements"):
-        extracted = _render_nested_post(element.get(key), image_keys, media_refs, mentions_map)
-        if extracted:
-            nested_parts.append(extracted)
-    return " ".join(part for part in nested_parts if part)
+
+def _join_nested_posts(values: Any, image_keys: Any, media_refs: Any, mentions_map: Any) -> str:
+    parts = (_render_nested_post(item, image_keys, media_refs, mentions_map) for item in values)
+    return " ".join(part for part in parts if part)
 
 
 def _render_nested_post(
-    value: Any,
-    image_keys: List[str],
-    media_refs: List[FeishuPostMediaRef],
+    value: Any, image_keys: List[str], media_refs: List[FeishuPostMediaRef],
     mentions_map: Optional[Dict[str, FeishuMentionRef]] = None,
 ) -> str:
     if isinstance(value, str):
         return _escape_markdown_text(value)
     if isinstance(value, list):
-        return " ".join(
-            part
-            for item in value
-            for part in [_render_nested_post(item, image_keys, media_refs, mentions_map)]
-            if part
-        )
+        return _join_nested_posts(value, image_keys, media_refs, mentions_map)
     if isinstance(value, dict):
         direct = _render_post_element(value, image_keys, media_refs, mentions_map)
-        if direct:
-            return direct
-        return " ".join(
-            part
-            for item in value.values()
-            for part in [_render_nested_post(item, image_keys, media_refs, mentions_map)]
-            if part
-        )
+        return direct or _join_nested_posts(value.values(), image_keys, media_refs, mentions_map)
     return ""
 
 
-# ---------------------------------------------------------------------------
-# Message normalization
-# ---------------------------------------------------------------------------
-
+# --- Message normalization ---
 
 def normalize_feishu_message(
-    *,
-    message_type: str,
-    raw_content: str,
-    mentions: Optional[Sequence[Any]] = None,
+    *, message_type: str, raw_content: str, mentions: Optional[Sequence[Any]] = None,
     bot: _FeishuBotIdentity = _FeishuBotIdentity(),
 ) -> FeishuNormalizedMessage:
     normalized_type = str(message_type or "").strip().lower()
@@ -861,8 +625,7 @@ def normalize_feishu_message(
         if "@_all" in text and "@_all" not in mentions_map:
             mentions_map["@_all"] = FeishuMentionRef(is_all=True)
         return FeishuNormalizedMessage(
-            raw_type=normalized_type,
-            text_content=_normalize_feishu_text(text, mentions_map),
+            raw_type=normalized_type, text_content=_normalize_feishu_text(text, mentions_map),
             mentions=list(mentions_map.values()),
         )
     if normalized_type == "post":
@@ -870,12 +633,9 @@ def normalize_feishu_message(
         # <at user_id="@_all">, so reading .values() after parsing is enough.
         parsed_post = parse_feishu_post_payload(payload, mentions_map=mentions_map)
         return FeishuNormalizedMessage(
-            raw_type=normalized_type,
-            text_content=parsed_post.text_content,
-            image_keys=list(parsed_post.image_keys),
-            media_refs=list(parsed_post.media_refs),
-            mentions=list(mentions_map.values()),
-            relation_kind="post",
+            raw_type=normalized_type, text_content=parsed_post.text_content,
+            image_keys=list(parsed_post.image_keys), media_refs=list(parsed_post.media_refs),
+            mentions=list(mentions_map.values()), relation_kind="post",
         )
     mention_refs = list(mentions_map.values())
     if normalized_type == "image":
@@ -889,21 +649,16 @@ def normalize_feishu_message(
         return FeishuNormalizedMessage(
             raw_type=normalized_type,
             text_content=alt_text if alt_text != FALLBACK_IMAGE_TEXT else "",
-            preferred_message_type="photo",
-            image_keys=[image_key] if image_key else [],
-            relation_kind="image",
-            mentions=mention_refs,
+            preferred_message_type="photo", image_keys=[image_key] if image_key else [],
+            relation_kind="image", mentions=mention_refs,
         )
     if normalized_type in {"file", "audio", "media"}:
         media_ref = _build_media_ref_from_payload(payload, resource_type=normalized_type)
-        placeholder = _attachment_placeholder(media_ref.file_name)
         return FeishuNormalizedMessage(
-            raw_type=normalized_type,
-            text_content="",
+            raw_type=normalized_type, text_content="",
             preferred_message_type="audio" if normalized_type == "audio" else "document",
-            media_refs=[media_ref] if media_ref.file_key else [],
-            relation_kind=normalized_type,
-            metadata={"placeholder_text": placeholder},
+            media_refs=[media_ref] if media_ref.file_key else [], relation_kind=normalized_type,
+            metadata={"placeholder_text": _attachment_placeholder(media_ref.file_name)},
             mentions=mention_refs,
         )
     if normalized_type == "merge_forward":
@@ -912,7 +667,6 @@ def normalize_feishu_message(
         return _normalize_share_chat_message(payload)
     if normalized_type in {"interactive", "card"}:
         return _normalize_interactive_message(normalized_type, payload)
-
     return FeishuNormalizedMessage(raw_type=normalized_type, text_content="")
 
 
@@ -925,50 +679,23 @@ def _load_feishu_payload(raw_content: str) -> Dict[str, Any]:
 
 
 def _normalize_merge_forward_message(payload: Dict[str, Any]) -> FeishuNormalizedMessage:
-    title = _first_non_empty_text(
-        payload.get("title"),
-        payload.get("summary"),
-        payload.get("preview"),
-        _find_first_text(payload, keys=("title", "summary", "preview", "description")),
-    )
+    title = _first_text_field(payload, "title", "summary", "preview", deep=("title", "summary", "preview", "description"))
     entries = _collect_forward_entries(payload)
-    lines: List[str] = []
-    if title:
-        lines.append(title)
-    lines.extend(entries[:8])
-    text_content = "\n".join(lines).strip() or FALLBACK_FORWARD_TEXT
+    lines = ([title] if title else []) + entries[:8]
     return FeishuNormalizedMessage(
-        raw_type="merge_forward",
-        text_content=text_content,
-        relation_kind="merge_forward",
-        metadata={"entry_count": len(entries), "title": title},
+        raw_type="merge_forward", text_content="\n".join(lines).strip() or FALLBACK_FORWARD_TEXT,
+        relation_kind="merge_forward", metadata={"entry_count": len(entries), "title": title},
     )
 
 
 def _normalize_share_chat_message(payload: Dict[str, Any]) -> FeishuNormalizedMessage:
-    chat_name = _first_non_empty_text(
-        payload.get("chat_name"),
-        payload.get("name"),
-        payload.get("title"),
-        _find_first_text(payload, keys=("chat_name", "name", "title")),
-    )
-    share_id = _first_non_empty_text(
-        payload.get("chat_id"),
-        payload.get("open_chat_id"),
-        payload.get("share_chat_id"),
-    )
-    lines = []
-    if chat_name:
-        lines.append(f"Shared chat: {chat_name}")
-    else:
-        lines.append(FALLBACK_SHARE_CHAT_TEXT)
+    chat_name = _first_text_field(payload, "chat_name", "name", "title", deep=("chat_name", "name", "title"))
+    share_id = _first_text_field(payload, "chat_id", "open_chat_id", "share_chat_id")
+    lines = [f"Shared chat: {chat_name}" if chat_name else FALLBACK_SHARE_CHAT_TEXT]
     if share_id:
         lines.append(f"Chat ID: {share_id}")
-    text_content = "\n".join(lines)
     return FeishuNormalizedMessage(
-        raw_type="share_chat",
-        text_content=text_content,
-        relation_kind="share_chat",
+        raw_type="share_chat", text_content="\n".join(lines), relation_kind="share_chat",
         metadata={"chat_id": share_id, "chat_name": chat_name},
     )
 
@@ -976,35 +703,21 @@ def _normalize_share_chat_message(payload: Dict[str, Any]) -> FeishuNormalizedMe
 def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -> FeishuNormalizedMessage:
     card_payload = payload.get("card") if isinstance(payload.get("card"), dict) else payload
     title = _first_non_empty_text(
-        _find_header_title(card_payload),
-        payload.get("title"),
+        _find_header_title(card_payload), payload.get("title"),
         _find_first_text(card_payload, keys=("title", "summary", "subtitle")),
     )
-    body_lines = _collect_card_lines(card_payload)
     actions = _collect_action_labels(card_payload)
-
-    lines: List[str] = []
-    if title:
-        lines.append(title)
-    for line in body_lines:
-        if line != title:
-            lines.append(line)
+    lines = ([title] if title else []) + [line for line in _collect_card_lines(card_payload) if line != title]
     if actions:
         lines.append(f"Actions: {', '.join(actions)}")
-
-    text_content = "\n".join(lines[:12]).strip() or FALLBACK_INTERACTIVE_TEXT
     return FeishuNormalizedMessage(
         raw_type=message_type,
-        text_content=text_content,
-        relation_kind="interactive",
-        metadata={"title": title, "actions": actions},
+        text_content="\n".join(lines[:12]).strip() or FALLBACK_INTERACTIVE_TEXT,
+        relation_kind="interactive", metadata={"title": title, "actions": actions},
     )
 
 
-# ---------------------------------------------------------------------------
-# Content extraction utilities (card / forward / text walking)
-# ---------------------------------------------------------------------------
-
+# --- Content extraction utilities (card / forward / text walking) ---
 
 def _collect_forward_entries(payload: Dict[str, Any]) -> List[str]:
     candidates: List[Any] = []
@@ -1019,22 +732,13 @@ def _collect_forward_entries(payload: Dict[str, Any]) -> List[str]:
             if text:
                 entries.append(f"- {text}")
             continue
-        sender = _first_non_empty_text(
-            item.get("sender_name"),
-            item.get("user_name"),
-            item.get("sender"),
-            item.get("name"),
-        )
+        sender = _first_text_field(item, "sender_name", "user_name", "sender", "name")
         nested_type = str(item.get("message_type", "") or item.get("msg_type", "")).strip().lower()
         if nested_type == "post":
             body = parse_feishu_post_payload(item.get("content") or item).text_content
         else:
-            body = _first_non_empty_text(
-                item.get("text"),
-                item.get("summary"),
-                item.get("preview"),
-                item.get("content"),
-                _find_first_text(item, keys=("text", "content", "summary", "preview", "title")),
+            body = _first_text_field(
+                item, "text", "summary", "preview", "content", deep=("text", "content", "summary", "preview", "title"),
             )
         body = _normalize_feishu_text(body)
         if sender and body:
@@ -1058,12 +762,7 @@ def _collect_action_labels(payload: Any) -> List[str]:
         tag = str(item.get("tag", "") or item.get("type", "")).strip().lower()
         if tag not in {"button", "select_static", "overflow", "date_picker", "picker"}:
             continue
-        label = _first_non_empty_text(
-            item.get("text"),
-            item.get("name"),
-            item.get("value"),
-            _find_first_text(item, keys=("text", "content", "name", "value")),
-        )
+        label = _first_text_field(item, "text", "name", "value", deep=("text", "content", "name", "value"))
         if label:
             labels.append(label)
     return _unique_lines(labels)
@@ -1073,50 +772,26 @@ def _collect_text_segments(value: Any, *, in_rich_block: bool) -> List[str]:
     if isinstance(value, str):
         return [_normalize_feishu_text(value)] if in_rich_block else []
     if isinstance(value, list):
-        segments: List[str] = []
-        for item in value:
-            segments.extend(_collect_text_segments(item, in_rich_block=in_rich_block))
-        return segments
+        return [seg for item in value for seg in _collect_text_segments(item, in_rich_block=in_rich_block)]
     if not isinstance(value, dict):
         return []
-
     tag = str(value.get("tag", "") or value.get("type", "")).strip().lower()
-    next_in_rich_block = in_rich_block or tag in {
-        "plain_text",
-        "lark_md",
-        "markdown",
-        "note",
-        "div",
-        "column_set",
-        "column",
-        "action",
-        "button",
-        "select_static",
-        "date_picker",
-    }
-
+    next_in_rich_block = in_rich_block or tag in _RICH_BLOCK_TAGS
     segments: List[str] = []
-    for key in _SUPPORTED_CARD_TEXT_KEYS:
-        item = value.get(key)
-        if isinstance(item, str) and next_in_rich_block:
-            normalized = _normalize_feishu_text(item)
-            if normalized:
-                segments.append(normalized)
-
+    if next_in_rich_block:
+        for key in _SUPPORTED_CARD_TEXT_KEYS:
+            item = value.get(key)
+            if isinstance(item, str) and _normalize_feishu_text(item):
+                segments.append(_normalize_feishu_text(item))
     for key, item in value.items():
-        if key in _SKIP_TEXT_KEYS:
-            continue
-        segments.extend(_collect_text_segments(item, in_rich_block=next_in_rich_block))
+        if key not in _SKIP_TEXT_KEYS:
+            segments.extend(_collect_text_segments(item, in_rich_block=next_in_rich_block))
     return segments
 
 
 def _build_media_ref_from_payload(payload: Dict[str, Any], *, resource_type: str) -> FeishuPostMediaRef:
     file_key = str(payload.get("file_key", "") or "").strip()
-    file_name = _first_non_empty_text(
-        payload.get("file_name"),
-        payload.get("title"),
-        payload.get("text"),
-    )
+    file_name = _first_text_field(payload, "file_name", "title", "text")
     effective_type = resource_type if resource_type in {"audio", "video"} else "file"
     return FeishuPostMediaRef(file_key=file_key, file_name=file_name, resource_type=effective_type)
 
@@ -1162,34 +837,30 @@ def _walk_nodes(value: Any):
 
 
 def _first_non_empty_text(*values: Any) -> str:
+    """First scalar (non-dict/list, non-None) value that normalizes to non-empty text."""
     for value in values:
-        if isinstance(value, str):
-            normalized = _normalize_feishu_text(value)
-            if normalized:
-                return normalized
-        elif value is not None and not isinstance(value, (dict, list)):
-            normalized = _normalize_feishu_text(str(value))
-            if normalized:
-                return normalized
+        if value is None or isinstance(value, (dict, list)):
+            continue
+        normalized = _normalize_feishu_text(value if isinstance(value, str) else str(value))
+        if normalized:
+            return normalized
     return ""
 
 
-# ---------------------------------------------------------------------------
-# General text utilities
-# ---------------------------------------------------------------------------
+def _first_text_field(payload: Dict[str, Any], *keys: str, deep: tuple[str, ...] = ()) -> str:
+    """``_first_non_empty_text`` over ``payload[key]`` for each key, then a deep ``_find_first_text``."""
+    values = [payload.get(key) for key in keys]
+    if deep:
+        values.append(_find_first_text(payload, keys=deep))
+    return _first_non_empty_text(*values)
 
 
-def _normalize_feishu_text(
-    text: str,
-    mentions_map: Optional[Dict[str, FeishuMentionRef]] = None,
-) -> str:
+# --- General text utilities ---
+
+def _normalize_feishu_text(text: str, mentions_map: Optional[Dict[str, FeishuMentionRef]] = None) -> str:
     def _sub(match: "re.Match[str]") -> str:
-        key = match.group(0)
-        ref = (mentions_map or {}).get(key)
-        if ref is None:
-            return " "
-        name = ref.name or ref.open_id or "user"
-        return f"@{name}"
+        ref = (mentions_map or {}).get(match.group(0))
+        return " " if ref is None else f"@{ref.name or ref.open_id or 'user'}"
 
     cleaned = _MENTION_PLACEHOLDER_RE.sub(_sub, text or "")
     cleaned = cleaned.replace("@_all", "@all")
@@ -1211,35 +882,20 @@ def _unique_lines(lines: List[str]) -> List[str]:
     return unique
 
 
-# ---------------------------------------------------------------------------
-# Mention helpers
-# ---------------------------------------------------------------------------
-
+# --- Mention helpers ---
 
 def _extract_mention_ids(mention: Any) -> tuple[str, str]:
-    # Returns (open_id, user_id). im.v1.message.get hands back id as a string
-    # plus id_type discriminator; event payloads hand back a nested UserId
-    # object carrying both fields.
+    """(open_id, user_id): message.get gives a string id + id_type; events give a nested UserId object."""
     mention_id = getattr(mention, "id", None)
     if isinstance(mention_id, str):
         id_type = str(getattr(mention, "id_type", "") or "").lower()
-        if id_type == "open_id":
-            return mention_id, ""
-        if id_type == "user_id":
-            return "", mention_id
-        return "", ""
+        return (mention_id, "") if id_type == "open_id" else ("", mention_id) if id_type == "user_id" else ("", "")
     if mention_id is None:
         return "", ""
-    return (
-        str(getattr(mention_id, "open_id", "") or ""),
-        str(getattr(mention_id, "user_id", "") or ""),
-    )
+    return str(getattr(mention_id, "open_id", "") or ""), str(getattr(mention_id, "user_id", "") or "")
 
 
-def _build_mentions_map(
-    mentions: Optional[Sequence[Any]],
-    bot: _FeishuBotIdentity,
-) -> Dict[str, FeishuMentionRef]:
+def _build_mentions_map(mentions: Optional[Sequence[Any]], bot: _FeishuBotIdentity) -> Dict[str, FeishuMentionRef]:
     result: Dict[str, FeishuMentionRef] = {}
     for mention in mentions or []:
         key = str(getattr(mention, "key", "") or "")
@@ -1250,11 +906,8 @@ def _build_mentions_map(
             continue
         open_id, user_id = _extract_mention_ids(mention)
         name = str(getattr(mention, "name", "") or "").strip()
-        result[key] = FeishuMentionRef(
-            name=name,
-            open_id=open_id,
-            is_self=bot.matches(open_id=open_id, user_id=user_id, name=name),
-        )
+        is_self = bot.matches(open_id=open_id, user_id=user_id, name=name)
+        result[key] = FeishuMentionRef(name=name, open_id=open_id, is_self=is_self)
     return result
 
 
@@ -1277,24 +930,14 @@ def _build_mention_hint(mentions: Sequence[FeishuMentionRef]) -> str:
     return f"[Mentioned: {', '.join(parts)}]" if parts else ""
 
 
-def _strip_edge_self_mentions(
-    text: str,
-    mentions: Sequence[FeishuMentionRef],
-) -> str:
-    # Leading: strip consecutive self-mentions unconditionally.
-    # Trailing: strip only when followed by whitespace/terminal punct, so
-    # mid-sentence references ("don't @Bot again") stay intact.
-    # Leading word-boundary prevents @Al from eating @Alice.
+def _strip_edge_self_mentions(text: str, mentions: Sequence[FeishuMentionRef]) -> str:
+    # Leading self-mentions are stripped unconditionally (word-boundary so @Al can't eat @Alice);
+    # trailing ones only when followed by whitespace/terminal punct so "don't @Bot again" survives.
     if not text:
         return text
-    self_names = [
-        f"@{ref.name or ref.open_id or 'user'}"
-        for ref in mentions
-        if ref.is_self
-    ]
+    self_names = [f"@{ref.name or ref.open_id or 'user'}" for ref in mentions if ref.is_self]
     if not self_names:
         return text
-
     remaining = text.lstrip()
     while True:
         for nm in self_names:
@@ -1307,7 +950,6 @@ def _strip_edge_self_mentions(
             break
         else:
             break
-
     while True:
         i = len(remaining)
         while i > 0 and remaining[i - 1] in _TRAILING_TERMINAL_PUNCT:
@@ -1322,16 +964,87 @@ def _strip_edge_self_mentions(
             return remaining
 
 
+# --- Multiplex isolation for the lark_oapi WebSocket client ---
+#
+# ``lark_oapi.ws.client`` keeps the asyncio loop in a *module-level global* (``loop``), and
+# Hermes monkey-patches ``websockets.connect`` on the shared module to inject ping settings.
+# In multiplex mode N profiles each run a WS client on their own thread, so they overwrite
+# each other's globals (last-write-wins): tasks land on a sibling's loop ("Future attached
+# to a different loop") or a client binds the wrong loop and goes deaf. Fix: install
+# process-wide, thread-dispatching shims exactly once —
+#   * ``ws_client_module.loop`` becomes a proxy forwarding to the loop registered by the
+#     *current thread* (all SDK reads happen on the loop-owning thread); unregistered
+#     threads fall back to the SDK's original loop.
+#   * ``websockets.connect`` becomes one dispatcher that merges the calling thread's
+#     registered ping overrides, so profiles stop racing over the global patch.
+
+# --------------------------------------------------------------------------- Multiplex isolation for the
+# lark_oapi WebSocket client (#73779)
+# --------------------------------------------------------------------------- ``lark_oapi.ws.client`` keeps
+# the asyncio loop used by ``Client.start()`` and every coroutine it spawns in a *module-level global*
+# (``loop``), and Hermes also monkey-patches ``websockets.connect`` on the shared ``websockets`` module to
+# inject per-adapter ping settings. In multiplex mode every profile runs its own WS client on a dedicated
+# thread, so the N threads overwrite each other's module globals (last-write-wins): a client ends up
+# scheduling tasks on a sibling profile's loop ("Future attached to a different loop" crashes) or binds to
+# the wrong loop at construction time and goes deaf from the start. The fix installs process-wide,
+# thread-dispatching shims exactly once: * ``ws_client_module.loop`` becomes a proxy that forwards every
+# attribute access to the loop registered by the *current thread*. All SDK reads of the global happen on the
+# thread that owns the loop (``start()`` blocks in ``run_until_complete`` and every ``create_task`` callback
+# runs on the loop's own thread), so each profile transparently sees its own loop. Threads that never
+# registered one (single-profile installs, CLI) fall back to the SDK's original module loop. *
+# ``websockets.connect`` becomes a single dispatcher that merges the per-thread ping overrides registered by
+# the calling profile, so profiles no longer race over the global patch or restore each other's hooks while
+# a sibling is still connected.
+_WS_ISOLATION_LOCK = threading.Lock()
+_WS_ISOLATION_INSTALLED = False
+_ws_isolation_state = threading.local()  # per WS thread: .loop and .connect_kwargs
+
+
+class _ThreadLocalLoopProxy:
+    """Forwards attribute access to the current thread's registered loop."""
+
+    def __init__(self, fallback: Any) -> None:
+        self._fallback = fallback
+
+    def _target(self) -> Any:
+        return getattr(_ws_isolation_state, "loop", None) or self._fallback
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._target(), name)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<ThreadLocalLoopProxy target={self._target()!r}>"
+
+
+def _install_lark_ws_isolation(ws_client_module: Any) -> None:
+    """Install the thread-dispatching shims once per process (idempotent)."""
+    global _WS_ISOLATION_INSTALLED
+    with _WS_ISOLATION_LOCK:
+        if _WS_ISOLATION_INSTALLED:
+            return
+        ws_client_module.loop = _ThreadLocalLoopProxy(ws_client_module.loop)
+        real_connect = ws_client_module.websockets.connect
+
+        def _dispatch_connect(*args: Any, **kwargs: Any) -> Any:
+            overrides = getattr(_ws_isolation_state, "connect_kwargs", None) or {}
+            for key, value in overrides.items():
+                kwargs.setdefault(key, value)
+            return real_connect(*args, **kwargs)
+
+        # Keep inspect.signature(websockets.connect) honest — the SDK probes it for ``proxy`` support.
+        _dispatch_connect.__wrapped__ = real_connect
+        _dispatch_connect.__name__ = getattr(real_connect, "__name__", "connect")
+        ws_client_module.websockets.connect = _dispatch_connect
+        _WS_ISOLATION_INSTALLED = True
+
+
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
-    """Run the official Lark WS client in its own thread-local event loop."""
+    """Run the official Lark WS client in its own thread-local loop (see isolation notes above)."""
     import lark_oapi.ws.client as ws_client_module
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    ws_client_module.loop = loop
     adapter._ws_thread_loop = loop
-
-    original_connect = ws_client_module.websockets.connect
     original_configure = getattr(ws_client, "_configure", None)
 
     def _apply_runtime_ws_overrides() -> None:
@@ -1343,12 +1056,14 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         except Exception:
             logger.debug("[Feishu] Failed to apply websocket runtime overrides", exc_info=True)
 
-    def _connect_with_overrides(*args: Any, **kwargs: Any) -> Any:
-        if adapter._ws_ping_interval is not None and "ping_interval" not in kwargs:
-            kwargs["ping_interval"] = adapter._ws_ping_interval
-        if adapter._ws_ping_timeout is not None and "ping_timeout" not in kwargs:
-            kwargs["ping_timeout"] = adapter._ws_ping_timeout
-        return original_connect(*args, **kwargs)
+    connect_overrides = {
+        key: value
+        for key, value in (("ping_interval", adapter._ws_ping_interval), ("ping_timeout", adapter._ws_ping_timeout))
+        if value is not None
+    }
+    _install_lark_ws_isolation(ws_client_module)
+    _ws_isolation_state.loop = loop
+    _ws_isolation_state.connect_kwargs = connect_overrides
 
     def _configure_with_overrides(conf: Any) -> Any:
         if original_configure is None:
@@ -1357,7 +1072,6 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         _apply_runtime_ws_overrides()
         return result
 
-    ws_client_module.websockets.connect = _connect_with_overrides
     if original_configure is not None:
         setattr(ws_client, "_configure", _configure_with_overrides)
     _apply_runtime_ws_overrides()
@@ -1366,7 +1080,8 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     except Exception:
         pass
     finally:
-        ws_client_module.websockets.connect = original_connect
+        _ws_isolation_state.loop = None
+        _ws_isolation_state.connect_kwargs = None
         if original_configure is not None:
             setattr(ws_client, "_configure", original_configure)
         pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
@@ -1374,14 +1089,11 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
             task.cancel()
         if pending:
             loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-        try:
-            loop.stop()
-        except Exception:
-            pass
-        try:
-            loop.close()
-        except Exception:
-            pass
+        for closer in (loop.stop, loop.close):
+            try:
+                closer()
+            except Exception:
+                pass
         adapter._ws_thread_loop = None
 
 
@@ -1389,74 +1101,32 @@ def _load_lark_oapi() -> bool:
     """Import and bind the Feishu SDK after an explicit connection request."""
     if FEISHU_AVAILABLE:
         return True
-
     with _lark_import_lock:
         if FEISHU_AVAILABLE:
             return True
+        import importlib
         try:
-            import lark_oapi as lark
-            from lark_oapi.api.application.v6 import GetApplicationRequest
-            from lark_oapi.api.im.v1 import (
-                CreateFileRequest, CreateFileRequestBody,
-                CreateImageRequest, CreateImageRequestBody,
-                CreateMessageRequest, CreateMessageRequestBody,
-                GetChatRequest, GetMessageRequest, GetMessageResourceRequest,
-                P2ImMessageMessageReadV1,
-                ReplyMessageRequest, ReplyMessageRequestBody,
-                UpdateMessageRequest, UpdateMessageRequestBody,
-            )
-            from lark_oapi.core import AccessTokenType, HttpMethod
-            from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
-            from lark_oapi.core.model import BaseRequest
-            from lark_oapi.event.callback.model.p2_card_action_trigger import (
-                CallBackCard, P2CardActionTriggerResponse,
-            )
-            from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
-            from lark_oapi.ws import Client as FeishuWSClient
-        except ImportError:
+            bound: Dict[str, Any] = {"lark": importlib.import_module("lark_oapi")}
+            for module_name, names in _LARK_SDK_IMPORTS:
+                module = importlib.import_module(module_name)
+                bound.update({name: getattr(module, name) for name in names})
+            bound["FeishuWSClient"] = importlib.import_module("lark_oapi.ws").Client
+        except (ImportError, AttributeError):
             return False
-
-        globals().update({
-            "lark": lark,
-            "GetApplicationRequest": GetApplicationRequest,
-            "CreateFileRequest": CreateFileRequest,
-            "CreateFileRequestBody": CreateFileRequestBody,
-            "CreateImageRequest": CreateImageRequest,
-            "CreateImageRequestBody": CreateImageRequestBody,
-            "CreateMessageRequest": CreateMessageRequest,
-            "CreateMessageRequestBody": CreateMessageRequestBody,
-            "GetChatRequest": GetChatRequest,
-            "GetMessageRequest": GetMessageRequest,
-            "GetMessageResourceRequest": GetMessageResourceRequest,
-            "P2ImMessageMessageReadV1": P2ImMessageMessageReadV1,
-            "ReplyMessageRequest": ReplyMessageRequest,
-            "ReplyMessageRequestBody": ReplyMessageRequestBody,
-            "UpdateMessageRequest": UpdateMessageRequest,
-            "UpdateMessageRequestBody": UpdateMessageRequestBody,
-            "AccessTokenType": AccessTokenType,
-            "HttpMethod": HttpMethod,
-            "FEISHU_DOMAIN": FEISHU_DOMAIN,
-            "LARK_DOMAIN": LARK_DOMAIN,
-            "BaseRequest": BaseRequest,
-            "CallBackCard": CallBackCard,
-            "P2CardActionTriggerResponse": P2CardActionTriggerResponse,
-            "EventDispatcherHandler": EventDispatcherHandler,
-            "FeishuWSClient": FeishuWSClient,
-            "FEISHU_AVAILABLE": True,
-        })
+        bound["FEISHU_AVAILABLE"] = True
+        globals().update(bound)
         return True
 
 
 def feishu_deps_present() -> bool:
-    """PASSIVE probe: is lark-oapi installed right now?
+    """PASSIVE registry ``check_fn``: is lark-oapi installed? Must never install or import the SDK.
 
-    Registry ``check_fn`` — called from status displays and config loading,
-    so it must never install anything.  Uses ``is_available`` (cheap
-    importlib.metadata lookups) instead of importing the SDK, which is
-    deferred to ``_load_lark_oapi`` at connect time.  The ACTIVE
-    lazy-installer (``check_feishu_requirements``) is registered as
-    ``ensure_deps_fn`` and runs from ``create_adapter()`` when this
-    returns False (#79812).
+    Uses cheap importlib.metadata lookups; the real import is deferred to ``_load_lark_oapi``
+    and the ACTIVE installer is ``check_feishu_requirements`` (``ensure_deps_fn``).
+
+    Registry ``check_fn`` — called from status displays and config loading, so it must never install
+    anything. The ACTIVE lazy-installer (``check_feishu_requirements``) is registered as ``ensure_deps_fn``
+    and runs from ``create_adapter()`` when this returns False (#79812).
     """
     if FEISHU_AVAILABLE:
         return True
@@ -1471,14 +1141,54 @@ def check_feishu_requirements() -> bool:
     """Ensure Feishu dependencies are installed without importing the SDK."""
     if FEISHU_AVAILABLE:
         return True
-
     from tools.lazy_deps import ensure
-
     try:
         ensure("platform.feishu", prompt=False)
         return True
     except Exception:
         return False
+
+
+def _tenant_get_request(uri: str, *, queries: Optional[List[tuple[str, str]]] = None) -> Any:
+    """Raw ``BaseRequest`` GET with the tenant access token (bot/v3 endpoints have no typed SDK request)."""
+    builder = BaseRequest.builder().http_method(HttpMethod.GET).uri(uri)
+    if queries is not None:
+        builder = builder.queries(queries)
+    return builder.token_types({AccessTokenType.TENANT}).build()
+
+
+def _sdk_domain(domain_name: str) -> Any:
+    return LARK_DOMAIN if domain_name == "lark" else FEISHU_DOMAIN
+
+
+def _build_lark_client(app_id: str, app_secret: str, sdk_domain: Any) -> Any:
+    return lark.Client.builder().app_id(app_id).app_secret(app_secret).domain(sdk_domain).log_level(lark.LogLevel.WARNING).build()
+
+
+def _card_button(label: str, btn_type: str, value: Dict[str, Any]) -> Dict[str, Any]:
+    return {"tag": "button", "text": {"tag": "plain_text", "content": label}, "type": btn_type, "value": value}
+
+
+def _card(title: str, template: str, markdown: str, *, actions: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """Wide interactive card: colored header + one markdown block (+ an optional button row)."""
+    elements: List[Dict[str, Any]] = [{"tag": "markdown", "content": markdown}]
+    if actions is not None:
+        elements.append({"tag": "action", "actions": actions})
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {"title": {"content": title, "tag": "plain_text"}, "template": template},
+        "elements": elements,
+    }
+
+
+def _sdk_build(request_cls: Any, **fields: Any) -> Any:
+    """``request_cls.builder().<field>(value)...build()``; SimpleNamespace when the SDK is unbound."""
+    if request_cls is None:
+        return SimpleNamespace(**fields)
+    builder = request_cls.builder()
+    for name, value in fields.items():
+        builder = getattr(builder, name)(value)
+    return builder.build()
 
 
 class FeishuAdapter(BasePlatformAdapter):
@@ -1488,58 +1198,42 @@ class FeishuAdapter(BasePlatformAdapter):
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
 
     MAX_MESSAGE_LENGTH = 8000
-    # Max distinct chat IDs retained in _chat_locks before LRU eviction kicks in.
-    CHAT_LOCK_MAX_SIZE: int = 1000
-    # Threshold for detecting Feishu client-side message splits.
-    # When a chunk is near the ~4096-char practical limit, a continuation
-    # is almost certain.
-    _SPLIT_THRESHOLD = 4000
+    CHAT_LOCK_MAX_SIZE: int = 1000  # distinct chat IDs kept in _chat_locks before LRU eviction
+    _SPLIT_THRESHOLD = 4000  # chunk near Feishu's ~4096-char client split → continuation almost certain
 
-    # =========================================================================
-    # Lifecycle — init / settings / connect / disconnect
-    # =========================================================================
-
+    # --- Lifecycle — init / settings / connect / disconnect ---
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.FEISHU)
-
         self._settings = self._load_settings(config.extra or {})
         self._apply_settings(self._settings)
         self._client: Optional[Any] = None
-        # Adapter-owned thread pool for blocking Feishu SDK calls. Routing SDK
-        # work through this pool (instead of asyncio's shared default executor)
-        # means a torn-down default executor can no longer wedge sends with
-        # "Executor shutdown has been called" — the pool is recreated on demand
-        # if it has been shut down. See issue #10849.
+        # Adapter-owned pool for blocking SDK calls, recreated on demand: a torn-down default
+        # executor can no longer wedge sends with "Executor shutdown has been called".
+        # See issue #10849.
         self._sdk_executor_lock = threading.Lock()
         self._sdk_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
-        # Set on disconnect/shutdown so a real teardown can't be resurrected
-        # by the recreate-on-shutdown path; cleared on connect for reconnects.
-        self._sdk_executor_closing = False
-        self._ws_client: Optional[Any] = None
-        self._ws_future: Optional[asyncio.Future] = None
-        self._ws_thread_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._sdk_executor_closing = False  # set on disconnect so a real teardown isn't resurrected
+        self._ws_client = self._ws_future = self._ws_supervisor = self._ws_thread_loop = None
+        self._ws_restart_backoff = 5.0
         self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._webhook_runner: Optional[Any] = None
-        self._webhook_site: Optional[Any] = None
-        self._event_handler: Optional[Any] = None
+        self._webhook_runner = self._webhook_site = self._event_handler = None
         self._seen_message_ids: Dict[str, float] = {}  # message_id → seen_at (time.time())
         self._seen_message_order: List[str] = []
         self._dedup_state_path = get_hermes_home() / "feishu_seen_message_ids.json"
         self._dedup_lock = threading.Lock()
+        # Serializes the offloaded dedup-state flushes so two concurrent
+        # inbound messages cannot land their writes out of order.
+        self._dedup_persist_lock = asyncio.Lock()
         self._sender_name_cache: Dict[str, tuple[str, float]] = {}  # sender_id → (name, expire_at)
         self._webhook_rate_counts: Dict[str, tuple[int, float]] = {}  # rate_key → (count, window_start)
         self._webhook_anomaly_counts: Dict[str, tuple[int, str, float]] = {}  # ip → (count, last_status, first_seen)
         self._card_action_tokens: Dict[str, float] = {}  # token → first_seen_time
-        # Inbound events that arrived before the adapter loop was ready
-        # (e.g. during startup/restart or network-flap reconnect). A single
-        # drainer thread replays them as soon as the loop becomes available.
+        # Inbound events that arrived before the loop was ready; one drainer thread replays them.
         self._pending_inbound_events: List[Any] = []
         self._pending_inbound_lock = threading.Lock()
         self._pending_drain_scheduled = False
         self._pending_inbound_max_depth = 1000  # cap queue; drop oldest beyond
         self._chat_locks: "collections.OrderedDict[str, asyncio.Lock]" = collections.OrderedDict()  # chat_id → lock (per-chat serial processing, LRU-bounded)
-        self._sent_message_ids_to_chat: Dict[str, str] = {}  # message_id → chat_id (for reaction routing)
-        self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
         self._message_text_cache: "OrderedDict[str, Optional[str]]" = OrderedDict()
         self._app_lock_identity: Optional[str] = None
@@ -1550,48 +1244,48 @@ class FeishuAdapter(BasePlatformAdapter):
         self._media_batch_state = FeishuBatchState()
         self._pending_media_batches = self._media_batch_state.events
         self._pending_media_batch_tasks = self._media_batch_state.tasks
-        # Exec approval button state (approval_id → {session_key, message_id, chat_id})
+        # Button-card state: id → {session_key, message_id, chat_id}
         self._approval_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
-        # Update prompt button state (prompt_id → {session_key, message_id, chat_id})
         self._update_prompt_state: Dict[int, Dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
-        # Feishu reaction deletion requires the opaque reaction_id returned
-        # by create, so we cache it per message_id.
+        # Reaction deletion needs the opaque reaction_id from create, cached per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
         self._load_seen_message_ids()
 
     @staticmethod
     def _load_settings(extra: Dict[str, Any]) -> FeishuAdapterSettings:
-        # Parse per-group rules from config
+        def _id_set(values: Any) -> set[str]:
+            return {str(u).strip() for u in values if str(u).strip()}
+
+        def _secret(name: str, default: str = "") -> str:
+            return _get_scoped_secret(name, default).strip()
+
+        def _extra_or_secret(key: str, env: str) -> str:
+            return str(extra.get(key) or _get_scoped_secret(env, "")).strip()
+
+        def _extra_or_env(key: str, env: str, default: str) -> str:
+            return str(extra.get(key) or os.getenv(env, default)).strip()
+
         raw_group_rules = extra.get("group_rules", {})
         group_rules: Dict[str, FeishuGroupRule] = {}
         if isinstance(raw_group_rules, dict):
             for chat_id, rule_cfg in raw_group_rules.items():
                 if not isinstance(rule_cfg, dict):
                     continue
-                # Only override when the key is explicitly set — missing vs false
-                # must not collapse.
-                per_chat_require_mention: Optional[bool] = None
-                if "require_mention" in rule_cfg:
-                    per_chat_require_mention = _to_boolean(rule_cfg.get("require_mention"))
                 group_rules[str(chat_id)] = FeishuGroupRule(
                     policy=str(rule_cfg.get("policy", "open")).strip().lower(),
-                    allowlist={str(u).strip() for u in rule_cfg.get("allowlist", []) if str(u).strip()},
-                    blacklist={str(u).strip() for u in rule_cfg.get("blacklist", []) if str(u).strip()},
-                    require_mention=per_chat_require_mention,
+                    allowlist=_id_set(rule_cfg.get("allowlist", [])),
+                    blacklist=_id_set(rule_cfg.get("blacklist", [])),
+                    # Only override when explicitly set — missing vs false must not collapse.
+                    require_mention=_to_boolean(rule_cfg["require_mention"]) if "require_mention" in rule_cfg else None,
                 )
 
-        # Bot-level admins
-        raw_admins = extra.get("admins", [])
-        admins = frozenset(str(u).strip() for u in raw_admins if str(u).strip())
-
-        # Default group policy (for groups not in group_rules)
-        default_group_policy = str(extra.get("default_group_policy", "")).strip().lower()
-
-        # Env-only so adapter and gateway auth bypass share one source; yaml
-        # feishu.allow_bots is bridged to this env var at config load.
-        allow_bots = os.getenv("FEISHU_ALLOW_BOTS", "none").strip().lower()
+        # Env-only so adapter and gateway auth bypass share one source (yaml feishu.allow_bots
+        # is bridged to the env var at config load). Scoped read: under multiplex a secondary
+        # profile's .env must govern its own adapter.
+        # See #86905.
+        allow_bots = _get_scoped_secret("FEISHU_ALLOW_BOTS", "none").strip().lower()
         if allow_bots not in {"none", "mentions", "all"}:
             logger.warning(
                 "[Feishu] Unknown allow_bots=%r, falling back to 'none'. Valid: none, mentions, all.",
@@ -1599,154 +1293,83 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             allow_bots = "none"
 
+        allow_all_dm = any(
+            _secret(var).lower() in {"true", "1", "yes"} for var in ("FEISHU_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS")
+        )
         return FeishuAdapterSettings(
-            app_id=str(extra.get("app_id") or os.getenv("FEISHU_APP_ID", "")).strip(),
-            app_secret=str(extra.get("app_secret") or _get_scoped_secret("FEISHU_APP_SECRET", "")).strip(),
-            domain_name=str(extra.get("domain") or os.getenv("FEISHU_DOMAIN", "feishu")).strip().lower(),
-            connection_mode=str(
-                extra.get("connection_mode") or os.getenv("FEISHU_CONNECTION_MODE", "websocket")
-            ).strip().lower(),
-            encrypt_key=str(extra.get("encrypt_key") or _get_scoped_secret("FEISHU_ENCRYPT_KEY", "")).strip(),
-            verification_token=str(
-                extra.get("verification_token") or _get_scoped_secret("FEISHU_VERIFICATION_TOKEN", "")
-            ).strip(),
-            group_policy=os.getenv("FEISHU_GROUP_POLICY", "allowlist").strip().lower(),
-            allowed_group_users=frozenset(
-                item.strip()
-                for item in os.getenv("FEISHU_ALLOWED_USERS", "").split(",")
-                if item.strip()
-            ),
-            bot_open_id=os.getenv("FEISHU_BOT_OPEN_ID", "").strip(),
-            bot_user_id=os.getenv("FEISHU_BOT_USER_ID", "").strip(),
-            bot_name=os.getenv("FEISHU_BOT_NAME", "").strip(),
-            dedup_cache_size=max(
-                32,
-                env_int("HERMES_FEISHU_DEDUP_CACHE_SIZE", _DEFAULT_DEDUP_CACHE_SIZE),
-            ),
-            text_batch_delay_seconds=env_float(
-                "HERMES_FEISHU_TEXT_BATCH_DELAY_SECONDS", _DEFAULT_TEXT_BATCH_DELAY_SECONDS
-            ),
-            text_batch_split_delay_seconds=env_float(
-                "HERMES_FEISHU_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0
-            ),
-            text_batch_max_messages=max(
-                1,
-                env_int("HERMES_FEISHU_TEXT_BATCH_MAX_MESSAGES", _DEFAULT_TEXT_BATCH_MAX_MESSAGES),
-            ),
-            text_batch_max_chars=max(
-                1,
-                env_int("HERMES_FEISHU_TEXT_BATCH_MAX_CHARS", _DEFAULT_TEXT_BATCH_MAX_CHARS),
-            ),
-            media_batch_delay_seconds=env_float(
-                "HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS", _DEFAULT_MEDIA_BATCH_DELAY_SECONDS
-            ),
-            webhook_host=str(
-                extra.get("webhook_host") or os.getenv("FEISHU_WEBHOOK_HOST", _DEFAULT_WEBHOOK_HOST)
-            ).strip(),
-            webhook_port=int(
-                extra.get("webhook_port") or os.getenv("FEISHU_WEBHOOK_PORT", str(_DEFAULT_WEBHOOK_PORT))
-            ),
-            webhook_path=(
-                str(extra.get("webhook_path") or os.getenv("FEISHU_WEBHOOK_PATH", _DEFAULT_WEBHOOK_PATH)).strip()
-                or _DEFAULT_WEBHOOK_PATH
-            ),
+            app_id=_extra_or_secret("app_id", "FEISHU_APP_ID"),
+            app_secret=_extra_or_secret("app_secret", "FEISHU_APP_SECRET"),
+            domain_name=_extra_or_env("domain", "FEISHU_DOMAIN", "feishu").lower(),
+            connection_mode=_extra_or_env("connection_mode", "FEISHU_CONNECTION_MODE", "websocket").lower(),
+            encrypt_key=_extra_or_secret("encrypt_key", "FEISHU_ENCRYPT_KEY"),
+            verification_token=_extra_or_secret("verification_token", "FEISHU_VERIFICATION_TOKEN"),
+            group_policy=_secret("FEISHU_GROUP_POLICY", "allowlist").lower(),
+            allowed_group_users=frozenset(_id_set(_get_scoped_secret("FEISHU_ALLOWED_USERS", "").split(","))),
+            bot_open_id=_secret("FEISHU_BOT_OPEN_ID"),
+            bot_user_id=_secret("FEISHU_BOT_USER_ID"),
+            bot_name=_secret("FEISHU_BOT_NAME"),
+            dedup_cache_size=max(32, env_int("HERMES_FEISHU_DEDUP_CACHE_SIZE", _DEFAULT_DEDUP_CACHE_SIZE)),
+            text_batch_delay_seconds=env_float("HERMES_FEISHU_TEXT_BATCH_DELAY_SECONDS", _DEFAULT_TEXT_BATCH_DELAY_SECONDS),
+            text_batch_split_delay_seconds=env_float("HERMES_FEISHU_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0),
+            text_batch_max_messages=max(1, env_int("HERMES_FEISHU_TEXT_BATCH_MAX_MESSAGES", _DEFAULT_TEXT_BATCH_MAX_MESSAGES)),
+            text_batch_max_chars=max(1, env_int("HERMES_FEISHU_TEXT_BATCH_MAX_CHARS", _DEFAULT_TEXT_BATCH_MAX_CHARS)),
+            media_batch_delay_seconds=env_float("HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS", _DEFAULT_MEDIA_BATCH_DELAY_SECONDS),
+            webhook_host=_extra_or_env("webhook_host", "FEISHU_WEBHOOK_HOST", _DEFAULT_WEBHOOK_HOST),
+            webhook_port=int(extra.get("webhook_port") or os.getenv("FEISHU_WEBHOOK_PORT", str(_DEFAULT_WEBHOOK_PORT))),
+            webhook_path=_extra_or_env("webhook_path", "FEISHU_WEBHOOK_PATH", _DEFAULT_WEBHOOK_PATH) or _DEFAULT_WEBHOOK_PATH,
             ws_reconnect_nonce=_coerce_required_int(extra.get("ws_reconnect_nonce"), default=30, min_value=0),
             ws_reconnect_interval=_coerce_required_int(extra.get("ws_reconnect_interval"), default=120, min_value=1),
             ws_ping_interval=_coerce_int(extra.get("ws_ping_interval"), default=None, min_value=1),
             ws_ping_timeout=_coerce_int(extra.get("ws_ping_timeout"), default=None, min_value=1),
-            admins=admins,
-            default_group_policy=default_group_policy,
-            group_rules=group_rules,
-            allow_bots=allow_bots,
-            require_mention=_to_boolean(
-                extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
-            ),
+            admins=frozenset(_id_set(extra.get("admins", []))),
+            default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
+            group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
+            require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
-        self._app_id = settings.app_id
-        self._app_secret = settings.app_secret
-        self._domain_name = settings.domain_name
-        self._connection_mode = settings.connection_mode
-        self._encrypt_key = settings.encrypt_key
-        self._verification_token = settings.verification_token
-        self._group_policy = settings.group_policy
+        # Every settings field is mirrored as ``self._<field>``; the three below need coercion.
+        for name in FeishuAdapterSettings.__dataclass_fields__:
+            setattr(self, f"_{name}", getattr(settings, name))
         self._allowed_group_users = set(settings.allowed_group_users)
         self._admins = set(settings.admins)
         self._default_group_policy = settings.default_group_policy or settings.group_policy
-        self._group_rules = settings.group_rules
-        self._bot_open_id = settings.bot_open_id
-        self._bot_user_id = settings.bot_user_id
-        self._bot_name = settings.bot_name
-        self._dedup_cache_size = settings.dedup_cache_size
-        self._text_batch_delay_seconds = settings.text_batch_delay_seconds
-        self._text_batch_split_delay_seconds = settings.text_batch_split_delay_seconds
-        self._text_batch_max_messages = settings.text_batch_max_messages
-        self._text_batch_max_chars = settings.text_batch_max_chars
-        self._media_batch_delay_seconds = settings.media_batch_delay_seconds
-        self._webhook_host = settings.webhook_host
-        self._webhook_port = settings.webhook_port
-        self._webhook_path = settings.webhook_path
-        self._ws_reconnect_nonce = settings.ws_reconnect_nonce
-        self._ws_reconnect_interval = settings.ws_reconnect_interval
-        self._ws_ping_interval = settings.ws_ping_interval
-        self._ws_ping_timeout = settings.ws_ping_timeout
-        self._allow_bots = settings.allow_bots
-        self._require_mention = settings.require_mention
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
             return None
         return (
-            EventDispatcherHandler.builder(
-                self._encrypt_key,
-                self._verification_token,
-            )
+            EventDispatcherHandler.builder(self._encrypt_key, self._verification_token)
             .register_p2_im_message_message_read_v1(self._on_message_read_event)
             .register_p2_im_message_receive_v1(self._on_message_event)
-            .register_p2_im_message_reaction_created_v1(
-                lambda data: self._on_reaction_event("im.message.reaction.created_v1", data)
-            )
-            .register_p2_im_message_reaction_deleted_v1(
-                lambda data: self._on_reaction_event("im.message.reaction.deleted_v1", data)
-            )
+            .register_p2_im_message_reaction_created_v1(lambda d: self._on_reaction_event("im.message.reaction.created_v1", d))
+            .register_p2_im_message_reaction_deleted_v1(lambda d: self._on_reaction_event("im.message.reaction.deleted_v1", d))
             .register_p2_card_action_trigger(self._on_card_action_trigger)
             .register_p2_im_chat_member_bot_added_v1(self._on_bot_added_to_chat)
             .register_p2_im_chat_member_bot_deleted_v1(self._on_bot_removed_from_chat)
             .register_p2_im_chat_access_event_bot_p2p_chat_entered_v1(self._on_p2p_chat_entered)
             .register_p2_im_message_recalled_v1(self._on_message_recalled)
-            .register_p2_customized_event(
-                "drive.notice.comment_add_v1",
-                self._on_drive_comment_event,
-            )
-            .register_p2_customized_event(
-                "vc.bot.meeting_invited_v1",
-                self._on_meeting_invited_event,
-            )
+            .register_p2_customized_event("drive.notice.comment_add_v1", self._on_drive_comment_event)
+            .register_p2_customized_event("vc.bot.meeting_invited_v1", self._on_meeting_invited_event)
             .build()
         )
 
     def _get_sdk_executor(self) -> concurrent.futures.ThreadPoolExecutor:
-        """Return the adapter-owned executor for blocking Feishu SDK calls.
+        """Adapter-owned executor; recreated after an *external* shutdown, never after our own close.
 
-        Recreates the pool if it was never built or was shut down by an
-        *external* teardown of the loop's default executor, so that can no
-        longer permanently wedge sends (#10849). Refuses to resurrect once
+        Recreates the pool if it was never built or was shut down by an *external* teardown of the loop's
+        default executor, so that can no longer permanently wedge sends (#10849). Refuses to resurrect once
         the adapter itself is closing — a real disconnect/shutdown stays shut.
         """
-        lock = getattr(self, "_sdk_executor_lock", None)
+        lock = getattr(self, "_sdk_executor_lock", None)  # bare adapters (tests) may lack __init__ state
         if lock is None:
-            lock = threading.Lock()
-            self._sdk_executor_lock = lock
+            lock = self._sdk_executor_lock = threading.Lock()
         with lock:
             if getattr(self, "_sdk_executor_closing", False):
                 raise RuntimeError("Feishu adapter is shutting down; SDK executor unavailable")
             executor = getattr(self, "_sdk_executor", None)
             if executor is None or getattr(executor, "_shutdown", False):
-                executor = concurrent.futures.ThreadPoolExecutor(
-                    max_workers=10,
-                    thread_name_prefix="hermes-feishu-sdk",
-                )
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=10, thread_name_prefix="hermes-feishu-sdk")
                 self._sdk_executor = executor
             return executor
 
@@ -1773,9 +1396,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Feishu/Lark."""
-        # A fresh connect (or reconnect) re-arms the SDK executor after a prior
-        # disconnect set the closing flag.
-        self._sdk_executor_closing = False
+        self._sdk_executor_closing = False  # re-arm the SDK executor after a prior disconnect
         if not self._app_id or not self._app_secret:
             logger.error("[Feishu] FEISHU_APP_ID or FEISHU_APP_SECRET not set")
             return False
@@ -1786,9 +1407,7 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             return False
         if self._connection_mode == "webhook" and not (self._verification_token or self._encrypt_key):
-            logger.error(
-                "[Feishu] Webhook mode requires FEISHU_VERIFICATION_TOKEN or FEISHU_ENCRYPT_KEY."
-            )
+            logger.error("[Feishu] Webhook mode requires FEISHU_VERIFICATION_TOKEN or FEISHU_ENCRYPT_KEY.")
             return False
         if not await asyncio.to_thread(_load_lark_oapi):
             logger.error("[Feishu] lark-oapi not installed")
@@ -1797,9 +1416,7 @@ class FeishuAdapter(BasePlatformAdapter):
         try:
             self._app_lock_identity = self._app_id
             acquired, existing = acquire_scoped_lock(
-                _FEISHU_APP_LOCK_SCOPE,
-                self._app_lock_identity,
-                metadata={"platform": self.platform.value},
+                _FEISHU_APP_LOCK_SCOPE, self._app_lock_identity, metadata={"platform": self.platform.value},
             )
             if not acquired:
                 owner_pid = existing.get("pid") if isinstance(existing, dict) else None
@@ -1814,6 +1431,9 @@ class FeishuAdapter(BasePlatformAdapter):
 
             self._loop = asyncio.get_running_loop()
             await self._connect_with_retry()
+            if self._connection_mode == "websocket":
+                # The WS thread can die without any external signal; keep a watcher alive.
+                self._ws_supervisor = asyncio.ensure_future(self._supervise_websocket_thread())
             self._mark_connected()
             logger.info("[Feishu] Connected in %s mode (%s)", self._connection_mode, self._domain_name)
             # Plugin-registered native handlers (lark_oapi client).
@@ -1829,37 +1449,41 @@ class FeishuAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Feishu/Lark."""
         self._running = False
+        if self._ws_supervisor is not None:
+            self._ws_supervisor.cancel()
+            self._ws_supervisor = None
         await self._cancel_pending_tasks(self._pending_text_batch_tasks)
         await self._cancel_pending_tasks(self._pending_media_batch_tasks)
         self._reset_batch_buffers()
-
-        # Send a WebSocket CLOSE frame to Feishu BEFORE tearing down the
-        # thread loop. Without this, Feishu's server never learns the
-        # connection is dead and continues routing messages to the stale
-        # endpoint — the channel goes silent until the server-side
-        # CLOSE-WAIT expires (minutes to hours). See issue #10202.
-        #
-        # ``_disable_websocket_auto_reconnect()`` nils ``self._ws_client``,
-        # so capture the client reference first.
+        # ``_disable_websocket_auto_reconnect()`` nils ``_ws_client`` — capture first.
+        # Send a WebSocket CLOSE frame to Feishu BEFORE tearing down the thread loop. Without this, Feishu's
+        # server never learns the connection is dead and continues routing messages to the stale endpoint —
+        # the channel goes silent until the server-side CLOSE-WAIT expires (minutes to hours). See issue
+        # #10202.
         ws_client = self._ws_client
         ws_thread_loop = self._ws_thread_loop
         self._disable_websocket_auto_reconnect()
         await self._stop_webhook_server()
+        await self._teardown_ws_thread(ws_client, ws_thread_loop)
+        self._ws_future = None
+        self._ws_thread_loop = None
+        self._loop = None
+        self._event_handler = None
+        self._shutdown_sdk_executor()
+        self._persist_seen_message_ids()
+        await self._release_app_lock()
+        self._mark_disconnected()
+        logger.info("[Feishu] Disconnected")
 
-        if (
-            ws_client is not None
-            and ws_thread_loop is not None
-            and not ws_thread_loop.is_closed()
-            and hasattr(ws_client, "_disconnect")
-        ):
+    async def _teardown_ws_thread(self, ws_client: Any, ws_thread_loop: Any) -> None:
+        """CLOSE frame → cancel the WS thread's tasks → wait for the thread future."""
+        # Send the CLOSE frame BEFORE tearing down the thread loop; otherwise Feishu keeps
+        # routing to the stale endpoint until server-side CLOSE-WAIT expires (minutes to hours).
+        loop_alive = ws_thread_loop is not None and not ws_thread_loop.is_closed()
+        if ws_client is not None and loop_alive and hasattr(ws_client, "_disconnect"):
             try:
-                future = asyncio.run_coroutine_threadsafe(
-                    ws_client._disconnect(), ws_thread_loop
-                )
-                # 5s is generous — the CLOSE frame is a single WebSocket
-                # control frame. If it takes longer than that the
-                # connection is already wedged and we gain nothing by
-                # waiting further.
+                future = asyncio.run_coroutine_threadsafe(ws_client._disconnect(), ws_thread_loop)
+                # A CLOSE frame is one control frame; if 5s isn't enough the link is already wedged.
                 await asyncio.wait_for(asyncio.wrap_future(future), timeout=5.0)
                 logger.debug("[Feishu] Sent WebSocket CLOSE frame to Feishu")
             except asyncio.TimeoutError:
@@ -1869,13 +1493,9 @@ class FeishuAdapter(BasePlatformAdapter):
                     "connection until server-side timeout"
                 )
             except Exception as exc:
-                logger.debug(
-                    "[Feishu] Could not send WebSocket CLOSE frame: %s",
-                    exc,
-                    exc_info=True,
-                )
+                logger.debug("[Feishu] Could not send WebSocket CLOSE frame: %s", exc, exc_info=True)
 
-        if ws_thread_loop is not None and not ws_thread_loop.is_closed():
+        if loop_alive:
             logger.debug("[Feishu] Cancelling websocket thread tasks and stopping loop")
 
             def cancel_all_tasks() -> None:
@@ -1899,17 +1519,6 @@ class FeishuAdapter(BasePlatformAdapter):
                 logger.debug("[Feishu] Websocket thread cancelled during disconnect")
             except Exception as exc:
                 logger.debug("[Feishu] Websocket thread exited with error: %s", exc, exc_info=True)
-
-        self._ws_future = None
-        self._ws_thread_loop = None
-        self._loop = None
-        self._event_handler = None
-        self._shutdown_sdk_executor()
-        self._persist_seen_message_ids()
-        await self._release_app_lock()
-
-        self._mark_disconnected()
-        logger.info("[Feishu] Disconnected")
 
     async def _cancel_pending_tasks(self, tasks: Dict[str, asyncio.Task]) -> None:
         pending = [task for task in tasks.values() if task and not task.done()]
@@ -1943,16 +1552,9 @@ class FeishuAdapter(BasePlatformAdapter):
             self._webhook_runner = None
             self._webhook_site = None
 
-    # =========================================================================
-    # Outbound — send / edit / send_image / send_voice / …
-    # =========================================================================
-
+    # --- Outbound — send / edit / send_image / send_voice / … ---
     async def send(
-        self,
-        chat_id: str,
-        content: str,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a Feishu message."""
         if not self._client:
@@ -1960,53 +1562,42 @@ class FeishuAdapter(BasePlatformAdapter):
 
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-        # When chunking splits a long markdown response, an individual chunk
-        # can end up as plain prose that doesn't match the per-chunk hint
-        # regex — so it would be sent as ``msg_type=text`` and the user would
-        # see literal ``**bold``/``## heading``/code fences in the Feishu
-        # client while other chunks render correctly. Lock the markdown
-        # decision at the whole-message level so every chunk consistently
-        # uses ``post``. See #26841.
+        # Decide markdown-vs-text once for the whole message: a chunk of a long
+        # markdown reply may be plain prose that fails the per-chunk regex and would
+        # otherwise render as literal ``**bold`` / fences while other chunks render.
+        # Lock the markdown decision at the whole-message level so every chunk consistently uses ``post``.
+        # See #26841.
         prefer_post = bool(_MARKDOWN_HINT_RE.search(formatted))
         last_response = None
 
+        async def _send_plain(chunk: str) -> Any:
+            return await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="text",
+                payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+
         try:
             for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(
-                    chunk, prefer_post=prefer_post,
-                )
+                msg_type, payload = self._build_outbound_payload(chunk, prefer_post=prefer_post)
                 try:
                     response = await self._feishu_send_with_retry(
-                        chat_id=chat_id,
-                        msg_type=msg_type,
-                        payload=payload,
-                        reply_to=reply_to,
-                        metadata=metadata,
+                        chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_to, metadata=metadata,
                     )
                 except Exception as exc:
                     if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
                         raise
                     logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                        reply_to=reply_to,
-                        metadata=metadata,
-                    )
+                    response = await _send_plain(chunk)
                 if (
                     msg_type == "post"
                     and not self._response_succeeded(response)
                     and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
                 ):
                     logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                        reply_to=reply_to,
-                        metadata=metadata,
-                    )
+                    response = await _send_plain(chunk)
                 last_response = response
 
             return self._finalize_send_result(last_response, "send failed")
@@ -2014,34 +1605,27 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Send error: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
-    async def edit_message(
-        self,
-        chat_id: str,
-        message_id: str,
-        content: str,
-        *,
-        finalize: bool = False,
-    ) -> SendResult:
+    async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         """Edit a previously sent Feishu text/post message."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
         content = self.format_message(content)
-        try:
-            msg_type, payload = self._build_outbound_payload(content)
+
+        async def _update(msg_type: str, payload: str) -> SendResult:
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await self._run_blocking(self._client.im.v1.message.update, request)
-            result = self._finalize_send_result(response, "update failed")
+            return self._finalize_send_result(response, "update failed")
+
+        try:
+            msg_type, payload = self._build_outbound_payload(content)
+            result = await _update(msg_type, payload)
             if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
                 logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
-                fallback_body = self._build_update_message_body(
-                    msg_type="text",
-                    content=json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
+                result = await _update(
+                    "text", json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
                 )
-                fallback_request = self._build_update_message_request(message_id=message_id, request_body=fallback_body)
-                fallback_response = await self._run_blocking(self._client.im.v1.message.update, fallback_request)
-                result = self._finalize_send_result(fallback_response, "update failed")
             if result.success:
                 result.message_id = message_id
             return result
@@ -2057,19 +1641,12 @@ class FeishuAdapter(BasePlatformAdapter):
     _EA_CMD_BUDGET = 3000
 
     async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str,
-        description: str = "dangerous command",
-        metadata: Optional[Dict[str, Any]] = None,
-        allow_permanent: bool = True,
-        allow_session: bool = True,
+        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
-        """Send an interactive card with approval buttons.
-
-        The buttons carry ``hermes_action`` in their value dict so that
-        ``_handle_card_action_event`` can intercept them and call
-        ``resolve_gateway_approval()`` to unblock the waiting agent thread.
-        """
+        """Approval-button card; ``hermes_action`` in each button value lets the click callback
+        route to ``resolve_gateway_approval()`` and unblock the waiting agent thread."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
@@ -2077,12 +1654,7 @@ class FeishuAdapter(BasePlatformAdapter):
             approval_id = next(self._approval_counter)
 
             def _btn(label: str, action_name: str, btn_type: str = "default") -> dict:
-                return {
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": label},
-                    "type": btn_type,
-                    "value": {"hermes_action": action_name, "approval_id": approval_id},
-                }
+                return _card_button(label, btn_type, {"hermes_action": action_name, "approval_id": approval_id})
 
             actions = [_btn("✅ Allow Once", "approve_once", "primary")]
             if not smart_denied and allow_session:
@@ -2090,146 +1662,76 @@ class FeishuAdapter(BasePlatformAdapter):
                 if allow_permanent:
                     actions.append(_btn("✅ Always", "approve_always"))
             actions.append(_btn("❌ Deny", "deny", "danger"))
-            card = {
-                "config": {"wide_screen_mode": True},
-                "header": {
-                    "title": {"content": "⚠️ Command Approval Required", "tag": "plain_text"},
-                    "template": "orange",
-                },
-                "elements": [
-                    {
-                        "tag": "markdown",
-                        "content": self._format_exec_approval(command, description, smart_denied),
-                    },
-                    {
-                        "tag": "action",
-                        "actions": actions,
-                    },
-                ],
-            }
-
-            payload = json.dumps(card, ensure_ascii=False)
-            response = await self._feishu_send_with_retry(
-                chat_id=chat_id,
-                msg_type="interactive",
-                payload=payload,
-                reply_to=None,
-                metadata=metadata,
+            card = _card(
+                "⚠️ Command Approval Required", "orange",
+                self._format_exec_approval(command, description, smart_denied), actions=actions,
             )
-
-            result = self._finalize_send_result(response, "send_exec_approval failed")
-            if result.success:
-                self._approval_state[approval_id] = {
-                    "session_key": session_key,
-                    "message_id": result.message_id or "",
-                    "chat_id": chat_id,
-                }
-            return result
+            return await self._send_interactive_card(
+                chat_id, card, metadata, "send_exec_approval failed",
+                state_map=self._approval_state, state_id=approval_id, session_key=session_key,
+            )
         except Exception as exc:
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
             return SendResult(success=False, error=str(exc))
+
+    async def _send_interactive_card(
+        self, chat_id: str, card: Dict[str, Any], metadata: Optional[Dict[str, Any]], failure_message: str, *,
+        state_map: Dict[int, Dict[str, str]], state_id: int, session_key: str,
+    ) -> SendResult:
+        """Send a button card and, on success, remember where it went so a click can be validated."""
+        response = await self._feishu_send_with_retry(
+            chat_id=chat_id, msg_type="interactive", payload=json.dumps(card, ensure_ascii=False),
+            reply_to=None, metadata=metadata,
+        )
+        result = self._finalize_send_result(response, failure_message)
+        if result.success:
+            state_map[state_id] = {
+                "session_key": session_key,
+                "message_id": result.message_id or "",
+                "chat_id": chat_id,
+            }
+        return result
 
     @staticmethod
     def _build_update_prompt_card(*, prompt: str, default: str, prompt_id: int) -> Dict[str, Any]:
         default_hint = f"\n\nDefault: `{default}`" if default else ""
 
         def _btn(label: str, answer: str, btn_type: str) -> dict:
-            return {
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": label},
-                "type": btn_type,
-                "value": {
-                    "hermes_update_prompt_action": answer,
-                    "update_prompt_id": prompt_id,
-                },
-            }
+            return _card_button(label, btn_type, {"hermes_update_prompt_action": answer, "update_prompt_id": prompt_id})
 
-        return {
-            "config": {"wide_screen_mode": True},
-            "header": {
-                "title": {"content": "⚕ Update Needs Your Input", "tag": "plain_text"},
-                "template": "orange",
-            },
-            "elements": [
-                {"tag": "markdown", "content": f"{prompt}{default_hint}"},
-                {
-                    "tag": "action",
-                    "actions": [
-                        _btn("✓ Yes", "y", "primary"),
-                        _btn("✗ No", "n", "danger"),
-                    ],
-                },
-            ],
-        }
+        actions = [_btn("✓ Yes", "y", "primary"), _btn("✗ No", "n", "danger")]
+        return _card("⚕ Update Needs Your Input", "orange", f"{prompt}{default_hint}", actions=actions)
 
     async def send_update_prompt(
-        self, chat_id: str, prompt: str, default: str = "",
-        session_key: str = "",
+        self, chat_id: str, prompt: str, default: str = "", session_key: str = "",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an interactive update prompt with Yes/No buttons."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
-
         try:
             prompt_id = next(self._update_prompt_counter)
-            payload = json.dumps(
-                self._build_update_prompt_card(prompt=prompt, default=default, prompt_id=prompt_id),
-                ensure_ascii=False,
+            card = self._build_update_prompt_card(prompt=prompt, default=default, prompt_id=prompt_id)
+            return await self._send_interactive_card(
+                chat_id, card, metadata, "send_update_prompt failed",
+                state_map=self._update_prompt_state, state_id=prompt_id, session_key=session_key,
             )
-            response = await self._feishu_send_with_retry(
-                chat_id=chat_id,
-                msg_type="interactive",
-                payload=payload,
-                reply_to=None,
-                metadata=metadata,
-            )
-
-            result = self._finalize_send_result(response, "send_update_prompt failed")
-            if result.success:
-                self._update_prompt_state[prompt_id] = {
-                    "session_key": session_key,
-                    "message_id": result.message_id or "",
-                    "chat_id": chat_id,
-                }
-            return result
         except Exception as exc:
             logger.warning("[Feishu] send_update_prompt failed: %s", exc)
             return SendResult(success=False, error=str(exc))
 
     @staticmethod
     def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
-        """Build raw card JSON for a resolved approval action."""
+        """Raw card JSON shown in place of the buttons once an approval is resolved."""
         icon = "❌" if choice == "deny" else "✅"
         label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
-        return {
-            "config": {"wide_screen_mode": True},
-            "header": {
-                "title": {"content": f"{icon} {label}", "tag": "plain_text"},
-                "template": "red" if choice == "deny" else "green",
-            },
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": f"{icon} **{label}** by {user_name}",
-                },
-            ],
-        }
+        return _card(f"{icon} {label}", "red" if choice == "deny" else "green", f"{icon} **{label}** by {user_name}")
 
     @staticmethod
     def _build_resolved_update_prompt_card(*, answer: str, user_name: str) -> Dict[str, Any]:
         yes = answer == "y"
-        label = "Yes" if yes else "No"
-        return {
-            "config": {"wide_screen_mode": True},
-            "header": {
-                "title": {"content": f"{'✅' if yes else '❌'} Update prompt answered: {label}", "tag": "plain_text"},
-                "template": "green" if yes else "red",
-            },
-            "elements": [
-                {"tag": "markdown", "content": f"Answered by **{user_name}**"},
-            ],
-        }
+        title = f"{'✅' if yes else '❌'} Update prompt answered: {'Yes' if yes else 'No'}"
+        return _card(title, "green" if yes else "red", f"Answered by **{user_name}**")
 
     @staticmethod
     def _write_update_prompt_response(answer: str) -> None:
@@ -2239,22 +1741,11 @@ class FeishuAdapter(BasePlatformAdapter):
         tmp_path.replace(response_path)
 
     async def send_voice(
-        self,
-        chat_id: str,
-        audio_path: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs,
+        self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None, **kwargs,
     ) -> SendResult:
-        """Send audio to Feishu as a native voice message (opus) or file.
-
-        Feishu's voice channel only accepts Opus (msg_type='audio' with an
-        opus upload). Non-opus audio (mp3/wav/flac/...) is transcoded on the
-        fly via the shared ffmpeg engine so audio actually arrives as a
-        playable voice message; when ffmpeg is unavailable the original
-        file is sent as a file attachment (previous behavior).
-        """
+        """Native voice message (Feishu only accepts Opus): non-opus audio is transcoded via ffmpeg
+        first; without ffmpeg the original file goes out as a file attachment."""
         transcoded_path: Optional[str] = None
         ext = Path(audio_path).suffix.lower()
         if ext not in _FEISHU_OPUS_UPLOAD_EXTENSIONS:
@@ -2264,12 +1755,8 @@ class FeishuAdapter(BasePlatformAdapter):
                 audio_path = transcoded_path
         try:
             return await self._send_uploaded_file_message(
-                chat_id=chat_id,
-                file_path=audio_path,
-                reply_to=reply_to,
-                metadata=metadata,
-                caption=caption,
-                outbound_message_type="audio",
+                chat_id=chat_id, file_path=audio_path, reply_to=reply_to, metadata=metadata,
+                caption=caption, outbound_message_type="audio",
             )
         finally:
             if transcoded_path:
@@ -2279,100 +1766,53 @@ class FeishuAdapter(BasePlatformAdapter):
                     pass
 
     async def send_document(
-        self,
-        chat_id: str,
-        file_path: str,
-        caption: Optional[str] = None,
-        file_name: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs,
+        self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
+        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs,
     ) -> SendResult:
         """Send a document/file attachment to Feishu."""
         return await self._send_uploaded_file_message(
-            chat_id=chat_id,
-            file_path=file_path,
-            reply_to=reply_to,
-            metadata=metadata,
-            caption=caption,
-            file_name=file_name,
+            chat_id=chat_id, file_path=file_path, reply_to=reply_to, metadata=metadata,
+            caption=caption, file_name=file_name,
         )
 
     async def send_video(
-        self,
-        chat_id: str,
-        video_path: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs,
+        self, chat_id: str, video_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None, **kwargs,
     ) -> SendResult:
         """Send a video file to Feishu."""
         return await self._send_uploaded_file_message(
-            chat_id=chat_id,
-            file_path=video_path,
-            reply_to=reply_to,
-            metadata=metadata,
-            caption=caption,
-            outbound_message_type="media",
+            chat_id=chat_id, file_path=video_path, reply_to=reply_to, metadata=metadata,
+            caption=caption, outbound_message_type="media",
         )
 
     async def send_image_file(
-        self,
-        chat_id: str,
-        image_path: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs,
+        self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None, **kwargs,
     ) -> SendResult:
         """Send a local image file to Feishu."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
         if not os.path.exists(image_path):
             return SendResult(success=False, error=f"Image file not found: {image_path}")
-
         try:
             import io as _io
             with open(image_path, "rb") as f:
-                image_bytes = f.read()
-            # Wrap in BytesIO so lark SDK's MultipartEncoder can read .name and .tell()
-            image_file = _io.BytesIO(image_bytes)
+                image_file = _io.BytesIO(f.read())  # lark's MultipartEncoder needs .name and .tell()
             image_file.name = os.path.basename(image_path)
-            body = self._build_image_upload_body(
-                image_type=_FEISHU_IMAGE_UPLOAD_TYPE,
-                image=image_file,
-            )
+            body = self._build_image_upload_body(image_type=_FEISHU_IMAGE_UPLOAD_TYPE, image=image_file)
             request = self._build_image_upload_request(body)
             upload_response = await self._run_blocking(self._client.im.v1.image.create, request)
             image_key = self._extract_response_field(upload_response, "image_key")
             if not image_key:
                 return self._response_error_result(
-                    upload_response,
-                    default_message="image upload failed",
+                    upload_response, default_message="image upload failed",
                     override_error="Feishu image upload missing image_key",
                 )
-
-            if caption:
-                post_payload = self._build_media_post_payload(
-                    caption=caption,
-                    media_tag={"tag": "img", "image_key": image_key},
-                )
-                message_response = await self._feishu_send_with_retry(
-                    chat_id=chat_id,
-                    msg_type="post",
-                    payload=post_payload,
-                    reply_to=reply_to,
-                    metadata=metadata,
-                )
-            else:
-                message_response = await self._feishu_send_with_retry(
-                    chat_id=chat_id,
-                    msg_type="image",
-                    payload=json.dumps({"image_key": image_key}, ensure_ascii=False),
-                    reply_to=reply_to,
-                    metadata=metadata,
-                )
+            message_response = await self._send_uploaded_key(
+                chat_id=chat_id, reply_to=reply_to, metadata=metadata, caption=caption,
+                key_msg_type="image", key_payload={"image_key": image_key},
+                media_tag={"tag": "img", "image_key": image_key},
+            )
             return self._finalize_send_result(message_response, "image send failed")
         except Exception as exc:
             logger.error("[Feishu] Failed to send image %s: %s", image_path, exc, exc_info=True)
@@ -2383,11 +1823,7 @@ class FeishuAdapter(BasePlatformAdapter):
         return None
 
     async def send_image(
-        self,
-        chat_id: str,
-        image_url: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
+        self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Download a remote image then send it through the native Feishu image flow."""
@@ -2396,68 +1832,40 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[Feishu] Failed to download image %s: %s", image_url, exc, exc_info=True)
             return await super().send_image(
-                chat_id=chat_id,
-                image_url=image_url,
-                caption=caption,
-                reply_to=reply_to,
-                metadata=metadata,
+                chat_id=chat_id, image_url=image_url, caption=caption, reply_to=reply_to, metadata=metadata,
             )
         return await self.send_image_file(
-            chat_id=chat_id,
-            image_path=image_path,
-            caption=caption,
-            reply_to=reply_to,
-            metadata=metadata,
+            chat_id=chat_id, image_path=image_path, caption=caption, reply_to=reply_to, metadata=metadata,
         )
 
     async def send_animation(
-        self,
-        chat_id: str,
-        animation_url: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
+        self, chat_id: str, animation_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Feishu has no native GIF bubble; degrade to a downloadable file."""
         try:
             file_path, file_name = await self._download_remote_document(
-                animation_url,
-                default_ext=".gif",
-                preferred_name="animation.gif",
+                animation_url, default_ext=".gif", preferred_name="animation.gif",
             )
         except Exception as exc:
             logger.error("[Feishu] Failed to download animation %s: %s", animation_url, exc, exc_info=True)
             return await super().send_animation(
-                chat_id=chat_id,
-                animation_url=animation_url,
-                caption=caption,
-                reply_to=reply_to,
-                metadata=metadata,
+                chat_id=chat_id, animation_url=animation_url, caption=caption, reply_to=reply_to, metadata=metadata,
             )
         degraded_caption = f"[GIF downgraded to file]\n{caption}" if caption else "[GIF downgraded to file]"
         return await self.send_document(
-            chat_id=chat_id,
-            file_path=file_path,
-            file_name=file_name,
-            caption=degraded_caption,
-            reply_to=reply_to,
-            metadata=metadata,
+            chat_id=chat_id, file_path=file_path, file_name=file_name, caption=degraded_caption,
+            reply_to=reply_to, metadata=metadata,
         )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return real chat metadata from Feishu when available."""
-        fallback = {
-            "chat_id": chat_id,
-            "name": chat_id,
-            "type": "dm",
-        }
+        fallback = {"chat_id": chat_id, "name": chat_id, "type": "dm"}
         if not self._client:
             return fallback
-
         cached = self._chat_info_cache.get(chat_id)
         if cached is not None:
             return dict(cached)
-
         try:
             request = self._build_get_chat_request(chat_id)
             response = await self._run_blocking(self._client.im.v1.chat.get, request)
@@ -2466,14 +1874,11 @@ class FeishuAdapter(BasePlatformAdapter):
                 msg = getattr(response, "msg", "chat lookup failed")
                 logger.warning("[Feishu] Failed to get chat info for %s: [%s] %s", chat_id, code, msg)
                 return fallback
-
             data = getattr(response, "data", None)
             raw_chat_type = str(getattr(data, "chat_type", "") or "").strip().lower()
             info = {
-                "chat_id": chat_id,
-                "name": str(getattr(data, "name", None) or chat_id),
-                "type": self._map_chat_type(raw_chat_type),
-                "raw_type": raw_chat_type or None,
+                "chat_id": chat_id, "name": str(getattr(data, "name", None) or chat_id),
+                "type": self._map_chat_type(raw_chat_type), "raw_type": raw_chat_type or None,
             }
             self._chat_info_cache[chat_id] = info
             return dict(info)
@@ -2485,136 +1890,85 @@ class FeishuAdapter(BasePlatformAdapter):
         """Feishu text messages are plain text by default."""
         return content.strip()
 
-    # =========================================================================
-    # Inbound event handlers
-    # =========================================================================
-
+    # --- Inbound event handlers ---
     def _on_message_event(self, data: Any) -> None:
-        """Normalize Feishu inbound events into MessageEvent.
-
-        Called by the lark_oapi SDK's event dispatcher on a background thread.
-        If the adapter loop is not currently accepting callbacks (brief window
-        during startup/restart or network-flap reconnect), the event is queued
-        for replay instead of dropped.
-        """
+        """SDK dispatcher callback (background thread); queues for replay while the loop isn't ready."""
         loop = self._loop
         if not self._loop_accepts_callbacks(loop):
-            start_drainer = self._enqueue_pending_inbound_event(data)
-            if start_drainer:
+            if self._enqueue_pending_inbound_event(data):
                 threading.Thread(
-                    target=self._drain_pending_inbound_events,
-                    name="feishu-pending-inbound-drainer",
-                    daemon=True,
+                    target=self._drain_pending_inbound_events, name="feishu-pending-inbound-drainer", daemon=True,
                 ).start()
             return
         self._submit_on_loop(loop, self._handle_message_event_data(data))
 
     def _enqueue_pending_inbound_event(self, data: Any) -> bool:
-        """Append an event to the pending-inbound queue.
-
-        Returns True if the caller should spawn a drainer thread (no drainer
-        currently scheduled), False if a drainer is already running and will
-        pick up the new event on its next pass.
-        """
+        """Queue an event for replay; True when the caller should spawn the (single) drainer thread."""
         with self._pending_inbound_lock:
             if len(self._pending_inbound_events) >= self._pending_inbound_max_depth:
-                # Queue full — drop the oldest to make room. This happens only
-                # if the loop stays unavailable for an extended period AND the
-                # WS keeps firing callbacks. Still better than silent drops.
+                # Full — drop the oldest (loop unavailable for long AND WS still firing).
                 dropped = self._pending_inbound_events.pop(0)
                 try:
-                    event = getattr(dropped, "event", None)
-                    message = getattr(event, "message", None)
+                    message = getattr(getattr(dropped, "event", None), "message", None)
                     message_id = str(getattr(message, "message_id", "") or "unknown")
                 except Exception:
                     message_id = "unknown"
                 logger.error(
                     "[Feishu] Pending-inbound queue full (%d); dropped oldest event %s",
-                    self._pending_inbound_max_depth,
-                    message_id,
+                    self._pending_inbound_max_depth, message_id,
                 )
             self._pending_inbound_events.append(data)
             depth = len(self._pending_inbound_events)
             should_start = not self._pending_drain_scheduled
-            if should_start:
-                self._pending_drain_scheduled = True
-        logger.warning(
-            "[Feishu] Queued inbound event for replay (loop not ready, queue depth=%d)",
-            depth,
-        )
+            self._pending_drain_scheduled = True
+        logger.warning("[Feishu] Queued inbound event for replay (loop not ready, queue depth=%d)", depth)
         return should_start
 
     def _drain_pending_inbound_events(self) -> None:
-        """Replay queued inbound events once the adapter loop is ready.
-
-        Runs in a dedicated daemon thread. Polls ``_running`` and
-        ``_loop_accepts_callbacks`` until events can be dispatched or the
-        adapter shuts down. A single drainer handles the entire queue;
-        concurrent ``_on_message_event`` calls just append.
-        """
+        """Daemon-thread drainer: replay queued inbound events once the loop is ready (or drop on shutdown/timeout)."""
         poll_interval = 0.25
         max_wait_seconds = 120.0  # safety cap: drop queue after 2 minutes
         waited = 0.0
+
+        def _take_all() -> List[Any]:
+            with self._pending_inbound_lock:
+                batch = self._pending_inbound_events[:]
+                self._pending_inbound_events.clear()
+            return batch
+
+        def _queue_empty() -> bool:
+            with self._pending_inbound_lock:
+                return not self._pending_inbound_events
+
         try:
             while True:
                 if not getattr(self, "_running", True):
-                    # Adapter shutting down — drop queued events rather than
-                    # holding them against a closed loop.
-                    with self._pending_inbound_lock:
-                        dropped = len(self._pending_inbound_events)
-                        self._pending_inbound_events.clear()
+                    # Shutting down — drop rather than hold events against a closed loop.
+                    dropped = len(_take_all())
                     if dropped:
-                        logger.warning(
-                            "[Feishu] Dropped %d queued inbound event(s) during shutdown",
-                            dropped,
-                        )
+                        logger.warning("[Feishu] Dropped %d queued inbound event(s) during shutdown", dropped)
                     return
                 loop = self._loop
                 if self._loop_accepts_callbacks(loop):
-                    with self._pending_inbound_lock:
-                        batch = self._pending_inbound_events[:]
-                        self._pending_inbound_events.clear()
+                    batch = _take_all()
                     if not batch:
-                        # Queue emptied between check and grab; done.
-                        with self._pending_inbound_lock:
-                            if not self._pending_inbound_events:
-                                return
+                        if _queue_empty():  # emptied between check and grab
+                            return
                         continue
-                    dispatched = 0
-                    requeue: List[Any] = []
-                    for event in batch:
-                        if self._submit_on_loop(
-                            loop, self._handle_message_event_data(event)
-                        ):
-                            dispatched += 1
-                        else:
-                            # Loop closed/unavailable — requeue and poll again.
-                            requeue.append(event)
+                    # Loop closed/unavailable mid-batch → requeue those and poll again.
+                    requeue = [e for e in batch if not self._submit_on_loop(loop, self._handle_message_event_data(e))]
                     if requeue:
                         with self._pending_inbound_lock:
                             self._pending_inbound_events[:0] = requeue
-                    if dispatched:
-                        logger.info(
-                            "[Feishu] Replayed %d queued inbound event(s)",
-                            dispatched,
-                        )
-                    if not requeue:
-                        # Successfully drained; check if more arrived while
-                        # we were dispatching and exit if not.
-                        with self._pending_inbound_lock:
-                            if not self._pending_inbound_events:
-                                return
-                    # More events queued or requeue pending — loop again.
+                    if len(batch) - len(requeue):
+                        logger.info("[Feishu] Replayed %d queued inbound event(s)", len(batch) - len(requeue))
+                    if not requeue and _queue_empty():  # fully drained and nothing new arrived
+                        return
                     continue
                 if waited >= max_wait_seconds:
-                    with self._pending_inbound_lock:
-                        dropped = len(self._pending_inbound_events)
-                        self._pending_inbound_events.clear()
                     logger.error(
-                        "[Feishu] Adapter loop unavailable for %.0fs; "
-                        "dropped %d queued inbound event(s)",
-                        max_wait_seconds,
-                        dropped,
+                        "[Feishu] Adapter loop unavailable for %.0fs; dropped %d queued inbound event(s)",
+                        max_wait_seconds, len(_take_all()),
                     )
                     return
                 time.sleep(poll_interval)
@@ -2631,47 +1985,34 @@ class FeishuAdapter(BasePlatformAdapter):
         if not message or not sender or not getattr(sender, "sender_id", None):
             logger.debug("[Feishu] Dropping malformed inbound event: missing message/sender")
             return
-
         message_id = getattr(message, "message_id", None)
-        if not message_id or self._is_duplicate(message_id):
+        if not message_id or await self._is_duplicate(message_id):
             logger.debug("[Feishu] Dropping duplicate/missing message_id: %s", message_id)
             return
-
         reason = self._admit(sender, message)
         if reason is not None:
             logger.debug("[Feishu] dropping inbound event: %s", reason)
             return
-
-        chat_type = getattr(message, "chat_type", "p2p")
         await self._process_inbound_message(
-            data=data,
-            message=message,
-            sender_id=getattr(sender, "sender_id", None),
-            chat_type=chat_type,
-            message_id=message_id,
-            is_bot=_is_bot_sender(sender),
+            data=data, message=message, sender_id=getattr(sender, "sender_id", None),
+            chat_type=getattr(message, "chat_type", "p2p"), message_id=message_id, is_bot=_is_bot_sender(sender),
         )
 
     def _on_message_read_event(self, data: P2ImMessageMessageReadV1) -> None:
         """Ignore read-receipt events that Hermes does not act on."""
-        event = getattr(data, "event", None)
-        message = getattr(event, "message", None)
-        message_id = getattr(message, "message_id", None) or ""
-        logger.debug("[Feishu] Ignoring message_read event: %s", message_id)
+        message = getattr(getattr(data, "event", None), "message", None)
+        logger.debug("[Feishu] Ignoring message_read event: %s", getattr(message, "message_id", None) or "")
+
+    def _on_bot_membership_change(self, data: Any, verb: str) -> None:
+        chat_id = str(getattr(getattr(data, "event", None), "chat_id", "") or "")
+        logger.info("[Feishu] Bot %s chat: %s", verb, chat_id)
+        self._chat_info_cache.pop(chat_id, None)
 
     def _on_bot_added_to_chat(self, data: Any) -> None:
-        """Handle bot being added to a group chat."""
-        event = getattr(data, "event", None)
-        chat_id = str(getattr(event, "chat_id", "") or "")
-        logger.info("[Feishu] Bot added to chat: %s", chat_id)
-        self._chat_info_cache.pop(chat_id, None)
+        self._on_bot_membership_change(data, "added to")
 
     def _on_bot_removed_from_chat(self, data: Any) -> None:
-        """Handle bot being removed from a group chat."""
-        event = getattr(data, "event", None)
-        chat_id = str(getattr(event, "chat_id", "") or "")
-        logger.info("[Feishu] Bot removed from chat: %s", chat_id)
-        self._chat_info_cache.pop(chat_id, None)
+        self._on_bot_membership_change(data, "removed from")
 
     def _on_p2p_chat_entered(self, data: Any) -> None:
         logger.debug("[Feishu] User entered P2P chat with bot")
@@ -2679,33 +2020,26 @@ class FeishuAdapter(BasePlatformAdapter):
     def _on_message_recalled(self, data: Any) -> None:
         logger.debug("[Feishu] Message recalled by user")
 
-    def _on_drive_comment_event(self, data: Any) -> None:
-        """Handle drive document comment notification (drive.notice.comment_add_v1).
-
-        Delegates to :mod:`gateway.platforms.feishu_comment` for parsing,
-        logging, and reaction.  Scheduling follows the same
-        ``run_coroutine_threadsafe`` pattern used by ``_on_message_event``.
-        """
-        from plugins.platforms.feishu.feishu_comment import handle_drive_comment_event
-
+    def _submit_if_ready(self, label: str, make_coro: Any) -> None:
+        """Schedule ``make_coro()`` on the adapter loop, or log-and-drop when the loop isn't ready."""
         loop = self._loop
         if not self._loop_accepts_callbacks(loop):
-            logger.warning("[Feishu] Dropping drive comment event before adapter loop is ready")
+            logger.warning("[Feishu] Dropping %s before adapter loop is ready", label)
             return
-        self._submit_on_loop(
-            loop,
-            handle_drive_comment_event(self._client, data, self_open_id=self._bot_open_id),
+        self._submit_on_loop(loop, make_coro())
+
+    def _on_drive_comment_event(self, data: Any) -> None:
+        """drive.notice.comment_add_v1 → feishu_comment.handle_drive_comment_event on the adapter loop."""
+        from plugins.platforms.feishu.feishu_comment import handle_drive_comment_event
+        self._submit_if_ready(
+            "drive comment event",
+            lambda: handle_drive_comment_event(self._client, data, self_open_id=self._bot_open_id),
         )
 
     def _on_meeting_invited_event(self, data: Any) -> None:
-        """Handle VC bot meeting invitation notification (vc.bot.meeting_invited_v1)."""
+        """vc.bot.meeting_invited_v1 → feishu_meeting_invite.handle_meeting_invited_event."""
         from plugins.platforms.feishu.feishu_meeting_invite import handle_meeting_invited_event
-
-        loop = self._loop
-        if not self._loop_accepts_callbacks(loop):
-            logger.warning("[Feishu] Dropping meeting invite event before adapter loop is ready")
-            return
-        self._submit_on_loop(loop, handle_meeting_invited_event(self, data))
+        self._submit_if_ready("meeting invite event", lambda: handle_meeting_invited_event(self, data))
 
     def _on_reaction_event(self, event_type: str, data: Any) -> None:
         """Route user reactions on bot messages as synthetic text events."""
@@ -2717,60 +2051,36 @@ class FeishuAdapter(BasePlatformAdapter):
         action = "added" if "created" in event_type else "removed"
         logger.debug(
             "[Feishu] Reaction %s on message %s (operator_type=%s, emoji=%s)",
-            action,
-            message_id,
-            operator_type,
-            emoji_type,
+            action, message_id, operator_type, emoji_type,
         )
-        # Drop bot/app-origin reactions to break the feedback loop from our
-        # own lifecycle reactions. A human reacting with the same emoji (e.g.
-        # clicking Typing on a bot message) is still routed through.
+        # Drop bot/app-origin reactions to break the feedback loop from our own lifecycle
+        # reactions; a human clicking the same emoji is still routed through.
         loop = self._loop
-        if (
-            operator_type in {"bot", "app"}
-            or not message_id
-            or loop is None
-            or bool(getattr(loop, "is_closed", lambda: False)())
-        ):
+        if operator_type in {"bot", "app"} or not message_id or not self._loop_accepts_callbacks(loop):
             return
         self._submit_on_loop(loop, self._handle_reaction_event(event_type, data))
 
     def _on_card_action_trigger(self, data: Any) -> Any:
-        """Handle card-action callback from the Feishu SDK (synchronous).
+        """Synchronous SDK card-action callback.
 
-        For approval actions: parses the event once, returns the resolved card
-        inline (the only reliable way to sync all clients), and schedules a
-        lightweight async method to actually unblock the agent.
-
-        For other card actions: delegates to ``_handle_card_action_event``.
+        Approval/update-prompt buttons return the resolved card inline (the only reliable way
+        to sync all clients) and schedule the async resolution; other clicks are routed as
+        synthetic commands via ``_handle_card_action_event``.
         """
         loop = self._loop
         if not self._loop_accepts_callbacks(loop):
             logger.warning("[Feishu] Dropping card action before adapter loop is ready")
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-
+            return self._card_response()
         event = getattr(data, "event", None)
         action = getattr(event, "action", None)
         action_value = getattr(action, "value", {}) or {}
-        hermes_action = action_value.get("hermes_action") if isinstance(action_value, dict) else None
-        update_prompt_action = (
-            action_value.get("hermes_update_prompt_action")
-            if isinstance(action_value, dict) else None
-        )
-
-        if hermes_action:
-            return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
-        if update_prompt_action:
-            return self._handle_update_prompt_card_action(
-                event=event,
-                action_value=action_value,
-                loop=loop,
-            )
-
+        if isinstance(action_value, dict):
+            if action_value.get("hermes_action"):
+                return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
+            if action_value.get("hermes_update_prompt_action"):
+                return self._handle_update_prompt_card_action(event=event, action_value=action_value, loop=loop)
         self._submit_on_loop(loop, self._handle_card_action_event(data))
-        if P2CardActionTriggerResponse is None:
-            return None
-        return P2CardActionTriggerResponse()
+        return self._card_response()
 
     @staticmethod
     def _loop_accepts_callbacks(loop: Any) -> bool:
@@ -2781,9 +2091,7 @@ class FeishuAdapter(BasePlatformAdapter):
         """Schedule background work on the adapter loop with shared failure logging."""
         from agent.async_utils import safe_schedule_threadsafe
         future = safe_schedule_threadsafe(
-            coro, loop,
-            logger=logger,
-            log_message="[Feishu] Failed to schedule background callback work",
+            coro, loop, logger=logger, log_message="[Feishu] Failed to schedule background callback work",
             log_level=logging.WARNING,
         )
         if future is None:
@@ -2801,144 +2109,117 @@ class FeishuAdapter(BasePlatformAdapter):
             return True
         return "*" in allowed_ids or normalized in allowed_ids
 
+    @staticmethod
+    def _card_response(card_data: Optional[Dict[str, Any]] = None) -> Any:
+        """Synchronous card-callback response; ``card_data`` updates the card inline."""
+        if P2CardActionTriggerResponse is None:
+            return None
+        response = P2CardActionTriggerResponse()
+        if card_data is not None and CallBackCard is not None:
+            card = CallBackCard()
+            card.type = "raw"
+            card.data = card_data
+            response.card = card
+        return response
+
+    def _validate_card_action(
+        self, *, event: Any, state: Dict[str, str], label: str, ident: Any,
+    ) -> Optional[tuple[str, str, str]]:
+        """Shared operator/chat checks for approval + update-prompt clicks.
+
+        Returns ``(open_id, callback_chat_id, user_name)`` or None (already logged).
+        """
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        if not self._is_interactive_operator_authorized(open_id):
+            logger.warning("[Feishu] Unauthorized %s click by %s", label, open_id or "<unknown>")
+            return None
+        callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        if callback_chat_id and expected_chat_id and callback_chat_id != expected_chat_id:
+            logger.warning(
+                "[Feishu] %s callback chat mismatch for %s (expected=%s, got=%s)",
+                label.capitalize(), ident, expected_chat_id, callback_chat_id,
+            )
+            return None
+        return open_id, callback_chat_id, self._get_cached_sender_name(open_id) or open_id
+
     def _handle_approval_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
         """Schedule approval resolution and build the synchronous callback response."""
         approval_id = action_value.get("approval_id")
         if approval_id is None:
             logger.debug("[Feishu] Card action missing approval_id, ignoring")
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+            return self._card_response()
         state = self._approval_state.get(approval_id)
         if not state:
             logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+            return self._card_response()
         choice = _APPROVAL_CHOICE_MAP.get(action_value.get("hermes_action"), "deny")
-
-        operator = getattr(event, "operator", None)
-        open_id = str(getattr(operator, "open_id", "") or "")
-        if not self._is_interactive_operator_authorized(open_id):
-            logger.warning("[Feishu] Unauthorized approval click by %s", open_id or "<unknown>")
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-
-        callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
-        expected_chat_id = str(state.get("chat_id", "") or "")
-        if callback_chat_id and expected_chat_id and callback_chat_id != expected_chat_id:
-            logger.warning(
-                "[Feishu] Approval callback chat mismatch for %s (expected=%s, got=%s)",
-                approval_id,
-                expected_chat_id,
-                callback_chat_id,
-            )
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-
-        user_name = self._get_cached_sender_name(open_id) or open_id
-
-        chat_context = getattr(event, "context", None)
-        chat_id = str(getattr(chat_context, "open_chat_id", "") or "")
-        if not self._submit_on_loop(
-            loop,
-            self._resolve_approval(
-                approval_id=approval_id,
-                choice=choice,
-                user_name=user_name,
-                open_id=open_id,
-                chat_id=chat_id,
-            ),
-        ):
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-
-        if P2CardActionTriggerResponse is None:
-            return None
-        response = P2CardActionTriggerResponse()
-        if CallBackCard is not None:
-            card = CallBackCard()
-            card.type = "raw"
-            card.data = self._build_resolved_approval_card(choice=choice, user_name=user_name)
-            response.card = card
-        return response
+        checked = self._validate_card_action(event=event, state=state, label="approval", ident=approval_id)
+        if checked is None:
+            return self._card_response()
+        open_id, chat_id, user_name = checked
+        coro = self._resolve_approval(
+            approval_id=approval_id, choice=choice, user_name=user_name, open_id=open_id, chat_id=chat_id,
+        )
+        if not self._submit_on_loop(loop, coro):
+            return self._card_response()
+        return self._card_response(self._build_resolved_approval_card(choice=choice, user_name=user_name))
 
     def _handle_update_prompt_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
         """Schedule update prompt resolution and build the synchronous callback response."""
         prompt_id = action_value.get("update_prompt_id")
         if prompt_id is None:
             logger.debug("[Feishu] Card action missing update_prompt_id, ignoring")
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+            return self._card_response()
         state = self._update_prompt_state.get(prompt_id)
         if not state:
             logger.debug("[Feishu] Update prompt %s already resolved or unknown", prompt_id)
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-
+            return self._card_response()
         answer = str(action_value.get("hermes_update_prompt_action", "") or "").strip().lower()
         if answer not in {"y", "n"}:
             logger.debug("[Feishu] Card action has invalid update prompt answer=%r", answer)
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+            return self._card_response()
+        checked = self._validate_card_action(event=event, state=state, label="update prompt", ident=prompt_id)
+        if checked is None:
+            return self._card_response()
+        open_id, chat_id, user_name = checked
+        coro = self._resolve_update_prompt(prompt_id, answer, user_name, open_id=open_id, chat_id=chat_id)
+        if not self._submit_on_loop(loop, coro):
+            return self._card_response()
+        return self._card_response(self._build_resolved_update_prompt_card(answer=answer, user_name=user_name))
 
-        operator = getattr(event, "operator", None)
-        open_id = str(getattr(operator, "open_id", "") or "")
-        if not self._is_interactive_operator_authorized(open_id):
-            logger.warning("[Feishu] Unauthorized update prompt click by %s", open_id or "<unknown>")
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-
-        callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
-        expected_chat_id = str(state.get("chat_id", "") or "")
-        if callback_chat_id and expected_chat_id and callback_chat_id != expected_chat_id:
-            logger.warning(
-                "[Feishu] Update prompt callback chat mismatch for %s (expected=%s, got=%s)",
-                prompt_id,
-                expected_chat_id,
-                callback_chat_id,
-            )
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-
-        user_name = self._get_cached_sender_name(open_id) or open_id
-        if not self._submit_on_loop(
-            loop,
-            self._resolve_update_prompt(
-                prompt_id,
-                answer,
-                user_name,
-                open_id=open_id,
-                chat_id=callback_chat_id,
-            ),
-        ):
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-
-        if P2CardActionTriggerResponse is None:
-            return None
-        response = P2CardActionTriggerResponse()
-        if CallBackCard is not None:
-            card = CallBackCard()
-            card.type = "raw"
-            card.data = self._build_resolved_update_prompt_card(answer=answer, user_name=user_name)
-            response.card = card
-        return response
-
-    async def _resolve_approval(
-        self,
-        approval_id: Any,
-        choice: str,
-        user_name: str,
-        *,
-        open_id: str = "",
-        chat_id: str = "",
-    ) -> None:
-        """Pop approval state and unblock the waiting agent thread."""
-        state = self._approval_state.get(approval_id)
+    def _pop_validated_prompt_state(
+        self, *, states: Dict[int, Dict[str, str]], ident: Any, label: str, open_id: str, chat_id: str,
+        unauthorized_fmt: str, operator_repr: str,
+    ) -> Optional[Dict[str, str]]:
+        """Re-validate on the loop thread (state may have changed since the callback) and pop."""
+        state = states.get(ident)
         if not state:
-            logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
-            return
+            logger.debug("[Feishu] %s %s already resolved or unknown", label, ident)
+            return None
         if not self._is_interactive_operator_authorized(open_id):
-            logger.warning("[Feishu] Unauthorized approval click by %s for approval %s", open_id or "<unknown>", approval_id)
-            return
+            logger.warning(unauthorized_fmt, operator_repr, ident)
+            return None
         expected_chat_id = str(state.get("chat_id", "") or "")
         if expected_chat_id and chat_id and expected_chat_id != chat_id:
-            logger.warning(
-                "[Feishu] Approval %s chat mismatch (expected=%s, got=%s)",
-                approval_id, expected_chat_id, chat_id,
-            )
-            return
-        state = self._approval_state.pop(approval_id, None)
+            logger.warning("[Feishu] %s %s chat mismatch (expected=%s, got=%s)", label, ident, expected_chat_id, chat_id)
+            return None
+        state = states.pop(ident, None)
         if not state:
-            logger.debug("[Feishu] Approval %s already resolved while validating callback", approval_id)
+            logger.debug("[Feishu] %s %s already resolved while validating callback", label, ident)
+        return state
+
+    async def _resolve_approval(
+        self, approval_id: Any, choice: str, user_name: str, *, open_id: str = "", chat_id: str = "",
+    ) -> None:
+        """Pop approval state and unblock the waiting agent thread."""
+        state = self._pop_validated_prompt_state(
+            states=self._approval_state, ident=approval_id, label="Approval", open_id=open_id, chat_id=chat_id,
+            unauthorized_fmt="[Feishu] Unauthorized approval click by %s for approval %s",
+            operator_repr=open_id or "<unknown>",
+        )
+        if not state:
             return
         try:
             from tools.approval import resolve_gateway_approval
@@ -2948,11 +2229,9 @@ class FeishuAdapter(BasePlatformAdapter):
                 count, state["session_key"], choice, user_name,
             )
             if not count and choice != "deny":
-                # The card was already updated synchronously to "Approved" by
-                # the callback response, but nothing was waiting — the wait
-                # already timed out (fail-closed deny) or was resolved via
-                # /approve. Correct the record so the user doesn't believe
-                # the command ran.
+                # The card already reads "Approved" (synchronous callback), but nothing was
+                # waiting — the wait timed out (fail-closed deny) or was resolved via /approve.
+                # Correct the record so the user doesn't believe the command ran.
                 _chat = str(state.get("chat_id", "") or chat_id or "")
                 if _chat:
                     try:
@@ -2967,34 +2246,15 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
 
     async def _resolve_update_prompt(
-        self,
-        prompt_id: Any,
-        answer: str,
-        user_name: str,
-        *,
-        open_id: str = "",
-        chat_id: str = "",
+        self, prompt_id: Any, answer: str, user_name: str, *, open_id: str = "", chat_id: str = "",
     ) -> None:
         """Persist an update prompt answer for the detached update process."""
-        state = self._update_prompt_state.get(prompt_id)
+        state = self._pop_validated_prompt_state(
+            states=self._update_prompt_state, ident=prompt_id, label="Update prompt", open_id=open_id,
+            chat_id=chat_id, unauthorized_fmt="[Feishu] Unauthorized update prompt click by %s for prompt %s",
+            operator_repr=open_id,
+        )
         if not state:
-            logger.debug("[Feishu] Update prompt %s already resolved or unknown", prompt_id)
-            return
-        if not self._is_interactive_operator_authorized(open_id):
-            logger.warning("[Feishu] Unauthorized update prompt click by %s for prompt %s", open_id, prompt_id)
-            return
-        expected_chat_id = str(state.get("chat_id", "") or "")
-        if expected_chat_id and chat_id and expected_chat_id != chat_id:
-            logger.warning(
-                "[Feishu] Update prompt %s chat mismatch (expected=%s, got=%s)",
-                prompt_id,
-                expected_chat_id,
-                chat_id,
-            )
-            return
-        state = self._update_prompt_state.pop(prompt_id, None)
-        if not state:
-            logger.debug("[Feishu] Update prompt %s already resolved while validating callback", prompt_id)
             return
         try:
             self._write_update_prompt_response(answer)
@@ -3013,22 +2273,21 @@ class FeishuAdapter(BasePlatformAdapter):
         message_id = str(getattr(event, "message_id", "") or "")
         if not message_id:
             return
-
         # Fetch the target message to verify it was sent by us and to obtain chat context.
         try:
             request = self._build_get_message_request(message_id)
             response = await self._run_blocking(self._client.im.v1.message.get, request)
-            if not response or not getattr(response, "success", lambda: False)():
+            if not self._response_succeeded(response):
                 return
             items = getattr(getattr(response, "data", None), "items", None) or []
             msg = items[0] if items else None
             if not msg:
                 return
-            # GET im/v1/messages returns sender.id=app_id for bot messages —
-            # peer bots and us share sender_type="app" but differ on app_id.
+            # GET im/v1/messages reports sender.id=app_id for bot messages — peer bots share
+            # sender_type="app" with us but differ on app_id. Only route our own messages.
             sender = getattr(msg, "sender", None)
             if str(getattr(sender, "id", "") or "") != self._app_id:
-                return  # only route reactions on this bot's own messages
+                return
             chat_id = str(getattr(msg, "chat_id", "") or "")
             chat_type_raw = str(getattr(msg, "chat_type", "p2p") or "p2p")
             if not chat_id:
@@ -3036,35 +2295,16 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             logger.debug("[Feishu] Failed to fetch message for reaction routing", exc_info=True)
             return
-
         user_id_obj = getattr(event, "user_id", None)
         reaction_type_obj = getattr(event, "reaction_type", None)
         emoji_type = str(getattr(reaction_type_obj, "emoji_type", "") or "UNKNOWN")
         action = "added" if "created" in event_type else "removed"
         synthetic_text = f"reaction:{action}:{emoji_type}"
-
-        sender_profile = await self._resolve_sender_profile(user_id_obj)
-        chat_info = await self.get_chat_info(chat_id)
-        source = self.build_source(
-            chat_id=chat_id,
-            chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
-            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type_raw),
-            user_id=sender_profile["user_id"],
-            user_name=sender_profile["user_name"],
-            thread_id=None,
-            user_id_alt=sender_profile["user_id_alt"],
-        )
-        synthetic_event = MessageEvent(
-            text=synthetic_text,
-            message_type=MessageType.TEXT,
-            source=source,
-            raw_message=data,
-            message_id=message_id,
-            channel_prompt=self._resolve_channel_prompt(chat_id),
-            timestamp=datetime.now(),
-        )
         logger.info("[Feishu] Routing reaction %s:%s on bot message %s as synthetic event", action, emoji_type, message_id)
-        await self._handle_message_with_guards(synthetic_event)
+        await self._dispatch_synthetic_event(
+            text=synthetic_text, message_type=MessageType.TEXT, chat_id=chat_id, sender_id=user_id_obj,
+            event_chat_type=chat_type_raw, raw_message=data, message_id=message_id,
+        )
 
     def _is_card_action_duplicate(self, token: str) -> bool:
         """Return True if this card action token was already processed within the dedup window."""
@@ -3085,7 +2325,6 @@ class FeishuAdapter(BasePlatformAdapter):
         if token and self._is_card_action_duplicate(token):
             logger.debug("[Feishu] Dropping duplicate card action token: %s", token)
             return
-
         context = getattr(event, "context", None)
         chat_id = str(getattr(context, "open_chat_id", "") or "")
         operator = getattr(event, "operator", None)
@@ -3093,273 +2332,172 @@ class FeishuAdapter(BasePlatformAdapter):
         if not chat_id or not open_id:
             logger.debug("[Feishu] Card action missing chat_id or operator open_id, dropping")
             return
-
         action = getattr(event, "action", None)
         action_tag = str(getattr(action, "tag", "") or "button")
         action_value = getattr(action, "value", {}) or {}
-
         synthetic_text = f"/card {action_tag}"
         if action_value:
             try:
                 synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
             except Exception:
                 pass
+        logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)
+        await self._dispatch_synthetic_event(
+            text=synthetic_text, message_type=MessageType.COMMAND, chat_id=chat_id,
+            sender_id=SimpleNamespace(open_id=open_id, user_id=None, union_id=None), event_chat_type="group",
+            raw_message=data, message_id=token or str(uuid.uuid4()),
+        )
 
-        sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
+    async def _dispatch_synthetic_event(
+        self, *, text: str, message_type: MessageType, chat_id: str, sender_id: Any, event_chat_type: str,
+        raw_message: Any, message_id: str,
+    ) -> None:
+        """Wrap a reaction/card click as a MessageEvent and run it through the guarded pipeline."""
         sender_profile = await self._resolve_sender_profile(sender_id)
         chat_info = await self.get_chat_info(chat_id)
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
-            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type="group"),
+            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=event_chat_type),
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
             thread_id=None,
             user_id_alt=sender_profile["user_id_alt"],
         )
         synthetic_event = MessageEvent(
-            text=synthetic_text,
-            message_type=MessageType.COMMAND,
-            source=source,
-            raw_message=data,
-            message_id=token or str(uuid.uuid4()),
-            channel_prompt=self._resolve_channel_prompt(chat_id),
+            text=text, message_type=message_type, source=source, raw_message=raw_message,
+            message_id=message_id, channel_prompt=self._resolve_channel_prompt(chat_id),
             timestamp=datetime.now(),
         )
-        logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)
         await self._handle_message_with_guards(synthetic_event)
 
-    # =========================================================================
-    # Per-chat serialization and typing indicator
-    # =========================================================================
-
+    # --- Per-chat serialization and typing indicator ---
     def _get_chat_lock(self, chat_id: str) -> asyncio.Lock:
-        """Return (creating if needed) the per-chat asyncio.Lock for serial message processing.
-
-        Bounded with LRU eviction so a long-running gateway that sees many
-        distinct chats does not grow ``_chat_locks`` without limit. Locks that
-        are currently held are never evicted; if every entry is locked we fall
-        back to dropping the least-recently-used one.
-        """
+        """Per-chat asyncio.Lock for serial processing; LRU-bounded, never evicts a held lock if any is free."""
         lock = self._chat_locks.get(chat_id)
         if lock is not None:
             self._chat_locks.move_to_end(chat_id)
             return lock
         if len(self._chat_locks) >= self.CHAT_LOCK_MAX_SIZE:
-            evicted = False
-            for key in list(self._chat_locks):
-                if not self._chat_locks[key].locked():
-                    self._chat_locks.pop(key)
-                    evicted = True
-                    break
-            if not evicted:
-                self._chat_locks.pop(next(iter(self._chat_locks)))
+            victim = next((k for k, lk in self._chat_locks.items() if not lk.locked()), next(iter(self._chat_locks)))
+            self._chat_locks.pop(victim)
         lock = asyncio.Lock()
         self._chat_locks[chat_id] = lock
         return lock
 
     async def _handle_message_with_guards(self, event: MessageEvent) -> None:
-        """Dispatch a single event through the agent pipeline with per-chat serialization
-        before handing the event off to the agent.
-
-        Per-chat lock ensures messages in the same chat are processed one at a
-        time (matches openclaw's createChatQueue serial queue behaviour).
-        """
+        """Run one event through the agent pipeline under the per-chat lock (openclaw createChatQueue)."""
         chat_id = getattr(event.source, "chat_id", "") or "" if event.source else ""
         chat_lock = self._get_chat_lock(chat_id)
         async with chat_lock:
             await self.handle_message(event)
 
-    # =========================================================================
-    # Processing status reactions
-    # =========================================================================
-
+    # --- Processing status reactions ---
     def _reactions_enabled(self) -> bool:
         return os.getenv("FEISHU_REACTIONS", "true").strip().lower() not in {"false", "0", "no"}
+
+    async def _reaction_call(self, verb: str, message_id: str, ident: str, build_request: Any, api: Any) -> Any:
+        """Shared add/remove reaction wrapper: returns the response data on success, else None (logged)."""
+        try:
+            response = await self._run_blocking(api, build_request())
+            if self._response_succeeded(response):
+                return getattr(response, "data", None) or True
+            logger.debug(
+                "[Feishu] %s reaction %s on %s rejected: code=%s msg=%s",
+                verb, ident, message_id, getattr(response, "code", None), getattr(response, "msg", None),
+            )
+        except Exception:
+            logger.warning("[Feishu] %s reaction %s on %s raised", verb, ident, message_id, exc_info=True)
+        return None
 
     async def _add_reaction(self, message_id: str, emoji_type: str) -> Optional[str]:
         """Return the reaction_id on success, else None. The id is needed later for deletion."""
         if not self._client or not message_id or not emoji_type:
             return None
-        try:
-            from lark_oapi.api.im.v1 import (
-                CreateMessageReactionRequest,
-                CreateMessageReactionRequestBody,
-            )
-            body = (
-                CreateMessageReactionRequestBody.builder()
-                .reaction_type({"emoji_type": emoji_type})
-                .build()
-            )
-            request = (
-                CreateMessageReactionRequest.builder()
-                .message_id(message_id)
-                .request_body(body)
-                .build()
-            )
-            response = await self._run_blocking(self._client.im.v1.message_reaction.create, request)
-            if response and getattr(response, "success", lambda: False)():
-                data = getattr(response, "data", None)
-                return getattr(data, "reaction_id", None)
-            logger.debug(
-                "[Feishu] Add reaction %s on %s rejected: code=%s msg=%s",
-                emoji_type,
-                message_id,
-                getattr(response, "code", None),
-                getattr(response, "msg", None),
-            )
-        except Exception:
-            logger.warning(
-                "[Feishu] Add reaction %s on %s raised",
-                emoji_type,
-                message_id,
-                exc_info=True,
-            )
-        return None
+
+        def _build() -> Any:  # lazy SDK import stays inside the guarded call
+            from lark_oapi.api.im.v1 import CreateMessageReactionRequest, CreateMessageReactionRequestBody
+            body = CreateMessageReactionRequestBody.builder().reaction_type({"emoji_type": emoji_type}).build()
+            return CreateMessageReactionRequest.builder().message_id(message_id).request_body(body).build()
+
+        data = await self._reaction_call("Add", message_id, emoji_type, _build, self._client.im.v1.message_reaction.create)
+        return getattr(data, "reaction_id", None) if data is not None else None
 
     async def _remove_reaction(self, message_id: str, reaction_id: str) -> bool:
         if not self._client or not message_id or not reaction_id:
             return False
-        try:
+
+        def _build() -> Any:
             from lark_oapi.api.im.v1 import DeleteMessageReactionRequest
-            request = (
-                DeleteMessageReactionRequest.builder()
-                .message_id(message_id)
-                .reaction_id(reaction_id)
-                .build()
-            )
-            response = await self._run_blocking(self._client.im.v1.message_reaction.delete, request)
-            if response and getattr(response, "success", lambda: False)():
-                return True
-            logger.debug(
-                "[Feishu] Remove reaction %s on %s rejected: code=%s msg=%s",
-                reaction_id,
-                message_id,
-                getattr(response, "code", None),
-                getattr(response, "msg", None),
-            )
-        except Exception:
-            logger.warning(
-                "[Feishu] Remove reaction %s on %s raised",
-                reaction_id,
-                message_id,
-                exc_info=True,
-            )
-        return False
+            return DeleteMessageReactionRequest.builder().message_id(message_id).reaction_id(reaction_id).build()
 
-    def _remember_processing_reaction(self, message_id: str, reaction_id: str) -> None:
-        cache = self._pending_processing_reactions
-        cache[message_id] = reaction_id
-        cache.move_to_end(message_id)
-        while len(cache) > _FEISHU_PROCESSING_REACTION_CACHE_SIZE:
-            cache.popitem(last=False)
-
-    def _pop_processing_reaction(self, message_id: str) -> Optional[str]:
-        return self._pending_processing_reactions.pop(message_id, None)
+        data = await self._reaction_call("Remove", message_id, reaction_id, _build, self._client.im.v1.message_reaction.delete)
+        return data is not None
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        if not self._reactions_enabled():
-            return
         message_id = event.message_id
-        if not message_id or message_id in self._pending_processing_reactions:
+        if not self._reactions_enabled() or not message_id or message_id in self._pending_processing_reactions:
             return
         reaction_id = await self._add_reaction(message_id, _FEISHU_REACTION_IN_PROGRESS)
         if reaction_id:
-            self._remember_processing_reaction(message_id, reaction_id)
+            cache = self._pending_processing_reactions
+            cache[message_id] = reaction_id
+            cache.move_to_end(message_id)
+            while len(cache) > _FEISHU_PROCESSING_REACTION_CACHE_SIZE:
+                cache.popitem(last=False)
 
-    async def on_processing_complete(
-        self, event: MessageEvent, outcome: ProcessingOutcome
-    ) -> None:
-        if not self._reactions_enabled():
-            return
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         message_id = event.message_id
-        if not message_id:
+        if not self._reactions_enabled() or not message_id:
             return
-
         start_reaction_id = self._pending_processing_reactions.get(message_id)
         if start_reaction_id:
             if not await self._remove_reaction(message_id, start_reaction_id):
-                # Don't stack a second badge on top of a Typing we couldn't
-                # remove — UI would read as both "working" and "done/failed"
-                # simultaneously. Keep the handle so LRU eventually evicts it.
+                # Don't stack a second badge on a Typing we couldn't remove (UI would read as both
+                # "working" and "done/failed"); keep the handle so LRU eventually evicts it.
                 return
-            self._pop_processing_reaction(message_id)
-
+            self._pending_processing_reactions.pop(message_id, None)
         if outcome is ProcessingOutcome.FAILURE:
             await self._add_reaction(message_id, _FEISHU_REACTION_FAILURE)
 
-    # =========================================================================
-    # Webhook server and security
-    # =========================================================================
-
+    # --- Webhook server and security ---
     def _record_webhook_anomaly(self, remote_ip: str, status: str) -> None:
-        """Increment the anomaly counter for remote_ip and emit a WARNING every threshold hits.
-
-        Mirrors openclaw's createWebhookAnomalyTracker: TTL 6 hours, log every 25 consecutive
-        error responses from the same IP.
-        """
+        """Count consecutive error responses per IP (openclaw createWebhookAnomalyTracker); WARN every threshold."""
         now = time.time()
-        entry = self._webhook_anomaly_counts.get(remote_ip)
-        if entry is not None:
-            count, _last_status, first_seen = entry
-            if now - first_seen < _FEISHU_WEBHOOK_ANOMALY_TTL_SECONDS:
-                count += 1
-                if count % _FEISHU_WEBHOOK_ANOMALY_THRESHOLD == 0:
-                    logger.warning(
-                        "[Feishu] Webhook anomaly: %d consecutive error responses (%s) from %s "
-                        "over the last %.0fs",
-                        count,
-                        status,
-                        remote_ip,
-                        now - first_seen,
-                    )
-                self._webhook_anomaly_counts[remote_ip] = (count, status, first_seen)
-                return
-        # Either first occurrence or TTL expired — start fresh.
-        self._webhook_anomaly_counts[remote_ip] = (1, status, now)
+        count, _last_status, first_seen = self._webhook_anomaly_counts.get(remote_ip) or (0, "", now)
+        if count and now - first_seen >= _FEISHU_WEBHOOK_ANOMALY_TTL_SECONDS:
+            count, first_seen = 0, now  # TTL expired — start fresh
+        count += 1
+        if count % _FEISHU_WEBHOOK_ANOMALY_THRESHOLD == 0:
+            logger.warning(
+                "[Feishu] Webhook anomaly: %d consecutive error responses (%s) from %s over the last %.0fs",
+                count, status, remote_ip, now - first_seen,
+            )
+        self._webhook_anomaly_counts[remote_ip] = (count, status, first_seen)
 
     def _clear_webhook_anomaly(self, remote_ip: str) -> None:
         """Reset the anomaly counter for remote_ip after a successful request."""
         self._webhook_anomaly_counts.pop(remote_ip, None)
 
-    # =========================================================================
-    # Inbound processing pipeline
-    # =========================================================================
-
+    # --- Inbound processing pipeline ---
     def _resolve_channel_prompt(self, chat_id: str, parent_id: str | None = None) -> str | None:
-        """Resolve a Feishu per-channel system prompt.
-
-        Mirrors the Discord/Slack behaviour so ``channel_prompts: {<chat_id>:
-        "<prompt>"}`` in ``PlatformConfig.extra`` is honoured for Feishu chats
-        instead of being silently ignored.
-        """
+        """Honour ``channel_prompts: {<chat_id>: "<prompt>"}`` in PlatformConfig.extra (as Discord/Slack do)."""
         from gateway.platforms.base import resolve_channel_prompt
-        _config = getattr(self, "config", None)
-        _extra = getattr(_config, "extra", None) or {}
-        return resolve_channel_prompt(_extra, chat_id, parent_id)
+        extra = getattr(getattr(self, "config", None), "extra", None) or {}  # tests build bare adapters
+        return resolve_channel_prompt(extra, chat_id, parent_id)
 
     async def _process_inbound_message(
-        self,
-        *,
-        data: Any,
-        message: Any,
-        sender_id: Any,
-        chat_type: str,
-        message_id: str,
-        is_bot: bool = False,
+        self, *, data: Any, message: Any, sender_id: Any, chat_type: str, message_id: str, is_bot: bool = False,
     ) -> None:
         text, inbound_type, media_urls, media_types, mentions = await self._extract_message_content(message)
-
         if inbound_type == MessageType.TEXT:
             text = _strip_edge_self_mentions(text, mentions)
             if text.startswith("/"):
                 inbound_type = MessageType.COMMAND
-
-        # Guard runs post-strip so a pure "@Bot" message (stripped to "") is dropped.
+        # Post-strip guard so a pure "@Bot" message (stripped to "") is dropped.
         if inbound_type == MessageType.TEXT and not text and not media_urls:
             logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
             return
-
         if inbound_type != MessageType.COMMAND:
             hint = _build_mention_hint(mentions)
             if hint:
@@ -3367,32 +2505,21 @@ class FeishuAdapter(BasePlatformAdapter):
 
         thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
         reply_to_message_id = (
-            getattr(message, "parent_id", None)
-            or getattr(message, "upper_message_id", None)
-            or getattr(message, "root_id", None)
-            or None
+            getattr(message, "parent_id", None) or getattr(message, "upper_message_id", None)
+            or getattr(message, "root_id", None) or None
         )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
-
         sender_primary = (
-            getattr(sender_id, "open_id", None)
-            or getattr(sender_id, "user_id", None)
-            or getattr(sender_id, "union_id", None)
-            or "<unknown>"
+            getattr(sender_id, "open_id", None) or getattr(sender_id, "user_id", None)
+            or getattr(sender_id, "union_id", None) or "<unknown>"
         )
+        chat_id = getattr(message, "chat_id", "") or ""
         logger.info(
             "[Feishu] Inbound %s message received: id=%s type=%s chat_id=%s sender=%s:%s text=%r media=%d",
-            "dm" if chat_type == "p2p" else "group",
-            message_id,
-            inbound_type.value,
-            getattr(message, "chat_id", "") or "",
-            "bot" if is_bot else "user",
-            sender_primary,
-            text[:120],
-            len(media_urls),
+            "dm" if chat_type == "p2p" else "group", message_id, inbound_type.value, chat_id,
+            "bot" if is_bot else "user", sender_primary, text[:120], len(media_urls),
         )
 
-        chat_id = getattr(message, "chat_id", "") or ""
         chat_info = await self.get_chat_info(chat_id)
         sender_profile = await self._resolve_sender_profile(sender_id, is_bot=is_bot)
         source = self.build_source(
@@ -3406,15 +2533,9 @@ class FeishuAdapter(BasePlatformAdapter):
             is_bot=is_bot,
         )
         normalized = MessageEvent(
-            text=text,
-            message_type=inbound_type,
-            source=source,
-            raw_message=data,
-            message_id=message_id,
-            media_urls=media_urls,
-            media_types=media_types,
-            reply_to_message_id=reply_to_message_id,
-            reply_to_text=reply_to_text,
+            text=text, message_type=inbound_type, source=source, raw_message=data,
+            message_id=message_id, media_urls=media_urls, media_types=media_types,
+            reply_to_message_id=reply_to_message_id, reply_to_text=reply_to_text,
             channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
             timestamp=datetime.now(),
         )
@@ -3430,35 +2551,17 @@ class FeishuAdapter(BasePlatformAdapter):
             return
         await self._handle_message_with_guards(event)
 
-    # =========================================================================
-    # Media batching
-    # =========================================================================
-
+    # --- Media batching ---
     def _should_batch_media_event(self, event: MessageEvent) -> bool:
-        return bool(
-            event.media_urls
-            and event.message_type in {MessageType.PHOTO, MessageType.VIDEO, MessageType.DOCUMENT, MessageType.AUDIO}
-        )
+        batchable = {MessageType.PHOTO, MessageType.VIDEO, MessageType.DOCUMENT, MessageType.AUDIO}
+        return bool(event.media_urls and event.message_type in batchable)
 
     def _media_batch_key(self, event: MessageEvent) -> str:
-        from gateway.session import build_session_key
-
-        session_key = build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=self._session_key_profile(event.source),
-        )
-        return f"{session_key}:media:{event.message_type.value}"
+        return f"{self._text_batch_key(event)}:media:{event.message_type.value}"
 
     @staticmethod
     def _media_batch_is_compatible(existing: MessageEvent, incoming: MessageEvent) -> bool:
-        return (
-            existing.message_type == incoming.message_type
-            and existing.reply_to_message_id == incoming.reply_to_message_id
-            and existing.reply_to_text == incoming.reply_to_text
-            and existing.source.thread_id == incoming.source.thread_id
-        )
+        return existing.message_type == incoming.message_type and FeishuAdapter._text_batch_is_compatible(existing, incoming)
 
     async def _enqueue_media_event(self, event: MessageEvent) -> None:
         key = self._media_batch_key(event)
@@ -3482,75 +2585,55 @@ class FeishuAdapter(BasePlatformAdapter):
         self._schedule_media_batch_flush(key)
 
     def _schedule_media_batch_flush(self, key: str) -> None:
-        self._reschedule_batch_task(
-            self._pending_media_batch_tasks,
-            key,
-            self._flush_media_batch,
-        )
+        self._reschedule_batch_task(self._pending_media_batch_tasks, key, self._flush_media_batch)
 
     async def _flush_media_batch(self, key: str) -> None:
+        await self._delayed_flush(
+            self._pending_media_batch_tasks, key, self._media_batch_delay_seconds, self._flush_media_batch_now,
+        )
+
+    @staticmethod
+    async def _delayed_flush(task_map: Dict[str, asyncio.Task], key: str, delay: float, flush_now: Any) -> None:
+        """Sleep ``delay`` then flush; drop our own task handle from ``task_map`` (not a successor's)."""
         current_task = asyncio.current_task()
         try:
-            await asyncio.sleep(self._media_batch_delay_seconds)
-            await self._flush_media_batch_now(key)
+            await asyncio.sleep(delay)
+            await flush_now(key)
         finally:
-            if self._pending_media_batch_tasks.get(key) is current_task:
-                self._pending_media_batch_tasks.pop(key, None)
+            if task_map.get(key) is current_task:
+                task_map.pop(key, None)
 
     async def _flush_media_batch_now(self, key: str) -> None:
         event = self._pending_media_batches.pop(key, None)
         if not event:
             return
-        logger.info(
-            "[Feishu] Flushing media batch %s with %d attachment(s)",
-            key,
-            len(event.media_urls),
-        )
+        logger.info("[Feishu] Flushing media batch %s with %d attachment(s)", key, len(event.media_urls))
         await self._handle_message_with_guards(event)
 
     async def _download_remote_image(self, image_url: str) -> str:
         ext = self._guess_remote_extension(image_url, default=".jpg")
         return await cache_image_from_url(image_url, ext=ext)
 
-    async def _download_remote_document(
-        self,
-        file_url: str,
-        *,
-        default_ext: str,
-        preferred_name: str,
-    ) -> tuple[str, str]:
+    async def _download_remote_document(self, file_url: str, *, default_ext: str, preferred_name: str) -> tuple[str, str]:
         from gateway.platforms.base import _ssrf_redirect_guard
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
-
         if not is_safe_url(file_url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {file_url[:80]}")
-
         async with create_ssrf_safe_async_client(
-            timeout=30.0,
-            follow_redirects=True,
-            event_hooks={"response": [_ssrf_redirect_guard]},
+            timeout=30.0, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]},
         ) as client:
             response = await client.get(
-                file_url,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
-                    "Accept": "*/*",
-                },
+                file_url, headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)", "Accept": "*/*"},
             )
             response.raise_for_status()
-            # Snapshot Content-Type and body while the client context is
-            # still active so pooled connections fully release on exit.
+            # Snapshot headers + body inside the context so pooled connections fully release.
             # See #18451.
             content_type_hdr = str(response.headers.get("Content-Type", ""))
             body = response.content
         filename = self._derive_remote_filename(
-            file_url,
-            content_type=content_type_hdr,
-            default_name=preferred_name,
-            default_ext=default_ext,
+            file_url, content_type=content_type_hdr, default_name=preferred_name, default_ext=default_ext,
         )
-        cached_path = cache_document_from_bytes(body, filename)
-        return cached_path, filename
+        return await cache_document_from_bytes_async(body, filename), filename
 
     @staticmethod
     def _guess_remote_extension(url: str, *, default: str) -> str:
@@ -3574,147 +2657,123 @@ class FeishuAdapter(BasePlatformAdapter):
             return [FeishuAdapter._namespace_from_mapping(item) for item in value]
         return value
 
+    def _webhook_reject(self, remote_ip: str, anomaly: str, status: int, text: Optional[str] = None,
+                        json_msg: Optional[str] = None) -> Any:
+        """Record an anomaly for ``remote_ip`` and build the matching aiohttp error response."""
+        self._record_webhook_anomaly(remote_ip, anomaly)
+        if json_msg is not None:
+            return web.json_response({"code": status, "msg": json_msg}, status=status)
+        return web.Response(status=status, text=text)
+
     async def _handle_webhook_request(self, request: Any) -> Any:
         remote_ip = (getattr(request, "remote", None) or "unknown")
 
-        # Rate limiting — composite key: app_id:path:remote_ip (matches openclaw key structure).
-        rate_key = f"{self._app_id}:{self._webhook_path}:{remote_ip}"
-        if not self._check_webhook_rate_limit(rate_key):
+        # Rate-limit key is app_id:path:remote_ip (matches openclaw key structure).
+        if not self._check_webhook_rate_limit(f"{self._app_id}:{self._webhook_path}:{remote_ip}"):
             logger.warning("[Feishu] Webhook rate limit exceeded for %s", remote_ip)
-            self._record_webhook_anomaly(remote_ip, "429")
-            return web.Response(status=429, text="Too Many Requests")
+            return self._webhook_reject(remote_ip, "429", 429, "Too Many Requests")
 
-        # Content-Type guard — Feishu always sends application/json.
         headers = getattr(request, "headers", {}) or {}
         content_type = str(headers.get("Content-Type", "") or "").split(";")[0].strip().lower()
-        if content_type and content_type != "application/json":
+        if content_type and content_type != "application/json":  # Feishu always sends JSON
             logger.warning("[Feishu] Webhook rejected: unexpected Content-Type %r from %s", content_type, remote_ip)
-            self._record_webhook_anomaly(remote_ip, "415")
-            return web.Response(status=415, text="Unsupported Media Type")
+            return self._webhook_reject(remote_ip, "415", 415, "Unsupported Media Type")
 
-        # Body size guard — reject early via Content-Length when present.
         content_length = getattr(request, "content_length", None)
         if content_length is not None and content_length > _FEISHU_WEBHOOK_MAX_BODY_BYTES:
             logger.warning("[Feishu] Webhook body too large (%d bytes) from %s", content_length, remote_ip)
-            self._record_webhook_anomaly(remote_ip, "413")
-            return web.Response(status=413, text="Request body too large")
+            return self._webhook_reject(remote_ip, "413", 413, "Request body too large")
 
         try:
             body_bytes: bytes = await asyncio.wait_for(
-                _read_limited_feishu_webhook_body(
-                    request,
-                    _FEISHU_WEBHOOK_MAX_BODY_BYTES,
-                ),
+                _read_limited_feishu_webhook_body(request, _FEISHU_WEBHOOK_MAX_BODY_BYTES),
                 timeout=_FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS,
             )
         except ValueError:
             logger.warning("[Feishu] Webhook body exceeds limit from %s", remote_ip)
-            self._record_webhook_anomaly(remote_ip, "413")
-            return web.Response(status=413, text="Request body too large")
+            return self._webhook_reject(remote_ip, "413", 413, "Request body too large")
         except asyncio.TimeoutError:
             logger.warning("[Feishu] Webhook body read timed out after %ds from %s", _FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS, remote_ip)
-            self._record_webhook_anomaly(remote_ip, "408")
-            return web.Response(status=408, text="Request Timeout")
+            return self._webhook_reject(remote_ip, "408", 408, "Request Timeout")
         except Exception:
-            self._record_webhook_anomaly(remote_ip, "400")
-            return web.json_response({"code": 400, "msg": "failed to read body"}, status=400)
+            return self._webhook_reject(remote_ip, "400", 400, json_msg="failed to read body")
 
         try:
             payload = json.loads(body_bytes.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
-            self._record_webhook_anomaly(remote_ip, "400")
-            return web.json_response({"code": 400, "msg": "invalid json"}, status=400)
+            return self._webhook_reject(remote_ip, "400", 400, json_msg="invalid json")
 
-        # Verification token check — second layer of defence beyond signature (matches openclaw).
+        # Verification token: second defence layer beyond the signature (matches openclaw).
         if self._verification_token:
             header = payload.get("header") or {}
             incoming_token = str(header.get("token") or payload.get("token") or "")
-            # Compare as bytes: compare_digest raises TypeError on a str with
-            # non-ASCII characters, and the token comes from the request body.
+            # compare_digest as bytes — it raises TypeError on non-ASCII str, and the token is remote input.
             if not incoming_token or not hmac.compare_digest(
                 incoming_token.encode(), self._verification_token.encode()
             ):
                 logger.warning("[Feishu] Webhook rejected: invalid verification token from %s", remote_ip)
-                self._record_webhook_anomaly(remote_ip, "401-token")
-                return web.Response(status=401, text="Invalid verification token")
+                return self._webhook_reject(remote_ip, "401-token", 401, "Invalid verification token")
 
-        # URL verification challenge — Feishu includes the verification token in
-        # challenge requests. Validate the token (above) before reflecting the
-        # challenge so an unauthenticated remote request cannot prove endpoint
-        # control by getting attacker-supplied challenge data echoed back.
+        # Token is validated above BEFORE reflecting the challenge, so an unauthenticated
+        # remote can't prove endpoint control by getting its own challenge echoed back.
         if payload.get("type") == "url_verification":
             return web.json_response({"challenge": payload.get("challenge", "")})
 
-        # Timing-safe signature verification (only enforced when encrypt_key is set).
         if self._encrypt_key and not self._is_webhook_signature_valid(request.headers, body_bytes):
             logger.warning("[Feishu] Webhook rejected: invalid signature from %s", remote_ip)
-            self._record_webhook_anomaly(remote_ip, "401-sig")
-            return web.Response(status=401, text="Invalid signature")
+            return self._webhook_reject(remote_ip, "401-sig", 401, "Invalid signature")
 
         if payload.get("encrypt"):
             logger.error("[Feishu] Encrypted webhook payloads are not supported by Hermes webhook mode")
-            self._record_webhook_anomaly(remote_ip, "400-encrypted")
-            return web.json_response({"code": 400, "msg": "encrypted webhook payloads are not supported"}, status=400)
+            return self._webhook_reject(
+                remote_ip, "400-encrypted", 400, json_msg="encrypted webhook payloads are not supported",
+            )
 
         self._clear_webhook_anomaly(remote_ip)
 
         event_type = str((payload.get("header") or {}).get("event_type") or "")
         data = self._namespace_from_mapping(payload)
-        if event_type == "im.message.receive_v1":
-            self._on_message_event(data)
-        elif event_type == "im.message.message_read_v1":
-            self._on_message_read_event(data)
-        elif event_type == "im.chat.member.bot.added_v1":
-            self._on_bot_added_to_chat(data)
-        elif event_type == "im.chat.member.bot.deleted_v1":
-            self._on_bot_removed_from_chat(data)
-        elif event_type in {"im.message.reaction.created_v1", "im.message.reaction.deleted_v1"}:
+        if event_type in {"im.message.reaction.created_v1", "im.message.reaction.deleted_v1"}:
             self._on_reaction_event(event_type, data)
-        elif event_type == "card.action.trigger":
-            self._on_card_action_trigger(data)
-        elif event_type == "drive.notice.comment_add_v1":
-            self._on_drive_comment_event(data)
-        elif event_type == "vc.bot.meeting_invited_v1":
-            self._on_meeting_invited_event(data)
         else:
-            logger.debug("[Feishu] Ignoring webhook event type: %s", event_type or "unknown")
+            handler = self._WEBHOOK_EVENT_HANDLERS.get(event_type)
+            if handler is None:
+                logger.debug("[Feishu] Ignoring webhook event type: %s", event_type or "unknown")
+            else:
+                getattr(self, handler)(data)
         return web.json_response({"code": 0, "msg": "ok"})
 
-    def _is_webhook_signature_valid(self, headers: Any, body_bytes: bytes) -> bool:
-        """Verify Feishu webhook signature using timing-safe comparison.
+    # Webhook event_type -> handler method name (reaction events are routed separately).
+    _WEBHOOK_EVENT_HANDLERS = {
+        "im.message.receive_v1": "_on_message_event",
+        "im.message.message_read_v1": "_on_message_read_event",
+        "im.chat.member.bot.added_v1": "_on_bot_added_to_chat",
+        "im.chat.member.bot.deleted_v1": "_on_bot_removed_from_chat",
+        "card.action.trigger": "_on_card_action_trigger",
+        "drive.notice.comment_add_v1": "_on_drive_comment_event",
+        "vc.bot.meeting_invited_v1": "_on_meeting_invited_event",
+    }
 
-        Feishu signature algorithm:
-            SHA256(timestamp + nonce + encrypt_key + body_string)
-        Headers checked: x-lark-request-timestamp, x-lark-request-nonce, x-lark-signature.
-        """
-        timestamp = str(headers.get("x-lark-request-timestamp", "") or "")
-        nonce = str(headers.get("x-lark-request-nonce", "") or "")
-        signature = str(headers.get("x-lark-signature", "") or "")
+    def _is_webhook_signature_valid(self, headers: Any, body_bytes: bytes) -> bool:
+        """Timing-safe check of x-lark-signature == SHA256(timestamp + nonce + encrypt_key + body)."""
+        timestamp, nonce, signature = (
+            str(headers.get(name, "") or "")
+            for name in ("x-lark-request-timestamp", "x-lark-request-nonce", "x-lark-signature")
+        )
         if not timestamp or not nonce or not signature:
             return False
         try:
             body_str = body_bytes.decode("utf-8", errors="replace")
-            content = f"{timestamp}{nonce}{self._encrypt_key}{body_str}"
-            computed = hashlib.sha256(content.encode("utf-8")).hexdigest()
-            # Compare as bytes: compare_digest raises TypeError on a str with
-            # non-ASCII characters, and the signature is a raw request header.
+            computed = hashlib.sha256(f"{timestamp}{nonce}{self._encrypt_key}{body_str}".encode("utf-8")).hexdigest()
+            # Compare as bytes: compare_digest raises TypeError on non-ASCII str, and the header is remote input.
             return hmac.compare_digest(computed.encode(), signature.encode())
         except Exception:
             logger.debug("[Feishu] Signature verification raised an exception", exc_info=True)
             return False
 
     def _check_webhook_rate_limit(self, rate_key: str) -> bool:
-        """Return False when the composite rate_key has exceeded _FEISHU_WEBHOOK_RATE_LIMIT_MAX.
-
-        The rate_key is composed as "{app_id}:{path}:{remote_ip}" — matching openclaw's key
-        structure so the limit is scoped to a specific (account, endpoint, IP) triple rather
-        than a bare IP, which causes fewer false-positive denials in multi-tenant setups.
-
-        The tracking dict is capped at _FEISHU_WEBHOOK_RATE_MAX_KEYS entries to prevent unbounded
-        memory growth. Stale (expired) entries are pruned when the cap is reached.
-        """
+        """Sliding-window limiter keyed by "{app_id}:{path}:{remote_ip}" (openclaw); table capped, fail-closed."""
         now = time.time()
-        # Fast path: existing entry within the current window.
         entry = self._webhook_rate_counts.get(rate_key)
         if entry is not None:
             count, window_start = entry
@@ -3723,18 +2782,12 @@ class FeishuAdapter(BasePlatformAdapter):
                     return False
                 self._webhook_rate_counts[rate_key] = (count + 1, window_start)
                 return True
-        # New window for an existing key, or a brand-new key — prune stale entries first.
+        # New window or new key — prune stale entries when at capacity.
         if len(self._webhook_rate_counts) >= _FEISHU_WEBHOOK_RATE_MAX_KEYS:
-            stale_keys = [
-                k for k, (_, ws) in self._webhook_rate_counts.items()
-                if now - ws >= _FEISHU_WEBHOOK_RATE_WINDOW_SECONDS
-            ]
-            for k in stale_keys:
+            for k in [k for k, (_, ws) in self._webhook_rate_counts.items() if now - ws >= _FEISHU_WEBHOOK_RATE_WINDOW_SECONDS]:
                 del self._webhook_rate_counts[k]
-            # If still at capacity after pruning, deny untracked keys (fail closed).
-            # The table only fills with this many distinct (account, endpoint, IP)
-            # triples under abuse; allowing untracked requests through at capacity
-            # would let an attacker who flooded the table bypass the limiter entirely.
+            # Still full → deny untracked keys (fail closed): the table only fills this far under
+            # abuse, and letting untracked requests through would bypass the limiter entirely.
             if rate_key not in self._webhook_rate_counts and len(self._webhook_rate_counts) >= _FEISHU_WEBHOOK_RATE_MAX_KEYS:
                 logger.warning(
                     "[Feishu] Webhook rate-limit table at capacity (%d keys) — denying untracked key",
@@ -3744,21 +2797,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._webhook_rate_counts[rate_key] = (1, now)
         return True
 
-    # =========================================================================
-    # Text batching
-    # =========================================================================
-
-    def _text_batch_key(self, event: MessageEvent) -> str:
-        """Return the session-scoped key used for Feishu text aggregation."""
-        from gateway.session import build_session_key
-
-        return build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=self._session_key_profile(event.source),
-        )
-
+    # --- Text batching ---
     @staticmethod
     def _text_batch_is_compatible(existing: MessageEvent, incoming: MessageEvent) -> bool:
         """Only merge text events when reply/thread context is identical."""
@@ -3772,30 +2811,28 @@ class FeishuAdapter(BasePlatformAdapter):
         """Debounce rapid Feishu text bursts into a single MessageEvent."""
         key = self._text_batch_key(event)
         chunk_len = len(event.text or "")
+
+        def _start_batch() -> None:
+            self._pending_text_batches[key] = event
+            self._pending_text_batch_counts[key] = 1
+            self._schedule_text_batch_flush(key)
+
         existing = self._pending_text_batches.get(key)
         if existing is None:
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-            self._pending_text_batches[key] = event
-            self._pending_text_batch_counts[key] = 1
-            self._schedule_text_batch_flush(key)
+            _start_batch()
             return
-
         if not self._text_batch_is_compatible(existing, event):
             await self._flush_text_batch_now(key)
-            self._pending_text_batches[key] = event
-            self._pending_text_batch_counts[key] = 1
-            self._schedule_text_batch_flush(key)
+            _start_batch()
             return
 
-        existing_count = self._pending_text_batch_counts.get(key, 1)
-        next_count = existing_count + 1
+        next_count = self._pending_text_batch_counts.get(key, 1) + 1
         appended_text = event.text or ""
         next_text = f"{existing.text}\n{appended_text}" if existing.text and appended_text else (existing.text or appended_text)
         if next_count > self._text_batch_max_messages or len(next_text) > self._text_batch_max_chars:
             await self._flush_text_batch_now(key)
-            self._pending_text_batches[key] = event
-            self._pending_text_batch_counts[key] = 1
-            self._schedule_text_batch_flush(key)
+            _start_batch()
             return
 
         existing.text = next_text
@@ -3808,44 +2845,22 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _schedule_text_batch_flush(self, key: str) -> None:
         """Reset the debounce timer for a pending Feishu text batch."""
-        self._reschedule_batch_task(
-            self._pending_text_batch_tasks,
-            key,
-            self._flush_text_batch,
-        )
+        self._reschedule_batch_task(self._pending_text_batch_tasks, key, self._flush_text_batch)
 
     @staticmethod
-    def _reschedule_batch_task(
-        task_map: Dict[str, asyncio.Task],
-        key: str,
-        flush_fn: Any,
-    ) -> None:
+    def _reschedule_batch_task(task_map: Dict[str, asyncio.Task], key: str, flush_fn: Any) -> None:
         prior_task = task_map.get(key)
         if prior_task and not prior_task.done():
             prior_task.cancel()
         task_map[key] = asyncio.create_task(flush_fn(key))
 
     async def _flush_text_batch(self, key: str) -> None:
-        """Flush a pending text batch after the quiet period.
-
-        Uses a longer delay when the latest chunk is near Feishu's ~4096-char
-        split point, since a continuation chunk is almost certain.
-        """
-        current_task = asyncio.current_task()
-        try:
-            # Adaptive delay: if the latest chunk is near the split threshold,
-            # a continuation is almost certain — wait longer.
-            pending = self._pending_text_batches.get(key)
-            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-            if last_len >= self._SPLIT_THRESHOLD:
-                delay = self._text_batch_split_delay_seconds
-            else:
-                delay = self._text_batch_delay_seconds
-            await asyncio.sleep(delay)
-            await self._flush_text_batch_now(key)
-        finally:
-            if self._pending_text_batch_tasks.get(key) is current_task:
-                self._pending_text_batch_tasks.pop(key, None)
+        """Flush after the quiet period; wait longer when the last chunk sits near Feishu's ~4096-char split."""
+        pending = self._pending_text_batches.get(key)
+        last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
+        near_split = last_len >= self._SPLIT_THRESHOLD  # a continuation chunk is almost certain
+        delay = self._text_batch_split_delay_seconds if near_split else self._text_batch_delay_seconds
+        await self._delayed_flush(self._pending_text_batch_tasks, key, delay, self._flush_text_batch_now)
 
     async def _flush_text_batch_now(self, key: str) -> None:
         """Dispatch the current text batch immediately."""
@@ -3853,16 +2868,14 @@ class FeishuAdapter(BasePlatformAdapter):
         self._pending_text_batch_counts.pop(key, None)
         if not event:
             return
-        logger.info(
-            "[Feishu] Flushing text batch %s (%d chars)",
-            key,
-            len(event.text or ""),
-        )
+        logger.info("[Feishu] Flushing text batch %s (%d chars)", key, len(event.text or ""))
         await self._handle_message_with_guards(event)
 
-    # =========================================================================
-    # Message content extraction and resource download
-    # =========================================================================
+    # --- Message content extraction and resource download ---
+    def _normalize(self, message_type: Any, raw_content: Any, mentions: Any) -> FeishuNormalizedMessage:
+        return normalize_feishu_message(
+            message_type=message_type, raw_content=raw_content, mentions=mentions, bot=self._bot_identity(),
+        )
 
     async def _extract_message_content(
         self, message: Any
@@ -3871,60 +2884,38 @@ class FeishuAdapter(BasePlatformAdapter):
         raw_type = getattr(message, "message_type", "") or ""
         message_id = str(getattr(message, "message_id", "") or "")
         logger.info("[Feishu] Received raw message type=%s message_id=%s", raw_type, message_id)
-
-        normalized = normalize_feishu_message(
-            message_type=raw_type,
-            raw_content=raw_content,
-            mentions=getattr(message, "mentions", None),
-            bot=self._bot_identity(),
-        )
+        normalized = self._normalize(raw_type, raw_content, getattr(message, "mentions", None))
         media_urls, media_types = await self._download_feishu_message_resources(
-            message_id=message_id,
-            normalized=normalized,
+            message_id=message_id, normalized=normalized,
         )
         inbound_type = self._resolve_normalized_message_type(normalized, media_types)
         text = normalized.text_content
-
         if (
             inbound_type in {MessageType.DOCUMENT, MessageType.AUDIO, MessageType.VIDEO, MessageType.PHOTO}
             and len(media_urls) == 1
             and normalized.preferred_message_type in {"document", "audio"}
         ):
-            injected = await self._maybe_extract_text_document(media_urls[0], media_types[0])
-            if injected:
-                text = injected
-
+            text = await self._maybe_extract_text_document(media_urls[0], media_types[0]) or text
         return text, inbound_type, media_urls, media_types, list(normalized.mentions)
 
     async def _download_feishu_message_resources(
-        self,
-        *,
-        message_id: str,
-        normalized: FeishuNormalizedMessage,
+        self, *, message_id: str, normalized: FeishuNormalizedMessage,
     ) -> tuple[List[str], List[str]]:
         media_urls: List[str] = []
         media_types: List[str] = []
 
+        def _collect(cached_path: str, media_type: str) -> None:
+            if cached_path:
+                media_urls.append(cached_path)
+                media_types.append(media_type)
+
         for image_key in normalized.image_keys:
-            cached_path, media_type = await self._download_feishu_image(
-                message_id=message_id,
-                image_key=image_key,
-            )
-            if cached_path:
-                media_urls.append(cached_path)
-                media_types.append(media_type)
-
-        for media_ref in normalized.media_refs:
-            cached_path, media_type = await self._download_feishu_message_resource(
-                message_id=message_id,
-                file_key=media_ref.file_key,
-                resource_type=media_ref.resource_type,
-                fallback_filename=media_ref.file_name,
-            )
-            if cached_path:
-                media_urls.append(cached_path)
-                media_types.append(media_type)
-
+            _collect(*await self._download_feishu_image(message_id=message_id, image_key=image_key))
+        for ref in normalized.media_refs:
+            _collect(*await self._download_feishu_message_resource(
+                message_id=message_id, file_key=ref.file_key, resource_type=ref.resource_type,
+                fallback_filename=ref.file_name,
+            ))
         return media_urls, media_types
 
     @staticmethod
@@ -3938,26 +2929,20 @@ class FeishuAdapter(BasePlatformAdapter):
             return MessageType.VIDEO
         return default
 
-    def _resolve_normalized_message_type(
-        self,
-        normalized: FeishuNormalizedMessage,
-        media_types: List[str],
-    ) -> MessageType:
+    def _resolve_normalized_message_type(self, normalized: FeishuNormalizedMessage, media_types: List[str]) -> MessageType:
         preferred = normalized.preferred_message_type
-        if preferred == "photo":
-            return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.PHOTO)
         if preferred == "audio":
-            # Lark's native "audio" msg_type is an in-app voice recording, not
-            # an uploaded audio file (those arrive as "file"/"media" and are
-            # normalized to "document"). Classify it as VOICE so the gateway
-            # auto-transcribes it (Opus → STT) the same way
-            # Discord/DingTalk/Telegram/etc. do — otherwise a Feishu voice note
-            # reaches the agent as an untranscribable AUDIO attachment and is
-            # silently ignored. Follow-up to #28993, which added native
-            # voice-note transcription for Discord + DingTalk.
+            # Lark's native "audio" is an in-app voice recording (uploaded audio arrives as
+            # file/media → "document"). VOICE makes the gateway auto-transcribe it like
+            # Discord/DingTalk/Telegram; as AUDIO it would be silently ignored.
+            # Classify it as VOICE so the gateway auto-transcribes it (Opus → STT) the same way
+            # Discord/DingTalk/Telegram/etc. do — otherwise a Feishu voice note reaches the agent as an
+            # untranscribable AUDIO attachment and is silently ignored. Follow-up to #28993, which added
+            # native voice-note transcription for Discord + DingTalk.
             return MessageType.VOICE
-        if preferred == "document":
-            return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.DOCUMENT)
+        if preferred in ("photo", "document"):
+            default = MessageType.PHOTO if preferred == "photo" else MessageType.DOCUMENT
+            return self._resolve_media_message_type(media_types[0] if media_types else "", default=default)
         return MessageType.TEXT
 
     async def _maybe_extract_text_document(self, cached_path: str, media_type: str) -> str:
@@ -3976,22 +2961,22 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] Failed to inject text document content from %s", cached_path, exc_info=True)
             return ""
 
+    async def _fetch_message_resource(self, *, message_id: str, file_key: str, resource_type: str) -> Any:
+        """GET im/v1/messages/{id}/resources/{key}; returns the SDK response (caller checks success)."""
+        request = self._build_message_resource_request(
+            message_id=message_id, file_key=file_key, resource_type=resource_type,
+        )
+        return await self._run_blocking(self._client.im.v1.message_resource.get, request)
+
     async def _download_feishu_image(self, *, message_id: str, image_key: str) -> tuple[str, str]:
         if not self._client or not message_id:
             return "", ""
         try:
-            request = self._build_message_resource_request(
-                message_id=message_id,
-                file_key=image_key,
-                resource_type="image",
-            )
-            response = await self._run_blocking(self._client.im.v1.message_resource.get, request)
+            response = await self._fetch_message_resource(message_id=message_id, file_key=image_key, resource_type="image")
             if not response or not response.success():
                 logger.warning(
                     "[Feishu] Failed to download image %s: %s %s",
-                    image_key,
-                    getattr(response, "code", "unknown"),
-                    getattr(response, "msg", "request failed"),
+                    image_key, getattr(response, "code", "unknown"), getattr(response, "msg", "request failed"),
                 )
                 return "", ""
             raw_bytes = self._read_binary_response(response)
@@ -4000,95 +2985,64 @@ class FeishuAdapter(BasePlatformAdapter):
             content_type = self._get_response_header(response, "Content-Type")
             filename = getattr(response, "file_name", None) or f"{image_key}.jpg"
             ext = self._guess_extension(filename, content_type, ".jpg", allowed=_IMAGE_EXTENSIONS)
-            cached_path = cache_image_from_bytes(raw_bytes, ext=ext)
-            media_type = self._normalize_media_type(content_type, default=self._default_image_media_type(ext))
-            return cached_path, media_type
+            cached_path = await cache_image_from_bytes_async(raw_bytes, ext=ext)
+            return cached_path, self._normalize_media_type(content_type, default=self._default_image_media_type(ext))
         except Exception:
             logger.warning("[Feishu] Failed to cache image resource %s", image_key, exc_info=True)
             return "", ""
 
     async def _download_feishu_message_resource(
-        self,
-        *,
-        message_id: str,
-        file_key: str,
-        resource_type: str,
-        fallback_filename: str,
+        self, *, message_id: str, file_key: str, resource_type: str, fallback_filename: str,
     ) -> tuple[str, str]:
         if not self._client or not message_id:
             return "", ""
-
-        request_types = [resource_type]
-        if resource_type in {"audio", "media"}:
-            request_types.append("file")
-
+        # audio/media uploads are sometimes only retrievable as type=file.
+        request_types = [resource_type] + (["file"] if resource_type in {"audio", "media"} else [])
         for request_type in request_types:
             try:
-                request = self._build_message_resource_request(
-                    message_id=message_id,
-                    file_key=file_key,
-                    resource_type=request_type,
+                response = await self._fetch_message_resource(
+                    message_id=message_id, file_key=file_key, resource_type=request_type,
                 )
-                response = await self._run_blocking(self._client.im.v1.message_resource.get, request)
                 if not response or not response.success():
                     logger.debug(
                         "[Feishu] Resource download failed for %s/%s via type=%s: %s %s",
-                        message_id,
-                        file_key,
-                        request_type,
-                        getattr(response, "code", "unknown"),
-                        getattr(response, "msg", "request failed"),
+                        message_id, file_key, request_type,
+                        getattr(response, "code", "unknown"), getattr(response, "msg", "request failed"),
                     )
                     continue
-
                 raw_bytes = self._read_binary_response(response)
                 if not raw_bytes:
                     continue
                 content_type = self._get_response_header(response, "Content-Type")
-                response_filename = getattr(response, "file_name", None) or ""
-                filename = response_filename or fallback_filename or f"{request_type}_{file_key}"
+                filename = (getattr(response, "file_name", None) or "") or fallback_filename or f"{request_type}_{file_key}"
                 media_type = self._normalize_media_type(
-                    content_type,
-                    default=self._guess_media_type_from_filename(filename),
+                    content_type, default=self._guess_media_type_from_filename(filename),
                 )
 
                 if media_type.startswith("image/"):
                     ext = self._guess_extension(filename, content_type, ".jpg", allowed=_IMAGE_EXTENSIONS)
-                    cached_path = cache_image_from_bytes(raw_bytes, ext=ext)
-                    logger.info("[Feishu] Cached message image resource at %s", cached_path)
-                    return cached_path, media_type or self._default_image_media_type(ext)
-
-                if request_type == "audio" or media_type.startswith("audio/"):
+                    kind, cached_path = "image", await cache_image_from_bytes_async(raw_bytes, ext=ext)
+                    media_type = media_type or self._default_image_media_type(ext)
+                elif request_type == "audio" or media_type.startswith("audio/"):
                     ext = self._guess_extension(filename, content_type, ".ogg", allowed=_AUDIO_EXTENSIONS)
-                    cached_path = cache_audio_from_bytes(raw_bytes, ext=ext)
-                    logger.info("[Feishu] Cached message audio resource at %s", cached_path)
-                    return cached_path, (media_type or f"audio/{ext.lstrip('.') or 'ogg'}")
-
-                if media_type.startswith("video/"):
+                    kind, cached_path = "audio", await cache_audio_from_bytes_async(raw_bytes, ext=ext)
+                    media_type = media_type or f"audio/{ext.lstrip('.') or 'ogg'}"
+                elif media_type.startswith("video/"):
                     if not Path(filename).suffix:
                         filename = f"{filename}.mp4"
-                    cached_path = cache_document_from_bytes(raw_bytes, filename)
-                    logger.info("[Feishu] Cached message video resource at %s", cached_path)
-                    return cached_path, media_type
-
-                if not Path(filename).suffix and media_type in _DOCUMENT_MIME_TO_EXT:
-                    filename = f"{filename}{_DOCUMENT_MIME_TO_EXT[media_type]}"
-                cached_path = cache_document_from_bytes(raw_bytes, filename)
-                logger.info("[Feishu] Cached message document resource at %s", cached_path)
-                return cached_path, (media_type or self._guess_document_media_type(filename))
+                    kind, cached_path = "video", await cache_document_from_bytes_async(raw_bytes, filename)
+                else:
+                    if not Path(filename).suffix and media_type in _DOCUMENT_MIME_TO_EXT:
+                        filename = f"{filename}{_DOCUMENT_MIME_TO_EXT[media_type]}"
+                    kind, cached_path = "document", await cache_document_from_bytes_async(raw_bytes, filename)
+                    media_type = media_type or self._guess_document_media_type(filename)
+                logger.info("[Feishu] Cached message %s resource at %s", kind, cached_path)
+                return cached_path, media_type
             except Exception:
-                logger.warning(
-                    "[Feishu] Failed to cache message resource %s/%s",
-                    message_id,
-                    file_key,
-                    exc_info=True,
-                )
+                logger.warning("[Feishu] Failed to cache message resource %s/%s", message_id, file_key, exc_info=True)
         return "", ""
 
-    # =========================================================================
-    # Static helpers — extension / media-type guessing
-    # =========================================================================
-
+    # --- Static helpers — extension / media-type guessing ---
     @staticmethod
     def _read_binary_response(response: Any) -> bytes:
         file_obj = getattr(response, "file", None)
@@ -4110,9 +3064,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if ext in allowed:
             return ext
         guessed = mimetypes.guess_extension((content_type or "").split(";", 1)[0].strip().lower() or "")
-        if guessed in allowed:
-            return guessed
-        return default
+        return guessed if guessed in allowed else default
 
     @staticmethod
     def _normalize_media_type(content_type: str, *, default: str) -> str:
@@ -4150,59 +3102,31 @@ class FeishuAdapter(BasePlatformAdapter):
         normalized = (raw_chat_type or "").strip().lower()
         if normalized == "p2p":
             return "dm"
-        if "topic" in normalized or "thread" in normalized or "forum" in normalized:
+        if any(marker in normalized for marker in ("topic", "thread", "forum")):
             return "forum"
-        if normalized == "group":
-            return "group"
-        return "dm"
+        return "group" if normalized == "group" else "dm"
 
     @staticmethod
     def _resolve_source_chat_type(*, chat_info: Dict[str, Any], event_chat_type: str) -> str:
         resolved = str(chat_info.get("type") or "").strip().lower()
         if resolved in {"group", "forum"}:
             return resolved
-        if event_chat_type == "p2p":
-            return "dm"
-        return "group"
+        return "dm" if event_chat_type == "p2p" else "group"
 
-    async def _resolve_sender_profile(
-        self,
-        sender_id: Any,
-        *,
-        is_bot: bool = False,
-    ) -> Dict[str, Optional[str]]:
-        """Map Feishu's three-tier user IDs onto Hermes' SessionSource fields.
-
-        Preference order for the primary ``user_id`` field:
-          1. user_id  (tenant-scoped, most stable — requires permission scope)
-          2. open_id  (app-scoped, always available — different per bot app)
-
-        ``user_id_alt`` carries the union_id (developer-scoped, stable across
-        all apps by the same developer).  Session-key generation prefers
-        user_id_alt when present, so participant isolation stays stable even
-        if the primary ID is the app-scoped open_id.
-        """
+    async def _resolve_sender_profile(self, sender_id: Any, *, is_bot: bool = False) -> Dict[str, Optional[str]]:
+        """Map Feishu's ID tiers onto SessionSource: user_id (tenant) > open_id (app) as primary,
+        union_id (developer-scoped, cross-app stable) as user_id_alt — session keys prefer the alt."""
         open_id = getattr(sender_id, "open_id", None) or None
         user_id = getattr(sender_id, "user_id", None) or None
         union_id = getattr(sender_id, "union_id", None) or None
-        # Prefer tenant-scoped user_id; fall back to app-scoped open_id.
         primary_id = user_id or open_id
-        # bot/v3/bots/basic_batch only accepts open_id.
-        name_lookup_id = open_id if is_bot else (primary_id or union_id)
-        display_name = await self._resolve_sender_name_from_api(
-            name_lookup_id, is_bot=is_bot,
-        )
-        return {
-            "user_id": primary_id,
-            "user_name": display_name,
-            "user_id_alt": union_id,
-        }
+        name_lookup_id = open_id if is_bot else (primary_id or union_id)  # bots/basic_batch only takes open_id
+        display_name = await self._resolve_sender_name_from_api(name_lookup_id, is_bot=is_bot)
+        return {"user_id": primary_id, "user_name": display_name, "user_id_alt": union_id}
 
     def _get_cached_sender_name(self, sender_id: Optional[str]) -> Optional[str]:
         """Return a cached sender name only while its TTL is still valid."""
-        if not sender_id:
-            return None
-        cached = self._sender_name_cache.get(sender_id)
+        cached = self._sender_name_cache.get(sender_id) if sender_id else None
         if cached is None:
             return None
         name, expire_at = cached
@@ -4211,18 +3135,9 @@ class FeishuAdapter(BasePlatformAdapter):
         self._sender_name_cache.pop(sender_id, None)
         return None
 
-    async def _resolve_sender_name_from_api(
-        self,
-        sender_id: Optional[str],
-        *,
-        is_bot: bool = False,
-    ) -> Optional[str]:
-        """Bots divert to bot/basic_batch — contact API doesn't return bot names.
-        Failures are silent so the pipeline never blocks on name resolution.
-        """
-        if not sender_id or not self._client:
-            return None
-        trimmed = sender_id.strip()
+    async def _resolve_sender_name_from_api(self, sender_id: Optional[str], *, is_bot: bool = False) -> Optional[str]:
+        """Bots go via bot/basic_batch (contact API has no bot names). Failures are silent — never block the pipeline."""
+        trimmed = sender_id.strip() if sender_id and self._client else ""
         if not trimmed:
             return None
         now = time.time()
@@ -4233,64 +3148,47 @@ class FeishuAdapter(BasePlatformAdapter):
             names = await self._fetch_bot_names([trimmed])
             if names is None:
                 return None
-            expire_at = now + _FEISHU_SENDER_NAME_TTL_SECONDS
             for oid, name in names.items():
-                self._sender_name_cache[oid] = (name, expire_at)
+                self._sender_name_cache[oid] = (name, now + _FEISHU_SENDER_NAME_TTL_SECONDS)
             hit = self._sender_name_cache.get(trimmed)
             return (hit[0] or None) if hit else None
         try:
             from lark_oapi.api.contact.v3 import GetUserRequest  # lazy import
-            if trimmed.startswith("ou_"):
-                id_type = "open_id"
-            elif trimmed.startswith("on_"):
-                id_type = "union_id"
-            else:
-                id_type = "user_id"
+            id_type = "open_id" if trimmed.startswith("ou_") else "union_id" if trimmed.startswith("on_") else "user_id"
             request = GetUserRequest.builder().user_id(trimmed).user_id_type(id_type).build()
             response = await self._run_blocking(self._client.contact.v3.user.get, request)
             if not response or not response.success():
                 return None
             user = getattr(getattr(response, "data", None), "user", None)
-            name = (
-                getattr(user, "name", None)
-                or getattr(user, "display_name", None)
-                or getattr(user, "nickname", None)
-                or getattr(user, "en_name", None)
-            )
-            if name and isinstance(name, str):
+            candidates = (getattr(user, k, None) for k in ("name", "display_name", "nickname", "en_name"))
+            name = next((value for value in candidates if value), None)
+            if name and isinstance(name, str) and name.strip():
                 name = name.strip()
-                if name:
-                    self._sender_name_cache[trimmed] = (name, now + _FEISHU_SENDER_NAME_TTL_SECONDS)
-                    return name
+                self._sender_name_cache[trimmed] = (name, now + _FEISHU_SENDER_NAME_TTL_SECONDS)
+                return name
         except Exception:
             logger.debug("[Feishu] Failed to resolve sender name for %s", sender_id, exc_info=True)
         return None
+
+    async def _tenant_get_raw(self, uri: str, *, queries: Optional[List[tuple[str, str]]] = None) -> Any:
+        """GET ``uri`` with the tenant token via the raw client; returns the raw response content."""
+        resp = await self._run_blocking(self._client.request, _tenant_get_request(uri, queries=queries))
+        return getattr(getattr(resp, "raw", None), "content", None)
 
     async def _fetch_bot_names(self, bot_ids: List[str]) -> Optional[Dict[str, str]]:
         if not self._client or not bot_ids:
             return None
         try:
-            req = (
-                BaseRequest.builder()
-                .http_method(HttpMethod.GET)
-                .uri("/open-apis/bot/v3/bots/basic_batch")
-                .queries([("bot_ids", oid) for oid in bot_ids])
-                .token_types({AccessTokenType.TENANT})
-                .build()
+            content = await self._tenant_get_raw(
+                "/open-apis/bot/v3/bots/basic_batch", queries=[("bot_ids", oid) for oid in bot_ids],
             )
-            resp = await self._run_blocking(self._client.request, req)
-            content = getattr(getattr(resp, "raw", None), "content", None)
             if not content:
                 return None
             payload = json.loads(content)
             if payload.get("code") != 0:
                 return None
             bots = (payload.get("data") or {}).get("bots") or {}
-            return {
-                oid: str(info.get("name") or "").strip()
-                for oid, info in bots.items()
-                if oid
-            }
+            return {oid: str(info.get("name") or "").strip() for oid, info in bots.items() if oid}
         except Exception:
             logger.debug("[Feishu] Failed to fetch bot names for %s", bot_ids, exc_info=True)
             return None
@@ -4316,9 +3214,7 @@ class FeishuAdapter(BasePlatformAdapter):
             raw_content = getattr(body, "content", "") or ""
             parent_mentions = getattr(parent, "mentions", None) if parent else None
             text = self._extract_text_from_raw_content(
-                msg_type=msg_type,
-                raw_content=raw_content,
-                mentions=parent_mentions,
+                msg_type=msg_type, raw_content=raw_content, mentions=parent_mentions,
             )
             self._message_text_cache[message_id] = text
             while len(self._message_text_cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:
@@ -4329,18 +3225,9 @@ class FeishuAdapter(BasePlatformAdapter):
             return None
 
     def _extract_text_from_raw_content(
-        self,
-        *,
-        msg_type: str,
-        raw_content: str,
-        mentions: Optional[Sequence[Any]] = None,
+        self, *, msg_type: str, raw_content: str, mentions: Optional[Sequence[Any]] = None,
     ) -> Optional[str]:
-        normalized = normalize_feishu_message(
-            message_type=msg_type,
-            raw_content=raw_content,
-            mentions=mentions,
-            bot=self._bot_identity(),
-        )
+        normalized = self._normalize(msg_type, raw_content, mentions)
         if normalized.text_content:
             return normalized.text_content
         placeholder = normalized.metadata.get("placeholder_text") if isinstance(normalized.metadata, dict) else None
@@ -4360,10 +3247,7 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             logger.exception("[Feishu] Background inbound processing failed")
 
-    # =========================================================================
-    # Inbound admission
-    # =========================================================================
-
+    # --- Inbound admission ---
     def _admit(self, sender: Any, message: Any) -> Optional[RejectReason]:
         sender_ids = _sender_identity(sender)
         self_ids = frozenset(v for v in (self._bot_open_id, self._bot_user_id) if v)
@@ -4371,41 +3255,29 @@ class FeishuAdapter(BasePlatformAdapter):
         is_group = getattr(message, "chat_type", "p2p") != "p2p"
         chat_id = getattr(message, "chat_id", "") or ""
         require_mention = is_group and self._require_mention_for(chat_id)
-
         # Defensive only — Feishu doesn't echo our outbound back as inbound,
         # and open_id is always populated on both sides.
         if self_ids and sender_ids & self_ids:
             return "self_echo"
-
         if is_bot:
             mode = self._allow_bots
-            if mode != "mentions" and mode != "all":
+            if mode not in ("mentions", "all"):
                 return "bots_disabled"
-            # Defensive: pre-hydration or malformed payloads.
-            if not self_ids or not sender_ids:
+            if not self_ids or not sender_ids:  # pre-hydration or malformed payloads
                 return "self_ids_unknown"
-            # Step 4 covers mention enforcement for groups when require_mention
-            # is on; check here only on paths step 4 won't reach.
+            # The group step below enforces mentions when require_mention is on; cover the rest here.
             if mode == "mentions" and not require_mention and not self._mentions_self(message):
                 return "bot_not_mentioned"
-
         if not is_group:
-            if os.getenv("FEISHU_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+            # _allow_all_dm is snapshotted per-profile in _load_settings: _admit runs on the
+            # lark_oapi WS thread with no secret scope, so a bare os.getenv would read the
+            # default profile's value.
+            # Empty FEISHU_ALLOWED_USERS is setup's pairing-mode default: forward DMs so the
+            # pairing handshake can run (gateway auth fail-closes until approval).
+            if self._allow_all_dm or not self._allowed_group_users:
                 return None
-            if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
-                return None
-            # Empty FEISHU_ALLOWED_USERS is the pairing-mode default from setup:
-            # forward DMs to gateway intake so the pairing handshake can run.
-            # Gateway auth fail-closes agent access until approval.
-            if not self._allowed_group_users:
-                return None
-            if not (sender_ids and (sender_ids & self._allowed_group_users)):
-                return "dm_policy_rejected"
-            return None
-
-        if not self._allow_group_message(
-            getattr(sender, "sender_id", None), chat_id, is_bot=is_bot,
-        ):
+            return None if sender_ids & self._allowed_group_users else "dm_policy_rejected"
+        if not self._allow_group_message(getattr(sender, "sender_id", None), chat_id, is_bot=is_bot):
             return "group_policy_rejected"
         if require_mention and not self._mentions_self(message):
             return "group_policy_rejected"
@@ -4417,52 +3289,27 @@ class FeishuAdapter(BasePlatformAdapter):
             return rule.require_mention
         return self._require_mention
 
-    # --- Group policy ---------------------------------------------------------
-
-    def _allow_group_message(
-        self,
-        sender_id: Any,
-        chat_id: str = "",
-        *,
-        is_bot: bool = False,
-    ) -> bool:
+    def _allow_group_message(self, sender_id: Any, chat_id: str = "", *, is_bot: bool = False) -> bool:
         """Per-group policy gate for non-DM traffic."""
-        sender_open_id = getattr(sender_id, "open_id", None)
-        sender_user_id = getattr(sender_id, "user_id", None)
-        sender_ids = {sender_open_id, sender_user_id} - {None}
-
+        sender_ids = {getattr(sender_id, "open_id", None), getattr(sender_id, "user_id", None)} - {None}
         if sender_ids and self._admins and (sender_ids & self._admins):
             return True
-
         rule = self._group_rules.get(chat_id) if chat_id else None
         if rule:
-            policy = rule.policy
-            allowlist = rule.allowlist
-            blacklist = rule.blacklist
+            policy, allowlist, blacklist = rule.policy, rule.allowlist, rule.blacklist
         else:
-            policy = self._default_group_policy or self._group_policy
-            allowlist = self._allowed_group_users
-            blacklist = set()
-
-        # Channel locks apply to everyone; allowlist/blacklist only gate humans
-        # (bots were already cleared upstream by FEISHU_ALLOW_BOTS).
-        if policy == "disabled":
+            policy, allowlist, blacklist = self._default_group_policy or self._group_policy, self._allowed_group_users, set()
+        # Channel locks apply to everyone; allowlist/blacklist only gate humans (bots were
+        # already cleared upstream by FEISHU_ALLOW_BOTS).
+        if policy in ("disabled", "admin_only"):
             return False
-        if policy == "open":
+        if policy == "open" or is_bot:
             return True
-        if policy == "admin_only":
-            return False
-        if is_bot:
-            return True
-
         if policy == "allowlist":
             return bool(sender_ids and (sender_ids & allowlist))
         if policy == "blacklist":
             return bool(sender_ids and not (sender_ids & blacklist))
-
         return bool(sender_ids and (sender_ids & self._allowed_group_users))
-
-    # --- Mention detection ----------------------------------------------------
 
     def _mentions_self(self, message: Any) -> bool:
         # @_all is Feishu's @everyone placeholder.
@@ -4472,74 +3319,40 @@ class FeishuAdapter(BasePlatformAdapter):
         mentions = getattr(message, "mentions", None) or []
         if mentions and self._message_mentions_bot(mentions):
             return True
-        normalized = normalize_feishu_message(
-            message_type=getattr(message, "message_type", "") or "",
-            raw_content=raw_content,
-            mentions=getattr(message, "mentions", None),
-            bot=self._bot_identity(),
-        )
+        normalized = self._normalize(getattr(message, "message_type", "") or "", raw_content, getattr(message, "mentions", None))
         return self._post_mentions_bot(normalized.mentions)
 
     def _message_mentions_bot(self, mentions: List[Any]) -> bool:
-        # IDs trump names: when both sides have open_id (or both user_id),
-        # match requires equal IDs. Name fallback only when either side
-        # lacks an ID.
+        # Same precedence as _FeishuBotIdentity.matches (open_id > user_id > name); a non-empty
+        # bot_name here only matches an exact stripped name, while an empty bot_name never matches.
+        bot = self._bot_identity()
         for mention in mentions:
             mention_id = getattr(mention, "id", None)
-            mention_open_id = (getattr(mention_id, "open_id", None) or "").strip()
-            mention_user_id = (getattr(mention_id, "user_id", None) or "").strip()
-            mention_name = (getattr(mention, "name", None) or "").strip()
-
-            if mention_open_id and self._bot_open_id:
-                if mention_open_id == self._bot_open_id:
-                    return True
-                continue  # IDs differ — not the bot; skip name fallback.
-            if mention_user_id and self._bot_user_id:
-                if mention_user_id == self._bot_user_id:
-                    return True
-                continue
-            if self._bot_name and mention_name == self._bot_name:
+            if bot.matches(
+                open_id=(getattr(mention_id, "open_id", None) or "").strip(),
+                user_id=(getattr(mention_id, "user_id", None) or "").strip(),
+                name=(getattr(mention, "name", None) or "").strip(),
+            ):
                 return True
-
         return False
 
     def _post_mentions_bot(self, mentions: List[FeishuMentionRef]) -> bool:
         return any(m.is_self for m in mentions)
 
     def _bot_identity(self) -> _FeishuBotIdentity:
-        return _FeishuBotIdentity(
-            open_id=self._bot_open_id,
-            user_id=self._bot_user_id,
-            name=self._bot_name,
-        )
+        return _FeishuBotIdentity(open_id=self._bot_open_id, user_id=self._bot_user_id, name=self._bot_name)
 
     async def _hydrate_bot_identity(self) -> None:
-        """Best-effort discovery of bot identity for precise group mention gating
-        and self-sent bot event filtering.
+        """Best-effort bot identity discovery for mention gating and self-event filtering.
 
-        Populates ``_bot_open_id`` and ``_bot_name`` from /open-apis/bot/v3/info
-        (no extra scopes required beyond the tenant access token). The probe
-        always runs when a client is available so stale env vars from app/bot
-        migrations do not break group @mention gating. Falls back to the
-        application info endpoint for ``_bot_name`` only when the first probe
-        doesn't return it. If the probe fails, env-provided values are preserved.
+        /bot/v3/info (tenant token, no extra scopes) always wins over env values so stale
+        FEISHU_BOT_* from app migrations can't break gating; the application-info endpoint is
+        a name-only fallback. On failure env-provided values are kept.
         """
         if not self._client:
             return
-
-        # Primary probe: /open-apis/bot/v3/info — returns bot_name + open_id, no
-        # extra scopes required. This is the same endpoint the onboarding wizard
-        # uses via probe_bot().
         try:
-            req = (
-                BaseRequest.builder()
-                .http_method(HttpMethod.GET)
-                .uri("/open-apis/bot/v3/info")
-                .token_types({AccessTokenType.TENANT})
-                .build()
-            )
-            resp = await self._run_blocking(self._client.request, req)
-            content = getattr(getattr(resp, "raw", None), "content", None)
+            content = await self._tenant_get_raw("/open-apis/bot/v3/info")
             if content:
                 payload = json.loads(content)
                 parsed = _parse_bot_response(payload) or {}
@@ -4558,16 +3371,11 @@ class FeishuAdapter(BasePlatformAdapter):
                         )
                     self._bot_name = bot_name
         except Exception:
-            logger.debug(
-                "[Feishu] /bot/v3/info probe failed during hydration",
-                exc_info=True,
-            )
+            logger.debug("[Feishu] /bot/v3/info probe failed during hydration", exc_info=True)
 
-        # Fallback probe for _bot_name only: application info endpoint. Needs
-        # admin:app.info:readonly or application:application:self_manage scope,
-        # so it's best-effort.
         if self._bot_name:
             return
+        # Name-only fallback; needs admin:app.info:readonly or application:application:self_manage.
         try:
             request = self._build_get_application_request(app_id=self._app_id, lang="en_us")
             response = await self._run_blocking(self._client.application.v6.application.get, request)
@@ -4587,10 +3395,7 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             logger.debug("[Feishu] Failed to hydrate bot name from application info", exc_info=True)
 
-    # =========================================================================
-    # Deduplication — seen message ID cache (persistent)
-    # =========================================================================
-
+    # --- Deduplication — seen message ID cache (persistent) ---
     def _load_seen_message_ids(self) -> None:
         try:
             payload = json.loads(self._dedup_state_path.read_text(encoding="utf-8"))
@@ -4602,27 +3407,21 @@ class FeishuAdapter(BasePlatformAdapter):
         seen_data = payload.get("message_ids", {}) if isinstance(payload, dict) else {}
         now = time.time()
         ttl = _FEISHU_DEDUP_TTL_SECONDS
-        # Backward-compat: old format stored a plain list of IDs (no timestamps).
-        if isinstance(seen_data, list):
+        if isinstance(seen_data, list):  # legacy format: plain list of IDs, no timestamps
             entries: Dict[str, float] = {str(item).strip(): 0.0 for item in seen_data if str(item).strip()}
         elif isinstance(seen_data, dict):
             entries = {}
             for key, value in seen_data.items():
-                if not isinstance(key, str) or not key.strip():
-                    continue
-                try:
-                    entries[key] = float(value)
-                except (TypeError, ValueError):
-                    continue
+                if isinstance(key, str) and key.strip() and isinstance(value, (int, float, str)):
+                    try:
+                        entries[key] = float(value)
+                    except ValueError:
+                        pass
         else:
             return
-        # Filter out TTL-expired entries (entries saved with ts=0.0 are treated as immortal
-        # for one migration cycle to avoid nuking old data on first upgrade).
-        valid: Dict[str, float] = {
-            msg_id: ts for msg_id, ts in entries.items()
-            if ts == 0.0 or ttl <= 0 or now - ts < ttl
-        }
-        # Apply size cap; keep the most recently seen IDs.
+        # Drop TTL-expired entries; ts=0.0 (legacy) is immortal for one migration cycle.
+        valid: Dict[str, float] = {m: ts for m, ts in entries.items() if ts == 0.0 or ttl <= 0 or now - ts < ttl}
+        # Size cap keeps the most recently seen IDs.
         sorted_ids = sorted(valid, key=lambda k: valid[k], reverse=True)[:self._dedup_cache_size]
         self._seen_message_order = list(reversed(sorted_ids))
         self._seen_message_ids = {k: valid[k] for k in sorted_ids}
@@ -4630,97 +3429,78 @@ class FeishuAdapter(BasePlatformAdapter):
     def _persist_seen_message_ids(self) -> None:
         try:
             self._dedup_state_path.parent.mkdir(parents=True, exist_ok=True)
-            recent = self._seen_message_order[-self._dedup_cache_size:]
-            # Save as {msg_id: timestamp} so TTL filtering works across restarts.
-            payload = {"message_ids": {k: self._seen_message_ids[k] for k in recent if k in self._seen_message_ids}}
+            with self._dedup_lock:
+                recent = self._seen_message_order[-self._dedup_cache_size:]
+                # Save as {msg_id: timestamp} so TTL filtering works across restarts.
+                payload = {"message_ids": {k: self._seen_message_ids[k] for k in recent if k in self._seen_message_ids}}
             atomic_json_write(self._dedup_state_path, payload, indent=None)
         except OSError:
             logger.warning("[Feishu] Failed to persist dedup state to %s", self._dedup_state_path, exc_info=True)
 
-    def _is_duplicate(self, message_id: str) -> bool:
-        now = time.time()
-        ttl = _FEISHU_DEDUP_TTL_SECONDS
+    async def _is_duplicate(self, message_id: str) -> bool:
+        now, ttl = time.time(), _FEISHU_DEDUP_TTL_SECONDS
         with self._dedup_lock:
             seen_at = self._seen_message_ids.get(message_id)
             if seen_at is not None and (ttl <= 0 or now - seen_at < ttl):
                 return True
-            # Record with current wall-clock timestamp so TTL works across restarts.
-            self._seen_message_ids[message_id] = now
+            self._seen_message_ids[message_id] = now  # wall-clock so TTL survives restarts
             self._seen_message_order.append(message_id)
             while len(self._seen_message_order) > self._dedup_cache_size:
-                stale = self._seen_message_order.pop(0)
-                self._seen_message_ids.pop(stale, None)
-            self._persist_seen_message_ids()
-            return False
+                self._seen_message_ids.pop(self._seen_message_order.pop(0), None)
+        # atomic_json_write() fsyncs; this runs on the event loop for every inbound message, so
+        # offload the flush. The lock keeps flushes in mutation order (the snapshot inside the
+        # worker is taken under _dedup_lock, but the write itself is not).
+        async with self._dedup_persist_lock_or_create():
+            await asyncio.to_thread(self._persist_seen_message_ids)
+        return False
 
-    # =========================================================================
-    # Outbound payload construction and send pipeline
-    # =========================================================================
+    def _dedup_persist_lock_or_create(self) -> asyncio.Lock:
+        # Tests build bare adapters via object.__new__ and install dedup state
+        # by hand; create the lock lazily so those fixtures keep working.
+        lock = getattr(self, "_dedup_persist_lock", None)
+        if lock is None:
+            lock = self._dedup_persist_lock = asyncio.Lock()
+        return lock
 
-    def _build_outbound_payload(
-        self, content: str, *, prefer_post: bool = False,
-    ) -> tuple[str, str]:
-        # Empirically (issue #52786), current Feishu clients render markdown
-        # tables inside ``post``-type ``md`` elements natively. The previous
-        # table-downgrade branch forced any table-containing message to
-        # ``text``, which left Feishu readers seeing the raw pipe-and-dash
-        # source instead of a rendered table. Trust the common markdown path
-        # for table content too.
-        #
-        # ``prefer_post`` lets ``send`` treat the chunk as part of a larger
-        # markdown document: when a long markdown reply is split at
-        # MAX_MESSAGE_LENGTH, the per-chunk regex would otherwise
-        # mis-classify a plain-prose chunk as ``text``. See #26841.
+    # --- Outbound payload construction and send pipeline ---
+    def _build_outbound_payload(self, content: str, *, prefer_post: bool = False) -> tuple[str, str]:
+        # Feishu clients render markdown tables inside ``post`` ``md`` elements natively, so tables
+        # take the common markdown path (no text downgrade). ``prefer_post`` lets ``send`` keep every
+        # chunk of a split markdown reply as ``post`` even when a chunk alone looks like prose.
+        # The previous table-downgrade branch forced any table-containing message to ``text``, which left
+        # Feishu readers seeing the raw pipe-and-dash source instead of a rendered table. ``prefer_post``
+        # lets ``send`` treat the chunk as part of a larger markdown document: when a long markdown reply is
+        # split at MAX_MESSAGE_LENGTH, the per-chunk regex would otherwise mis-classify a plain-prose chunk
+        # as ``text``. See #26841.
         if prefer_post or _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
-        text_payload = {"text": content}
-        return "text", json.dumps(text_payload, ensure_ascii=False)
+        return "text", json.dumps({"text": content}, ensure_ascii=False)
 
     @staticmethod
     def _get_audio_duration_ms(file_path: str) -> int:
-        """Extract OGG/Opus audio duration in milliseconds (pure Python, no deps).
-
-        Parses the OGG container to find the last granule position and divides
-        by the Opus sample rate (48000 Hz). Returns 0 for non-OGG files or on error.
-        """
+        """OGG/Opus duration in ms (pure Python): last granule position / 48000 Hz; 0 on non-OGG or error."""
         import struct
         try:
             with open(file_path, "rb") as f:
                 data = f.read()
-            pos = 0
-            last_granule = 0
+            pos = last_granule = 0
             while pos < len(data) - 27:
-                idx = data.find(b"OggS", pos)
-                if idx == -1:
-                    break
-                pos = idx
-                if pos + 27 > len(data):
+                pos = data.find(b"OggS", pos)
+                if pos == -1 or pos + 27 > len(data):
                     break
                 granule = struct.unpack_from("<q", data, pos + 6)[0]
                 num_segments = data[pos + 26]
-                if granule > 0:
-                    last_granule = granule
-                segment_end = pos + 27 + num_segments
-                if segment_end > len(data):
+                last_granule = granule if granule > 0 else last_granule
+                if pos + 27 + num_segments > len(data):
                     break
-                page_size = num_segments
-                for i in range(num_segments):
-                    page_size += data[pos + 27 + i]
-                pos += page_size
+                pos += num_segments + sum(data[pos + 27 : pos + 27 + num_segments])
             return int(last_granule / 48000 * 1000) if last_granule > 0 else 0
         except Exception:
             return 0
 
     async def _send_uploaded_file_message(
-        self,
-        *,
-        chat_id: str,
-        file_path: str,
-        reply_to: Optional[str],
-        metadata: Optional[Dict[str, Any]],
-        caption: Optional[str] = None,
-        file_name: Optional[str] = None,
-        outbound_message_type: str = "file",
+        self, *, chat_id: str, file_path: str, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
+        caption: Optional[str] = None, file_name: Optional[str] = None, outbound_message_type: str = "file",
     ) -> SendResult:
         if not self._client:
             return SendResult(success=False, error="Not connected")
@@ -4729,85 +3509,69 @@ class FeishuAdapter(BasePlatformAdapter):
 
         display_name = file_name or os.path.basename(file_path)
         upload_file_type, resolved_message_type = self._resolve_outbound_file_routing(
-            file_path=display_name,
-            requested_message_type=outbound_message_type,
+            file_path=display_name, requested_message_type=outbound_message_type,
         )
         try:
-            duration_ms = 0
-            if upload_file_type == "opus":
-                duration_ms = self._get_audio_duration_ms(file_path)
+            duration_ms = self._get_audio_duration_ms(file_path) if upload_file_type == "opus" else 0
             with open(file_path, "rb") as file_obj:
                 body = self._build_file_upload_body(
-                    file_type=upload_file_type,
-                    file_name=display_name,
-                    file=file_obj,
-                    duration=duration_ms,
+                    file_type=upload_file_type, file_name=display_name, file=file_obj, duration=duration_ms,
                 )
                 request = self._build_file_upload_request(body)
                 upload_response = await self._run_blocking(self._client.im.v1.file.create, request)
             file_key = self._extract_response_field(upload_response, "file_key")
             if not file_key:
                 return self._response_error_result(
-                    upload_response,
-                    default_message="file upload failed",
+                    upload_response, default_message="file upload failed",
                     override_error="Feishu file upload missing file_key",
                 )
 
-            if caption:
-                media_tag = {
-                    "tag": "media",
-                    "file_key": file_key,
-                    "file_name": display_name,
-                }
-                message_response = await self._feishu_send_with_retry(
-                    chat_id=chat_id,
-                    msg_type="post",
-                    payload=self._build_media_post_payload(caption=caption, media_tag=media_tag),
-                    reply_to=reply_to,
-                    metadata=metadata,
-                )
-            else:
-                message_response = await self._feishu_send_with_retry(
-                    chat_id=chat_id,
-                    msg_type=resolved_message_type,
-                    payload=json.dumps({"file_key": file_key}, ensure_ascii=False),
-                    reply_to=reply_to,
-                    metadata=metadata,
-                )
-                # Audio messages may fail with 99992402 when using thread_id routing.
-                # Try replying to the last message in the thread, then fall back to chat_id.
-                if (not self._response_succeeded(message_response)
-                        and getattr(message_response, "code", None) == 99992402
-                        and resolved_message_type == "audio"
-                        and (metadata or {}).get("thread_id")):
-                    # Try reply API with thread_id as reply anchor
-                    thread_msg_id = (metadata or {}).get("reply_to_message_id")
-                    if not thread_msg_id:
-                        thread_msg_id = await self._fetch_last_message_in_thread(
-                            (metadata or {}).get("thread_id")
-                        )
-                    if thread_msg_id:
-                        logger.info("[Feishu] Audio: retrying via reply API in thread")
-                        message_response = await self._feishu_send_with_retry(
-                            chat_id=chat_id,
-                            msg_type=resolved_message_type,
-                            payload=json.dumps({"file_key": file_key}, ensure_ascii=False),
-                            reply_to=thread_msg_id,
-                            metadata=metadata,
-                        )
-                    if not self._response_succeeded(message_response):
-                        logger.warning("[Feishu] Audio send failed in thread, retrying with chat_id")
-                        message_response = await self._feishu_send_with_retry(
-                            chat_id=chat_id,
-                            msg_type=resolved_message_type,
-                            payload=json.dumps({"file_key": file_key}, ensure_ascii=False),
-                            reply_to=None,
-                            metadata=None,
-                        )
+            key_payload = {"file_key": file_key}
+            message_response = await self._send_uploaded_key(
+                chat_id=chat_id, reply_to=reply_to, metadata=metadata, caption=caption,
+                key_msg_type=resolved_message_type, key_payload=key_payload,
+                media_tag={"tag": "media", "file_key": file_key, "file_name": display_name},
+            )
+            # Audio may fail with 99992402 under thread_id routing: retry as a reply to the
+            # thread's last message, then fall back to a plain chat_id send.
+            if (not caption
+                    and not self._response_succeeded(message_response)
+                    and getattr(message_response, "code", None) == 99992402
+                    and resolved_message_type == "audio"
+                    and (metadata or {}).get("thread_id")):
+                payload = json.dumps(key_payload, ensure_ascii=False)
+                thread_msg_id = (metadata or {}).get("reply_to_message_id")
+                if not thread_msg_id:
+                    thread_msg_id = await self._fetch_last_message_in_thread((metadata or {}).get("thread_id"))
+                if thread_msg_id:
+                    logger.info("[Feishu] Audio: retrying via reply API in thread")
+                    message_response = await self._feishu_send_with_retry(
+                        chat_id=chat_id, msg_type="audio", payload=payload, reply_to=thread_msg_id, metadata=metadata,
+                    )
+                if not self._response_succeeded(message_response):
+                    logger.warning("[Feishu] Audio send failed in thread, retrying with chat_id")
+                    message_response = await self._feishu_send_with_retry(
+                        chat_id=chat_id, msg_type="audio", payload=payload, reply_to=None, metadata=None,
+                    )
             return self._finalize_send_result(message_response, "file send failed")
         except Exception as exc:
             logger.error("[Feishu] Failed to send file %s: %s", file_path, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    async def _send_uploaded_key(
+        self, *, chat_id: str, reply_to: Optional[str], metadata: Optional[Dict[str, Any]], caption: Optional[str],
+        key_msg_type: str, key_payload: Dict[str, str], media_tag: Dict[str, str],
+    ) -> Any:
+        """Send an uploaded image/file key: as a captioned ``post`` or as a bare key message."""
+        if caption:
+            msg_type = "post"
+            payload = self._build_media_post_payload(caption=caption, media_tag=media_tag)
+        else:
+            msg_type = key_msg_type
+            payload = json.dumps(key_payload, ensure_ascii=False)
+        return await self._feishu_send_with_retry(
+            chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_to, metadata=metadata,
+        )
 
     async def _fetch_last_message_in_thread(self, thread_id: str) -> Optional[str]:
         """Fetch the last message_id in a thread for reply-based routing."""
@@ -4815,15 +3579,9 @@ class FeishuAdapter(BasePlatformAdapter):
             return None
         try:
             from lark_oapi.api.im.v1 import ListMessageRequest
-            request = (
-                ListMessageRequest.builder()
-                .container_id_type("thread")
-                .container_id(thread_id)
-                .page_size(1)
-                .build()
-            )
+            request = ListMessageRequest.builder().container_id_type("thread").container_id(thread_id).page_size(1).build()
             response = await asyncio.to_thread(self._client.im.v1.message.list, request)
-            if response and getattr(response, "success", lambda: False)():
+            if self._response_succeeded(response):
                 items = getattr(getattr(response, "data", None), "items", None)
                 if items and len(items) > 0:
                     return getattr(items[0], "message_id", None)
@@ -4832,56 +3590,27 @@ class FeishuAdapter(BasePlatformAdapter):
         return None
 
     async def _send_raw_message(
-        self,
-        *,
-        chat_id: str,
-        msg_type: str,
-        payload: str,
-        reply_to: Optional[str],
-        metadata: Optional[Dict[str, Any]],
+        self, *, chat_id: str, msg_type: str, payload: str, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
     ) -> Any:
-        effective_reply_to = reply_to
-        if not effective_reply_to and metadata and metadata.get("thread_id"):
-            effective_reply_to = metadata.get("reply_to_message_id")
-        reply_in_thread = bool((metadata or {}).get("thread_id"))
+        thread_id = (metadata or {}).get("thread_id")
+        effective_reply_to = reply_to or ((metadata or {}).get("reply_to_message_id") if thread_id else None)
         if effective_reply_to:
             body = self._build_reply_message_body(
-                content=payload,
-                msg_type=msg_type,
-                reply_in_thread=reply_in_thread,
-                uuid_value=str(uuid.uuid4()),
+                content=payload, msg_type=msg_type, reply_in_thread=bool(thread_id), uuid_value=str(uuid.uuid4()),
             )
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
-
-        # For topic/thread messages that fell back from reply→create, use
-        # thread_id as receive_id so the message lands in the topic instead of
-        # the main chat.
-        _thread_id = (metadata or {}).get("thread_id")
-        if _thread_id:
-            body = self._build_create_message_body(
-                receive_id=_thread_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
-            )
-            request = self._build_create_message_request("thread_id", body)
+        if thread_id:
+            # reply→create fallback inside a topic: thread_id as receive_id keeps it in the topic.
+            receive_id, receive_id_type = thread_id, "thread_id"
+        elif chat_id.startswith("feishu_user_id:"):
+            receive_id, receive_id_type = chat_id.split(":", 1)[1], "user_id"
         else:
-            receive_id = chat_id
-            receive_id_type = "chat_id"
-            if chat_id.startswith("feishu_user_id:"):
-                receive_id = chat_id.split(":", 1)[1]
-                receive_id_type = "user_id"
-            elif chat_id.startswith("ou_"):
-                receive_id_type = "open_id"
-
-            body = self._build_create_message_body(
-                receive_id=receive_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
-            )
-            request = self._build_create_message_request(receive_id_type, body)
+            receive_id, receive_id_type = chat_id, "open_id" if chat_id.startswith("ou_") else "chat_id"
+        body = self._build_create_message_body(
+            receive_id=receive_id, msg_type=msg_type, content=payload, uuid_value=str(uuid.uuid4()),
+        )
+        request = self._build_create_message_request(receive_id_type, body)
         return await self._run_blocking(self._client.im.v1.message.create, request)
 
     @staticmethod
@@ -4890,17 +3619,11 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _extract_response_field(response: Any, field_name: str) -> Any:
-        if not FeishuAdapter._response_succeeded(response):
-            return None
-        data = getattr(response, "data", None)
+        data = getattr(response, "data", None) if FeishuAdapter._response_succeeded(response) else None
         return getattr(data, field_name, None) if data else None
 
     def _response_error_result(
-        self,
-        response: Any,
-        *,
-        default_message: str,
-        override_error: Optional[str] = None,
+        self, response: Any, *, default_message: str, override_error: Optional[str] = None,
     ) -> SendResult:
         if override_error:
             return SendResult(success=False, error=override_error, raw_response=response)
@@ -4912,15 +3635,11 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._response_succeeded(response):
             return self._response_error_result(response, default_message=default_message)
         return SendResult(
-            success=True,
-            message_id=self._extract_response_field(response, "message_id"),
+            success=True, message_id=self._extract_response_field(response, "message_id"),
             raw_response=response,
         )
 
-    # =========================================================================
-    # Connection internals — websocket / webhook setup
-    # =========================================================================
-
+    # --- Connection internals — websocket / webhook setup ---
     async def _connect_with_retry(self) -> None:
         for attempt in range(_FEISHU_CONNECT_ATTEMPTS):
             try:
@@ -4939,21 +3658,50 @@ class FeishuAdapter(BasePlatformAdapter):
                 wait_seconds = 2 ** attempt
                 logger.warning(
                     "[Feishu] Connect attempt %d/%d failed; retrying in %ds: %s",
-                    attempt + 1,
-                    _FEISHU_CONNECT_ATTEMPTS,
-                    wait_seconds,
-                    exc,
+                    attempt + 1, _FEISHU_CONNECT_ATTEMPTS, wait_seconds, exc,
                 )
                 await asyncio.sleep(wait_seconds)
+
+    async def _supervise_websocket_thread(self) -> None:
+        """Restart the WS client thread if it dies while the adapter is up.
+
+        ``lark_oapi.start()`` only returns on fatal errors; without this watcher a dead thread
+        left the profile silently deaf until a gateway restart. Rebuild with capped backoff.
+
+        See #73779.
+        """
+        backoff = initial_backoff = float(self._ws_restart_backoff)
+        last_dead: Optional[asyncio.Future] = None
+        while self._running:
+            ws_future = self._ws_future
+            if ws_future is None:
+                return
+            try:
+                await asyncio.shield(ws_future)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+            # Deliberate disconnects nil ``_ws_client``/``_running`` first; only restart a live link.
+            if not self._running or self._ws_client is None:
+                return
+            if ws_future is not last_dead:
+                logger.error("[Feishu] WebSocket client thread exited unexpectedly; restarting in %.0fs", backoff)
+                last_dead = ws_future
+            await asyncio.sleep(backoff)
+            if not self._running:
+                return
+            try:
+                await self._connect_websocket()
+                backoff = initial_backoff
+            except Exception as exc:
+                logger.warning("[Feishu] WebSocket restart failed (retrying): %s", exc)
+                backoff = min(backoff * 2, 60.0)
 
     async def _connect_websocket(self) -> None:
         if not FEISHU_WEBSOCKET_AVAILABLE:
             raise RuntimeError("websockets not installed; websocket mode unavailable")
-        domain = FEISHU_DOMAIN if self._domain_name != "lark" else LARK_DOMAIN
-        self._client = self._build_lark_client(domain)
-        self._event_handler = self._build_event_handler()
-        if self._event_handler is None:
-            raise RuntimeError("failed to build Feishu event handler")
+        domain = self._prepare_client()
         loop = self._loop
         if loop is None or loop.is_closed():
             raise RuntimeError("adapter loop is not ready")
@@ -4964,32 +3712,18 @@ class FeishuAdapter(BasePlatformAdapter):
             log_level=lark.LogLevel.INFO,
             event_handler=self._event_handler,
             domain=domain,
-            # Channel SDK signaling tag: without this UA tag the Feishu
-            # server does not push group @mention events over the WebSocket
-            # transport.  The tag tells the server to use the Channel protocol
-            # which enables group-message routing in addition to P2P DM.
-            # See https://github.com/NousResearch/hermes-agent/issues/50656
+            # Without the "channel" UA tag Feishu won't push group @mention events over WS.
             extra_ua_tags=["channel"],
         )
-        self._ws_future = loop.run_in_executor(
-            None,
-            _run_official_feishu_ws_client,
-            self._ws_client,
-            self,
-        )
+        self._ws_future = loop.run_in_executor(None, _run_official_feishu_ws_client, self._ws_client, self)
 
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:
             raise RuntimeError("aiohttp not installed; webhook mode unavailable")
-        domain = FEISHU_DOMAIN if self._domain_name != "lark" else LARK_DOMAIN
-        self._client = self._build_lark_client(domain)
-        self._event_handler = self._build_event_handler()
-        if self._event_handler is None:
-            raise RuntimeError("failed to build Feishu event handler")
+        self._prepare_client()
         await self._hydrate_bot_identity()
-        # client_max_size backstops the bounded reader in
-        # _handle_webhook_request; aiohttp then enforces the same cap on
-        # every read path (#58536/#58902/#59180 pattern).
+        # client_max_size backstops the bounded reader in _handle_webhook_request on every read path.
+        # See #58536, #58902, #59180.
         app = web.Application(client_max_size=_FEISHU_WEBHOOK_MAX_BODY_BYTES)
         app.router.add_post(self._webhook_path, self._handle_webhook_request)
         self._webhook_runner = web.AppRunner(app)
@@ -4997,38 +3731,33 @@ class FeishuAdapter(BasePlatformAdapter):
         self._webhook_site = web.TCPSite(self._webhook_runner, self._webhook_host, self._webhook_port)
         await self._webhook_site.start()
 
+    def _prepare_client(self) -> Any:
+        """Build the lark client + event dispatcher for this adapter's domain; returns the SDK domain."""
+        domain = _sdk_domain(self._domain_name)
+        self._client = self._build_lark_client(domain)
+        self._event_handler = self._build_event_handler()
+        if self._event_handler is None:
+            raise RuntimeError("failed to build Feishu event handler")
+        return domain
+
     def _build_lark_client(self, domain: Any) -> Any:
-        return (
-            lark.Client.builder()
-            .app_id(self._app_id)
-            .app_secret(self._app_secret)
-            .domain(domain)
-            .log_level(lark.LogLevel.WARNING)
-            .build()
-        )
+        return _build_lark_client(self._app_id, self._app_secret, domain)
 
     async def _feishu_send_with_retry(
-        self,
-        *,
-        chat_id: str,
-        msg_type: str,
-        payload: str,
-        reply_to: Optional[str],
-        metadata: Optional[Dict[str, Any]],
+        self, *, chat_id: str, msg_type: str, payload: str, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
     ) -> Any:
         last_error: Optional[Exception] = None
         active_reply_to = reply_to
+
+        async def _raw(reply_target: Optional[str]) -> Any:
+            return await self._send_raw_message(
+                chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_target, metadata=metadata,
+            )
+
         for attempt in range(_FEISHU_SEND_ATTEMPTS):
             try:
-                response = await self._send_raw_message(
-                    chat_id=chat_id,
-                    msg_type=msg_type,
-                    payload=payload,
-                    reply_to=active_reply_to,
-                    metadata=metadata,
-                )
-                # If replying to a message failed because it was withdrawn or not found,
-                # fall back to posting a new message directly to the chat.
+                response = await _raw(active_reply_to)
+                # Reply target withdrawn/missing → post a new message to the chat instead.
                 if active_reply_to and not self._response_succeeded(response):
                     code = getattr(response, "code", None)
                     if code in _FEISHU_REPLY_FALLBACK_CODES:
@@ -5036,26 +3765,16 @@ class FeishuAdapter(BasePlatformAdapter):
                             logger.warning(
                                 "[Feishu] Reply to %s failed in thread %s (code %s — message withdrawn/missing); "
                                 "skipping top-level fallback to avoid creating a new topic",
-                                active_reply_to,
-                                (metadata or {}).get("thread_id"),
-                                code,
+                                active_reply_to, (metadata or {}).get("thread_id"), code,
                             )
                             return response
                         logger.warning(
                             "[Feishu] Reply to %s failed (code %s — message withdrawn/missing); "
                             "falling back to new message in chat %s",
-                            active_reply_to,
-                            code,
-                            chat_id,
+                            active_reply_to, code, chat_id,
                         )
                         active_reply_to = None
-                        response = await self._send_raw_message(
-                            chat_id=chat_id,
-                            msg_type=msg_type,
-                            payload=payload,
-                            reply_to=None,
-                            metadata=metadata,
-                        )
+                        response = await _raw(None)
                 return response
             except Exception as exc:
                 last_error = exc
@@ -5066,11 +3785,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 wait_seconds = 2 ** attempt
                 logger.warning(
                     "[Feishu] Send attempt %d/%d failed for chat %s; retrying in %ds: %s",
-                    attempt + 1,
-                    _FEISHU_SEND_ATTEMPTS,
-                    chat_id,
-                    wait_seconds,
-                    exc,
+                    attempt + 1, _FEISHU_SEND_ATTEMPTS, chat_id, wait_seconds, exc,
                 )
                 await asyncio.sleep(wait_seconds)
         raise last_error or RuntimeError("Feishu send failed")
@@ -5085,201 +3800,93 @@ class FeishuAdapter(BasePlatformAdapter):
         finally:
             self._app_lock_identity = None
 
-    # =========================================================================
-    # Lark API request builders
-    # =========================================================================
-
+    # --- Lark API request builders (SimpleNamespace fallback when the SDK is unbound) ---
     @staticmethod
     def _build_get_chat_request(chat_id: str) -> Any:
-        if GetChatRequest is not None:
-            return GetChatRequest.builder().chat_id(chat_id).build()
-        return SimpleNamespace(chat_id=chat_id)
+        return _sdk_build(GetChatRequest, chat_id=chat_id)
 
     @staticmethod
     def _build_get_message_request(message_id: str) -> Any:
-        if GetMessageRequest is not None:
-            return GetMessageRequest.builder().message_id(message_id).build()
-        return SimpleNamespace(message_id=message_id)
+        return _sdk_build(GetMessageRequest, message_id=message_id)
 
     @staticmethod
     def _build_message_resource_request(*, message_id: str, file_key: str, resource_type: str) -> Any:
-        if GetMessageResourceRequest is not None:
-            return (
-                GetMessageResourceRequest.builder()
-                .message_id(message_id)
-                .file_key(file_key)
-                .type(resource_type)
-                .build()
-            )
-        return SimpleNamespace(message_id=message_id, file_key=file_key, type=resource_type)
+        return _sdk_build(GetMessageResourceRequest, message_id=message_id, file_key=file_key, type=resource_type)
 
     @staticmethod
     def _build_get_application_request(*, app_id: str, lang: str) -> Any:
-        if GetApplicationRequest is not None:
-            return (
-                GetApplicationRequest.builder()
-                .app_id(app_id)
-                .lang(lang)
-                .build()
-            )
-        return SimpleNamespace(app_id=app_id, lang=lang)
+        return _sdk_build(GetApplicationRequest, app_id=app_id, lang=lang)
 
     @staticmethod
     def _build_reply_message_body(*, content: str, msg_type: str, reply_in_thread: bool, uuid_value: str) -> Any:
-        if ReplyMessageRequestBody is not None:
-            return (
-                ReplyMessageRequestBody.builder()
-                .content(content)
-                .msg_type(msg_type)
-                .reply_in_thread(reply_in_thread)
-                .uuid(uuid_value)
-                .build()
-            )
-        return SimpleNamespace(
-            content=content,
-            msg_type=msg_type,
-            reply_in_thread=reply_in_thread,
-            uuid=uuid_value,
+        return _sdk_build(
+            ReplyMessageRequestBody,
+            content=content, msg_type=msg_type, reply_in_thread=reply_in_thread, uuid=uuid_value,
         )
 
     @staticmethod
     def _build_reply_message_request(message_id: str, request_body: Any) -> Any:
-        if ReplyMessageRequest is not None:
-            return (
-                ReplyMessageRequest.builder()
-                .message_id(message_id)
-                .request_body(request_body)
-                .build()
-            )
-        return SimpleNamespace(message_id=message_id, request_body=request_body)
+        return _sdk_build(ReplyMessageRequest, message_id=message_id, request_body=request_body)
 
     @staticmethod
     def _build_update_message_body(*, msg_type: str, content: str) -> Any:
-        if UpdateMessageRequestBody is not None:
-            return (
-                UpdateMessageRequestBody.builder()
-                .msg_type(msg_type)
-                .content(content)
-                .build()
-            )
-        return SimpleNamespace(msg_type=msg_type, content=content)
+        return _sdk_build(UpdateMessageRequestBody, msg_type=msg_type, content=content)
 
     @staticmethod
     def _build_update_message_request(message_id: str, request_body: Any) -> Any:
-        if UpdateMessageRequest is not None:
-            return (
-                UpdateMessageRequest.builder()
-                .message_id(message_id)
-                .request_body(request_body)
-                .build()
-            )
-        return SimpleNamespace(message_id=message_id, request_body=request_body)
+        return _sdk_build(UpdateMessageRequest, message_id=message_id, request_body=request_body)
 
     @staticmethod
     def _build_create_message_body(*, receive_id: str, msg_type: str, content: str, uuid_value: str) -> Any:
-        if CreateMessageRequestBody is not None:
-            return (
-                CreateMessageRequestBody.builder()
-                .receive_id(receive_id)
-                .msg_type(msg_type)
-                .content(content)
-                .uuid(uuid_value)
-                .build()
-            )
-        return SimpleNamespace(
-            receive_id=receive_id,
-            msg_type=msg_type,
-            content=content,
-            uuid=uuid_value,
+        return _sdk_build(
+            CreateMessageRequestBody, receive_id=receive_id, msg_type=msg_type, content=content, uuid=uuid_value,
         )
 
     @staticmethod
     def _build_create_message_request(receive_id_type: str, request_body: Any) -> Any:
-        if CreateMessageRequest is not None:
-            return (
-                CreateMessageRequest.builder()
-                .receive_id_type(receive_id_type)
-                .request_body(request_body)
-                .build()
-            )
-        return SimpleNamespace(receive_id_type=receive_id_type, request_body=request_body)
+        return _sdk_build(CreateMessageRequest, receive_id_type=receive_id_type, request_body=request_body)
 
     @staticmethod
     def _build_image_upload_body(*, image_type: str, image: Any) -> Any:
-        if CreateImageRequestBody is not None:
-            return (
-                CreateImageRequestBody.builder()
-                .image_type(image_type)
-                .image(image)
-                .build()
-            )
-        return SimpleNamespace(image_type=image_type, image=image)
+        return _sdk_build(CreateImageRequestBody, image_type=image_type, image=image)
 
     @staticmethod
     def _build_image_upload_request(request_body: Any) -> Any:
-        if CreateImageRequest is not None:
-            return CreateImageRequest.builder().request_body(request_body).build()
-        return SimpleNamespace(request_body=request_body)
+        return _sdk_build(CreateImageRequest, request_body=request_body)
 
     @staticmethod
     def _build_file_upload_body(*, file_type: str, file_name: str, file: Any, duration: int = 0) -> Any:
-        if CreateFileRequestBody is not None:
-            builder = (
-                CreateFileRequestBody.builder()
-                .file_type(file_type)
-                .file_name(file_name)
-                .file(file)
-            )
-            if duration > 0:
-                builder = builder.duration(duration)
-            return builder.build()
-        return SimpleNamespace(file_type=file_type, file_name=file_name, file=file, duration=duration)
+        if CreateFileRequestBody is None:
+            return SimpleNamespace(file_type=file_type, file_name=file_name, file=file, duration=duration)
+        fields: Dict[str, Any] = {"file_type": file_type, "file_name": file_name, "file": file}
+        if duration > 0:
+            fields["duration"] = duration
+        return _sdk_build(CreateFileRequestBody, **fields)
 
     @staticmethod
     def _build_file_upload_request(request_body: Any) -> Any:
-        if CreateFileRequest is not None:
-            return CreateFileRequest.builder().request_body(request_body).build()
-        return SimpleNamespace(request_body=request_body)
-
-    def _build_post_payload(self, content: str) -> str:
-        return _build_markdown_post_payload(content)
+        return _sdk_build(CreateFileRequest, request_body=request_body)
 
     def _build_media_post_payload(self, *, caption: str, media_tag: Dict[str, str]) -> str:
-        payload = json.loads(self._build_post_payload(caption))
+        payload = json.loads(_build_markdown_post_payload(caption))
         content = payload.setdefault("zh_cn", {}).setdefault("content", [])
         content.append([media_tag])
         return json.dumps(payload, ensure_ascii=False)
 
     @staticmethod
-    def _resolve_outbound_file_routing(
-        *,
-        file_path: str,
-        requested_message_type: str,
-    ) -> tuple[str, str]:
+    def _resolve_outbound_file_routing(*, file_path: str, requested_message_type: str) -> tuple[str, str]:
+        # requested_message_type is accepted for call-site symmetry; routing is by extension only.
         ext = Path(file_path).suffix.lower()
-
         if ext in _FEISHU_OPUS_UPLOAD_EXTENSIONS:
             return "opus", "audio"
-
         if ext in _FEISHU_MEDIA_UPLOAD_EXTENSIONS:
             return "mp4", "media"
-
         if ext in _FEISHU_DOC_UPLOAD_TYPES:
             return _FEISHU_DOC_UPLOAD_TYPES[ext], "file"
-
-        if requested_message_type == "file":
-            return _FEISHU_FILE_UPLOAD_TYPE, "file"
-
         return _FEISHU_FILE_UPLOAD_TYPE, "file"
 
 
-# =============================================================================
-# QR scan-to-create onboarding
-#
-# Device-code flow: user scans a QR code with Feishu/Lark mobile app and the
-# platform creates a fully configured bot application automatically.
-# Called by `hermes gateway setup` via _setup_feishu() in hermes_cli/gateway.py.
-# =============================================================================
+# --- QR scan-to-create onboarding (device-code flow; Feishu creates a configured bot app) ---
 
 
 def _accounts_base_url(domain: str) -> str:
@@ -5291,15 +3898,11 @@ def _onboard_open_base_url(domain: str) -> str:
 
 
 def _post_registration(base_url: str, body: Dict[str, str]) -> dict:
-    """POST form-encoded data to the registration endpoint, return parsed JSON.
-
-    The registration endpoint returns JSON even on 4xx (e.g. poll returns
-    authorization_pending as a 400). We always parse the body regardless of
-    HTTP status.
-    """
-    url = f"{base_url}{_REGISTRATION_PATH}"
-    data = urlencode(body).encode("utf-8")
-    req = Request(url, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
+    """POST form data to the registration endpoint; parse JSON even on 4xx (poll's pending is a 400)."""
+    req = Request(
+        f"{base_url}{_REGISTRATION_PATH}", data=urlencode(body).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
     try:
         with urlopen(req, timeout=_ONBOARD_REQUEST_TIMEOUT_S) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -5314,12 +3917,8 @@ def _post_registration(base_url: str, body: Dict[str, str]) -> dict:
 
 
 def _init_registration(domain: str = "feishu") -> None:
-    """Verify the environment supports client_secret auth.
-
-    Raises RuntimeError if not supported.
-    """
-    base_url = _accounts_base_url(domain)
-    res = _post_registration(base_url, {"action": "init"})
+    """Raise RuntimeError unless the registration environment supports client_secret auth."""
+    res = _post_registration(_accounts_base_url(domain), {"action": "init"})
     methods = res.get("supported_auth_methods") or []
     if "client_secret" not in methods:
         raise RuntimeError(
@@ -5330,55 +3929,31 @@ def _init_registration(domain: str = "feishu") -> None:
 
 def _begin_registration(domain: str = "feishu") -> dict:
     """Start the device-code flow. Returns device_code, qr_url, user_code, interval, expire_in."""
-    base_url = _accounts_base_url(domain)
-    res = _post_registration(base_url, {
-        "action": "begin",
-        "archetype": "PersonalAgent",
-        "auth_method": "client_secret",
-        "request_user_info": "open_id",
+    res = _post_registration(_accounts_base_url(domain), {
+        "action": "begin", "archetype": "PersonalAgent", "auth_method": "client_secret", "request_user_info": "open_id",
     })
     device_code = res.get("device_code")
     if not device_code:
         raise RuntimeError("Feishu / Lark registration did not return a device_code")
     qr_url = res.get("verification_uri_complete", "")
-    if "?" in qr_url:
-        qr_url += "&from=hermes&tp=hermes"
-    else:
-        qr_url += "?from=hermes&tp=hermes"
+    qr_url += ("&" if "?" in qr_url else "?") + "from=hermes&tp=hermes"
     return {
-        "device_code": device_code,
-        "qr_url": qr_url,
-        "user_code": res.get("user_code", ""),
-        "interval": res.get("interval") or 5,
-        "expire_in": res.get("expire_in") or 600,
+        "device_code": device_code, "qr_url": qr_url, "user_code": res.get("user_code", ""),
+        "interval": res.get("interval") or 5, "expire_in": res.get("expire_in") or 600,
     }
 
 
-def _poll_registration(
-    *,
-    device_code: str,
-    interval: int,
-    expire_in: int,
-    domain: str = "feishu",
-) -> Optional[dict]:
-    """Poll until the user scans the QR code, or timeout/denial.
-
-    Returns dict with app_id, app_secret, domain, open_id on success.
-    Returns None on failure.
-    """
+def _poll_registration(*, device_code: str, interval: int, expire_in: int, domain: str = "feishu") -> Optional[dict]:
+    """Poll until scan (→ {app_id, app_secret, domain, open_id}), or None on denial/timeout."""
     deadline = time.monotonic() + expire_in
     current_domain = domain
     domain_switched = False
     poll_count = 0
 
     while time.monotonic() < deadline:
-        base_url = _accounts_base_url(current_domain)
         try:
-            res = _post_registration(base_url, {
-                "action": "poll",
-                "device_code": device_code,
-                "tp": "ob_app",
-            })
+            body = {"action": "poll", "device_code": device_code, "tp": "ob_app"}
+            res = _post_registration(_accounts_base_url(current_domain), body)
         except (URLError, OSError, json.JSONDecodeError):
             time.sleep(interval)
             continue
@@ -5389,35 +3964,26 @@ def _poll_registration(
         elif poll_count % 6 == 0:
             print(".", end="", flush=True)
 
-        # Domain auto-detection
+        # Domain auto-detection; fall through — this same response may carry credentials.
         user_info = res.get("user_info") or {}
-        tenant_brand = user_info.get("tenant_brand")
-        if tenant_brand == "lark" and not domain_switched:
+        if user_info.get("tenant_brand") == "lark" and not domain_switched:
             current_domain = "lark"
             domain_switched = True
-            # Fall through — server may return credentials in this same response.
-
-        # Success
         if res.get("client_id") and res.get("client_secret"):
             if poll_count > 0:
                 print()  # newline after "Fetching configuration results..." dots
             return {
-                "app_id": res["client_id"],
-                "app_secret": res["client_secret"],
-                "domain": current_domain,
+                "app_id": res["client_id"], "app_secret": res["client_secret"], "domain": current_domain,
                 "open_id": user_info.get("open_id"),
             }
 
-        # Terminal errors
         error = res.get("error", "")
         if error in {"access_denied", "expired_token"}:
             if poll_count > 0:
                 print()
             logger.warning("[Feishu onboard] Registration %s", error)
             return None
-
-        # authorization_pending or unknown — keep polling
-        time.sleep(interval)
+        time.sleep(interval)  # authorization_pending or unknown — keep polling
 
     if poll_count > 0:
         print()
@@ -5446,33 +4012,18 @@ def _render_qr(url: str) -> bool:
 
 
 def probe_bot(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
-    """Verify bot connectivity via /open-apis/bot/v3/info.
+    """Probe /open-apis/bot/v3/info → {"bot_name", "bot_open_id"} (app-scoped open_id, NOT app_id) or None.
 
-    Uses lark_oapi SDK when available, falls back to raw HTTP otherwise.
-    Returns {"bot_name": ..., "bot_open_id": ...} on success, None on failure.
-
-    Note: ``bot_open_id`` here is the bot's app-scoped open_id — the same ID
-    that Feishu puts in @mention payloads.  It is NOT the app_id.
+    Onboarding runs before connect(), so load the SDK here instead of always falling back to HTTP.
     """
-    # The SDK import is deferred until connect(); onboarding runs before any
-    # connect, so load it here to keep the SDK probe path reachable rather
-    # than silently degrading every setup run to the HTTP fallback.
     if _load_lark_oapi():
         return _probe_bot_sdk(app_id, app_secret, domain)
     return _probe_bot_http(app_id, app_secret, domain)
 
 
 def _build_onboard_client(app_id: str, app_secret: str, domain: str) -> Any:
-    """Build a lark Client for the given credentials and domain."""
-    sdk_domain = LARK_DOMAIN if domain == "lark" else FEISHU_DOMAIN
-    return (
-        lark.Client.builder()
-        .app_id(app_id)
-        .app_secret(app_secret)
-        .domain(sdk_domain)
-        .log_level(lark.LogLevel.WARNING)
-        .build()
-    )
+    """Build a lark Client for the given credentials and domain name ("feishu"/"lark")."""
+    return _build_lark_client(app_id, app_secret, _sdk_domain(domain))
 
 
 def _parse_bot_response(data: dict) -> Optional[dict]:
@@ -5489,19 +4040,9 @@ def _parse_bot_response(data: dict) -> Optional[dict]:
 def _probe_bot_sdk(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
     """Probe bot info using lark_oapi SDK."""
     try:
-        client = _build_onboard_client(app_id, app_secret, domain)
-        req = (
-            BaseRequest.builder()
-            .http_method(HttpMethod.GET)
-            .uri("/open-apis/bot/v3/info")
-            .token_types({AccessTokenType.TENANT})
-            .build()
-        )
-        resp = client.request(req)
+        resp = _build_onboard_client(app_id, app_secret, domain).request(_tenant_get_request("/open-apis/bot/v3/info"))
         content = getattr(getattr(resp, "raw", None), "content", None)
-        if content is None:
-            return None
-        return _parse_bot_response(json.loads(content))
+        return None if content is None else _parse_bot_response(json.loads(content))
     except Exception as exc:
         logger.debug("[Feishu onboard] SDK probe failed: %s", exc)
         return None
@@ -5510,56 +4051,31 @@ def _probe_bot_sdk(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
 def _probe_bot_http(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
     """Fallback probe using raw HTTP (when lark_oapi is not installed)."""
     base_url = _onboard_open_base_url(domain)
-    try:
-        token_data = json.dumps({"app_id": app_id, "app_secret": app_secret}).encode("utf-8")
-        token_req = Request(
-            f"{base_url}/open-apis/auth/v3/tenant_access_token/internal",
-            data=token_data,
-            headers={"Content-Type": "application/json"},
-        )
-        with urlopen(token_req, timeout=_ONBOARD_REQUEST_TIMEOUT_S) as resp:
-            token_res = json.loads(resp.read().decode("utf-8"))
 
+    def _get_json(path: str, *, data: Optional[bytes] = None, extra_headers: Optional[Dict[str, str]] = None) -> dict:
+        headers = {**(extra_headers or {}), "Content-Type": "application/json"}
+        with urlopen(Request(f"{base_url}{path}", data=data, headers=headers), timeout=_ONBOARD_REQUEST_TIMEOUT_S) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    try:
+        token_res = _get_json(
+            "/open-apis/auth/v3/tenant_access_token/internal",
+            data=json.dumps({"app_id": app_id, "app_secret": app_secret}).encode("utf-8"),
+        )
         access_token = token_res.get("tenant_access_token")
         if not access_token:
             return None
-
-        bot_req = Request(
-            f"{base_url}/open-apis/bot/v3/info",
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json",
-            },
-        )
-        with urlopen(bot_req, timeout=_ONBOARD_REQUEST_TIMEOUT_S) as resp:
-            bot_res = json.loads(resp.read().decode("utf-8"))
-
+        bot_res = _get_json("/open-apis/bot/v3/info", extra_headers={"Authorization": f"Bearer {access_token}"})
         return _parse_bot_response(bot_res)
     except (URLError, OSError, KeyError, json.JSONDecodeError) as exc:
         logger.debug("[Feishu onboard] HTTP probe failed: %s", exc)
         return None
 
 
-def qr_register(
-    *,
-    initial_domain: str = "feishu",
-    timeout_seconds: int = 600,
-) -> Optional[dict]:
-    """Run the Feishu / Lark scan-to-create QR registration flow.
+def qr_register(*, initial_domain: str = "feishu", timeout_seconds: int = 600) -> Optional[dict]:
+    """Scan-to-create flow → {app_id, app_secret, domain, open_id, bot_name, bot_open_id}.
 
-    Returns on success::
-
-        {
-            "app_id": str,
-            "app_secret": str,
-            "domain": "feishu" | "lark",
-            "open_id": str | None,
-            "bot_name": str | None,
-            "bot_open_id": str | None,
-        }
-
-    Returns None on expected failures (network, auth denied, timeout).
-    Unexpected errors (bugs, protocol regressions) propagate to the caller.
+    None on expected failures (network, denied, timeout); unexpected errors propagate.
     """
     try:
         return _qr_register_inner(initial_domain=initial_domain, timeout_seconds=timeout_seconds)
@@ -5568,17 +4084,12 @@ def qr_register(
         return None
 
 
-def _qr_register_inner(
-    *,
-    initial_domain: str,
-    timeout_seconds: int,
-) -> Optional[dict]:
+def _qr_register_inner(*, initial_domain: str, timeout_seconds: int) -> Optional[dict]:
     """Run init → begin → poll → probe. Raises on network/protocol errors."""
     print("  Connecting to Feishu / Lark...", end="", flush=True)
     _init_registration(initial_domain)
     begin = _begin_registration(initial_domain)
     print(" done.")
-
     print()
     qr_url = begin["qr_url"]
     if _render_qr(qr_url):
@@ -5587,127 +4098,73 @@ def _qr_register_inner(
         print(f"  Open this URL in Feishu / Lark on your phone:\n\n  {qr_url}\n")
         print("  Tip: pip install qrcode  to display a scannable QR code here next time")
     print()
-
     result = _poll_registration(
-        device_code=begin["device_code"],
-        interval=begin["interval"],
-        expire_in=min(begin["expire_in"], timeout_seconds),
-        domain=initial_domain,
+        device_code=begin["device_code"], interval=begin["interval"],
+        expire_in=min(begin["expire_in"], timeout_seconds), domain=initial_domain,
     )
     if not result:
         return None
-
-    # Probe bot — best-effort, don't fail the registration
-    bot_info = probe_bot(result["app_id"], result["app_secret"], result["domain"])
-    if bot_info:
-        result["bot_name"] = bot_info.get("bot_name")
-        result["bot_open_id"] = bot_info.get("bot_open_id")
-    else:
-        result["bot_name"] = None
-        result["bot_open_id"] = None
-
+    bot_info = probe_bot(result["app_id"], result["app_secret"], result["domain"]) or {}  # best-effort
+    result["bot_name"] = bot_info.get("bot_name")
+    result["bot_open_id"] = bot_info.get("bot_open_id")
     return result
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Plugin migration glue (#41112 / #3823)
-#
-# Added when the Feishu adapter (+ its feishu_comment / feishu_comment_rules /
-# feishu_meeting_invite satellites) moved from gateway/platforms/ into this
-# bundled plugin. Mirrors the Discord (#24356) / Slack migrations: a
-# register(ctx) entry point plus hook implementations that replace the
-# per-platform core touchpoints (the Platform.FEISHU elif in gateway/run.py,
-# the feishu_cfg YAML→env block + _PLATFORM_CONNECTED_CHECKERS entry in
-# gateway/config.py, the _setup_feishu wizard + _PLATFORMS["feishu"] static
-# dict in hermes_cli/gateway.py, and the _send_feishu dispatch in
-# tools/send_message_tool.py).
-# ──────────────────────────────────────────────────────────────────────────
+# --- Plugin glue: register(ctx) + the hook fns that replaced the per-platform core touchpoints ---
 
+# ────────────────────────────────────────────────────────────────────────── Plugin migration glue (#41112 /
+# #3823) Added when the Feishu adapter (+ its feishu_comment / feishu_comment_rules / feishu_meeting_invite
+# satellites) moved from gateway/platforms/ into this bundled plugin. Mirrors the Discord (#24356) / Slack
+# migrations: a register(ctx) entry point plus hook implementations that replace the per-platform core
+# touchpoints (the Platform.FEISHU elif in gateway/run.py, the feishu_cfg YAML→env block +
+# _PLATFORM_CONNECTED_CHECKERS entry in gateway/config.py, the _setup_feishu wizard + _PLATFORMS["feishu"]
+# static dict in hermes_cli/gateway.py, and the _send_feishu dispatch in tools/send_message_tool.py).
+# ──────────────────────────────────────────────────────────────────────────
 _MIGRATION_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _MIGRATION_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _MIGRATION_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
-_MIGRATION_VOICE_EXTS = {".ogg", ".opus"}
 
 
-async def _standalone_send(
-    pconfig,
-    chat_id,
-    message,
-    *,
-    thread_id=None,
-    media_files=None,
-    force_document=False,
-):
-    """Out-of-process Feishu/Lark delivery via the adapter's send pipeline.
-
-    Implements the standalone_sender_fn contract so deliver=feishu cron jobs
-    succeed when cron runs separately from the gateway. Builds a transient
-    FeishuAdapter, hydrates its lark client, and sends text + native media
-    (images, video, voice, documents). Replaces the legacy _send_feishu helper.
-    """
+async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
+    """standalone_sender_fn: out-of-process delivery (cron without gateway) via a transient adapter."""
     if not await asyncio.to_thread(_load_lark_oapi):
         return {"error": "Feishu dependencies not installed. Run `hermes setup` to install Feishu support."}
-
-    media_files = media_files or []
     try:
         adapter = FeishuAdapter(pconfig)
-        domain_name = getattr(adapter, "_domain_name", "feishu")
-        domain = FEISHU_DOMAIN if domain_name != "lark" else LARK_DOMAIN
-        adapter._client = adapter._build_lark_client(domain)
+        adapter._client = adapter._build_lark_client(_sdk_domain(getattr(adapter, "_domain_name", "feishu")))
         metadata = {"thread_id": thread_id} if thread_id else None
-
         last_result = None
         if message.strip():
             last_result = await adapter.send(chat_id, message, metadata=metadata)
             if not last_result.success:
                 return {"error": f"Feishu send failed: {last_result.error}"}
-
-        for media_path, is_voice in media_files:
+        for media_path, _is_voice in media_files or []:
             if not os.path.exists(media_path):
                 return {"error": f"Media file not found: {media_path}"}
             ext = os.path.splitext(media_path)[1].lower()
             if ext in _MIGRATION_IMAGE_EXTS:
-                last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
+                sender = adapter.send_image_file
             elif ext in _MIGRATION_VIDEO_EXTS:
-                last_result = await adapter.send_video(chat_id, media_path, metadata=metadata)
-            elif ext in _MIGRATION_VOICE_EXTS and is_voice:
-                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
-            elif ext in _MIGRATION_AUDIO_EXTS:
-                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+                sender = adapter.send_video
+            elif ext in _MIGRATION_AUDIO_EXTS:  # voice + non-voice audio both go out as voice
+                sender = adapter.send_voice
             else:
-                last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
+                sender = adapter.send_document
+            last_result = await sender(chat_id, media_path, metadata=metadata)
             if not last_result.success:
                 return {"error": f"Feishu media send failed: {last_result.error}"}
-
         if last_result is None:
             return {"error": "No deliverable text or media remained after processing MEDIA tags"}
-        return {
-            "success": True,
-            "platform": "feishu",
-            "chat_id": chat_id,
-            "message_id": last_result.message_id,
-        }
+        return {"success": True, "platform": "feishu", "chat_id": chat_id, "message_id": last_result.message_id}
     except Exception as e:
         return {"error": f"Feishu send failed: {e}"}
 
 
 def interactive_setup() -> None:
-    """Interactive setup for Feishu / Lark — scan-to-create or manual creds.
-
-    Replaces the central _setup_feishu in hermes_cli/gateway.py and the static
-    _PLATFORMS["feishu"] dict. CLI helpers are lazy-imported.
-    """
+    """Interactive setup for Feishu / Lark — scan-to-create or manual creds (CLI helpers lazy-imported)."""
     from hermes_cli.config import get_env_value, remove_env_value, save_env_value
     from hermes_cli.setup import prompt_choice
-    from hermes_cli.cli_output import (
-        prompt,
-        prompt_yes_no,
-        print_header,
-        print_info,
-        print_success,
-        print_warning,
-        print_error,
-    )
+    from hermes_cli.cli_output import prompt, prompt_yes_no, print_header, print_info, print_success, print_warning
 
     print_header("Feishu / Lark")
     existing_app_id = get_env_value("FEISHU_APP_ID")
@@ -5719,16 +4176,10 @@ def interactive_setup() -> None:
 
     method_idx = prompt_choice(
         "How would you like to set up Feishu / Lark?",
-        [
-            "Scan QR code to create a new bot automatically (recommended)",
-            "Enter existing App ID and App Secret manually",
-        ],
+        ["Scan QR code to create a new bot automatically (recommended)", "Enter existing App ID and App Secret manually"],
         0,
     )
-
     credentials = None
-    used_qr = False
-
     if method_idx == 0:
         try:
             credentials = qr_register()
@@ -5737,10 +4188,9 @@ def interactive_setup() -> None:
             return
         except Exception as exc:
             print_warning(f"QR registration failed: {exc}")
-        if credentials:
-            used_qr = True
-        else:
+        if not credentials:
             print_info("QR setup did not complete. Continuing with manual input.")
+    used_qr = bool(credentials)
 
     if not credentials:
         print_info("Go to https://open.feishu.cn/ (or https://open.larksuite.com/ for Lark)")
@@ -5753,9 +4203,7 @@ def interactive_setup() -> None:
         if not app_secret:
             print_warning("Skipped — Feishu / Lark won't work without an App Secret.")
             return
-        domain_idx = prompt_choice("Domain", ["feishu (China)", "lark (International)"], 0)
-        domain = "lark" if domain_idx == 1 else "feishu"
-
+        domain = "lark" if prompt_choice("Domain", ["feishu (China)", "lark (International)"], 0) == 1 else "feishu"
         bot_name = None
         try:
             bot_info = probe_bot(app_id, app_secret, domain)
@@ -5767,20 +4215,11 @@ def interactive_setup() -> None:
         except Exception as exc:
             print_warning(f"Credential verification skipped: {exc}")
 
-        credentials = {
-            "app_id": app_id,
-            "app_secret": app_secret,
-            "domain": domain,
-            "open_id": None,
-            "bot_name": bot_name,
-        }
+        credentials = {"app_id": app_id, "app_secret": app_secret, "domain": domain, "open_id": None, "bot_name": bot_name}
 
-    app_id = credentials["app_id"]
-    app_secret = credentials["app_secret"]
+    app_id, app_secret = credentials["app_id"], credentials["app_secret"]
     domain = credentials.get("domain", "feishu")
-    open_id = credentials.get("open_id")
-    bot_name = credentials.get("bot_name")
-
+    open_id, bot_name = credentials.get("open_id"), credentials.get("bot_name")
     save_env_value("FEISHU_APP_ID", app_id)
     save_env_value("FEISHU_APP_SECRET", app_secret)
     save_env_value("FEISHU_DOMAIN", domain)
@@ -5790,10 +4229,7 @@ def interactive_setup() -> None:
     else:
         mode_idx = prompt_choice(
             "Connection mode",
-            [
-                "WebSocket (recommended — no public URL needed)",
-                "Webhook (requires a reachable HTTP endpoint)",
-            ],
+            ["WebSocket (recommended — no public URL needed)", "Webhook (requires a reachable HTTP endpoint)"],
             0,
         )
         connection_mode = "webhook" if mode_idx == 1 else "websocket"
@@ -5808,57 +4244,36 @@ def interactive_setup() -> None:
 
     access_idx = prompt_choice(
         "How should direct messages be authorized?",
-        [
-            "Use DM pairing approval (recommended)",
-            "Allow all direct messages",
-            "Only allow listed user IDs",
-        ],
+        ["Use DM pairing approval (recommended)", "Allow all direct messages", "Only allow listed user IDs"],
         0,
     )
-    if access_idx == 0:
-        save_env_value("FEISHU_ALLOW_ALL_USERS", "false")
-        save_env_value("FEISHU_ALLOWED_USERS", "")
-        print_success("DM pairing enabled.")
-        print_info("Unknown users can request access; approve with `hermes pairing approve`.")
-    elif access_idx == 1:
-        save_env_value("FEISHU_ALLOW_ALL_USERS", "true")
-        save_env_value("FEISHU_ALLOWED_USERS", "")
-        print_warning("Open DM access enabled for Feishu / Lark.")
-    else:
-        save_env_value("FEISHU_ALLOW_ALL_USERS", "false")
-        default_allow = open_id or ""
-        allowlist = prompt(
-            "Allowed user IDs (comma-separated)", default_allow, password=False
-        ).replace(" ", "")
+    save_env_value("FEISHU_ALLOW_ALL_USERS", "true" if access_idx == 1 else "false")
+    if access_idx == 2:
+        allowlist = prompt("Allowed user IDs (comma-separated)", open_id or "", password=False).replace(" ", "")
         save_env_value("FEISHU_ALLOWED_USERS", allowlist)
         print_success("Allowlist saved.")
+    else:
+        save_env_value("FEISHU_ALLOWED_USERS", "")
+        if access_idx == 0:
+            print_success("DM pairing enabled.")
+            print_info("Unknown users can request access; approve with `hermes pairing approve`.")
+        else:
+            print_warning("Open DM access enabled for Feishu / Lark.")
 
     group_idx = prompt_choice(
         "How should group chats be handled?",
-        [
-            "Respond only when @mentioned in groups (recommended)",
-            "Disable group chats",
-        ],
-        0,
+        ["Respond only when @mentioned in groups (recommended)", "Disable group chats"], 0,
     )
-    if group_idx == 0:
-        save_env_value("FEISHU_GROUP_POLICY", "open")
-        print_info("Group chats enabled (bot must be @mentioned).")
-    else:
-        save_env_value("FEISHU_GROUP_POLICY", "disabled")
-        print_info("Group chats disabled.")
+    save_env_value("FEISHU_GROUP_POLICY", "open" if group_idx == 0 else "disabled")
+    print_info("Group chats enabled (bot must be @mentioned)." if group_idx == 0 else "Group chats disabled.")
 
-    print_info(
-        "Leave blank to clear a previously saved home channel "
-        "(cron / notifications)."
-    )
+    print_info("Leave blank to clear a previously saved home channel (cron / notifications).")
     home_channel = prompt("Home chat ID (optional, for cron/notifications)", password=False).strip()
     if home_channel:
         save_env_value("FEISHU_HOME_CHANNEL", home_channel)
         print_success(f"Home channel set to {home_channel}")
-    else:
-        if remove_env_value("FEISHU_HOME_CHANNEL"):
-            print_info("Home channel cleared.")
+    elif remove_env_value("FEISHU_HOME_CHANNEL"):
+        print_info("Home channel cleared.")
 
     print_success("🪽 Feishu / Lark configured!")
     print_info(f"App ID: {app_id}")
@@ -5868,11 +4283,10 @@ def interactive_setup() -> None:
 
 
 def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
-    """Translate config.yaml feishu: keys into FEISHU_* env vars.
+    """apply_yaml_config_fn: bridge config.yaml feishu.allow_bots to FEISHU_ALLOW_BOTS (env wins); returns None.
 
-    Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy
-    feishu_cfg block from gateway/config.py::load_gateway_config() (allow_bots).
-    Env vars take precedence over YAML. Returns None — flows through env.
+    Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy feishu_cfg block from
+    gateway/config.py::load_gateway_config() (allow_bots). Env vars take precedence over YAML.
     """
     if "allow_bots" in feishu_cfg and not os.getenv("FEISHU_ALLOW_BOTS"):
         os.environ["FEISHU_ALLOW_BOTS"] = str(feishu_cfg["allow_bots"]).lower()
@@ -5880,8 +4294,7 @@ def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
 
 
 def _is_connected(config) -> bool:
-    """Feishu is connected when app_id is configured. Mirrors the legacy
-    _PLATFORM_CONNECTED_CHECKERS[Platform.FEISHU] = lambda cfg: bool(app_id)."""
+    """Feishu counts as connected once app_id is configured."""
     extra = getattr(config, "extra", {}) or {}
     return bool(extra.get("app_id"))
 
@@ -5894,22 +4307,13 @@ def _build_adapter(config):
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
     ctx.register_platform(
-        name="feishu",
-        label="Feishu / Lark",
-        adapter_factory=_build_adapter,
-        check_fn=feishu_deps_present,
-        ensure_deps_fn=check_feishu_requirements,
-        is_connected=_is_connected,
-        validate_config=_is_connected,
+        name="feishu", label="Feishu / Lark", adapter_factory=_build_adapter,
+        check_fn=feishu_deps_present, ensure_deps_fn=check_feishu_requirements,
+        is_connected=_is_connected, validate_config=_is_connected,
         required_env=["FEISHU_APP_ID", "FEISHU_APP_SECRET"],
-        install_hint="Run `hermes setup` to install Feishu support.",
-        setup_fn=interactive_setup,
-        apply_yaml_config_fn=_apply_yaml_config,
-        allowed_users_env="FEISHU_ALLOWED_USERS",
-        allow_all_env="FEISHU_ALLOW_ALL_USERS",
-        cron_deliver_env_var="FEISHU_HOME_CHANNEL",
-        standalone_sender_fn=_standalone_send,
-        max_message_length=8000,
-        emoji="🪽",
+        install_hint="Run `hermes setup` to install Feishu support.", setup_fn=interactive_setup,
+        apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="FEISHU_ALLOWED_USERS",
+        allow_all_env="FEISHU_ALLOW_ALL_USERS", cron_deliver_env_var="FEISHU_HOME_CHANNEL",
+        standalone_sender_fn=_standalone_send, max_message_length=8000, emoji="🪽",
         allow_update_command=True,
     )

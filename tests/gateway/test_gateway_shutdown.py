@@ -7,9 +7,10 @@ import pytest
 import gateway.run as gateway_run
 from gateway.config import HomeChannel, Platform
 from gateway.platforms.base import MessageEvent
-from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+from gateway.restart import DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE
 from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
+from tools import browser_tool_lifecycle as bt_lifecycle
 
 
 @pytest.mark.asyncio
@@ -217,7 +218,7 @@ def test_post_interrupt_grace_tolerates_duck_typed_runner():
 
     assert (
         gateway_run.GatewayRunner._post_interrupt_grace_timeout(runner)
-        == gateway_run.DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT
+        == DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT
     )
 
 @pytest.mark.asyncio
@@ -272,10 +273,11 @@ async def test_gateway_stop_kills_tool_subprocesses_before_adapter_disconnect_on
     # Patch the module-level names the stop() helper imports lazily.
     import tools.process_registry as _pr
     import tools.terminal_tool as _tt
-    import tools.browser_tool as _bt
+    import tools.terminal_tool_lifecycle as terminal_tool_lifecycle
     monkeypatch.setattr(_pr.process_registry, "kill_all", _fake_kill_all)
     monkeypatch.setattr(_tt, "cleanup_all_environments", _fake_cleanup_envs)
-    monkeypatch.setattr(_bt, "cleanup_all_browsers", _fake_cleanup_browsers)
+    monkeypatch.setattr(terminal_tool_lifecycle, "cleanup_all_environments", _fake_cleanup_envs)
+    monkeypatch.setattr(bt_lifecycle, "cleanup_all_browsers", _fake_cleanup_browsers)
 
     adapter.disconnect = _disconnect
 
@@ -421,7 +423,7 @@ async def test_shutdown_mcp_servers_nonblocking_keeps_loop_responsive():
 
     hb = asyncio.create_task(heartbeat())
     try:
-        with patch("tools.mcp_tool.shutdown_mcp_servers", wedged_shutdown):
+        with patch("tools.mcp_tool_lifecycle.shutdown_mcp_servers", wedged_shutdown):
             done = await asyncio.wait_for(
                 gateway_run._shutdown_mcp_servers_nonblocking(timeout=0.5),
                 timeout=5,
@@ -438,7 +440,7 @@ async def test_shutdown_mcp_servers_nonblocking_keeps_loop_responsive():
 @pytest.mark.asyncio
 async def test_shutdown_mcp_servers_nonblocking_completes_fast_path():
     calls = []
-    with patch("tools.mcp_tool.shutdown_mcp_servers", lambda: calls.append(1)):
+    with patch("tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda: calls.append(1)):
         done = await gateway_run._shutdown_mcp_servers_nonblocking(timeout=5)
     assert done is True
     assert calls == [1]

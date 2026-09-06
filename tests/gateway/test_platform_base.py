@@ -678,6 +678,34 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(artifact)) == str(artifact.resolve())
 
+    def test_denylist_blocks_session_stores_but_not_neighbouring_artifacts(self, tmp_path, monkeypatch):
+        """The SQLite session/kanban stores (and WAL/SHM sidecars, whose mtime is always fresh),
+        legacy ``sessions/`` transcripts and the copied browser cookie store hold every secret ever
+        pasted into a chat; ``MEDIA:~/.hermes/state.db`` must not exfiltrate them (#41071). Named
+        boards keep their DB beside the ATTACHMENTS the gateway already allowlists, so the board
+        attachment stays deliverable while ``kanban.db`` next to it does not."""
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        hermes_dir.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+        board = hermes_dir / "kanban" / "boards" / "team-a"
+        (board / "attachments").mkdir(parents=True)
+
+        denied = ["state.db", "state.db-wal", "state.db-shm", "kanban.db", "kanban.db-wal",
+                  "sessions/20260101_abc.json", "browser-profile/Default/Cookies",
+                  "kanban/boards/team-a/kanban.db", "kanban/boards/team-a/kanban.db-wal"]
+        allowed = ["kanban/boards/team-a/attachments/report.pdf", "adhoc_report.pdf", "logs/agent.log"]
+        for rel in denied + allowed:
+            path = hermes_dir / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"SQLite format 3\x00")
+        assert [rel for rel in denied if BasePlatformAdapter.validate_media_delivery_path(str(hermes_dir / rel))] == []
+        assert [rel for rel in allowed if not BasePlatformAdapter.validate_media_delivery_path(str(hermes_dir / rel))] == []
+
     def test_strict_mode_envvar_restores_legacy_behavior(self, tmp_path, monkeypatch):
         """Setting HERMES_MEDIA_DELIVERY_STRICT=1 reactivates the older
         allowlist+recency logic. A stale file outside the allowlist is
@@ -1222,8 +1250,15 @@ class TestMediaDeliveryDiagnosability:
             with caplog.at_level("WARNING"):
                 out = BasePlatformAdapter.filter_media_delivery_paths([(str(outside), False)])
         assert out == []
-        # The dropped path must be in the log so operators can diagnose it.
-        assert str(outside) in caplog.text
+        # The dropped path must be in the log so operators can diagnose it, with the REASON: a policy
+        # rejection reads differently from a path that simply does not exist (#100074).
+        assert str(outside) in caplog.text and "denied by the delivery policy" in caplog.text
+
+    def test_missing_file_is_logged_as_not_found_not_unsafe(self, tmp_path, caplog):
+        ghost = tmp_path / "never-written.pdf"
+        with caplog.at_level("WARNING"):
+            assert BasePlatformAdapter.filter_media_delivery_paths([(str(ghost), False)]) == []
+        assert "not found on this host" in caplog.text and "unsafe" not in caplog.text
 
     def test_crafted_null_path_does_not_abort_batch(self, tmp_path, monkeypatch):
         """One crafted ~\\x00 path must not drop every other attachment."""
@@ -1336,7 +1371,8 @@ class TestDockerProfileSandboxMediaTranslation:
 
     @staticmethod
     def _sandbox_dir(task_id: str = "default"):
-        from tools.environments.base import get_sandbox_dir, sanitize_task_id_for_path
+        from tools.environments.base import get_sandbox_dir
+        from tools.environments.path_utils import sanitize_task_id_for_path
 
         name = task_id if task_id == "default" else sanitize_task_id_for_path(task_id)
         return get_sandbox_dir() / "docker" / name

@@ -231,7 +231,71 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
 }
 
 const GROUP_TURN_TIMEOUT_MS = 180000
-const GROUP_TURN_POLL_MS = 2000
+// Backstop cadence only. The turn normally wakes the instant the member's
+// session emits its terminal frame (message.complete / error) via host.onEvent;
+// this poll exists for hosts without the event tap, sessions whose events
+// ride a socket this window doesn't hold, and frames lost to a reconnect.
+const GROUP_TURN_POLL_MS = 5000
+const GROUP_TURN_SETTLE_RECHECK_MS = 250
+const GROUP_TURN_SETTLE_RECHECKS = 8
+
+/** Resolve as soon as the member's session reports a terminal frame for the
+ *  turn — or after `ms` as the backstop. Feature-detected: without
+ *  `host.onEvent` (older shells, the node test harness) this is a plain sleep.
+ *  `error` is terminal too (agent init failed → no message.complete follows). */
+function waitForTurnSignal(runtimeIds: string[], ms: number): Promise<boolean> {
+  const ids = new Set(runtimeIds.filter(id => id.length > 0))
+
+  return new Promise(resolve => {
+    const unsubs: Array<() => void> = []
+    let timer: null | ReturnType<typeof setTimeout> = null
+    let settled = false
+
+    const done = (signalled: boolean) => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+
+      if (timer !== null) {
+        clearTimeout(timer)
+      }
+
+      for (const unsub of unsubs) {
+        try {
+          unsub()
+        } catch {
+          /* disposer already ran */
+        }
+      }
+
+      resolve(signalled)
+    }
+
+    // (The test harness runs timers inline — `done` may already have fired
+    // by the time this assignment lands, hence the `settled` guard below.)
+    timer = setTimeout(() => done(false), ms)
+
+    if (settled || typeof host.onEvent !== 'function' || !ids.size) {
+      return
+    }
+
+    for (const type of ['message.complete', 'error']) {
+      try {
+        unsubs.push(
+          host.onEvent(type, (event: { session_id?: string }) => {
+            if (ids.has(String(event?.session_id || ''))) {
+              done(true)
+            }
+          })
+        )
+      } catch {
+        /* event tap unavailable — the timer still resolves */
+      }
+    }
+  })
+}
 
 // --- group-turn session-lease helpers (#93602) ------------------------------
 // A member turn is a session-scoped RPC SEQUENCE (resume → attach → submit →
@@ -560,6 +624,9 @@ async function runGroupChatMemberTurnLeased(
 
   // Baseline: how many messages exist before our submit.
   let before = 0
+  // Every runtime id this turn has seen for the member's session. Terminal
+  // frames are keyed by runtime id, and a resume can hand back a fresh one.
+  const runtimeIds = new Set<string>([runtime])
 
   try {
     const pre = (await requestForBot(member, 'session.resume', {
@@ -568,6 +635,10 @@ async function runGroupChatMemberTurnLeased(
     })) as GroupSessionSnapshot
 
     before = Array.isArray(pre?.messages) ? pre.messages.length : pre?.message_count || 0
+
+    if (pre?.session_id) {
+      runtimeIds.add(pre.session_id)
+    }
   } catch {
     /* lazy session — zero messages */
   }
@@ -625,11 +696,20 @@ async function runGroupChatMemberTurnLeased(
   // minting and submitting. Tracks the runtime id the submit landed on so
   // the poll fallback below targets a live session.
   const liveRuntime = await submitGroupTurnPrompt(member, runtime, stored, turnText)
+  runtimeIds.add(liveRuntime)
   const started = Date.now()
   let deadline = started + GROUP_TURN_TIMEOUT_MS
+  // After the terminal frame fires, the gateway still has to flip
+  // session.running off in its turn `finally` — re-check quickly for a few
+  // beats instead of falling back to the slow backstop cadence.
+  let quickRechecks = 0
 
   while (Date.now() < deadline) {
-    await new Promise(resolve => setTimeout(resolve, GROUP_TURN_POLL_MS))
+    const signalled = quickRechecks
+      ? await waitForTurnSignal([], GROUP_TURN_SETTLE_RECHECK_MS)
+      : await waitForTurnSignal([...runtimeIds], GROUP_TURN_POLL_MS)
+
+    quickRechecks = signalled ? GROUP_TURN_SETTLE_RECHECKS : Math.max(0, quickRechecks - 1)
 
     // #91868/#94569: an explicit stop (stopGroupThread) bumped the epoch AND
     // held this member — the member's session was interrupted, so nothing is
@@ -652,6 +732,10 @@ async function runGroupChatMemberTurnLeased(
       })) as GroupSessionSnapshot
     } catch {
       continue
+    }
+
+    if (state?.session_id) {
+      runtimeIds.add(state.session_id)
     }
 
     const messages = Array.isArray(state?.messages) ? state.messages : []

@@ -408,7 +408,9 @@ def _parse_pre_kanban_complete(data: Dict[str, Any]) -> Optional[Dict[str, Any]]
     action = str(data.get("action") or data.get("decision") or "").strip().lower()
     if action == "block":
         return {"action": "block", "message": _block_message(data.get("message"), data.get("reason"))}
-    return None
+    # Preserve every JSON object so the completion boundary can reject an
+    # invalid policy decision instead of treating it as a no-op.
+    return data
 
 
 def _parse_pre_verify(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:

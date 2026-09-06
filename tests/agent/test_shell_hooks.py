@@ -49,6 +49,13 @@ class TestParseResponse:
         )
         assert r == {"action": "block", "message": "nope"}
 
+    def test_pre_kanban_invalid_decision_is_preserved_for_validation(self):
+        r = shell_hooks._parse_response(
+            "pre_kanban_complete",
+            '{"action": "blok"}',
+        )
+        assert r == {"action": "blok"}
+
 
 
     def test_empty_stdout_returns_none(self):

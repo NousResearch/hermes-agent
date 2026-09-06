@@ -908,13 +908,9 @@ export function normalizeConnectionInput(input: ConnectionInput, registry: Conne
 
     const entry: RegistryConnection = { id, kind: 'ssh', label, ...sshFields }
 
-    // Carry the adopted session-token envelope across edits. There is no
-    // auth-mode choice to invalidate it (ssh entries always authenticate with
-    // the per-serve token), and saveRegistryConnection already decided which
-    // envelope survives — resolvePersistedRemoteToken keeps the stored one
-    // when the editor sends no new value. Dropping it here made a plain label
-    // rename wipe the live backend's reuse credential and force the same
-    // reap-and-respawn loop as a cold read (#103795).
+    // Carry the adopted session-token envelope across edits (mirrors the remote
+    // branch): dropping it made a label rename wipe the backend's reuse
+    // credential and force the reap-and-respawn loop of #103795.
     if (input.token !== undefined) {
       entry.token = input.token
     }
@@ -1205,16 +1201,10 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
         const { mode: _mode, ...sshFields } = ssh
         Object.assign(clean, sshFields)
 
-        // The per-serve session token persistSshConnectionToken() adopted for
-        // this entry. normalizeSshConfig only describes the DIAL (host/user/
-        // port/key/remote paths), so without this line every cold read of
-        // connections.json silently dropped the token — it survived only in
-        // the mtime-keyed in-process cache. The next launch then dialed with
-        // an empty reuseToken, which fails remote-lifecycle's
-        // `Boolean(reuseToken)` reuse gate, so a HEALTHY owned backend was
-        // reaped and respawned on a new port while the renderer kept dialing
-        // the old token — a permanent 403 WS loop (#103795). Mirrors the
-        // remote/cloud branch above.
+        // normalizeSshConfig describes only the dial, so the token
+        // persistSshConnectionToken() adopted must be carried explicitly (as the
+        // remote/cloud branch does). Losing it on a cold read fails the
+        // remote-lifecycle reuse gate and reaps a healthy backend (#103795).
         if (entry.token !== undefined) {
           clean.token = entry.token
         }

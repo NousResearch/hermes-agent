@@ -2847,16 +2847,30 @@ _BUILTIN_SUBCOMMANDS = frozenset(
 )
 
 
+def _first_positional_from_argv(argv: list[str]) -> str | None:
+    """Return the first non-flag, non-flag-value token in *argv*.
+
+    Parametrized core of :func:`_first_positional_argv` (which calls this
+    with ``sys.argv[1:]``) — pulled out so ``gateway.status``'s live-process
+    scan can run the identical subcommand-detection logic against an
+    ARBITRARY other process's argv (read from ``/proc/<pid>/cmdline``), not
+    just the current process's own. Same caveats apply: does NOT fully
+    simulate argparse — unknown ``--foo=bar`` / ``--foo bar`` flags degrade
+    gracefully (``bar`` may be wrongly classified as a positional).
+    """
+    from hermes_cli._parser import command_argv
+
+    args = command_argv(argv)
+    return args[0] if args else None
+
+
 def _first_positional_argv() -> str | None:
     """First non-flag, non-flag-value token in ``sys.argv[1:]`` (skips values of known flags).
 
     Not a full argparse simulation: an unknown ``--foo bar`` may classify
     ``bar`` as positional, which at worst forces a one-time plugin discovery.
     """
-    from hermes_cli._parser import command_argv
-
-    args = command_argv(sys.argv[1:])
-    return args[0] if args else None
+    return _first_positional_from_argv(sys.argv[1:])
 
 
 def _plugin_cli_discovery_needed() -> bool:

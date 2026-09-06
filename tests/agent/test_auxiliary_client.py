@@ -4286,6 +4286,54 @@ class TestAuxUnhealthyCache:
         assert label == "fallback_chain[1](custom)"
         resolver.assert_called_once_with(local_entry)
 
+    def test_bare_named_custom_aliases_share_endpoint_quarantine(self):
+        """Bare registry aliases cannot retry a quarantined custom endpoint."""
+        from agent.auxiliary_client import _mark_provider_unhealthy, _try_configured_fallback_chain
+
+        hosted_url = "https://hosted.example/v1"
+        local_url = "http://127.0.0.1:8080/v1"
+        hosted_entry = {"provider": "mirror", "model": "hosted-model"}
+        local_entry = {"provider": "custom", "model": "local-model", "base_url": local_url}
+        local_client = MagicMock()
+        _mark_provider_unhealthy("custom:primary", base_url=hosted_url)
+
+        with patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value={"fallback_chain": [hosted_entry, local_entry]},
+        ), patch(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            side_effect=lambda name: (
+                {"name": "mirror", "base_url": hosted_url} if name == "mirror" else None
+            ),
+        ), patch(
+            "agent.auxiliary_client._resolve_fallback_entry",
+            return_value=(local_client, "local-model"),
+        ) as resolver:
+            client, model, label = _try_configured_fallback_chain(
+                "compression", "openrouter", reason="payment error"
+            )
+
+        assert (client, model, label) == (
+            local_client, "local-model", "fallback_chain[1](custom)",
+        )
+        resolver.assert_called_once_with(local_entry)
+
+    def test_bare_named_custom_main_route_honors_endpoint_quarantine(self):
+        """A bare named custom main route is skipped before client resolution."""
+        from agent.auxiliary_client import _mark_provider_unhealthy, _try_main_provider_route
+
+        hosted_url = "https://hosted.example/v1"
+        _mark_provider_unhealthy("custom:primary", base_url=hosted_url)
+
+        with patch(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            return_value={"name": "hosted", "base_url": hosted_url},
+        ), patch("agent.auxiliary_client.resolve_provider_client") as resolver:
+            routed = _try_main_provider_route("hosted", "hosted-model", "", "", "")
+
+        assert routed is None
+        resolver.assert_not_called()
+
 
 # ── auxiliary_max_tokens_param ──────────────────────────────────────────────
 

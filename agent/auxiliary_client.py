@@ -2903,8 +2903,8 @@ def _normalize_chain_label(provider: str) -> str:
 def _unhealthy_cache_key(provider: str, base_url: Optional[str] = None) -> Any:
     """Provider-wide key, or endpoint-specific key for an explicit custom endpoint."""
     label = _normalize_chain_label(provider)
-    endpoint = str(base_url or "").strip().lower().rstrip("/")
-    if endpoint and (label == "local/custom" or label.startswith("custom:")):
+    endpoint = _custom_health_base_url(provider, base_url).lower().rstrip("/")
+    if endpoint:
         return "custom-endpoint", endpoint
     return label
 
@@ -2912,18 +2912,18 @@ def _unhealthy_cache_key(provider: str, base_url: Optional[str] = None) -> Any:
 def _custom_health_base_url(provider: str, explicit_base_url: Optional[str] = None) -> str:
     """Return the concrete custom endpoint used to scope health and failed-route checks."""
     explicit = str(explicit_base_url or "").strip()
-    if explicit:
-        return explicit
     label = _normalize_chain_label(provider)
-    if label.startswith("custom:"):
-        with contextlib.suppress(ImportError):
-            from hermes_cli.runtime_provider import _get_named_custom_provider
-            entry = _get_named_custom_provider(provider)
-            if entry:
-                return str(entry.get("base_url") or "").strip()
-        return ""
     if label == "local/custom":
-        return _current_custom_base_url()
+        return explicit or _current_custom_base_url()
+    if label.startswith("custom:") and explicit:
+        return explicit
+    with contextlib.suppress(ImportError):
+        from hermes_cli.runtime_provider import _get_named_custom_provider, _resolves_to_custom
+        if _resolves_to_custom(label):
+            return explicit or _current_custom_base_url()
+        entry = _get_named_custom_provider(provider)
+        if entry:
+            return explicit or str(entry.get("base_url") or "").strip()
     return ""
 
 

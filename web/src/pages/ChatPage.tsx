@@ -39,6 +39,7 @@ import { latchChatActivation } from "@/lib/chat-activation";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import { createPtyCompositionForwarder } from "@/lib/pty-composition";
+import { shouldRestoreTerminalFocus } from "@/lib/pty-focus";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
 import {
   PTY_CONNECTING_TIMEOUT_MS,
@@ -1610,16 +1611,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       raf2 = requestAnimationFrame(() => {
         raf2 = 0;
         syncMetricsRef.current?.();
-        const host = hostRef.current;
         const active = typeof document !== "undefined"
           ? document.activeElement
           : null;
-        const focusIsElsewhereInChatPage =
-          active !== null &&
-          active !== document.body &&
-          host !== null &&
-          !host.contains(active);
-        if (!focusIsElsewhereInChatPage) {
+        if (shouldRestoreTerminalFocus(active, hostRef.current)) {
           termRef.current?.focus();
         }
       });
@@ -1628,6 +1623,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (raf1) cancelAnimationFrame(raf1);
       if (raf2) cancelAnimationFrame(raf2);
     };
+  }, [isActive]);
+
+  // Returning from another OS app (alt-tab to copy text, then back) lands
+  // browser focus on <body>, not on the xterm textarea, so the next Ctrl+V
+  // goes nowhere. Pull focus back into the terminal under the same
+  // ownership rule as tab activation above. This listener must not touch
+  // the PTY connection — the resume/reconnect path is separate.
+  useEffect(() => {
+    if (!isActive || typeof window === "undefined") return;
+    const onWindowFocus = () => {
+      if (shouldRestoreTerminalFocus(document.activeElement, hostRef.current)) {
+        termRef.current?.focus();
+      }
+    };
+    window.addEventListener("focus", onWindowFocus);
+    return () => window.removeEventListener("focus", onWindowFocus);
   }, [isActive]);
 
   const maybeReconnectOnPageResume = useCallback(() => {

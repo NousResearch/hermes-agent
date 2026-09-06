@@ -32,6 +32,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from hermes_cli.web_server import _SESSION_TOKEN, app
+import hermes_cli.web_routers.oauth as _rt_oauth
+import hermes_cli.web_server_oauth as _web_server_oauth
 
 client = TestClient(app)
 HEADERS = {"X-Hermes-Session-Token": _SESSION_TOKEN}
@@ -87,7 +89,7 @@ def test_minimax_login_does_not_launch_anthropic_flow():
         "hermes_cli.auth._minimax_pkce_pair",
         return_value=("verifier-stub", "challenge-stub", "stub-state"),
     ), patch(
-        "hermes_cli.web_server._minimax_poller",
+        "hermes_cli.web_server_oauth._minimax_poller",
         return_value=None,
     ):
         resp = client.post(
@@ -131,7 +133,7 @@ def test_oauth_provider_status_uses_profile_query(tmp_path, monkeypatch):
         "docs_url": "https://example.com",
         "status_fn": fake_status,
     },)
-    monkeypatch.setattr(ws, "_OAUTH_PROVIDER_CATALOG", fake_catalog)
+    monkeypatch.setattr(_web_server_oauth, "_OAUTH_PROVIDER_CATALOG", fake_catalog)
 
     resp = client.get("/api/providers/oauth?profile=coder", headers=HEADERS)
 
@@ -157,7 +159,7 @@ def test_oauth_start_stores_profile_for_background_completion(tmp_path, monkeypa
         "hermes_cli.auth._minimax_pkce_pair",
         return_value=("verifier-stub", "challenge-stub", "stub-state"),
     ), patch(
-        "hermes_cli.web_server._minimax_poller",
+        "hermes_cli.web_server_oauth._minimax_poller",
         return_value=None,
     ):
         resp = client.post(
@@ -168,9 +170,9 @@ def test_oauth_start_stores_profile_for_background_completion(tmp_path, monkeypa
     assert resp.status_code == 200, resp.text
     session_id = resp.json()["session_id"]
     try:
-        assert ws._oauth_sessions[session_id]["profile"] == "coder"
+        assert _web_server_oauth._oauth_sessions[session_id]["profile"] == "coder"
     finally:
-        ws._oauth_sessions.pop(session_id, None)
+        _web_server_oauth._oauth_sessions.pop(session_id, None)
 
 
 def test_oauth_session_cannot_be_polled_or_cancelled_from_another_profile(
@@ -181,7 +183,7 @@ def test_oauth_session_cannot_be_polled_or_cancelled_from_another_profile(
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "profiles" / "worker").mkdir(parents=True)
-    session_id, _session = ws._new_oauth_session(
+    session_id, _session = _rt_oauth._new_oauth_session(
         "xai-oauth", "device_code", profile="worker"
     )
     try:
@@ -198,7 +200,7 @@ def test_oauth_session_cannot_be_polled_or_cancelled_from_another_profile(
         )
         assert cancel_resp.status_code == 400, cancel_resp.text
         assert "profile" in cancel_resp.text.lower()
-        assert session_id in ws._oauth_sessions
+        assert session_id in _web_server_oauth._oauth_sessions
 
         correct_poll = client.get(
             f"/api/providers/oauth/xai-oauth/poll/{session_id}?profile=worker",
@@ -212,7 +214,7 @@ def test_oauth_session_cannot_be_polled_or_cancelled_from_another_profile(
         )
         assert correct_cancel.status_code == 200, correct_cancel.text
     finally:
-        ws._oauth_sessions.pop(session_id, None)
+        _web_server_oauth._oauth_sessions.pop(session_id, None)
 
 
 
@@ -220,7 +222,7 @@ def test_oauth_session_cannot_be_polled_or_cancelled_from_another_profile(
 def test_codex_dashboard_start_rewords_device_authorization_error(monkeypatch):
     from hermes_cli import web_server as ws
 
-    before_sessions = set(ws._oauth_sessions)
+    before_sessions = set(_web_server_oauth._oauth_sessions)
 
     class _Resp:
         status_code = 400
@@ -263,8 +265,8 @@ def test_codex_dashboard_start_rewords_device_authorization_error(monkeypatch):
         assert "click Login again" in detail
         assert "hermes auth" not in detail
     finally:
-        for sid in set(ws._oauth_sessions) - before_sessions:
-            ws._oauth_sessions.pop(sid, None)
+        for sid in set(_web_server_oauth._oauth_sessions) - before_sessions:
+            _web_server_oauth._oauth_sessions.pop(sid, None)
 
 
 def test_codex_dashboard_worker_stops_polling_after_cancel(tmp_path, monkeypatch):
@@ -319,7 +321,7 @@ def test_codex_dashboard_worker_stops_polling_after_cancel(tmp_path, monkeypatch
     monkeypatch.setattr(httpx, "Client", _Client)
     monkeypatch.setattr(auth_mod, "_save_codex_tokens", lambda tokens: saved.append(tokens))
 
-    sid, _ = ws._new_oauth_session("openai-codex", "device_code", profile="coder")
+    sid, _ = _rt_oauth._new_oauth_session("openai-codex", "device_code", profile="coder")
 
     def fake_sleep(_interval):
         # Simulate a real concurrent DELETE /api/providers/oauth/sessions/{sid}
@@ -333,12 +335,12 @@ def test_codex_dashboard_worker_stops_polling_after_cancel(tmp_path, monkeypatch
     monkeypatch.setattr(ws.time, "sleep", fake_sleep)
 
     try:
-        ws._codex_full_login_worker(sid)
+        _rt_oauth._codex_full_login_worker(sid)
 
         assert saved == []
-        assert sid not in ws._oauth_sessions
+        assert sid not in _web_server_oauth._oauth_sessions
     finally:
-        ws._oauth_sessions.pop(sid, None)
+        _web_server_oauth._oauth_sessions.pop(sid, None)
 
 
 def test_codex_worker_final_save_is_atomic_with_cancel_delete(tmp_path, monkeypatch):
@@ -425,9 +427,9 @@ def test_codex_worker_final_save_is_atomic_with_cancel_delete(tmp_path, monkeypa
     monkeypatch.setattr(auth_mod, "_save_codex_tokens", fake_save)
     monkeypatch.setattr(ws.time, "sleep", lambda *_a, **_k: None)
 
-    sid, _ = ws._new_oauth_session("openai-codex", "device_code", profile="coder")
+    sid, _ = _rt_oauth._new_oauth_session("openai-codex", "device_code", profile="coder")
 
-    ws._codex_full_login_worker(sid)
+    _rt_oauth._codex_full_login_worker(sid)
 
     # The lock is released now (worker returned), so the DELETE thread can
     # finally complete.
@@ -443,7 +445,7 @@ def test_codex_worker_final_save_is_atomic_with_cancel_delete(tmp_path, monkeypa
     # DELETE arrived after the point of no return (save already committed),
     # so this is the legitimate too-late-to-cancel outcome: token saved,
     # session subsequently removed by the now-unblocked DELETE.
-    assert sid not in ws._oauth_sessions
+    assert sid not in _web_server_oauth._oauth_sessions
 
 
 def test_cancel_oauth_session_marks_dict_cancelled_before_popping(tmp_path, monkeypatch):
@@ -457,7 +459,7 @@ def test_cancel_oauth_session_marks_dict_cancelled_before_popping(tmp_path, monk
 
     _make_profile_home(tmp_path, monkeypatch, profile="coder")
     session_id = "cancel-flag-test"
-    ws._oauth_sessions[session_id] = {
+    _web_server_oauth._oauth_sessions[session_id] = {
         "session_id": session_id,
         "provider": "openai-codex",
         "flow": "device_code",
@@ -466,7 +468,7 @@ def test_cancel_oauth_session_marks_dict_cancelled_before_popping(tmp_path, monk
         "status": "pending",
         "error_message": None,
     }
-    worker_ref = ws._oauth_sessions[session_id]
+    worker_ref = _web_server_oauth._oauth_sessions[session_id]
 
     resp = client.delete(
         f"/api/providers/oauth/sessions/{session_id}?profile=coder",
@@ -475,7 +477,7 @@ def test_cancel_oauth_session_marks_dict_cancelled_before_popping(tmp_path, monk
 
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"ok": True, "session_id": session_id}
-    assert session_id not in ws._oauth_sessions
+    assert session_id not in _web_server_oauth._oauth_sessions
     assert worker_ref["cancelled"] is True
 
 
@@ -484,7 +486,7 @@ def test_nous_dashboard_poller_preserves_effective_scope_when_token_omits_scope(
     from hermes_cli import web_server as ws
 
     session_id = "nous-effective-scope-test"
-    ws._oauth_sessions[session_id] = {
+    _web_server_oauth._oauth_sessions[session_id] = {
         "session_id": session_id,
         "provider": "nous",
         "flow": "device_code",
@@ -522,11 +524,11 @@ def test_nous_dashboard_poller_preserves_effective_scope_when_token_omits_scope(
     monkeypatch.setattr(auth_mod, "persist_nous_credentials", lambda state: None)
 
     try:
-        ws._nous_poller(session_id)
+        _web_server_oauth._nous_poller(session_id)
         assert captured_state["scope"] == auth_mod.DEFAULT_NOUS_SCOPE
-        assert ws._oauth_sessions[session_id]["status"] == "approved"
+        assert _web_server_oauth._oauth_sessions[session_id]["status"] == "approved"
     finally:
-        ws._oauth_sessions.pop(session_id, None)
+        _web_server_oauth._oauth_sessions.pop(session_id, None)
 
 
 
@@ -551,7 +553,7 @@ def test_anthropic_dashboard_oauth_is_removed_and_external():
     assert providers["anthropic"]["flow"] == "external"
     assert providers["anthropic"]["cli_command"] == "hermes auth add anthropic"
 
-    before_sessions = set(ws._oauth_sessions)
+    before_sessions = set(_web_server_oauth._oauth_sessions)
     start_resp = client.post(
         "/api/providers/oauth/anthropic/start",
         headers=HEADERS,
@@ -567,7 +569,7 @@ def test_anthropic_dashboard_oauth_is_removed_and_external():
     )
     assert submit_resp.status_code == 400, submit_resp.text
     assert "not supported" in submit_resp.text
-    assert set(ws._oauth_sessions) == before_sessions
+    assert set(_web_server_oauth._oauth_sessions) == before_sessions
 
 
 def test_accounts_offers_every_oauth_provider_from_catalog():
@@ -704,7 +706,7 @@ def test_xai_dashboard_poller_seeds_single_entry_and_clears_suppression(tmp_path
     )
 
     session_id = "xai-dashboard-dedupe-test"
-    ws._oauth_sessions[session_id] = {
+    _web_server_oauth._oauth_sessions[session_id] = {
         "session_id": session_id,
         "provider": "xai-oauth",
         "flow": "device_code",
@@ -716,10 +718,10 @@ def test_xai_dashboard_poller_seeds_single_entry_and_clears_suppression(tmp_path
         "expires_at": time.time() + 600,
     }
     try:
-        ws._xai_device_poller(session_id)
-        assert ws._oauth_sessions[session_id]["status"] == "approved"
+        _web_server_oauth._xai_device_poller(session_id)
+        assert _web_server_oauth._oauth_sessions[session_id]["status"] == "approved"
     finally:
-        ws._oauth_sessions.pop(session_id, None)
+        _web_server_oauth._oauth_sessions.pop(session_id, None)
 
     # The interactive dashboard login cleared the suppression marker.
     assert auth_mod.is_source_suppressed("xai-oauth", "device_code") is False
@@ -764,7 +766,7 @@ def test_status_falls_through_to_generic_dispatcher_for_catalog_only_provider():
         "has_refresh_token": True,
     }
     with patch("hermes_cli.auth.get_auth_status", return_value=fake_status):
-        out = ws._resolve_provider_status("some-future-oauth", None)
+        out = _rt_oauth._resolve_provider_status("some-future-oauth", None)
 
     assert out["logged_in"] is True
     assert out["source"] == "some-future-oauth"

@@ -1,15 +1,4 @@
-"""Tests for the cross-Hermes-profile write guard in agent/file_safety.
-
-The guard fires when a tool tries to write into another Hermes profile's
-skills/plugins/cron/memories directory. It's a soft guard — defense in
-depth, NOT a security boundary — but it prevents the agent from silently
-corrupting a profile that belongs to a different session.
-
-Reference: May 2026 incident — a hermes-security profile session
-accidentally edited skills under both ~/.hermes/profiles/hermes-security/skills/
-AND ~/.hermes/skills/ (the default profile's skills), realizing only
-afterwards that the second path belonged to a different profile.
-"""
+"""Tests for the active-profile resolver in agent/file_safety."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -60,7 +49,6 @@ def fake_hermes(tmp_path, monkeypatch):
     import hermes_constants
     monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: root)
 
-    # The reloads below ensure get_cross_profile_warning/classify see the patched root.
     import agent.file_safety as fs
     monkeypatch.setattr(fs, "_hermes_root_path", lambda: root)
 

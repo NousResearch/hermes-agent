@@ -558,30 +558,10 @@ youtube-transcript-api = false
 
 
 [tool.setuptools]
-# Top-level single-file modules (not packages). Without this, uv2nix's
-# sealed venv is missing hermes_constants, run_agent, etc.
-py-modules = [
-  "run_agent",
-  "registration_lifecycle",
-  "model_tools",
-  "toolsets",
-  "batch_runner",
-  "trajectory_compressor",
-  "toolset_distributions",
-  "cli",
-  "hermes_bootstrap",
-  "hermes_constants",
-  "hermes_state",
-  "hermes_state_common",
-  "hermes_state_portability",
-  "hermes_state_schema",
-  "hermes_state_search",
-  "hermes_startup_watchdog",
-  "hermes_time",
-  "hermes_logging",
-  "utils",
-  "mcp_serve",
-]
+# Root single-file modules are derived by setup.py at build time from the
+# source tree (see the ``_root_py_modules`` helper there). A static
+# ``py-modules`` list here drifted from the tree each time the layout changed,
+# and the drift broke installed wheels. Do not add the list back.
 
 [tool.setuptools.packages.find]
 include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
@@ -668,6 +648,7 @@ select = ["PLW1514", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251"]
 # process (no wait), an accepted momentary spawn cost pending a dedicated
 # async-subprocess sweep.
 "gateway/run.py" = ["ASYNC220"]
+"gateway/run_shutdown.py" = ["ASYNC220"]
 "gateway/slash_commands.py" = ["ASYNC220"]
 # Off-loop sweep for these routers is in flight (PR #84376).
 "hermes_cli/web_routers/profiles.py" = ["ASYNC220", "ASYNC221"]

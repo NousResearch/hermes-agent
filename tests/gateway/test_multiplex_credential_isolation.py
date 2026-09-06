@@ -44,7 +44,7 @@ class TestMcpInterpolationUsesScope:
     """MCP config ${VAR} interpolation resolves through the secret scope."""
 
     def test_interpolation_reads_scope(self, monkeypatch):
-        from tools.mcp_tool import _interpolate_env_vars
+        from tools.mcp_tool_config import _interpolate_env_vars
         monkeypatch.setenv("MY_MCP_TOKEN", "global-token")
         ss.set_multiplex_active(True)
         tok = ss.set_secret_scope({"MY_MCP_TOKEN": "profile-token"})

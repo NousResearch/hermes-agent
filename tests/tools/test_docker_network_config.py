@@ -30,13 +30,25 @@ def test_sibling_container_config_sites_carry_docker_network():
     import tools.code_execution_tool as code_execution_tool
     import tools.file_tools as file_tools
 
-    for module in (terminal_tool, file_tools, code_execution_tool):
+    # file_tools no longer builds its own container_config: it goes through
+    # the shared _create_configured_env, which is what carries docker_network.
+    assert "_create_configured_env(" in inspect.getsource(file_tools)
+
+    for module in (terminal_tool, code_execution_tool):
         tree = ast.parse(inspect.getsource(module))
         sites = 0
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Dict):
+            # Accept a dict literal or a (key, default) pair table that a dict
+            # comprehension is built from.
+            if isinstance(node, ast.Dict):
+                keys = {k.value for k in node.keys if isinstance(k, ast.Constant)}
+            elif isinstance(node, ast.Tuple) and node.elts and all(
+                isinstance(e, ast.Tuple) and len(e.elts) == 2 and isinstance(e.elts[0], ast.Constant)
+                for e in node.elts
+            ):
+                keys = {e.elts[0].value for e in node.elts}
+            else:
                 continue
-            keys = {k.value for k in node.keys if isinstance(k, ast.Constant)}
             if "docker_run_as_host_user" in keys:
                 sites += 1
                 assert "docker_network" in keys, (

@@ -1,33 +1,14 @@
 """Bot Mode cross-connection relay — connections ARE the peer set.
 
-Every gateway connected to the user's Desktop (local, remote URL, SSH,
-Hermes Cloud, docker) is a persistent line. This module is the gateway-side
-half of the relay that rides those lines so agents on ANY connected gateway
-can find and message agents on ANY other, with `message_agent` as the one
-send path (Teknium ruling, Aug 2026 — the peers-vs-connections split was
-itself the bug).
-
-How the relay works (three files under ``<root>/bot_relay/``):
-
-- ``roster.json`` — the union roster of agents on OTHER connections, pushed
-  by the Desktop over each connection's WebSocket (``bot_relay.roster.sync``).
-  ``tools/bot_mode_probe.py`` folds it into the Bot Chat protocol section so
-  every bot knows every reachable teammate, and ``message_agent`` resolves
-  cross-connection targets against it.
-- ``outbox/`` — envelopes queued by ``message_agent`` for targets that live
-  on another connection. The Desktop drains them (``bot_relay.outbox.drain``)
-  and delivers each to the target connection (``bot_relay.deliver``).
-- ``replies/`` — one JSON per envelope, written when the Desktop relays the
-  target agent's reply back (``bot_relay.reply``). A background waiter
-  spawned at send time watches for it, so the reply wakes the sender through
-  the exact same completion-notification path local DMs already use.
-
-The gateway never holds another connection's credentials; the Desktop owns
-every socket and does all cross-connection I/O. Everything here is plain
-file plumbing on the gateway's own HERMES root — no network. The public
-helpers never raise, with one deliberate exception: ``enqueue_envelope``
-raises ``EnvelopeRefusedError`` when the target is definitively offline, so
-the sender fails fast instead of queueing a DM nobody will drain (#93091).
+Gateway-side half of the relay letting agents on ANY Desktop-connected gateway
+message agents on ANY other. Plain file plumbing under ``<root>/bot_relay/`` —
+no network; the Desktop owns every socket: ``roster.json`` (union roster of
+agents on OTHER connections, pushed via ``bot_relay.roster.sync``), ``outbox/``
+(envelopes queued by ``message_agent``, drained via ``bot_relay.outbox.drain``),
+``replies/`` (one JSON per envelope via ``bot_relay.reply``; a waiter spawned at
+send time watches it so the reply wakes the sender like a local DM).
+Public helpers never raise, except ``enqueue_envelope`` → ``EnvelopeRefusedError``
+when the target is definitively offline (fail fast instead of queueing a DM nobody will drain).
 """
 
 from __future__ import annotations
@@ -46,6 +27,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+from tools.bot_mode_probe import _default_home, _hermes_root
+
 logger = logging.getLogger(__name__)
 
 RELAY_DIR_NAME = "bot_relay"
@@ -55,43 +38,37 @@ CLAIMED_DIR = "claimed"
 REPLIES_DIR = "replies"
 LOCKS_DIR = "locks"
 
-# Fallback wait budget for a queued delivery turn when config is unreadable.
-# The real knob is ``bot_mode.turn_wait_seconds`` in config.yaml.
+# Config fallbacks (real knobs: ``bot_mode.turn_wait_seconds`` / ``bot_mode.envelope_ttl_seconds``).
 TURN_WAIT_SECONDS_FALLBACK = 120
-
-# A reply must arrive before the waiter gives up. Cross-connection turns can
-# be slow (remote model, cold gateway) — generous, but bounded.
+DEFAULT_ENVELOPE_TTL_SECONDS = 900  # older envelopes are refused at drain with 'queued_expired'
+# Waiter give-up budget: cross-connection turns can be slow — generous, but bounded.
 REPLY_WAIT_SECONDS = 900
-
-# Envelopes and replies older than this are stale artifacts (Desktop was
-# closed, connection died) and are swept opportunistically.
+# Envelopes/replies older than this are stale artifacts (Desktop closed) and are swept.
 STALE_AFTER_SECONDS = 6 * 3600
-
-# Fallback envelope TTL when config is unreachable — mirrors the
-# ``bot_mode.envelope_ttl_seconds`` default in hermes_cli/config_defaults.py.
-# Envelopes older than the TTL are refused at drain time with a
-# 'queued_expired' error reply instead of being delivered late.
-DEFAULT_ENVELOPE_TTL_SECONDS = 900
-
-# A roster older than this proves nothing about who is offline: the Desktop
-# pushes roster.sync on connection-state changes, so only a recently-written
-# roster is treated as an authoritative view for the fail-fast check.
+# Only a recent roster is authoritative for the fail-fast offline check: the
+# Desktop re-pushes roster.sync on connection-state changes.
 ROSTER_FRESH_SECONDS = 600
 
 
 class EnvelopeRefusedError(RuntimeError):
-    """``enqueue_envelope`` refused to queue — nothing was written to disk.
+    """``enqueue_envelope`` refused to queue (nothing written); ``reason`` is a stable machine code.
 
-    ``reason`` is a stable machine code; ``str(exc)`` is the human text.
-    'runtime_offline' matches the #93091 item-1 failure-reason enum (plain
-    literal here so the branches merge cleanly).
+    ``reason`` is a stable machine code; ``str(exc)`` is the human text. 'runtime_offline' matches the
+    #93091 item-1 failure-reason enum (plain literal here so the branches merge cleanly).
     """
 
     def __init__(self, reason: str, message: str):
         super().__init__(message)
         self.reason = reason
 
+
+# Profile names, handles and connection ids share one shape (also the local
+# ``message_agent`` target grammar in ``tools/bot_mode_dm.py``).
 _HANDLE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
+
+# One turn in a profile's canonical Bot Chat: ``hermes -p <profile> *BOT_CHAT_TURN_ARGS``.
+# ``-c "Bot Chat"`` must match ``bot_mode_probe.BOT_CHAT_TITLE``.
+BOT_CHAT_TURN_ARGS = ("chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing", "-Q")
 
 
 def relay_root(root: Path | str) -> Path:
@@ -105,43 +82,49 @@ def _ensure_dirs(root: Path | str) -> Path:
     return base
 
 
-# ── remote roster ────────────────────────────────────────────────────────────
+def _atomic_write_json(target: Path, payload: Any, *, prefix: str, sort_keys: bool = False) -> None:
+    """tempfile + os.replace so readers never see a partial file; tempfile removed on failure."""
+    fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=prefix, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, sort_keys=sort_keys)
+        os.replace(tmp, target)
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def _bot_mode_cfg(key: str, *, loader: str) -> Any:
+    """``bot_mode.<key>`` from config, read lazily (tools/ must not import CLI
+    config at import time); None when absent or the config is unreadable."""
+    try:
+        import hermes_cli.config as cfgmod
+
+        cfg = getattr(cfgmod, loader)() or {}
+        return (cfg.get("bot_mode") or {}).get(key)
+    except Exception:
+        logger.debug("bot_mode.%s config read failed", key, exc_info=True)
+        return None
 
 
 def _normalize_roster_row(row: Any) -> Optional[dict]:
-    """Validated, minimal roster row or None.
-
-    Rows come from the Desktop over RPC — treat as untrusted input. A row
-    names an agent on another connection: profile name, taggable handle,
-    the connection id/label of the gateway that owns it, and optional
-    friendly title/description for the protocol section.
-    """
+    """Validated, minimal roster row or None. Rows come from the Desktop over
+    RPC — treat as untrusted input."""
     if not isinstance(row, dict):
         return None
     profile = str(row.get("profile") or "").strip()
-    handle = str(row.get("handle") or "").strip().lstrip("@")
+    handle = str(row.get("handle") or "").strip().lstrip("@") or ("hermes" if profile == "default" else profile)
     connection_id = str(row.get("connection_id") or "").strip()
-    if not profile or not connection_id:
-        return None
-    if not handle:
-        handle = "hermes" if profile == "default" else profile
-    if (
-        not _HANDLE_RE.match(handle)
-        or not _HANDLE_RE.match(profile)
-        or not _HANDLE_RE.match(connection_id)
-    ):
+    if not profile or not connection_id or not all(_HANDLE_RE.match(v) for v in (handle, profile, connection_id)):
         return None
     out = {
-        "profile": profile,
-        "handle": handle,
-        "connection_id": connection_id,
+        "profile": profile, "handle": handle, "connection_id": connection_id,
         "connection_label": str(row.get("connection_label") or "").strip()[:80],
         "title": str(row.get("title") or "").strip()[:120],
         "description": " ".join(str(row.get("description") or "").split())[:160],
     }
-    # Optional explicit liveness flag (additive — the Desktop may push it).
-    # Preserved only when it is a real bool so absent stays distinguishable
-    # from false: absent == liveness unknown == fail-open on enqueue.
+    # Liveness kept only when a real bool: absent == unknown == fail-open on enqueue.
     if isinstance(row.get("online"), bool):
         out["online"] = row["online"]
     return out
@@ -150,43 +133,21 @@ def _normalize_roster_row(row: Any) -> Optional[dict]:
 def write_remote_roster(root: Path | str, rows: Any) -> int:
     """Atomically persist the Desktop-pushed remote roster. Returns count."""
     base = _ensure_dirs(root)
-    cleaned: list[dict] = []
-    seen: set[tuple[str, str]] = set()
-    for row in rows if isinstance(rows, list) else []:
-        norm = _normalize_roster_row(row)
-        if not norm:
-            continue
-        key = (norm["connection_id"], norm["profile"])
-        if key in seen:
-            continue
-        seen.add(key)
-        cleaned.append(norm)
-    cleaned.sort(key=lambda r: (r["connection_id"], r["profile"]))
-    payload = {"updated_at": int(time.time()), "agents": cleaned}
-    target = base / ROSTER_FILE
-    fd, tmp = tempfile.mkstemp(dir=str(base), prefix=".roster-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, sort_keys=True)
-        os.replace(tmp, target)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    by_key: dict[tuple[str, str], dict] = {}
+    for norm in filter(None, map(_normalize_roster_row, rows if isinstance(rows, list) else [])):
+        by_key.setdefault((norm["connection_id"], norm["profile"]), norm)
+    cleaned = [by_key[k] for k in sorted(by_key)]
+    _atomic_write_json(base / ROSTER_FILE, {"updated_at": int(time.time()), "agents": cleaned},
+                       prefix=".roster-", sort_keys=True)
     return len(cleaned)
 
 
 def read_remote_roster(root: Path | str) -> list[dict]:
     """The current remote roster (possibly empty). Never raises."""
     try:
-        raw = (relay_root(root) / ROSTER_FILE).read_text(encoding="utf-8")
-        data = json.loads(raw)
+        data = json.loads((relay_root(root) / ROSTER_FILE).read_text(encoding="utf-8"))
         agents = data.get("agents") if isinstance(data, dict) else None
-        if not isinstance(agents, list):
-            return []
-        return [r for r in (_normalize_roster_row(a) for a in agents) if r]
+        return [r for r in map(_normalize_roster_row, agents) if r] if isinstance(agents, list) else []
     except FileNotFoundError:
         return []
     except Exception:
@@ -195,317 +156,179 @@ def read_remote_roster(root: Path | str) -> list[dict]:
 
 
 def resolve_remote_target(raw_target: str, roster: list[dict]) -> Any:
-    """Resolve ``raw_target`` against the remote roster.
-
-    Accepted forms:
-    - bare handle/profile (``moxie``) — must be unique across connections;
-    - ``<handle>@<connection-id>`` / ``<profile>@<connection-id>`` — exact.
-
-    Returns the matched row, the string ``"ambiguous"`` when a bare form
-    matches agents on several connections, or None for no match.
-    """
-    want = str(raw_target or "").strip().lstrip("@")
-    if not want:
+    """Matched row for a bare handle/profile (unique across connections) or
+    ``<handle|profile>@<connection-id>``; ``"ambiguous"`` for a bare form on several connections; None otherwise."""
+    want, at, conn = (p.strip() for p in str(raw_target or "").strip().lstrip("@").partition("@"))
+    if not want or (at and not conn):
         return None
-    conn: Optional[str] = None
-    if "@" in want:
-        want, _, conn = want.partition("@")
-        want = want.strip()
-        conn = conn.strip()
-        if not want or not conn:
-            return None
-    matches = []
-    for row in roster:
-        if want.lower() not in (row["handle"].lower(), row["profile"].lower()):
-            continue
-        if conn and row["connection_id"].lower() != conn.lower():
-            continue
-        matches.append(row)
+    matches = [row for row in roster if want.lower() in (row["handle"].lower(), row["profile"].lower())
+               and (not conn or row["connection_id"].lower() == conn.lower())]
     if not matches:
         return None
-    if len(matches) > 1:
-        return "ambiguous"
-    return matches[0]
+    return matches[0] if len(matches) == 1 else "ambiguous"
 
 
 def remote_target_forms(roster: list[dict]) -> list[str]:
-    """Human/agent-facing target strings, ambiguity-aware."""
-    by_handle: dict[str, int] = {}
-    for row in roster:
-        by_handle[row["handle"].lower()] = by_handle.get(row["handle"].lower(), 0) + 1
-    forms = []
-    for row in roster:
-        if by_handle[row["handle"].lower()] > 1:
-            forms.append(f"{row['handle']}@{row['connection_id']}")
-        else:
-            forms.append(row["handle"])
-    return forms
-
-
-# ── outbox / replies ─────────────────────────────────────────────────────────
+    """Target strings: bare handle when unique across connections, else
+    ``handle@connection`` (mirrors ``resolve_remote_target``)."""
+    handles = [row["handle"].lower() for row in roster]
+    return [f"{row['handle']}@{row['connection_id']}" if handles.count(h) > 1 else row["handle"]
+            for row, h in zip(roster, handles)]
 
 
 def _envelope_ttl_seconds() -> int:
-    """Configured drain TTL (``bot_mode.envelope_ttl_seconds``), lazily read.
-
-    tools/ must not pull heavy CLI config at import time, so the read happens
-    per-drain and falls back to ``DEFAULT_ENVELOPE_TTL_SECONDS`` when config
-    is unavailable (tests, stripped installs). ``0`` (or negative) disables
-    drain-time expiry.
-    """
-    try:
-        from hermes_cli.config import load_config_readonly
-
-        cfg = load_config_readonly() or {}
-        val = (cfg.get("bot_mode") or {}).get("envelope_ttl_seconds")
-        if val is not None:
-            return int(val)
-    except Exception:
-        logger.debug("bot_relay TTL config read failed", exc_info=True)
-    return DEFAULT_ENVELOPE_TTL_SECONDS
+    """Configured drain TTL (``bot_mode.envelope_ttl_seconds``), read per-drain.
+    ``0`` (or negative) disables expiry."""
+    val = _bot_mode_cfg("envelope_ttl_seconds", loader="load_config_readonly")
+    return DEFAULT_ENVELOPE_TTL_SECONDS if val is None else int(val)
 
 
 def _target_liveness(root: Path | str, target: dict) -> Optional[bool]:
-    """Tri-state liveness for ``target``: True / False / None (unknown).
-
-    Roster rows carry no heartbeat today, so 'definitively offline' is keyed
-    off the two signals roster.json actually gives us:
-
-    - an explicit ``online: false`` on the target's row (additive field,
-      honored when the Desktop starts pushing it);
-    - the target's (connection_id, profile) being ABSENT from a *fresh*
-      roster — the Desktop re-pushes the whole roster on connection-state
-      changes, so a recently-synced roster that dropped the target means its
-      connection is gone.
-
-    A missing, unreadable, or stale (older than ``ROSTER_FRESH_SECONDS``)
-    roster proves nothing → None, and callers fail open. Never raises.
-    """
+    """Tri-state liveness: True / False / None (unknown → callers fail open). Offline =
+    explicit ``online: false`` or ABSENT from a *fresh* roster; a missing, unreadable,
+    empty or stale roster proves nothing → None. Never raises."""
     try:
-        roster_path = relay_root(root) / ROSTER_FILE
         try:
-            age = time.time() - roster_path.stat().st_mtime
+            age = time.time() - (relay_root(root) / ROSTER_FILE).stat().st_mtime
         except OSError:
-            return None  # no roster ever synced — unknown
-        if age > ROSTER_FRESH_SECONDS:
-            return None  # stale view — unknown
-        roster = read_remote_roster(root)
+            return None
+        roster = read_remote_roster(root) if age <= ROSTER_FRESH_SECONDS else []
         if not roster:
-            return None  # empty/corrupt roster — treat as unknown, fail open
+            return None
         key = (str(target.get("connection_id") or ""), str(target.get("profile") or ""))
-        for row in roster:
-            if (row["connection_id"], row["profile"]) == key:
-                online = row.get("online")
-                if online is False:
-                    return False
-                return True if online is True else None
-        return False  # fresh roster no longer lists the target — offline
+        row = next((r for r in roster if (r["connection_id"], r["profile"]) == key), None)
+        if row is None:
+            return False  # fresh roster no longer lists the target — offline
+        return row["online"] if isinstance(row.get("online"), bool) else None
     except Exception:
         logger.debug("bot_relay liveness check failed", exc_info=True)
         return None
 
 
-def enqueue_envelope(
-    root: Path | str,
-    *,
-    target: dict,
-    message: str,
-    sender_profile: str,
-    sender_handle: str,
-) -> dict:
-    """Queue a cross-connection DM for the Desktop relay. Returns envelope.
-
-    Raises ``EnvelopeRefusedError`` (reason ``'runtime_offline'``) instead of
-    writing the outbox file when the target is definitively offline per
-    ``_target_liveness``. Unknown liveness enqueues as before (fail-open).
-    """
+def enqueue_envelope(root: Path | str, *, target: dict, message: str, sender_profile: str, sender_handle: str) -> dict:
+    """Queue a cross-connection DM for the Desktop relay; returns the envelope. Raises
+    ``EnvelopeRefusedError`` ('runtime_offline') without writing when the target is
+    definitively offline; unknown liveness enqueues (fail-open)."""
     if _target_liveness(root, target) is False:
-        label = (
-            f"@{target.get('handle') or target.get('profile') or '?'} on "
-            f"{target.get('connection_label') or target.get('connection_id') or '?'}"
-        )
-        # 'runtime_offline' matches the #93091 item-1 reason enum.
-        raise EnvelopeRefusedError(
-            "runtime_offline",
-            f"{label} is offline right now — the message was NOT queued. "
-            "Try again once that machine reconnects to the Desktop.",
-        )
+        label = (f"@{target.get('handle') or target.get('profile') or '?'} on "
+                 f"{target.get('connection_label') or target.get('connection_id') or '?'}")
+        raise EnvelopeRefusedError("runtime_offline", f"{label} is offline right now — the message was NOT queued. "
+                                   "Try again once that machine reconnects to the Desktop.")
     base = _ensure_dirs(root)
     envelope = {
-        "id": uuid.uuid4().hex,
-        "created_at": int(time.time()),
-        "from_profile": sender_profile,
-        "from_handle": sender_handle,
-        "target_connection": target["connection_id"],
-        "target_profile": target["profile"],
-        "target_handle": target["handle"],
-        "message": message,
+        "id": uuid.uuid4().hex, "created_at": int(time.time()),
+        "from_profile": sender_profile, "from_handle": sender_handle,
+        "target_connection": target["connection_id"], "target_profile": target["profile"],
+        "target_handle": target["handle"], "message": message,
     }
-    path = base / OUTBOX_DIR / f"{envelope['id']}.json"
-    fd, tmp = tempfile.mkstemp(dir=str(base / OUTBOX_DIR), prefix=".env-", suffix=".tmp")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(envelope, f, ensure_ascii=False)
-    os.replace(tmp, path)
+    _atomic_write_json(base / OUTBOX_DIR / f"{envelope['id']}.json", envelope, prefix=".env-")
     return envelope
 
 
-def claim_pending_envelopes(root: Path | str) -> list[dict]:
-    """Drain the outbox (rename → claimed/, so a second drain can't double-
-    deliver). Sweeps stale claimed/reply artifacts opportunistically.
+def _expire_if_stale(root: Path | str, path: Path, ttl: float, now: float) -> bool:
+    """True when the outbox envelope is older than ``ttl``; writes the 'queued_expired'
+    reply so the sender's waiter resolves (best effort). Unreadable envelopes are left for the claim."""
+    try:
+        env = json.loads(path.read_text(encoding="utf-8"))
+        created = float(env.get("created_at") or path.stat().st_mtime)
+    except (OSError, ValueError):
+        return False
+    if now - created <= ttl:
+        return False
+    with contextlib.suppress(OSError, ValueError):
+        write_reply(root, str(env.get("id") or ""), reason="queued_expired", error=(
+            f"queued message to @{env.get('target_handle') or '?'} on {env.get('target_connection') or '?'} "
+            f"expired after {ttl}s waiting for the Desktop to drain it — it was NOT delivered. "
+            "Resend once the Desktop reconnects."))
+    return True
 
-    Envelopes older than ``bot_mode.envelope_ttl_seconds`` are NOT delivered:
-    each gets an error reply (reason ``'queued_expired'``) so the sender's
-    waiter resolves, and its outbox file is removed (#93091 item 2).
+
+def claim_pending_envelopes(root: Path | str) -> list[dict]:
+    """Drain the outbox (rename → claimed/ so a second drain can't double-deliver).
+    TTL-expired envelopes get a 'queued_expired' reply and are removed instead.
+
+    Envelopes older than ``bot_mode.envelope_ttl_seconds`` are NOT delivered: each gets an error reply
+    (reason ``'queued_expired'``) so the sender's waiter resolves, and its outbox file is removed (#93091
+    item 2).
     """
     base = _ensure_dirs(root)
     _sweep_stale(base)
     ttl = _envelope_ttl_seconds()
     now = time.time()
     out: list[dict] = []
-    outbox = base / OUTBOX_DIR
-    for path in sorted(outbox.glob("*.json")):
-        if ttl > 0:
-            expired = False
-            try:
-                env = json.loads(path.read_text(encoding="utf-8"))
-                created = float(env.get("created_at") or path.stat().st_mtime)
-                if now - created > ttl:
-                    expired = True
-                    handle = str(env.get("target_handle") or "?")
-                    conn = str(env.get("target_connection") or "?")
-                    # 'queued_expired' matches the #93091 item-1 reason enum.
-                    write_reply(
-                        root,
-                        str(env.get("id") or ""),
-                        error=(
-                            f"queued message to @{handle} on {conn} expired after "
-                            f"{ttl}s waiting for the Desktop to drain it — it was "
-                            "NOT delivered. Resend once the Desktop reconnects."
-                        ),
-                        reason="queued_expired",
-                    )
-            except (OSError, ValueError):
-                # Unreadable envelope or invalid id: if it already counted as
-                # expired, still remove it below; otherwise let the normal
-                # claim attempt below deal with it.
-                pass
-            if expired:
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
-                continue
+    for path in sorted((base / OUTBOX_DIR).glob("*.json")):
+        if ttl > 0 and _expire_if_stale(root, path, ttl, now):
+            with contextlib.suppress(OSError):
+                path.unlink()
+            continue
         claimed = base / CLAIMED_DIR / path.name
-        try:
+        with contextlib.suppress(OSError, ValueError):
             os.replace(path, claimed)  # atomic claim
             out.append(json.loads(claimed.read_text(encoding="utf-8")))
-        except (OSError, ValueError):
-            continue
     return out
 
 
-def write_reply(
-    root: Path | str, envelope_id: str, *, reply: str = "", error: str = "", reason: str = ""
-) -> Path:
-    """Persist the relayed reply (or delivery error) for the waiter.
-
-    ``reason`` is an optional typed failure code (see
-    ``tools.bot_failure_reasons``, e.g. 'queued_expired'); when omitted and
-    ``error`` is non-empty it is classified from the error text. The waiter
-    only surfaces the human ``error``.
-    """
+def write_reply(root: Path | str, envelope_id: str, *, reply: str = "", error: str = "", reason: str = "") -> Path:
+    """Persist the relayed reply (or delivery error) for the waiter. ``reason`` (typed
+    code, ``tools.bot_failure_reasons``) is classified from ``error`` when omitted."""
     base = _ensure_dirs(root)
     safe = str(envelope_id or "").strip()
     if not re.match(r"^[0-9a-f]{32}$", safe):
         raise ValueError(f"invalid envelope id: {envelope_id!r}")
-    err = str(error or "")
-    code = str(reason or "")
+    err, code = str(error or ""), str(reason or "")
     if not code and err:
         from tools.bot_failure_reasons import classify_agent_error
 
         code = classify_agent_error(err)
     path = base / REPLIES_DIR / f"{safe}.json"
-    payload = {
-        "id": safe,
-        "at": int(time.time()),
-        "reply": str(reply or ""),
-        "error": err,
-        "reason": code,
-    }
-    fd, tmp = tempfile.mkstemp(dir=str(base / REPLIES_DIR), prefix=".rep-", suffix=".tmp")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
-    os.replace(tmp, path)
+    _atomic_write_json(path, {"id": safe, "at": int(time.time()), "reply": str(reply or ""), "error": err, "reason": code},
+                       prefix=".rep-")
     return path
+
+
+def unlink_files_older_than(directory: Path, pattern: str, cutoff: float) -> int:
+    """Unlink regular files matching ``pattern`` with mtime before ``cutoff``; returns count. Never raises."""
+    removed = 0
+    with contextlib.suppress(OSError):
+        for path in directory.glob(pattern):
+            with contextlib.suppress(OSError):
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink()
+                    removed += 1
+    return removed
 
 
 def _sweep_stale(base: Path, *, now: float | None = None) -> int:
     cutoff = (time.time() if now is None else now) - STALE_AFTER_SECONDS
-    removed = 0
-    for sub in (CLAIMED_DIR, REPLIES_DIR, OUTBOX_DIR):
-        try:
-            for path in (base / sub).glob("*.json"):
-                try:
-                    if path.stat().st_mtime < cutoff:
-                        path.unlink()
-                        removed += 1
-                except OSError:
-                    continue
-        except OSError:
-            continue
-    return removed
+    return sum(unlink_files_older_than(base / sub, "*.json", cutoff) for sub in (CLAIMED_DIR, REPLIES_DIR, OUTBOX_DIR))
 
 
 def cleanup_bot_relay_artifacts(max_age_hours: float | None = None) -> int:
-    """Sweep stale relay artifacts (envelopes/replies hold DM plaintext).
-
-    ``_sweep_stale`` otherwise runs only when the Desktop drains the outbox
-    (``claim_pending_envelopes``) — if the Desktop never reconnects, queued
-    plaintext envelopes would sit on disk forever. Same contract as the
-    ``cleanup_*_cache`` helpers so the gateway housekeeping loop can call it
-    hourly. ``max_age_hours`` is accepted for signature compatibility but the
-    relay's own ``STALE_AFTER_SECONDS`` governs staleness.
-    """
-    del max_age_hours  # relay staleness is governed by STALE_AFTER_SECONDS
+    """Hourly sweep of stale relay artifacts (DM plaintext; ``_sweep_stale`` otherwise runs
+    only on Desktop drains). ``max_age_hours`` is for ``cleanup_*_cache`` signature parity only."""
+    del max_age_hours
     try:
-        home = Path(os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
-        root = home.parent.parent if home.parent.name == "profiles" else home
-        base = relay_root(root)
-        if not base.is_dir():
-            return 0
-        return _sweep_stale(base)
+        base = relay_root(_hermes_root(Path(_default_home())))
+        return _sweep_stale(base) if base.is_dir() else 0
     except Exception:
         logger.debug("bot_relay artifact sweep failed", exc_info=True)
         return 0
 
 
-# ── waiter (runs on the sender gateway via terminal background process) ─────
-
-
 def waiter_command(root: Path | str, envelope: dict) -> str:
-    """Shell command that blocks until the reply file appears, then prints it.
-
-    Spawned with ``terminal_tool(background=True, notify_on_complete=True)``
-    so its stdout — the teammate's reply — arrives as the same completion
-    notification local DMs use. Stdlib-only; runs under the sender gateway's
-    interpreter.
-    """
+    """Shell command that blocks until the reply file appears, then prints it; spawned
+    via ``terminal_tool(background=True, notify_on_complete=True)`` so its stdout arrives
+    as the same completion notification local DMs use. Stdlib-only."""
     reply_path = str(relay_root(root) / REPLIES_DIR / f"{envelope['id']}.json")
-    label = (
-        f"@{envelope.get('target_handle', '')} "
-        f"on {envelope.get('target_connection', '')}"
-    )
-    # Encode label with !r so roster fields cannot break out of the generated
-    # python -c source (quotes, parens, or extra statements in connection_id).
-    # The raw-string prefix keeps Windows paths viable: repr escapes each
-    # backslash ("C:\\Users\\..."), but the Windows execution layer the
-    # waiter runs under folds "\\" back to "\", which turns "\U" into an
-    # invalid unicode escape and SyntaxErrors the whole script (#93590).
-    # With the r prefix the folded single backslash parses as a literal.
-    # POSIX paths contain no backslashes, so the prefix is a no-op there,
-    # and \' inside a raw literal still cannot terminate the string, so
-    # the injection defense above is unchanged.
+    label = f"@{envelope.get('target_handle', '')} on {envelope.get('target_connection', '')}"
+    # !r keeps roster fields from breaking out of the generated python -c source.
+    # The r-prefix keeps Windows paths viable: the Windows execution layer folds
+    # repr's "\\" back to "\", turning "\U" into an invalid unicode escape; a
+    # raw literal parses the folded backslash literally. No-op on POSIX, and \'
+    # still cannot terminate a raw literal, so the injection defense holds.
     code = (
+        # Encode label with !r so roster fields cannot break out of the generated python -c source (quotes,
+        # parens, or extra statements in connection_id). See #93590.
         "import json,os,sys,time\n"
         f"p = r{reply_path!r}\n"
         f"label = r{label!r}\n"
@@ -514,9 +337,9 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
         "    if os.path.exists(p):\n"
         "        d = json.load(open(p, encoding='utf-8'))\n"
         "        if d.get('error'):\n"
-        # The typed reason code (#93091) rides ahead of the free text so the
-        # sending agent can branch on it (auth vs rate limit vs offline)
-        # without parsing provider prose.
+        # Typed reason code rides ahead of the free text so the sender can
+        # branch on it without parsing provider prose.
+        # See #93091.
         "            code = str(d.get('reason') or '').strip()\n"
         "            tag = ' [reason: ' + code + ']' if code else ''\n"
         "            print('Delivery to ' + label + ' failed' + tag + ': ' + d['error'])\n"
@@ -524,9 +347,7 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
         "        print('Reply from ' + label + ':')\n"
         "        print(d.get('reply') or '(empty reply)')\n"
         "        sys.exit(0)\n"
-        # 250ms cadence: the reply file is written once by the target
-        # gateway's deliver path; a 2s sleep here added up to 2s of dead
-        # air to every cross-machine reply for no benefit (stat is cheap).
+        # 250ms cadence: stat is cheap and a longer sleep is pure dead air.
         "    time.sleep(0.25)\n"
         f"print('No reply from ' + label + ' within {REPLY_WAIT_SECONDS}s. The message may "
         "still be delivered when the Desktop reconnects; do not resend blindly.')\n"
@@ -535,94 +356,60 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
     return f"{shlex.quote(sys.executable or 'python3')} -c {shlex.quote(code)}"
 
 
-# ── delivery command (used by the deliver RPC on the TARGET gateway) ────────
-
-
 def _hermes_cli() -> str:
-    """Resolve the hermes CLI beside this gateway's own interpreter.
+    """hermes CLI beside this interpreter, then ``shutil.which``, then the bare name
+    (service contexts lack PATH, so a bare "hermes" died with ENOENT).
 
-    The deliver RPC runs on the target gateway, whose process is the venv
-    python — its bin/Scripts directory holds the matching ``hermes``
-    entrypoint. A bare ``"hermes"`` relies on PATH, which is exactly what
-    service contexts (systemd units, desktop launchers, non-login SSH
-    shells) do not provide, so delivery died with ENOENT there (#93590).
-    When no sibling exists (e.g. running from a source tree without an
-    installed script), a ``shutil.which`` lookup runs next — it honors
-    whatever PATH the process does have — before falling back to the bare
-    name, preserving today's behavior for interactive shells.
+    The deliver RPC runs on the target gateway, whose process is the venv python — its bin/Scripts directory
+    holds the matching ``hermes`` entrypoint. A bare ``"hermes"`` relies on PATH, which is exactly what
+    service contexts (systemd units, desktop launchers, non-login SSH shells) do not provide, so delivery
+    died with ENOENT there (#93590). When no sibling exists (e.g. running from a source tree without an
+    installed script), a ``shutil.which`` lookup runs next — it honors whatever PATH the process does have —
+    before falling back to the bare name, preserving today's behavior for interactive shells.
     """
-    exe = Path(sys.executable or "")
-    sibling = exe.parent / ("hermes.exe" if sys.platform == "win32" else "hermes")
-    if sibling.is_file():
-        return str(sibling)
-    found = shutil.which("hermes")
-    if found:
-        return found
-    return "hermes"
+    sibling = Path(sys.executable or "").parent / ("hermes.exe" if sys.platform == "win32" else "hermes")
+    return str(sibling) if sibling.is_file() else shutil.which("hermes") or "hermes"
 
 
 def local_delivery_command(profile: str, query_file: str) -> list[str]:
     """argv that delivers a DM into ``profile``'s Bot Chat on THIS gateway."""
-    return [
-        _hermes_cli(),
-        "-p",
-        profile,
-        "chat",
-        "--in",
-        "~",
-        "-c",
-        "Bot Chat",
-        "--create-if-missing",
-        "-Q",
-        "--query-file",
-        query_file,
-    ]
+    return [_hermes_cli(), "-p", profile, *BOT_CHAT_TURN_ARGS, "--query-file", query_file]
 
 
-# ── per-profile turn lock (#93091) ───────────────────────────────────────────
-#
-# Two deliveries into the SAME target profile must never run their Bot Chat
-# turns concurrently: deliveries spawn separate ``hermes`` subprocesses, so
-# an in-memory mutex is useless — the lock is a per-profile lockfile under
-# ``<root>/bot_relay/locks/`` held with ``fcntl.flock`` for exactly the turn
-# execution window. flock is released by the kernel when the holder's fd
-# closes (including process death), so a crashed turn can never wedge the
-# profile. A queued delivery waits up to ``bot_mode.turn_wait_seconds`` and
-# then fails with a structured 'target_busy' refusal instead of blocking
-# forever.
+# Two deliveries into the SAME profile must never run Bot Chat turns concurrently.
+# Deliveries are separate ``hermes`` subprocesses, so the lock is a per-profile
+# lockfile under ``<root>/bot_relay/locks/`` held with ``fcntl.flock`` for exactly
+# the turn window; the kernel releases it on fd close (incl. process death), so a
+# crashed turn can never wedge the profile.
 
 
+# ── per-profile turn lock (#93091) ─────────────────────────────────────────── Two deliveries into the SAME
+# target profile must never run their Bot Chat turns concurrently: deliveries spawn separate ``hermes``
+# subprocesses, so an in-memory mutex is useless — the lock is a per-profile lockfile under
+# ``<root>/bot_relay/locks/`` held with ``fcntl.flock`` for exactly the turn execution window. flock is
+# released by the kernel when the holder's fd closes (including process death), so a crashed turn can never
+# wedge the profile. A queued delivery waits up to ``bot_mode.turn_wait_seconds`` and then fails with a
+# structured 'target_busy' refusal instead of blocking forever.
 class TurnBusyError(RuntimeError):
-    """A delivery turn is already running for the target profile.
+    """A delivery turn is already running for the target profile (``waited_seconds`` ≈ time queued).
 
-    ``reason`` is 'target_busy' — extends the #93091 item-1 structured
-    refusal enum. ``waited_seconds`` is roughly how long the caller queued
-    behind the current turn before giving up.
+    ``reason`` is 'target_busy' — extends the #93091 item-1 structured refusal enum. ``waited_seconds`` is
+    roughly how long the caller queued behind the current turn before giving up.
     """
 
     reason = "target_busy"
 
     def __init__(self, profile: str, waited_seconds: float):
-        self.profile = profile
-        self.waited_seconds = waited_seconds
-        super().__init__(
-            f"target_busy: another delivery turn is already running for "
-            f"profile '{profile}' — queued behind it for ~{int(round(waited_seconds))}s "
-            "without it finishing. The message was NOT delivered; retry shortly."
-        )
+        self.profile, self.waited_seconds = profile, waited_seconds
+        super().__init__(f"target_busy: another delivery turn is already running for profile '{profile}' — "
+                         f"queued behind it for ~{int(round(waited_seconds))}s without it finishing. "
+                         "The message was NOT delivered; retry shortly.")
 
 
 def turn_wait_seconds() -> float:
     """Wait budget for a queued delivery turn (config, lazily read)."""
-    try:
-        from hermes_cli.config import cfg_get, load_config
-
-        val = cfg_get(load_config(), "bot_mode", "turn_wait_seconds", default=None)
-        if val is not None:
-            return max(0.0, float(val))
-    except Exception:
-        logger.debug("bot_mode.turn_wait_seconds read failed", exc_info=True)
-    return float(TURN_WAIT_SECONDS_FALLBACK)
+    val = _bot_mode_cfg("turn_wait_seconds", loader="load_config")
+    return float(TURN_WAIT_SECONDS_FALLBACK) if val is None else max(0.0, float(val))
 
 
 def turn_lock_path(root: Path | str, profile: str) -> Path:
@@ -632,19 +419,12 @@ def turn_lock_path(root: Path | str, profile: str) -> Path:
 
 
 @contextlib.contextmanager
-def acquire_turn_lock(
-    root: Path | str, profile: str, timeout_seconds: float | None = None
-) -> Iterator[Path]:
-    """Hold ``profile``'s cross-process turn lock for the ``with`` body.
-
-    Non-blocking flock probe + short-sleep retry loop up to the budget
-    (``bot_mode.turn_wait_seconds`` unless ``timeout_seconds`` is given).
-    No ordering guarantee among waiters — whichever probe lands first after
-    release wins — but every waiter is bounded by the budget, so no
-    deadlock. Raises :class:`TurnBusyError` when the budget is exhausted.
-    On platforms without ``fcntl`` (Windows) the lock degrades to a no-op —
-    those installs never had this race path in production.
-    """
+def acquire_turn_lock(root: Path | str, profile: str, timeout_seconds: float | None = None) -> Iterator[Path]:
+    """Hold ``profile``'s cross-process turn lock for the ``with`` body: non-blocking
+    flock probe + short-sleep retry up to the budget (``bot_mode.turn_wait_seconds``
+    unless ``timeout_seconds``); raises :class:`TurnBusyError` when exhausted. No
+    ordering among waiters, but every waiter is bounded. Without ``fcntl`` (Windows)
+    the lock is a no-op — those installs never had this race path."""
     try:
         import fcntl
     except ImportError:  # pragma: no cover — Windows
@@ -671,9 +451,7 @@ def acquire_turn_lock(
         try:
             yield path
         finally:
-            try:
+            with contextlib.suppress(OSError):  # kernel releases on close anyway
                 fcntl.flock(fd, fcntl.LOCK_UN)
-            except OSError:  # pragma: no cover — kernel releases on close anyway
-                pass
     finally:
         os.close(fd)

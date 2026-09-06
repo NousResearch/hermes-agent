@@ -42,7 +42,7 @@ def _bound_session_key(key="agent:main:telegram:dm:123"):
     """Context manager binding the approval session key contextvar."""
     import contextlib
 
-    from tools.approval import _approval_session_key
+    from tools.approval_context import _approval_session_key
 
     @contextlib.contextmanager
     def _cm():

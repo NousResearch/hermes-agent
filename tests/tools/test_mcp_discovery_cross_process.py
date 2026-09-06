@@ -53,6 +53,8 @@ def test_two_processes_each_complete_local_mcp_discovery(tmp_path):
             sys.path.insert(0, repo_root)
 
             import tools.mcp_tool as mcp_tool
+            from tools import mcp_tool_config as _mcp_config
+            from tools import mcp_tool_discovery as _mcp_discovery
 
             ready = Path(ready_arg)
             release = Path(release_arg)
@@ -71,7 +73,7 @@ def test_two_processes_each_complete_local_mcp_discovery(tmp_path):
                     "enabled": True,
                 }
             }
-            mcp_tool._load_mcp_config = lambda: config
+            _mcp_config._load_mcp_config = lambda: config
 
             def fake_register_mcp_servers(servers):
                 tool_name = "mcp__test_srv__ping"
@@ -89,10 +91,10 @@ def test_two_processes_each_complete_local_mcp_discovery(tmp_path):
 
                 return [tool_name]
 
-            mcp_tool.register_mcp_servers = fake_register_mcp_servers
+            _mcp_discovery.register_mcp_servers = fake_register_mcp_servers
             started.write_text("1", encoding="utf-8")
 
-            result = mcp_tool.discover_mcp_tools()
+            result = _mcp_discovery.discover_mcp_tools()
             server = mcp_tool._servers.get("test_srv")
             output.write_text(
                 json.dumps(

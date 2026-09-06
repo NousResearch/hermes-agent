@@ -4,7 +4,7 @@ A worktree created off the standalone clone's local ``HEAD`` roots the new
 branch on a stale base when that clone lags the remote. ``_resolve_worktree_base``
 fetches and branches from the remote tip instead so the worktree starts current.
 
-These tests exercise the REAL ``cli._resolve_worktree_base`` /
+These tests exercise the REAL ``worktree_ops._resolve_worktree_base`` /
 ``cli._setup_worktree`` against a real local "remote" repo (so ``git fetch``
 works offline in the hermetic sandbox), proving the worktree includes commits
 that exist on the remote but not on the stale local HEAD.
@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 
 import pytest
+
+from hermes_cli import worktree_ops
 
 import cli
 
@@ -76,7 +78,7 @@ def remote_and_clone(tmp_path):
 class TestResolveWorktreeBase:
     def test_resolves_to_fetched_upstream(self, remote_and_clone):
         clone, remote_head, stale_local_head = remote_and_clone
-        base_ref, label = cli._resolve_worktree_base(str(clone))
+        base_ref, label = worktree_ops._resolve_worktree_base(str(clone))
         # Should resolve to the upstream tracking ref and have fetched it.
         assert base_ref == "origin/main"
         assert "fetched" in label
@@ -92,7 +94,7 @@ class TestResolveWorktreeBase:
         _run(["git", "config", "user.email", "t@t.com"], repo)
         _run(["git", "config", "user.name", "T"], repo)
         _commit(repo, "README.md", "only commit")
-        base_ref, label = cli._resolve_worktree_base(str(repo))
+        base_ref, label = worktree_ops._resolve_worktree_base(str(repo))
         assert base_ref == "HEAD"
         assert "HEAD" in label
 
@@ -119,7 +121,7 @@ class TestResolveWorktreeBaseStartupCost:
             return real_run(args, **kw)
 
         monkeypatch.setattr(subprocess, "run", spy)
-        base_ref, label = cli._resolve_worktree_base(str(clone))
+        base_ref, label = worktree_ops._resolve_worktree_base(str(clone))
         assert base_ref == "origin/main"
         assert "fetched" in label and "ago" in label
         assert calls == [], "fresh FETCH_HEAD must skip the network fetch"
@@ -134,7 +136,7 @@ class TestResolveWorktreeBaseStartupCost:
         fetch_head = Path(clone) / ".git" / "FETCH_HEAD"
         old = time.time() - 3600
         os.utime(fetch_head, (old, old))
-        base_ref, label = cli._resolve_worktree_base(str(clone))
+        base_ref, label = worktree_ops._resolve_worktree_base(str(clone))
         assert base_ref == "origin/main"
         assert label == "origin/main (fetched)"
 
@@ -154,7 +156,7 @@ class TestResolveWorktreeBaseStartupCost:
 
         monkeypatch.setattr(subprocess, "run", stall_fetches)
         start = time.monotonic()
-        base_ref, label = cli._resolve_worktree_base(str(clone))
+        base_ref, label = worktree_ops._resolve_worktree_base(str(clone))
         elapsed = time.monotonic() - start
         # Cached tracking ref, single fetch attempt, no step-2 cascade.
         assert base_ref == "origin/main"
@@ -185,7 +187,7 @@ class TestResolveWorktreeBaseStartupCost:
         _run(
             ["git", "config", "branch.main.merge", "refs/heads/main"], repo
         )
-        base_ref, label = cli._resolve_worktree_base(str(repo))
+        base_ref, label = worktree_ops._resolve_worktree_base(str(repo))
         assert base_ref == "HEAD"
         assert "HEAD" in label
 

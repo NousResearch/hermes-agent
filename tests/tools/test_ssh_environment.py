@@ -29,7 +29,7 @@ def _run(command, task_id="ssh_test", **kwargs):
 
 
 def _cleanup(task_id="ssh_test"):
-    from tools.terminal_tool import cleanup_vm
+    from tools.terminal_tool_lifecycle import cleanup_vm
     cleanup_vm(task_id)
 
 

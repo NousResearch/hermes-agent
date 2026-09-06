@@ -14,7 +14,8 @@ from gateway.platforms.base import SendResult
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.platforms import weixin
 from gateway.platforms.weixin import ContextTokenStore, WeixinAdapter
-from tools.send_message_tool import _parse_target_ref, _send_to_platform
+from tools.send_message_tool import _send_to_platform
+from tools.send_message_targets import _parse_target_ref
 
 
 def _make_adapter() -> WeixinAdapter:
@@ -703,7 +704,7 @@ class TestWeixinVoiceAlwaysDownloaded:
     the raw audio and route it through Hermes' own STT pipeline.
 
     Non-Chinese users currently see garbled transcriptions because the
-    existing code short-circuits in two places: ``_download_voice``
+    existing code short-circuits in two places: the voice download
     returns ``None`` whenever Tencent provided *any* text (even
     incorrect), and ``_extract_text`` returns that text as the message
     body. The fix is to always download and never return Tencent's
@@ -727,7 +728,7 @@ class TestWeixinVoiceAlwaysDownloaded:
 
     @pytest.mark.asyncio
     async def test_download_voice_returns_path_when_tencent_text_set(self, tmp_path, monkeypatch):
-        """#27300 PRIMARY: ``_download_voice`` must not short-circuit on
+        """#27300 PRIMARY: voice ``_download_media`` must not short-circuit on
         ``voice_item.text``. The audio is needed so Hermes' own STT can
         re-transcribe when Tencent's text is in the wrong language.
         """
@@ -746,13 +747,13 @@ class TestWeixinVoiceAlwaysDownloaded:
         monkeypatch.setattr(weixin, "_download_and_decrypt_media", _fake_download)
 
         item = self._make_voice_item(text="garbled-tencent-transcript")
-        result = await adapter._download_voice(item)
+        result, _mime = await adapter._download_media(item, weixin._INBOUND_MEDIA[weixin.ITEM_VOICE])
 
         # Currently broken: returns None when voice_item.text is set.
         # After fix: returns a local path so the central STT pipeline
         # can pick it up and re-transcribe.
         assert result is not None, (
-            "_download_voice returned None even though raw audio is "
+            "_download_media returned None even though raw audio is "
             "available — Hermes' STT pipeline needs the audio to handle "
             "non-Chinese voice messages (#27300)."
         )
@@ -782,7 +783,7 @@ class TestWeixinVoiceAlwaysDownloaded:
         """#27300 INTEGRATION: ``_collect_media`` should add a ``.silk``
         path to ``media_paths`` even when Tencent returned text, so the
         central STT pipeline can re-transcribe. Currently the
-        short-circuit in ``_download_voice`` means the audio is never
+        short-circuit in the voice download means the audio is never
         downloaded, and the message body is whatever Tencent wrote
         (garbled for non-Chinese audio).
         """

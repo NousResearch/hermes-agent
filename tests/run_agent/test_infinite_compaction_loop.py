@@ -303,9 +303,9 @@ class TestPressureRealFloor:
         applied only on the ``else`` (rough fallback) branch.
         """
         import inspect
-        from agent import conversation_loop
+        from agent import turn_request_assembly
 
-        src = inspect.getsource(conversation_loop.run_conversation)
+        src = inspect.getsource(turn_request_assembly.assemble_api_request)
         i = src.index("if _anchored_pressure is not None:")
         window = src[i : i + 400]
         assert "request_pressure_tokens = _anchored_pressure" in window

@@ -192,7 +192,7 @@ def test_hermes_only_save_uses_the_same_clean_values_in_file_and_process(
     from dotenv import dotenv_values
 
     env_path = tmp_path / ".env"
-    ov._save_hermes_only_config(
+    ov._setup._save_hermes_only_config(
         config={"memory": {}},
         provider_config={},
         env_path=env_path,
@@ -226,7 +226,7 @@ def test_hermes_only_save_failure_leaves_process_environment_unchanged(
 
     monkeypatch.setattr(ov, "_write_env_vars", fail_write)
     with pytest.raises(OSError, match="test write failure"):
-        ov._save_hermes_only_config(
+        ov._setup._save_hermes_only_config(
             config={"memory": {}},
             provider_config={},
             env_path=tmp_path / ".env",

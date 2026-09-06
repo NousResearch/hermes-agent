@@ -16,7 +16,7 @@ supported vocabulary. The policy under test:
 import pytest
 
 from agent.reasoning_effort import (
-    CODEX_RESPONSES_EFFORTS,
+    CODEX_GPT56_EFFORTS,
     EFFORT_LADDER,
     GLM52_EFFORTS,
     GLM52_OVERRIDES,
@@ -137,8 +137,8 @@ class TestGlm52Vocabulary:
 
 class TestCodexVocabulary:
     def test_minimal_and_ultra(self):
-        assert clamp_effort("minimal", CODEX_RESPONSES_EFFORTS) == "low"
-        assert clamp_effort("ultra", CODEX_RESPONSES_EFFORTS) == "max"
+        assert clamp_effort("minimal", CODEX_GPT56_EFFORTS) == "low"
+        assert clamp_effort("ultra", CODEX_GPT56_EFFORTS) == "max"
 
     def test_per_model_max_support(self):
         """Live-verified (Aug 2026, #68365): 'max' is gpt-5.6-only — gpt-5.5

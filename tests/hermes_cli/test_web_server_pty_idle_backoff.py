@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.web_server import _legacy_pump
+from hermes_cli.web_server_chat import _legacy_pump
 
 
 class _FakeBridge:

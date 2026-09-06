@@ -21,6 +21,7 @@ import threading
 import pytest
 
 import plugins.memory.honcho.client as client_mod
+import plugins.memory.honcho.client_cache as client_cache_mod
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from plugins.memory.honcho.client import (
     HonchoClientConfig,
@@ -245,12 +246,12 @@ class TestCredentialIdentity:
         token = set_hermes_home_override(home)
         try:
             cfg1 = HonchoClientConfig.from_global_config()
-            fp1 = client_mod._credential_fingerprint(cfg1)
+            fp1 = client_cache_mod._credential_fingerprint(cfg1)
 
             # Access token rotates in place; refresh token unchanged.
             cfg_rotated = HonchoClientConfig.from_global_config()
             cfg_rotated.api_key = "access-token-2"
-            fp_rotated = client_mod._credential_fingerprint(cfg_rotated)
+            fp_rotated = client_cache_mod._credential_fingerprint(cfg_rotated)
 
             # Re-auth: new refresh token.
             oauth_block2 = dict(oauth_block, refreshToken="refresh-2")
@@ -259,7 +260,7 @@ class TestCredentialIdentity:
                                       "oauth": oauth_block2}},
             }))
             cfg2 = HonchoClientConfig.from_global_config()
-            fp2 = client_mod._credential_fingerprint(cfg2)
+            fp2 = client_cache_mod._credential_fingerprint(cfg2)
         finally:
             reset_hermes_home_override(token)
 

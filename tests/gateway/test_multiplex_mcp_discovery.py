@@ -20,7 +20,7 @@ async def test_gateway_boot_discovers_mcp_under_every_profile_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import gateway.run as gateway_run
-    from tools import mcp_tool
+    from tools import mcp_tool_discovery as _mcp_discovery
 
     homes = [("default", tmp_path / "default"), ("worker", tmp_path / "worker")]
     for _name, home in homes:
@@ -35,7 +35,7 @@ async def test_gateway_boot_discovers_mcp_under_every_profile_home(
         "hermes_cli.profiles.profiles_to_serve",
         lambda multiplex, profile_allowlist=None: homes,
     )
-    monkeypatch.setattr(mcp_tool, "discover_mcp_tools", fake_discover)
+    monkeypatch.setattr(_mcp_discovery, "discover_mcp_tools", fake_discover)
 
     await gateway_run._discover_gateway_mcp_tools(GatewayConfig(multiplex_profiles=True))
 
@@ -50,6 +50,8 @@ async def test_reload_mcp_only_touches_requesting_profile(
 ) -> None:
     from gateway.run import GatewayRunner
     from tools import mcp_tool
+    from tools import mcp_tool_discovery as _mcp_discovery
+    from tools import mcp_tool_lifecycle as _mcp_lifecycle
 
     worker_home = tmp_path / "profiles" / "worker"
     worker_home.mkdir(parents=True)
@@ -78,8 +80,8 @@ async def test_reload_mcp_only_touches_requesting_profile(
         seen.append(("discover", get_hermes_home()))
         return []
 
-    monkeypatch.setattr(mcp_tool, "shutdown_mcp_servers", fake_shutdown)
-    monkeypatch.setattr(mcp_tool, "discover_mcp_tools", fake_discover)
+    monkeypatch.setattr(_mcp_lifecycle, "shutdown_mcp_servers", fake_shutdown)
+    monkeypatch.setattr(_mcp_discovery, "discover_mcp_tools", fake_discover)
 
     event = MessageEvent(
         text="/reload-mcp", message_id="m1",

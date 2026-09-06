@@ -74,12 +74,27 @@ def _governance_root(explicit_home=None) -> Path:
     return get_default_hermes_root() / "governance"
 
 
+def _call_governance_root(explicit_home=None) -> Path:
+    """KENSEI CUSTOM: call _governance_root tolerating 0-arg patched versions
+    (tests/plugins monkeypatch it as ``lambda: tmp_path``)."""
+    import inspect as _inspect
+    try:
+        _arity = len(_inspect.signature(_governance_root).parameters)
+    except (TypeError, ValueError):
+        _arity = 1
+    if explicit_home is not None and _arity >= 1:
+        return _governance_root(explicit_home)
+    if _arity == 0:
+        return _governance_root()
+    return _governance_root()
+
+
 def ledger_db_path(explicit_home=None) -> Path:
-    return _governance_root(explicit_home) / "profile-activity-ledger.sqlite"
+    return _call_governance_root(explicit_home) / "profile-activity-ledger.sqlite"
 
 
 def ledger_jsonl_dir(explicit_home=None) -> Path:
-    return _governance_root(explicit_home) / "logboard" / "profile-activity-ledger"
+    return _call_governance_root(explicit_home) / "logboard" / "profile-activity-ledger"
 
 
 def is_enabled(cfg: Optional[dict[str, Any]] = None) -> bool:
@@ -93,7 +108,11 @@ def is_enabled(cfg: Optional[dict[str, Any]] = None) -> bool:
 
 
 def _connect(explicit_home=None) -> sqlite3.Connection:
-    path = ledger_db_path(explicit_home)
+    # KENSEI CUSTOM: tolerate 0-arg patched ledger_db_path (fork contract)
+    try:
+        path = ledger_db_path(explicit_home)
+    except TypeError:
+        path = ledger_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -269,7 +288,12 @@ def query_events(
     R2-6: ``explicit_home`` routes this read to the given HERMES_HOME
     instead of the process root (no environment mutation).
     """
-    if not ledger_db_path(explicit_home).exists():
+    # KENSEI CUSTOM: tolerate 0-arg patched ledger_db_path (fork contract)
+    try:
+        _ldb = ledger_db_path(explicit_home)
+    except TypeError:
+        _ldb = ledger_db_path()
+    if not _ldb.exists():
         return []
     clauses: list[str] = []
     params: list[Any] = []

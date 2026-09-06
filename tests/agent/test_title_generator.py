@@ -228,10 +228,11 @@ class TestAutoTitleSession:
     def test_body_exception_routed_to_failure_callback(self):
         db = MagicMock()
         db.get_session_title.return_value = None
+        db.get_session_title_source.return_value = None
         seen = []
 
         boom = ImportError("stale module")
-        with patch("agent.title_generator._auto_title_session", side_effect=boom):
+        with patch("agent.title_generator.generate_title", side_effect=boom):
             auto_title_session(
                 db,
                 "sess-1",

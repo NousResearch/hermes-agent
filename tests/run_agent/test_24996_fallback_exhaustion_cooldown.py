@@ -23,9 +23,9 @@ from agent.chat_completion_helpers import _FALLBACK_EXHAUSTED_COOLDOWN_S
 
 def _make_agent(fallback_model=None):
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
         # Neutralise fallback floor so test-visible chain matches fallback_model config.
         patch("agent.agent_init.apply_fallback_floor", side_effect=lambda chain, floor, **kw: chain),
     ):

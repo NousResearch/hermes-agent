@@ -79,7 +79,7 @@ class TestSetupLogging:
         root = logging.getLogger()
 
         agent_handlers = [
-            h for h in hermes_logging.rotating_file_handlers()
+            h for h in hermes_logging._queued_file_handlers
             if isinstance(h, RotatingFileHandler)
             and "agent.log" in getattr(h, "baseFilename", "")
         ]
@@ -107,7 +107,7 @@ class TestSetupLogging:
 
         root = logging.getLogger()
         agent_handlers = [
-            h for h in hermes_logging.rotating_file_handlers()
+            h for h in hermes_logging._queued_file_handlers
             if isinstance(h, RotatingFileHandler)
             and "agent.log" in getattr(h, "baseFilename", "")
         ]
@@ -170,7 +170,7 @@ class TestSetupLogging:
 
         root = logging.getLogger()
         agent_handlers = [
-            h for h in hermes_logging.rotating_file_handlers()
+            h for h in hermes_logging._queued_file_handlers
             if isinstance(h, RotatingFileHandler)
             and "agent.log" in getattr(h, "baseFilename", "")
         ]
@@ -186,7 +186,7 @@ class TestGatewayMode:
         root = logging.getLogger()
 
         gw_handlers = [
-            h for h in hermes_logging.rotating_file_handlers()
+            h for h in hermes_logging._queued_file_handlers
             if isinstance(h, RotatingFileHandler)
             and "gateway.log" in getattr(h, "baseFilename", "")
         ]
@@ -197,7 +197,7 @@ class TestGatewayMode:
         root = logging.getLogger()
 
         gw_handlers = [
-            h for h in hermes_logging.rotating_file_handlers()
+            h for h in hermes_logging._queued_file_handlers
             if isinstance(h, RotatingFileHandler)
             and "gateway.log" in getattr(h, "baseFilename", "")
         ]
@@ -246,7 +246,7 @@ class TestGuiMode:
         root = logging.getLogger()
 
         gui_handlers = [
-            h for h in hermes_logging.rotating_file_handlers()
+            h for h in hermes_logging._queued_file_handlers
             if isinstance(h, RotatingFileHandler)
             and "gui.log" in getattr(h, "baseFilename", "")
         ]
@@ -341,31 +341,25 @@ class TestAddRotatingHandler:
 
     def test_no_duplicate_for_same_path(self, tmp_path):
         log_path = tmp_path / "test.log"
-        logger = logging.getLogger("_test_rotating_dup")
         formatter = logging.Formatter("%(message)s")
 
         hermes_logging._add_rotating_handler(
-            logger, log_path,
+            log_path,
             level=logging.INFO, max_bytes=1024, backup_count=1,
             formatter=formatter,
         )
         hermes_logging._add_rotating_handler(
-            logger, log_path,
+            log_path,
             level=logging.INFO, max_bytes=1024, backup_count=1,
             formatter=formatter,
         )
 
         rotating_handlers = [
-            h for h in hermes_logging.rotating_file_handlers()
+            h for h in hermes_logging._queued_file_handlers
             if isinstance(h, RotatingFileHandler)
         ]
         assert len(rotating_handlers) == 1
         # Clean up
-        for h in list(logger.handlers):
-            if isinstance(h, RotatingFileHandler):
-                logger.removeHandler(h)
-                h.close()
-
 
     def test_no_session_filter_on_handler(self, tmp_path):
         """Handlers rely on record factory, not per-handler _SessionFilter."""
@@ -374,12 +368,12 @@ class TestAddRotatingHandler:
         formatter = logging.Formatter("%(session_tag)s%(message)s")
 
         hermes_logging._add_rotating_handler(
-            logger, log_path,
+            log_path,
             level=logging.INFO, max_bytes=1024, backup_count=1,
             formatter=formatter,
         )
 
-        handlers = [h for h in hermes_logging.rotating_file_handlers() if isinstance(h, RotatingFileHandler)]
+        handlers = [h for h in hermes_logging._queued_file_handlers if isinstance(h, RotatingFileHandler)]
         assert len(handlers) == 1
         # No _SessionFilter on the handler — record factory handles it
         assert len(handlers[0].filters) == 0
@@ -392,21 +386,15 @@ class TestAddRotatingHandler:
         assert "[factory_test]" in content
 
         # Clean up
-        for h in list(logger.handlers):
-            if isinstance(h, RotatingFileHandler):
-                logger.removeHandler(h)
-                h.close()
-
     def test_managed_mode_initial_open_sets_group_writable(self, tmp_path):
         log_path = tmp_path / "managed-open.log"
-        logger = logging.getLogger("_test_rotating_managed_open")
         formatter = logging.Formatter("%(message)s")
 
         old_umask = os.umask(0o022)
         try:
             with patch("hermes_cli.config.is_managed", return_value=True):
                 hermes_logging._add_rotating_handler(
-                    logger, log_path,
+                    log_path,
                     level=logging.INFO, max_bytes=1024, backup_count=1,
                     formatter=formatter,
                 )
@@ -415,11 +403,6 @@ class TestAddRotatingHandler:
 
         assert log_path.exists()
         assert stat.S_IMODE(log_path.stat().st_mode) == 0o660
-
-        for h in list(logger.handlers):
-            if isinstance(h, RotatingFileHandler):
-                logger.removeHandler(h)
-                h.close()
 
 
 
@@ -715,6 +698,6 @@ class TestAsyncQueueLogging:
         # The real file handlers are discoverable via the accessor.
         assert any(
             "agent.log" in getattr(h, "baseFilename", "")
-            for h in hermes_logging.rotating_file_handlers()
+            for h in hermes_logging._queued_file_handlers
         )
 

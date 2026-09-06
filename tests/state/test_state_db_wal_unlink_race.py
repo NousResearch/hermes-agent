@@ -12,7 +12,8 @@ import sqlite3
 import pytest
 
 import hermes_state
-from hermes_state import repair_state_db_schema
+import hermes_state_repair
+from hermes_state_repair import repair_state_db_schema
 
 
 def _make_db(path):
@@ -31,9 +32,9 @@ def test_wal_restoration_reuses_exclusive_repair_connection(tmp_path, monkeypatc
     def fail_if_reopened(_path):
         pytest.fail("WAL restoration reopened state.db outside the repair guard")
 
-    monkeypatch.setattr(hermes_state, "_connect_repair_durable", fail_if_reopened)
+    monkeypatch.setattr(hermes_state_repair, "_connect_repair_durable", fail_if_reopened)
 
-    hermes_state._restore_journal_mode_after_repair(db_path, None, conn=conn)
+    hermes_state_repair._restore_journal_mode_after_repair(db_path, None, conn=conn)
     # The mode itself is whatever apply_wal_with_fallback resolves on this
     # runtime (WAL, or DELETE on WAL-reset-vulnerable SQLite builds); the
     # contract under test is the connection reuse, asserted above.
@@ -46,20 +47,20 @@ def test_repair_never_reopens_after_the_guard_releases(tmp_path, monkeypatch):
     opens is opened while the exclusive guard is still held, and none after."""
     db = tmp_path / "state.db"
     _make_db(db)
-    monkeypatch.setattr(hermes_state, "_db_opens_cleanly", lambda path: "forced-unhealthy")
+    monkeypatch.setattr(hermes_state_repair, "_db_opens_cleanly", lambda path: "forced-unhealthy")
     # The scratch-space pre-flight wants ~10GB headroom; irrelevant here.
-    monkeypatch.setattr(hermes_state, "_repair_scratch_space_error", lambda path: None)
+    monkeypatch.setattr(hermes_state_repair, "_repair_scratch_space_error", lambda path: None)
 
     def fake_strategies(scratch_path, report):
         report["repaired"] = True
         report["strategy"] = "test_strategy"
         return report
 
-    monkeypatch.setattr(hermes_state, "_run_repair_strategies", fake_strategies)
+    monkeypatch.setattr(hermes_state_repair, "_run_repair_strategies", fake_strategies)
 
     events: list[str] = []
-    real_guard = hermes_state._exclusive_repair_db_guard
-    real_connect = hermes_state._connect_repair_durable
+    real_guard = hermes_state_repair._exclusive_repair_db_guard
+    real_connect = hermes_state_repair._connect_repair_durable
 
     from contextlib import contextmanager
 
@@ -74,8 +75,8 @@ def test_repair_never_reopens_after_the_guard_releases(tmp_path, monkeypatch):
         events.append("connect")
         return real_connect(path, *a, **kw)
 
-    monkeypatch.setattr(hermes_state, "_exclusive_repair_db_guard", tracing_guard)
-    monkeypatch.setattr(hermes_state, "_connect_repair_durable", tracing_connect)
+    monkeypatch.setattr(hermes_state_repair, "_exclusive_repair_db_guard", tracing_guard)
+    monkeypatch.setattr(hermes_state_repair, "_connect_repair_durable", tracing_connect)
 
     report = repair_state_db_schema(db, backup=False)
     assert report["repaired"] is True

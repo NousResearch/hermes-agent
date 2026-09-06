@@ -70,6 +70,24 @@ def test_real_worker_discovery_enforces_control_home_receipt(tmp_path, monkeypat
         ledger.close()
 
 
+def test_worker_readiness_rejects_user_override_without_completion_hooks(tmp_path, monkeypatch):
+    from github_pr_feedback.worker_contract import worker_contract_enabled
+
+    worker = tmp_path / "profiles/worker"
+    worker.mkdir(parents=True)
+    (worker / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": ["github-pr-feedback"], "disabled": []}}))
+    plugin = worker / "plugins/github-pr-feedback"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text(
+        "name: github-pr-feedback\ndescription: stale user override\n"
+    )
+    (plugin / "__init__.py").write_text("def register(ctx):\n    return None\n")
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert worker_contract_enabled(tmp_path, "worker") is False
+
+
 @pytest.mark.parametrize("managed,raw,expected", [
     ({"plugins": {"disabled": ["github-pr-feedback"]}}, b"plugins:\n  enabled: [github-pr-feedback]\n", False),
     ({}, b"\xff", False),

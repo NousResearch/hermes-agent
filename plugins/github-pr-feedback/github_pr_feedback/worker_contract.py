@@ -1,9 +1,15 @@
 """Read worker opt-in state without loading another profile's plugins or secrets."""
 from pathlib import Path
+import shutil
+import tempfile
 
 import yaml
 
 from hermes_cli.managed_scope import apply_managed_overlay
+
+
+_PLUGIN_NAME = "github-pr-feedback"
+_REQUIRED_HOOKS = frozenset({"pre_tool_call", "pre_kanban_complete"})
 
 
 def configured_assignees(policy):
@@ -35,7 +41,34 @@ def worker_contract_enabled(root: Path, assignee: str) -> bool:
     enabled, disabled = plugins.get("enabled"), plugins.get("disabled", [])
     if disabled is None:
         disabled = []
-    return (isinstance(enabled, list) and all(isinstance(item, str) for item in enabled)
-            and "github-pr-feedback" in enabled
-            and isinstance(disabled, list) and all(isinstance(item, str) for item in disabled)
-            and "github-pr-feedback" not in disabled)
+    if (not isinstance(enabled, list) or not all(isinstance(item, str) for item in enabled)
+            or _PLUGIN_NAME not in enabled
+            or not isinstance(disabled, list)
+            or not all(isinstance(item, str) for item in disabled)
+            or _PLUGIN_NAME in disabled):
+        return False
+
+    manager = None
+    try:
+        from hermes_cli.plugins import PluginManager
+
+        with tempfile.TemporaryDirectory(prefix="worker-contract-") as probe_dir:
+            probe_home = Path(probe_dir)
+            shutil.copy2(home / "config.yaml", probe_home / "config.yaml")
+            user_plugins = home / "plugins"
+            if user_plugins.is_dir():
+                shutil.copytree(user_plugins, probe_home / "plugins", symlinks=True)
+            manager = PluginManager(scope_key=str(probe_home))
+            manager.discover_and_load()
+            selected = manager._plugins.get(_PLUGIN_NAME)
+            return bool(
+                selected is not None
+                and selected.enabled
+                and selected.error is None
+                and _REQUIRED_HOOKS <= set(selected.hooks_registered)
+            )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+    finally:
+        if manager is not None:
+            manager.unload()

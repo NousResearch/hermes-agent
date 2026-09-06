@@ -8,6 +8,7 @@ for the full command timeout before surfacing a useless error.
 
 import os
 import shutil
+import sys
 
 import pytest
 
@@ -111,7 +112,13 @@ class TestChromiumInstalled:
 
     def test_result_cached(self, monkeypatch, tmp_path):
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
-        executable = tmp_path / "chromium-1208" / "chrome-mac-arm64" / "Google Chrome for Testing.app" / "Contents" / "MacOS" / "Google Chrome for Testing"
+        release = tmp_path / "chromium-1208"
+        if sys.platform == "darwin":
+            executable = release / "chrome-mac-arm64" / "Google Chrome for Testing.app" / "Contents" / "MacOS" / "Google Chrome for Testing"
+        elif sys.platform == "win32":
+            executable = release / "chrome-win64" / "chrome.exe"
+        else:
+            executable = release / "chrome-linux64" / "chrome"
         executable.parent.mkdir(parents=True)
         executable.touch(mode=0o755)
         assert bt_install._chromium_installed() is True
@@ -128,7 +135,13 @@ class TestCheckBrowserRequirementsChromium:
         monkeypatch.setattr("tools.browser_tool_install._requires_real_termux_browser_install", lambda _: False)
         monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: None)
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
-        executable = tmp_path / "chromium-1208" / "chrome-mac-arm64" / "Google Chrome for Testing.app" / "Contents" / "MacOS" / "Google Chrome for Testing"
+        release = tmp_path / "chromium-1208"
+        if sys.platform == "darwin":
+            executable = release / "chrome-mac-arm64" / "Google Chrome for Testing.app" / "Contents" / "MacOS" / "Google Chrome for Testing"
+        elif sys.platform == "win32":
+            executable = release / "chrome-win64" / "chrome.exe"
+        else:
+            executable = release / "chrome-linux64" / "chrome"
         executable.parent.mkdir(parents=True)
         executable.touch(mode=0o755)
 

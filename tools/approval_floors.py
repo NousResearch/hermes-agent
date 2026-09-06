@@ -36,8 +36,25 @@ def _match_user_deny_rule(command: str) -> str | None:
         return None
     for command_variant in _command_detection_variants(command):
         candidate = command_variant.lower().strip()
+        
+        normalized = candidate
+        parts = candidate.split()
+        if parts:
+            idx = 0
+            while idx < len(parts):
+                basename = parts[idx].split("/")[-1]
+                if basename == "env":
+                    idx += 1
+                    while idx < len(parts) and "=" in parts[idx]:
+                        idx += 1
+                    continue
+                if idx > 0 or basename != parts[0]:
+                    normalized = " ".join([basename] + parts[idx+1:])
+                break
+                
         for pattern in globs:
-            if fnmatch.fnmatchcase(candidate, pattern.lower()):
+            lower_pattern = pattern.lower()
+            if fnmatch.fnmatchcase(candidate, lower_pattern) or fnmatch.fnmatchcase(normalized, lower_pattern):
                 return pattern
     return None
 

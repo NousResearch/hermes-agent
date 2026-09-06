@@ -58,6 +58,18 @@ class TestMatchUserDenyRule:
         deny_config(["git push --force*"])
         assert mod._match_user_deny_rule('git pu""sh --force origin main') is not None
 
+    def test_path_and_env_wrappers_still_match(self, deny_config):
+        """A path or env wrapper around the first token is normalized away before matching."""
+        deny_config(["sudo *"])
+        assert mod._match_user_deny_rule("sudo -n id -u") is not None
+        assert mod._match_user_deny_rule("/usr/bin/sudo -n id -u") is not None
+        assert mod._match_user_deny_rule("env sudo -n id -u") is not None
+        assert mod._match_user_deny_rule("env FOO=bar /usr/bin/sudo -n id -u") is not None
+        assert mod._match_user_deny_rule("/usr/bin/env FOO=bar /usr/bin/sudo -n id -u") is not None
+        
+        # Ensure we didn't break things that shouldn't match
+        assert mod._match_user_deny_rule("echo sudo -n id -u") is None
+
 
 class TestDenyBeatsYolo:
     def test_deny_blocks_under_yolo_env(self, deny_config, clean_env, monkeypatch):

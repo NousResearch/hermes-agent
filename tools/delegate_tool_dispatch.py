@@ -13,6 +13,7 @@ from concurrent.futures import FIRST_COMPLETED, wait as _cf_wait
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional
 
+from tools.async_delegation import _new_delegation_id, record_unit_child
 from tools.delegate_tool_child_run import _detach_child, _fabricated_entry, _signal_child_stop
 from tools.delegate_tool_progress import (
     SUBAGENT_FAILURE_STATUSES, _clean_error_text, _print_completion_line, _quiet, format_batch_tag,
@@ -45,6 +46,7 @@ class _Batch:
     overall_start: float
     # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
     group: Optional[str] = None
+    unit_id: Optional[str] = None  # the async registry id this unit runs under (``<call_id>-k`` for split calls)
 
     def owner_kwargs(self) -> Dict[str, Any]:
         """Steer/stop authority of the originating session, passed to every child run."""
@@ -129,6 +131,9 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
             for future in done:
                 entry = _entry_of(future, futures[future])
                 results.append(entry)
+                if not honor_parent_interrupt and batch.unit_id:
+                    # Detached unit: a crash before the join must not lose children that already finished.
+                    record_unit_child(batch.unit_id, entry)
                 _report_child_done(parent_agent, spinner_ref, entry, _tag, task_labels, n_tasks, n_here - len(results))
     results.sort(key=lambda r: r["task_index"])  # match input order
 
@@ -363,6 +368,7 @@ def _dispatch_background(batch: _Batch) -> str:
         # One unit keeps the live-transcript directory's id so the returned delegation_id matches
         # cache/delegation/live/<id>/; several units suffix it (-1, -2, ...) and the call keeps the bare id.
         unit_id = batch.live_deleg_id if len(units) == 1 else (f"{batch.live_deleg_id}-{k + 1}" if batch.live_deleg_id else None)
+        unit.unit_id = unit_id = unit_id or _new_delegation_id()  # fixed before the runner can start
         dispatch = _dispatch_unit(unit, unit_id, slot_key, routing)
         if dispatch.get("status") == "dispatched":
             slot_key = slot_key or dispatch["delegation_id"]

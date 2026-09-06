@@ -4,6 +4,7 @@ globals at install time (method_ctx.bind_module), so they reference server.py gl
 
 from __future__ import annotations
 
+import contextlib
 import threading
 
 from .method_ctx import bind_module
@@ -356,6 +357,47 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
         "status_callback": lambda kind, text=None: progress(text if text is not None else kind)}
 
 
+def _rebuild_session_agent(sid: str, session: dict, **kwargs):
+    """Rebuild a LIVE session's agent on the profile that session belongs to.
+
+    ``_make_agent`` resolves prompt/skills/toolsets through ``get_hermes_home()`` and falls back to the
+    process-wide LAUNCH ``state.db`` when handed no handle, so an unscoped in-session rebuild silently moves
+    a named-profile session onto the launch profile: its later turns append to ``~/.hermes/state.db`` under
+    the same session id while the desktop replays the profile store and shows a stale transcript (#104079).
+    The outgoing agent already holds this session's handle — inherit it (same session, same FILE) instead of
+    acquiring a second refcount, and carry ownership across so teardown still releases it exactly once.
+    """
+    old_agent = session.get("agent")
+    profile_home = session.get("profile_home")
+    session_db = getattr(old_agent, "_session_db", None)
+    # No live agent to inherit from (rebuild before the deferred build ran): open the profile's store the
+    # same FAIL-CLOSED way _start_agent_build does rather than letting _make_agent reach for the launch db.
+    opened = session_db is None and bool(profile_home)
+    scopes = _bind_build_profile_scopes(profile_home) if profile_home else None
+    try:
+        if opened:
+            session_db = _open_profile_session_db(profile_home)
+        agent = _make_agent(sid, session["session_key"], session_db=session_db, **kwargs)
+    except BaseException:
+        if opened and session_db is not None:
+            with contextlib.suppress(Exception):
+                session_db.close()
+        raise
+    finally:
+        if scopes is not None:
+            _release_build_profile_scopes(scopes)
+    # Only a DEDICATED handle carries ownership; the shared launch handle outlives every agent and
+    # _transfer_db_to_agent refuses it.
+    owned = opened or bool(getattr(old_agent, "_owns_session_db", False))
+    if owned and _transfer_db_to_agent(agent, session_db):
+        if old_agent is not None:
+            old_agent._owns_session_db = False
+    elif opened:
+        with contextlib.suppress(Exception):
+            session_db.close()
+    return agent
+
+
 def _reset_session_agent(sid: str, session: dict) -> dict:
     tokens = _set_session_context(session["session_key"])
     try:
@@ -364,8 +406,8 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         # resurrect them. Global process state is never touched (see _apply_model_switch).
         for k in ("model_override", "create_reasoning_override", "create_service_tier_override", "one_turn_model_restore"):
             session.pop(k, None)
-        new_agent = _make_agent(
-            sid, session["session_key"], session_id=session["session_key"],
+        new_agent = _rebuild_session_agent(
+            sid, session, session_id=session["session_key"],
             platform_override=_session_source(session),
             context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session))
     finally:

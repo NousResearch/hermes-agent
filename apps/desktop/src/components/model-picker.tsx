@@ -6,7 +6,7 @@ import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { modelSearchText } from '@/lib/model-search-text'
 import { currentPickerSelection } from '@/lib/model-status-label'
-import { normalize } from '@/lib/text'
+import { foldIncludes, normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $localRuntimeJobs, runningModelDownloads, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
@@ -266,9 +266,9 @@ function ModelResults({
 
   const matches = (provider: ModelOptionProvider, model: string) =>
     !q ||
-    modelSearchText(model).toLowerCase().includes(q) ||
-    provider.name.toLowerCase().includes(q) ||
-    provider.slug.toLowerCase().includes(q)
+    foldIncludes(modelSearchText(model), q) ||
+    foldIncludes(provider.name, q) ||
+    foldIncludes(provider.slug, q)
 
   // Only configured providers (those with curated models) are selectable
   // here. Switching to a NOT-yet-configured provider goes through the

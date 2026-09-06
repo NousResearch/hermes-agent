@@ -14,7 +14,7 @@ import { useI18n } from '@/i18n'
 import { Search } from '@/lib/icons'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
-import { normalize } from '@/lib/text'
+import { foldIncludes, normalize } from '@/lib/text'
 import {
   $visibleModels,
   collapseModelFamilies,
@@ -76,7 +76,7 @@ export function ModelVisibilityDialog({
   const q = normalize(search)
 
   const matches = (provider: ModelOptionProvider, model: string) =>
-    !q || `${model} ${provider.name} ${provider.slug} ${displayModelName(model)}`.toLowerCase().includes(q)
+    !q || foldIncludes(`${model} ${provider.name} ${provider.slug} ${displayModelName(model)}`, q)
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>

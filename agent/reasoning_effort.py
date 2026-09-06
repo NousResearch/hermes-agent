@@ -27,8 +27,9 @@ EFFORT_LADDER: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "x
 #: Widest OpenAI-compatible wire vocabulary (OpenRouter, Nous Portal).
 OPENAI_COMPAT_WIRE_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
-#: OpenAI/Codex Responses per model generation (live-verified): ``minimal`` is rejected by
-#: both (clamps to low); ``max`` is gpt-5.6-only.
+#: Astra accepts low..max; GPT-5.6 additionally accepts none. Older Codex models
+#: cap at xhigh. Unsupported minimal/ultra requests use the shared clamp.
+CODEX_ASTRA_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 CODEX_GPT56_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh", "max")
 CODEX_LEGACY_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh")
 
@@ -80,6 +81,9 @@ META_AI_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
 
 def codex_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     """Supported effort set for an OpenAI/Codex Responses model."""
+    bare_model = (model or "").strip().lower().rsplit("/", 1)[-1]
+    if bare_model == "gpt-6-astra" or bare_model.startswith("gpt-6-astra-"):
+        return CODEX_ASTRA_EFFORTS
     return CODEX_GPT56_EFFORTS if "gpt-5.6" in (model or "").lower() else CODEX_LEGACY_EFFORTS
 
 

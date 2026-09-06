@@ -141,7 +141,7 @@ class TestCodexVocabulary:
         assert clamp_effort("ultra", CODEX_GPT56_EFFORTS) == "max"
 
     def test_per_model_max_support(self):
-        """Live-verified (Aug 2026, #68365): 'max' is gpt-5.6-only — gpt-5.5
+        """Live-verified (Aug 2026, #68365): GPT-5.6 accepts 'max' — GPT-5.5
         rejects it ("Supported values are: 'none','low','medium','high',
         'xhigh'"); 'minimal' is rejected by both generations."""
         from agent.reasoning_effort import (
@@ -171,3 +171,51 @@ class TestRequestedEffort:
         assert requested_effort({"enabled": False, "effort": "high"}) is None
         assert requested_effort("not-a-dict") is None
         assert requested_effort({"effort": ""}) is None
+
+
+# Check the outgoing request, not just membership in the vocabulary table.
+_CODEX_EFFORT_CASES = [
+    ("gpt-6-astra", {"max": "max", "ultra": "max", "none": "low", "minimal": "low"}),
+    ("gpt-6-astra-900k", {"max": "max", "none": "low", "minimal": "low"}),
+    ("openai/gpt-6-astra-pro", {"max": "max", "none": "low"}),
+    ("gpt-5.6-sol", {"max": "max", "none": "none", "minimal": "low"}),
+    ("gpt-5.5", {"max": "xhigh", "none": "none", "minimal": "low"}),
+    ("gpt-6-astraexperimental", {"max": "xhigh", "none": "none"}),
+    ("gpt-60", {"max": "xhigh", "none": "none"}),
+]
+
+
+@pytest.mark.parametrize("model,efforts", _CODEX_EFFORT_CASES)
+def test_codex_main_request_preserves_model_effort_contract(model, efforts):
+    from agent.transports.codex import ResponsesApiTransport
+
+    transport = ResponsesApiTransport()
+    for requested, expected in efforts.items():
+        kwargs = transport.build_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex/",
+            is_codex_backend=True,
+            reasoning_config={"enabled": True, "effort": requested},
+        )
+        assert kwargs["reasoning"]["effort"] == expected, (model, requested)
+
+
+@pytest.mark.parametrize("model,efforts", _CODEX_EFFORT_CASES)
+def test_codex_aux_request_preserves_model_effort_contract(model, efforts):
+    from openai import OpenAI
+    from agent.auxiliary_client import _CodexCompletionsAdapter
+
+    # Exercise the real auxiliary request builder used by compression, without
+    # sending a request or reading the operator's credentials.
+    with OpenAI(api_key="test-unused", base_url="https://chatgpt.com/backend-api/codex/") as client:
+        adapter = _CodexCompletionsAdapter(client, model)
+        for requested, expected in efforts.items():
+            kwargs, _, _ = adapter._build_responses_kwargs({
+                "model": model,
+                "messages": [{"role": "user", "content": "Summarize this conversation."}],
+                "extra_body": {"reasoning": {"effort": requested}},
+            })
+            assert kwargs["reasoning"]["effort"] == expected, (model, requested)

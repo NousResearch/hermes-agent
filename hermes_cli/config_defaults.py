@@ -2286,10 +2286,12 @@ DEFAULT_CONFIG = {
         "keepalive_interval_seconds": 900,
         # anthropic_wire: which Portal route carries anthropic/* models. "chat" =
         # /v1/chat/completions (default for now); "native" = /v1/messages, the Anthropic
-        # Messages wire (signed thinking passthrough, native cache_control scopes). Native is the
-        # better wire but re-writes the previous turn's cache on 14-20% of consecutive calls in
-        # concurrent tool loops (measured 2026-09-06; NousResearch/api#227), so chat is the
-        # default until that is fixed.
+        # Messages wire (signed thinking passthrough, native cache_control scopes); "auto" =
+        # start on chat and, per session, switch to native from the first response when the
+        # Portal upstream serving the model is one where native is known clean. Native is the
+        # better wire but on the OpenRouter-served path it re-writes the previous turn's cache on
+        # 14-20% of consecutive calls in concurrent tool loops (measured 2026-09-06;
+        # NousResearch/api#227), so chat is the default until that is fixed.
         "anthropic_wire": "chat",
     },
     # Google Vertex AI (Gemini). Auth is OAuth2 from a service-account JSON or ADC, NOT an API key;

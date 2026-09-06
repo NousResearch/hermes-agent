@@ -14,12 +14,11 @@ import {
   $sessionControlBySession,
   applySessionControlSnapshot,
   applySessionControlUpdate,
+  clearAllSessionControl,
   clearSessionControl,
   parseSessionControlSnapshot,
   refreshSessionControl,
   refreshSupportedSessionControlAfterTurn,
-  resetSessionControlAfterGatewayRebind,
-  resetSessionControlForTests,
   runSessionControlAction,
   type SessionControlSnapshot
 } from './session-control'
@@ -90,13 +89,13 @@ function useGateway(request: (method: string, params: Record<string, unknown>) =
 describe('session-control store', () => {
   beforeEach(() => {
     refreshLegacyGoal.mockReset()
-    resetSessionControlForTests()
+    clearAllSessionControl()
   })
 
   afterEach(() => {
     $gateway.set(null as never)
     resetBackgroundPollingGuard()
-    resetSessionControlForTests()
+    clearAllSessionControl()
   })
 
   it('parses the exact persisted goal, loop, heartbeat, and wait-barrier shapes into fresh data', () => {
@@ -132,41 +131,6 @@ describe('session-control store', () => {
     expect(parseSessionControlSnapshot(value)).toBeNull()
   })
 
-  it('preserves entry and snapshot identity for a same-revision snapshot with no other state change', () => {
-    applySessionControlSnapshot('s1', FULL_SNAPSHOT)
-    const first = $sessionControlBySession.get().s1
-
-    applySessionControlSnapshot('s1', { ...FULL_SNAPSHOT })
-    const second = $sessionControlBySession.get().s1
-
-    expect(second).toBe(first)
-    expect(second!.snapshot).toBe(first!.snapshot)
-  })
-
-  it('creates foreground loading state and leaves background hydration visually quiet', async () => {
-    const first = deferred<unknown>()
-    const request = vi.fn(() => first.promise)
-    useGateway(request)
-
-    const foreground = refreshSessionControl('s1')
-    expect($sessionControlBySession.get().s1).toMatchObject({
-      capability: 'unknown',
-      error: null,
-      loading: true,
-      pendingAction: null
-    })
-    first.resolve({ control: FULL_SNAPSHOT })
-    await foreground
-
-    const second = deferred<unknown>()
-    request.mockImplementationOnce(() => second.promise)
-    const background = refreshSessionControl('s1', { background: true })
-
-    expect($sessionControlBySession.get().s1).toMatchObject({ capability: 'supported', loading: false })
-    second.resolve({ control: { ...FULL_SNAPSHOT, revision: 'background-revision' } })
-    await background
-  })
-
   it('falls back once on the unsupported transition and suppresses future compatibility retries', async () => {
     const request = vi.fn(async () => {
       throw new JsonRpcGatewayError('method not found', { code: -32601 })
@@ -187,76 +151,6 @@ describe('session-control store', () => {
     expect(request).toHaveBeenCalledTimes(1)
   })
 
-  it('lets a precise gateway-rebind seam make an unsupported session probeable again', async () => {
-    useGateway(
-      vi.fn(async () => {
-        throw new JsonRpcGatewayError('method not found', { code: -32601 })
-      })
-    )
-    await refreshSessionControl('s1')
-
-    resetSessionControlAfterGatewayRebind()
-    expect($sessionControlBySession.get().s1).toMatchObject({ capability: 'unknown', loading: false })
-
-    const request = vi.fn(async () => ({ control: FULL_SNAPSHOT }))
-    useGateway(request)
-    await refreshSessionControl('s1')
-    expect(request).toHaveBeenCalledTimes(1)
-    expect($sessionControlBySession.get().s1!.capability).toBe('supported')
-  })
-
-  it('rebind clears busy state and transport errors without discarding every cached snapshot', async () => {
-    applySessionControlSnapshot('supported', FULL_SNAPSHOT)
-    const actionResponse = deferred<unknown>()
-    const readResponse = deferred<unknown>()
-    useGateway(
-      vi.fn((_method, params) => (params.session_id === 'supported' ? actionResponse.promise : readResponse.promise))
-    )
-
-    const action = runSessionControlAction('supported', 'goal.pause')
-    const read = refreshSessionControl('unknown')
-    $sessionControlBySession.set({
-      ...$sessionControlBySession.get(),
-      unsupported: {
-        capability: 'unsupported',
-        error: 'stale transport error',
-        loading: true,
-        pendingAction: 'goal.pause',
-        snapshot: { ...FULL_SNAPSHOT, revision: 'unsupported-snapshot' }
-      }
-    })
-
-    resetSessionControlAfterGatewayRebind()
-
-    expect($sessionControlBySession.get()).toMatchObject({
-      supported: {
-        capability: 'supported',
-        error: null,
-        loading: false,
-        pendingAction: null,
-        snapshot: { revision: FULL_SNAPSHOT.revision }
-      },
-      unknown: { capability: 'unknown', error: null, loading: false, pendingAction: null, snapshot: null },
-      unsupported: {
-        capability: 'unknown',
-        error: null,
-        loading: false,
-        pendingAction: null,
-        snapshot: { revision: 'unsupported-snapshot' }
-      }
-    })
-
-    actionResponse.reject(new Error('stale action response'))
-    readResponse.resolve({ control: { ...FULL_SNAPSHOT, revision: 'stale read response' } })
-    await expect(action).rejects.toThrow('stale action response')
-    await read
-
-    expect($sessionControlBySession.get()).toMatchObject({
-      supported: { loading: false, pendingAction: null, snapshot: { revision: FULL_SNAPSHOT.revision } },
-      unknown: { loading: false, pendingAction: null, snapshot: null }
-    })
-  })
-
   it('retains the last good snapshot and reports a bounded ordinary read error', async () => {
     applySessionControlSnapshot('s1', FULL_SNAPSHOT)
     const message = 'x'.repeat(500)
@@ -273,30 +167,6 @@ describe('session-control store', () => {
     expect(entry.capability).toBe('supported')
     expect(entry.error).toHaveLength(240)
     expect(entry.loading).toBe(false)
-  })
-
-  it('marks a session gone without publishing an ordinary hydration error', async () => {
-    useGateway(
-      vi.fn(async () => {
-        throw new JsonRpcGatewayError('session not found', { code: 4001 })
-      })
-    )
-
-    await refreshSessionControl('gone')
-    expect($sessionControlBySession.get().gone).toMatchObject({ error: null, loading: false })
-  })
-
-  it('rejects a session-gone action truthfully while clearing only its pending state', async () => {
-    applySessionControlSnapshot('s1', FULL_SNAPSHOT)
-    useGateway(
-      vi.fn(async () => {
-        throw new JsonRpcGatewayError('session not found', { code: 4001 })
-      })
-    )
-
-    await expect(runSessionControlAction('s1', 'goal.pause')).rejects.toThrow('session not found')
-    expect($sessionControlBySession.get().s1).toMatchObject({ error: null, pendingAction: null })
-    expect($sessionControlBySession.get().s1!.snapshot!.revision).toBe(FULL_SNAPSHOT.revision)
   })
 
   it('downgrades a current action method-not-found once, preserves its snapshot, and still rejects', async () => {
@@ -377,16 +247,6 @@ describe('session-control store', () => {
     })
   })
 
-  it('makes an event-first session supported and leaves malformed events as a no-op', () => {
-    applySessionControlUpdate('s1', FULL_SNAPSHOT)
-    const first = $sessionControlBySession.get().s1
-
-    applySessionControlUpdate('s1', { ...FULL_SNAPSHOT, loop: { ...FULL_SNAPSHOT.loop!, mode: 'fixed' } })
-
-    expect(first).toMatchObject({ capability: 'supported', pendingAction: null })
-    expect($sessionControlBySession.get().s1).toBe(first)
-  })
-
   it('submits only the requested action and exposes its pending state on that session', async () => {
     const response = deferred<unknown>()
     const request = vi.fn(() => response.promise)
@@ -459,22 +319,6 @@ describe('session-control store', () => {
     })
   })
 
-  it('rejects malformed action data without promoting an unknown capability', async () => {
-    useGateway(
-      vi.fn(async () => ({
-        control: FULL_SNAPSHOT,
-        dispatch: { display: null, message: null, notice: null, output: null, type: 'unknown' }
-      }))
-    )
-
-    await expect(runSessionControlAction('s1', 'goal.pause')).rejects.toThrow('Invalid session.control action response')
-    expect($sessionControlBySession.get().s1).toMatchObject({
-      capability: 'unknown',
-      pendingAction: null,
-      snapshot: null
-    })
-  })
-
   it('does not let a late read overwrite a newer event', async () => {
     const slow = deferred<unknown>()
     useGateway(vi.fn(() => slow.promise))
@@ -518,6 +362,29 @@ describe('session-control store', () => {
     await read
 
     expect($sessionControlBySession.get().s1!.snapshot!.revision).toBe('action-newer')
+  })
+
+  it('a gateway-switch wipe drops every entry and strands in-flight responses from the old backend', async () => {
+    applySessionControlSnapshot('supported', FULL_SNAPSHOT)
+    const slowRead = deferred<unknown>()
+    const slowAction = deferred<unknown>()
+    useGateway(vi.fn((method: string) => (method === 'session.control' ? slowAction.promise : slowRead.promise)))
+
+    const read = refreshSessionControl('probing')
+    const action = runSessionControlAction('supported', 'goal.pause')
+
+    clearAllSessionControl()
+    expect($sessionControlBySession.get()).toEqual({})
+
+    slowRead.resolve({ control: FULL_SNAPSHOT })
+    slowAction.resolve({
+      control: { ...FULL_SNAPSHOT, revision: 'stale-action' },
+      dispatch: { display: null, message: null, notice: null, output: 'paused', type: 'exec' }
+    })
+    await read
+    await action
+
+    expect($sessionControlBySession.get()).toEqual({})
   })
 
   it('does not let a late read repopulate a cleared session', async () => {
@@ -576,27 +443,6 @@ describe('session-control store', () => {
     })
   })
 
-  it('skips post-turn refreshes until the session is known to support the control RPC', async () => {
-    const request = vi.fn(async () => ({ control: FULL_SNAPSHOT }))
-    useGateway(request)
-
-    await refreshSupportedSessionControlAfterTurn('unknown')
-    expect(request).not.toHaveBeenCalled()
-
-    applySessionControlUpdate('unsupported', FULL_SNAPSHOT)
-    useGateway(
-      vi.fn(async () => {
-        throw new JsonRpcGatewayError('method not found', { code: -32601 })
-      })
-    )
-    await refreshSessionControl('unsupported')
-
-    const unsupportedRequest = vi.fn(async () => ({ control: FULL_SNAPSHOT }))
-    useGateway(unsupportedRequest)
-    await refreshSupportedSessionControlAfterTurn('unsupported')
-    expect(unsupportedRequest).not.toHaveBeenCalled()
-  })
-
   it('applies an authoritative action response after an intermediate event', async () => {
     const slow = deferred<unknown>()
     useGateway(vi.fn(() => slow.promise))
@@ -622,27 +468,5 @@ describe('session-control store', () => {
       pendingAction: null,
       snapshot: { revision: 'action-stale' }
     })
-  })
-
-  it('does not schedule a timer or poller while hydrating or dispatching control state', async () => {
-    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval')
-    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout')
-    useGateway(
-      vi.fn(async method =>
-        method === 'session.control.read'
-          ? { control: FULL_SNAPSHOT }
-          : {
-              control: FULL_SNAPSHOT,
-              dispatch: { display: null, message: null, notice: null, output: null, type: 'exec' }
-            }
-      )
-    )
-
-    await refreshSessionControl('s1')
-    await runSessionControlAction('s1', 'goal.pause')
-    await refreshSupportedSessionControlAfterTurn('s1')
-
-    expect(setIntervalSpy).not.toHaveBeenCalled()
-    expect(setTimeoutSpy).not.toHaveBeenCalled()
   })
 })

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,6 +43,60 @@ async def test_gateway_boot_discovers_mcp_under_every_profile_home(
     # Ran once per profile, under that profile's home, off the loop thread.
     assert [home for home, _ in seen] == [home for _, home in homes]
     assert all(thread != threading.current_thread().name for _, thread in seen)
+
+
+@pytest.mark.asyncio
+async def test_gateway_boot_persists_failed_mcp_registration_as_degraded_health(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import gateway.run as gateway_run
+    from gateway.readiness import collect_runtime_readiness
+    from gateway.status import read_runtime_status
+    from hermes_cli.gateway import _runtime_health_lines
+    from tools import mcp_tool_discovery as _mcp_discovery
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(_mcp_discovery, "discover_mcp_tools", lambda: [])
+    monkeypatch.setattr(
+        _mcp_discovery,
+        "get_mcp_status",
+        lambda: [
+            {
+                "name": "knowledge",
+                "status": "failed",
+                "connected": False,
+                "disabled": False,
+                "error": "HTTP transport SDK/code contract is incompatible",
+            }
+        ],
+    )
+
+    await gateway_run._discover_gateway_mcp_tools(GatewayConfig())
+
+    runtime = read_runtime_status()
+    assert runtime["mcp"] == {
+        "status": "degraded",
+        "configured_servers": 1,
+        "connected_servers": 0,
+        "failed_servers": 1,
+        "failures": [
+            {
+                "name": "knowledge",
+                "error": "HTTP transport SDK/code contract is incompatible",
+            }
+        ],
+    }
+    assert Path(runtime["code_root"]).resolve() == Path(gateway_run.__file__).resolve().parent.parent
+    assert Path(runtime["python_executable"]).resolve() == Path(sys.executable).resolve()
+    assert Path(runtime["python_prefix"]).resolve() == Path(sys.prefix).resolve()
+
+    readiness = collect_runtime_readiness(
+        configured_model="test/model",
+        runtime_status={**runtime, "gateway_state": "running"},
+    )
+    assert readiness["checks"]["mcp"]["status"] == "degraded"
+    assert readiness["status"] == "degraded"
+    assert any("MCP degraded" in line and "knowledge" in line for line in _runtime_health_lines())
 
 
 @pytest.mark.asyncio

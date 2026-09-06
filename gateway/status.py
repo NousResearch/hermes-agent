@@ -434,9 +434,16 @@ def _get_code_identity_fields() -> dict[str, Any]:
     degrades to absent fields.
     """
     try:
+        from hermes_cli import build_info
         from hermes_cli.build_info import get_code_identity
         identity = get_code_identity()
-        return {"code_sha": identity.get("sha"), "code_version": identity.get("version")}
+        return {
+            "code_sha": identity.get("sha"),
+            "code_version": identity.get("version"),
+            "code_root": str(Path(build_info.__file__).resolve().parent.parent),
+            "python_executable": str(Path(sys.executable).resolve()),
+            "python_prefix": str(Path(sys.prefix).resolve()),
+        }
     except Exception:
         return {}
 
@@ -790,11 +797,29 @@ def _coerce_session_store(session_store: Any) -> dict[str, str]:
     return {"status": state if state in {"ok", "unavailable", "retrying"} else "unknown"}
 
 
+def _coerce_mcp_health(mcp: Any) -> dict[str, Any]:
+    """Keep the persisted MCP receipt bounded and JSON-safe."""
+    source = mcp if isinstance(mcp, dict) else {}
+    failures = source.get("failures")
+    failures = failures if isinstance(failures, list) else []
+    return {
+        "status": "degraded" if source.get("status") == "degraded" else "ok",
+        "configured_servers": parse_active_agents(source.get("configured_servers")),
+        "connected_servers": parse_active_agents(source.get("connected_servers")),
+        "failed_servers": parse_active_agents(source.get("failed_servers")),
+        "failures": [
+            {"name": str(item.get("name") or "unknown"), "error": str(item.get("error") or "unknown error")}
+            for item in failures[:20] if isinstance(item, dict)
+        ],
+    }
+
+
 def write_runtime_status(
     *, gateway_state: Any = _UNSET, exit_reason: Any = _UNSET, restart_requested: Any = _UNSET,
     active_agents: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
     error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
     retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
+    mcp: Any = _UNSET,
     clear_profile_platforms: bool = False,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
@@ -822,6 +847,7 @@ def write_runtime_status(
         # Multiplexed profiles; absent/empty for a single-profile gateway.
         ("served_profiles", served_profiles, lambda v: list(v or [])),
         ("session_store", session_store, _coerce_session_store),
+        ("mcp", mcp, _coerce_mcp_health),
     ))
     if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})

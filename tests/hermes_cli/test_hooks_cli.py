@@ -203,3 +203,19 @@ class TestHooksDoctor:
         )
         assert "not allowlisted" in out.lower()
         assert "skipped JSON smoke test" in out
+
+    def test_block_on_synthetic_payload_is_reported_as_a_block(self, tmp_path):
+        """An allowlisted gate that exits 2 on doctor's synthetic payload (the documented
+        ``kanban_worktree_created`` seeder finds no ``/tmp/repo/.env``) must be reported as the
+        block the dispatcher would receive, not as a clean observer-only run."""
+        script = _hook_script(
+            tmp_path, "#!/usr/bin/env bash\necho 'no .env in /tmp/repo' >&2\nexit 2\n",
+        )
+        shell_hooks._record_approval("kanban_worktree_created", str(script))
+        cfg = {"hooks": {"kanban_worktree_created": [{"command": str(script)}]}}
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            out = _run(SimpleNamespace(hooks_action="doctor"))
+
+        assert "returned a block on the synthetic payload (exit=2" in out
+        assert "no .env in /tmp/repo" in out
+        assert "observer-only" not in out

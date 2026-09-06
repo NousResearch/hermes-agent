@@ -1287,7 +1287,8 @@ class TestThinkingBlockSignatureManagement:
 
 
     def test_multi_turn_conversation_preserves_only_last(self):
-        """Full multi-turn conversation: only last assistant keeps thinking."""
+        """Last-turn-only models (Sonnet <= 4.5, Haiku): only the last assistant keeps thinking.
+        Keep-all models replay every turn's blocks (tests/agent/test_anthropic_keep_all_thinking_cache.py)."""
         messages = [
             {"role": "user", "content": "Question 1"},
             {
@@ -1314,7 +1315,7 @@ class TestThinkingBlockSignatureManagement:
                 ],
             },
         ]
-        _, result = convert_messages_to_anthropic(messages)
+        _, result = convert_messages_to_anthropic(messages, model="claude-sonnet-4-5")
 
         assistants = [m for m in result if m["role"] == "assistant"]
         assert len(assistants) == 3

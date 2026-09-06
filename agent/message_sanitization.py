@@ -467,8 +467,21 @@ def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_u
     walks must share: if they disagree, a reasoning-heavy session can look over-threshold
     to preflight yet fully tail-protected to the walk — an infinite compaction loop.
     ``codex_responses`` never reads the text keys (continuity rides the encrypted sidecar).
+
+    Two routes replay stale reasoning: the reasoning_content echo-back families (Kimi, DeepSeek,
+    MiMo) on any chat wire, and the Anthropic Messages wire for Claude generations whose API
+    keeps every prior turn's signed thinking blocks (``_model_keeps_all_thinking``). The converter
+    passes those blocks back unchanged so the cached prefix stays byte-stable; the estimator must
+    count them or a 280K-token wire looks like 9K to preflight and compaction never fires.
     """
-    return (api_mode or "") != "codex_responses" and needs_reasoning_echo(provider, model, base_url)
+    if (api_mode or "") == "codex_responses":
+        return False
+    if needs_reasoning_echo(provider, model, base_url):
+        return True
+    if (api_mode or "") == "anthropic_messages":
+        from agent.anthropic_endpoints import _model_keeps_all_thinking
+        return _model_keeps_all_thinking(str(model or ""))
+    return False
 
 
 def apply_reasoning_content_policy(source_msg: dict, api_msg: dict, needs_thinking_pad: bool) -> None:

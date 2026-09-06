@@ -34,6 +34,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from agent.secret_scope import UnscopedSecretError, get_secret
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms._shared import profile_scoped as _profile_scoped
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome,
@@ -2930,8 +2931,17 @@ class SlackAdapter(BasePlatformAdapter):
         return await self._react(channel, timestamp, emoji, team_id, remove=True)
 
     def _reactions_enabled(self) -> bool:
-        """Whether message reactions are enabled (``SLACK_REACTIONS`` env)."""
-        return os.getenv("SLACK_REACTIONS", "true").lower() not in {"false", "0", "no"}
+        """Whether message reactions are enabled (``config.extra["reactions"]`` else
+        ``SLACK_REACTIONS`` env; see ``_slack_require_mention`` for the multiplex-scope
+        fail-closed rationale)."""
+        configured = self.config.extra.get("reactions")
+        if configured is None:
+            if _profile_scoped():
+                return True
+            configured = os.getenv("SLACK_REACTIONS", "true")
+        if isinstance(configured, str):
+            return configured.lower() not in {"false", "0", "no"}
+        return bool(configured)
 
     def _reacting_target(self, event: MessageEvent) -> Optional[Tuple[str, str, Any]]:
         """``(ts, team_id, marker)`` when reactions are on and ``event`` is being tracked."""
@@ -3632,9 +3642,10 @@ class SlackAdapter(BasePlatformAdapter):
     def _slack_reaction_triggers(self) -> Optional[set]:
         """Reaction-routing opt-in: None = disabled (default, events acked+dropped);
         empty set = all emoji, bot's own messages only; non-empty = these emoji on
-        any message. From ``slack.reaction_triggers`` or ``SLACK_REACTION_TRIGGERS``."""
+        any message. From ``slack.reaction_triggers`` or ``SLACK_REACTION_TRIGGERS``.
+        See ``_slack_require_mention`` for the multiplex-scope fail-closed rationale."""
         raw = self.config.extra.get("reaction_triggers")
-        if raw is None:
+        if raw is None and not _profile_scoped():
             raw = os.getenv("SLACK_REACTION_TRIGGERS") or None
         if raw is None:
             return None
@@ -3651,10 +3662,11 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _slack_reaction_trigger_target(self) -> Tuple[str, str]:
         """Optional (channel, thread) reaction handoff target: ``C123`` or ``C123:<ts>``.
-        Empty (default) routes into the reacted-to message's thread."""
+        Empty (default) routes into the reacted-to message's thread. See
+        ``_slack_require_mention`` for the multiplex-scope fail-closed rationale."""
         raw = self.config.extra.get("reaction_trigger_target")
         if raw is None:
-            raw = os.getenv("SLACK_REACTION_TRIGGER_TARGET", "")
+            raw = "" if _profile_scoped() else os.getenv("SLACK_REACTION_TRIGGER_TARGET", "")
         channel, _, thread = str(raw or "").strip().partition(":")
         return channel.strip(), thread.strip()
 
@@ -5916,18 +5928,30 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _slack_require_mention(self) -> bool:
         """Whether channel messages need an @mention. Explicit-false parsing: unrecognised
-        or empty values keep gating enabled (safe default True)."""
+        or empty values keep gating enabled (safe default True).
+
+        Under a secondary multiplex profile scope, ``os.environ`` holds the default profile's
+        YAML-to-env bridge output (see ``_apply_yaml_config``), so a missing ``extra`` key must
+        NOT fall back to env — it fails closed to the documented default instead of silently
+        borrowing another profile's setting."""
         configured = self.config.extra.get("require_mention")
         if configured is None:
+            if _profile_scoped():
+                return True
             configured = os.getenv("SLACK_REQUIRE_MENTION", "true")
         if isinstance(configured, str):
             return configured.lower() not in {"false", "0", "no", "off"}
         return bool(configured)
 
     def _extra_or_env_flag(self, key: str, env_var: str, *, strip: bool = False) -> bool:
-        """Opt-in boolean: ``config.extra[key]`` wins, else ``env_var`` (default false)."""
+        """Opt-in boolean: ``config.extra[key]`` wins, else ``env_var`` (default false).
+
+        See ``_slack_require_mention`` for why a missing ``extra`` key fails closed under a
+        secondary multiplex profile scope instead of consulting env."""
         configured = self.config.extra.get(key)
         if configured is None:
+            if _profile_scoped():
+                return False
             configured = os.getenv(env_var, "false")
         if isinstance(configured, str):
             if strip:
@@ -5961,9 +5985,14 @@ class SlackAdapter(BasePlatformAdapter):
     def _extra_or_env_channel_set(
         self, key: str, env_var: str, *, coerce_scalar: bool = False) -> set:
         """Channel-ID set from ``config.extra[key]`` (list or CSV) else ``env_var`` CSV.
-        ``coerce_scalar`` accepts non-str scalars (a bare numeric YAML value loads as int)."""
+        ``coerce_scalar`` accepts non-str scalars (a bare numeric YAML value loads as int).
+
+        See ``_slack_require_mention`` for why a missing ``extra`` key fails closed (empty set)
+        under a secondary multiplex profile scope instead of consulting env."""
         raw = self.config.extra.get(key)
         if raw is None:
+            if _profile_scoped():
+                return set()
             raw = os.getenv(env_var, "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
@@ -6452,7 +6481,18 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
 
     Implements the ``apply_yaml_config_fn`` contract (#24849). Mirrors the legacy ``slack_cfg`` block that
     used to live in ``gateway/config.py::load_gateway_config()`` before this migration.
+
+    A secondary multiplex profile must NOT write the process-global env — first-writer-wins would pin
+    its values for every other profile (the #72348 Telegram/Discord class). Its adapter reads
+    ``PlatformConfig.extra`` directly instead (see ``_extra_or_env_flag``/``_extra_or_env_channel_set``/
+    ``_slack_require_mention``/``_reactions_enabled``/``_slack_reaction_triggers``/
+    ``_slack_reaction_trigger_target``, all profile-scope-aware and fail-closed to their documented
+    default rather than falling back to env in that case). ``allow_bots``'s own multiplex-scoping is
+    tracked separately in open PR #100028, which resolves it via a different, runner-bound mechanism
+    (``_gateway_allow_bots_policy``) rather than ``PlatformConfig.extra`` — not duplicated here.
     """
+    if _profile_scoped():
+        return None
     for key, env in _YAML_BOOL_KEYS:
         if key in slack_cfg and not os.getenv(env):
             os.environ[env] = str(slack_cfg[key]).lower()

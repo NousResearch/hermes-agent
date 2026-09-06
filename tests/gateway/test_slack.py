@@ -5865,3 +5865,140 @@ class TestSlackAuthoredTextDeduplication:
         assert "Deploy failed" in payload
         assert "rollback" in payload
         assert "Roll back" in payload
+
+
+# ---------------------------------------------------------------------------
+# Multiplex profile scoping (#72348 class): a secondary profile's own
+# require_mention/reactions/allow_bots/channel-set/reaction-trigger settings
+# must gate its behavior -- not the default profile's YAML-to-env bridge
+# output sitting in the shared process's os.environ. Mirrors the
+# Buzz/Mattermost/Telegram/Discord fix for the same bug class; Slack had
+# never received it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def multiplex_scope():
+    """Install multiplex + a secondary-profile secret scope; restore after."""
+    tokens = []
+
+    def install(scope=None):
+        from agent.secret_scope import set_multiplex_active, set_secret_scope
+
+        set_multiplex_active(True)
+        tokens.append(set_secret_scope(scope or {}))
+        return tokens[-1]
+
+    yield install
+
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active
+
+    for token in reversed(tokens):
+        reset_secret_scope(token)
+    set_multiplex_active(False)
+
+
+@pytest.fixture
+def default_profile_env(monkeypatch):
+    """The default profile's YAML-to-env bridge output sitting in os.environ."""
+    monkeypatch.setenv("SLACK_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("SLACK_REACTIONS", "false")
+    monkeypatch.setenv("SLACK_ALLOW_BOTS", "all")
+    monkeypatch.setenv("SLACK_DISABLE_DMS", "true")
+    monkeypatch.setenv("SLACK_FREE_RESPONSE_CHANNELS", "chan_default")
+    monkeypatch.setenv("SLACK_ALLOWED_CHANNELS", "chan_default")
+    monkeypatch.setenv("SLACK_REACTION_TRIGGERS", "eyes")
+    monkeypatch.setenv("SLACK_REACTION_TRIGGER_TARGET", "C_DEFAULT")
+
+
+class TestMultiplexProfileScope:
+    def test_require_mention_ignores_default_profile_env(
+        self, multiplex_scope, default_profile_env
+    ):
+        """A secondary profile with no explicit require_mention in its own extra must fail
+        closed to the documented default (True), not borrow the default profile's env-bridged
+        'false'."""
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        multiplex_scope()
+        assert adapter._slack_require_mention() is True
+
+    def test_reactions_enabled_ignores_default_profile_env(
+        self, multiplex_scope, default_profile_env
+    ):
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        multiplex_scope()
+        assert adapter._reactions_enabled() is True
+
+    def test_disable_dms_ignores_default_profile_env(
+        self, multiplex_scope, default_profile_env
+    ):
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        multiplex_scope()
+        assert adapter._slack_disable_dms() is False
+
+    def test_channel_sets_ignore_default_profile_env(
+        self, multiplex_scope, default_profile_env
+    ):
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        multiplex_scope()
+        assert adapter._slack_free_response_channels() == set()
+        assert adapter._slack_allowed_channels() == set()
+
+    def test_reaction_triggers_ignore_default_profile_env(
+        self, multiplex_scope, default_profile_env
+    ):
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        multiplex_scope()
+        assert adapter._slack_reaction_triggers() is None
+        assert adapter._slack_reaction_trigger_target() == ("", "")
+
+    def test_own_extra_still_wins_under_multiplex(
+        self, multiplex_scope, default_profile_env
+    ):
+        """The scoping fix must not block the profile's OWN explicit config.yaml/extra
+        settings -- only the env fallback is disabled."""
+        adapter = SlackAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="xoxb-fake",
+                extra={
+                    "require_mention": False,
+                    "reactions": False,
+                    "allowed_channels": ["chan_own"],
+                },
+            )
+        )
+        multiplex_scope()
+        assert adapter._slack_require_mention() is False
+        assert adapter._reactions_enabled() is False
+        assert adapter._slack_allowed_channels() == {"chan_own"}
+
+    def test_single_profile_still_reads_env(self, default_profile_env):
+        """Control: outside multiplex (single-profile gateway, the common case), the legacy
+        env fallback must be unchanged."""
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        assert adapter._slack_require_mention() is False
+        assert adapter._reactions_enabled() is False
+        assert adapter._slack_allowed_channels() == {"chan_default"}
+        assert adapter._slack_reaction_triggers() == {"eyes"}
+        assert adapter._slack_reaction_trigger_target() == ("C_DEFAULT", "")
+
+    def test_apply_yaml_config_skips_env_write_under_multiplex(
+        self, multiplex_scope
+    ):
+        from plugins.platforms.slack.adapter import _apply_yaml_config
+
+        multiplex_scope()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SLACK_REQUIRE_MENTION", None)
+            result = _apply_yaml_config({}, {"require_mention": False})
+            assert result is None
+            assert "SLACK_REQUIRE_MENTION" not in os.environ
+
+    def test_apply_yaml_config_still_writes_env_outside_multiplex(self):
+        from plugins.platforms.slack.adapter import _apply_yaml_config
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SLACK_REQUIRE_MENTION", None)
+            _apply_yaml_config({}, {"require_mention": False})
+            assert os.environ["SLACK_REQUIRE_MENTION"] == "false"

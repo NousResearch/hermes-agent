@@ -137,9 +137,82 @@ def _op_child_env(token_value: str) -> Dict[str, str]:
     return env
 
 
-def _run_op_read(op: Path, reference: str, *, account: str = "", token_value: str = "") -> str:
+def _describe_secret_purpose(reference: str) -> str:
+    """Build a human-readable description of what a secret is used for.
+    This is the contextual information that 1Password's prompt lacks."""
+    ref_lower = reference.lower()
+    if "ollama" in ref_lower or "api_key" in ref_lower:
+        return ("This key is used to call the AI inference service that "
+                "generates responses. Without it, the agent cannot think.")
+    if "discord" in ref_lower or "bot_token" in ref_lower:
+        return ("This token is used to connect the Discord bot so it can "
+                "receive and respond to messages.")
+    if "nextcloud" in ref_lower or "app_password" in ref_lower:
+        return ("This password is used to access Nextcloud files, calendars, "
+                "and Talk messaging.")
+    if "stripe" in ref_lower:
+        return "These credentials are used for payment processing."
+    if "forge" in ref_lower or "forgejo" in ref_lower:
+        return "These credentials are used for code repository access."
+    return "This credential is needed for the agent to perform its current task."
+
+
+def _notify_secret_access(reference: str, *, profile: str = "", reason: str = "") -> None:
+    """Send a desktop notification BEFORE calling op read, so the user has context
+    when the 1Password authorization prompt appears. This addresses the blind-prompt
+    problem where 1Password shows a process path but not what it's for or why.
+
+    Servetus design principle: informed consent, not blind authorization.
+    """
+    try:
+        # Parse the op://vault/item/field reference for human-readable parts
+        parts = reference.replace("op://", "").split("/")
+        vault = parts[0] if parts else "vault"
+        item = parts[1] if len(parts) > 1 else "item"
+        # Clean up the item name for display
+        item_display = item.replace("_", " ").replace("-", " ").title()
+
+        # Build the context: who is asking
+        who = "Hermes Agent"
+        if profile:
+            who = f"Hermes ({profile} profile)"
+        if reason:
+            who = f"{who} — {reason}"
+
+        # Build the purpose description
+        purpose = _describe_secret_purpose(reference)
+
+        # Title: what's being accessed
+        title = f"{who} needs {item_display}"
+
+        # Body: vault + purpose + scope
+        body = (f"Reading from your {vault} vault.\n"
+                f"Purpose: {purpose}\n"
+                f"A 1Password prompt will appear — you are authorizing this access.")
+
+        subprocess.run(
+            ["notify-send", "--urgency=normal", "--expire-time=10000",
+             "--icon=1password", title, body],
+            capture_output=True, timeout=5,
+            env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0")},
+        )
+    except Exception:
+        # Never let notification failure block secret resolution
+        pass
+
+
+def _run_op_read(op: Path, reference: str, *, account: str = "",
+                 token_value: str = "", profile: str = "", reason: str = "") -> str:
     """Resolve one ``op://`` reference; raises ``RuntimeError`` on any failure, including
-    an exit-0 empty value (applying it would clobber a good credential with ``""``)."""
+    an exit-0 empty value (applying it would clobber a good credential with ``""``).
+
+    Sends a desktop notification before calling ``op read`` so the user has context
+    when the 1Password authorization prompt appears (Servetus informed-consent principle).
+    """
+    # Notify the user BEFORE the op read call — this gives them context for the
+    # 1Password prompt that's about to appear
+    _notify_secret_access(reference, profile=profile, reason=reason)
+
     cmd: List[str] = [str(op), "read"]
     if account:
         cmd += ["--account", account]
@@ -165,6 +238,7 @@ def fetch_onepassword_secrets(
     *, references: Dict[str, str], account: str = "", token_env: str = _DEFAULT_TOKEN_ENV,
     binary: Optional[Path] = None, binary_path: str = "", use_cache: bool = True,
     cache_ttl_seconds: float = 300, home_path: Optional[Path] = None,
+    profile: str = "", reason: str = "",
 ) -> Tuple[Dict[str, str], List[str]]:
     """Resolve ``references`` (name → ``op://…``) to ``(secrets, warnings)``.
 
@@ -195,7 +269,8 @@ def fetch_onepassword_secrets(
     read_errors = 0
     for name in sorted(valid):
         try:
-            secrets[name] = _run_op_read(op, valid[name], account=account, token_value=token_value)
+            secrets[name] = _run_op_read(op, valid[name], account=account,
+                                         token_value=token_value, profile=profile, reason=reason)
         except RuntimeError as exc:
             warnings.append(str(exc))
             read_errors += 1
@@ -227,6 +302,9 @@ def apply_onepassword_secrets(
     if not enabled:
         return result
 
+    # Detect the active profile for contextual notifications
+    _profile = os.environ.get("HERMES_PROFILE_NAME", "") or os.environ.get("HERMES_PROFILE", "")
+
     valid, warnings = _validate_references(env)
     result.warnings.extend(warnings)
 
@@ -248,7 +326,8 @@ def apply_onepassword_secrets(
     try:
         secrets, fetch_warnings = fetch_onepassword_secrets(
             references=refs_to_fetch, account=account, token_env=service_account_token_env,
-            binary=binary, cache_ttl_seconds=cache_ttl_seconds, home_path=home_path)
+            binary=binary, cache_ttl_seconds=cache_ttl_seconds, home_path=home_path,
+            profile=_profile)
     except RuntimeError as exc:
         result.error = str(exc)
         return result
@@ -300,6 +379,9 @@ class OnePasswordSource(SecretSource):
         cfg = cfg if isinstance(cfg, dict) else {}
         result = FetchResult()
 
+        # Detect the active profile for contextual notifications
+        _profile = os.environ.get("HERMES_PROFILE_NAME", "") or os.environ.get("HERMES_PROFILE", "")
+
         env_map = cfg.get("env")
         valid, warnings = _validate_references(env_map if isinstance(env_map, dict) else None)
         result.warnings.extend(warnings)
@@ -319,7 +401,7 @@ class OnePasswordSource(SecretSource):
             secrets, fetch_warnings = fetch_onepassword_secrets(
                 references=valid, account=str(cfg.get("account") or ""), token_env=self.token_env(cfg),
                 binary=binary, cache_ttl_seconds=coerce_float(cfg.get("cache_ttl_seconds", 300), 300.0),
-                home_path=home_path)
+                home_path=home_path, profile=_profile)
         except RuntimeError as exc:
             return result.fail(str(exc), _classify_op_error(str(exc)))
 

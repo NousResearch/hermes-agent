@@ -12,6 +12,7 @@ locks). Schema: tasks, task_links, task_comments, task_events, task_runs, attach
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -2537,6 +2538,7 @@ def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
+    expected_claim_lock: Optional[str] = None, expected_worker_pid: Optional[int] = None,
     fire_lifecycle_hook: bool = True,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
@@ -2548,6 +2550,10 @@ def complete_task(
     ``created_cards`` are verified first — a phantom id raises
     :class:`HallucinatedCardsError` after an auditable event; afterwards the
     prose is scanned for unresolvable ``t_<hex>`` refs (advisory event only).
+
+    ``expected_claim_lock`` fences completion to the worker that owns the claim
+    (see :func:`_claim_fence_verdict`); a retry after a successful commit still
+    reports success instead of repeating the completion side effects.
     """
     now = int(time.time())
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
@@ -2564,6 +2570,11 @@ def complete_task(
         if not _parents_satisfied(conn, task_id):
             return False
         prior_status = _task_status(conn, task_id)
+        if expected_claim_lock is not None:
+            verdict = _claim_fence_verdict(
+                conn, task_id, expected_claim_lock, expected_worker_pid, expected_run_id)
+            if verdict is not None:
+                return verdict
         sql = """
                 UPDATE tasks
                    SET status       = 'done',
@@ -2581,6 +2592,11 @@ def complete_task(
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))
+        if expected_claim_lock is not None:
+            # Re-assert ownership in the UPDATE itself: the pre-check above read the row in this
+            # same txn, but the predicate is what makes the fence atomic rather than TOCTOU.
+            sql += " AND claim_lock = ? AND (? IS NULL OR worker_pid IS NULL OR worker_pid = ?)"
+            params = (*params, expected_claim_lock, expected_worker_pid, expected_worker_pid)
         if conn.execute(sql, params).rowcount != 1:
             return False
         if isinstance(metadata, dict):
@@ -2603,7 +2619,8 @@ def complete_task(
             event_summary = _REVIEW_APPROVED_NOTE
         _append_event(
             conn, task_id, "completed",
-            _completed_event_payload(result, event_summary, verified_cards, metadata),
+            _completed_event_payload(
+                result, event_summary, verified_cards, metadata, claim_lock=expected_claim_lock),
             run_id=run_id,
         )
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
@@ -2654,8 +2671,66 @@ def _stage_completion_artifacts(conn: sqlite3.Connection, task_id: str, metadata
         )
 
 
+def _claim_fence_verdict(
+    conn: sqlite3.Connection, task_id: str, expected_claim_lock: str,
+    expected_worker_pid: Optional[int], expected_run_id: Optional[int],
+) -> Optional[bool]:
+    """Ownership fence for a claimed completion. ``None`` = proceed, else the value to return.
+
+    ``True`` is reserved for the idempotent retry: the task is already ``done`` and the recorded
+    completion carries this very claim lock, so an earlier call by this worker did commit and it
+    must not be told the completion failed.
+    """
+    row = conn.execute(
+        "SELECT status, claim_lock, current_run_id, worker_pid FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    if row["status"] == "done":
+        return _completed_by_claim(conn, task_id, expected_claim_lock, expected_run_id)
+    if row["claim_lock"] != expected_claim_lock:
+        return False
+    # The claim lock reaches a nested CLI through the environment, so a child process can present a
+    # matching one and complete its parent's card. The pid of the process actually making the call
+    # cannot be inherited that way, which is what makes it worth checking. A row with no recorded
+    # pid is left alone on purpose: reporting a pid from spawn_fn is a crash-detection nicety, not a
+    # contract, so a deployment whose spawn returns none never stamps one — refusing those would
+    # reject the legitimate worker finishing its own task. Where no pid was recorded this fence is
+    # no weaker than before; where one was, it is strictly stronger.
+    if (expected_worker_pid is not None and row["worker_pid"] is not None
+            and row["worker_pid"] != int(expected_worker_pid)):
+        return False
+    if expected_run_id is not None and row["current_run_id"] != int(expected_run_id):
+        return False
+    return None
+
+
+def _completed_by_claim(
+    conn: sqlite3.Connection, task_id: str, expected_claim_lock: str, expected_run_id: Optional[int],
+) -> bool:
+    """Whether the recorded completion was made by this claim (retry-after-commit)."""
+    sql = "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'completed'"
+    params: list[Any] = [task_id]
+    if expected_run_id is not None:
+        sql += " AND run_id = ?"
+        params.append(int(expected_run_id))
+    sql += " ORDER BY id DESC LIMIT 1"
+    row = conn.execute(sql, tuple(params)).fetchone()
+    try:
+        payload = json.loads(row["payload"]) if row and row["payload"] else {}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        payload = {}
+    return payload.get("completion_claim_lock_sha256") == _claim_digest(expected_claim_lock)
+
+
+def _claim_digest(claim_lock: str) -> str:
+    """Digest, not the lock itself: the event log is readable by anything that can read the board."""
+    return hashlib.sha256(claim_lock.encode("utf-8")).hexdigest()
+
+
 def _completed_event_payload(
     result: Optional[str], event_summary: Optional[str], verified_cards: list[str], metadata: Any,
+    *, claim_lock: Optional[str] = None,
 ) -> dict:
     """``completed`` event payload: first summary line (400 chars) so gateway
     notifiers / dashboard WS render without a second round-trip; verified
@@ -2678,6 +2753,8 @@ def _completed_event_payload(
             cleaned = [str(p).strip() for p in md_artifacts if isinstance(p, str) and str(p).strip()]
             if cleaned:
                 payload["artifacts"] = cleaned
+    if claim_lock:
+        payload["completion_claim_lock_sha256"] = _claim_digest(claim_lock)
     return payload
 
 

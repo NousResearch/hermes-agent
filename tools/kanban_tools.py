@@ -146,6 +146,11 @@ def _own_task_env(task_id: str, var: str) -> Optional[str]:
     return os.environ.get(var) if os.environ.get("HERMES_KANBAN_TASK") == task_id else None
 
 
+def _worker_claim_lock(task_id: str) -> Optional[str]:
+    """This worker's dispatcher claim lock when it is scoped to ``task_id``."""
+    return _own_task_env(task_id, "HERMES_KANBAN_CLAIM_LOCK") or None
+
+
 def _worker_run_id(task_id: str) -> Optional[int]:
     """This worker's dispatcher run id when it is scoped to task_id."""
     raw = _own_task_env(task_id, "HERMES_KANBAN_RUN_ID")
@@ -565,7 +570,12 @@ def _handle_complete(args: dict, **kw) -> str:
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
-                created_cards=created_cards, expected_run_id=_worker_run_id(tid))
+                created_cards=created_cards, expected_run_id=_worker_run_id(tid),
+                expected_claim_lock=_worker_claim_lock(tid),
+                # The tool handoff is the path the reported bypass actually travels: a nested CLI
+                # inherits the claim lock and completes its parent's card from here. os.getpid() is
+                # the one input that cannot be inherited along with it.
+                expected_worker_pid=os.getpid())
         except kb.ArtifactPreservationError as artifact_err:
             # Structured rejection — surface the phantom ids so the worker can retry with a corrected list
             # or drop the field. Audit event already landed in the DB. The task itself was NOT mutated (the

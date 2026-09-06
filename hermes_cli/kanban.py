@@ -782,6 +782,13 @@ def _cmd_attach_rm(args: argparse.Namespace) -> int:
     return 0
 
 
+def _worker_claim_lock_for(task_id: str) -> Optional[str]:
+    """This worker's dispatcher claim lock, only when it is scoped to ``task_id``."""
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return None
+    return os.environ.get("HERMES_KANBAN_CLAIM_LOCK") or None
+
+
 def _worker_run_id_for(task_id: str) -> Optional[int]:
     raw = os.environ.get("HERMES_KANBAN_RUN_ID")
     if os.environ.get("HERMES_KANBAN_TASK") != task_id or not raw:
@@ -870,7 +877,12 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 return False
             fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
             return kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
-                                    expected_run_id=_worker_run_id_for(tid))
+                                    expected_run_id=_worker_run_id_for(tid),
+                                    expected_claim_lock=_worker_claim_lock_for(tid),
+                                    # os.getpid(), never an environment variable: a pid read from the
+                                    # environment is inherited exactly like the claim lock and would
+                                    # rebuild the same hole one layer down.
+                                    expected_worker_pid=os.getpid())
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
 

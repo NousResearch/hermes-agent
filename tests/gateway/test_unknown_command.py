@@ -271,3 +271,40 @@ def test_plugin_command_dispatch_passes_authenticated_source_context_to_opted_in
     assert context.chat_type == "channel"
     assert context.scope_id == "guild-42"
     assert context.profile == "profile-42"
+
+
+def test_plugin_command_dispatch_checks_slash_access_before_handler(monkeypatch):
+    runner = _make_runner()
+    runner._draining = False
+    runner._hm_quick_commands = lambda: {}
+
+    def deny(source, canonical_cmd):
+        return "not allowed"
+
+    runner._check_slash_access = deny
+    seen = []
+
+    async def handler(raw_args, *, command_context):
+        seen.append((raw_args, command_context))
+        return "secret result"
+
+    monkeypatch.setattr(
+        "hermes_cli.plugins._get_plugin_command_entry",
+        lambda _name: {"handler": handler, "authenticated_context": True},
+    )
+    source = SessionSource(
+        platform=Platform.SLACK,
+        user_id="staff-user",
+        chat_id="direct-chat",
+        chat_type="dm",
+        scope_id="firm-workspace",
+        profile="lilly",
+    )
+    event = MessageEvent(text="/probe exact args", source=source, message_id="m-denied")
+
+    handled, result, command = asyncio.run(
+        runner._hm_dispatch_quick_and_plugin_commands(event, source, "probe")
+    )
+
+    assert (handled, result, command) == (True, "not allowed", "probe")
+    assert seen == []

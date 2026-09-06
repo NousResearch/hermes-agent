@@ -983,6 +983,9 @@ class GatewayInboundMixin:
                 )
                 plugin_entry = _get_plugin_command_entry(command.replace("_", "-"))
                 if plugin_entry:
+                    _denied = self._check_slash_access(source, command)
+                    if _denied is not None:
+                        return True, _denied, command
                     plugin_context = PluginCommandContext(
                         platform=source.platform.value,
                         user_id=source.user_id,

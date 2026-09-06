@@ -1,11 +1,20 @@
 """Anthropic credential sources, OAuth flows, and token resolution.
 
 ``resolve_anthropic_token()`` order: ``ANTHROPIC_TOKEN`` / ``CLAUDE_CODE_OAUTH_TOKEN``,
-``ANTHROPIC_API_KEY``, ``~/.claude/.credentials.json`` / macOS Keychain, then the
-``auth.json`` credential pool. ``~/.hermes/.anthropic_oauth.json`` (Hermes PKCE) and
-the Claude Code file are *singletons*: ``credential_pool._seed_from_singletons()``
-re-reads them on every ``load_pool()``, so a failed write here is a failed refresh
+``ANTHROPIC_API_KEY``, ``~/.claude/.credentials.json`` / macOS Keychain (unless
+``HERMES_DISABLE_CLAUDE_CODE_CREDENTIALS`` is truthy), then the ``auth.json``
+credential pool. ``~/.hermes/.anthropic_oauth.json`` (Hermes PKCE) and the Claude
+Code file are *singletons*: ``credential_pool._seed_from_singletons()`` re-reads
+them on every ``load_pool()``, so a failed write here is a failed refresh
 (``CredentialPersistError``), not a cache miss.
+
+Claude Code auto-discovery opt-out
+-----------------------------------
+Set ``HERMES_DISABLE_CLAUDE_CODE_CREDENTIALS`` (any of ``1``, ``true``, ``yes``,
+case-insensitive) to skip reading Claude Code's OAuth credentials entirely. This
+is recommended when you run the Claude Code CLI alongside Hermes — otherwise
+Hermes may silently spend Claude Code's single-use refresh token, logging the
+CLI out (see issue #103978).
 """
 
 import base64
@@ -461,6 +470,13 @@ def resolve_anthropic_token() -> Optional[str]:
     api_key = _first_env("ANTHROPIC_API_KEY")  # an explicit API key must not be shadowed by discovered OAuth creds
     if api_key:
         return api_key
+    # Honor opt-out: skip Claude Code credential auto-discovery (Keychain + ~/.claude/.credentials.json).
+    # When HERMES_DISABLE_CLAUDE_CODE_CREDENTIALS is truthy, never touch Claude Code's credential files —
+    # this avoids spending its single-use refresh token (which logs the Claude CLI out) and avoids
+    # subscribing a user's Claude Pro/Max OAuth to a third-party product against Anthropic's Consumer ToS.
+    # See https://github.com/NousResearch/hermes-agent/issues/103978
+    if _getenv("HERMES_DISABLE_CLAUDE_CODE_CREDENTIALS", "").strip().lower() in {"1", "true", "yes"}:
+        return _resolve_anthropic_pool_token()
     return _resolve_claude_code_token_from_credentials(_read_creds()) or _resolve_anthropic_pool_token()
 
 

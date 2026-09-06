@@ -14,6 +14,7 @@ import logging
 import re
 import shutil
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -37,30 +38,60 @@ from tools.skills_guard import scan_skill, should_allow_install, format_scan_rep
 logger = logging.getLogger(__name__)
 
 
-def _guard_agent_created_enabled() -> bool:
-    """skills.guard_agent_created (default False): opt-in — terminal() runs the same code ungated."""
+@dataclass(frozen=True)
+class _SecurityScanOutcome:
+    error: Optional[str] = None
+    unscanned_reason: Optional[str] = None
+
+
+def _skill_target_identities(skill_dir: Path, target: Path) -> Tuple[str, ...]:
+    """Both the requested path and its in-skill symlink destination identify a write."""
+    try:
+        return (target.relative_to(skill_dir).as_posix(),
+                target.resolve().relative_to(skill_dir.resolve()).as_posix())
+    except (OSError, ValueError):
+        return ()
+
+
+def _security_scan_skill(skill_dir: Path, *, target: Optional[Path] = None) -> _SecurityScanOutcome:
+    """Opt-in post-write scan: preserve blocking verdicts and report actual target coverage."""
     try:
         from hermes_cli.config import load_config
-        return is_truthy_value(cfg_get(load_config(), "skills", "guard_agent_created"), default=False)
+        enabled = is_truthy_value(cfg_get(load_config(), "skills", "guard_agent_created"), default=False)
     except Exception:
-        return False
-
-
-def _security_scan_skill(skill_dir: Path) -> Optional[str]:
-    """Post-write scan (opt-in); error string if blocked, else None. An "ask" verdict
-    (dangerous findings) is surfaced as an error so the agent can retry without them."""
-    if not _guard_agent_created_enabled():
-        return None
+        return _SecurityScanOutcome(unscanned_reason="the skills.guard_agent_created setting could not be read")
+    if not enabled:
+        return _SecurityScanOutcome(unscanned_reason=(
+            "skills.guard_agent_created is disabled; enable it with "
+            "`hermes config set skills.guard_agent_created true` for opt-in scanning"))
+    scanned_files: set[str] = set()
     try:
-        result = scan_skill(skill_dir, source="agent-created")
+        result = scan_skill(skill_dir, source="agent-created", scanned_files=scanned_files)
         allowed, reason = should_allow_install(result)
         if allowed is None:
             logger.warning("Agent-created skill blocked (dangerous findings): %s", reason)
         if allowed is not True:
-            return f"Security scan blocked this skill ({reason}):\n{format_scan_report(result)}"
+            return _SecurityScanOutcome(error=f"Security scan blocked this skill ({reason}):\n{format_scan_report(result)}")
     except Exception as e:
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
-    return None
+        return _SecurityScanOutcome(unscanned_reason="the Skills Guard scan failed before confirming this file was inspected")
+    if target is not None and scanned_files.isdisjoint(_skill_target_identities(skill_dir, target)):
+        return _SecurityScanOutcome(unscanned_reason=(
+            "Skills Guard did not inspect this file (for example because its extension, "
+            "ignore rules, or text decoding excluded it)"))
+    return _SecurityScanOutcome()
+
+
+def _add_unscanned_script_note(result: Dict[str, Any], skill_dir: Path, target: Path,
+                              scan: _SecurityScanOutcome) -> None:
+    if scan.error or not scan.unscanned_reason:
+        return
+    if not any(identity.startswith("scripts/") for identity in _skill_target_identities(skill_dir, target)):
+        return
+    note = ("Files under scripts/ may be executed later. This write was not "
+            f"content-scanned because {scan.unscanned_reason}.")
+    result["security_note"] = note
+    result["message"] = f"{result['message']} {note}"
 
 
 # All skills live in ~/.hermes/skills/ (single source of truth)
@@ -331,9 +362,8 @@ def _locate_for_write(name: str, action: str, not_found_suffix: str = "", *,
 
 
 def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label: str,
-                   content: str) -> Optional[Dict[str, Any]]:
-    """Read-before-write guard (existing targets only), atomic write, then the security scan;
-    a blocked scan restores the original (or unlinks a new file). Error dict or None."""
+                   content: str, result: Dict[str, Any]) -> Dict[str, Any]:
+    """Atomic guarded write; return the success result with scan notes, or a rollback error."""
     original = None
     if target.exists():
         if read_guard := _background_review_read_before_write_guard(name, target, action, label):
@@ -341,14 +371,15 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
         original = target.read_text(encoding="utf-8")
     target.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
-    scan_error = _security_scan_skill(skill_dir)
-    if not scan_error:
-        return None
+    scan = _security_scan_skill(skill_dir, target=target)
+    if not scan.error:
+        _add_unscanned_script_note(result, skill_dir, target, scan)
+        return result
     if original is not None:
         atomic_write_text(target, original, preserve_mode=True)
     else:
         target.unlink(missing_ok=True)
-    return _err(scan_error)
+    return _err(scan.error)
 
 
 def _attach_org_note(result: Dict[str, Any], name: str, skill_dir: Path) -> Dict[str, Any]:
@@ -399,7 +430,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     skill_dir.mkdir(parents=True, exist_ok=True)
     skill_md = skill_dir / "SKILL.md"
     atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
-    if scan_error := _security_scan_skill(skill_dir):
+    if scan_error := _security_scan_skill(skill_dir).error:
         shutil.rmtree(skill_dir, ignore_errors=True)
         return _err(scan_error)
     root = _skills_dir()  # display relative under the profile dir; absolute under skills.create_dir
@@ -421,11 +452,14 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
         return _err(err)
     skill_dir, guard = _locate_for_write(name, "edit")
     # SKILL.md always exists here (_find_skill requires it), so a blocked scan restores it.
-    if guard := guard or _guarded_write(name, skill_dir, skill_dir / "SKILL.md", "edit", "SKILL.md", content):
+    if guard:
         return guard
     result = {
         "success": True, "message": f"Skill '{name}' updated (full rewrite).",
         "path": str(skill_dir), "_change": {"description": _description_preview(content)}}
+    result = _guarded_write(name, skill_dir, skill_dir / "SKILL.md", "edit", "SKILL.md", content, result)
+    if not result["success"]:
+        return result
     return _add_description_prompt_preview(_attach_org_note(result, name, skill_dir), content)
 
 
@@ -473,13 +507,12 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
         return _err(err)
     if not file_path and (err := _validate_frontmatter(new_content)):
         return _err(f"Patch would break SKILL.md structure: {err}")
-    if guard := _guarded_write(name, skill_dir, target, "patch", target_label, new_content):
-        return guard
     result = {
         "success": True,
         "message": f"Patched {target_label} in skill '{name}' ({match_count} replacement{'s' if match_count > 1 else ''}).",
         "_change": {"old": _clip(old_string, 200, "…"), "new": _clip(new_string, 200, "…")}}
-    return _attach_org_note(result, name, skill_dir)
+    result = _guarded_write(name, skill_dir, target, "patch", target_label, new_content, result)
+    return _attach_org_note(result, name, skill_dir) if result["success"] else result
 
 
 def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, Any]:
@@ -539,10 +572,14 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if guard:
         return guard
     target, err = _resolve_supporting_file(skill_dir, file_path)
-    if guard := err or _guarded_write(name, skill_dir, target, "write_file", file_path, file_content):
-        return guard
-    result = _attach_org_note({"success": True, "message": f"File '{file_path}' written to skill '{name}'.",
-                               "path": str(target)}, name, skill_dir)
+    if err:
+        return err
+    result = _guarded_write(name, skill_dir, target, "write_file", file_path, file_content,
+                            {"success": True, "message": f"File '{file_path}' written to skill '{name}'.",
+                             "path": str(target)})
+    if not result["success"]:
+        return result
+    _attach_org_note(result, name, skill_dir)
     # references/ is where per-session hoarding shows up; surface the sprawl finding on the write
     # that crosses the line so the review fork sees it in the same turn.
     if file_path.startswith("references/") and (skill_dir / "SKILL.md").exists():

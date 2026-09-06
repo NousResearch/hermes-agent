@@ -5345,6 +5345,15 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
 
     parsed_skills = _parse_skills_argument(skills)
 
+    # KENSEI CUSTOM: ensure plugin toolsets (e.g. memlock's "guard") are registered before
+    # HermesCLI._init_toolsets validates the configured list — discovery normally happens
+    # later via model_tools import, which printed a spurious "Unknown toolsets" warning.
+    try:
+        from hermes_cli.plugins import discover_plugins as _discover_plugins
+        _discover_plugins()
+    except Exception:
+        pass
+
     try:
         cli = HermesCLI(
             model=model,

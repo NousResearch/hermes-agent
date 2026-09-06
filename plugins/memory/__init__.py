@@ -67,7 +67,13 @@ def _is_bundled(provider_dir: Path) -> bool:
 
 def _module_name(provider_dir: Path, name: str) -> str:
     """``plugins.memory.<name>`` for bundled providers, else under the synthetic user namespace."""
-    return f"plugins.memory.{name}" if _is_bundled(provider_dir) else f"{_USER_NAMESPACE}.{name}"
+    if _is_bundled(provider_dir):
+        return f"plugins.memory.{name}"
+    # Separate package trees, including relative imports, across homes/sources.
+    import hashlib
+
+    digest = hashlib.sha256(str(provider_dir.resolve()).encode()).hexdigest()[:16]
+    return f"{_USER_NAMESPACE}.{name}__source_{digest}"
 
 
 def _external_source_dirs() -> List[Path]:
@@ -224,7 +230,7 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
             pass
     if hasattr(loaded, "register"):
         collector = _ProviderCollector(entry_point.name, register_skills=register_skills)
-        loaded.register(collector)
+        collector.collect(loaded.register, source=getattr(loaded, "__file__", None))
         if collector.provider:
             return collector.provider
     if callable(loaded):
@@ -235,7 +241,7 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
         except TypeError:
             pass
         collector = _ProviderCollector(entry_point.name, register_skills=register_skills)
-        loaded(collector)
+        collector.collect(loaded)
         return collector.provider
 
     provider = _instantiate_subclass(loaded)
@@ -259,7 +265,7 @@ def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True)
     if hasattr(mod, "register"):
         collector = _ProviderCollector(name, register_skills=register_skills)
         try:
-            mod.register(collector)
+            collector.collect(mod.register, source=mod.__file__)
         except Exception as e:
             # A raise AFTER register_memory_provider() must not cost us the provider:
             # falling through to the subclass scan would hand back a bare second
@@ -288,6 +294,43 @@ class _ProviderCollector:
         self.provider = None
         self._register_skills = register_skills
         self._context = None
+        self._hook_source = None
+
+    def collect(self, register, *, source=None):
+        """General discovery owns hooks; memory-only activation supplies a fallback.
+
+        Replace a whole registration group, not callbacks by name or identity:
+        a register function may deliberately create several distinct closures.
+        """
+        module = sys.modules.get(getattr(register, "__module__", ""))
+        source = source or getattr(module, "__file__", None)
+        if source:
+            self._hook_source = (self.name, str(Path(source).resolve()))
+        manager = self._plugin_context()._manager
+        with manager._discovery_lock:
+            if self._hook_source is not None:
+                for handle in manager._memory_hook_registrations.pop(self._hook_source, []):
+                    handle.dispose()
+            register(self)
+
+    def register_hook(self, hook_name, callback):
+        context = self._plugin_context()
+        manager = context._manager
+        with manager._discovery_lock:
+            if self._hook_source is not None:
+                for loaded in manager._plugins.values():
+                    source = getattr(loaded.module, "__file__", None)
+                    if (loaded.enabled and source and
+                            (loaded.manifest.name, str(Path(source).resolve())) == self._hook_source):
+                        # Preserve the disposable-handle contract without leasing
+                        # the general plugin's callback to this provider instance.
+                        handle = context._track("hook", hook_name, lambda: None)
+                        manager._memory_hook_registrations.setdefault(self._hook_source, []).append(handle)
+                        return handle
+            handle = context.register_hook(hook_name, callback)
+            if self._hook_source is not None:
+                manager._memory_hook_registrations.setdefault(self._hook_source, []).append(handle)
+            return handle
 
     def register_memory_provider(self, provider):
         self.provider = provider
@@ -386,7 +429,7 @@ def discover_plugin_cli_commands() -> List[dict]:
                 # resolve without executing the plugin's __init__.py (the shell has no
                 # __file__, so _load_provider_from_dir() still loads the real module).
                 _register_synthetic_package(_USER_NAMESPACE, [])
-                _register_synthetic_package(f"{_USER_NAMESPACE}.{active_provider}", [str(plugin_dir)])
+                _register_synthetic_package(_module_name(plugin_dir, active_provider), [str(plugin_dir)])
             spec = importlib.util.spec_from_file_location(module_name, str(plugin_dir / "cli.py"))
             if not spec or not spec.loader:
                 return []

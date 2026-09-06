@@ -2883,6 +2883,9 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._sudo_state = self._modal_input_snapshot = self._approval_state = None
         self._slash_confirm_state = self._model_picker_state = None
         self._clarify_deadline = self._sudo_deadline = self._approval_deadline = self._slash_confirm_deadline = 0
+        self._sudo_lock = threading.Lock()
+        self._sudo_state_lock = threading.Lock()
+        self._sudo_interrupt_generation = 0
         self._approval_lock = threading.Lock()
         try:  # composer placeholder chosen once so it stays stable on screen
             from hermes_cli.tips import get_random_composer_placeholder

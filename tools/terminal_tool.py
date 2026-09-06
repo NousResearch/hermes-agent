@@ -152,6 +152,7 @@ def _check_all_guards(command: str, env_type: str,
 
 
 from tools.environments.base import EnvironmentConnectionError
+from tools.terminal_tool_sudo import SudoPasswordPromptCancelled
 
 
 # Tool description for LLM
@@ -1098,6 +1099,8 @@ def _run_foreground(
                                 task_id=task_id, session_key=session_key),
             )
             break
+        except SudoPasswordPromptCancelled:
+            raise
         except Exception as e:
             if "timeout" in str(e).lower():
                 return _error_json(f"Command timed out after {effective_timeout} seconds", exit_code=124)
@@ -1250,6 +1253,9 @@ def terminal_tool(
         return r.result_json
     except EnvironmentConnectionError as e:
         return _degraded_result(e, task_id)
+    except SudoPasswordPromptCancelled:
+        return _error_json("Command cancelled: sudo password prompt was dismissed.",
+                           exit_code=130, status="cancelled")
     except Exception as e:
         return _fatal_error_json(e)
 

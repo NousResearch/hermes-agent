@@ -1031,6 +1031,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 session.mark_exited(int(result.get("returncode", -1)) or -1, "failed_start", "failed_start")
                 session.output_buffer = output
         except Exception as e:
+            from tools.terminal_tool_sudo import SudoPasswordPromptCancelled
+            if isinstance(e, SudoPasswordPromptCancelled):
+                raise
             session.mark_exited(-1, "failed_start", "failed_start")
             session.output_buffer = f"Failed to start: {e}"
         if session.exited:

@@ -173,9 +173,13 @@ def _read_hidden_password(result: dict) -> None:
         result["done"] = True
 
 
+class SudoPasswordPromptCancelled(Exception):
+    """An explicit UI dismissal aborts the command instead of trying without a password."""
+
+
 def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     """Prompt for a sudo password; "" on skip (empty Enter), timeout, or error. Prefers the
-    CLI-registered callback (prompt_toolkit-integrated); otherwise reads /dev/tty (msvcrt on
+    CLI-registered callback (None raises SudoPasswordPromptCancelled); otherwise reads /dev/tty (msvcrt on
     Windows) with echo disabled. Human wait time is excluded from tool deadlines (``human_wait_window``)."""
     from tools.terminal_tool import _get_sudo_password_callback
     _sudo_cb = _get_sudo_password_callback()
@@ -183,7 +187,12 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
         try:
             from tools.approval_human_wait import human_wait_window
             with human_wait_window():
-                return _sudo_cb() or ""
+                password = _sudo_cb()
+            if password is None:
+                raise SudoPasswordPromptCancelled
+            return password or ""
+        except SudoPasswordPromptCancelled:
+            raise
         except Exception:
             return ""
 

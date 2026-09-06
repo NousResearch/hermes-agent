@@ -186,6 +186,9 @@ def spawn_background_process(
             result_data["watch_patterns"] = proc_session.watch_patterns
         return json.dumps(result_data, ensure_ascii=False)
     except Exception as e:
+        from tools.terminal_tool_sudo import SudoPasswordPromptCancelled
+        if isinstance(e, SudoPasswordPromptCancelled):
+            raise
         return json.dumps({
             "output": "", "exit_code": -1,
             "error": _redact_terminal_error_text(f"Failed to start background process: {e}"),

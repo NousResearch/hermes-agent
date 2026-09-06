@@ -259,7 +259,7 @@ class PluginLedgerMixin:
             self._plugin_commands, self._plugin_skills, self._portable_mcp_servers,
             self._aux_tasks, self._system_prompt_sections, self._approval_transports,
             self._slack_action_handlers, self._predeclared_modules, self._predeclared_tools,
-            self._platform_handler_factories,
+            self._platform_handler_factories, self._agent_runtimes,
         ):
             container.clear()
         self._context_engine = None

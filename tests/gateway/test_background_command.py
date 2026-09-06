@@ -110,8 +110,9 @@ class TestRunBackgroundTask:
         call_args = mock_adapter.send.call_args
         assert "failed" in call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "").lower()
 
+    @pytest.mark.parametrize("api_mode,api_key", [("chat_completions", "test-key"), ("agent_runtime", "")])
     @pytest.mark.asyncio
-    async def test_successful_task_sends_result(self):
+    async def test_successful_task_sends_result(self, api_mode, api_key):
         """When the agent completes successfully, the result is sent."""
         runner = _make_runner()
         mock_adapter = AsyncMock()
@@ -137,7 +138,7 @@ class TestRunBackgroundTask:
                 "max_file_size_mb": 3,
             }
         }
-        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": api_key, "api_mode": api_mode}), \
              patch("gateway.run._load_gateway_config", return_value=checkpoint_config), \
              patch("run_agent.AIAgent") as MockAgent:
             mock_agent_instance = MagicMock()
@@ -155,6 +156,8 @@ class TestRunBackgroundTask:
         assert "Background task complete" in content
         assert "Hello from background!" in content
         agent_kwargs = MockAgent.call_args.kwargs
+        assert agent_kwargs["api_mode"] == api_mode
+        assert agent_kwargs["api_key"] == api_key
         assert agent_kwargs["checkpoints_enabled"] is True
         assert agent_kwargs["checkpoint_max_snapshots"] == 8
         assert agent_kwargs["checkpoint_max_total_size_mb"] == 222

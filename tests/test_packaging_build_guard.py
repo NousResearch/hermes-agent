@@ -94,3 +94,30 @@ def test_artifact_build_allows_explicit_nix_package_build_marker(kind, artifact_
 
     missing = sorted(expected - shipped)
     assert not missing, f"{kind} omits bundled plugin manifests: {missing}"
+
+
+def test_wheel_ships_state_holder_module_and_imports_state(tmp_path):
+    result = _build_artifact("wheel", tmp_path, nix_build=True)
+
+    assert result.returncode == 0, result.stderr
+    artifacts = list(tmp_path.glob("hermes_agent-*.whl"))
+    assert artifacts
+
+    with zipfile.ZipFile(artifacts[0]) as wheel:
+        shipped = set(wheel.namelist())
+    assert {
+        "hermes_state_holders.py", "hermes_state_registry.py",
+        "hermes_state_runtime.py", "agent/turn_runtime.py",
+    } <= shipped
+
+    import_env = os.environ.copy()
+    import_env["PYTHONPATH"] = str(artifacts[0])
+    imported = subprocess.run(
+        [sys.executable, "-c", "import hermes_state"],
+        cwd=tmp_path,
+        env=import_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr

@@ -198,6 +198,9 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["session_key"] == "agent:main:cli:dm:local"
     assert evt["parent_session_id"] == "20260703_parent_sid"
     assert evt["delegation_id"] == res["delegation_id"]
+    assert evt["delivery_id"] == (
+        f"async-delegation:{res['delegation_id']}:20260703_parent_sid"
+    )
 
 
 def test_rich_reinjection_block_is_self_contained():
@@ -578,6 +581,40 @@ assert ad.mark_completion_delivered({delegation_id!r})
         cwd=repo, env=env, text=True, capture_output=True, timeout=15, check=True,
     )
     assert probe.stdout.strip().splitlines()[-1] == "0"
+
+
+def test_owner_loss_is_terminal_and_not_restored_as_a_success_delivery(monkeypatch):
+    """A dead owner remains queryable but cannot create a synthetic success turn."""
+    delegation_id = "deleg_owner_lost"
+    ad._persist_dispatch({
+        "delegation_id": delegation_id,
+        "session_key": "synthetic-owner-session",
+        "origin_ui_session_id": "",
+        "parent_session_id": "synthetic-parent",
+        "dispatched_at": 1000.0,
+        "task": {"goal": "synthetic owner-loss probe"},
+    })
+    with ad._connect() as conn:
+        conn.execute(
+            "UPDATE async_delegations SET owner_pid=?, owner_started_at=NULL "
+            "WHERE delegation_id=?",
+            (999999, delegation_id),
+        )
+
+    import gateway.status as status
+
+    monkeypatch.setattr(status, "_pid_exists", lambda _pid: False)
+    assert ad.recover_abandoned_delegations() == 1
+
+    row = ad.get_durable_delegation(delegation_id)
+    assert row is not None
+    assert row["state"] == "unknown"
+    assert row["result"]["status"] == "unknown"
+    assert row["delivery_state"] == "dropped"
+
+    restored = queue.Queue()
+    assert ad.restore_undelivered_completions(restored) == 0
+    assert restored.empty()
 
 
 # ---------------------------------------------------------------------------

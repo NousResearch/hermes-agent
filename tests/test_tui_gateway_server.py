@@ -20,6 +20,24 @@ from tui_gateway import server
 from tui_gateway.transport import bind_transport, reset_transport
 
 
+@pytest.mark.parametrize("agent, expected", [
+    (None, ["file"]),
+    (types.SimpleNamespace(enabled_toolsets=["file"]), ["file"]),
+    (types.SimpleNamespace(enabled_toolsets=[]), []),
+])
+def test_tools_show_preserves_tool_scope_during_deferred_build(monkeypatch, agent, expected):
+    import model_tools
+
+    seen = []
+    monkeypatch.setitem(server._sessions, "tool-inventory-test", {"agent": agent})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+    monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **kwargs: seen.append(kwargs["enabled_toolsets"]) or [])
+    reply = _dispatch_sync({"jsonrpc": "2.0", "id": 1, "method": "tools.show",
+                            "params": {"session_id": "tool-inventory-test"}})
+    assert reply["result"] == {"sections": [], "total": 0}
+    assert seen == [expected]
+
+
 def _dispatch_sync(req: dict, transport=None) -> dict | None:
     """Run one RPC to completion synchronously, regardless of pool routing.
 
@@ -12606,6 +12624,63 @@ def test_prompt_submit_sanitizes_bracketed_paste_before_agent(monkeypatch):
         )
         assert resp.get("result"), f"got error: {resp.get('error')}"
         assert captured["prompt"] == "hello"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_persists_resolved_runtime_before_provider_turn(monkeypatch):
+    """A lazy session must bind its resolved provider before the first call.
+
+    The initial row is created before deferred agent construction. Without this
+    refresh, a client that omits explicit provider fields persists only the
+    model and cold resume can auto-detect a different built-in provider.
+    """
+    order: list[str] = []
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+        ):
+            order.append("provider_turn")
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None, **_kwargs):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    agent = _Agent()
+    server._sessions["sid"] = _session(agent=agent)
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _agent: {})
+        monkeypatch.setattr(server, "render_message", lambda _text, _cols: "")
+        monkeypatch.setattr(server, "_emit", lambda *args: None)
+        monkeypatch.setattr(server, "_start_agent_build", lambda *args, **kwargs: None)
+        monkeypatch.setattr(server, "_ensure_session_db_row", lambda *args, **kwargs: None)
+        monkeypatch.setattr(server, "_persist_branch_seed", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            server,
+            "_persist_live_session_runtime",
+            lambda session: order.append("persist_runtime"),
+        )
+
+        response = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "hi"},
+            }
+        )
+
+        assert response.get("result"), response.get("error")
+        assert order[:2] == ["persist_runtime", "provider_turn"]
+        assert order.count("persist_runtime") == 1
     finally:
         server._sessions.pop("sid", None)
 

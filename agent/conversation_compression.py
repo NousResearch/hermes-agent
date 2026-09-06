@@ -33,7 +33,32 @@ from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
 
+from agent.runtime_api import CompactionOwnership
+
 logger = logging.getLogger(__name__)
+
+
+def runtime_compaction_ownership(agent: Any) -> CompactionOwnership | None:
+    """Return this turn's descriptor-derived compaction ownership.
+
+    A normal conversation sets ``_runtime_compaction_ownership`` immediately
+    after descriptor resolution. ``None`` deliberately means no runtime
+    descriptor is active, preserving direct/manual compression compatibility
+    for older callers that still use the legacy Codex route.
+    """
+    descriptor = getattr(agent, "_runtime_descriptor", None)
+    if descriptor is not None:
+        value = getattr(descriptor, "compaction_ownership", None)
+    else:
+        value = getattr(agent, "_runtime_compaction_ownership", None)
+    if isinstance(value, CompactionOwnership):
+        return value
+    if isinstance(value, str):
+        try:
+            return CompactionOwnership(value)
+        except ValueError:
+            return None
+    return None
 
 
 @contextlib.contextmanager
@@ -3570,7 +3595,13 @@ def compress_context(
     # compression.codex_app_server_auto). Memory handoff is Hermes-only: no native
     # summary prompt to inject into. `is True`: MagicMock attributes are truthy.
     checkpoint_required = getattr(agent, "compression_checkpoint_required", False) is True
-    if getattr(agent, "api_mode", None) == "codex_app_server":
+    ownership = runtime_compaction_ownership(agent)
+    if ownership is CompactionOwnership.RUNTIME_NATIVE and getattr(agent, "api_mode", None) != "codex_app_server":
+        existing_prompt = getattr(agent, "_cached_system_prompt", None)
+        if not existing_prompt:
+            existing_prompt = agent._build_system_prompt(system_message)
+        return messages, existing_prompt
+    if getattr(agent, "api_mode", None) == "codex_app_server" and ownership in (None, CompactionOwnership.RUNTIME_NATIVE):
         if checkpoint_required:
             raise _checkpoint_blocked(
                 "codex_app_server owns the authoritative thread and does not expose a truthful pre-compaction transcript boundary"

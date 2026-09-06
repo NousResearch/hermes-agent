@@ -841,6 +841,98 @@ class PluginContext:
         self.register_platform_handler("telegram", factory)
 
     @_serialized_replacement
+    def register_agent_runtime(
+        self,
+        *,
+        descriptor: Any,
+        factory: Callable[[], Any],
+    ) -> PluginRegistration:
+        """Register a compatible whole-turn runtime without instantiating it.
+
+        Compatibility is validated before the factory is retained.  That
+        ordering guarantees an unsupported plugin cannot resolve credentials,
+        start a subprocess, or issue a model query during registration.
+        """
+        from agent.runtime_api import (
+            RuntimeRegistration,
+            RuntimeRegistrationError,
+            validate_runtime_descriptor,
+        )
+
+        validate_runtime_descriptor(descriptor)
+        if not callable(factory):
+            raise RuntimeRegistrationError("runtime factory must be callable")
+
+        runtime_id = descriptor.runtime_id
+        owner_id = self.plugin_id
+        existing = self._manager._agent_runtimes.get(runtime_id)
+        if existing is not None and existing.plugin_id != owner_id:
+            raise RuntimeRegistrationError(
+                f"runtime {runtime_id!r} is already registered by "
+                f"plugin {existing.plugin_id!r}"
+            )
+
+        entry = RuntimeRegistration(
+            descriptor=descriptor,
+            factory=factory,
+            plugin_id=owner_id,
+        )
+        self._manager._agent_runtimes[runtime_id] = entry
+        return self._track_replacement(
+            "agent_runtime",
+            runtime_id,
+            slot=("manager_mapping", id(self._manager._agent_runtimes), runtime_id),
+            current=entry,
+            previous=existing,
+            restore=lambda replacement: self._manager._restore_mapping(
+                self._manager._agent_runtimes,
+                runtime_id,
+                entry,
+                replacement,
+            ),
+        )
+
+    @_serialized_replacement
+    def register_provider_profile(self, profile: Any) -> PluginRegistration:
+        """Register a declarative model-provider profile for this plugin.
+
+        Pip entry-point discovery may import a module-shaped plugin before its
+        ``register(ctx)`` hook runs. When that import already installed the
+        same profile object, this method adopts ownership of that registration
+        so targeted unload or uninstall removes it with the runtime.
+        """
+        from providers import (
+            register_provider,
+            restore_registration,
+            snapshot_registration,
+        )
+        from providers.base import ProviderProfile
+
+        if not isinstance(profile, ProviderProfile):
+            raise TypeError("provider profile must be a ProviderProfile")
+
+        previous = snapshot_registration(profile.name)
+        # The module-shaped entry point may have self-registered this exact
+        # object during import. Adopt it instead of restoring it on unload.
+        replacement = None if previous is profile else previous
+        register_provider(profile)
+        if snapshot_registration(profile.name) is not profile:
+            raise RuntimeError(f"provider profile {profile.name!r} was not retained")
+
+        return self._track_replacement(
+            "provider_profile",
+            profile.name,
+            slot=("provider_profile", profile.name),
+            current=profile,
+            previous=replacement,
+            restore=lambda prior: restore_registration(
+                profile.name,
+                profile,
+                prior,
+            ),
+        )
+
+    @_serialized_replacement
     def register_auxiliary_task(
         self, key: str, *, display_name: str, description: str,
         defaults: Optional[Dict[str, Any]] = None,
@@ -1136,6 +1228,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
         self._portable_mcp_servers: Dict[str, Dict[str, Any]] = {}
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
+        # Whole-turn runtimes share the profile-scoped lifecycle ledger.
+        self._agent_runtimes: Dict[str, Any] = {}
         self._approval_transports: Dict[str, Any] = {}
         self._slack_action_handlers: List[tuple] = []
         self._platform_handler_factories: Dict[str, List[tuple]] = {}
@@ -1360,6 +1454,23 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             name=clean, present=present_fn, plugin_id=plugin_id, profile_home=str(get_hermes_home().resolve()),
         )
         logger.info("Plugin %s registered approval transport: %s", plugin_id, clean)
+
+    def get_agent_runtime(self, runtime_id: str) -> Any:
+        """Return registration metadata without creating the runtime."""
+        return self._agent_runtimes.get(runtime_id)
+
+    def iter_agent_runtime_registrations(self) -> tuple[Any, ...]:
+        """Return a stable snapshot for the host's shared runtime resolver."""
+        return tuple(self._agent_runtimes.values())
+
+    def select_agent_runtime(self, selection: Any) -> Any:
+        """Select one compatible runtime using descriptor-only routing."""
+        from agent.runtime_api import resolve_runtime_registration
+
+        return resolve_runtime_registration(
+            selection,
+            tuple(self._agent_runtimes.values()),
+        )
 
     def get_approval_transport(self, name: str):
         """Return a transport only inside the profile that registered it."""

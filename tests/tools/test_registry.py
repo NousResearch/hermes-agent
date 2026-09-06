@@ -402,6 +402,29 @@ class TestEntryLookup:
         reg = ToolRegistry()
         assert reg.get_entry("missing") is None
 
+    def test_get_registration_origin_distinguishes_host_and_scoped_plugin(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="host_tool",
+            toolset="core",
+            schema=_make_schema("host_tool"),
+            handler=_dummy_handler,
+        )
+        reg.register(
+            name="plugin_tool",
+            toolset="plugin",
+            schema=_make_schema("plugin_tool"),
+            handler=_dummy_handler,
+            scope="synthetic-profile",
+        )
+
+        assert reg.get_registration_origin("host_tool") == "host"
+        assert (
+            reg.get_registration_origin("plugin_tool", scope="synthetic-profile")
+            == "plugin"
+        )
+        assert reg.get_registration_origin("missing") is None
+
 
 class TestSecretCaptureResultContract:
     def test_secret_request_result_does_not_include_secret_value(self):

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
-from typing import Callable
+from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -66,3 +66,53 @@ def propagate_context_to_thread(target: Callable) -> Callable:
         return ctx.run(_inner)
 
     return _runner
+
+
+def propagate_callbacks_to_async_thread(
+    awaitable: Awaitable[Any],
+) -> Awaitable[Any]:
+    """Keep parent approval/sudo callbacks installed while *awaitable* runs.
+
+    Call this on the parent thread immediately before submitting the returned
+    awaitable with :func:`asyncio.run_coroutine_threadsafe`. That asyncio API
+    carries the caller's ContextVars onto the destination loop; this helper
+    supplies the thread-local half of the same security boundary and clears it
+    when the turn finishes.
+    """
+
+    parent_approval_cb = parent_sudo_cb = None
+    setters = None
+    try:
+        get_approval, get_sudo, set_approval, set_sudo = _callback_api()
+        parent_approval_cb = get_approval()
+        parent_sudo_cb = get_sudo()
+        setters = (set_approval, set_sudo)
+    except Exception:
+        logger.debug("Could not capture parent approval/sudo callbacks", exc_info=True)
+
+    async def _runner():
+        if setters is not None:
+            set_approval, set_sudo = setters
+            try:
+                set_approval(parent_approval_cb)
+                set_sudo(parent_sudo_cb)
+            except Exception:
+                logger.debug(
+                    "Failed to install propagated approval/sudo callbacks; "
+                    "dangerous-command approval will fail closed",
+                    exc_info=True,
+                )
+        try:
+            return await awaitable
+        finally:
+            if setters is not None:
+                set_approval, set_sudo = setters
+                try:
+                    set_approval(None)
+                    set_sudo(None)
+                except Exception:
+                    logger.debug(
+                        "Failed to clear propagated approval/sudo callbacks",
+                        exc_info=True,
+                    )
+    return _runner()

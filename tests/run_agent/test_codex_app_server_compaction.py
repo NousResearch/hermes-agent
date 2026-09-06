@@ -5,6 +5,7 @@ import pytest
 
 from agent.codex_runtime import _record_codex_app_server_compaction
 from agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS, compress_context
+from agent.runtime_api import CompactionOwnership
 from agent.transports.codex_app_server_session import TurnResult
 
 
@@ -111,6 +112,27 @@ def test_codex_app_server_native_auto_mode_leaves_thread_compaction_to_codex():
     assert agent._codex_session.calls == 0
     assert agent.context_compressor.compression_count == 0
     assert agent.events == []
+
+
+def test_descriptor_native_ownership_skips_host_compression_without_provider_checks():
+    agent = DummyAgent(
+        TurnResult(thread_id="thread-1", turn_id="compact-turn-1")
+    )
+    agent.api_mode = "synthetic_runtime"
+    agent._runtime_compaction_ownership = CompactionOwnership.RUNTIME_NATIVE
+    messages = [{"role": "user", "content": "hi"}]
+
+    returned, prompt = compress_context(
+        agent,
+        messages,
+        "system",
+        approx_tokens=100000,
+        task_id="test",
+    )
+
+    assert returned is messages
+    assert prompt == "cached prompt"
+    assert agent._codex_session.calls == 0
 
 
 def test_codex_app_server_compaction_heartbeat_refreshes_activity_while_waiting():

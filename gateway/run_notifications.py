@@ -839,6 +839,75 @@ class GatewayNotificationsMixin:
                 return a
         return None
 
+    @staticmethod
+    def _async_delegation_delivery_id(evt: dict) -> Optional[str]:
+        """Return the durable consumer identity for an async completion."""
+        explicit = str(evt.get("delivery_id") or "").strip()
+        if explicit:
+            return explicit
+        delegation_id = str(evt.get("delegation_id") or "").strip()
+        if not delegation_id:
+            return None
+        parent_session_id = str(evt.get("parent_session_id") or "").strip()
+        if parent_session_id:
+            return f"async-delegation:{delegation_id}:{parent_session_id}"
+        return f"async-delegation:{delegation_id}"
+
+    async def _async_delegation_delivery_already_persisted(
+        self, adapter: Any, session_id: str, evt: dict,
+    ) -> bool:
+        """Check the api_server delivery ledger before replaying an append.
+
+        ``persist_delegation_delivery`` intentionally has no gateway turn. A
+        process can therefore crash after its append commits but before the
+        async-delegation claim is acknowledged. The display row is the
+        consumer's durable idempotency key on that surface; checking it before
+        the retry keeps at-least-once recovery from creating a second visible
+        completion.
+        """
+        if evt.get("type") != "async_delegation":
+            return False
+        delegation_id = str(evt.get("delegation_id") or "").strip()
+        if not delegation_id or not session_id:
+            return False
+        ensure = getattr(adapter, "_ensure_session_db", None)
+        if not callable(ensure):
+            return False
+        try:
+            db = await asyncio.to_thread(ensure)
+            get_messages = getattr(db, "get_messages", None)
+            if db is None or not callable(get_messages):
+                return False
+            rows = await asyncio.to_thread(get_messages, session_id)
+        except Exception:
+            # Let the authoritative append path report/retry a transient DB
+            # failure. This check is only a replay fast-path, never a second
+            # persistence ledger.
+            logger.debug(
+                "Async-delegation delivery idempotency lookup failed",
+                exc_info=True,
+            )
+            return False
+        delivery_id = self._async_delegation_delivery_id(evt)
+        for row in rows or ():
+            if not isinstance(row, dict) or row.get("display_kind") != (
+                "async_delegation_complete"
+            ):
+                continue
+            metadata = row.get("display_metadata")
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except (TypeError, ValueError):
+                    metadata = None
+            if not isinstance(metadata, dict):
+                continue
+            if metadata.get("delegation_id") == delegation_id:
+                return True
+            if delivery_id and metadata.get("delivery_id") == delivery_id:
+                return True
+        return False
+
     async def _self_post_api_server(self, adapter, synth_text: str, raw_sid: str, evt: dict) -> bool:
         """Deliver to a non-push (api_server) session by raw session id.
 
@@ -857,6 +926,8 @@ class GatewayNotificationsMixin:
             deliver = lambda: deliver_wake(adapter, text=synth_text, session_id=raw_sid)  # noqa: E731
         try:
             logger.info(info, raw_sid)
+            if await self._async_delegation_delivery_already_persisted(adapter, raw_sid, evt):
+                return True
             await deliver()
             return True
         except Exception as e:
@@ -920,9 +991,12 @@ class GatewayNotificationsMixin:
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
+            async_delivery_id = self._async_delegation_delivery_id(evt) if evt.get("type") == "async_delegation" else None
+            if async_delivery_id:
+                metadata["async_delegation_delivery_id"] = async_delivery_id
             synth_event = MessageEvent(
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
-                message_id=str(evt.get("message_id") or "").strip() or None, metadata=metadata,
+                message_id=async_delivery_id or str(evt.get("message_id") or "").strip() or None, metadata=metadata,
             )
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
@@ -949,8 +1023,9 @@ class GatewayNotificationsMixin:
         """
         evt_type = str(evt.get("type") or "")
         if evt_type == "async_delegation":
-            producer_id = str(evt.get("delegation_id") or "")
-            return (evt_type, producer_id, "") if producer_id else None
+            producer_id = GatewayNotificationsMixin._async_delegation_delivery_id(evt)
+            parent_session_id = str(evt.get("parent_session_id") or "").strip()
+            return (evt_type, producer_id, parent_session_id) if producer_id else None
         if evt_type == "completion":
             producer_id = str(evt.get("session_id") or "")
             started_at = evt.get("started_at")

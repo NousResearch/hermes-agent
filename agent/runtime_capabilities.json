@@ -1,0 +1,46 @@
+{
+  "runtime_api_version": 1,
+  "capabilities": {
+    "background_delivery_v1": {
+      "consumer": "HermesRuntimeHostServices.emit_background_result",
+      "result_type": "RuntimeBackgroundResult",
+      "lifecycle": "parent_session",
+      "delivery_owner": "host"
+    },
+    "cancellation_v1": {},
+    "compaction_events_v1": {},
+    "host_approval_v1": {},
+    "host_content_stream_v1": {
+      "consumer": "RuntimeHostServices.emit_content",
+      "delivery_owner": "host"
+    },
+    "host_status_v1": {},
+    "host_tool_execution_v1": {},
+    "host_tool_request_id_v1": {
+      "consumer": "RuntimeHostServices.execute_tool",
+      "request_id": "optional keyword-only request_id",
+      "scope": "turn",
+      "validation": "bounded string with control characters rejected"
+    },
+    "provider_profile_registration_v1": {
+      "consumer": "PluginContext.register_provider_profile",
+      "lifecycle": "plugin_owned"
+    },
+    "runtime_model_provenance_v1": {
+      "consumer": "RuntimeUsageReceipt",
+      "fields": [
+        "selected_model",
+        "effective_model",
+        "canonical_model",
+        "model_resolution"
+      ],
+      "persistence_owner": "host"
+    },
+    "runtime_state_v1": {},
+    "runtime_tool_inventory_v1": {
+      "consumer": "RuntimeTurnRequest.tool_inventory",
+      "surface": "delivered_request"
+    },
+    "usage_receipts_v1": {}
+  }
+}

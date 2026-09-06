@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent.context_engine import automatic_compaction_status_message
+from agent.conversation_compression import runtime_compaction_ownership
+from agent.runtime_api import CompactionOwnership
 from agent.conversation_compression import (
     IDLE_COMPACTION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
     compression_skipped_due_to_lock, conversation_history_after_compression,
@@ -150,7 +152,7 @@ def _idle_compaction(
 
     messages = out.messages
     _idle_after = getattr(agent, "compression_idle_compact_after_seconds", 0)
-    if not (agent.compression_enabled and _idle_after > 0 and messages):
+    if not (agent.compression_enabled and _idle_after > 0 and messages) or runtime_compaction_ownership(agent) is CompactionOwnership.RUNTIME_NATIVE:
         return
     _idle_gap = time.time() - getattr(agent, "_last_activity_ts", time.time())
     if _idle_gap < _idle_after:
@@ -211,6 +213,9 @@ def _idle_compaction(
 def _codex_native_auto_compaction(agent: Any) -> bool:
     """Codex app-server threads are compacted by the codex agent itself; Hermes only
     initiates compaction in "hermes" mode."""
+    ownership = runtime_compaction_ownership(agent)
+    if ownership is not None:
+        return ownership is CompactionOwnership.RUNTIME_NATIVE
     return (
         # See #36801.
         getattr(agent, "api_mode", None) == "codex_app_server"

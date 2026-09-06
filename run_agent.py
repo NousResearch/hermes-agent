@@ -894,6 +894,8 @@ class AIAgent(
         """Release LLM clients and child agents WITHOUT tearing down session tool state (gateway cache
         eviction: the session may resume on the same task_id, so processes, sandbox, browser, computer-use and
         memory provider are kept). Idempotent; distinct from ``close()``."""
+        from agent.runtime_dispatch import close_runtime_session
+        _quietly(close_runtime_session, self)
         self._close_active_children(soft=True)
         # Retire (don't hard-close) the shared client: eviction runs on the gateway memory-manager thread,
         # and a cross-thread close can release TLS FDs under a still-unwinding worker.
@@ -903,6 +905,8 @@ class AIAgent(
     def close(self) -> None:
         """Release every resource this agent holds (idempotent); each phase is guarded so one failure never
         blocks the rest."""
+        from agent.runtime_dispatch import close_runtime_session
+        _quietly(close_runtime_session, self)
         # close() is the hard owner boundary; shutdown_memory_provider() is idempotent so gateway pre-calls
         # never double-extract.
         session_messages = getattr(self, "_session_messages", None)
@@ -1060,10 +1064,10 @@ class AIAgent(
 
     @classmethod
     def _assistant_has_todo_tool_call(cls, assistant_msg: Dict[str, Any], tool_call_id: str) -> bool:
-        """True when the assistant message issued a ``todo`` call with this id."""
+        """True when the assistant issued a canonical or legacy todo call with this id."""
         tool_calls = assistant_msg.get("tool_calls")
         return isinstance(tool_calls, list) and any(
-            cls._get_tool_call_id_static(tc) == tool_call_id and cls._get_tool_call_name_static(tc) == "todo"
+            cls._get_tool_call_id_static(tc) == tool_call_id and cls._get_tool_call_name_static(tc) in {"todo_list", "todo"}
             for tc in tool_calls
         )
 

@@ -97,7 +97,7 @@ _HOST_MANDATED_API_MODES = {
 
 # codex_app_server is opt-in: hand the whole turn to a `codex app-server` subprocess (Codex's own
 # tool runtime), gated on `model.openai_runtime == "codex_app_server"` AND provider in {openai, openai-codex}.
-_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}
+_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server", "agent_runtime"}
 
 
 def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
@@ -727,13 +727,76 @@ _VERTEX_NAMES = ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai
 _LOCAL_BYPASS_CLOUD_HOSTS = ("openrouter.ai", "anthropic.com", "openai.com")
 
 
+def _resolve_agent_runtime_profile(
+    *,
+    requested_provider: str,
+    model_cfg: Dict[str, Any],
+    explicit_base_url: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Resolve a provider profile that delegates the whole turn to a runtime.
+
+    Provider profiles are the existing discovery surface for independently
+    packaged providers. A profile declaring ``agent_runtime`` has no API
+    endpoint or credential contract for Hermes to resolve; the selected
+    runtime is responsible for its own authentication. Keep this check before
+    the ordinary provider resolver so a missing profile credential cannot make
+    a whole-turn runtime fall through to another provider.
+    """
+    requested_norm = str(requested_provider or "").strip().lower()
+    if not requested_norm or requested_norm in {"auto", "custom"}:
+        return None
+
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(requested_norm)
+    except Exception:
+        return None
+    if profile is None:
+        return None
+    if _parse_api_mode(getattr(profile, "api_mode", None)) != "agent_runtime":
+        return None
+
+    provider = str(getattr(profile, "name", "") or requested_norm).strip().lower()
+    configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+    configured_base_url = ""
+    if configured_provider in {requested_norm, provider}:
+        configured_base_url = str(model_cfg.get("base_url") or "").strip()
+    base_url = (
+        str(explicit_base_url or "").strip()
+        or configured_base_url
+        or str(getattr(profile, "base_url", "") or "").strip()
+    ).rstrip("/")
+    if not base_url:
+        # The CLI keeps a non-empty endpoint in its runtime snapshot even
+        # when the selected runtime has no network endpoint. This structural
+        # sentinel is never opened as a provider connection.
+        base_url = f"runtime://{provider}"
+    return {
+        "provider": provider,
+        "api_mode": "agent_runtime",
+        "base_url": base_url,
+        # No SDK client consumes this field for agent_runtime. Keep the
+        # structural value empty rather than copying any ambient credential.
+        "api_key": "",
+        "source": "provider-profile",
+        "requested_provider": requested_provider,
+    }
+
+
+def _provider_config_is_enabled(provider: str, config: Optional[Dict[str, Any]] = None) -> bool:
+    """Apply the shared explicit providers.<name>.enabled gate."""
+    if config is None:
+        config = _config_mod.load_config()
+    providers = config.get("providers") if isinstance(config, dict) else None
+    block = providers.get(provider) if isinstance(providers, dict) else None
+    return not isinstance(block, dict) or _config_mod.is_provider_enabled(block)
+
+
 def _raise_if_provider_disabled(requested_provider: str) -> None:
     """Honour ``providers.<name>.enabled: false`` for built-ins too (the custom lookup gate only
     covers custom blocks); a typed error lets the fallback chain advance."""
-    full_cfg = _config_mod.load_config()
-    provs_cfg = full_cfg.get("providers") if isinstance(full_cfg, dict) else None
-    block = provs_cfg.get(requested_provider) if isinstance(provs_cfg, dict) else None
-    if isinstance(block, dict) and not _config_mod.is_provider_enabled(block):
+    if not _provider_config_is_enabled(requested_provider):
         raise ValueError(f"provider {requested_provider!r} is disabled in config "
                          f"(providers.{requested_provider}.enabled: false)")
 
@@ -827,6 +890,12 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     OpenCode Zen/Go where different models route through different API surfaces)."""
     requested_provider = resolve_requested_provider(requested)
     _raise_if_provider_disabled(requested_provider)
+    profile_runtime = _resolve_agent_runtime_profile(
+        requested_provider=requested_provider, model_cfg=_get_model_config(),
+        explicit_base_url=explicit_base_url,
+    )
+    if profile_runtime is not None:
+        return profile_runtime
     return next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
 
 

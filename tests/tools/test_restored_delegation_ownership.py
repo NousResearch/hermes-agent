@@ -105,3 +105,87 @@ def test_owns_event_callback_beats_restored_flag():
 
     assert len(results) == 1
     assert reg.completion_queue.empty()
+
+
+def test_foreign_owner_callback_requeues_restored_event():
+    """A foreign owner filter cannot consume a restored completion."""
+    reg = _make_registry()
+    event = _delegation_event(session_key="OWNER", restored=True)
+    reg.completion_queue.put(event)
+
+    results = reg.drain_notifications(
+        session_key="FOREIGN",
+        owns_event=lambda candidate: candidate.get("session_key") == "FOREIGN",
+    )
+
+    assert results == []
+    assert reg.completion_queue.get_nowait() == event
+    assert reg.completion_queue.empty()
+
+
+def test_absent_owner_filter_requeues_restored_event():
+    """A legacy unfiltered drain cannot adopt a restored completion."""
+    reg = _make_registry()
+    event = _delegation_event(session_key="OWNER", restored=True)
+    reg.completion_queue.put(event)
+
+    results = reg.drain_notifications()
+
+    assert results == []
+    assert reg.completion_queue.get_nowait() == event
+    assert reg.completion_queue.empty()
+
+
+def test_restored_owner_callback_exception_fails_closed():
+    """A broken owner check leaves the restored completion recoverable."""
+    reg = _make_registry()
+    event = _delegation_event(session_key="OWNER", restored=True)
+    reg.completion_queue.put(event)
+
+    def broken(_event):
+        raise RuntimeError("synthetic ownership failure")
+
+    results = reg.drain_notifications(owns_event=broken)
+
+    assert results == []
+    assert reg.completion_queue.get_nowait() == event
+    assert reg.completion_queue.empty()
+
+
+def test_matching_owner_claims_and_acknowledges_restored_event_once(
+    tmp_path, monkeypatch,
+):
+    """The verified owner can claim and acknowledge a restored row once."""
+    import tools.async_delegation as ad
+
+    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "async_delegations.db")
+    event = _delegation_event(session_key="OWNER", delegation_id="d-owner")
+    ad._persist_dispatch({
+        "delegation_id": event["delegation_id"],
+        "session_key": event["session_key"],
+        "origin_ui_session_id": "",
+        "parent_session_id": "OWNER",
+        "dispatched_at": event["dispatched_at"],
+    })
+    ad._persist_completion(event, {
+        "status": "success",
+        "summary": event["summary"],
+    })
+
+    restored_queue = queue.Queue()
+    assert ad.restore_undelivered_completions(restored_queue) == 1
+    restored = restored_queue.get_nowait()
+    assert restored["restored"] is True
+
+    reg = _make_registry()
+    reg.completion_queue.put(restored)
+    results = reg.drain_notifications(
+        owns_event=lambda candidate: candidate.get("session_key") == "OWNER",
+    )
+    assert len(results) == 1
+
+    claim_id = ad.claim_event_delivery(restored, "owner-consumer")
+    assert claim_id
+    ad.complete_event_delivery(restored, claim_id)
+    assert ad.get_durable_delegation("d-owner")["delivery_state"] == "delivered"
+    assert ad.claim_event_delivery(restored, "foreign-after-ack") is None

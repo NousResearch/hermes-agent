@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from agent.runtime_api import RuntimeFailure, RuntimeFailurePhase
 from agent.error_surface import (
     LAYER_AUTH,
     LAYER_BILLING,
@@ -11,6 +12,7 @@ from agent.error_surface import (
     LAYER_ENDPOINT,
     LAYER_GATEWAY,
     LAYER_PROVIDER,
+    LAYER_RUNTIME,
     LAYER_STREAMING,
     build_error_surface_from_exception,
     build_error_surface_from_result,
@@ -150,6 +152,54 @@ def test_result_disk_full_wins_over_reason():
     )
     assert surface["layer"] == LAYER_DISK
     assert surface["retryable"] is False
+
+
+@pytest.mark.parametrize("code", ["runtime_offline", "x" * 128])
+@pytest.mark.parametrize("retryable", [False, True])
+def test_result_runtime_failure_projects_safe_code_and_retryability(code, retryable):
+    failure = RuntimeFailure(
+        code=code,
+        message="private runtime details",
+        phase=RuntimeFailurePhase.BEFORE_VISIBLE_OUTPUT,
+        replay_safe=False,
+        retryable=retryable,
+    )
+
+    surface = build_error_surface_from_result(
+        {"error": "runtime failed", "failure": failure},
+        provider="claude-agent-sdk",
+        model="claude-fable-5-1",
+    )
+
+    assert surface == {
+        "layer": LAYER_RUNTIME,
+        "code": code,
+        "retryable": retryable,
+        "provider": "claude-agent-sdk",
+        "model": "claude-fable-5-1",
+    }
+    assert "message" not in surface
+    assert "phase" not in surface
+    assert "replay_safe" not in surface
+
+
+@pytest.mark.parametrize("code", ["", "RuntimeOffline", "runtime/offline", "x" * 129])
+def test_result_runtime_failure_sanitizes_invalid_code(code):
+    failure = RuntimeFailure(
+        code=code,
+        message="private runtime details",
+        phase=RuntimeFailurePhase.PREFLIGHT,
+        replay_safe=False,
+        retryable=True,
+    )
+
+    surface = build_error_surface_from_result({"failure": failure})
+
+    assert surface == {
+        "layer": LAYER_RUNTIME,
+        "code": "runtime_failed",
+        "retryable": False,
+    }
 
 
 # ── build_error_surface_from_exception ───────────────────────────────────

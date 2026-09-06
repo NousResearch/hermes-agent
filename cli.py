@@ -3298,13 +3298,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         return True
 
     def _run_plugin_slash_command(self, base_cmd: str, user_args: str) -> None:
-        from hermes_cli.plugins import get_plugin_command_handler, resolve_plugin_command_result
+        from hermes_cli.plugins import (
+            call_plugin_command_handler, get_plugin_command_handler, resolve_plugin_command_result,
+        )
 
         plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
         if not plugin_handler:
             return
         try:
-            result = resolve_plugin_command_result(plugin_handler(user_args))
+            result = resolve_plugin_command_result(call_plugin_command_handler(plugin_handler, user_args))
             if result:
                 _cprint(str(result))
         except Exception as e:

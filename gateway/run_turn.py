@@ -2090,12 +2090,12 @@ class GatewayTurnMixin:
             )
             return []
         principals = {
-            value.strip()
+            value
             for value in (
                 getattr(source, "user_id", None),
                 getattr(source, "user_id_alt", None),
             )
-            if isinstance(value, str) and value.strip()
+            if isinstance(value, str) and value
         }
         result = list(enabled)
         for toolset, raw_allowed in platform_rules.items():
@@ -2104,9 +2104,14 @@ class GatewayTurnMixin:
                 continue
             valid = (
                 isinstance(raw_allowed, list)
-                and all(isinstance(item, str) and item.strip() for item in raw_allowed)
+                and all(
+                    isinstance(item, str)
+                    and bool(item)
+                    and item == item.strip()
+                    for item in raw_allowed
+                )
             )
-            allowed = {item.strip() for item in raw_allowed} if valid else set()
+            allowed = set(raw_allowed) if valid else set()
             if not principals.intersection(allowed):
                 result.remove(name)
         return result

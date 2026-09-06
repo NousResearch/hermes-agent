@@ -64,6 +64,15 @@ def test_non_string_identity_cannot_match_allowlist():
     assert "computer_use" not in _resolve(config, _source("U_OTHER", 123))
 
 
+def test_whitespace_distinct_identities_do_not_match():
+    assert "computer_use" not in _resolve(
+        _config(["U_ALLOWED"]), _source(" U_ALLOWED ")
+    )
+    assert "computer_use" not in _resolve(
+        _config([" U_ALLOWED "]), _source("U_ALLOWED")
+    )
+
+
 def test_alternate_authenticated_identity_can_match():
     result = _resolve(_config(["U_ALT"]), _source("U_PRIMARY", "U_ALT"))
     assert "computer_use" in result

@@ -1451,12 +1451,22 @@ def get_running_pid(
         records = (
             _read_pid_record(resolved_pid_path), _read_gateway_lock_record(resolved_lock_path),
         )
+        skipped_foreign_live = False
         for record in records:
             pid = _live_pid_from_record(record)
-            if pid is None or not _pid_record_belongs_to_current_profile(record):
+            if pid is None:
+                continue
+            if not _pid_record_belongs_to_current_profile(record):
+                # A live record from another HERMES_HOME owns this lock: the
+                # probe must neither claim it nor delete its identity files.
+                # (_cleanup below force-unlinks pid+lock; running it here
+                # would split-brain a live foreign gateway and report it down.)
+                skipped_foreign_live = True
                 continue
             if _record_matches_live_gateway_pid(record, pid):
                 return pid
+        if skipped_foreign_live:
+            return get_runtime_status_running_pid() if pid_path is None else None
         _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
         return get_runtime_status_running_pid() if pid_path is None else None
     # Lock inactive: the runtime-status fallback runs BEFORE cleanup here.

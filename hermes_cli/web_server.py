@@ -1093,9 +1093,9 @@ def _configure_auth_gate(
 
     # ``--insecure`` no longer disables the gate (June 2026 hermes-0day
     # hardening); warn that it is a no-op rather than silently ignore it.
-    if allow_public and host not in _LOOPBACK_HOST_VALUES:
+    if allow_public and app.state.auth_required:
         _log.warning(
-            "--insecure no longer bypasses dashboard authentication. A "
+            "--insecure no longer bypasses Hermes server authentication. A "
             "non-loopback bind (%s) now ALWAYS requires an auth provider "
             "(OAuth or the bundled password provider). Configure one — see "
             "below — or bind to 127.0.0.1 and reach it over an SSH tunnel / "
@@ -1103,6 +1103,11 @@ def _configure_auth_gate(
         )
 
     if app.state.auth_required:
+        _log.warning(
+            "An exposed Hermes server permits authenticated agent and command execution "
+            "with the operating-system privileges of the Hermes process; "
+            "never run an exposed server as root."
+        )
         # No escape hatch serves a gated dashboard without a provider.
         from hermes_cli.dashboard_auth import list_providers
         if not list_providers():

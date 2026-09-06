@@ -960,7 +960,7 @@ def test_seed_from_singletons_respects_hermes_pkce_suppression(tmp_path, monkeyp
     }))
 
     # Stub the readers so only hermes_pkce is "available"; claude_code returns None
-    import agent.anthropic_adapter as aa
+    import agent.anthropic_credentials as aa
     monkeypatch.setattr(aa, "read_hermes_oauth_credentials", lambda: {
         "accessToken": "tok", "refreshToken": "r", "expiresAt": 9999999999000,
     })
@@ -1110,3 +1110,20 @@ def test_auth_remove_env_seeded_dotenv_with_bom_no_shell_hint(tmp_path, monkeypa
     out = capsys.readouterr().out
     assert "Cleared DEEPSEEK_API_KEY from .env" in out
     assert "still set in your shell environment" not in out
+
+
+def test_qwen_oauth_login_marks_active_through_moved_owner(monkeypatch):
+    """`_mark_qwen_oauth_active` lives in `auth_qwen`; the login flow must reach it
+    without depending on a re-export from the `auth` facade (AttributeError on head before)."""
+    import hermes_cli.auth_commands as auth_commands
+    import hermes_cli.auth_qwen as auth_qwen
+
+    creds = {"access_token": "tok"}
+    marked = []
+    monkeypatch.setattr(
+        auth_commands.auth_mod, "resolve_qwen_runtime_credentials", lambda **kw: creds
+    )
+    monkeypatch.setattr(auth_qwen, "_mark_qwen_oauth_active", lambda c: marked.append(c))
+
+    assert auth_commands._qwen_oauth_login(None) is creds
+    assert marked == [creds]

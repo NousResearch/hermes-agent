@@ -25,17 +25,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import hermes_state
-from hermes_state import (
-    _MAX_MALFORMED_BACKUPS,
-    _MAX_PERSISTENT_REPAIR_ATTEMPTS,
-    _backup_db_file,
-    _existing_malformed_backups,
-    _persistent_repair_attempts_exhausted,
-    _prune_malformed_backups,
-    _record_repair_outcome,
-    _repair_ledger_path,
-    repair_state_db_schema,
-)
+import hermes_state_repair
+from hermes_state_repair import _MAX_MALFORMED_BACKUPS, _MAX_PERSISTENT_REPAIR_ATTEMPTS, _backup_db_file, _existing_malformed_backups, _persistent_repair_attempts_exhausted, _prune_malformed_backups, _record_repair_outcome, _repair_ledger_path, repair_state_db_schema
 
 
 def _make_unrepairable_db(tmp_path: Path) -> Path:
@@ -76,12 +67,19 @@ class TestPersistentAttemptCap:
         # Budget burned: the next call must refuse WITHOUT running surgery
         # (and without taking another backup).
         backups_before = len(_existing_malformed_backups(db))
-        with patch.object(hermes_state, "_repair_state_db_schema_locked") as surgery:
+        with patch.object(hermes_state_repair, "_repair_state_db_schema_locked") as surgery:
             report = repair_state_db_schema(db)
         surgery.assert_not_called()
         assert report["repaired"] is False
         assert "Manual recovery required" in report["error"]
         assert ".recover" in report["error"]
+        assert "sessions recover" in report["error"]
+        assert "sqlite3" in report["error"]
+        # The terminal error must not direct a raw sqlite3 shell at the
+        # live database: a WAL-reset-vulnerable CLI (Debian/Ubuntu 3.45.x/
+        # 3.46.x, pre-#100368 forensics) unlinks the live WAL/SHM pair
+        # and splits the store into two generations.
+        assert 'sqlite3 state.db ".recover"' not in report["error"]
         assert len(_existing_malformed_backups(db)) == backups_before
 
     def test_changed_file_resets_the_budget(self, tmp_path):

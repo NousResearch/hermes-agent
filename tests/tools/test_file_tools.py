@@ -33,6 +33,22 @@ class TestReadFileHandler:
 
 
     @patch("tools.file_tools._get_file_ops")
+    def test_dispatch_without_limit_uses_schema_default(self, mock_get):
+        """The model omits ``limit`` on most reads; the dispatch handler must fall
+        back to the SAME default the schema advertises (drifted to 500 vs 2000)."""
+        from tools.file_tools import READ_FILE_SCHEMA, _handle_read_file
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = "x"
+        result_obj.to_dict.return_value = {"content": "x", "total_lines": 1}
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        _handle_read_file({"path": "/tmp/test.txt"}, task_id="t-default")
+        schema_default = READ_FILE_SCHEMA["parameters"]["properties"]["limit"]["default"]
+        assert mock_ops.read_file.call_args.args[2] == schema_default
+
+    @patch("tools.file_tools._get_file_ops")
     def test_exception_returns_error_json(self, mock_get):
         mock_get.side_effect = RuntimeError("terminal not available")
 
@@ -317,7 +333,7 @@ class TestWindowsMsysPathResolution:
         """Windows-only: ``_resolve_path_for_task`` hands the translated path
         to ``ntpath``/``Path``, and only a real Windows ``Path`` renders
         ``C:\\Users\\...`` — faking ``sys.platform`` left PosixPath in place."""
-        import tools.file_tools as file_tools
+        import tools.file_tools_paths as file_tools
 
         monkeypatch.setattr(file_tools, "_uses_container_paths", lambda task_id="default": False)
 
@@ -332,7 +348,7 @@ class TestWindowsMsysPathResolution:
         Windows-only: the translation this guards against only happens when
         the host really is Windows, so the negative is only meaningful there.
         """
-        import tools.file_tools as file_tools
+        import tools.file_tools_paths as file_tools
 
         monkeypatch.setattr(file_tools, "_uses_container_paths", lambda task_id="default": True)
         monkeypatch.setattr(
@@ -387,7 +403,7 @@ class TestSearchHints:
 
     def setup_method(self):
         """Clear read/search tracker between tests to avoid cross-test state."""
-        from tools.file_tools import _read_tracker
+        from tools.file_tools_read_tracking import _read_tracker
         _read_tracker.clear()
 
     @patch("tools.file_tools._get_file_ops")
@@ -436,8 +452,8 @@ class TestSensitivePathCheck:
 
     def test_hermes_config_blocked_for_write_file(self, tmp_path, monkeypatch):
         fake_config = tmp_path / "config.yaml"
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", str(fake_config))
+        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
 
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool(str(fake_config), "approvals:\n  mode: off\n"))
@@ -446,8 +462,8 @@ class TestSensitivePathCheck:
 
     def test_hermes_config_blocked_via_tilde_path(self, tmp_path, monkeypatch):
         fake_config = tmp_path / "config.yaml"
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", str(fake_config))
+        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
 
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool(str(fake_config), "approvals:\n  mode: off\n"))
@@ -456,8 +472,8 @@ class TestSensitivePathCheck:
 
 
     def test_system_path_still_blocked(self, monkeypatch):
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/some/other/path")
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", "/some/other/path")
+        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
 
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool("/etc/passwd", "evil"))
@@ -467,7 +483,7 @@ class TestSensitivePathCheck:
     def test_macos_private_var_carveouts(self):
         """macOS temp dirs under /private/var must not be blanket-blocked,
         while the genuinely-sensitive /private/var subtrees still are."""
-        from tools.file_tools import _check_sensitive_path
+        from tools.file_tools_write_guards import _check_sensitive_path
 
         # $TMPDIR / /tmp / /var/folders realpath into these on macOS.
         assert _check_sensitive_path("/private/var/folders/xy/T/tmp.txt") is None
@@ -480,8 +496,8 @@ class TestSensitivePathCheck:
 
     @patch("tools.file_tools._get_file_ops")
     def test_normal_file_not_blocked(self, mock_get, monkeypatch):
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/home/user/.hermes/config.yaml")
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", "/home/user/.hermes/config.yaml")
+        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
         mock_ops = MagicMock()
         result_obj = MagicMock()
         result_obj.to_dict.return_value = {"status": "ok", "path": "/tmp/other.txt", "bytes": 5}
@@ -547,7 +563,7 @@ class TestSessionCwdSurvivesEnvRecreation:
     @patch("tools.terminal_tool._active_environments", new_callable=dict)
     @patch("tools.file_tools._file_ops_cache", new_callable=dict)
     @patch("tools.terminal_tool._get_env_config")
-    @patch("tools.terminal_tool._create_environment")
+    @patch("tools.terminal_tool_backends._create_environment")
     def test_recorded_cwd_used_for_recreated_env(
         self, mock_create_env, mock_config, mock_cache, mock_active
     ):
@@ -588,7 +604,7 @@ class TestSessionCwdSurvivesEnvRecreation:
     @patch("tools.terminal_tool._active_environments", new_callable=dict)
     @patch("tools.file_tools._file_ops_cache", new_callable=dict)
     @patch("tools.terminal_tool._get_env_config")
-    @patch("tools.terminal_tool._create_environment")
+    @patch("tools.terminal_tool_backends._create_environment")
     def test_stale_cache_cwd_rescued_into_record_on_cleanup_detection(
         self, mock_create_env, mock_config, mock_cache, mock_active
     ):
@@ -718,21 +734,24 @@ class TestDedupInvalidationTaskResolution:
 
         # The task resolves the relative path into the workspace; the default
         # task (the old buggy resolution) would resolve into proc.
-        correct = str(ft._resolve_path("data.txt", task_id))
-        buggy = str(ft._resolve_path("data.txt"))
+        from tools.file_tools_paths import _resolve_path_for_task
+        from tools.file_tools_read_tracking import _read_tracker
+        correct = str(_resolve_path_for_task("data.txt", task_id))
+        buggy = str(_resolve_path_for_task("data.txt"))
         assert correct != buggy, "test precondition: cwds must diverge"
 
         # Populate the dedup cache via a real read.
         ft.read_file_tool("data.txt", task_id=task_id)
-        keys = [k[0] for k in ft._read_tracker.get(task_id, {}).get("dedup", {})]
+        keys = [k[0] for k in _read_tracker.get(task_id, {}).get("dedup", {})]
         assert correct in keys, keys
 
         # Invalidate as write_file_tool does; the entry must be gone.
-        ft._invalidate_dedup_for_path("data.txt", task_id)
-        remaining = [k[0] for k in ft._read_tracker.get(task_id, {}).get("dedup", {})]
+        from tools.file_tools_read_tracking import _invalidate_dedup_for_path
+        _invalidate_dedup_for_path("data.txt", task_id)
+        remaining = [k[0] for k in _read_tracker.get(task_id, {}).get("dedup", {})]
         assert correct not in remaining, remaining
 
-        ft._read_tracker.pop(task_id, None)
+        _read_tracker.pop(task_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -757,7 +776,8 @@ class TestNotFoundCache:
         mock_ops.read_file.return_value = result_obj
         mock_get.return_value = mock_ops
 
-        from tools.file_tools import read_file_tool, _read_tracker
+        from tools.file_tools import read_file_tool
+        from tools.file_tools_read_tracking import _read_tracker
         # Use a unique task_id so we don't collide with other tests.
         tid = "neg-cache-read-1"
         _read_tracker.pop(tid, None)
@@ -785,7 +805,8 @@ class TestNotFoundCache:
         mock_ops.read_file.return_value = result_obj
         mock_get.return_value = mock_ops
 
-        from tools.file_tools import read_file_tool, _read_tracker
+        from tools.file_tools import read_file_tool
+        from tools.file_tools_read_tracking import _read_tracker
         for tid in ("neg-cache-iso-A", "neg-cache-iso-B"):
             _read_tracker.pop(tid, None)
 
@@ -804,7 +825,8 @@ class TestNotFoundCache:
         mock_ops.read_file.return_value = result_obj
         mock_get.return_value = mock_ops
 
-        from tools.file_tools import read_file_tool, _read_tracker
+        from tools.file_tools import read_file_tool
+        from tools.file_tools_read_tracking import _read_tracker
         tid = "neg-cache-success-only"
         _read_tracker.pop(tid, None)
 
@@ -826,7 +848,8 @@ class TestNotFoundCache:
         mock_ops.search.return_value = result_obj
         mock_get.return_value = mock_ops
 
-        from tools.file_tools import search_tool, _read_tracker
+        from tools.file_tools import search_tool
+        from tools.file_tools_read_tracking import _read_tracker
         tid = "neg-cache-search-3"
         _read_tracker.pop(tid, None)
 
@@ -862,7 +885,8 @@ class TestNotFoundCache:
 
         mock_get.return_value = mock_ops
 
-        from tools.file_tools import read_file_tool, search_tool, _read_tracker
+        from tools.file_tools import read_file_tool, search_tool
+        from tools.file_tools_read_tracking import _read_tracker
         tid = "neg-cache-namespace-4"
         _read_tracker.pop(tid, None)
 
@@ -894,7 +918,8 @@ class TestNotFoundCache:
         mock_ops.write_file.return_value = write_result_obj
         mock_get.return_value = mock_ops
 
-        from tools.file_tools import read_file_tool, write_file_tool, _read_tracker
+        from tools.file_tools import read_file_tool, write_file_tool
+        from tools.file_tools_read_tracking import _read_tracker
         tid = "neg-cache-write-invalidate-5"
         _read_tracker.pop(tid, None)
 
@@ -912,13 +937,9 @@ class TestNotFoundCache:
 
     def test_not_found_ttl_expires(self):
         # A cache entry older than _NOT_FOUND_TTL_SECONDS must be discarded.
-        from tools.file_tools import (
-            _check_not_found_cache,
-            _record_not_found,
-            _read_tracker,
-            _NOT_FOUND_TTL_SECONDS,
-        )
-        import tools.file_tools as ft
+        from tools.file_tools_read_tracking import (
+            _NOT_FOUND_TTL_SECONDS, _check_not_found_cache, _read_tracker, _read_tracker_lock,
+            _record_not_found)
 
         tid = "neg-cache-ttl-6"
         _read_tracker.pop(tid, None)
@@ -927,15 +948,15 @@ class TestNotFoundCache:
         assert _check_not_found_cache("read", "/tmp/ttl-test", tid) is not None
 
         # Backdate the entry past the TTL.
-        with ft._read_tracker_lock:
+        with _read_tracker_lock:
             entry = _read_tracker[tid]["not_found"][("read", "/tmp/ttl-test")]
-            ft._read_tracker[tid]["not_found"][("read", "/tmp/ttl-test")] = (
+            _read_tracker[tid]["not_found"][("read", "/tmp/ttl-test")] = (
                 entry[0] - _NOT_FOUND_TTL_SECONDS - 1.0,
                 entry[1],
             )
         # Stale entry: cache miss, also evicted.
         assert _check_not_found_cache("read", "/tmp/ttl-test", tid) is None
-        with ft._read_tracker_lock:
+        with _read_tracker_lock:
             assert ("read", "/tmp/ttl-test") not in _read_tracker[tid].get("not_found", {})
 
     def test_out_of_band_creation_defeats_cached_miss(self, tmp_path):
@@ -943,11 +964,7 @@ class TestNotFoundCache:
         by a terminal command or any external process, NOT write_file_tool —
         must be served for real on the next read. The agent pattern
         'check for file → create it → read it' breaks otherwise."""
-        from tools.file_tools import (
-            _check_not_found_cache,
-            _record_not_found,
-            _read_tracker,
-        )
+        from tools.file_tools_read_tracking import _check_not_found_cache, _record_not_found, _read_tracker
 
         tid = "neg-cache-oob-read"
         _read_tracker.pop(tid, None)
@@ -971,11 +988,7 @@ class TestNotFoundCache:
     def test_out_of_band_creation_defeats_cached_search_miss(self, tmp_path):
         """Same contract for search roots: creating a file under a
         previously-missing directory must defeat the cached 'Path not found'."""
-        from tools.file_tools import (
-            _check_not_found_cache,
-            _record_not_found,
-            _read_tracker,
-        )
+        from tools.file_tools_read_tracking import _check_not_found_cache, _record_not_found, _read_tracker
 
         tid = "neg-cache-oob-search"
         _read_tracker.pop(tid, None)
@@ -994,12 +1007,8 @@ class TestNotFoundCache:
     def test_notify_other_tool_call_clears_not_found(self):
         """Belt-and-suspenders: any non-read tool (terminal etc.) invalidates
         the task's negative cache via the dispatcher's notify hook."""
-        from tools.file_tools import (
-            _check_not_found_cache,
-            _record_not_found,
-            _read_tracker,
-            notify_other_tool_call,
-        )
+        from tools.file_tools_read_tracking import _check_not_found_cache, _record_not_found, _read_tracker
+        from tools.file_tools_read_tracking import notify_other_tool_call
 
         tid = "neg-cache-notify"
         _read_tracker.pop(tid, None)
@@ -1022,7 +1031,7 @@ class TestSSHConfigWriteGateSingleQuery:
     def test_gate_call_passes_single_query_deny_message(self):
         import inspect as _inspect
         import re as _re
-        import tools.file_tools as ft
+        import tools.file_tools_write_guards as ft
 
         src = _inspect.getsource(ft)
         idx = src.find("_approval._run_approval_gate(")

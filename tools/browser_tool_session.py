@@ -118,13 +118,17 @@ def _prepare_session_socket_dir(session_name: str) -> str:
     return socket_dir
 
 
-def _agent_browser_command_env(socket_dir: str) -> Dict[str, str]:
+def _agent_browser_command_env(socket_dir: str, *, managed_chromium: bool = False) -> Dict[str, str]:
     """Credential-scrubbed env for one command: PATH fallbacks, the session socket dir, and
     daemon-side idle self-termination (agent-browser 0.24+) mirroring the Python janitor
     unless the user set ``AGENT_BROWSER_IDLE_TIMEOUT_MS`` explicitly."""
     env = _bt._build_browser_env()
     env["PATH"] = _install._merge_browser_path(env.get("PATH", ""))
     env["AGENT_BROWSER_SOCKET_DIR"] = socket_dir
+    if managed_chromium and "AGENT_BROWSER_EXECUTABLE_PATH" not in env:
+        executable = _install._managed_chromium_executable()
+        if executable:
+            env["AGENT_BROWSER_EXECUTABLE_PATH"] = executable
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in env:
         env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(_bt.BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
     return env
@@ -512,7 +516,10 @@ def _spawn_and_collect(
     task_socket_dir = _prepare_session_socket_dir(session_info["session_name"])
     _bt.logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
                  command, task_id, task_socket_dir, len(task_socket_dir))
-    browser_env = _agent_browser_command_env(task_socket_dir)
+    browser_env = _agent_browser_command_env(
+        task_socket_dir,
+        managed_chromium=engine != "lightpanda" and not session_info.get("cdp_url"),
+    )
 
     # Lightpanda rejects Chromium-only launch flags: strip current and legacy vars;
     # Chrome commands and fallback use the shared Chromium policy.

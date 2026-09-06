@@ -2373,27 +2373,57 @@ find_system_browser() {
     return 1
 }
 
-strip_snap_browser_override() {
-    # Existing installs created before the system-browser fallback was dropped
-    # may carry an auto-written AGENT_BROWSER_EXECUTABLE_PATH pointing at a Snap
-    # Chromium (/snap/bin/chromium). That path is the root cause of the "opening
-    # web page failed" hang, and the runtime reads it straight from .env — so
-    # removing the fallback in the installer is not enough on its own. Strip any
-    # snap-pointing override here (and its auto-written comment) so the bundled
-    # Chromium download runs and the agent stops using the broken binary. A
-    # deliberately-set non-snap override is left untouched.
+strip_stale_browser_override() {
+    # Older installers auto-wrote the system Chrome/Chromium executable into
+    # .env. That was not an operator opt-in, so remove the exact installer-owned
+    # marker + following override pair on every OS. Also remove Snap overrides,
+    # whose confinement breaks agent-browser. An unmarked non-Snap override is
+    # user-owned and must remain untouched.
     local env_file="$HERMES_HOME/.env"
+    local legacy_marker="# Hermes Agent browser tools — use the system Chrome/Chromium binary."
 
     [ -f "$env_file" ] || return 0
-    grep -Eq '^AGENT_BROWSER_EXECUTABLE_PATH=/snap/' "$env_file" 2>/dev/null || return 0
+    if ! grep -Fqx "$legacy_marker" "$env_file" 2>/dev/null && \
+            ! grep -Eq '^AGENT_BROWSER_EXECUTABLE_PATH=/snap/' "$env_file" 2>/dev/null; then
+        return 0
+    fi
 
-    local tmp
+    local tmp line
+    local pending_legacy_marker=false
+    local removed=false
     tmp="$(mktemp)" || return 0
-    if grep -Ev '^AGENT_BROWSER_EXECUTABLE_PATH=/snap/|^# Hermes Agent browser tools' "$env_file" > "$tmp"; then
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ "$pending_legacy_marker" = true ]; then
+            case "$line" in
+                AGENT_BROWSER_EXECUTABLE_PATH=*)
+                    pending_legacy_marker=false
+                    removed=true
+                    continue
+                    ;;
+                *)
+                    printf '%s\n' "$legacy_marker" >> "$tmp"
+                    pending_legacy_marker=false
+                    ;;
+            esac
+        fi
+        if [ "$line" = "$legacy_marker" ]; then
+            pending_legacy_marker=true
+            continue
+        fi
+        case "$line" in
+            AGENT_BROWSER_EXECUTABLE_PATH=/snap/*)
+                removed=true
+                continue
+                ;;
+        esac
+        printf '%s\n' "$line" >> "$tmp"
+    done < "$env_file"
+    [ "$pending_legacy_marker" = true ] && printf '%s\n' "$legacy_marker" >> "$tmp"
+
+    if [ "$removed" = true ]; then
         mv "$tmp" "$env_file"
-        log_warn "Removed stale Snap browser override (AGENT_BROWSER_EXECUTABLE_PATH=/snap/...) from $env_file"
+        log_warn "Removed a stale installer-owned browser override from $env_file"
         log_info "Hermes will use the bundled Chromium instead."
-        # Drop it from this process too so the rest of the run doesn't re-detect it.
         unset AGENT_BROWSER_EXECUTABLE_PATH
     else
         rm -f "$tmp"
@@ -2702,7 +2732,7 @@ install_node_deps() {
             log_info "  sudo npx playwright install-deps chromium"
         else
         log_info "Installing browser engine (Playwright Chromium)..."
-        strip_snap_browser_override
+        strip_stale_browser_override
         DETECTED_BROWSER_EXECUTABLE="$(find_system_browser 2>/dev/null || true)"
         if [ -n "$DETECTED_BROWSER_EXECUTABLE" ]; then
             log_success "Using explicit browser override: $DETECTED_BROWSER_EXECUTABLE"
@@ -3226,7 +3256,7 @@ ensure_browser() {
     rm -f "$log_file"
     export PATH="$HERMES_HOME/node/bin:$PATH"
 
-    strip_snap_browser_override
+    strip_stale_browser_override
     local sys_browser
     sys_browser="$(find_system_browser 2>/dev/null || true)"
     if [ -n "$sys_browser" ]; then

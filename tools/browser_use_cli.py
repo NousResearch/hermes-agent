@@ -385,6 +385,12 @@ def _resolve_managed_chromium_cdp(env: dict, task_id: Optional[str], session_nam
     except Exception as e:  # pragma: no cover — stubbed browser_tool in tests
         logger.debug("managed chromium resolution unavailable: %s", e)
         return None
+    from tools import browser_tool_install as bt_install
+    if not bt_install._running_in_docker() and not bt_install._managed_chromium_executable():
+        bt_install._maybe_autoinstall_chromium()
+        if not bt_install._managed_chromium_executable():
+            return ("Hermes' managed Chrome for Testing is not installed. Run `agent-browser install`, "
+                    "or set AGENT_BROWSER_EXECUTABLE_PATH explicitly to opt in to another browser.")
     res = _run_browser_command(_backend_cache_key(task_id, session_name), "get", ["cdp-url"],
                                timeout=_get_open_command_timeout(first_open=True))
     cdp = str(((res or {}).get("data") or {}).get("cdpUrl") or "") if (res or {}).get("success") else ""

@@ -110,17 +110,22 @@ def cua_driver_install_hint() -> str:
 
 def _mcp_args_with_overlay_flag(args: List[str], driver_cmd: str = _CUA_DRIVER_DEFAULT_CMD) -> List[str]:
     """Return *args* with ``--no-overlay`` appended when configured and supported."""
-    on = _cb()._cua_no_overlay() and _cua_driver_supports_no_overlay(driver_cmd)
+    resolved = resolve_cua_driver_cmd(driver_cmd if _has_path_separator(driver_cmd) or driver_cmd != _CUA_DRIVER_DEFAULT_CMD else None) or driver_cmd
+    on = _cb()._cua_no_overlay() and _cua_driver_supports_no_overlay(resolved)
     return [*args, "--no-overlay"] if on else list(args)
 
 @functools.lru_cache(maxsize=1)
 def _cua_driver_supports_no_overlay(driver_cmd: str) -> bool:
     """True if ``<driver> --help`` mentions ``--no-overlay`` (probed once); older drivers reject unknown flags, which
-    would crash the MCP spawn."""
+    would crash the MCP spawn. A bare command name that the probing process cannot find on its PATH resolves to the
+    installed binary first — a thin PATH (headless service, GUI launcher without ~/.local/bin) must not silently
+    drop the overlay flag (#104076)."""
+    probe_cmd = driver_cmd if _has_path_separator(driver_cmd) else (resolve_cua_driver_cmd() or driver_cmd)
     try:
-        proc = _cb()._run_driver(driver_cmd, "--help", timeout=3.0)
+        proc = _cb()._run_driver(probe_cmd, "--help", timeout=3.0)
         return "--no-overlay" in (proc.stdout or "") + (proc.stderr or "")
     except Exception:
+        logger.debug("cua-driver --no-overlay probe failed for %r; flag dropped", probe_cmd, exc_info=True)
         return False
 
 def _resolve_mcp_invocation(driver_cmd: str, *, timeout: float = 6.0) -> Tuple[str, List[str]]:

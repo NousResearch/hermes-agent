@@ -1402,7 +1402,9 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
     if explicit_provider := os.environ.get("HERMES_TUI_PROVIDER", "").strip():
         return model, explicit_provider
     if not (explicit_model := _env_model_seed()):
-        return model, None
+        cfg = _load_cfg().get("model") or {}
+        provider = (str(cfg.get("provider") or "").strip() if isinstance(cfg, dict) else "") or None
+        return model, provider
     with contextlib.suppress(Exception):
         from hermes_cli.models import detect_static_provider_for_model
         cfg = _load_cfg().get("model") or {}

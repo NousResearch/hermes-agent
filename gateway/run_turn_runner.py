@@ -1282,8 +1282,20 @@ class TurnRunner:
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
             )
-            if fut is not None:
-                fut.result(timeout=15)
+            # Same disposition contract as the button path: only a DEFINITIVE
+            # failure means the user never got the prompt (slow acks stay
+            # armed instead of being mislogged as failures).
+            outcome = _approval_send_outcome(fut, timeout=15)
+            if outcome == "ambiguous":
+                logger.warning(
+                    "Text approval send timed out — treating as possibly-delivered "
+                    "(no re-send; the prompt stays armed for a late reply)"
+                )
+            elif outcome == "failed":
+                logger.warning(
+                    "Text approval prompt was not delivered; the agent waits for "
+                    "a reply that may never arrive"
+                )
         except Exception as e:
             logger.error("Failed to send approval request: %s", e)
 

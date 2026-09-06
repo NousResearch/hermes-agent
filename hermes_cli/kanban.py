@@ -792,17 +792,24 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return None
 
 
-def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
-    """Goal judge for every terminal worker handoff (including review).
+_REVIEW_READINESS_NOTE = (
+    "\n\nJudging note: this checks whether the implementation work described "
+    "above is finished and ready to hand off to a reviewer — it does not "
+    "check whether the card as a whole is done. If the card's own criteria "
+    "call for a reviewer to approve or close out the work, treat that as a "
+    "later step outside this check: do not withhold DONE merely because "
+    "reviewer/approval evidence is absent."
+)
 
-    Returns ``(verdict, reason_or_None)``: ``"done"`` allows; ``"blocked"`` = judge ruled the goal
-    unachievable; ``"continue"``/``"wait"`` reject with the judge's reason. Judge failures allow
-    the handoff (logged).
 
-    See #100954.
-    ``{"done", None}`` means the judge allows the handoff; anything else is a rejection whose verdict
-    disambiguates the guidance the caller gives the worker (``continue`` = not done yet, ``blocked`` =
-    judged unachievable — see #100954).
+def _goal_mode_handoff_rejection(
+    task: Optional[kb.Task], evidence: str, *, handoff: str = "complete"
+):
+    """Goal judge for worker handoffs, scoped to the phase being entered.
+
+    A review request is a non-terminal transition. Its judge must verify only
+    implementation readiness; asking it to prove the later reviewer approval
+    creates a circular gate where the reviewer can never claim the task.
     """
     if task is None or not task.goal_mode:
         return ("done", None)
@@ -815,17 +822,31 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
     if client is None or not model:
         return ("done", None)
 
+    goal = f"{task.title}\n\n{task.body or ''}".strip()
+    if handoff == "review":
+        # judge_goal truncates goals to 2000 chars; reserve room so the
+        # review-scoping note survives long task bodies.
+        budget = 2000 - len(_REVIEW_READINESS_NOTE)
+        if len(goal) > budget:
+            goal = goal[:budget]
+        goal = f"{goal}{_REVIEW_READINESS_NOTE}"
+
     from hermes_cli.goals import judge_goal
 
     verdict, reason = "done", ""
     try:
-        verdict, reason, _, _, _ = judge_goal(goal=f"{task.title}\n\n{task.body or ''}".strip(),
-                                              last_response=evidence.strip())
+        verdict, reason, _, _, _ = judge_goal(
+            goal=goal,
+            last_response=evidence.strip(),
+        )
     except Exception as judge_exc:
         import logging as _logging
 
-        _logging.getLogger(__name__).warning("goal judge check failed, allowing lifecycle handoff: %s",
-                                             judge_exc, exc_info=True)
+        _logging.getLogger(__name__).warning(
+            "goal judge check failed, allowing lifecycle handoff: %s",
+            judge_exc,
+            exc_info=True,
+        )
     return (verdict, None if verdict == "done" else reason)
 
 
@@ -834,7 +855,8 @@ def _goal_gate_error(conn, tid: str, evidence: str, handoff: str, blocked_hint: 
     """Goal-mode judge gate shared by ``complete`` / ``request-review`` (mirrors tools/kanban_tools.py);
     applied to every terminal handoff so request-review can't bypass it. Returns the error line, or
     None to allow."""
-    verdict, rejection = _goal_mode_handoff_rejection(kb.get_task(conn, tid), evidence)
+    verdict, rejection = _goal_mode_handoff_rejection(
+        kb.get_task(conn, tid), evidence, handoff=handoff)
     if verdict == "blocked":
         return (f"kanban: goal {handoff} of {tid} rejected: judge ruled "
                 f"the goal unachievable — {rejection}. {blocked_hint}")

@@ -351,7 +351,17 @@ def _goal_judge_available() -> bool:
     return client is not None and bool(model)
 
 
-# Per-tool guidance for a judge rejection: verdict -> message. ``{reason}``/``{tid}`` are filled in.
+_REVIEW_READINESS_NOTE = (
+    "\n\nJudging note: this checks whether the implementation work described "
+    "above is finished and ready to hand off to a reviewer — it does not "
+    "check whether the card as a whole is done. If the card's own criteria "
+    "call for a reviewer to approve or close out the work, treat that as a "
+    "later step outside this check: do not withhold DONE merely because "
+    "reviewer/approval evidence is absent."
+)
+
+
+# Per-tool guidance for a judge rejection. ``{reason}``/``{tid}`` are filled in.
 _GOAL_GATE_MESSAGES = {
     "kanban_complete": {
         "blocked": (
@@ -371,16 +381,26 @@ _GOAL_GATE_MESSAGES = {
             "matching the card before requesting review.")}}
 
 
-def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
-    """Goal-mode pre-handoff judge gate: a worker must not complete / request
-    review before acceptance criteria are met. ``blocked`` gets its own
-    guidance; any other non-``done`` verdict gets the ``continue`` guidance.
-    A broken judge fails open (logged) so it cannot permanently wedge work."""
+def _goal_gate(tool_name: str, task, tid: str, evidence: str, *, handoff: str = "complete") -> None:
+    """Goal-mode pre-handoff judge gate, scoped to the phase being entered.
+
+    A review request is a non-terminal transition. Its judge must verify only
+    implementation readiness; asking it to prove the later reviewer approval
+    creates a circular gate where the reviewer can never claim the task.
+    A broken judge fails open so it cannot permanently wedge work.
+    """
     if not task or not task.goal_mode or not _goal_judge_available():
         return
+    goal = f"{task.title}\n\n{task.body or ''}".strip()
+    if handoff == "review":
+        # judge_goal truncates goals to 2000 chars; reserve room so the
+        # review-scoping note survives long task bodies.
+        budget = 2000 - len(_REVIEW_READINESS_NOTE)
+        if len(goal) > budget:
+            goal = goal[:budget]
+        goal = f"{goal}{_REVIEW_READINESS_NOTE}"
     try:
-        verdict, reason, _, _, _ = judge_goal(
-            goal=f"{task.title}\n\n{task.body or ''}".strip(), last_response=evidence.strip())
+        verdict, reason, _, _, _ = judge_goal(goal=goal, last_response=evidence.strip())
     except Exception as judge_exc:
         logger.warning(
             "goal judge check failed, allowing lifecycle handoff: %s", judge_exc, exc_info=True)
@@ -639,7 +659,9 @@ def _handle_request_review(args: dict, **kw) -> str:
     # Reviewer is model-supplied free text stored durably on the event payload.
     reviewer = _redact_opt(args.get("reviewer") or None)
     with _board(args.get("board")) as (kb, conn):
-        _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
+        _goal_gate(
+            "kanban_request_review", kb.get_task(conn, tid), tid, summary, handoff="review"
+        )
         ok, fail_reason = kb.request_review(
             conn, tid, summary=summary, metadata=metadata, reviewer=reviewer,
             expected_run_id=_worker_run_id(tid), with_reason=True)

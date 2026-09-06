@@ -89,9 +89,23 @@ class MicroCompactionMixin:
             return None
         return (exchange_start, idx)
 
-    def _build_micro_summary_prompt(self, existing_summary: str, exchange_text: str) -> List[Dict[str, str]]:
+    def _build_micro_summary_prompt(
+        self,
+        existing_summary: str,
+        exchange_text: str,
+        *,
+        defrag: bool = False,
+    ) -> List[Dict[str, str]]:
         """Build the prompt messages for a single-exchange micro-summary."""
         summary_block = existing_summary if existing_summary.strip() else "(No previous summary yet.)"
+        defrag_instruction = ""
+        if defrag:
+            defrag_instruction = (
+                "This is a defrag pass, not a merge. Rewrite the text under Next Exchange "
+                f"to at most {max(1, len(exchange_text) // 2)} characters. Preserve every key "
+                "decision, requirement, file path, and open question while removing redundancy, "
+                "filler, and stale low-level detail.\n\n"
+            )
         user_prompt = (
             "You are a summarization agent creating a compact record of an "
             "ongoing conversation.  You are given a running summary and the "
@@ -103,6 +117,7 @@ class MicroCompactionMixin:
             "NEVER include API keys, tokens, passwords, secrets, credentials, "
             "or connection strings in the summary \u2014 replace any that appear "
             f"with [REDACTED].\n\n"
+            f"{defrag_instruction}"
             f"## Current Running Summary\n{summary_block}\n\n"
             f"## Next Exchange to Merge\n{exchange_text}\n\n"
             "Return ONLY the updated summary text, no preamble or explanation. "
@@ -113,13 +128,15 @@ class MicroCompactionMixin:
             {"role": "user", "content": user_prompt},
         ]
 
-    def _micro_summarize_one(self, exchange_text: str) -> Optional[str]:
+    def _micro_summarize_one(self, exchange_text: str, *, defrag: bool = False) -> Optional[str]:
         """Micro-summarize one exchange into the rolling summary via the aux LLM (None on failure)."""
         from agent.auxiliary_client import aux_interrupt_protection, call_llm
 
         call_kwargs = {
             "task": "compression",
-            "messages": self._build_micro_summary_prompt(self._micro_compact_rolling_summary, exchange_text),
+            "messages": self._build_micro_summary_prompt(
+                self._micro_compact_rolling_summary, exchange_text, defrag=defrag,
+            ),
             "max_tokens": min(1500, self.max_summary_tokens or 1500),
             "temperature": 0.1,
         }
@@ -165,9 +182,10 @@ class MicroCompactionMixin:
         old_summary = self._micro_compact_rolling_summary
         if not old_summary.strip():
             return False
-        # Empty base turns the merge prompt into a rewrite-compactly instruction.
+        # An empty base keeps the accumulated summary out of the merge slot; the explicit
+        # defrag mode supplies the shrink bound that literal instruction-following models need.
         self._micro_compact_rolling_summary = ""
-        fresh_summary = self._micro_summarize_one(old_summary)
+        fresh_summary = self._micro_summarize_one(old_summary, defrag=True)
         self._micro_compact_rolling_summary = fresh_summary or old_summary
         if not fresh_summary:
             return False

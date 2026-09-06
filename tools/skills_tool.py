@@ -234,11 +234,12 @@ def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
 
 
-def skills_list(category: str = None, task_id: str = None) -> str:
+def skills_list(category: Optional[str] = None, task_id: Optional[str] = None,
+                session_id: Optional[str] = None) -> str:
     """Tier 1 listing: name + description (+ category) only; ``task_id`` is handler parity."""
     try:
         _skills_dir().mkdir(parents=True, exist_ok=True)
-        all_skills = _find_all_skills()
+        all_skills = [{**skill, "source": skill.get("source") or "local"} for skill in _find_all_skills()]
         try:
             from hermes_cli.plugins import discover_plugins, get_plugin_manager
             discover_plugins()
@@ -249,6 +250,11 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 all_skills.append(plugin_skill)
         except Exception:
             logger.debug("Plugin skill listing failed", exc_info=True)
+        try:
+            from tools.mcp_skills_registry import list_remote_skills
+            all_skills.extend(list_remote_skills(get_hermes_home(), session_id or task_id))
+        except Exception:
+            logger.debug("MCP skill listing failed", exc_info=True)
         if not all_skills:
             return _json({"success": True, "skills": [], "categories": [],
                           "message": "No skills found in skills/ directory."})
@@ -264,7 +270,7 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         return tool_error(str(e), success=False)
 
 
-def _resolve_plugin_skill(name, file_path, task_id, preprocess):
+def _resolve_plugin_skill(name, file_path, task_id, session_id, preprocess):
     """``plugin:skill`` dispatch: ``(result_json, None)`` when answered, else ``(None,
     local_category_name)`` to fall through to the flat-tree scan — categorized local skills also use
     ``category:skill`` in config/gateway prompts, so the on-disk ``category/skill`` form returns."""
@@ -299,7 +305,8 @@ def _resolve_plugin_skill(name, file_path, task_id, preprocess):
             f"has been cleaned up — try again after the plugin is reloaded."), None
     if plugin_skill_md is not None:
         return _serve_plugin_skill(
-            plugin_skill_md, namespace, bare, file_path=file_path, preprocess=preprocess, session_id=task_id), None
+            plugin_skill_md, namespace or "", bare, file_path=file_path, preprocess=preprocess,
+            session_id=session_id or task_id), None
     if available := pm.list_plugin_skills(namespace):  # plugin exists but this specific skill is missing
         return _fail(
             f"Skill '{bare}' not found in plugin '{namespace}'.",
@@ -517,19 +524,29 @@ def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, ac
 
 
 def skill_view(
-    name: str, file_path: str = None, task_id: str = None, preprocess: bool = True) -> str:
+    name: str, file_path: Optional[str] = None, task_id: Optional[str] = None, preprocess: bool = True,
+    session_id: Optional[str] = None, materialize: bool = False,
+    destination: Optional[str] = None) -> str:
     """View a skill (SKILL.md) or a file within its directory, as JSON. ``name`` is a skill name
     or path ("axolotl", "03-fine-tuning/axolotl"); "plugin:skill" resolves plugin-provided
     skills. ``preprocess`` applies the configured SKILL.md template / inline shell rendering;
     slash/preload callers render the message themselves."""
     try:
+        if isinstance(name, str) and name.startswith("mcp:"):
+            from tools.mcp_skills_view import serve_remote_skill
+            return serve_remote_skill(
+                name, file_path=file_path, task_id=task_id, session_id=session_id,
+                materialize=bool(materialize), destination=destination)
+        if materialize or destination:
+            return _fail("materialize/destination are only supported for qualified MCP skills.")
         # Validate before the ':' dispatch so a Windows drive path (C:\skills\foo) can't be
         # reinterpreted as a plugin namespace.
         if lookup_error := _skill_lookup_path_error(name):
             return _fail(lookup_error, hint=_LOOKUP_HINT)
         local_category_name: str | None = None
         if ":" in name:  # plugin registry; bare names use the flat-tree scan below
-            served, local_category_name = _resolve_plugin_skill(name, file_path, task_id, preprocess)
+            served, local_category_name = _resolve_plugin_skill(
+                name, file_path, task_id, session_id, preprocess)
             if served is not None:
                 return served
         # The fall-through form (namespace/bare) joins onto each search dir too; re-validate it
@@ -569,7 +586,8 @@ def skill_view(
         skill_name = frontmatter.get("name", skill_md.stem if not skill_dir else skill_dir.name)
         readiness, readiness_extras = _skill_readiness(frontmatter, skill_name)
         rendered_content = content if not preprocess else _preprocess_skill(
-            content, skill_dir, task_id, "Could not preprocess skill content for %s", skill_name)
+            content, skill_dir, session_id or task_id,
+            "Could not preprocess skill content for %s", skill_name)
         org_provenance, header = None, ""
         if skill_dir:
             try:
@@ -620,11 +638,19 @@ SKILL_VIEW_SCHEMA = {
         "properties": {
             "name": {
                 "type": "string",
-                "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use the qualified form 'plugin:skill' (e.g. 'superpowers:writing-plans').",
+                "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use 'plugin:skill'; for remote MCP skills, use the exact qualified_name returned by skills_list (mcp:<server>:<skill-uri>).",
             },
             "file_path": {
                 "type": "string",
                 "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
+            },
+            "materialize": {
+                "type": "boolean", "default": False,
+                "description": "For an MCP skill resource, copy verified bytes into the editable local agent workspace. Never overwrites an edited file.",
+            },
+            "destination": {
+                "type": "string",
+                "description": "Optional workspace-relative output path; valid only with materialize=true for an MCP resource.",
             },
         },
         "required": ["name"],
@@ -633,7 +659,8 @@ SKILL_VIEW_SCHEMA = {
 
 registry.register(
     name="skills_list", toolset="skills", schema=SKILLS_LIST_SCHEMA,
-    handler=lambda args, **kw: skills_list(category=args.get("category"), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: skills_list(category=args.get("category"), task_id=kw.get("task_id"),
+                                          session_id=kw.get("session_id")),
     check_fn=check_skills_requirements, emoji="📚")
 
 
@@ -643,9 +670,12 @@ def _skill_view_with_bump(args, **kw):
     session returns a short stub (cache cleared on context compression)."""
     name = args.get("name", "")
     task_id = kw.get("task_id")
-    if (stub := _check_skill_view_dedup(task_id, name, args.get("file_path"))) is not None:
+    materialize = bool(args.get("materialize", False))
+    if not materialize and (stub := _check_skill_view_dedup(task_id, name, args.get("file_path"))) is not None:
         return stub
-    result = skill_view(name, file_path=args.get("file_path"), task_id=task_id)
+    result = skill_view(
+        name, file_path=args.get("file_path"), task_id=task_id, session_id=kw.get("session_id"),
+        materialize=materialize, destination=args.get("destination"))
     with suppress(Exception):
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):

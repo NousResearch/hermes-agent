@@ -104,6 +104,11 @@ def _resolve_server_lazy(name: str, config: dict) -> bool:
     Gated per-server by ``mcp_servers.<name>.lazy`` in config (default OFF), following the same per-server
     key pattern as ``idle_timeout_seconds``. Design from #56832 (Vansh5632).
     """
+    from tools.mcp_skills_protocol import skills_opted_in
+    if skills_opted_in(config):
+        # The tool schema cache has no authenticated skill manifest. Explicit
+        # skill opt-in therefore makes startup eager for metadata discovery.
+        return False
     return _parse_boolish(config.get("lazy", False), default=False)
 
 

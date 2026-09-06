@@ -307,8 +307,16 @@ def _skills_prompt(agent: Any) -> str:
         _compact_cats = coding_compact_skill_categories(platform=agent.platform, cwd=resolve_context_cwd())
     except Exception:
         _compact_cats = frozenset()
+    if not hasattr(agent, "_mcp_skill_snapshot"):
+        try:
+            from tools.mcp_skills_registry import pin_session
+            agent._mcp_skill_snapshot = pin_session(_agent_home(agent), getattr(agent, "session_id", None))
+        except Exception as exc:
+            logger.warning("Could not pin remote MCP skills for this session: %s", exc)
+            agent._mcp_skill_snapshot = ()
     return _pb.build_skills_system_prompt(available_tools=agent.valid_tool_names, available_toolsets=avail_toolsets,
-                                         compact_categories=_compact_cats or None, skills_dir_override=_agent_skills_dir(agent))
+                                         compact_categories=_compact_cats or None, skills_dir_override=_agent_skills_dir(agent),
+                                         remote_skills=agent._mcp_skill_snapshot)
 
 
 def _bot_mode_parts(agent: Any) -> List[str]:

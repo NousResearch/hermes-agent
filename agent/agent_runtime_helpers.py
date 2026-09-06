@@ -2165,7 +2165,7 @@ def switch_model(
 
 
 def _pre_tool_block_message(agent, function_name, function_args, effective_task_id, tool_call_id, middleware_trace):
-    """Plugin pre-tool-call hook verdict: ``(block_message, function_args)``; failures never block."""
+    """Plugin verdict followed by the host-owned remote-skill gate on final arguments."""
     try:
         from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
         block_message, modified_args = _dispatch_pre_tool_call_hooks(
@@ -2175,9 +2175,18 @@ def _pre_tool_block_message(agent, function_name, function_args, effective_task_
             api_request_id=getattr(agent, "_current_api_request_id", "") or "",
             middleware_trace=list(middleware_trace),
         )
-        return block_message, (modified_args if modified_args is not None else function_args)
+        final_args = modified_args if modified_args is not None else function_args
     except Exception:
-        return None, function_args
+        block_message, final_args = None, function_args
+    if block_message is not None:
+        return block_message, final_args
+    try:
+        from tools.mcp_skills_consent import enforce_remote_skill_block_message
+        return enforce_remote_skill_block_message(
+            function_name, final_args, task_id=effective_task_id,
+            session_id=getattr(agent, "session_id", "") or ""), final_args
+    except Exception as exc:
+        return f"Remote MCP skill origin gate failed closed: {exc}", final_args
 
 
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,

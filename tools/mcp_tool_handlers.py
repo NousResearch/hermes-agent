@@ -450,7 +450,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     return _handler
 
 
-def _make_utility_handler(op: str, log_label: str, rpc, render, required: Optional[str] = None):
+def _make_utility_handler(op: str, log_label: str, rpc, render, required: Optional[str] = None,
+                          guarded_render=None):
     """``(server_name, tool_timeout) -> sync handler`` for one utility tool: ``rpc(session, args,
     server_name)`` awaited under ``_rpc_lock``, ``render(result, server_name)`` -> JSON-able
     payload, ``required`` validated before any transport work."""
@@ -466,7 +467,9 @@ def _make_utility_handler(op: str, log_label: str, rpc, render, required: Option
             async def _call():
                 async with server._rpc_lock:
                     result = await rpc(server.session, args, server_name)
-                return json.dumps(render(result, server_name), ensure_ascii=False)
+                rendered = (guarded_render(result, server_name, args, kwargs)
+                            if guarded_render is not None else render(result, server_name))
+                return json.dumps(rendered, ensure_ascii=False)
             return _dispatch(
                 server_name, server, op, _call, tool_timeout,
                 (_handle_auth_error_and_retry, _handle_session_expired_and_retry),
@@ -510,6 +513,67 @@ def _render_read_resource(result, server_name: str) -> dict:
     return {"result": "\n".join(parts)}
 
 
+def _catalog_record(server_name: str, uri: str, kwargs: dict[str, Any]):
+    sid = str(kwargs.get("session_id") or kwargs.get("task_id") or "")
+    if not sid:
+        return None
+    from hermes_constants import get_hermes_home
+    from tools.mcp_skills_registry import resolve_catalog_resource
+    return resolve_catalog_resource(server_name, uri, get_hermes_home(), sid)
+
+
+def _render_catalog_read_resource(result, server_name: str, args: dict,
+                                  kwargs: dict[str, Any]) -> dict:
+    """Guard exact catalog-owned bytes; ordinary resources retain old rendering."""
+    uri = str(args.get("uri") or "")
+    record = _catalog_record(server_name, uri, kwargs)
+    if record is None:
+        return _render_read_resource(result, server_name)
+    from tools.mcp_skills_scan import RemoteSkillSecurityError, scan_resource_bytes
+    if record.get("metadata_allowed") is not True:
+        raise RemoteSkillSecurityError("resource")
+    resource = next((item for item in record["resources"] if item["uri"] == uri), None)
+    if resource is None:
+        raise RemoteSkillSecurityError("resource")
+    from tools.mcp_skills_cache import _verify
+    from tools.mcp_skills_protocol import decode_read_resource_result
+    raw, _mime, is_text = decode_read_resource_result(result, uri)
+    _verify(raw, resource)
+    scan_resource_bytes(
+        raw, record=record, resource=resource, is_text=is_text, mime_type=_mime)
+    return _render_read_resource(result, server_name)
+
+
+def _render_catalog_resource_list(result, server_name: str, args: dict,
+                                  kwargs: dict[str, Any]) -> dict:
+    """Omit only unsafe catalog-owned rows; ordinary resource rows are unchanged."""
+    kept = []
+    all_resources = result if isinstance(result, list) else getattr(result, "resources", [])
+    for resource_obj in all_resources:
+        uri = str(getattr(resource_obj, "uri", "") or "")
+        record = _catalog_record(server_name, uri, kwargs)
+        if record is None:
+            kept.append(resource_obj)
+            continue
+        if record.get("metadata_allowed") is not True:
+            continue
+        manifested = next((item for item in record["resources"] if item["uri"] == uri), None)
+        if manifested is None:
+            continue
+        values = _pick(resource_obj, ("uri", "uri"), ("name", "name"),
+                       ("title", "title", True), ("description", "description", True))
+        mime = mcp_field(resource_obj, "mime_type", "mimeType")
+        if mime:
+            values["mimeType"] = mime
+        try:
+            from tools.mcp_skills_scan import scan_resource_listing_metadata
+            scan_resource_listing_metadata(values, record=record, resource=manifested)
+        except Exception:
+            continue
+        kept.append(resource_obj)
+    return _render_resource_list(kept, server_name)
+
+
 def _render_prompt_list(all_prompts, server_name: str) -> dict:
     prompts = []
     for p in all_prompts:
@@ -533,10 +597,12 @@ def _render_get_prompt(result, server_name: str) -> dict:
 
 _make_list_resources_handler = _make_utility_handler(
     "resources/list", "list_resources",
-    lambda session, args, sn: _core._paginate_full_list(session.list_resources, "resources", sn), _render_resource_list)
+    lambda session, args, sn: _core._paginate_full_list(session.list_resources, "resources", sn),
+    _render_resource_list, guarded_render=_render_catalog_resource_list)
 _make_read_resource_handler = _make_utility_handler(
     "resources/read", "read_resource",
-    lambda session, args, sn: session.read_resource(args["uri"]), _render_read_resource, required="uri")
+    lambda session, args, sn: session.read_resource(args["uri"]), _render_read_resource,
+    required="uri", guarded_render=_render_catalog_read_resource)
 _make_list_prompts_handler = _make_utility_handler(
     "prompts/list", "list_prompts",
     lambda session, args, sn: _core._paginate_full_list(session.list_prompts, "prompts", sn), _render_prompt_list)

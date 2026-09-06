@@ -1372,6 +1372,14 @@ def _rebind_session_context(session_id: str) -> None:
         set_session_context(session_id)
 
 
+def _carry_mcp_skill_state(agent: Any, parent_session_id: str, child_session_id: str) -> None:
+    """Move content-bound remote-skill state across a proven compression lineage edge."""
+    from hermes_constants import get_hermes_home
+    from tools.mcp_skills_registry import continue_session
+    continue_session(getattr(agent, "_hermes_home", None) or get_hermes_home(),
+                     parent_session_id, child_session_id)
+
+
 def _adopt_live_compression_child(
     agent: Any, session_db: Any, parent_session_id: str
 ) -> Optional[List[Dict[str, Any]]]:
@@ -1405,6 +1413,7 @@ def _adopt_live_compression_child(
     confirmed = resolver(session_db, parent_session_id)
     if not confirmed or str(confirmed) != child_session_id:
         return None
+    _carry_mcp_skill_state(agent, parent_session_id, child_session_id)
     agent.session_id = child_session_id
     _rebind_session_context(child_session_id)
     agent._session_db_created = True
@@ -2963,6 +2972,11 @@ def _publish_rotated_compaction(
     old_title = agent._session_db.get_session_title(agent.session_id)
     new_session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
     from agent.context_compressor import _DB_PERSISTED_MARKER
+    # Seed the child security scope before publishing its durable lineage row.
+    # Once publish_compression_child commits, another runtime can resolve and
+    # dispatch the child immediately. A failed publish may leave an unreachable
+    # random-id security copy, which is safer than a reachable ungated child.
+    _carry_mcp_skill_state(agent, old_session_id, new_session_id)
     agent._session_db.publish_compression_child(
         parent_session_id=old_session_id, child_session_id=new_session_id,
         source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"), model=agent.model,

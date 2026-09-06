@@ -729,6 +729,17 @@ def _pre_dispatch_guards(function_name: str, function_args: Dict[str, Any], skip
         logger.debug("ACP edit approval guard error: %s", _edit_approval_err)
         if function_name in {"write_file", "patch"}:
             return function_args, (tool_error("Edit approval denied: approval guard failed"), "edit_approval_error", None)
+    # Remote-skill origin enforcement is host-owned and non-bypassable. It runs
+    # after middleware/hook argument rewrites so consent describes the exact
+    # action that will reach the dispatcher.
+    try:
+        from tools.mcp_skills_consent import enforce_remote_skill_gate
+        origin_block = enforce_remote_skill_gate(
+            function_name, function_args, task_id=ids.task_id, session_id=ids.session_id)
+    except Exception as origin_exc:
+        origin_block = tool_error(f"Remote MCP skill origin gate failed closed: {origin_exc}")
+    if origin_block is not None:
+        return function_args, (origin_block, "mcp_skill_consent_denied", None)
     return function_args, None
 
 

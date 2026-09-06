@@ -34,6 +34,8 @@ mcp_servers:
     timeout: 120
     connect_timeout: 60
     supports_parallel_tool_calls: false
+    skills:
+      enabled: false       # opt in to advertised SEP-2640 remote skills
     tools:
       include: []
       exclude: []
@@ -68,6 +70,81 @@ mcp_servers:
 | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
 | `elicitation` | mapping | both | Server-initiated user-input requests. `enabled` (default `true`) and `timeout` in seconds (default `300`). Form-mode requests route through the approval surface; URL-mode is declined (see MCP guide) |
 | `trust` | string | both | Trust tier: `full` (default) or `untrusted`. On an `untrusted` server, every write-capable tool call (any tool without a `readOnlyHint: true` annotation) requires user approval through the standard approval surface before it runs. `readOnlyHint` is a server-supplied *hint* — a lying server can at most skip approval for tools it claims are read-only, never gain extra access — so mark any server you don't fully control as `untrusted`. Unrecognized values are treated as `untrusted` (fail-closed) |
+| `skills.enabled` | bool | both | Opt in to SEP-2640 Skills over MCP for this configured server. Default `false`; the server must also advertise `io.modelcontextprotocol/skills`. Opted-in servers connect eagerly even if `lazy: true`, because Hermes must authenticate and pin current manifests before assembling the initial session prompt. |
+
+## Skills over MCP
+
+When `skills.enabled: true`, Hermes calls `skills/list` at startup and adds only
+the returned names and descriptions to the session's initial skill index. It
+does not fetch `SKILL.md` or support files during discovery. Each remote skill
+has a lossless identifier:
+
+```text
+mcp:<configured-server-label>:<exact-SKILL.md-URI>
+```
+
+Use that identifier with `skill_view`. A shorter
+`mcp:<server-label>:<skill-name>` is accepted only when it is unambiguous for
+that server and pinned session. `skill_view(..., file_path="references/x.md")`
+loads a manifested support file after the parent `SKILL.md` has been loaded.
+Add `materialize: true` to copy only the selected verified file into a
+collision-free, origin/version-bound directory below the workspace's managed
+`.hermes/mcp-skills/materialized/` tree. `destination` is relative to that
+managed origin directory, never an arbitrary workspace or local-skill path.
+An existing edited copy is accepted only when its exact provenance sidecar
+matches, is reported, and is never overwritten. Exact materialized targets are
+recorded in host-managed session state and their current text bytes are scanned
+again before reuse or host execution, including after a process restart or a
+compression continuation. Hermes does not crawl or assign remote provenance to
+other workspace files.
+
+Hermes applies the existing Skills Guard scanner and install policy at each
+model-exposure boundary. Remote sources always use the `community` policy;
+neither server metadata nor the separate MCP `trust` setting can assert a more
+permissive scanner tier. All model-visible catalog fields and manifested paths
+are scanned before prompt/list exposure, including when a session pin is
+restored. Text bodies and support files remain lazy and are scanned as each
+resource is read, even when its verified bytes came from cache. Scanner errors
+fail closed. A blocked catalog row remains privately known only so its exact
+resource URIs cannot bypass the guard through generic `read_resource`.
+
+Resource scans are honestly per-file: remote ignore files do not suppress
+another lazy resource and a per-resource verdict is not a whole-bundle audit.
+Binary content such as DOCX is integrity checked and structurally screened with
+Skills Guard (so suspicious executable extensions still block), but is reported
+as `not_scanned_binary`, not text-scanned safe. Scanning is heuristic and does
+not establish that allowed instructions or documents are harmless.
+
+Hermes auto-discovers manifested skills from `skills/list`. On the first native
+`skill_view` for a held skill, Hermes calls `skills/get` and requires that
+manifest to match the session-pinned list manifest before reading any resource.
+A list-only server can contribute startup descriptions, but skill loading fails
+closed; that compatibility mode is not SEP-2640 conformance. A get-only server
+has no automatic discovery path. Dynamic resource manifests are also declined.
+These are bounded host capabilities, not a claim of support for every SEP-2640
+server profile.
+
+Remote instructions remain origin-labeled and cannot enable tools, run setup
+hooks, install dependencies, or grant execution. The first host execution while
+a remote skill is active requires explicit consent bound to that exact session
+and manifest, in addition to normal approval policy. This state follows only a
+real compression continuation, not an unrelated new session or profile. Generic
+MCP `read_resource`, including for `SKILL.md`, remains an ordinary non-activating
+resource read. To activate instructions and unlock their manifested support
+files, load the skill through `skill_view`. Cross-origin generic reads and native
+`skill_view` reads require per-call consent while remote guidance is active.
+When more than one remote manifest is active, Hermes treats source attribution
+as ambiguous and asks per call rather than using the union of their manifests
+as authority. Managed cache, active-origin, lock, and provenance files are
+host-owned state and cannot be written through native file tools.
+
+Managed remote-skill state and materialization currently require POSIX
+directory-descriptor and no-follow filesystem semantics. On native Windows or
+another runtime that cannot provide those primitives, Hermes fails closed
+before creating or reading managed remote-skill files; Skills over MCP cannot
+be activated or materialized there. Ordinary sessions with Skills over MCP
+disabled, including compression continuations with no remote-skill state,
+remain available.
 
 ## Environment variable references
 

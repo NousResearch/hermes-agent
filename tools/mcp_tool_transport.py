@@ -71,7 +71,49 @@ class MCPServerTransportMixin:
             kwargs["message_handler"] = self._make_message_handler()
         if _core._MCP_LOGGING_CALLBACK_SUPPORTED:
             kwargs["logging_callback"] = self._make_logging_callback()
+        from tools.mcp_skills_protocol import SKILLS_EXTENSION, skills_opted_in
+        if skills_opted_in(getattr(self, "_config", {})):
+            kwargs["extensions"] = {SKILLS_EXTENSION: {}}
         return kwargs
+
+    async def _discover_skills(self) -> None:
+        """Publish validated metadata for opted-in advertising servers.
+
+        Failure is server-scoped: ordinary MCP tools remain available and no
+        resource body is read during startup.
+        """
+        from hermes_constants import get_hermes_home
+        from tools.mcp_skills_protocol import (
+            advertised_skills_settings, directory_read_advertised, list_skills, skills_opted_in,
+        )
+        from tools.mcp_skills_registry import drop_live_catalog, publish_live_catalog, server_config_fingerprint
+        config = getattr(self, "_config", {})
+        name = getattr(self, "name", "")
+        current_home = str(get_hermes_home())
+        for catalog_home in {current_home, str(getattr(self, "_skills_home", "") or "")} - {""}:
+            drop_live_catalog(catalog_home, name)
+        self._skills_catalog = ()
+        self._skills_diagnostic = None
+        self._skills_config_fingerprint = ""
+        self._skills_directory_read = False
+        self._skills_home = ""
+        if not skills_opted_in(config):
+            return
+        if advertised_skills_settings(self.initialize_result) is None:
+            self._skills_diagnostic = "server did not advertise io.modelcontextprotocol/skills"
+            return
+        try:
+            async with getattr(self, "_rpc_lock"):
+                entries, _metadata = await list_skills(self.session, name)
+            fingerprint = server_config_fingerprint(config)
+            self._skills_catalog = tuple(entries)
+            self._skills_config_fingerprint = fingerprint
+            self._skills_directory_read = directory_read_advertised(self.initialize_result)
+            self._skills_home = current_home
+            publish_live_catalog(self._skills_home, name, fingerprint, entries)
+        except Exception as exc:
+            self._skills_diagnostic = str(exc)
+            logger.warning("MCP server '%s': remote skills catalog excluded: %s", name, exc)
 
     async def _negotiate_session(self, session, connect_timeout: float):
         """Negotiate the protocol era (``initialize`` vs ``server/discover``; both expose
@@ -115,6 +157,7 @@ class MCPServerTransportMixin:
         if mark_lifecycle:
             self._mark_lifecycle_started()
         await self._discover_tools()
+        await self._discover_skills()
         self._ready.set()
         self._ever_connected = True
         _core._reset_server_error(self.name)

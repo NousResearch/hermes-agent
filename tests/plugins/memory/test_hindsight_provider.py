@@ -1395,14 +1395,21 @@ class TestBankIdTemplate:
         config_path.write_text(json.dumps(config))
         monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
 
-        provider = HindsightMemoryProvider()
-        provider.initialize(
-            session_id="replaceable-session",
-            hermes_home=str(tmp_path),
-            platform="msteams",
-            chat_id="19:room@example",
-        )
-        assert provider._bank_id == "hermes-msteams-19-room-example"
+        resolved_banks = []
+        for session_id in ("first-session", "replacement-session"):
+            provider = HindsightMemoryProvider()
+            provider.initialize(
+                session_id=session_id,
+                hermes_home=str(tmp_path),
+                platform="msteams",
+                chat_id="19:room@example",
+            )
+            resolved_banks.append(provider._bank_id)
+
+        assert resolved_banks == [
+            "hermes-msteams-19-room-example",
+            "hermes-msteams-19-room-example",
+        ]
 
 
 # ---------------------------------------------------------------------------

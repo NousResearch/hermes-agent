@@ -90,7 +90,8 @@ VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", 
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
-VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
+VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient",
+                     "resource"}
 
 # Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
@@ -2971,6 +2972,25 @@ def _route_block(
     payload = {"reason": reason, "kind": kind, "source_status": source_status}
     if kind == "dependency":
         return "todo", "dependency_wait", "block_kind    = ?", (kind,), payload
+    if kind == "resource":
+        # A shared resource is held by a peer -- a per-file write lease, a
+        # rate-limited API seat. The card did not fail and did nothing wrong;
+        # it is queueing. Counting that as an unblock loop sends healthy work
+        # to ``triage`` at BLOCK_RECURRENCE_LIMIT, and triage can auto-decompose,
+        # which shatters the card into subtasks that inherit no project_id and
+        # then cannot dispatch at all.
+        #
+        # So a resource wait parks in ``blocked`` like the other human-visible
+        # kinds, but CARRIES the previous recurrence count rather than
+        # incrementing it. It therefore neither trips the loop breaker nor
+        # launders a genuine loop that was already under way. Visibility is not
+        # lost: ``stuck_in_blocked`` still fires on age, so a card parked
+        # forever behind a lease that never frees is still surfaced.
+        payload["recurrences"] = prev_recurrences
+        payload["resource_wait"] = True
+        return ("blocked", "blocked",
+                "block_kind    = ?,\n                       block_recurrences = ?",
+                (kind, prev_recurrences), payload)
     recurrences = prev_recurrences + 1 if prev_kind == kind else 1
     set_sql = "block_kind    = ?,\n                       block_recurrences = ?"
     payload = {"reason": reason, "kind": kind, "recurrences": recurrences, "source_status": source_status}

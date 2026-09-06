@@ -137,7 +137,8 @@ describe('main.ts wiring for #90812', () => {
     expect(handlerStart).toBeGreaterThan(-1)
     const body = mainSource.slice(handlerStart, handlerStart + 1_200)
 
-    expect(body).toContain('backendDialClaims.run(backendScopeKey(id, profile)')
+    expect(body).toContain('const scopeKey = backendScopeKey(id, profile)')
+    expect(body).toContain('backendDialClaims.run(scopeKey, ')
     expect(body).toContain("ensureRegistryBackend(id, profile, '', { spawnPriority })")
   })
 

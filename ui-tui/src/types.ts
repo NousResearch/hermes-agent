@@ -25,6 +25,9 @@ export type SubagentStatus = 'completed' | 'error' | 'failed' | 'interrupted' | 
 export interface SubagentProgress {
   apiCalls?: number
   costUsd?: number
+  /** Batch (delegation) id — tags `[n/N]` rows so concurrent/nested fan-outs
+   *  are distinguishable. Absent on older gateways. */
+  delegationId?: string
   depth: number
   durationSeconds?: number
   filesRead?: string[]

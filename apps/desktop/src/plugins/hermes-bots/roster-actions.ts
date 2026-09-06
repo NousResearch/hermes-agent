@@ -71,6 +71,8 @@ export function trackInboundActivity(roster: RosterRow[]) {
     // Activity in the exact bot owner the user is currently looking at is
     // already visible — never badge the open chat or its same-named twin.
     if ($selectedBot.get() === key) {
+      refreshOpenBotChat(bot)
+
       continue
     }
 
@@ -105,29 +107,45 @@ export function trackInboundActivity(roster: RosterRow[]) {
   }
 }
 
-/** The tab this bot's workspace already has open, fronted — or null when it has
- *  none. A roster click consults this BEFORE the canonical registry so a bot
- *  with open tabs simply comes back to the one the user left. It is what lets a
- *  closed Bot Chat STAY closed: the click path used to re-open the forever-chat
- *  beside every newer thread on every bot switch, and nothing records a close
- *  (this plugin keeps no closed set; core's tile bucket only forgets), so the
- *  only honest signal is the open set itself. Feature-detected — older shells
- *  fall through to the canonical open.
+/** The open Bot Chat's canonical session moved on the gateway (a cron
+ *  `bot-chat:` delivery, a teammate's `message_agent`, a group round, a CLI
+ *  turn) — none of those arrive on this window's live stream, so the pane
+ *  kept painting a stale transcript until an app restart (#99393). Re-run the
+ *  same registry open the row click uses: it fronts the chat in place and
+ *  forceResume re-pulls the transcript. Only while that chat is the FOCUSED
+ *  session — a group room or another tab owning the center must not be
+ *  yanked away by background activity — and never mid-turn, when the
+ *  activity is the turn itself, already streaming. */
+function refreshOpenBotChat(bot: RosterRow) {
+  const canonicalIds = [bot.canonical_session?.id, bot.canonical_session?.resolved_id].filter(Boolean).map(String)
+  const focused = String(host.state.focusedStoredSessionId?.get?.() || '')
+
+  if (!focused || !canonicalIds.includes(focused) || host.state.busy.get()) {
+    return
+  }
+
+  const generation = getBotOpenGeneration()
+  void openBotCanonicalChat(bot, () => generation === getBotOpenGeneration()).catch(() => {
+    /* the next click or reclaim event re-resolves it */
+  })
+}
+
+/** Front the bot's canonical Bot Chat when it is ALREADY open as a tab —
+ *  presentation only, no registry round-trip. Returns the fronted stored id,
+ *  or null when the chat is not on screen (or this shell cannot tell) and the
+ *  caller must resolve the registry.
  *
- *  The open set is a Local Storage cache, and it must reconcile with backend
- *  truth before it wins (hermes-agent#90102): a persisted "Bot Chat" tile can
- *  name a session the registry no longer resolves to — a superseded row from
- *  the retired pointer design, a re-minted canonical chat, a stale finished
- *  session. Fronting it re-pinned the roster click to that stale (often
- *  hidden) session forever while the row's preview described the live one.
- *  The staleness probe compares each canonical-titled tile against the
- *  roster's server-resolved `canonical_session` (identity by NAME, resolved
- *  fresh on every profiles.list): a mismatch means the registry moved on, so
- *  the tile is discarded and the click falls through to the authoritative
- *  registry open. Side-chat tabs (any other title) carry no registry identity
- *  and are never judged; an older gateway without `canonical_session` cannot
- *  judge either — both keep the tile, the pre-#90102 behavior. */
-function focusExistingBotTab(bot: RosterRow): null | string {
+ *  Only the canonical chat qualifies: a tile whose stored id is the roster's
+ *  server-resolved `canonical_session` (registry row or its lineage tip). An
+ *  earlier version fronted whatever bots-workspace tab the user last had
+ *  active — a `+` side thread persisted in Local Storage across restarts and
+ *  won every click forever while the row kept previewing the Bot Chat, so
+ *  sidebar and center described two different conversations ("[Bots] -
+ *  Sessions is not in sync again"). Side tabs stay open; they never answer a
+ *  click aimed at the bot. Canonical-titled tiles at a foreign id are stale
+ *  (hermes-agent#90102) and are discarded. Without `canonical_session` (older
+ *  gateway) nothing can be verified, so nothing is fronted. */
+function focusExistingBotTab(bot: RosterRow): null | { registryId: string; storedSessionId: string } {
   if (typeof host.focusOpenWorkspaceSession !== 'function') {
     return null
   }
@@ -135,31 +153,38 @@ function focusExistingBotTab(bot: RosterRow): null | string {
   const canonical = bot?.canonical_session
   const canonicalIds = [canonical?.id, canonical?.resolved_id].filter(Boolean).map(String)
 
+  if (canonicalIds.length === 0) {
+    return null
+  }
+
   const isStaleTile = (tile: { storedSessionId: string; workspaceTabTitle?: string }) =>
-    canonicalIds.length > 0 &&
     typeof tile.workspaceTabTitle === 'string' &&
     tile.workspaceTabTitle === CANONICAL_CHAT_TITLE &&
     !canonicalIds.includes(String(tile.storedSessionId))
 
   try {
-    const focused = host.focusOpenWorkspaceSession(botWorkspaceOwnerKey(bot), isStaleTile)
+    const focused = host.focusOpenWorkspaceSession(botWorkspaceOwnerKey(bot), isStaleTile, canonicalIds)
 
-    return typeof focused === 'string' && focused ? focused : null
+    return typeof focused === 'string' && focused
+      ? { registryId: String(canonical!.id), storedSessionId: focused }
+      : null
   } catch {
     return null
   }
 }
 
-/** Select one exact roster owner, then open its named canonical chat only when
- *  the current Desktop can route that owner without guessing. The workspace
+/** Select one exact roster owner and open its canonical Bot Chat — the same
+ *  session the row previews. Resolution always goes through the owner
+ *  profile's "Bot Chat" title registry: an already-open canonical tab is
+ *  fronted (focusExistingBotTab), otherwise openBotCanonicalChat resolves and
+ *  opens it in place; side tabs the user opened with `+` stay open beside it. A click never fronts a side tab: an
+ *  earlier "return to the last open tab" shortcut left the center on a `+`
+ *  thread (persisted in Local Storage across restarts) while the row kept
+ *  previewing the Bot Chat — sidebar and center described two different
+ *  conversations ("[Bots] - Sessions is not in sync again"). The workspace
  *  remembers only this transient opened-view observation; it never stores or
- *  resolves a canonical-chat id.
- *
- *  `canonical`: the user asked for the forever-chat itself (the row menu's
- *  "Open Bot Chat"). A plain row click is "go to this bot": when its workspace
- *  already holds tabs, the one the user last had active is fronted and no chat
- *  is resolved or opened — see focusExistingBotTab. */
-export async function openRosterBot(bot: RosterRow, { canonical = false } = {}): Promise<boolean> {
+ *  resolves a canonical-chat id. */
+export async function openRosterBot(bot: RosterRow): Promise<boolean> {
   const generation = bumpBotOpenGeneration()
   const key = botRosterKey(bot)
   const meta = botRosterMeta(bot, $botMeta.get())
@@ -178,7 +203,7 @@ export async function openRosterBot(bot: RosterRow, { canonical = false } = {}):
   haptic('tap')
   saveSelectedRosterBot(bot)
   setBotsWorkspaceOwner(botWorkspaceOwnerKey(bot), bot)
-  const dismissedGroup = bot.remoteSource ? null : dismissGroupChatForLocalBotOpen()
+  const dismissedGroup = dismissGroupChatForBotOpen()
 
   if (!dismissedGroup) {
     $groupChatWorkspace.set(null)
@@ -213,18 +238,23 @@ export async function openRosterBot(bot: RosterRow, { canonical = false } = {}):
   // a bot open deliberately leaves the gateway on the launch profile.
   ackStoredSessionId(botCanonicalSessionId(bot), bot.name)
 
-  if (!canonical) {
-    const focused = focusExistingBotTab(bot)
+  const fronted = focusExistingBotTab(bot)
 
-    if (focused) {
-      // Open tabs win: no source activation, no registry consult, no open. The
-      // claim carries only the fronted tab so the focus edge it fires keeps it
-      // (releaseStaleOpenBotChat) and no registry id is recorded, because none
-      // was resolved.
-      $openBotChat.set({ key, openedRegistryId: '', openedSessionId: focused })
+  if (fronted) {
+    // The canonical chat is on screen: no source activation, no registry
+    // round-trip. Both identities are recorded so the reclaim listener and
+    // the roster-activity refresh treat it exactly like a registry open.
+    $openBotChat.set({ key, openedRegistryId: fronted.registryId, openedSessionId: fronted.storedSessionId })
 
-      return true
-    }
+    // Fronting is presentation-only: the pane keeps whatever transcript it
+    // last painted, which can predate rows the bot wrote while the user was
+    // elsewhere (another bot's turn, a cron delivery, a teammate's
+    // message_agent). Force a registry open so forceResume re-pulls the
+    // latest transcript instead of leaving a stale snapshot until the next
+    // user turn (#99393 class; #95600 only covered the not-yet-open path).
+    refreshOpenBotChat(bot)
+
+    return true
   }
 
   try {
@@ -299,7 +329,7 @@ export async function openRosterBot(bot: RosterRow, { canonical = false } = {}):
 /** Bot-open handoff: capture the selected group and retire its registered
  * main tab (or clear the in-panel selection) before async source prep /
  * canonical open. */
-function dismissGroupChatForLocalBotOpen(): null | { group: string; roomId: string } {
+function dismissGroupChatForBotOpen(): null | { group: string; roomId: string } {
   const group = $groupChatWorkspace.get()
 
   if (!group) {

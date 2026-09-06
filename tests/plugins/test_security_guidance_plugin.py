@@ -2,8 +2,8 @@
 
 Covers ``plugins/security-guidance/``:
 
-  * ``patterns.py`` data integrity — every rule has a ``RuleId``, the
-    fail-loud import assertion is wired.
+  * ``patterns.py`` data integrity — every rule has a name, reminder, and at
+    least one trigger; names are unique.
   * ``_scan_content`` — true positives (pickle.load, yaml.load, eval,
     dangerouslySetInnerHTML, GitHub Actions workflow), true negatives
     (.md skips Python rules, ``model.eval()`` doesn't trip eval),

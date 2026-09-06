@@ -152,47 +152,50 @@ class TestNoProgressFailFast:
 
     def test_watchdog_timer_fires_while_blocked_before_first_event(self):
         """responses.create() itself can block with zero bytes; the re-armable
-        watchdog must close the client and surface the no-progress timeout
-        without any event ever reaching _check_cancelled."""
+        watchdog must mark the timeout (without releasing FDs from its own
+        stranger thread — #29507) and the owning thread must surface the
+        no-progress TimeoutError and perform the close on unwind."""
         release = threading.Event()
 
         def _blocked_create(**_kwargs):
             release.wait(timeout=30.0)
             return iter([])
 
-        closed = threading.Event()
+        closed_by = []
         real_client = SimpleNamespace(
             base_url="https://chatgpt.com/backend-api/codex",
             responses=SimpleNamespace(create=_blocked_create),
-            close=closed.set,
+            close=lambda: closed_by.append(threading.get_ident()),
         )
         adapter = _CodexCompletionsAdapter(real_client, "gpt-5.6-sol")
+        owner_result: dict = {}
         try:
             with (
                 patch("agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.3),
                 patch("agent.auxiliary_client._evict_cached_client_instance"),
             ):
-                # The watchdog closes the shared client at the window; the
-                # blocked create keeps waiting (SimpleNamespace has no real
-                # transport), so unblock it and verify the timeout surfaced.
-                waiter: dict = {}
-
                 def _run():
+                    owner_result["tid"] = threading.get_ident()
                     try:
                         adapter.create(
                             messages=[{"role": "user", "content": "x"}],
                             timeout=300,
                         )
                     except Exception as exc:  # noqa: BLE001
-                        waiter["exc"] = exc
+                        owner_result["exc"] = exc
 
                 t = threading.Thread(target=_run, daemon=True)
                 t.start()
-                assert closed.wait(timeout=5.0), "watchdog never closed client"
+                # Watchdog fires within the patched window; it must NOT
+                # close() from its own thread (FD ownership, #29507).
+                time.sleep(1.0)
+                assert not closed_by, f"stranger-thread close: {closed_by}"
                 release.set()
                 t.join(timeout=5.0)
-            assert isinstance(waiter.get("exc"), TimeoutError)
-            assert "no-progress timeout" in str(waiter["exc"])
+            assert isinstance(owner_result.get("exc"), TimeoutError)
+            assert "no-progress timeout" in str(owner_result["exc"])
+            # The OWNER released the FDs on unwind.
+            assert closed_by == [owner_result["tid"]], closed_by
         finally:
             release.set()
 

@@ -5,11 +5,16 @@ import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { activeConnectionScopeSuffix, rescopeConnectionScopedStores } from '@/lib/connection-scoped'
+import {
+  activeConnectionScopeSuffix,
+  connectionScopeSuffix,
+  rescopeConnectionScopedStores
+} from '@/lib/connection-scoped'
 import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
 import { syncCronModelImpactConnection } from '@/store/cron-model-impact-scope'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
+import { isSessionRemovalPending } from './session-removal'
 import type { SessionOwnerRoute, SessionOwnerScope } from './session-request-router'
 import { clearUnreadOnOpen } from './session-unread-remote'
 
@@ -21,13 +26,49 @@ const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 // The composer's model/effort/fast is sticky UI state, NOT the profile default
 // (that lives in Settings → Model). Persisting it in localStorage makes a pick
 // follow across Cmd+N and app restarts instead of snapping back to the default.
-// It's deliberately global (not per-profile): a profile switch force-reseeds to
-// that profile's default, while within a profile new chats keep your last pick.
+// Model/provider/source are scoped to the remote (connection, profile) owner so
+// a provider authenticated on one profile cannot contaminate another profile's
+// session.create. Local/single-backend users retain the historical bare keys.
 const COMPOSER_MODEL_KEY = 'hermes.desktop.composer.model'
 const COMPOSER_PROVIDER_KEY = 'hermes.desktop.composer.provider'
 const COMPOSER_MODEL_SOURCE_KEY = 'hermes.desktop.composer.model-source'
 const COMPOSER_EFFORT_KEY = 'hermes.desktop.composer.reasoning-effort'
 const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
+
+// Unlike presentation-oriented $connection, this scope is published from the
+// gateway activation coordinate before profile-change effects can reseed the
+// composer. null means the exact owner is temporarily unknown: values may still
+// paint, but must not be written through the previous backend's storage key.
+let composerSelectionScope: string | null = ''
+
+function composerScopeForConnection(connection: HermesConnection | null): string | null {
+  if (!connection) {
+    return null
+  }
+
+  // Electron may infer the sole `local` registry id onto the ordinary primary
+  // descriptor. That remains the legacy single-backend path: only an explicit
+  // registry-scoped route earns a new namespace.
+  if (connection.mode !== 'remote' && !connection.registryScoped) {
+    return ''
+  }
+
+  if (connection.connectionId) {
+    return `.registry.${encodeURIComponent(connection.connectionId)}.${encodeURIComponent(connection.profile || 'default')}`
+  }
+
+  return connectionScopeSuffix(connection)
+}
+
+function composerSelectionKey(base: string): string | null {
+  return composerSelectionScope === null ? null : `${base}${composerSelectionScope}`
+}
+
+function storedComposerString(base: string): string | null {
+  const key = composerSelectionKey(base)
+
+  return key === null ? null : storedString(key)
+}
 
 // The last chat the user had open, so a relaunch lands back on it instead of an
 // empty new-chat. Stored (not runtime) id — the route is keyed by stored id.
@@ -319,16 +360,19 @@ export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id
  *  the live id or the stable lineage root (see sessionPinId). The one place the
  *  "same conversation across compression" test lives. */
 export const sessionMatchesStoredId = (
-  session: Pick<SessionInfo, '_lineage_root_id' | 'id'>,
+  session: Pick<SessionInfo, '_lineage_ids' | '_lineage_root_id' | 'id'>,
   storedSessionId: string
-): boolean => session.id === storedSessionId || session._lineage_root_id === storedSessionId
+): boolean =>
+  session.id === storedSessionId ||
+  session._lineage_root_id === storedSessionId ||
+  Boolean(session._lineage_ids?.includes(storedSessionId))
 
 // Alias lookup, memoized per sessions-list reference. `lineageAliases` runs
 // per cached session state per status projection per message delta — an
 // O(sessions) scan there multiplies out to states × sessions × ~30Hz per busy
 // session, which is what made a populated recents list drag every stream. The
 // list is replaced wholesale (never mutated), so its reference is the cache key.
-type LineageRow = Pick<SessionInfo, '_lineage_root_id' | 'id'>
+type LineageRow = Pick<SessionInfo, '_lineage_ids' | '_lineage_root_id' | 'id'>
 const lineageIndexBySessions = new WeakMap<readonly LineageRow[], Map<string, string[]>>()
 
 function lineageIndex(sessions: readonly LineageRow[]): Map<string, string[]> {
@@ -357,6 +401,21 @@ function lineageIndex(sessions: readonly LineageRow[]): Map<string, string[]> {
       add(session.id, session._lineage_root_id)
       add(session._lineage_root_id, session.id)
       add(session._lineage_root_id, session._lineage_root_id)
+    }
+
+    // Chains three+ segments deep: the projected row carries every id the
+    // conversation has answered to, so a surface keyed to a MIDDLE segment
+    // (it was the tip when the surface opened) still aliases to the rest.
+    // Without this, only tip↔root connect and such a surface reads as a
+    // different conversation — one chat open twice after a compaction.
+    const ids = session._lineage_ids
+
+    if (ids && ids.length > 1) {
+      for (const a of ids) {
+        for (const b of ids) {
+          add(a, b)
+        }
+      }
     }
   }
 
@@ -587,6 +646,85 @@ export function mergeSessionPage(
   }
 
   return interleaved
+}
+
+function sidebarProfileKey(session: Pick<SessionInfo, 'profile'>): string {
+  return (session.profile ?? '').trim() || 'default'
+}
+
+function sessionListIdentity(session: Pick<SessionInfo, 'id' | 'profile'>): string {
+  return `${sidebarProfileKey(session)}::${session.id}`
+}
+
+/**
+ * Re-attach previous rows for profiles whose sidebar slice failed this refresh.
+ *
+ * The batched sidebar endpoint reports a disk I/O / lock failure as HTTP 200
+ * with `recents: []` and `errors: [{ profile }]`. `mergeSessionPage` only keeps
+ * working / pinned / selected ids, so idle Yesterday / This-week rows would
+ * otherwise vanish until a later successful scan (#73847, #88528).
+ *
+ * Successful profiles are left alone: their incoming page is still authoritative.
+ */
+export function carryForwardFailedProfileSessions(
+  previous: SessionInfo[],
+  incoming: SessionInfo[],
+  errors: Array<{ profile?: string; error?: string }> | undefined | null
+): SessionInfo[] {
+  if (!errors?.length || previous.length === 0) {
+    return incoming
+  }
+
+  const failed = new Set(errors.map(error => (error.profile ?? '').trim() || 'default'))
+  const incomingIds = new Set(incoming.map(sessionListIdentity))
+  const carried: SessionInfo[] = []
+
+  for (const session of previous) {
+    if (!failed.has(sidebarProfileKey(session)) || incomingIds.has(sessionListIdentity(session))) {
+      continue
+    }
+
+    carried.push(session)
+  }
+
+  if (carried.length === 0) {
+    return incoming
+  }
+
+  // Incoming-first concat parks the failed profile at the tail of an
+  // all-profiles list. Re-rank by the same recency key the backend uses.
+  const recency = (session: SessionInfo): number => Math.max(session.last_active || 0, session.started_at || 0)
+
+  return [...incoming, ...carried].sort((a, b) => recency(b) - recency(a))
+}
+
+/** Keep previous per-profile sidebar meta for profiles whose slice failed.
+ *
+ *  A failed scan returns `{}` / falsey truncated flags. Applying those
+ *  would zero usage and hide Load more under a list we just carried forward.
+ */
+export function keepFailedProfileMeta<T>(
+  previous: Record<string, T>,
+  incoming: Record<string, T>,
+  errors: Array<{ profile?: string; error?: string }> | undefined | null
+): Record<string, T> {
+  if (!errors?.length) {
+    return incoming
+  }
+
+  const next = { ...incoming }
+
+  for (const error of errors) {
+    const key = (error.profile ?? '').trim() || 'default'
+
+    if (Object.prototype.hasOwnProperty.call(previous, key)) {
+      next[key] = previous[key]
+    } else {
+      delete next[key]
+    }
+  }
+
+  return next
 }
 
 /** Raise a session in recents on user send (before stream / turn resolve). */
@@ -948,8 +1086,8 @@ export function getSessionOwnerHint(
 // clears it and resets the retry counter. Null whenever the active route has a
 // healthy, in-flight, or still-auto-retrying resume.
 export const $resumeExhaustedSessionId = atom<string | null>(null)
-export const $currentModel = atom(storedString(COMPOSER_MODEL_KEY) ?? '')
-export const $currentProvider = atom(storedString(COMPOSER_PROVIDER_KEY) ?? '')
+export const $currentModel = atom(storedComposerString(COMPOSER_MODEL_KEY) ?? '')
+export const $currentProvider = atom(storedComposerString(COMPOSER_PROVIDER_KEY) ?? '')
 export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? '')
 export const $currentServiceTier = atom('')
 export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
@@ -1005,6 +1143,31 @@ export const $contextSuggestions = atom<ContextSuggestion[]>([])
 export const $modelPickerOpen = atom(false)
 export const $sessionPickerOpen = atom(false)
 
+function rescopeComposerSelection(nextScope: string | null): void {
+  if (nextScope === composerSelectionScope) {
+    return
+  }
+
+  composerSelectionScope = nextScope
+  $currentModel.set(storedComposerString(COMPOSER_MODEL_KEY) ?? '')
+  $currentProvider.set(storedComposerString(COMPOSER_PROVIDER_KEY) ?? '')
+  $currentModelSource.set(getCurrentModelSource())
+}
+
+/** Publish an exact registry route before active-profile effects can persist a
+ * forced default. A registry id is authority even while its descriptive
+ * HermesConnection lookup is unavailable. */
+export function setComposerSelectionOwner(connectionId: string, profile: string): void {
+  rescopeComposerSelection(
+    `.registry.${encodeURIComponent(connectionId)}.${encodeURIComponent(profile.trim() || 'default')}`
+  )
+}
+
+/** Fail closed while a successful legacy profile activation has no descriptor. */
+export function clearComposerSelectionOwner(): void {
+  rescopeComposerSelection(null)
+}
+
 export const setConnection = (next: Updater<HermesConnection | null>) => {
   updateAtom($connection, next)
   // Repoint connection-scoped persistence (pins, manual session order,
@@ -1013,6 +1176,7 @@ export const setConnection = (next: Updater<HermesConnection | null>) => {
   // keeps the current scope.
   rescopeConnectionScopedStores($connection.get())
   syncCronModelImpactConnection($connection.get())
+  rescopeComposerSelection(composerScopeForConnection($connection.get()))
 }
 
 export const setGatewayState = (next: Updater<ConnectionState>) => updateAtom($gatewayState, next)
@@ -1120,6 +1284,16 @@ export const requestSessionResume = (sessionId: string, ownerRoute?: SessionOwne
     return
   }
 
+  // A chat on its way out must never be re-selected. The push path
+  // (markRuntimeGone) and the RPC seam both queue a resume off a 4001, and an
+  // idle reap can land one in the same tick as a delete — that queued request
+  // then resumes a tombstoned id, 404s, and toasts "Resume failed / Session
+  // not found" for a chat the user deliberately removed. Filtering at the
+  // producer means no consumer has to re-derive "is this id doomed".
+  if (isSessionRemovalPending(id)) {
+    return
+  }
+
   if (ownerRoute) {
     setSessionOwnerHint(id, ownerRoute)
   }
@@ -1137,16 +1311,24 @@ export const setAwaitingResponse = (next: Updater<boolean>) => updateAtom($await
 
 export const setCurrentModel = (next: Updater<string>) => {
   updateAtom($currentModel, next)
-  persistString(COMPOSER_MODEL_KEY, $currentModel.get() || null)
+  const key = composerSelectionKey(COMPOSER_MODEL_KEY)
+
+  if (key !== null) {
+    persistString(key, $currentModel.get() || null)
+  }
 }
 
 export const setCurrentProvider = (next: Updater<string>) => {
   updateAtom($currentProvider, next)
-  persistString(COMPOSER_PROVIDER_KEY, $currentProvider.get() || null)
+  const key = composerSelectionKey(COMPOSER_PROVIDER_KEY)
+
+  if (key !== null) {
+    persistString(key, $currentProvider.get() || null)
+  }
 }
 
 export const getCurrentModelSource = (): ComposerModelSource => {
-  const source = storedString(COMPOSER_MODEL_SOURCE_KEY)
+  const source = storedComposerString(COMPOSER_MODEL_SOURCE_KEY)
 
   return source === 'default' || source === 'manual' ? source : ''
 }
@@ -1157,7 +1339,12 @@ export const getCurrentModelSource = (): ComposerModelSource => {
 export const $currentModelSource = atom<ComposerModelSource>(getCurrentModelSource())
 
 export const setCurrentModelSource = (source: ComposerModelSource) => {
-  persistString(COMPOSER_MODEL_SOURCE_KEY, source || null)
+  const key = composerSelectionKey(COMPOSER_MODEL_SOURCE_KEY)
+
+  if (key !== null) {
+    persistString(key, source || null)
+  }
+
   $currentModelSource.set(source)
 }
 
@@ -1270,16 +1457,19 @@ export const setNewChatWorkspaceTarget = (next: NewChatWorkspaceTarget): number 
 }
 
 export const workspaceCwdForNewSession = (): string => {
-  if ($connection.get()?.mode === 'remote') {
-    return getRememberedWorkspaceCwd()
-  }
-
   // A bare new chat starts DETACHED — no inherited cwd, so the composer's coding
   // rail (which keys off $currentCwd) shows no branch and the first message runs
   // in the gateway's default rather than silently in the last repo you touched.
   // Only an explicit default-project-dir setting pre-attaches. Entering a
   // project/worktree attaches its cwd directly (startSessionInWorkspace), so the
   // "remember where I was when I'm in a project" case is unaffected.
+  //
+  // This must behave identically in local and remote mode: the remembered CWD
+  // under the remote-keyed workspaceCwdKey() can be from a *different* project
+  // than the one the user is currently scoped into, and bare-new-session in
+  // the wrong workspace was the #57911 symptom. Resume/restore still reads
+  // the remembered cwd via ensureDefaultWorkspaceCwd (where it remains
+  // remote-keyed and intentionally sticky).
   return getConfiguredDefaultProjectDir()
 }
 

@@ -9,7 +9,7 @@ Hermes uses two kinds of model slots:
 - **Main model** — what the agent thinks with. Every user message, every tool-call loop, every streamed response goes through this model.
 - **Auxiliary models** — smaller side-jobs the agent offloads. Context compression, vision (image analysis), web-page summarization, approval scoring, MCP tool routing, session-title generation, and skill search. Each has its own slot and can be overridden independently.
 
-This page covers configuring both from the dashboard. If you prefer config files or the CLI, jump to [Alternative methods](#alternative-methods) at the bottom.
+This page covers configuring both from the dashboard. If you prefer config files or the CLI, jump to [Alternative methods](#alternative-methods) at the bottom. To run models on your own machine instead of a cloud provider, see [Local Models](/user-guide/local-models).
 
 :::tip Fastest path: Nous Portal
 [Nous Portal](/user-guide/features/tool-gateway) provides 300+ models under one subscription. On a fresh install, run `hermes setup --portal` to log in and set Nous as your provider in one command. Inspect what's wired up with `hermes portal info`.
@@ -57,7 +57,7 @@ Prompt caches are keyed to the model serving the request, so any mid-conversatio
 
 ### Unattended data-training tiers
 
-Models such as `muse-spark-1.2-contributor` are discounted because the vendor may train on your prompts and completions. Interactive model selection always shows a confirmation prompt. Non-interactive startup paths such as Kanban workers and cron agents fail closed because they cannot ask that question.
+Models with a `-contributor` suffix (e.g. `muse-spark-1.2-contributor`, `muse-spark-1.3-contributor`) are discounted because the vendor may train on your prompts and completions. Interactive model selection always shows a confirmation prompt. Non-interactive startup paths such as Kanban workers and cron agents fail closed because they cannot ask that question.
 
 If training on the unattended workload's data is acceptable, record a persistent acknowledgement:
 
@@ -286,7 +286,7 @@ A one-turn switch breaks the provider's prompt-cache prefix twice (switching out
 
 ### Custom aliases
 
-Define your own short names for models you reach for often, then use `/model <alias>` in the CLI or any messaging platform. There are two equivalent formats — pick whichever fits your workflow.
+Define your own short names for models you reach for often, then use `/model <alias>` in a running session or `hermes chat --model <alias>` at startup. There are two equivalent formats — pick whichever fits your workflow.
 
 **Canonical (top-level `model_aliases:`)** — full control over provider + base_url:
 

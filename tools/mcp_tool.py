@@ -252,6 +252,26 @@ _JSONRPC_METHOD_NOT_FOUND = -32601
 _MCP_LIST_MAX_PAGES = 50
 
 
+def _list_method_accepts_params(list_method) -> bool:
+    """True when *list_method* accepts the mcp 2.0 ``params=`` keyword.
+
+    Probing the signature instead of catching TypeError around the call keeps
+    a TypeError raised INSIDE the list call — e.g. a server response decode
+    failure — propagating, rather than being replaced by a misleading
+    legacy-cursor retry error (#104150).
+    """
+    import inspect
+
+    try:
+        sig = inspect.signature(list_method)
+    except (TypeError, ValueError):
+        return True  # can't introspect — assume the modern convention
+    return any(
+        param.name == "params" or param.kind == inspect.Parameter.VAR_KEYWORD
+        for param in sig.parameters.values()
+    )
+
+
 async def _paginate_full_list(list_method, items_attr: str, server_name: str,
                               cache_meta_out: Optional[dict] = None):
     """Drain a paginated ``list_*`` call by following ``nextCursor``; ``cache_meta_out`` gets the
@@ -263,12 +283,17 @@ async def _paginate_full_list(list_method, items_attr: str, server_name: str,
             result = await list_method()
         else:
             # mcp 2.0 takes params=PaginatedRequestParams, 1.x takes cursor=.
-            try:
+            # Signature-probed (see _list_method_accepts_params) instead of
+            # try/except TypeError: a TypeError from inside the list call
+            # must propagate, not trigger the legacy fallback (#104150).
+            if _list_method_accepts_params(list_method):
                 import mcp.types as _types  # late: keeps the SDK import lazy
                 _params_cls = getattr(_types, "PaginatedRequestParams", None)
-                result = await (list_method(params=_params_cls(cursor=cursor)) if _params_cls is not None
-                                else list_method(cursor=cursor))
-            except TypeError:
+                if _params_cls is not None:
+                    result = await list_method(params=_params_cls(cursor=cursor))
+                else:
+                    result = await list_method(cursor=cursor)
+            else:
                 result = await list_method(cursor=cursor)
         if cache_meta_out is not None and not items:
             for key, snake, camel in (("ttl_ms", "ttl_ms", "ttlMs"), ("cache_scope", "cache_scope", "cacheScope")):

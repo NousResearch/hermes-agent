@@ -26,6 +26,9 @@ Quick Local reports installation and first-model-download progress. It validates
 the generated configuration with a temporary server before activating the
 profile. Hermes starts the configured local OpenViking server when memory is
 first used; the server remains running for reuse after a Hermes session exits.
+Quick Local deliberately ignores `OPENVIKING_*` environment overrides so its
+profile-scoped managed configuration remains authoritative. Those variables
+continue to apply to self-managed connections.
 
 ## Self-managed requirements
 

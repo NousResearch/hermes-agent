@@ -1264,11 +1264,15 @@ class OpenVikingMemoryProvider(MemoryProvider):
     """Full bidirectional memory via OpenViking context database."""
 
     def backup_paths(self) -> List[str]:
-        """The resolved ovcli config (default ~/.openviking/ovcli.conf) so endpoint/api-key
-        survive backup/import. The backup walk itself drops paths outside $HOME."""
+        """The resolved external ovcli profile; in-home profiles use the normal backup walk."""
         try:
             provider_config = _load_hermes_openviking_config()
-            return [str(_provider_ovcli_config_path(provider_config))]
+            profile = _provider_ovcli_config_path(provider_config)
+            try:
+                profile.resolve().relative_to(_hermes_home_path().resolve())
+                return []
+            except ValueError:
+                return [str(profile)]
         except Exception:
             return []
 
@@ -1464,6 +1468,17 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 )
             else:
                 start_state, start_message = _start_local_openviking_server(endpoint)
+            if (
+                start_state == _LOCAL_SERVER_STARTED
+                and is_quick_local
+                and config_path is not None
+                and not quick_local.clear_server_restart_required(config_path)
+            ):
+                logger.warning(
+                    "Could not clear Quick Local's restart-required marker after "
+                    "starting %s.",
+                    config_path,
+                )
             if start_state != _LOCAL_SERVER_STARTED:
                 self._runtime_start_pending = False
 

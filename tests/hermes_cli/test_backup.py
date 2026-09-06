@@ -579,6 +579,37 @@ class TestImport:
             mode = (hermes_home / rel).stat().st_mode & 0o777
             assert mode == 0o600, f"{rel} restored with mode {oct(mode)}, expected 0o600"
 
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX file permissions only")
+    def test_restores_nested_provider_conf_and_directory_privately(
+        self, tmp_path, monkeypatch
+    ):
+        """A provider config may carry credentials even under a traversable home."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(mode=0o701)
+        hermes_home.chmod(0o701)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_HOME_MODE", "0701")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        zip_path = tmp_path / "backup.zip"
+        self._make_backup_zip(
+            zip_path,
+            {
+                "config.yaml": "model: openrouter\n",
+                "openviking/ov.conf": '{"vlm":{"api_key":"secret"}}',
+                "openviking/ovcli.conf": '{"url":"http://127.0.0.1:1933"}',
+            },
+        )
+
+        from hermes_cli.backup import run_import
+
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        openviking_home = hermes_home / "openviking"
+        assert stat.S_IMODE(hermes_home.stat().st_mode) == 0o701
+        assert stat.S_IMODE(openviking_home.stat().st_mode) == 0o700
+        assert stat.S_IMODE((openviking_home / "ov.conf").stat().st_mode) == 0o600
+
 
 # ---------------------------------------------------------------------------
 # Round-trip test

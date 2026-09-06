@@ -35,6 +35,7 @@ _OPENVIKING_VERSION_SPECIFIER = _OPENVIKING_REQUIREMENT.specifier
 _ROOT_DIRNAME = "openviking"
 _SERVER_CONFIG_FILENAME = "ov.conf"
 _OVCLI_CONFIG_FILENAME = "ovcli.conf"
+_RESTART_REQUIRED_FILENAME = ".restart-required"
 _WORKSPACE_DIRNAME = "data"
 _MODEL_CACHE_DIRNAME = "models"
 _DEFAULT_PORT = 1933
@@ -84,6 +85,10 @@ class QuickLocalPaths:
         scripts = "Scripts" if os.name == "nt" else "bin"
         executable = "openviking-server.exe" if os.name == "nt" else "openviking-server"
         return self.runtime / scripts / executable
+
+    @property
+    def restart_required_marker(self) -> Path:
+        return self.root / _RESTART_REQUIRED_FILENAME
 
 
 @dataclass(frozen=True)
@@ -138,6 +143,25 @@ def clear_managed_settings(provider_config: dict[str, Any]) -> None:
     provider_config.pop("deployment", None)
     provider_config.pop("server_config_path", None)
     provider_config.pop("server_command_path", None)
+
+
+def clear_server_restart_required(server_config_path: Path) -> bool:
+    """Clear the durable marker once no stale managed server remains."""
+    marker = Path(server_config_path).with_name(_RESTART_REQUIRED_FILENAME)
+    try:
+        marker.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def _mark_server_restart_required(paths: QuickLocalPaths) -> None:
+    _prepare_private_directory(paths.root)
+    atomic_json_write(
+        paths.restart_required_marker,
+        {"restart_required": True},
+        mode=0o600,
+    )
 
 
 def build_server_config(
@@ -319,8 +343,9 @@ class QuickLocalSetup:
             config_changed = not _stored_server_config_matches(
                 preflight.paths, server_config
             )
+            if runtime_changed or config_changed:
+                _mark_server_restart_required(preflight.paths)
             if config_changed:
-                _prepare_private_directory(preflight.paths.root)
                 atomic_json_write(
                     preflight.paths.server_config,
                     server_config,
@@ -340,7 +365,7 @@ class QuickLocalSetup:
                 paths=preflight.paths,
                 endpoint=reusable_endpoint,
                 reused=True,
-                server_restart_required=runtime_changed or config_changed,
+                server_restart_required=preflight.paths.restart_required_marker.is_file(),
             )
 
         port = find_available_port(
@@ -361,6 +386,10 @@ class QuickLocalSetup:
             server_config=server_config,
         )
 
+        if not clear_server_restart_required(preflight.paths.server_config):
+            raise QuickLocalSetupError(
+                "Could not clear Quick Local's stale restart marker."
+            )
         _prepare_private_directory(preflight.paths.root)
         preflight.paths.workspace.mkdir(parents=True, exist_ok=True)
         atomic_json_write(preflight.paths.server_config, server_config, mode=0o600)

@@ -20,6 +20,45 @@ def _preflight(tmp_path: Path) -> quick_local.QuickLocalPreflight:
     )
 
 
+def test_backup_paths_include_only_the_linked_external_profile(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    linked = tmp_path / "external" / "ovcli.conf.hermes"
+    linked.parent.mkdir()
+    linked.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(openviking_module, "_hermes_home_path", lambda: hermes_home)
+    monkeypatch.setattr(
+        openviking_module,
+        "_load_hermes_openviking_config",
+        lambda: {
+            "use_ovcli_config": True,
+            "ovcli_config_path": str(linked),
+        },
+    )
+
+    assert OpenVikingMemoryProvider().backup_paths() == [str(linked)]
+
+
+def test_backup_paths_skip_quick_local_profile_inside_hermes_home(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "hermes"
+    profile = hermes_home / "openviking" / "ovcli.conf"
+    profile.parent.mkdir(parents=True)
+    profile.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(openviking_module, "_hermes_home_path", lambda: hermes_home)
+    monkeypatch.setattr(
+        openviking_module,
+        "_load_hermes_openviking_config",
+        lambda: {
+            "use_ovcli_config": True,
+            "ovcli_config_path": str(profile),
+            "deployment": quick_local.DEPLOYMENT,
+        },
+    )
+
+    assert OpenVikingMemoryProvider().backup_paths() == []
+
+
 def test_build_server_config_uses_profile_scoped_storage_and_local_embedding(
     tmp_path,
 ):
@@ -166,6 +205,16 @@ def test_resolve_vlm_accepts_structured_persisted_default(monkeypatch):
                 "base_url": "https://chatgpt.com/backend-api/codex",
                 "api_key": "short-lived",
                 "source": "oauth",
+            },
+            "cannot be copied safely",
+        ),
+        (
+            {
+                "provider": "anthropic",
+                "api_mode": "anthropic_messages",
+                "base_url": "https://api.anthropic.com",
+                "api_key": "sk-ant-oat01-short-lived",
+                "source": "env",
             },
             "cannot be copied safely",
         ),
@@ -495,6 +544,41 @@ def test_reuse_rechecks_runtime_and_refreshes_saved_vlm(tmp_path, monkeypatch):
     ensure_runtime.assert_called_once_with(paths)
 
 
+def test_reuse_restart_requirement_survives_separate_setup_runs(tmp_path, monkeypatch):
+    paths = quick_local.managed_paths(tmp_path)
+    paths.root.mkdir(parents=True)
+    old_vlm = {
+        "provider": "openai",
+        "model": "old-model",
+        "api_key": "old-secret",
+        "api_base": "https://llm.example/v1",
+    }
+    new_vlm = {**old_vlm, "api_key": "new-secret"}
+    quick_local.atomic_json_write(
+        paths.server_config,
+        quick_local.build_server_config(paths, old_vlm, port=1938),
+        mode=0o600,
+    )
+    quick_local.atomic_json_write(
+        paths.ovcli_config,
+        {"url": "http://127.0.0.1:1938", "actor_peer_id": "hermes"},
+        mode=0o600,
+    )
+    monkeypatch.setattr(quick_local, "resolve_hermes_vlm_config", lambda: new_vlm)
+
+    def provision_again():
+        setup = quick_local.QuickLocalSetup(health_check=lambda _endpoint: (True, ""))
+        monkeypatch.setattr(setup, "_ensure_openviking_installed", lambda _paths: False)
+        return setup.provision(hermes_home=tmp_path)
+
+    first = provision_again()
+    second = provision_again()
+
+    assert first.server_restart_required is True
+    assert second.server_restart_required is True
+    assert paths.restart_required_marker.is_file()
+
+
 @pytest.mark.parametrize("runtime_current", [False, True])
 def test_reuse_with_unchanged_config_requires_restart_only_after_runtime_upgrade(
     tmp_path, monkeypatch, runtime_current
@@ -548,11 +632,17 @@ def test_reuse_with_unchanged_config_requires_restart_only_after_runtime_upgrade
     assert result.endpoint == "http://127.0.0.1:1938"
     assert result.server_restart_required is (not runtime_current)
     assert json.loads(paths.server_config.read_text(encoding="utf-8")) == server_config
-    write.assert_not_called()
+    assert all(call.args[0] != paths.server_config for call in write.call_args_list)
     if runtime_current:
+        write.assert_not_called()
         ensure_uv.assert_not_called()
         install.assert_not_called()
     else:
+        write.assert_called_once_with(
+            paths.restart_required_marker,
+            {"restart_required": True},
+            mode=0o600,
+        )
         ensure_uv.assert_called_once_with()
         install.assert_called_once()
 
@@ -577,9 +667,15 @@ def test_fresh_provision_validates_before_writing_active_config(tmp_path, monkey
     )
     monkeypatch.setattr(setup, "_ensure_openviking_installed", lambda _paths: True)
     monkeypatch.setattr(quick_local, "find_available_port", lambda **_kwargs: 1937)
+    paths = quick_local.managed_paths(tmp_path)
+    paths.root.mkdir(parents=True)
+    quick_local.atomic_json_write(
+        paths.restart_required_marker,
+        {"restart_required": True},
+        mode=0o600,
+    )
 
     def start(endpoint, config_path, hermes_home, server_command):
-        paths = quick_local.managed_paths(tmp_path)
         assert endpoint == "http://127.0.0.1:1937"
         assert hermes_home == tmp_path
         assert server_command == paths.server_command
@@ -602,6 +698,7 @@ def test_fresh_provision_validates_before_writing_active_config(tmp_path, monkey
     assert result.endpoint == "http://127.0.0.1:1937"
     assert result.reused is False
     assert result.server_restart_required is False
+    assert not paths.restart_required_marker.exists()
     final_config = json.loads(paths.server_config.read_text(encoding="utf-8"))
     assert final_config["storage"]["workspace"] == str(paths.workspace)
     assert final_config["server"]["port"] == 1937
@@ -1089,6 +1186,12 @@ def test_runtime_start_refuses_missing_quick_local_config(tmp_path, monkeypatch)
 
 def test_runtime_unreachable_uses_quick_local_config_marker(tmp_path, monkeypatch):
     config_path = tmp_path / "ov.conf"
+    restart_marker = config_path.with_name(".restart-required")
+    quick_local.atomic_json_write(
+        restart_marker,
+        {"restart_required": True},
+        mode=0o600,
+    )
     start = MagicMock(
         return_value=(openviking_module._LOCAL_SERVER_FAILED, "expected test failure")
     )
@@ -1112,6 +1215,43 @@ def test_runtime_unreachable_uses_quick_local_config_marker(tmp_path, monkeypatc
         config_path=config_path,
         server_command_path=Path("/bin/ov"),
     )
+    assert restart_marker.is_file()
+
+
+def test_runtime_managed_start_clears_durable_restart_requirement(
+    tmp_path, monkeypatch
+):
+    config_path = tmp_path / "ov.conf"
+    restart_marker = config_path.with_name(".restart-required")
+    quick_local.atomic_json_write(
+        restart_marker,
+        {"restart_required": True},
+        mode=0o600,
+    )
+    start = MagicMock(return_value=(openviking_module._LOCAL_SERVER_STARTED, "started"))
+    monkeypatch.setattr(
+        openviking_module,
+        "_load_hermes_openviking_config",
+        lambda: {
+            "deployment": quick_local.DEPLOYMENT,
+            "server_config_path": str(config_path),
+            "server_command_path": "/bin/ov",
+        },
+    )
+    monkeypatch.setattr(openviking_module, "_start_local_openviking_server", start)
+    provider = OpenVikingMemoryProvider()
+    provider._endpoint = "http://127.0.0.1:1933"
+    provider._start_runtime_openviking_waiter = MagicMock()
+
+    provider._handle_runtime_openviking_unreachable()
+
+    start.assert_called_once_with(
+        "http://127.0.0.1:1933",
+        config_path=config_path,
+        server_command_path=Path("/bin/ov"),
+    )
+    assert not restart_marker.exists()
+    provider._start_runtime_openviking_waiter.assert_called_once()
 
 
 def test_runtime_does_not_fall_back_when_quick_local_markers_are_incomplete(

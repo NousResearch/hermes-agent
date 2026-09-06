@@ -96,7 +96,10 @@ _EXCLUDED_PREFIXES = ("state.db.pre-update-emergency-",)
 _IMPORT_SKIP_NAMES = {"gateway_state.json", "gateway.pid", "cron.pid", "gateway.lock", "processes.json"}
 
 # zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
-_SECRET_FILE_NAMES = {".env", "auth.json", "state.db"}
+_SECRET_FILE_NAMES = {".env", "auth.json", "state.db", "ov.conf"}
+# Directories containing files that seed further provider-managed state must also
+# remain private after import. The Hermes home itself retains HERMES_HOME_MODE.
+_PRIVATE_PARENT_FILE_NAMES = {"ov.conf"}
 
 # Reserved archive subtree for memory-provider state OUTSIDE HERMES_HOME (e.g. ~/.honcho, via
 # MemoryProvider.backup_paths()), stored and restored relative to the user's home; paths not
@@ -902,6 +905,15 @@ def _import_members(
                 if tighten:
                     try:
                         os.chmod(target, 0o600)
+                        # A nested provider config can seed further files beside
+                        # itself. Keep that provider-owned directory private while
+                        # preserving an explicit HERMES_HOME_MODE on the root.
+                        if (
+                            not external
+                            and target.name in _PRIVATE_PARENT_FILE_NAMES
+                            and target.parent.resolve() != root
+                        ):
+                            os.chmod(target.parent, 0o700)
                     except OSError:
                         if not external:  # external configs are tightened best-effort only
                             raise

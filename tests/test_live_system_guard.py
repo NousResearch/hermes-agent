@@ -53,7 +53,7 @@ def test_launchctl_bootout_of_profile_gateway_is_blocked():
 
 
 def test_shell_wrapped_launchctl_kickstart_is_blocked():
-    with pytest.raises(RuntimeError, match="host service control"):
+    with pytest.raises(RuntimeError, match="guard"):
         subprocess.run(
             ["bash", "-c", "launchctl kickstart -k gui/501/ai.hermes.gateway"]
         )

@@ -771,17 +771,21 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         msg = MIMEText(message, "plain", "utf-8")
         for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
             msg[key] = value
-        server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
+        server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL, timeout=SMTP_CONNECT_TIMEOUT)
         server.login(address, password)
         server.send_message(msg)
         server.quit()
         return {"success": True, "platform": "email", "chat_id": chat_id}
     except Exception as e:
+        error = (
+            f"Email send timed out ({SMTP_CONNECT_TIMEOUT}s socket timeout): {smtp_host}:{smtp_port}"
+            if isinstance(e, TimeoutError) else f"Email send failed: {e}"
+        )
         try:
             from tools.send_message_tool import _error as _e
-            return _e(f"Email send failed: {e}")
+            return _e(error)
         except Exception:
-            return {"error": f"Email send failed: {e}"}
+            return {"error": error}
 
 
 def _is_connected(config) -> bool:

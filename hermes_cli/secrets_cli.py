@@ -25,12 +25,14 @@ _BWS_VERSION = "2.0.0"
 
 from hermes_cli._secrets_common import (
     arg, cfg_str, cli_version, disable_secret_source, flag, print_status_panel, print_table,
-    prompt_index, register_subcommands, require_enabled, rotate_token, section_cfg,
+    prompt_index, register_subcommands, require_enabled, rotate_token, section_cfg, token_env_name,
     yn,
 )
 from hermes_cli.config import get_env_path, load_config, save_config, save_env_value
 from agent.secret_sources.base import build_minimal_provider_env, redact_provider_output
-from hermes_cli.secret_prompt import masked_secret_prompt
+from hermes_cli.secret_prompt import (
+    cli_secret_arg_warning, get_pre_dotenv_rotation_input, masked_secret_prompt,
+)
 
 # Old names kept bound: tests monkeypatch ``secrets_cli._bws_version``.
 _bws_version = cli_version
@@ -75,7 +77,7 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
     register_subcommands(parent_parser, "secrets_bw_command", (
         ("setup", "Interactive wizard: install bws, store access token, pick project", cmd_setup, (
             arg("--project-id", "Pre-select a project UUID instead of prompting"),
-            arg("--access-token", "Provide the access token non-interactively (will be stored in .env)"),
+            arg("--access-token", "Provide the access token non-interactively (will be stored in .env); warning: visible in process listings and shell history"),
             arg("--server-url", (
                 "Bitwarden region / self-hosted endpoint. Examples: "
                 "https://vault.bitwarden.com (US, default), "
@@ -85,7 +87,7 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
         )),
         ("status", "Show config + binary + token validation status", cmd_status, ()),
         ("token", "Rotate the access token: validate a new one and store it in .env", cmd_token, (
-            arg("--access-token", "Provide the new token non-interactively (default: masked prompt)"),
+            arg("--access-token", "Provide the new token non-interactively (default: masked prompt); warning: visible in process listings and shell history"),
             flag("--no-verify", "Store without probing Bitwarden first (not recommended)"),
         )),
         ("sync", "Fetch secrets now and report what changed", cmd_sync, (
@@ -122,19 +124,23 @@ def _setup_binary(bw, console: Console) -> Optional[Path]:
         return None
 
 
-def _missing_noninteractive_flags(args: argparse.Namespace) -> list[str]:
+def _missing_noninteractive_flags(
+    args: argparse.Namespace, env_token: str = "", token_env: str = _DEFAULT_TOKEN_ENV,
+) -> list[str]:
     """Setup flags a no-TTY run must supply (BWS_SERVER_URL env substitutes for --server-url)."""
     provided = {
-        "--access-token": args.access_token,
+        f"--access-token (or {token_env})": args.access_token or env_token,
         "--server-url": (args.server_url or "").strip() or os.environ.get("BWS_SERVER_URL", ""),
         "--project-id": args.project_id}
     return [flag for flag, value in provided.items() if not (value and value.strip())]
 
 
-def _setup_token(args: argparse.Namespace, console: Console, token_env: str) -> Optional[str]:
+def _setup_token(
+    args: argparse.Namespace, console: Console, token_env: str, env_token: str = "",
+) -> Optional[str]:
     """Step 2: take the token from ``--access-token`` or a masked prompt and persist it."""
     _step(console, 2, "Provide your access token")
-    token = (args.access_token or "").strip() or masked_secret_prompt(f"  Paste access token ({token_env}): ").strip()
+    token = (args.access_token or "").strip() or env_token or masked_secret_prompt(f"  Paste access token ({token_env}): ").strip()
     if not token:
         console.print("  [red]Empty token, aborting.[/red]")
         return None
@@ -178,8 +184,18 @@ def cmd_setup(args: argparse.Namespace) -> int:
     binary = _setup_binary(bw, console)
     if binary is None:
         return 1
+    cfg = load_config()
+    if not isinstance(cfg.get("secrets"), dict):
+        cfg["secrets"] = {}
+    if not isinstance(cfg["secrets"].get("bitwarden"), dict):
+        cfg["secrets"]["bitwarden"] = {}
+    secrets_cfg = cfg["secrets"]["bitwarden"]
+    token_env = token_env_name(secrets_cfg.get("access_token_env"), _DEFAULT_TOKEN_ENV)
+    env_token = (get_pre_dotenv_rotation_input(token_env) or os.environ.get(token_env, "")).strip()
+    if args.access_token:
+        console.print(f"[yellow]⚠ {cli_secret_arg_warning('--access-token', token_env)}[/yellow]")
     if not sys.stdin.isatty():
-        missing = _missing_noninteractive_flags(args)
+        missing = _missing_noninteractive_flags(args, env_token, token_env)
         if missing:
             console.print(
                 f"  [red]Non-interactive mode (no TTY) requires all setup flags.[/red]\n"
@@ -190,10 +206,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
                 "      --server-url 'https://vault.bitwarden.com' \\\n"
                 "      --project-id 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'")
             return 1
-    cfg = load_config()
-    secrets_cfg = cfg.setdefault("secrets", {}).setdefault("bitwarden", {})
-    token_env = secrets_cfg.get("access_token_env", _DEFAULT_TOKEN_ENV)
-    token = _setup_token(args, console, token_env)
+    token = _setup_token(args, console, token_env, env_token)
     if token is None:
         return 1
     _step(console, 3, "Pick a Bitwarden region")
@@ -222,7 +235,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
                     ((key, _fetch_status(key, token_env)) for key in sorted(secrets)))
     for w in warnings:
         console.print(f"  [yellow]warning:[/yellow] {redact_provider_output(w, (token,))}")
-    secrets_cfg.update(enabled=True, project_id=project_id, server_url=server_url)
+    secrets_cfg.update(enabled=True, project_id=project_id, server_url=server_url, access_token_env=token_env)
     for key, default in (("access_token_env", token_env), ("cache_ttl_seconds", 300),
                          ("override_existing", True), ("auto_install", True)):
         secrets_cfg.setdefault(key, default)
@@ -253,7 +266,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     console = Console()
     bw_cfg = _bw_cfg(load_config())
     enabled = bool(bw_cfg.get("enabled"))
-    token_env = bw_cfg.get("access_token_env", _DEFAULT_TOKEN_ENV)
+    token_env = token_env_name(bw_cfg.get("access_token_env"), _DEFAULT_TOKEN_ENV)
     project_id = bw_cfg.get("project_id", "")
     server_url = cfg_str(bw_cfg, "server_url")
     token = os.environ.get(token_env, "").strip()
@@ -292,7 +305,7 @@ def cmd_token(args: argparse.Namespace) -> int:
     bw = _load_bw()
     console = Console()
     bw_cfg = _bw_cfg(load_config())
-    token_env = bw_cfg.get("access_token_env", _DEFAULT_TOKEN_ENV)
+    token_env = token_env_name(bw_cfg.get("access_token_env"), _DEFAULT_TOKEN_ENV)
     server_url = cfg_str(bw_cfg, "server_url")
 
     def verify(token: str) -> bool:
@@ -344,7 +357,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
     bw_cfg = _bw_cfg(load_config())
     if not require_enabled(console, bw_cfg, "Bitwarden", "bitwarden"):
         return 1
-    token_env = bw_cfg.get("access_token_env", _DEFAULT_TOKEN_ENV)
+    token_env = token_env_name(bw_cfg.get("access_token_env"), _DEFAULT_TOKEN_ENV)
     token = os.environ.get(token_env, "").strip()
     if not token:
         console.print(f"[red]{token_env} is not set.[/red]")

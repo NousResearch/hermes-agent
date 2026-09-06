@@ -22,6 +22,7 @@ import pytest
 
 from hermes_cli import main as hermes_main
 from hermes_cli import update_cmd
+import hermes_cli.update_cmd_deps as update_cmd_deps
 from hermes_constants import partial_update_hint
 
 
@@ -52,12 +53,13 @@ def test_syntax_guard_passes_but_import_guard_catches_skew(monkeypatch, tmp_path
     monkeypatch.setattr(
         update_cmd, "_UPDATE_CRITICAL_FILES", ("consumer.py", "provider/thing.py")
     )
-    syntax_ok, _, _ = hermes_main._validate_critical_files_syntax(tmp_path)
+    syntax_ok, _, _ = update_cmd._validate_critical_files_syntax(tmp_path)
     assert syntax_ok, "sanity: the skewed tree must parse cleanly"
 
     # The import guard catches it.
     monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
-    ok, module, error = hermes_main._validate_critical_modules_import(tmp_path)
+    monkeypatch.setattr(update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+    ok, module, error = update_cmd._validate_critical_modules_import(tmp_path)
     assert ok is False
     assert module == "consumer"
     assert error is not None and "SHARED_NAME" in error
@@ -66,8 +68,9 @@ def test_syntax_guard_passes_but_import_guard_catches_skew(monkeypatch, tmp_path
 def test_import_guard_passes_on_consistent_tree(monkeypatch, tmp_path):
     _write_skewed_tree(tmp_path, skewed=False)
     monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+    monkeypatch.setattr(update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("consumer",))
 
-    assert hermes_main._validate_critical_modules_import(tmp_path) == (True, None, None)
+    assert update_cmd._validate_critical_modules_import(tmp_path) == (True, None, None)
 
 
 def test_import_guard_ignores_non_import_errors(monkeypatch, tmp_path):
@@ -77,9 +80,165 @@ def test_import_guard_ignores_non_import_errors(monkeypatch, tmp_path):
         "raise RuntimeError('no API key configured')\n"
     )
     monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+    monkeypatch.setattr(update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("consumer",))
 
-    ok, _, _ = hermes_main._validate_critical_modules_import(tmp_path)
+    ok, _, _ = update_cmd._validate_critical_modules_import(tmp_path)
     assert ok is True
+
+
+def test_import_guard_can_report_non_import_errors(monkeypatch, tmp_path):
+    """Stash restore can compare runtime failures before and after apply."""
+    (tmp_path / "consumer.py").write_text("raise RuntimeError('broken config')\n")
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+    monkeypatch.setattr(update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+
+    ok, module, error = update_cmd._validate_critical_modules_import(
+        tmp_path, report_runtime_errors=True
+    )
+
+    assert ok is False
+    assert module == "consumer"
+    assert error == "broken config"
+
+
+def test_import_guard_can_report_missing_third_party_dependency(
+    monkeypatch, tmp_path
+):
+    """Stash comparison must see newly introduced missing dependencies."""
+    (tmp_path / "consumer.py").write_text("import totally_not_installed_pkg\n")
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+    monkeypatch.setattr(update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+
+    ok, module, error = update_cmd._validate_critical_modules_import(
+        tmp_path, report_runtime_errors=True
+    )
+
+    assert ok is False
+    assert module == "consumer"
+    assert error is not None and "totally_not_installed_pkg" in error
+
+
+def test_import_failure_comparison_preserves_exception_type(monkeypatch, tmp_path):
+    source = tmp_path / "consumer.py"
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+    monkeypatch.setattr(update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+    source.write_text("raise RuntimeError('stopped')\n")
+    runtime_failure = update_cmd._critical_module_import_failures(
+        tmp_path, report_runtime_errors=True
+    )
+    source.write_text("raise SystemExit('stopped')\n")
+    terminating_failure = update_cmd._critical_module_import_failures(
+        tmp_path, report_runtime_errors=True
+    )
+
+    assert runtime_failure == {"consumer": ("RuntimeError", "stopped")}
+    assert terminating_failure == {"consumer": ("SystemExit", "stopped")}
+
+
+def test_import_guard_reports_probe_termination_when_comparing_states(
+    monkeypatch, tmp_path
+):
+    """A terminating import is unsafe when validating a restored stash."""
+    (tmp_path / "consumer.py").write_text("import os\nos._exit(7)\n")
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+    monkeypatch.setattr(update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+
+    ok, module, error = update_cmd._validate_critical_modules_import(
+        tmp_path, report_runtime_errors=True
+    )
+
+    assert ok is False
+    assert module == "critical-module probe"
+    assert error == "terminated before reporting import health (exit code 7)"
+
+
+def test_import_guard_reports_probe_termination_by_default(monkeypatch, tmp_path):
+    """A missing health marker must not classify a terminated probe as healthy."""
+    (tmp_path / "consumer.py").write_text("import os\nos._exit(9)\n")
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+    monkeypatch.setattr(update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+
+    ok, module, error = update_cmd._validate_critical_modules_import(tmp_path)
+
+    assert ok is False
+    assert module == "critical-module probe"
+    assert error == "terminated before reporting import health (exit code 9)"
+
+
+def test_import_guard_reports_system_exit_by_default(monkeypatch, tmp_path):
+    """Catchable terminating imports must not complete with a healthy marker."""
+    (tmp_path / "consumer.py").write_text("raise SystemExit('stopped')\n")
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+    monkeypatch.setattr(update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+
+    ok, module, error = update_cmd._validate_critical_modules_import(tmp_path)
+
+    assert ok is False
+    assert module == "consumer"
+    assert error == "stopped"
+
+
+def test_import_guard_does_not_accept_forged_static_marker(monkeypatch, tmp_path):
+    """Imported stdout cannot impersonate the per-probe completion marker."""
+    (tmp_path / "consumer.py").write_text(
+        "import os, sys\n"
+        "sys.stdout.write('__HERMES_IMPORT_HEALTH__[]')\n"
+        "sys.stdout.flush()\n"
+        "os._exit(7)\n"
+    )
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+    monkeypatch.setattr(update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+
+    ok, module, error = update_cmd._validate_critical_modules_import(tmp_path)
+
+    assert ok is False
+    assert module == "critical-module probe"
+    assert error == "terminated before reporting import health (exit code 7)"
+
+
+def test_import_guard_rejects_malformed_health_payload(monkeypatch, tmp_path):
+    class Result:
+        returncode = 0
+        stdout = ""
+
+    def malformed(cmd, **_kwargs):
+        marker = cmd[-1].split("sys.stdout.write('\\n", 1)[1].split("'", 1)[0]
+        Result.stdout = f"{marker}{{}}"
+        return Result()
+
+    monkeypatch.setattr(update_cmd.subprocess, "run", malformed)
+
+    ok, module, error = update_cmd._validate_critical_modules_import(tmp_path)
+
+    assert ok is False
+    assert module == "critical-module probe"
+    assert error == "reported malformed import health data"
+
+
+def test_import_guard_reports_probe_timeout(monkeypatch, tmp_path):
+    import subprocess
+
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(["python", "-c", "probe"], 120)
+
+    monkeypatch.setattr(update_cmd.subprocess, "run", timeout)
+
+    ok, module, error = update_cmd._validate_critical_modules_import(tmp_path)
+
+    assert ok is False
+    assert module == "critical-module probe"
+    assert error == "timed out before reporting import health"
+
+
+def test_untracked_enumeration_failure_is_visible(monkeypatch, tmp_path, capsys):
+    class Result:
+        returncode = 1
+        stdout = ""
+
+    monkeypatch.setattr(update_cmd.subprocess, "run", lambda *_a, **_kw: Result())
+
+    assert update_cmd._git_untracked_paths(["git"], tmp_path) is None
+    assert "Could not enumerate untracked files" in capsys.readouterr().out
 
 
 def test_import_guard_is_non_fatal_when_probe_cannot_run(monkeypatch, tmp_path):
@@ -163,6 +322,7 @@ def test_import_guard_ignores_missing_third_party_dependency(monkeypatch, tmp_pa
     """
     (tmp_path / "consumer.py").write_text("import totally_not_installed_pkg\n")
     monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+    monkeypatch.setattr(update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("consumer",))
 
     assert update_cmd._validate_critical_modules_import(tmp_path) == (True, None, None)
 
@@ -171,6 +331,7 @@ def test_import_guard_flags_missing_first_party_module(monkeypatch, tmp_path):
     """A missing *first-party* module IS skew — the update dropped a file."""
     (tmp_path / "consumer.py").write_text("import tools.nonexistent_module\n")
     monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+    monkeypatch.setattr(update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("consumer",))
 
     ok, module, error = update_cmd._validate_critical_modules_import(tmp_path)
     assert ok is False
@@ -188,7 +349,7 @@ def test_hint_does_not_claim_partial_update_for_lookalike_third_party(modname):
 
 
 @pytest.mark.parametrize("modname", ["tools.todo_tool", "agent.context_compressor",
-                                     "hermes_constants", "cli"])
+                                     "hermes_constants", "hermes_cli.config", "cli"])
 def test_hint_fires_for_each_first_party_root(modname):
     exc = ImportError("cannot import name 'X'")
     exc.name = modname

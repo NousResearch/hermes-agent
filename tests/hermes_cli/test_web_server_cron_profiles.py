@@ -7,6 +7,9 @@ import threading
 
 import pytest
 from fastapi import HTTPException
+import hermes_cli.web_models as _web_models
+import hermes_cli.web_routers.cron as _rt_cron
+import hermes_cli.web_server_cron as _web_server_cron
 
 
 @pytest.fixture()
@@ -71,7 +74,7 @@ def test_fire_cron_job_scopes_store_and_runtime_home_together(
 
     outer_token = set_hermes_home_override(default_home)
     try:
-        assert web_server._fire_cron_job_for_profile("worker_alpha", "worker-job") is True
+        assert _web_server_cron._fire_cron_job_for_profile("worker_alpha", "worker-job") is True
         assert captured == {
             "job_id": "worker-job",
             "runtime_home": worker_home,
@@ -113,7 +116,7 @@ def test_create_registers_scheduler_inside_target_profile(
         lambda: RecordingProvider(),
     )
 
-    job = web_server._call_cron_for_profile(
+    job = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="managed by named profile",
@@ -144,11 +147,11 @@ def test_dashboard_create_reports_saved_but_unregistered(
     def fail_create(*args, **kwargs):
         raise failure
 
-    monkeypatch.setattr(web_server, "_call_cron_for_profile", fail_create)
+    monkeypatch.setattr(_web_server_cron, "_call_cron_for_profile", fail_create)
 
     with pytest.raises(HTTPException) as exc_info:
-        web_server._create_cron_job_sync(
-            web_server.CronJobCreate(
+        _web_server_cron._create_cron_job_sync(
+            _web_models.CronJobCreate(
                 prompt="managed by named profile",
                 schedule="every 1h",
                 name="named-profile-job",
@@ -185,7 +188,7 @@ def test_notify_cron_provider_scopes_store_and_runtime_home_together(
     worker_home = isolated_profiles["worker_alpha"]
     monkeypatch.setattr(scheduler, "_hermes_home", None)
     monkeypatch.setattr(
-        web_server,
+        _web_server_cron,
         "_cron_profile_dicts",
         lambda: [{"name": "worker_alpha"}],
     )
@@ -203,7 +206,7 @@ def test_notify_cron_provider_scopes_store_and_runtime_home_together(
 
     outer_token = set_hermes_home_override(default_home)
     try:
-        web_server._notify_cron_provider_for_profile("worker_alpha")
+        _web_server_cron._notify_cron_provider_for_profile("worker_alpha")
         assert captured == {
             "runtime_home": worker_home,
             "jobs_file": worker_home / "cron" / "jobs.json",
@@ -235,7 +238,7 @@ def test_notify_cron_provider_failure_is_best_effort(
         lambda: FailNotifyProvider(),
     )
 
-    created = web_server._mutate_cron_for_profile(
+    created = _web_server_cron._mutate_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="survives provider failure",
@@ -260,7 +263,7 @@ def test_external_provider_reconcile_fails_closed_with_multiple_profiles(
 
     monkeypatch.setattr(scheduler, "_hermes_home", None)
     monkeypatch.setattr(
-        web_server,
+        _web_server_cron,
         "_cron_profile_dicts",
         lambda: [{"name": "default"}, {"name": "worker_alpha"}],
     )
@@ -282,7 +285,7 @@ def test_external_provider_reconcile_fails_closed_with_multiple_profiles(
         lambda: ExternalProvider(),
     )
 
-    created = web_server._mutate_cron_for_profile(
+    created = _web_server_cron._mutate_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="must not disarm siblings",
@@ -309,7 +312,7 @@ def test_builtin_provider_hook_still_fires_with_multiple_profiles(
 
     monkeypatch.setattr(scheduler, "_hermes_home", None)
     monkeypatch.setattr(
-        web_server,
+        _web_server_cron,
         "_cron_profile_dicts",
         lambda: [{"name": "default"}, {"name": "worker_alpha"}],
     )
@@ -324,7 +327,7 @@ def test_builtin_provider_hook_still_fires_with_multiple_profiles(
         lambda: BuiltinProbe(),
     )
 
-    created = web_server._mutate_cron_for_profile(
+    created = _web_server_cron._mutate_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="builtin notify",
@@ -405,7 +408,7 @@ def test_profile_call_cannot_retarget_ticker_store_mid_write(
         ticker_future = pool.submit(run_ticker_write)
         assert ticker_loaded.wait(5), "ticker did not load the default store"
         profile_future = pool.submit(
-            web_server._call_cron_for_profile,
+            _web_server_cron._call_cron_for_profile,
             "worker_alpha",
             "_hold_profile_call",
         )
@@ -429,7 +432,7 @@ def test_profile_call_cannot_retarget_ticker_store_mid_write(
 async def test_cron_mutation_without_profile_finds_named_profile_job(isolated_profiles):
     from hermes_cli import web_server
 
-    worker_job = web_server._call_cron_for_profile(
+    worker_job = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="managed by named profile",
@@ -437,12 +440,12 @@ async def test_cron_mutation_without_profile_finds_named_profile_job(isolated_pr
         name="named-profile-job",
     )
 
-    paused = await web_server.pause_cron_job(worker_job["id"])
+    paused = await _rt_cron.pause_cron_job(worker_job["id"])
     assert paused["profile"] == "worker_alpha"
     assert paused["enabled"] is False
 
-    default_jobs = await web_server.list_cron_jobs(profile="default")
-    worker_jobs = await web_server.list_cron_jobs(profile="worker_alpha")
+    default_jobs = await _rt_cron.list_cron_jobs(profile="default")
+    worker_jobs = await _rt_cron.list_cron_jobs(profile="worker_alpha")
 
     assert default_jobs == []
     assert len(worker_jobs) == 1
@@ -459,27 +462,27 @@ async def test_dashboard_cron_mutations_notify_selected_profile_provider(
 
     notified_profiles = []
     monkeypatch.setattr(
-        web_server,
+        _web_server_cron,
         "_notify_cron_provider_for_profile",
         notified_profiles.append,
     )
 
-    created = await web_server.create_cron_job(
-        web_server.CronJobCreate(
+    created = await _rt_cron.create_cron_job(
+        _web_models.CronJobCreate(
             prompt="managed by named profile",
             schedule="every 1h",
             name="provider-notify-job",
         ),
         profile="worker_alpha",
     )
-    await web_server.update_cron_job(
+    await _rt_cron.update_cron_job(
         created["id"],
-        web_server.CronJobUpdate(updates={"name": "provider-notify-job-updated"}),
+        _web_models.CronJobUpdate(updates={"name": "provider-notify-job-updated"}),
         profile="worker_alpha",
     )
-    await web_server.pause_cron_job(created["id"], profile="worker_alpha")
-    await web_server.resume_cron_job(created["id"], profile="worker_alpha")
-    await web_server.delete_cron_job(created["id"], profile="worker_alpha")
+    await _rt_cron.pause_cron_job(created["id"], profile="worker_alpha")
+    await _rt_cron.resume_cron_job(created["id"], profile="worker_alpha")
+    await _rt_cron.delete_cron_job(created["id"], profile="worker_alpha")
 
     assert notified_profiles == ["worker_alpha"] * 5
 
@@ -493,13 +496,13 @@ async def test_blueprint_instantiation_notifies_selected_profile_provider(
 
     notified_profiles = []
     monkeypatch.setattr(
-        web_server,
+        _web_server_cron,
         "_notify_cron_provider_for_profile",
         notified_profiles.append,
     )
 
-    created = await web_server.instantiate_blueprint(
-        web_server.AutomationBlueprintInstantiate(
+    created = await _rt_cron.instantiate_blueprint(
+        _web_models.AutomationBlueprintInstantiate(
             blueprint="morning-brief",
             values={"time": "07:30", "deliver": "local"},
         ),
@@ -518,14 +521,14 @@ async def test_trigger_cron_job_fires_only_selected_job_and_returns_refreshed_st
     from cron import jobs as cron_jobs
     from hermes_cli import web_server
 
-    selected = web_server._call_cron_for_profile(
+    selected = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="run immediately",
         schedule="every 1h",
         name="selected-trigger-job",
     )
-    sibling = web_server._call_cron_for_profile(
+    sibling = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="leave scheduled",
@@ -558,7 +561,7 @@ async def test_trigger_cron_job_fires_only_selected_job_and_returns_refreshed_st
         ),
     )
 
-    triggered = await web_server.trigger_cron_job(
+    triggered = await _rt_cron.trigger_cron_job(
         selected["id"],
         profile="worker_alpha",
     )
@@ -572,7 +575,7 @@ async def test_trigger_cron_job_fires_only_selected_job_and_returns_refreshed_st
     ]
     assert triggered["last_status"] == "ok"
     assert triggered["last_run_at"] is not None
-    untouched = web_server._call_cron_for_profile(
+    untouched = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
         "get_job",
         sibling["id"],
@@ -587,7 +590,7 @@ async def test_trigger_cron_job_reports_lost_claim_as_conflict(
 ):
     from hermes_cli import web_server
 
-    job = web_server._call_cron_for_profile(
+    job = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="already running",
@@ -605,7 +608,7 @@ async def test_trigger_cron_job_reports_lost_claim_as_conflict(
     )
 
     with pytest.raises(HTTPException) as exc:
-        await web_server.trigger_cron_job(job["id"], profile="worker_alpha")
+        await _rt_cron.trigger_cron_job(job["id"], profile="worker_alpha")
 
     assert exc.value.status_code == 409
     assert "already running" in exc.value.detail
@@ -619,14 +622,14 @@ async def test_trigger_cron_job_forces_paused_job_atomically(
     from cron import jobs as cron_jobs
     from hermes_cli import web_server
 
-    job = web_server._call_cron_for_profile(
+    job = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="resume me",
         schedule="every 1h",
         name="paused-trigger-job",
     )
-    web_server._call_cron_for_profile("worker_alpha", "pause_job", job["id"])
+    _web_server_cron._call_cron_for_profile("worker_alpha", "pause_job", job["id"])
     observed = {}
 
     class ForceProvider:
@@ -641,7 +644,7 @@ async def test_trigger_cron_job_forces_paused_job_atomically(
         lambda: ForceProvider(),
     )
 
-    triggered = await web_server.trigger_cron_job(
+    triggered = await _rt_cron.trigger_cron_job(
         job["id"],
         profile="worker_alpha",
     )
@@ -660,14 +663,14 @@ async def test_trigger_paused_job_rejects_legacy_provider_without_mutating_job(
     from fastapi import HTTPException
     from hermes_cli import web_server
 
-    job = web_server._call_cron_for_profile(
+    job = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="stay paused",
         schedule="every 1h",
         name="legacy-paused-trigger-job",
     )
-    web_server._call_cron_for_profile("worker_alpha", "pause_job", job["id"])
+    _web_server_cron._call_cron_for_profile("worker_alpha", "pause_job", job["id"])
     calls = []
 
     class LegacyProvider:
@@ -681,12 +684,12 @@ async def test_trigger_paused_job_rejects_legacy_provider_without_mutating_job(
     )
 
     with pytest.raises(HTTPException) as exc:
-        await web_server.trigger_cron_job(job["id"], profile="worker_alpha")
+        await _rt_cron.trigger_cron_job(job["id"], profile="worker_alpha")
 
     assert exc.value.status_code == 409
     assert "forced" in exc.value.detail.lower()
     assert calls == []
-    persisted = web_server._call_cron_for_profile(
+    persisted = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
         "get_job",
         job["id"],
@@ -703,7 +706,7 @@ async def test_trigger_cron_job_returns_refreshed_execution_failure(
     from cron import jobs as cron_jobs
     from hermes_cli import web_server
 
-    job = web_server._call_cron_for_profile(
+    job = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="fail visibly",
@@ -721,7 +724,7 @@ async def test_trigger_cron_job_returns_refreshed_execution_failure(
         lambda: FailedProvider(),
     )
 
-    triggered = await web_server.trigger_cron_job(
+    triggered = await _rt_cron.trigger_cron_job(
         job["id"],
         profile="worker_alpha",
     )
@@ -738,11 +741,11 @@ async def test_trigger_cron_job_returns_completed_snapshot_for_retained_oneshot(
     from cron import jobs as cron_jobs
     from hermes_cli import web_server
 
-    job = web_server._call_cron_for_profile(
+    job = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="run once",
-        schedule="30m",
+        schedule="in 30m",
         name="completed-trigger-job",
     )
 
@@ -756,7 +759,7 @@ async def test_trigger_cron_job_returns_completed_snapshot_for_retained_oneshot(
         lambda: SuccessfulProvider(),
     )
 
-    triggered = await web_server.trigger_cron_job(
+    triggered = await _rt_cron.trigger_cron_job(
         job["id"],
         profile="worker_alpha",
     )
@@ -768,7 +771,7 @@ async def test_trigger_cron_job_returns_completed_snapshot_for_retained_oneshot(
     # record, not a synthetic pre-removal snapshot.
     assert triggered["last_status"] == "ok"
     assert triggered["last_run_at"] is not None
-    retained = web_server._call_cron_for_profile(
+    retained = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
         "get_job",
         job["id"],
@@ -781,7 +784,7 @@ async def test_trigger_cron_job_returns_completed_snapshot_for_retained_oneshot(
 async def test_cron_profile_scan_runs_off_event_loop(isolated_profiles, monkeypatch):
     from hermes_cli import web_server
 
-    worker_job = web_server._call_cron_for_profile(
+    worker_job = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="managed by named profile",
@@ -792,8 +795,8 @@ async def test_cron_profile_scan_runs_off_event_loop(isolated_profiles, monkeypa
     event_loop_thread = threading.get_ident()
     profile_scan_threads = SimpleQueue()
     worker_threads = SimpleQueue()
-    original_profile_dicts = web_server._cron_profile_dicts
-    original_find = web_server._find_cron_job_profile
+    original_profile_dicts = _web_server_cron._cron_profile_dicts
+    original_find = _web_server_cron._find_cron_job_profile
 
     def tracking_profile_dicts():
         profile_scan_threads.put(threading.get_ident())
@@ -803,11 +806,11 @@ async def test_cron_profile_scan_runs_off_event_loop(isolated_profiles, monkeypa
         worker_threads.put(threading.get_ident())
         return original_find(job_id)
 
-    monkeypatch.setattr(web_server, "_cron_profile_dicts", tracking_profile_dicts)
-    monkeypatch.setattr(web_server, "_find_cron_job_profile", tracking_find)
+    monkeypatch.setattr(_web_server_cron, "_cron_profile_dicts", tracking_profile_dicts)
+    monkeypatch.setattr(_web_server_cron, "_find_cron_job_profile", tracking_find)
 
-    jobs = await web_server.list_cron_jobs(profile="all")
-    paused = await web_server.pause_cron_job(worker_job["id"])
+    jobs = await _rt_cron.list_cron_jobs(profile="all")
+    paused = await _rt_cron.pause_cron_job(worker_job["id"])
 
     assert any(job["id"] == worker_job["id"] for job in jobs)
     assert paused["profile"] == "worker_alpha"
@@ -827,7 +830,7 @@ async def test_cron_dashboard_io_rejects_async_callables():
         return "nope"
 
     with pytest.raises(TypeError, match="only accepts sync callables"):
-        await web_server._run_cron_dashboard_io(async_callable)
+        await _web_server_cron._run_cron_dashboard_io(async_callable)
 
 
 
@@ -838,7 +841,7 @@ async def test_update_cron_job_normalizes_dashboard_core_fields(isolated_profile
     scripts_dir = isolated_profiles["worker_alpha"] / "scripts"
     scripts_dir.mkdir()
     (scripts_dir / "collect.py").write_text("print('ok')\n", encoding="utf-8")
-    job = web_server._call_cron_for_profile(
+    job = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="managed by named profile",
@@ -846,9 +849,9 @@ async def test_update_cron_job_normalizes_dashboard_core_fields(isolated_profile
         name="normalizes-dashboard-fields",
     )
 
-    updated = await web_server.update_cron_job(
+    updated = await _rt_cron.update_cron_job(
         job["id"],
-        web_server.CronJobUpdate(
+        _web_models.CronJobUpdate(
             updates={
                 "base_url": "https://example.invalid/v1/",
                 "script": str(scripts_dir / "collect.py"),
@@ -875,8 +878,8 @@ async def test_create_cron_job_rejects_script_outside_profile_scripts(
     outside.write_text("print('nope')\n", encoding="utf-8")
 
     with pytest.raises(HTTPException) as exc:
-        await web_server.create_cron_job(
-            web_server.CronJobCreate(
+        await _rt_cron.create_cron_job(
+            _web_models.CronJobCreate(
                 schedule="every 1h",
                 script=str(outside),
                 no_agent=True,
@@ -893,8 +896,8 @@ async def test_create_cron_job_rejects_empty_agent_job(isolated_profiles):
     from hermes_cli import web_server
 
     with pytest.raises(HTTPException) as exc:
-        await web_server.create_cron_job(
-            web_server.CronJobCreate(schedule="every 1h"),
+        await _rt_cron.create_cron_job(
+            _web_models.CronJobCreate(schedule="every 1h"),
             profile="worker_alpha",
         )
 
@@ -910,17 +913,17 @@ async def test_update_cron_job_no_agent_reuses_existing_script(isolated_profiles
     scripts_dir.mkdir()
     (scripts_dir / "collect.py").write_text("print('ok')\n", encoding="utf-8")
 
-    job = await web_server.create_cron_job(
-        web_server.CronJobCreate(
+    job = await _rt_cron.create_cron_job(
+        _web_models.CronJobCreate(
             schedule="every 1h",
             script=str(scripts_dir / "collect.py"),
         ),
         profile="worker_alpha",
     )
 
-    updated = await web_server.update_cron_job(
+    updated = await _rt_cron.update_cron_job(
         job["id"],
-        web_server.CronJobUpdate(updates={"no_agent": True}),
+        _web_models.CronJobUpdate(updates={"no_agent": True}),
         profile="worker_alpha",
     )
 
@@ -933,8 +936,8 @@ async def test_dashboard_cron_rejects_missing_context_from(isolated_profiles):
     from hermes_cli import web_server
 
     with pytest.raises(HTTPException) as create_exc:
-        await web_server.create_cron_job(
-            web_server.CronJobCreate(
+        await _rt_cron.create_cron_job(
+            _web_models.CronJobCreate(
                 prompt="process missing upstream",
                 schedule="every 1h",
                 context_from=["missing-job-id"],
@@ -945,7 +948,7 @@ async def test_dashboard_cron_rejects_missing_context_from(isolated_profiles):
     assert create_exc.value.status_code == 400
     assert "missing-job-id" in create_exc.value.detail
 
-    job = web_server._call_cron_for_profile(
+    job = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="managed by named profile",
@@ -954,9 +957,9 @@ async def test_dashboard_cron_rejects_missing_context_from(isolated_profiles):
     )
 
     with pytest.raises(HTTPException) as update_exc:
-        await web_server.update_cron_job(
+        await _rt_cron.update_cron_job(
             job["id"],
-            web_server.CronJobUpdate(
+            _web_models.CronJobUpdate(
                 updates={
                     "context_from": ["missing-job-id"],
                 }
@@ -986,7 +989,7 @@ async def test_dashboard_cron_noop_inference_fields_keep_existing_snapshots(
         lambda **kwargs: {"provider": current_provider["name"]},
     )
 
-    job = web_server._call_cron_for_profile(
+    job = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="managed by named profile",
@@ -1003,9 +1006,9 @@ async def test_dashboard_cron_noop_inference_fields_keep_existing_snapshots(
         encoding="utf-8",
     )
 
-    updated = await web_server.update_cron_job(
+    updated = await _rt_cron.update_cron_job(
         job["id"],
-        web_server.CronJobUpdate(
+        _web_models.CronJobUpdate(
             updates={
                 "name": "dashboard-edit-job-renamed",
                 "provider": None,
@@ -1038,7 +1041,7 @@ async def test_update_cron_job_clears_snapshots_for_no_agent(
     scripts_dir.mkdir()
     (scripts_dir / "collect.py").write_text("print('ok')\n", encoding="utf-8")
 
-    job = web_server._call_cron_for_profile(
+    job = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="managed by named profile",
@@ -1049,9 +1052,9 @@ async def test_update_cron_job_clears_snapshots_for_no_agent(
     assert job["provider_snapshot"] == "worker-provider"
     assert job["model_snapshot"] == "test-model"
 
-    updated = await web_server.update_cron_job(
+    updated = await _rt_cron.update_cron_job(
         job["id"],
-        web_server.CronJobUpdate(
+        _web_models.CronJobUpdate(
             updates={
                 "script": str(scripts_dir / "collect.py"),
                 "no_agent": True,
@@ -1072,11 +1075,11 @@ async def test_update_cron_job_rejects_id_mutation(isolated_profiles, monkeypatc
 
     notified_profiles = []
     monkeypatch.setattr(
-        web_server,
+        _web_server_cron,
         "_notify_cron_provider_for_profile",
         notified_profiles.append,
     )
-    worker_job = web_server._call_cron_for_profile(
+    worker_job = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="managed by named profile",
@@ -1085,16 +1088,16 @@ async def test_update_cron_job_rejects_id_mutation(isolated_profiles, monkeypatc
     )
 
     with pytest.raises(HTTPException) as exc:
-        await web_server.update_cron_job(
+        await _rt_cron.update_cron_job(
             worker_job["id"],
-            web_server.CronJobUpdate(updates={"id": "../escape"}),
+            _web_models.CronJobUpdate(updates={"id": "../escape"}),
             profile="worker_alpha",
         )
 
     assert exc.value.status_code == 400
     assert "id" in exc.value.detail
     assert notified_profiles == []
-    worker_jobs = await web_server.list_cron_jobs(profile="worker_alpha")
+    worker_jobs = await _rt_cron.list_cron_jobs(profile="worker_alpha")
     assert [job["id"] for job in worker_jobs] == [worker_job["id"]]
 
 
@@ -1102,14 +1105,14 @@ async def test_update_cron_job_rejects_id_mutation(isolated_profiles, monkeypatc
 async def test_cron_delete_with_profile_deletes_only_target_profile(isolated_profiles):
     from hermes_cli import web_server
 
-    default_job = web_server._call_cron_for_profile(
+    default_job = _web_server_cron._call_cron_for_profile(
         "default",
         "create_job",
         prompt="same-ish default",
         schedule="every 1h",
         name="shared-name",
     )
-    worker_job = web_server._call_cron_for_profile(
+    worker_job = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="same-ish worker",
@@ -1117,11 +1120,11 @@ async def test_cron_delete_with_profile_deletes_only_target_profile(isolated_pro
         name="shared-name-worker",
     )
 
-    deleted = await web_server.delete_cron_job(worker_job["id"], profile="worker_alpha")
+    deleted = await _rt_cron.delete_cron_job(worker_job["id"], profile="worker_alpha")
     assert deleted == {"ok": True}
 
-    remaining_default = await web_server.list_cron_jobs(profile="default")
-    remaining_worker = await web_server.list_cron_jobs(profile="worker_alpha")
+    remaining_default = await _rt_cron.list_cron_jobs(profile="default")
+    remaining_worker = await _rt_cron.list_cron_jobs(profile="worker_alpha")
     assert [job["id"] for job in remaining_default] == [default_job["id"]]
     assert remaining_worker == []
 
@@ -1131,11 +1134,11 @@ async def test_cron_profile_validation_errors(isolated_profiles):
     from hermes_cli import web_server
 
     with pytest.raises(HTTPException) as bad_name:
-        await web_server.list_cron_jobs(profile="../bad")
+        await _rt_cron.list_cron_jobs(profile="../bad")
     assert bad_name.value.status_code == 400
 
     with pytest.raises(HTTPException) as missing:
-        await web_server.list_cron_jobs(profile="missing_profile")
+        await _rt_cron.list_cron_jobs(profile="missing_profile")
     assert missing.value.status_code == 404
 
 
@@ -1152,8 +1155,8 @@ async def test_create_cron_job_without_profile_uses_backend_own_profile(
         "HERMES_HOME", str(isolated_profiles["worker_alpha"])
     )
 
-    job = await web_server.create_cron_job(
-        web_server.CronJobCreate(
+    job = await _rt_cron.create_cron_job(
+        _web_models.CronJobCreate(
             prompt="runs in my own profile",
             schedule="every 1h",
             name="own-profile-job",
@@ -1176,8 +1179,8 @@ async def test_create_cron_job_without_profile_defaults_when_unscoped(
 
     monkeypatch.setenv("HERMES_HOME", str(isolated_profiles["default"]))
 
-    job = await web_server.create_cron_job(
-        web_server.CronJobCreate(
+    job = await _rt_cron.create_cron_job(
+        _web_models.CronJobCreate(
             prompt="runs in default",
             schedule="every 1h",
             name="default-job",

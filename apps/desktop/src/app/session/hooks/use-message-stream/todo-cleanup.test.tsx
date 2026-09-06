@@ -56,4 +56,18 @@ describe('useMessageStream turn-end todo cleanup', () => {
 
     expect($todosBySession.get()[SID]).toBeUndefined()
   })
+
+  it('applies a dedicated todo snapshot immediately', () => {
+    mountStream()
+
+    act(() =>
+      stream.handleEvent({
+        payload: { revision: 3, todos: [todo('live', 'in_progress')] },
+        session_id: SID,
+        type: 'todo.updated'
+      })
+    )
+
+    expect($todosBySession.get()[SID]?.[0]?.id).toBe('live')
+  })
 })

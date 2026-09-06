@@ -58,6 +58,86 @@ class TestZeroMatchProbe:
         # Same class as the casing probe: the path must be in the hint.
         assert "conf.cfg" in r.get("warning", "")
 
+    def test_hidden_probe_prunes_dependency_trees_and_keeps_local_ignored(self, proj, monkeypatch):
+        d = proj / "proj"
+        dependency = d / "node_modules" / "package" / ".hidden"
+        dependency.mkdir(parents=True)
+        dependency_file = dependency / "dependency.js"
+        dependency_file.write_text("BOUNDED_HIDDEN_TOKEN = true\n")
+        local = d / ".project-local"
+        local.mkdir()
+        local_file = local / "settings.cfg"
+        local_file.write_text("BOUNDED_HIDDEN_TOKEN = true\n")
+        (d / ".gitignore").write_text("node_modules/\n.project-local/\n")
+
+        # Drive the public search seam while recording the commands that the
+        # zero-match probe actually executes. The real rg calls still run.
+        from tools.file_tools import _get_file_ops
+
+        task_id = "t-zm-pruned-hidden"
+        ops = _get_file_ops(task_id=task_id)
+        commands = []
+        real_exec = ops._exec
+
+        def recording_exec(command, *args, **kwargs):
+            commands.append(command)
+            return real_exec(command, *args, **kwargs)
+
+        monkeypatch.setattr(ops, "_exec", recording_exec)
+        r = json.loads(search_tool("BOUNDED_HIDDEN_TOKEN", path=str(d), task_id=task_id))
+        warning = r.get("warning", "")
+
+        assert r["total_count"] == 0
+        assert "hidden or gitignored" in warning
+        assert local_file.name in warning
+        assert dependency_file.name not in warning
+
+        hidden_probe_commands = [
+            command for command in commands
+            if "--hidden" in command and "--no-ignore" in command
+        ]
+        assert len(hidden_probe_commands) == 1
+        hidden_probe = hidden_probe_commands[0]
+        assert "--glob" in hidden_probe
+        assert "'!node_modules/**'" in hidden_probe
+        assert "'!**/node_modules/**'" in hidden_probe
+
+    def test_hidden_probe_prunes_explicit_dependency_root(self, proj, monkeypatch):
+        d = proj / "proj"
+        dependency = d / "node_modules" / "package" / ".hidden"
+        dependency.mkdir(parents=True)
+        (dependency / "dependency.js").write_text("EXPLICIT_ROOT_TOKEN = true\n")
+        (d / ".gitignore").write_text("node_modules/\n")
+
+        from tools.file_tools import _get_file_ops
+
+        task_id = "t-zm-explicit-pruned-root"
+        ops = _get_file_ops(task_id=task_id)
+        commands = []
+        real_exec = ops._exec
+
+        def recording_exec(command, *args, **kwargs):
+            commands.append(command)
+            return real_exec(command, *args, **kwargs)
+
+        monkeypatch.setattr(ops, "_exec", recording_exec)
+        r = json.loads(search_tool(
+            "EXPLICIT_ROOT_TOKEN",
+            path=str(d / "node_modules"),
+            task_id=task_id,
+        ))
+
+        assert r["total_count"] == 0
+        assert "warning" not in r
+        hidden_probe_commands = [
+            command for command in commands
+            if "--hidden" in command and "--no-ignore" in command
+        ]
+        assert len(hidden_probe_commands) == 1
+        hidden_probe = hidden_probe_commands[0]
+        assert "'!node_modules/**'" in hidden_probe
+        assert "'!**/node_modules/**'" in hidden_probe
+
     def test_probe_path_list_is_capped(self, proj):
         d = proj / "proj"
         for i in range(8):

@@ -13,10 +13,20 @@ These tests pin the handle to the *active* scope rather than to construction
 time.  ``test_write_under_profile_scope_lands_in_profile_store`` is the one
 that reproduces the report; it fails against the pre-fix code with the session
 row sitting in the root store.
+
+The second group covers #66887: scoping the handle to the *active* scope is
+only half an answer, because only the inbound path ever installs one.  Every
+background caller — the expiry watcher above all — walks the single
+process-wide ``_entries`` dict, which holds every profile's keys, with no
+scope at all, and so resolved the root store for rows living under
+``profiles/<name>/``.  Those tests resolve the store from the profile encoded
+in the key instead, and pin that single-profile installs still resolve exactly
+where they always did.
 """
 
 import asyncio
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -24,7 +34,7 @@ import pytest
 
 from gateway.config import GatewayConfig
 from gateway.platforms.base import MessageEvent, Platform, SessionSource
-from gateway.session import SessionStore
+from gateway.session import SessionEntry, SessionStore
 from hermes_constants import (
     get_hermes_home,
     reset_hermes_home_override,
@@ -457,3 +467,315 @@ def test_runner_session_db_follows_the_active_profile_scope(multiplex_homes):
     assert runner._session_db_handles == {}
     assert root_db._db._conn is None
     assert profile_db._db._conn is None
+
+
+# ---------------------------------------------------------------------------
+# #66887 — the store must follow the key, not whatever scope happens to be on
+# ---------------------------------------------------------------------------
+
+
+def _expiry_finalized_flag(db_path: Path, session_id: str):
+    """Read one session's expiry_finalized flag, or None when the row is absent."""
+    if not db_path.exists():
+        return None
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute(
+            "SELECT expiry_finalized FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        return None if row is None else row[0]
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        conn.close()
+
+
+def _multiplex_store(root: Path) -> SessionStore:
+    """A store whose keys carry the profile namespace (``agent:<profile>:...``)."""
+    with patch("gateway.session.SessionStore._ensure_loaded"):
+        store = SessionStore(
+            sessions_dir=root / "sessions",
+            config=GatewayConfig(multiplex_profiles=True),
+        )
+    store._loaded = True
+    return store
+
+
+def _profile_source() -> SessionSource:
+    return SessionSource(
+        platform=Platform.TELEGRAM, chat_id="555", user_id="u1", profile="fitness"
+    )
+
+
+def test_scoped_inbound_turn_lands_in_profile_store(multiplex_homes):
+    """Control for the test below: the scoped path was already correct.
+
+    #88734 fixed the inbound path, which runs inside ``_profile_runtime_scope``.
+    Pinning it here makes the next test unambiguous — the only difference
+    between the two is whether a scope is installed.
+    """
+    root, profile = multiplex_homes
+    store = _multiplex_store(root)
+
+    token = set_hermes_home_override(str(profile))
+    try:
+        entry = store.get_or_create_session(_profile_source())
+    finally:
+        reset_hermes_home_override(token)
+
+    assert entry.session_key.startswith("agent:fitness:")
+    assert _session_ids(profile / "state.db") == {entry.session_id}
+    assert _session_ids(root / "state.db") == set()
+
+
+def test_unscoped_background_finalize_reaches_the_key_owner_store(multiplex_homes):
+    """Background work carries no scope but owns every profile's keys.
+
+    ``_session_expiry_watcher`` walks the process-wide ``_entries`` dict and
+    finalizes expired sessions without entering ``_profile_runtime_scope``, so
+    resolving from the ambient home wrote the flag to the ROOT store while the
+    row lives under ``profiles/<name>/``.  Two copies of one session then drift
+    apart until the #54878 guard drops a live conversation.
+
+    Fails before this change with ``expiry_finalized`` still 0 on the profile row.
+    """
+    root, profile = multiplex_homes
+    store = _multiplex_store(root)
+
+    token = set_hermes_home_override(str(profile))
+    try:
+        entry = store.get_or_create_session(_profile_source())
+    finally:
+        reset_hermes_home_override(token)
+
+    # No scope installed — exactly how the watcher calls this.
+    store.set_expiry_finalized(entry)
+
+    assert _expiry_finalized_flag(profile / "state.db", entry.session_id) == 1
+    assert _session_ids(root / "state.db") == set()
+
+
+def test_unscoped_staleness_check_reads_the_key_owner_store(multiplex_homes):
+    """The routing guard must consult the row it actually routes to.
+
+    ``_is_session_ended_in_db`` decides whether the #54878 self-heal fires.
+    Reading the ambient store lets another store's copy answer the question,
+    which is how a live session gets reported as ended and dropped.
+    """
+    root, profile = multiplex_homes
+    store = _multiplex_store(root)
+
+    token = set_hermes_home_override(str(profile))
+    try:
+        entry = store.get_or_create_session(_profile_source())
+    finally:
+        reset_hermes_home_override(token)
+
+    # Alive in the profile store, and the root store has never heard of it.
+    assert store._is_session_ended_in_db(entry.session_id) is False
+
+    token = set_hermes_home_override(str(profile))
+    try:
+        store._db.end_session(entry.session_id, "agent_close")
+    finally:
+        reset_hermes_home_override(token)
+
+    assert store._is_session_ended_in_db(entry.session_id) is True
+
+
+def test_default_namespace_keeps_ambient_resolution(multiplex_homes):
+    """Guardrail: the legacy ``agent:main`` namespace must not change stores.
+
+    Single-profile installs are the overwhelming majority.  A key without a
+    named profile has to resolve exactly where it did before ``_db_for_key``
+    existed, or this fix would silently relocate their history.
+    """
+    root, _profile = multiplex_homes
+    store = _make_store(root)  # multiplex off -> agent:main keys
+
+    assert store._profile_home_for_key("agent:main:telegram:dm:1") is None
+    assert store._db_for_key("agent:main:telegram:dm:1") is store._db
+    assert store._db_for_key(None) is store._db
+
+
+def test_pinned_handle_still_wins_over_key_resolution(multiplex_homes):
+    """``store._db = fake`` stays authoritative, as the rest of the suite assumes."""
+    root, _profile = multiplex_homes
+    store = _multiplex_store(root)
+
+    sentinel = object()
+    store._db = sentinel
+    assert store._db_for_key("agent:fitness:telegram:dm:1") is sentinel
+    assert store._db_for_session_id("whatever") is sentinel
+
+
+def test_profile_home_is_not_memoized_before_the_profile_exists(multiplex_homes):
+    """A profile provisioned after startup must not stay pinned to the root store.
+
+    The enrollment bridge creates ``profiles/<name>/`` at runtime, so a key can
+    be seen before its directory exists.  Memoizing that miss would pin the
+    profile to the ambient store for the life of the process — the exact bug
+    this helper exists to prevent.
+    """
+    root, _profile = multiplex_homes
+    store = _multiplex_store(root)
+    key = "agent:latecomer:telegram:dm:9"
+
+    assert store._profile_home_for_key(key) is None
+
+    (root / "profiles" / "latecomer").mkdir(parents=True)
+
+    assert store._profile_home_for_key(key) == root / "profiles" / "latecomer"
+
+
+def test_named_owner_without_a_home_never_falls_back_to_root(multiplex_homes):
+    """A named profile that is not provisioned yet must not land in root.
+
+    The enrollment bridge creates ``profiles/<name>/`` at runtime, so a key
+    can arrive before its owner exists.  Resolving that to the ambient store
+    would put one qualified session identity in two physical stores — root on
+    the first lookup, the profile store on the next — which is exactly the
+    split this whole change removes.  Fail closed instead.
+    """
+    root, _profile = multiplex_homes
+    store = _multiplex_store(root)
+    key = "agent:latecomer:telegram:dm:9"
+
+    assert store._named_profile_for_key(key) == "latecomer"
+    assert store._db_for_key(key) is None
+    assert _session_ids(root / "state.db") == set()
+
+    # Once the bridge provisions it, the same key owns a real store.
+    home = root / "profiles" / "latecomer"
+    home.mkdir(parents=True)
+    db = store._db_for_key(key)
+    assert db is not None
+    db.create_session("20260829_120000_abcdef01", "telegram")
+
+    assert _session_ids(home / "state.db") == {"20260829_120000_abcdef01"}
+    assert _session_ids(root / "state.db") == set()
+
+
+def test_profile_resolution_failure_fails_closed(multiplex_homes, monkeypatch):
+    """A resolver error must not degrade into an ambient write either.
+
+    ``_profile_home_for_key`` swallows lookup exceptions, so without the
+    ownership check the failure would be indistinguishable from "no named
+    owner" and silently route the row to root.
+    """
+    import hermes_cli.profiles as profiles_mod
+
+    root, _profile = multiplex_homes
+    store = _multiplex_store(root)
+    key = "agent:fitness:telegram:dm:1"
+
+    # It resolves while the lookup works.
+    assert store._db_for_key(key) is not None
+    store._profile_home_cache.clear()
+
+    def _boom(_name):
+        raise OSError("profile lookup failed")
+
+    monkeypatch.setattr(profiles_mod, "profile_exists", _boom)
+
+    assert store._db_for_key(key) is None
+    assert _session_ids(root / "state.db") == set()
+
+
+def test_compression_child_write_stays_in_the_parents_profile_store(multiplex_homes):
+    """The continuation write must not fall back to root before it is routed.
+
+    ``_append_to_transcript_serialized`` writes the compression child BEFORE
+    publishing the reroute and the ``_entries`` update — that ordering is
+    load-bearing for backlog order — so at that moment nothing in the routing
+    index points at the child id.  Resolving the child by id therefore misses
+    and lands on the ambient store, which is a live handle and slips past the
+    fail-closed guard.  The parent's owner is already proven, so it is carried
+    into the child write instead.
+
+    Physical regression: real stores on disk, no active profile scope.
+    """
+    root, profile = multiplex_homes
+    store = _multiplex_store(root)
+    key = "agent:fitness:telegram:dm:777"
+    parent_id = "20260830_100000_parent01"
+    child_id = "20260830_100500_child001"
+
+    token = set_hermes_home_override(str(profile))
+    try:
+        db = store._db
+        db.create_session(parent_id, "telegram")
+        db.create_session(child_id, "telegram", parent_session_id=parent_id)
+        db.end_session(parent_id, "compression")
+    finally:
+        reset_hermes_home_override(token)
+
+    entry = SessionEntry(
+        session_key=key,
+        session_id=parent_id,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    store._entries[key] = entry
+
+    # Background surface: no profile scope installed anywhere.
+    store.append_to_transcript(parent_id, {"role": "user", "content": "after-compaction"})
+
+    # 1. the row landed on the child, in the profile store
+    token = set_hermes_home_override(str(profile))
+    try:
+        rows = store._db.get_messages(child_id)
+    finally:
+        reset_hermes_home_override(token)
+    assert [r["content"] for r in rows] == ["after-compaction"]
+
+    # 2. the pending queue drained
+    assert not store._dirty_transcripts.get(parent_id)
+
+    # 3. routing advanced onto the child
+    assert store._transcript_reroutes.get(parent_id) == child_id
+    assert store._entries[key].session_id == child_id
+
+    # 4. root was never touched
+    assert _session_ids(root / "state.db") == set()
+
+
+def _restarted_store(root: Path) -> SessionStore:
+    """A store that really loads its index — a restart, not a primed fixture."""
+    return SessionStore(
+        sessions_dir=root / "sessions",
+        config=GatewayConfig(multiplex_profiles=True),
+    )
+
+
+def test_crash_marker_from_a_secondary_profile_survives_restart(multiplex_homes):
+    """Startup recovery must see turn markers written under any profile.
+
+    ``mark_turn_active`` persists through the routing index's single-entry
+    fast path (state.db only, no sessions.json mirror), and
+    ``recover_interrupted_turns`` reads that index at startup with no profile
+    scope installed.  While the index followed the ambient store, a marker
+    written during a secondary profile's turn landed in that profile's
+    state.db and the unscoped startup pass never saw it, so the interrupted
+    turn was never promoted to ``resume_pending`` — the recovery half of
+    #66887, and the one this issue's title names.
+    """
+    root, profile = multiplex_homes
+    store = _multiplex_store(root)
+
+    scope = set_hermes_home_override(str(profile))
+    try:
+        entry = store.get_or_create_session(_profile_source())
+        assert store.mark_turn_active(entry.session_key) is not None
+    finally:
+        reset_hermes_home_override(scope)
+
+    # Restart: fresh store, fresh index, no profile scope anywhere.
+    restarted = _restarted_store(root)
+    promoted = restarted.recover_interrupted_turns(max_age_seconds=3600)
+
+    assert promoted == 1
+    recovered = restarted._entries[entry.session_key]
+    assert recovered.resume_pending is True
+    assert recovered.resume_reason == "restart_interrupted"
+    assert recovered.active_turn_token is None

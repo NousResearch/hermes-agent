@@ -701,7 +701,7 @@ class GitHubClient:
             raise GitHubClientError("invalid PR metadata")
         paths = tuple(f["filename"] for f in files)
         if isinstance(row.get("changed_files"), int) and len(paths) != row["changed_files"]:
-            raise GitHubClientError("incomplete PR file listing")
+            raise GitHubClientError("incomplete PR file listing", code="metadata_incomplete")
         return pull, row["title"], paths
 
     def create_pull_request(

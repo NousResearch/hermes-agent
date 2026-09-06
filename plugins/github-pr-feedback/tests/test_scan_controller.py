@@ -4436,3 +4436,25 @@ def test_label_reconciliation_skips_read_only_repository_before_writes(tmp_path)
     assert github.label_calls == []
     assert github.ensure_label_calls == []
     ledger.close()
+
+
+def test_incomplete_metadata_skips_only_affected_pr(tmp_path):
+    from dataclasses import replace
+    from github_pr_feedback.github_client import GitHubClientError
+    from github_pr_feedback.metadata_labels import MetadataLabelRule
+    local_path, sha = initialized_repository(tmp_path)
+    policy = configured_policy(local_path, not_before="2026-08-24T00:00:00Z", agent_labels=True)
+    rule = MetadataLabelRule("area/ci", ("acme/widgets",), (), (".github/*",), "123456", "CI files")
+    policy = replace(policy, agent_labels=replace(policy.agent_labels, metadata_rules=(rule,)))
+    pulls = tuple(replace(admitted_pull_request(sha), number=n) for n in (1,2))
+    class MetadataGitHub(FakeGitHub):
+        def get_pull_request_metadata(self, repository, number):
+            if number == 1:
+                raise GitHubClientError("incomplete PR file listing", code="metadata_incomplete")
+            return self.current_by_number[number], "CI update", (".github/workflows/ci.yml",)
+    github = MetadataGitHub(pulls[0], (), pull_requests=pulls)
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    result = ScanController(policy, ledger, github, RecordingKanban(), RecordingLocalGit()).reconcile_labels("acme/widgets")
+    assert result["skipped"]["agent_label_metadata_incomplete"] == 1
+    assert [(number, set(labels)) for _,number,labels in github.label_calls] == [(2,{"codex","area/ci"})]
+    ledger.close()

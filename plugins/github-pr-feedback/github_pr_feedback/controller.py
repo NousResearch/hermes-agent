@@ -1590,7 +1590,7 @@ class ScanController:
             code = getattr(error, "code", "github_error")
             self._agent_label_errors.append({"repository": repository, "pr_number": listed.number,
                                              "reason": str(error)[:200], "code": code})
-            if code in {"permission_denied", "authentication", "rate_limited"}:
+            if code in {"permission_denied", "authentication", "rate_limited", "metadata_incomplete"}:
                 return f"agent_label_{code}"
             return "agent_label_github_error"
         except Exception:  # noqa: BLE001 - a label write must fail closed.

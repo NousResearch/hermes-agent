@@ -289,6 +289,21 @@ def _model_flow_nous(config, current_model="", args=None):
     # instead of the hundreds returned by the live /models endpoint.
     from hermes_cli.models import check_nous_free_tier, get_curated_nous_model_ids
     from hermes_cli.models_pricing import get_pricing_for_provider
+    from hermes_cli.model_switch_providers import _free_tier_nous_row
+    tier_row = _free_tier_nous_row({"name": "Nous Portal", "models": []})
+    if tier_row is None:
+        print("Nous free tier is switched off (nous.guest: false); sign in with `hermes auth upgrade` to use Nous models.")
+        return
+    if tier_row["models"]:
+        # Free-tier identity: the welcome host serves the single pinned model; no Portal catalog,
+        # pricing, or account lookups apply.
+        creds = _nous_verified_credentials()
+        if creds is None:
+            return
+        selected = tier_row["models"][0]
+        _nous_persist_selection(selected, creds)
+        print(f"Default model set to: {selected} (via {tier_row['name']})")
+        return
     model_ids = get_curated_nous_model_ids()
     if not model_ids:
         print("No curated models available for Nous Portal.")

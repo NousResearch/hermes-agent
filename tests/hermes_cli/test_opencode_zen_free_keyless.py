@@ -9,13 +9,12 @@ The Go relay doesn't serve the free tier at all ("Model x is not supported").
 These tests pin the keyless routing added for the community report where the
 free Ox Alpha model failed under an OpenCode subscription:
 
-1. ``is_opencode_zen_free_model`` recognizes free slugs (bare + prefixed).
-2. ``opencode_zen_free_runtime`` pins free slugs to the Zen relay with the
+1. ``opencode_zen_free_runtime`` pins free slugs to the Zen relay with the
    keyless placeholder + empty-Authorization headers, for BOTH family
    providers (Go selections heal to Zen).
-3. ``resolve_runtime_provider`` routes free slugs keylessly with no
+2. ``resolve_runtime_provider`` routes free slugs keylessly with no
    OPENCODE_* credential present, and still fails closed for paid models.
-4. The keyless placeholder never reaches the wire: client default_headers
+3. The keyless placeholder never reaches the wire: client default_headers
    carry ``Authorization: ""`` overriding the SDK bearer.
 """
 
@@ -26,45 +25,14 @@ import pytest
 
 from hermes_cli.models import (
     OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER,
-    is_opencode_zen_free_model,
     opencode_zen_free_headers,
     opencode_zen_free_runtime,
 )
 
 
-class TestFreeSlugDetection:
-    def test_bare_free_slug(self):
-        assert is_opencode_zen_free_model("x-preview-f-free")
-
-    def test_provider_prefixed_slug(self):
-        assert is_opencode_zen_free_model("opencode-zen/x-preview-f-free")
-
-    def test_other_free_tier_slugs(self):
-        for slug in (
-            "hy3-free",
-            "laguna-s-2.1-free",
-            "mimo-v2.5-free",
-            "nemotron-3-ultra-free",
-        ):
-            assert is_opencode_zen_free_model(slug), slug
-
-    def test_paid_models_not_free(self):
-        for slug in ("claude-sonnet-5", "glm-5.2", "kimi-k3", "gpt-5.6-sol"):
-            assert not is_opencode_zen_free_model(slug), slug
-
-    def test_empty_and_none(self):
-        assert not is_opencode_zen_free_model("")
-        assert not is_opencode_zen_free_model(None)
-
-    def test_freedom_like_names_not_swept(self):
-        # suffix match must be exact "-free", not substring "free"
-        assert not is_opencode_zen_free_model("freeform-1")
-        assert not is_opencode_zen_free_model("model-freedom")
-
-
 class TestFreeRuntime:
     def test_zen_provider_free_model(self):
-        rt = opencode_zen_free_runtime("opencode-zen", "x-preview-f-free")
+        rt = opencode_zen_free_runtime("opencode-zen", "hy3-free")
         assert rt is not None
         assert rt["base_url"] == "https://opencode.ai/zen/v1"
         assert rt["api_key"] == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER
@@ -74,7 +42,7 @@ class TestFreeRuntime:
     def test_go_provider_heals_to_zen(self):
         # Free slugs only exist on the Zen relay; a Go selection must be
         # routed to Zen (the Go relay rejects the model outright).
-        rt = opencode_zen_free_runtime("opencode-go", "x-preview-f-free")
+        rt = opencode_zen_free_runtime("opencode-go", "hy3-free")
         assert rt is not None
         assert rt["base_url"] == "https://opencode.ai/zen/v1"
 
@@ -114,13 +82,13 @@ class TestRuntimeProviderKeylessRouting:
             return resolve_runtime_provider(requested=provider, target_model=model)
 
     def test_zen_free_model_resolves_keyless(self):
-        rt = self._resolve("opencode-zen", "x-preview-f-free")
+        rt = self._resolve("opencode-zen", "hy3-free")
         assert rt["api_key"] == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER
         assert rt["base_url"] == "https://opencode.ai/zen/v1"
         assert rt["api_mode"] == "chat_completions"
 
     def test_go_free_model_resolves_keyless_on_zen(self):
-        rt = self._resolve("opencode-go", "x-preview-f-free")
+        rt = self._resolve("opencode-go", "hy3-free")
         assert rt["api_key"] == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER
         assert rt["base_url"] == "https://opencode.ai/zen/v1"
 

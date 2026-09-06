@@ -294,6 +294,13 @@ def is_windows() -> bool:
 
 def run_gateway():
     """Run the gateway in foreground."""
+    # Startup-liveness watchdog (OOF-298): arm before importing the gateway
+    # graph so an import-time or pre-loop deadlock still gets respawned.
+    try:
+        from hermes_startup_watchdog import arm_startup_watchdog
+        arm_startup_watchdog()
+    except Exception:
+        pass
     from gateway.run import start_gateway
     print("Starting Hermes Gateway...")
     print("Press Ctrl+C to stop.")

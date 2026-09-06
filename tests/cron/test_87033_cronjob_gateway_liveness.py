@@ -162,11 +162,20 @@ from contextlib import ExitStack
 
 
 class _LivenessPatches:
-    """Context manager patching the provider/gateway-pid probes."""
+    """Context manager patching the provider/gateway-pid probes.
 
-    def __init__(self, *, provider, pids):
+    Also pins the gateway runtime lock probe to *inactive* by default so
+    these tests are deterministic even when a real gateway (holding the
+    real lock) runs on the developer's machine — the lock-first check in
+    ``_builtin_gateway_liveness`` would otherwise short-circuit to True
+    and mask the pid-scan behavior under test. Pass ``lock_active=True``
+    to exercise the lock-first path itself.
+    """
+
+    def __init__(self, *, provider, pids, lock_active=False):
         self._provider = provider
         self._pids = pids
+        self._lock_active = lock_active
 
     def __enter__(self):
         from unittest.mock import patch
@@ -190,11 +199,172 @@ class _LivenessPatches:
                 return_value=list(self._pids),
             )
         )
+        self._stack.enter_context(
+            patch(
+                "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+                return_value=False,
+            )
+        )
+        self._stack.enter_context(
+            patch(
+                "gateway.status.is_gateway_runtime_lock_active",
+                return_value=self._lock_active,
+            )
+        )
         return self
 
     def __exit__(self, *exc):
         return self._stack.__exit__(*exc)
 
 
-def patch_liveness(*, provider, pids):
-    return _LivenessPatches(provider=provider, pids=pids)
+def patch_liveness(*, provider, pids, lock_active=False):
+    return _LivenessPatches(provider=provider, pids=pids, lock_active=lock_active)
+
+
+class TestRuntimeLockFirstLiveness:
+    """The gateway runtime lock is the primary liveness signal (#95947).
+
+    ``find_gateway_pids`` can transiently return empty while the gateway is
+    up (right after a restart) and excludes the current PID by design
+    (#13242), so a single-process gateway probed as dead while its own
+    ticker was firing (#94143 class). The lock is held for exactly the
+    gateway's lifetime and short-circuits to True before the pid scan.
+    """
+
+    def test_lock_active_reports_alive_despite_empty_pid_scan(self, hermes_env):
+        """The reported false alarm: lock held, pid scan empty → alive."""
+        _create_job()
+        with patch_liveness(provider="builtin", pids=[], lock_active=True):
+            from tools.cronjob_tools import cronjob
+
+            result = json.loads(cronjob(action="list"))
+
+        assert result["success"] is True
+        assert result["gateway_running"] is True
+        assert "warning" not in result
+
+    def test_lock_inactive_falls_back_to_pid_scan(self):
+        from unittest.mock import patch
+
+        import hermes_cli.cron as cron_cli
+
+        with (
+            patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
+            patch("gateway.status.is_gateway_runtime_lock_active", return_value=False),
+            patch("hermes_cli.gateway.find_gateway_pids", return_value=[424242]),
+        ):
+            assert cron_cli._builtin_gateway_liveness() is True
+
+    def test_no_lock_no_pids_is_false(self):
+        from unittest.mock import patch
+
+        import hermes_cli.cron as cron_cli
+
+        with (
+            patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
+            patch("gateway.status.is_gateway_runtime_lock_active", return_value=False),
+            patch("hermes_cli.gateway.find_gateway_pids", return_value=[]),
+            patch(
+                "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+                return_value=False,
+            ),
+        ):
+            assert cron_cli._builtin_gateway_liveness() is False
+
+    def test_lock_probe_failure_still_falls_back(self):
+        """A crashing lock probe must not poison the tri-state helper —
+        the pid scan still decides (the outer except returns None only
+        when both probes fail)."""
+        from unittest.mock import patch
+
+        import hermes_cli.cron as cron_cli
+
+        with (
+            patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
+            patch(
+                "gateway.status.is_gateway_runtime_lock_active",
+                side_effect=OSError("lock probe failed"),
+            ),
+            patch("hermes_cli.gateway.find_gateway_pids", return_value=[424242]),
+        ):
+            assert cron_cli._builtin_gateway_liveness() is True
+
+    def test_running_multiplexer_counts_as_alive_for_named_profile(self):
+        """A satellite profile has no own PID; the default multiplexer ticks it."""
+        from unittest.mock import patch
+
+        import hermes_cli.cron as cron_cli
+
+        with (
+            patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
+            patch("gateway.status.is_gateway_runtime_lock_active", return_value=False),
+            patch("hermes_cli.gateway.find_gateway_pids", return_value=[]),
+            patch(
+                "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+                return_value=True,
+            ),
+        ):
+            assert cron_cli._builtin_gateway_liveness() is True
+
+    def test_no_multiplexer_and_no_pids_is_still_false(self):
+        from unittest.mock import patch
+
+        import hermes_cli.cron as cron_cli
+
+        with (
+            patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
+            patch("gateway.status.is_gateway_runtime_lock_active", return_value=False),
+            patch("hermes_cli.gateway.find_gateway_pids", return_value=[]),
+            patch(
+                "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+                return_value=False,
+            ),
+        ):
+            assert cron_cli._builtin_gateway_liveness() is False
+
+
+class TestCronStatusLockFirst:
+    """`hermes cron status` shares the lock-first false-alarm fix (#95947).
+
+    Sibling site of `_builtin_gateway_liveness`: it previously declared
+    "Gateway is not running — cron jobs will NOT fire" from a bare
+    `find_gateway_pids()` miss even while the runtime lock proved the
+    gateway (and its ticker) alive.
+    """
+
+    def _run_status(self, *, pids, lock_active, lock_pid=None):
+        from unittest.mock import patch
+        import io
+        from contextlib import redirect_stdout
+
+        import hermes_cli.cron as cron_cli
+
+        out = io.StringIO()
+        with (
+            patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
+            patch("hermes_cli.gateway.find_gateway_pids", return_value=list(pids)),
+            patch(
+                "gateway.status.is_gateway_runtime_lock_active",
+                return_value=lock_active,
+            ),
+            patch("gateway.status.get_running_pid", return_value=lock_pid),
+            redirect_stdout(out),
+        ):
+            cron_cli.cron_status()
+        return out.getvalue()
+
+    def test_lock_active_suppresses_not_running_false_alarm(self, hermes_env):
+        text = self._run_status(pids=[], lock_active=True, lock_pid=4242)
+        # The lock-first contract (#87033): an active runtime lock means the
+        # gateway process is alive, so the RED "Gateway is not running" alarm
+        # must never fire. Since #98790 a never-written heartbeat is no longer
+        # silently green — the YELLOW first-heartbeat notice (which also says
+        # "NOT fire") is expected here, so assert on the red alarm itself
+        # rather than the "NOT fire" substring both messages share.
+        assert "Gateway is not running" not in text
+        assert "has not reported a heartbeat" in text
+        assert "Gateway is running" in text or "running" in text
+
+    def test_no_lock_no_pids_still_warns(self, hermes_env):
+        text = self._run_status(pids=[], lock_active=False)
+        assert "NOT fire" in text

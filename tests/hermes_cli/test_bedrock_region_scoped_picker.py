@@ -5,7 +5,7 @@ route from endpoints in their own geography. Offering us.* profiles to an
 eu-central-2 picker produces configs AWS rejects regardless of credentials.
 """
 
-from hermes_cli.model_setup_flows import (
+from hermes_cli.model_setup_flows_bedrock import (
     BEDROCK_GEO_PREFIXES,
     bedrock_model_routable_from_region,
     bedrock_region_geo_prefix,

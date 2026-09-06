@@ -143,6 +143,9 @@ def record_response_usage(
 
     # Stash canonical usage for on_turn_complete(); keep the latest call's.
     agent._last_turn_usage = dict(usage_dict)
+    # The parent's CURRENT prompt size for headroom math (delegate summary budgets): the
+    # aggregator's own prompt, never the MoA-folded total (advisor prompts are not in this context).
+    agent._last_prompt_size_tokens = int(aggregator_usage.prompt_tokens or 0)
 
     # Persist only provider-confirmed context lengths, not probe tiers.
     if getattr(compressor, "_context_probed", False):

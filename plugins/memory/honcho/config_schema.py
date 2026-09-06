@@ -64,7 +64,10 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         _field("userPeerAliases", "User peer aliases", KIND_JSON, "Map gateway runtime user IDs to stable Honcho peers.",
                placeholder='{"telegram_123": "eri"}', group="Identity"),
         # — Session —
-        _field("sessionPeerPrefix", "Session peer prefix", KIND_BOOL, "Prefix session peer names with the host.",
+        _field("sessionPeerPrefix", "Session peer prefix", KIND_BOOL, "Prefix session names with the user peer.",
+               default="false", group="Session"),
+        _field("sessionAiPeerPrefix", "Session AI peer prefix", KIND_BOOL,
+               "Prefix session names with the AI peer to isolate profiles sharing a workspace.",
                default="false", group="Session"),
         _field("sessions", "Session overrides", KIND_JSON, "Explicit session ID overrides keyed by resolver.",
                placeholder='{"key": "session-id"}', group="Session", scope="root"),

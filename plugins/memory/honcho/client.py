@@ -320,6 +320,7 @@ def _behavior_fields(look: _HostLookup, explicitly_configured: bool) -> dict[str
         **_resolve_observation(observation_mode, look.pick("observation")),
         "session_strategy": look.pick("sessionStrategy", "per-directory"),
         "session_peer_prefix": look.pick_set("sessionPeerPrefix", False),
+        "session_ai_peer_prefix": look.pick_set("sessionAiPeerPrefix", False),
     }
 
 
@@ -381,6 +382,8 @@ class HonchoClientConfig:
     # Session resolution
     session_strategy: str = "per-directory"
     session_peer_prefix: bool = False
+    # Prefix resolved sessions with ai_peer when multiple profiles share a workspace.
+    session_ai_peer_prefix: bool = False
     sessions: dict[str, str] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
     # A hosts.<host> block or explicit enabled flag, vs auto-enabled from a stray env key.
@@ -469,6 +472,24 @@ class HonchoClientConfig:
         return f"{self.peer_name}-{name}" if self.session_peer_prefix and self.peer_name else name
 
     def resolve_session_name(
+        self, cwd: str | None = None, session_title: str | None = None,
+        session_id: str | None = None, gateway_session_key: str | None = None,
+    ) -> str | None:
+        """Resolve a session name, then apply the optional AI-peer namespace."""
+        result = self._resolve_session_name_base(
+            cwd=cwd, session_title=session_title, session_id=session_id,
+            gateway_session_key=gateway_session_key,
+        )
+        if result and self.session_ai_peer_prefix and self.ai_peer:
+            import re
+
+            ai_peer = re.sub(r'[^a-zA-Z0-9_-]+', '-', self.ai_peer).strip('-')
+            if ai_peer:
+                prefixed = f"{ai_peer}-{result}"
+                return self._enforce_session_id_limit(prefixed, prefixed)
+        return result
+
+    def _resolve_session_name_base(
         self, cwd: str | None = None, session_title: str | None = None,
         session_id: str | None = None, gateway_session_key: str | None = None,
     ) -> str | None:

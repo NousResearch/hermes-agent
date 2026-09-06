@@ -35,6 +35,12 @@ import {
 } from '@/lib/media'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
+import {
+  createTranscriptDirectiveCodec,
+  finalizeTranscriptDirectiveBlocks,
+  protectTranscriptDirectiveBlocks,
+  type TranscriptDirectiveCodec
+} from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
 
 import { ArtifactCard } from './artifact-card'
@@ -513,22 +519,25 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
 function MarkdownParagraph({
   children,
   className,
+  directiveCodec,
   streaming,
   ...props
-}: ComponentProps<'p'> & { streaming?: boolean }) {
+}: ComponentProps<'p'> & { streaming?: boolean; directiveCodec: TranscriptDirectiveCodec }) {
   const plain = paragraphPlainText(children)
-  const claimed = useIsClaimedDirective(plain)
+  const directiveText = plain === null ? null : directiveCodec.decode(plain)
+  const claimed = useIsClaimedDirective(directiveText)
 
-  if (claimed && plain !== null) {
-    return <TranscriptDirectiveLeaf streaming={streaming} text={plain} />
+  if (claimed && directiveText !== null) {
+    return <TranscriptDirectiveLeaf streaming={streaming} text={directiveText} />
   }
 
+  const fallbackChildren = directiveText ?? children
+
   return (
-    // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which
-    // must out-specify Tailwind Typography's `prose` margins — so no
-    // `my-*` here on purpose.
+    // Vertical rhythm is owned by styles.css (paragraph gap), which
+    // must out-specify Tailwind Typography margins, so no margin class here.
     <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props}>
-      {children}
+      {fallbackChildren}
     </p>
   )
 }
@@ -541,6 +550,24 @@ function MarkdownTextSurface({
 }: MarkdownTextSurfaceProps) {
   const { status, text } = useMessagePartText()
   const isStreaming = status.type === 'running'
+
+  const protectionCodec = useMemo(() => createTranscriptDirectiveCodec(), [])
+  const directiveCodec = useMemo(() => createTranscriptDirectiveCodec(), [])
+
+  const preprocess = useMemo(
+    () => (value: string) => {
+      const protectedValue = protectTranscriptDirectiveBlocks(value, parseMarkdownIntoBlocksCached, protectionCodec)
+      const preprocessedValue = preprocessWithTailRepair(protectedValue)
+
+      return finalizeTranscriptDirectiveBlocks(
+        preprocessedValue,
+        parseMarkdownIntoBlocksCached,
+        protectionCodec,
+        directiveCodec
+      )
+    },
+    [directiveCodec, protectionCodec]
+  )
 
   // Keep code parsing enabled while streaming so incomplete fenced blocks still
   // render as code cards. The expensive Shiki pass is deferred by
@@ -564,7 +591,9 @@ function MarkdownTextSurface({
         h4: ({ className, ...props }: ComponentProps<'h4'>) => (
           <h4 className={cn('my-1 font-semibold', HEADING_SIZES.h4, className)} {...props} />
         ),
-        p: (props: ComponentProps<'p'>) => <MarkdownParagraph {...props} streaming={isStreaming} />,
+        p: (props: ComponentProps<'p'>) => (
+          <MarkdownParagraph {...props} directiveCodec={directiveCodec} streaming={isStreaming} />
+        ),
         a: MarkdownLink,
         // Inline code must not vote when an ancestor resolves `dir="auto"`
         // (HTML's algorithm skips descendants that carry their own dir),
@@ -646,7 +675,7 @@ function MarkdownTextSurface({
           )
         }
       }) as StreamdownTextComponents,
-    [disableArtifacts, isStreaming]
+    [disableArtifacts, directiveCodec, isStreaming]
   )
 
   if (text.length > MAX_MARKDOWN_CHARS) {
@@ -691,7 +720,7 @@ function MarkdownTextSurface({
         parseIncompleteMarkdown={false}
         parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
         plugins={plugins}
-        preprocess={preprocessWithTailRepair}
+        preprocess={preprocess}
       />
     </ErrorBoundary>
   )

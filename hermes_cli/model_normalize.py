@@ -203,6 +203,13 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         return name
     provider = _normalize_provider_alias(target_provider)
 
+    if provider == "nous":
+        # Free tier (guest identity) is served by the welcome host, which carries exactly one model.
+        # Pinning here covers every surface that normalizes (CLI, agent init, TUI switch, web).
+        from hermes_cli.anon_auth import GUEST_MODEL, guest_carries_inference
+        if guest_carries_inference():
+            return GUEST_MODEL
+
     if provider in _AGGREGATOR_PROVIDERS:
         return _prepend_vendor(name)
 

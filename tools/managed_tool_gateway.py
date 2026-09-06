@@ -87,10 +87,25 @@ def peek_nous_access_token() -> Optional[str]:
 
 
 def read_nous_access_token() -> Optional[str]:
-    """Read a Nous Subscriber OAuth access token from auth store or env override."""
+    """Read a Nous Subscriber OAuth access token from auth store or env override.
+
+    With no Nous identity at all, the free tier is set up here (blocking, short timeout): this is
+    the guarantee that managed-tool and connector calls always have a bearer once the free tier is
+    on, whichever surface booted the process.
+    """
     if explicit := _read_user_token_override():
         return explicit
     nous_provider = _read_nous_provider_state() or {}
+    if not nous_provider:
+        try:
+            from hermes_cli.anon_auth import ensure_portal_identity
+
+            nous_provider = ensure_portal_identity(blocking=True) or {}
+        except Exception as exc:
+            logger.debug("Nous free tier setup from tool gateway skipped: %s", exc)
+            nous_provider = {}
+        if not nous_provider:
+            return None
     cached_token = peek_nous_access_token()
     if cached_token and not _access_token_is_expiring(nous_provider.get("expires_at"), _NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS):
         return cached_token

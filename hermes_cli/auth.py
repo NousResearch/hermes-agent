@@ -1371,6 +1371,10 @@ def _logged_in_oauth_active_provider() -> Optional[str]:
     """auth.json ``active_provider`` when it is a registry provider that reports logged in."""
     try:
         _maybe = _load_auth_store().get("active_provider")
+        if _maybe == "nous":
+            from hermes_cli.anon_auth import guest_enabled, has_guest
+            if has_guest() and not guest_enabled():
+                return None  # nous.guest: false — the free tier is off, so a guest is not a login
         if _maybe and _maybe in PROVIDER_REGISTRY and get_auth_status(_maybe).get("logged_in"):
             return _maybe
     except Exception as e:
@@ -1641,6 +1645,16 @@ def resolve_nous_access_token(
                 # cross-process file locks to get here. The token has >= refresh_skew_seconds (>=
                 # 120s) of life, so a 5s memo can never serve an expired token.
                 return _memo(access_token)
+
+            from hermes_cli.anon_auth import is_guest_state, refresh_guest_state
+            if is_guest_state(state):
+                # Guest seam: re-exchange the anon_ credential; no refresh token exists.
+                with httpx.Client(timeout=httpx.Timeout(timeout_seconds or 15.0),
+                                  headers={"Accept": "application/json"}, verify=verify) as client:
+                    refresh_guest_state(state, client)
+                persist()
+                _write_shared_nous_state(state)
+                return _memo(state["access_token"])
 
             if not isinstance(refresh_token, str) or not refresh_token:
                 raise _nous_err("Session expired and no refresh token is available.", relogin=True)

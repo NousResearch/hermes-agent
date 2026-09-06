@@ -198,6 +198,15 @@ class CLIAgentSetupMixin:
         api_key = runtime.get("api_key")
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
+        if resolved_provider != "nous":
+            # Explicit provider carries inference; the free tier still sets itself up (background,
+            # nothing waits) so connectors have a bearer. No-op when an identity exists or the
+            # free tier is off.
+            try:
+                from hermes_cli.anon_auth import ensure_portal_identity
+                ensure_portal_identity(blocking=False)
+            except Exception as exc:
+                logger.debug("free tier background setup skipped: %s", exc)
         resolved_routing = (
             resolved_provider, runtime.get("api_mode", self.api_mode), runtime.get("command"),
             list(runtime.get("args") or []))

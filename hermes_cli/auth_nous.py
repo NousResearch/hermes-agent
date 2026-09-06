@@ -103,7 +103,10 @@ def _migrate_stale_nous_portal_url(providers: Dict[str, Any]) -> None:
 # else would leak. Consulted only for URLs from the NETWORK side (Portal refresh responses);
 # the NOUS_INFERENCE_BASE_URL env override bypasses it (documented dev/staging escape hatch, the
 # user set it themselves).
-_ALLOWED_NOUS_INFERENCE_HOSTS: FrozenSet[str] = frozenset({"inference-api.nousresearch.com"})
+_ALLOWED_NOUS_INFERENCE_HOSTS: FrozenSet[str] = frozenset({
+    "inference-api.nousresearch.com",
+    # Free-tier (anonymous) host: serves the single ``nous/welcome`` model.
+    "welcome-api.nousresearch.com"})
 
 
 def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[str]:
@@ -329,7 +332,9 @@ def _shared_lock_timeout(timeout_seconds: float) -> float:
 # OAuth fields mirrored between a profile's Nous state and the shared cross-profile store.
 _NOUS_SHARED_STATE_KEYS = (
     "access_token", "refresh_token", "token_type", "scope", "client_id", "portal_base_url",
-    "inference_base_url", "obtained_at", "expires_at")
+    "inference_base_url", "obtained_at", "expires_at",
+    # Guest (``auth_method: anonymous``) identity: the ``anon_`` credential is the refresh material.
+    "auth_method", "account_tier", "anon_token", "user_id", "org_id")
 
 
 def _merge_shared_nous_oauth_state(state: Dict[str, Any]) -> bool:
@@ -360,7 +365,9 @@ def _nous_shared_shape(src: Dict[str, Any]) -> Dict[str, Any]:
         "client_id": src.get("client_id") or DEFAULT_NOUS_CLIENT_ID,
         "portal_base_url": src.get("portal_base_url") or DEFAULT_NOUS_PORTAL_URL,
         "inference_base_url": src.get("inference_base_url") or DEFAULT_NOUS_INFERENCE_URL,
-        "obtained_at": src.get("obtained_at"), "expires_at": src.get("expires_at")}
+        "obtained_at": src.get("obtained_at"), "expires_at": src.get("expires_at"),
+        **{k: src[k] for k in ("auth_method", "account_tier", "anon_token", "user_id", "org_id")
+           if src.get(k) not in (None, "")}}
 
 
 def _write_shared_nous_state(state: Dict[str, Any]) -> None:
@@ -370,8 +377,11 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
     """
     from hermes_cli.auth import _nonempty_str, _write_private_file_atomic
     refresh_token = state.get("refresh_token")
-    # No refresh_token = nothing worth sharing across profiles
-    if not (_nonempty_str(refresh_token) and _nonempty_str(state.get("access_token"))):
+    # Nothing worth sharing without refresh material: an OAuth refresh_token, or a guest's anon_
+    # credential (which is its own refresh material).
+    if not _nonempty_str(state.get("access_token")):
+        return
+    if not (_nonempty_str(refresh_token) or _nonempty_str(state.get("anon_token"))):
         return
     shared = {
         "_schema": 1, **_nous_shared_shape(state),
@@ -407,8 +417,8 @@ def _read_shared_nous_state() -> Optional[Dict[str, Any]]:
         return None
     if not isinstance(payload, dict):
         return None
-    has_tokens = (
-        _nonempty_str(payload.get("refresh_token")) and _nonempty_str(payload.get("access_token")))
+    has_tokens = _nonempty_str(payload.get("access_token")) and (
+        _nonempty_str(payload.get("refresh_token")) or _nonempty_str(payload.get("anon_token")))
     return payload if has_tokens else None
 
 
@@ -919,6 +929,17 @@ class _NousRuntimeResolve:
 
     def ensure_usable_access_token(self, client: httpx.Client) -> None:
         """Merge from the shared store / refresh until the access token is a usable invoke JWT."""
+        from hermes_cli.anon_auth import is_guest_state, refresh_guest_state
+        if is_guest_state(self.state):
+            # Guest seam: the anon_ credential is the refresh material; re-exchange instead of
+            # redeeming a rotating refresh token. Quarantine never applies to a guest.
+            if self.force_refresh or self.invoke_jwt_status() is not None:
+                refresh_guest_state(self.state, client)
+                self.access_token = self.state["access_token"]
+                self.stored_inference_base_url = self.state.get("inference_base_url") or self.stored_inference_base_url
+                self.inference_base_url = _nous_inference_env_override() or self.stored_inference_base_url
+                self.persist("guest_exchange")
+            return
         if not self.has_access_token():
             with self.shared_lock():
                 if self.merge_shared():
@@ -939,6 +960,28 @@ class _NousRuntimeResolve:
 
 
 def resolve_nous_runtime_credentials(
+    *, timeout_seconds: float = 15.0, insecure: Optional[bool] = None,
+    ca_bundle: Optional[str] = None, force_refresh: bool = False,
+    stale_access_token: Optional[str] = None) -> Dict[str, Any]:
+    """Resolve Nous inference credentials for runtime use (refreshing under the auth-store lock).
+
+    A guest whose ``anon_`` credential NAS no longer knows (reaped or claimed) is retired and a new
+    identity is set up once, transparently -- the one client rule covering both reap and claim.
+    """
+    from hermes_cli.anon_auth import AnonCredentialDead, clear_dead_guest, ensure_portal_identity
+    try:
+        return _resolve_nous_runtime_credentials(
+            timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle,
+            force_refresh=force_refresh, stale_access_token=stale_access_token)
+    except AnonCredentialDead:
+        clear_dead_guest("anon_credential_dead")
+        if ensure_portal_identity(blocking=True, timeout_seconds=timeout_seconds) is None:
+            raise
+        return _resolve_nous_runtime_credentials(
+            timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle)
+
+
+def _resolve_nous_runtime_credentials(
     *, timeout_seconds: float = 15.0, insecure: Optional[bool] = None,
     ca_bundle: Optional[str] = None, force_refresh: bool = False,
     stale_access_token: Optional[str] = None) -> Dict[str, Any]:

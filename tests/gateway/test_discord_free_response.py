@@ -121,7 +121,7 @@ def adapter(monkeypatch):
 
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)
-    adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
+    adapter._client = SimpleNamespace(user=SimpleNamespace(id=999, bot=True))
     adapter._text_batch_delay_seconds = 0  # disable batching for tests
     adapter.handle_message = AsyncMock()
     return adapter
@@ -184,6 +184,21 @@ class FakeHistoryChannel(FakeTextChannel):
         return _iter()
 
 
+def _patch_discord_channel_types(monkeypatch):
+    monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
+    monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
+    monkeypatch.setattr(discord_platform.discord, "ForumChannel", FakeForumChannel, raising=False)
+
+
+def _make_adapter(user_id=999):
+    config = PlatformConfig(enabled=True, token="fake-token")
+    adapter = DiscordAdapter(config)
+    adapter._client = SimpleNamespace(user=SimpleNamespace(id=user_id, bot=True))
+    adapter._text_batch_delay_seconds = 0
+    adapter.handle_message = AsyncMock()
+    return adapter
+
+
 def test_unowned_participated_thread_keeps_mentionless_shortcut(adapter):
     """No recorded owner: participation still skips @mention (upstream default)."""
     thread = FakeThread(channel_id=555)
@@ -227,6 +242,213 @@ def test_text_channel_is_never_a_bot_thread(adapter):
     adapter._claim_created_thread("555")
     message = make_message(channel=FakeTextChannel(channel_id=555), content="hello")
     assert adapter._in_bot_thread(message) is False
+
+
+def test_claim_without_client_user_marks_participation_only(adapter):
+    adapter._client = None
+    adapter._claim_created_thread("555")
+    assert "555" in adapter._threads
+    assert adapter._thread_owners.owner_for("555") is None
+
+
+def test_claim_ignores_empty_thread_id(adapter):
+    adapter._claim_created_thread(None)
+    adapter._claim_created_thread("")
+    assert adapter._thread_owners.owner_for("") is None
+
+
+def test_owner_survives_adapter_restart(tmp_path, monkeypatch):
+    _patch_discord_channel_types(monkeypatch)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    first = _make_adapter(999)
+    first._claim_created_thread("555")
+    second = _make_adapter(999)
+    assert second._thread_owners.owner_for("555") == "999"
+    thread = FakeThread(channel_id=555)
+    second._threads.mark("555")
+    assert second._in_bot_thread(make_message(channel=thread, content="follow up")) is True
+
+
+def test_second_bot_adapter_needs_mention_in_owned_thread(tmp_path, monkeypatch):
+    _patch_discord_channel_types(monkeypatch)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    creator = _make_adapter(999)
+    creator._claim_created_thread("555")
+    other = _make_adapter(111)
+    other._threads.mark("555")
+    thread = FakeThread(channel_id=555)
+    assert other._in_bot_thread(make_message(channel=thread, content="follow up")) is False
+
+
+@pytest.mark.asyncio
+async def test_handle_unowned_thread_followup_without_mention(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    thread = FakeThread(channel_id=555)
+    adapter._threads.mark("555")
+    ok = await adapter._handle_message(make_message(channel=thread, content="follow up"))
+    assert ok is True
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_other_owner_followup_without_mention_is_dropped(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    thread = FakeThread(channel_id=555)
+    adapter._threads.mark("555")
+    adapter._thread_owners.mark_owner("555", "111")
+    ok = await adapter._handle_message(make_message(channel=thread, content="follow up"))
+    assert ok is False
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_handle_other_owner_still_answers_explicit_mention(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    thread = FakeThread(channel_id=555)
+    adapter._threads.mark("555")
+    adapter._thread_owners.mark_owner("555", "111")
+    bot = adapter._client.user
+    ok = await adapter._handle_message(make_message(
+        channel=thread, content=f"<@{bot.id}> ping", mentions=[bot],
+    ))
+    assert ok is True
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_replying_does_not_claim_an_unowned_thread(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    thread = FakeThread(channel_id=555)
+    adapter._threads.mark("555")
+    bot = adapter._client.user
+    await adapter._handle_message(make_message(
+        channel=thread, content=f"<@{bot.id}> hi", mentions=[bot],
+    ))
+    assert adapter._thread_owners.owner_for("555") is None
+
+
+@pytest.mark.asyncio
+async def test_handle_own_owner_followup_without_mention(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter._claim_created_thread("555")
+    ok = await adapter._handle_message(
+        make_message(channel=FakeThread(channel_id=555), content="follow up"),
+    )
+    assert ok is True
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_recovered_other_owner_without_mention_is_dropped(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    thread = FakeThread(channel_id=555)
+    adapter._threads.mark("555")
+    adapter._thread_owners.mark_owner("555", "111")
+    ok = await adapter._dispatch_recovered_message(
+        make_message(channel=thread, content="follow up"),
+    )
+    assert ok is False
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recovered_unowned_followup_without_mention(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setattr(adapter, "_is_allowed_user", lambda *a, **k: True)
+    adapter._threads.mark("555")
+    ok = await adapter._dispatch_recovered_message(
+        make_message(channel=FakeThread(channel_id=555), content="follow up"),
+    )
+    assert ok is True
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_recovered_own_owner_followup_without_mention(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setattr(adapter, "_is_allowed_user", lambda *a, **k: True)
+    adapter._claim_created_thread("555")
+    ok = await adapter._dispatch_recovered_message(
+        make_message(channel=FakeThread(channel_id=555), content="follow up"),
+    )
+    assert ok is True
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_recovered_other_owner_still_answers_explicit_mention(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setattr(adapter, "_is_allowed_user", lambda *a, **k: True)
+    adapter._threads.mark("555")
+    adapter._thread_owners.mark_owner("555", "111")
+    bot = adapter._client.user
+    ok = await adapter._dispatch_recovered_message(make_message(
+        channel=FakeThread(channel_id=555),
+        content=f"<@{bot.id}> ping",
+        mentions=[bot],
+    ))
+    assert ok is True
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_two_adapters_only_creator_gets_mentionless_followup(tmp_path, monkeypatch):
+    _patch_discord_channel_types(monkeypatch)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    creator = _make_adapter(999)
+    other = _make_adapter(111)
+    creator._claim_created_thread("555")
+    other._threads.mark("555")
+    follow = make_message(channel=FakeThread(channel_id=555), content="follow up")
+    assert await other._handle_message(follow) is False
+    other.handle_message.assert_not_awaited()
+    assert await creator._handle_message(follow) is True
+    creator.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_creation_claims_owner(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    parent = FakeTextChannel(channel_id=123)
+    created = FakeThread(channel_id=555, parent=parent)
+    adapter._auto_create_thread = AsyncMock(return_value=created)
+    bot = adapter._client.user
+    ok = await adapter._handle_message(make_message(
+        channel=parent, content=f"<@{bot.id}> start", mentions=[bot],
+    ))
+    assert ok is True
+    assert adapter._thread_owners.owner_for("555") == "999"
+    assert "555" in adapter._threads
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_id == "555"
+    assert event.source.chat_type == "thread"
+    assert event.source.auto_thread_created is True
+
+
+@pytest.mark.asyncio
+async def test_failed_auto_thread_does_not_claim_owner(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    parent = FakeTextChannel(channel_id=123)
+    parent.send = AsyncMock()
+    adapter._auto_create_thread = AsyncMock(return_value=None)
+    bot = adapter._client.user
+    ok = await adapter._handle_message(make_message(
+        channel=parent, content=f"<@{bot.id}> start", mentions=[bot],
+    ))
+    assert ok is False
+    assert adapter._thread_owners.owner_for("555") is None
+    adapter.handle_message.assert_not_awaited()
+    parent.send.assert_awaited()
 
 
 @pytest.mark.asyncio

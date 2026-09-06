@@ -10,6 +10,7 @@ import shutil
 import subprocess
 from typing import Any, Dict, Optional
 
+from agent.terminal_env_provider import WorkspaceBinding
 from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
@@ -180,11 +181,14 @@ def _build_ssh_env(*, cwd, timeout, ssh_config, probe_only=False, **_):
                            key_path=ssh_config.get("key", ""), cwd=cwd, timeout=timeout, probe_only=probe_only)
 
 
-def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
+def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id,
+                      workspace_binding=None, **_):
     provider = _get_plugin_env_provider(env_type)
     if provider is not None:
-        env_obj = provider.create_environment(cwd=cwd, timeout=timeout, task_id=task_id, image=image,
-                                              container_config=cc)
+        env_obj = provider.create_environment(
+            cwd=cwd, timeout=timeout, task_id=task_id, image=image,
+            container_config=cc, workspace_binding=workspace_binding,
+        )
         # Stamp the backend name so path-resolution and progress surfaces can identify plugin
         # backends without class-name sniffing. Test doubles may reject attributes.
         try:
@@ -210,14 +214,21 @@ _ENV_BUILDERS = {"local": _build_local_env, "docker": _build_docker_env, "singul
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         ssh_config: dict = None, container_config: dict = None,
                         local_config: dict = None, task_id: str = "default",
-                        host_cwd: Optional[str] = None, probe_only: bool = False):
+                        host_cwd: Optional[str] = None, probe_only: bool = False,
+                        workspace_binding: Optional[WorkspaceBinding] = None):
     """Create an execution environment (instance with ``execute()``) for *env_type*. ``image`` is ignored
     for local/ssh/vercel; ``container_config`` carries the container_*/docker_* resource keys; ``host_cwd`` is
     the host dir bound into Docker when cwd mounting is enabled. ``probe_only`` asks ssh for a throwaway
-    connection with no remote setup/sync (the prompt-time probe). Unknown types fall through to plugin backends."""
+    connection with no remote setup/sync (the prompt-time probe). ``workspace_binding`` preserves the
+    selected host workspace and its provenance for plugin providers. Unknown types fall through to plugins."""
+    if workspace_binding is None and host_cwd:
+        workspace_binding = WorkspaceBinding(host_path=host_cwd, source="factory")
+    if host_cwd is None and workspace_binding is not None:
+        host_cwd = workspace_binding.host_path
     builder = _ENV_BUILDERS.get(env_type, _build_plugin_env)
     return builder(env_type=env_type, image=image, cwd=cwd, timeout=timeout, cc=container_config or {},
-                   task_id=task_id, ssh_config=ssh_config, host_cwd=host_cwd, probe_only=probe_only)
+                   task_id=task_id, ssh_config=ssh_config, host_cwd=host_cwd, probe_only=probe_only,
+                   workspace_binding=workspace_binding)
 
 
 # --- Requirement checkers: one generic path driven by _BACKEND_SPECS; optional fields, checked in order:

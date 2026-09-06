@@ -28,6 +28,8 @@ import atexit
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
 
+from agent.terminal_env_provider import WorkspaceBinding
+
 logger = logging.getLogger(__name__)
 
 
@@ -493,32 +495,70 @@ def _lookup_active_env(effective_task_id: str, task_id: Optional[str]):
     return None
 
 
-def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Optional[str]:
-    """Host directory to bind-mount at ``/workspace`` for *task_id*'s container.
+def _workspace_binding_from_overrides(task_id: Optional[str]) -> Optional[WorkspaceBinding]:
+    """Return a validated non-process workspace binding from task overrides."""
+    overrides = resolve_task_overrides(task_id)
+    source = overrides.get("cwd_source")
+    candidate = overrides.get("cwd")
+    if source == "process" or not isinstance(candidate, str) or not candidate.strip():
+        return None
+    candidate = os.path.expanduser(candidate)
+    # Reject container paths before os.path.abspath() rewrites POSIX roots to
+    # a native drive on Windows.
+    if candidate.startswith(("/workspace", "/root")):
+        return None
+    candidate = os.path.abspath(candidate)
+    if not os.path.isdir(candidate):
+        return None
+    return WorkspaceBinding(host_path=candidate, source=str(source or "task"))
 
-    Single owner of the cwd-mount policy for every creation site. Shared-
+
+def _resolve_task_workspace_binding(
+    config: Dict[str, Any], task_id: Optional[str]
+) -> Optional[WorkspaceBinding]:
+    """Validated host workspace and provenance for *task_id*'s backend.
+
+    Single owner of the workspace-binding policy for every creation site. Shared-
     container mode: the ``TERMINAL_CWD``-derived ``config["host_cwd"]``.
-    Per-session isolation (docker + ``container_persistent: false``): only
+    Per-session isolation (Docker or an opted-in plugin in non-persistent mode): only
     the SESSION's own registered workspace may mount — the process env var is
     a launch artifact that outlives the session that set it, so deriving a
     fresh session's mount from it would leak the previous session's directory.
     Overrides tagged ``cwd_source: "process"`` are refused for the same reason;
     ``cwd_source: "session"`` or untagged (ACP/RL) overrides mount.
     """
-    if config.get("env_type") != "docker" or not config.get("docker_mount_cwd_to_workspace"):
+
+    env_type = config.get("env_type")
+    is_plugin_container = env_type != "docker" and _plugin_env_flag(env_type, "is_container")
+    if env_type != "docker" and not is_plugin_container:
         return None
-    # Top-level CLI parent ("default") is a single-session process — legacy behavior.
-    if not _docker_session_isolation_enabled() or _resolve_container_task_id(task_id) == "default":
-        return config.get("host_cwd")
-    overrides = resolve_task_overrides(task_id)
-    candidate = overrides.get("cwd")
-    if overrides.get("cwd_source") == "process" or not isinstance(candidate, str) or not candidate.strip():
+    if env_type == "docker" and not config.get("docker_mount_cwd_to_workspace"):
         return None
-    candidate = os.path.abspath(os.path.expanduser(candidate))
-    # Must exist on the host and not already be an in-container path.
-    if not os.path.isdir(candidate) or candidate.startswith(("/workspace", "/root")):
+
+    scope = _session_scope()
+    # Preserve Docker's shared-container policy: the configured process path is
+    # authoritative unless the session is isolated.
+    if env_type == "docker" and (
+        not scope.session_isolated or _resolve_container_task_id(task_id) == "default"
+    ):
+        host_path = config.get("host_cwd")
+        return WorkspaceBinding(host_path=host_path, source="process") if host_path else None
+    binding = _workspace_binding_from_overrides(task_id)
+    if binding is not None:
+        return binding
+    # An isolated session without its own assignment must not inherit the
+    # process-global launch directory. Non-isolated plugins may use that legacy
+    # fallback when one was explicitly resolved into config.
+    if scope.session_isolated:
         return None
-    return candidate
+    host_path = config.get("host_cwd")
+    return WorkspaceBinding(host_path=host_path, source="process") if host_path else None
+
+
+def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Optional[str]:
+    """Legacy path-only view of :func:`_resolve_task_workspace_binding`."""
+    binding = _resolve_task_workspace_binding(config, task_id)
+    return binding.host_path if binding is not None else None
 
 
 # One-shot guard for the config-fallback bridge: after the first attempt
@@ -877,7 +917,7 @@ class _ExecPlan:
     effective_task_id: str
     image: str
     cwd: str
-    host_cwd: Optional[str]
+    workspace_binding: Optional[WorkspaceBinding]
     effective_timeout: int
 
 
@@ -922,14 +962,14 @@ def _plan_execution(
     image = _select_image(env_type, overrides, config)
 
     cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
-    host_cwd = _resolve_task_host_cwd(config, task_id)
+    workspace_binding = _resolve_task_workspace_binding(config, task_id)
     # config["cwd"] was sanitized for container backends in _get_env_config
     # but an override / session record is raw: a host path would reach
     # `docker run -w` and fail with exit 125. Re-apply the guard to the
     # resolved cwd; when the host path IS this session's mounted workspace,
     # remap to /workspace instead of discarding it.
     if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd):
-        remapped = "/workspace" if host_cwd else config["cwd"]
+        remapped = "/workspace" if workspace_binding else config["cwd"]
         if cwd != remapped:
             logger.info(
                 "Remapping host/relative cwd override %r for %s backend "
@@ -955,7 +995,8 @@ def _plan_execution(
 
     return _ExecPlan(
         config=config, env_type=env_type, effective_task_id=effective_task_id,
-        image=image, cwd=cwd, host_cwd=host_cwd, effective_timeout=timeout or config["timeout"],
+        image=image, cwd=cwd, workspace_binding=workspace_binding,
+        effective_timeout=timeout or config["timeout"],
     )
 
 
@@ -990,7 +1031,8 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
         try:
             new_env = _create_configured_env(
                 plan.config, env_type, image=plan.image, cwd=plan.cwd,
-                timeout=plan.effective_timeout, task_id=eff, host_cwd=plan.host_cwd,
+                timeout=plan.effective_timeout, task_id=eff,
+                workspace_binding=plan.workspace_binding,
                 local_config=(
                     {"persistent": plan.config.get("local_persistent", False)}
                     if env_type == "local" else None

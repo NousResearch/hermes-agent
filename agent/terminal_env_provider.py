@@ -12,9 +12,24 @@ any ``BaseEnvironment`` duck type (``execute()``, ``cleanup()`` …); the factor
 from __future__ import annotations
 
 import abc
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.provider_base import ProviderBase
+
+
+@dataclass(frozen=True)
+class WorkspaceBinding:
+    """A host workspace selected by Hermes for one environment.
+
+    ``host_path`` is the validated host-side directory and ``source`` preserves
+    where the selection came from (for example ``session``, ``task``, or
+    ``process``). The binding supplies routing context, not authorization:
+    providers remain responsible for deciding whether and how to expose it.
+    """
+
+    host_path: str
+    source: str
 
 
 class TerminalEnvironmentProvider(ProviderBase):
@@ -96,8 +111,11 @@ class TerminalEnvironmentProvider(ProviderBase):
     @abc.abstractmethod
     def create_environment(
         self, *, cwd: str, timeout: int, task_id: str = "default", image: Optional[str] = None,
-        container_config: Optional[Dict[str, Any]] = None, **kwargs: Any,
+        container_config: Optional[Dict[str, Any]] = None,
+        workspace_binding: Optional[WorkspaceBinding] = None, **kwargs: Any,
     ):
         """Create an execution environment (``BaseEnvironment`` duck type). MUST accept ``**kwargs`` and ignore
         unknown keys so the factory can evolve without breaking older plugins. ``task_id`` keys reuse/persistence;
-        ``container_config`` carries ``container_cpu/memory/disk/persistent`` when :attr:`is_container`."""
+        ``container_config`` carries ``container_cpu/memory/disk/persistent`` when :attr:`is_container`.
+        ``workspace_binding`` carries a validated host path plus its provenance; it is context, not authority,
+        and may be ``None`` when no workspace was assigned."""

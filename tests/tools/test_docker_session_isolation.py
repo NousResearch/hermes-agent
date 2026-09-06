@@ -30,6 +30,7 @@ import os
 
 import pytest
 
+from agent.terminal_env_provider import WorkspaceBinding
 from tools import terminal_tool, terminal_tool_backends
 from tools.terminal_tool_lifecycle import is_persistent_env
 
@@ -217,6 +218,28 @@ class TestSessionScopedMountResolution:
         cfg = self._config()
         cfg["env_type"] = "modal"
         assert terminal_tool._resolve_task_host_cwd(cfg, "t") is None
+
+    def test_plugin_receives_session_workspace_with_provenance(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("TERMINAL_ENV", "testbox")
+        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "false")
+        monkeypatch.setattr(
+            terminal_tool,
+            "_plugin_env_flag",
+            lambda env_type, attr, default=False: env_type == "testbox"
+            and attr in {"is_container", "session_isolated_when_nonpersistent"},
+        )
+        ws = tmp_path / "attached"
+        ws.mkdir()
+        terminal_tool.register_task_env_overrides(
+            "tui:sess-new", {"cwd": str(ws), "cwd_source": "session"}
+        )
+        cfg = self._config()
+        cfg["env_type"] = "testbox"
+        cfg["docker_mount_cwd_to_workspace"] = False
+
+        assert terminal_tool._resolve_task_workspace_binding(cfg, "tui:sess-new") == (
+            WorkspaceBinding(host_path=str(ws), source="session")
+        )
 
 
 class TestRecordedHostCwdDiscardedOnContainers:

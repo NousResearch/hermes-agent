@@ -34,7 +34,7 @@ site instead of a hardcoded list of names.
 ## Minimal provider
 
 ```python title="~/.hermes/plugins/acmebox/__init__.py"
-from agent.terminal_env_provider import TerminalEnvironmentProvider
+from agent.terminal_env_provider import TerminalEnvironmentProvider, WorkspaceBinding
 
 
 class AcmeBoxEnvironment:
@@ -77,7 +77,10 @@ class AcmeBoxProvider(TerminalEnvironmentProvider):
         )
 
     def create_environment(self, *, cwd, timeout, task_id="default",
-                           image=None, container_config=None, **kwargs):
+                           image=None, container_config=None,
+                           workspace_binding: WorkspaceBinding | None = None,
+                           **kwargs):
+        # Validate workspace_binding against provider policy before using it.
         return AcmeBoxEnvironment(cwd, timeout, task_id)
 
 
@@ -108,6 +111,16 @@ hermes config set terminal.backend acmebox
 - **`create_environment` must accept `**kwargs`** and ignore unknown keys —
   the forward-compat contract that lets the factory signature evolve without
   breaking older plugins.
+- **Workspace bindings are context, not authorization.** Container providers
+  receive `workspace_binding` when Hermes has a validated task/session host
+  workspace. Its immutable `host_path` and `source` preserve the assignment
+  and provenance separately from the sandbox `cwd` and model-authored command
+  `workdir`; `task_id` carries the matching task/session scope. Sources are
+  `session`, `task` (an untagged explicit task override), `process` (the
+  non-isolated CLI fallback), or `factory` for legacy direct factory callers.
+  It may be `None`; providers must reject a required-but-missing or
+  invalid binding and apply their own access/mount policy rather than treating
+  the path as an authorization decision.
 - **`is_available()` / `probe()` must be cheap.** No network calls — they run
   during requirement checks and UI paints.
 - **Fail-soft everywhere.** A provider attribute that raises is treated as

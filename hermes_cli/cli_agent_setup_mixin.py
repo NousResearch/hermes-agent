@@ -207,6 +207,9 @@ class CLIAgentSetupMixin:
                 ensure_portal_identity(blocking=False)
             except Exception as exc:
                 logger.debug("free tier background setup skipped: %s", exc)
+            # The mint above may land after this turn, so the one-time "free tier is here" notice is
+            # checked on every credential resolve and printed the first time an identity is seen.
+            self._maybe_print_free_tier_available_notice()
         resolved_routing = (
             resolved_provider, runtime.get("api_mode", self.api_mode), runtime.get("command"),
             list(runtime.get("args") or []))
@@ -272,6 +275,20 @@ class CLIAgentSetupMixin:
             self.agent = None
             self._active_agent_route_signature = None
         return True
+
+    def _maybe_print_free_tier_available_notice(self) -> None:
+        """One-time notice for installs whose inference is carried by an explicit provider: the free
+        tier (inference + connectors) now exists. Printed the first time an identity is present, then
+        flagged on that identity so it never repeats. Never blocks or raises."""
+        from cli import logger
+        try:
+            from hermes_cli import anon_auth
+            if not anon_auth.guest_notice_pending():
+                return
+            self._console_print(f"[dim]{anon_auth.FREE_TIER_AVAILABLE_NOTICE}[/]")
+            anon_auth.mark_guest_notice_shown()
+        except Exception as exc:
+            logger.debug("free tier availability notice skipped: %s", exc)
 
     def _resolve_fallback_runtime(self, primary_exc):
         """Primary provider resolution failed: on an AuthError try each fallback entry in

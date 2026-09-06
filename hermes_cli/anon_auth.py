@@ -312,3 +312,42 @@ def clear_dead_guest(reason: str) -> None:
             _save_auth_store(auth_store)
     _clear_shared_nous_state(reason)
     logger.info("Nous free-tier identity retired (%s); a new one is set up on next use", reason)
+
+
+# One-time CLI notice: an install whose inference is carried by an explicit provider learns once that
+# the free tier (inference + connectors) now exists. The flag lives on the guest state itself so it
+# dies with the identity; a fresh guest (re-mint, new profile) may announce itself once more.
+GUEST_NOTICE_FLAG = "guest_notice_shown"
+FREE_TIER_AVAILABLE_NOTICE = (
+    "Free Nous inference and connectors are now available. "
+    "`hermes model` to try them, `hermes auth upgrade` to sign in.")
+
+
+def guest_notice_pending() -> bool:
+    """True when a guest identity exists and the one-time availability notice has not been shown."""
+    state = current_nous_state()
+    return is_guest_state(state) and not bool(state.get(GUEST_NOTICE_FLAG))
+
+
+def mark_guest_notice_shown() -> bool:
+    """Persist ``guest_notice_shown`` on the guest's ``providers.nous`` state (whichever store holds it).
+
+    Returns True when a flag was written; False when there is no guest to mark."""
+    from hermes_cli.auth import (
+        _auth_file_path, _load_auth_store, _provider_state_transaction, _same_path, _save_auth_store,
+        _store_section)
+    with _provider_state_transaction("nous") as (auth_store, state, source_path):
+        if not is_guest_state(state) or source_path is None:
+            return False
+        if state.get(GUEST_NOTICE_FLAG):
+            return True
+        state = dict(state)
+        state[GUEST_NOTICE_FLAG] = True
+        if _same_path(source_path, _auth_file_path()):
+            _store_section(auth_store, "providers")["nous"] = state
+            _save_auth_store(auth_store)
+        else:
+            source_store = _load_auth_store(source_path)
+            _store_section(source_store, "providers")["nous"] = state
+            _save_auth_store(source_store, target_path=source_path)
+    return True

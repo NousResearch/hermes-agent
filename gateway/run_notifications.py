@@ -742,6 +742,22 @@ class GatewayNotificationsMixin:
             logger.warning(failure_fmt, platform.value, home.chat_id, exc)
             return False
 
+    def _free_tier_startup_line(self) -> Optional[str]:
+        """Extra startup line when the gateway's inference is carried by the Nous free tier; None otherwise.
+
+        Best-effort: a resolution failure (no provider, auth error) must not block the online notice."""
+        try:
+            from gateway.run import _resolve_runtime_agent_kwargs
+            from hermes_cli.anon_auth import guest_carries_inference
+            if (_resolve_runtime_agent_kwargs().get("provider") or "") != "nous":
+                return None
+            if not guest_carries_inference():
+                return None
+        except Exception as exc:
+            logger.debug("Free tier startup line skipped: %s", exc)
+            return None
+        return "Inference: Nous free tier (nous/welcome). Sign in for more: hermes auth upgrade"
+
     async def _send_home_channel_startup_notifications(
         self, *, skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None
     ) -> set[tuple[str, str, Optional[str]]]:
@@ -753,6 +769,9 @@ class GatewayNotificationsMixin:
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
         message = "♻️ Gateway online — Hermes is back and ready."
+        free_tier_line = self._free_tier_startup_line()
+        if free_tier_line:
+            message = f"{message}\n{free_tier_line}"
         for platform, platform_cfg, home, transport in self._home_channel_transports():
             if not platform_cfg.gateway_restart_notification:
                 logger.info(

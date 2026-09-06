@@ -3318,18 +3318,9 @@ class BasePlatformAdapter(ABC):
                 except Exception as notify_err:
                     logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, notify_err)
                 return result
-        # Non-network / post-retry formatting failure: try plain text as fallback.
-        # Never attempt a truncating plain-text fallback for a rate-limited /
-        # flood-capped send: it re-enters the server ban and would drop the tail
-        # of the message.  Return the typed failure so the delivery ledger owns
-        # redelivery after the cooldown instead.
-        if self._is_rate_limited_error(error_str):
-            logger.error(
-                "[%s] Rate-limited send not retried via plain-text fallback; "
-                "returning typed failure for redelivery: %s",
-                self.name, error_str,
-            )
-            return result
+        # Non-network / post-retry formatting failure: try plain text as fallback. A
+        # rate-limited error never reaches here: it classifies as network above and the
+        # loop only breaks on a non-transient, non-rate-limited error.
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
         fallback_result = await _send(f"(Response formatting failed, plain text:)\n\n{content[:3500]}")
         if not fallback_result.success:

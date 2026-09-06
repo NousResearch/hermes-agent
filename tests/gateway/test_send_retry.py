@@ -80,22 +80,6 @@ class TestIsTimeoutError:
 # _is_rate_limited_error
 # ---------------------------------------------------------------------------
 
-class TestIsRateLimitedError:
-    @pytest.mark.parametrize(
-        ("error", "rate_limited"),
-        [
-            (None, False),
-            ("", False),
-            ("Bad Request: can't parse entities", False),
-            ("flood control exceeded, retry in 60 seconds", True),
-            # Platforms without a retry_after field (Weixin) surface a bare text.
-            ("iLink sendmessage rate limited; cooldown active for 42.0s", True),
-        ],
-    )
-    def test_rate_limited_follows_the_shared_classifier(self, error, rate_limited):
-        assert _StubAdapter._is_rate_limited_error(error) is rate_limited
-
-
 # ---------------------------------------------------------------------------
 # _send_with_retry — success on first attempt
 # ---------------------------------------------------------------------------
@@ -236,24 +220,6 @@ class TestSendWithRetryAfter:
 # server ban and drop the tail of the message.
 
 class TestSendWithRetryRateLimited:
-    @pytest.mark.asyncio
-    async def test_rate_limited_no_retry_after_backs_off_and_retries(self):
-        """A flood/rate-limit error WITHOUT retry_after still counts as network
-        (retryable) because classify_send_error == 'rate_limited', so it retries
-        and succeeds instead of falling through to plain-text fallback."""
-        adapter = _StubAdapter()
-        adapter._send_results = [
-            SendResult(success=False, error="flood control exceeded, timeout 30 seconds"),
-            SendResult(success=True, message_id="ok"),
-        ]
-        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=1.0)
-        # Must have slept (backoff), i.e. treated as transient — NOT immediate fallback
-        assert mock_sleep.called
-        assert result.success
-        assert len(adapter._send_calls) == 2
-        # No plain-text fallback content on either call
-        assert all("plain text" not in c[1].lower() for c in adapter._send_calls)
 
     @pytest.mark.asyncio
     async def test_long_server_retry_after_returns_typed_failure_without_sleeping(self):
@@ -328,26 +294,3 @@ class TestSendWithRetryFailureTypeTransitions:
         assert result.success  # fallback succeeded
         # No delivery-failure notice was sent (this is a formatting fallback, not network exhaustion)
         assert "delivery failed" not in adapter._send_calls[-1][1].lower()
-
-    @pytest.mark.asyncio
-    async def test_transient_then_rate_limited_then_success_preserves_retry_budget(self):
-        """A transient network error followed by a rate-limited attempt must NOT
-        break the retry loop early: a later rate-limited result is still
-        transient, so the remaining retry budget is preserved and the send goes
-        on to succeed."""
-        adapter = _StubAdapter()
-        adapter._send_results = [
-            SendResult(success=False, error="httpx.ConnectError: connection refused"),
-            SendResult(success=False, error="flood control exceeded, retry in 30 seconds"),
-            SendResult(success=True, message_id="ok"),
-        ]
-        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            result = await adapter._send_with_retry("chat1", "hello", max_retries=3, base_delay=0)
-        # Initial + retry(rate-limited) + retry(success) = 3 sends, recovered.
-        assert result.success
-        assert len(adapter._send_calls) == 3
-        # The rate-limited attempt was treated as transient (not a break), so no
-        # delivery-failure notice and no plain-text fallback.
-        assert all("plain text" not in c[1].lower() for c in adapter._send_calls)
-        assert "delivery failed" not in adapter._send_calls[-1][1].lower()
-

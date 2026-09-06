@@ -235,15 +235,18 @@ def _release_flock(lock_fd) -> None:
 
 
 @contextlib.contextmanager
-def _jobs_lock():
+def _jobs_lock(*, strict: bool = False):
     """Serialize a load_jobs→modify→save_jobs critical section: in-process RLock (parallel tick
     threads) plus a cross-process flock on ``<cron dir>/.jobs.lock`` (gateway vs. CLI writes —
     otherwise a `cron pause` could be clobbered and keep firing). Nested calls in one thread
     reuse the held lock. Without a flock backend, or on flock timeout (logged loudly), it
     degrades to in-process-only locking: a briefly torn cross-process write beats a dead
-    scheduler."""
+    scheduler. ``strict=True`` instead fails closed; nested strict calls require an actually
+    acquired outer flock, not merely an in-process lock."""
     depth = getattr(_jobs_lock_state, "depth", 0)
     if depth:
+        if strict and not getattr(_jobs_lock_state, "flock_acquired", False):
+            raise RuntimeError("Cron jobs lock is degraded; strict locking required")
         _jobs_lock_state.depth = depth + 1
         try:
             yield
@@ -258,13 +261,20 @@ def _jobs_lock():
         # stamps from unlocked loads or prior sections can never suppress a needed merge.
         # See #80703.
         _jobs_lock_state.load_stamp = None
+        _jobs_lock_state.flock_acquired = False
         lock_fd = None
         try:
             try:
                 ensure_dirs()
                 lock_fd = open(_jobs_lock_file(), "a+", encoding="utf-8")
                 lock_fd.seek(0)
-                if _acquire_flock(lock_fd, _JOBS_LOCK_TIMEOUT_SECONDS) is False:
+                acquired = _acquire_flock(lock_fd, _JOBS_LOCK_TIMEOUT_SECONDS)
+                _jobs_lock_state.flock_acquired = acquired is True
+                if strict and not _jobs_lock_state.flock_acquired:
+                    if acquired is False:
+                        raise TimeoutError("Timed out waiting for the cron jobs lock")
+                    raise RuntimeError("No cross-process lock backend for cron jobs lock")
+                if acquired is False:
                     logger.error(
                         "Timed out after %.0fs waiting for the cron "
                         "jobs lock (%s) — another process is holding "
@@ -275,17 +285,22 @@ def _jobs_lock():
                         lock_fd.close()
                     lock_fd = None
             except (OSError, IOError) as e:
+                if strict:
+                    raise
                 # A locking failure must never take down cron writes — in-process lock still held.
                 logger.warning("jobs.json cross-process lock unavailable (%s); "
                                "proceeding with in-process lock only", e)
-            try:
-                yield
-            finally:
-                if lock_fd is not None:
-                    _release_flock(lock_fd)
+            yield
         finally:
-            _jobs_lock_state.depth = 0
-            _jobs_lock_state.load_stamp = None
+            try:
+                if lock_fd is not None and _jobs_lock_state.flock_acquired:
+                    _release_flock(lock_fd)
+                elif lock_fd is not None:
+                    lock_fd.close()
+            finally:
+                _jobs_lock_state.depth = 0
+                _jobs_lock_state.load_stamp = None
+                _jobs_lock_state.flock_acquired = False
 
 
 @contextlib.contextmanager
@@ -2521,7 +2536,10 @@ def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
     # against takeover/completion, just like heartbeat_run_claim. Taking the fire fence here
     # would block behind our own delivery and mistake its lock timeout for ownership loss.
     # Keep that fence on owner mutations and external side effects, not lease renewal.
-    return _with_job(job_id, apply, False)
+    # Do not renew from an unsynchronized snapshot if the jobs lock degrades. Raising lets
+    # the heartbeat loop apply its existing transient-error grace instead of reporting loss.
+    with _jobs_lock(strict=True):
+        return _with_job(job_id, apply, False)
 
 
 # Completed one-shots are retained in jobs.json (final status stays inspectable) and pruned by

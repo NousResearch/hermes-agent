@@ -1127,7 +1127,7 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 |---|---|---|
 | `created` | `{assignee, status, parents, tenant}` | Task inserted. `run_id` is `NULL`. |
 | `promoted` | — | `todo → ready` because all parents hit `done`. `run_id` is `NULL`. |
-| `claimed` | `{lock, expires, run_id}` | Dispatcher atomically claimed a `ready` task for spawn. |
+| `claimed` | `{lock, expires, run_id, pidns}` | Dispatcher atomically claimed a `ready` task for spawn. `pidns` is the claimer's PID namespace (Linux: the `/proc/self/ns/pid` inode; `null` where there is none) — only a reader in that namespace may treat the worker PID as evidence of liveness or death. |
 | `completed` | `{result_len, summary?}` | Worker wrote `--result` / `--summary` and task hit `done`. `summary` is the first-line handoff (400-char cap); full version lives on the run row. If `complete_task` is called on a never-claimed task with handoff fields, a zero-duration run is synthesized so `run_id` still points at something. |
 | `blocked` | `{reason, kind, recurrences}` | Worker or human flipped the task to `blocked`. `kind` is the typed block reason (`needs_input`, `capability`, `transient`, or `null` for a generic block); `recurrences` is the unblock-loop counter. Synthesizes a zero-duration run when called on a never-claimed task with `--reason`. |
 | `dependency_wait` | `{reason, kind}` | Worker blocked with `kind=dependency` — the task is only waiting on another task, so it routes to `todo` (parent-gated, auto-promoted) instead of `blocked`. No human needed. |
@@ -1150,7 +1150,7 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 |---|---|---|
 | `spawned` | `{pid}` | Dispatcher successfully started a worker process. |
 | `heartbeat` | `{note?}` | Worker called `hermes kanban heartbeat $TASK` to signal liveness during long operations. |
-| `reclaimed` | `{stale_lock}` | Claim TTL expired without a completion; task goes back to `ready`. |
+| `reclaimed` | `{stale_lock, worker_pid, host_local, pid_checkable, heartbeat_stale, retry_status, …}` | Claim TTL expired without a completion; task goes back to its source phase (`retry_status`: `ready`, or `review` for a reviewer run). `pid_checkable: false` means the sweep could not verify the worker PID — the claim came from another host, from another PID namespace on this host, or recorded no namespace (pre-upgrade row, older writer), or this reader could not read its own — so it neither probed nor signalled the PID and waited for the TTL instead. |
 | `crashed` | `{pid, claimer}` | Worker PID no longer alive but TTL hadn't expired yet. |
 | `timed_out` | `{pid, elapsed_seconds, limit_seconds, sigkill}` | `max_runtime_seconds` exceeded; dispatcher SIGTERM'd (then SIGKILL'd after 5 s grace) and re-queued. |
 | `stale` | `{elapsed_seconds, last_heartbeat_at, heartbeat_age_seconds, timeout_seconds, pid, terminated}` | Task ran longer than `kanban.dispatch_stale_timeout_seconds` (default 4 h) AND no `kanban_heartbeat` arrived in the last hour. Dispatcher SIGTERM'd the host-local worker (if any), reset the task to `ready` for re-dispatch. Does NOT tick the failure counter (stale is dispatcher-side absence detection, not a worker fault). Workers running long operations should call `kanban_heartbeat` at least once an hour to avoid this. |
@@ -1164,7 +1164,9 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 
 ## Out of scope
 
-Kanban is deliberately single-host. `~/.hermes/kanban.db` is a local SQLite file and the dispatcher spawns workers on the same machine. Running a shared board across two hosts is not supported — there's no coordination primitive for "worker X on host A, worker Y on host B," and the crash-detection path assumes PIDs are host-local. If you need multi-host, run an independent board per host and use `delegate_task` / a message queue to bridge them.
+Kanban is deliberately single-host. `~/.hermes/kanban.db` is a local SQLite file and the dispatcher spawns workers on the same machine. Running a shared board across two hosts is not supported — there's no coordination primitive for "worker X on host A, worker Y on host B," and the crash-detection path only trusts a worker PID recorded on this host **and in this PID namespace** (`claim_pidns`, stamped on every claim). If you need multi-host, run an independent board per host and use `delegate_task` / a message queue to bridge them.
+
+The namespace rule matters inside one Docker host too. Compose services that join one network namespace (`network_mode: "service:gateway"`) share a hostname but not a PID namespace, so a dispatch run from the dashboard container cannot see the gateway's worker PIDs; it leaves those claims alone instead of closing live workers as crashed, and a claim it cannot verify (including the claims of a recreated gateway container, whose namespace is gone) is released only when its TTL expires (`claim_expires`, 15 min default) with `pid_checkable: false`. Add `pid: "service:gateway"` to the dashboard service to share the PID namespace and get first-tick crash recovery back from either container.
 
 ## Design spec
 

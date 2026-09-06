@@ -286,21 +286,45 @@ def _terminate_reclaimed_worker(
     pid: Optional[int],
     claim_lock: Optional[str],
     *,
+    claim_pidns: Optional[str],
     signal_fn=None,
 ) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths."""
+    """Best-effort worker termination for reclaim paths.
+
+    Signals only a PID this process can actually resolve to that worker:
+    ``claim_lock`` must carry our host prefix AND the claim's PID namespace must
+    be provably ours (:func:`_kbp._claim_pid_checkable`). A hostname match
+    alone is not enough — containers sharing a network namespace share the
+    hostname, and there the same PID number is an unrelated process, so a
+    SIGTERM would kill a bystander. ``claim_pidns`` is required for the same
+    reason: ``None`` means "the claim recorded no namespace", which on Linux is
+    no signal at all (the claim is left to its TTL), not hostname-only trust —
+    so every caller passes the row's column rather than an implicit unknown.
+
+    The returned ``host_local`` / ``pid_checkable`` describe how far this call
+    got, not the claim: both stay ``False`` when there was no PID to signal at
+    all. A caller that reports claim provenance computes it from the claim (see
+    :func:`_kb._record_reclaim`, whose merge lets the caller's values win).
+    """
     info: dict[str, Any] = {
         "prev_pid": int(pid) if pid else None,
         "host_local": False,
+        "pid_checkable": False,
         "termination_attempted": False,
         "terminated": False,
         "sigkill": False,
     }
     if not pid or pid <= 0 or not claim_lock:
         return info
-    if not _kbp._claim_pid_checkable(claim_lock):
+    host_prefix = _kb._host_prefix()
+    if not str(claim_lock).startswith(host_prefix):
         return info
     info["host_local"] = True
+    if not _kbp._claim_pid_checkable(claim_lock, claim_pidns, host_prefix=host_prefix):
+        # Another PID namespace: the claim is left to the claim TTL rather than
+        # signalling a PID number that means something else here.
+        return info
+    info["pid_checkable"] = True
 
     kill = _kill_fn(signal_fn)
     if kill is None:
@@ -333,8 +357,9 @@ def _worker_survived_termination(termination: dict) -> bool:
 
     Reclaiming then would release the claim and spawn a second worker while the
     first still runs — the duplication loop. Only host-local workers we actually
-    signalled count; a non-local lock or no-op attempt (no ``os.kill``) must fall
-    through to the normal release path since we cannot manage that worker anyway.
+    signalled count; a non-local lock, a lock from another PID namespace, or a
+    no-op attempt (no ``os.kill``) must fall through to the normal release path
+    since we cannot manage that worker anyway.
     """
     return bool(
         termination.get("termination_attempted")
@@ -419,25 +444,28 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
 
     SIGTERM, short grace, then SIGKILL. Emits ``timed_out`` and restores the
     task's source phase so the next tick re-spawns the same kind of worker —
-    unless the circuit breaker already gave up, leaving it blocked. Host-local
-    only (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a test hook.
+    unless the circuit breaker already gave up, leaving it blocked. Only claims
+    whose PID this process can resolve (:func:`_kbp._claim_pid_checkable`, same
+    reasoning as ``detect_crashed_workers``). ``signal_fn`` is a test hook.
     """
     timed_out: list[str] = []
     now = int(time.time())
-    host_prefix = _kb._host_prefix()
 
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
-        "       t.max_runtime_seconds, t.claim_lock "
+        "       t.max_runtime_seconds, t.claim_lock, t.claim_pidns "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
         "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
         "  AND COALESCE(r.started_at, t.started_at) IS NOT NULL "
         "  AND t.worker_pid IS NOT NULL"
     ).fetchall()
+    host_prefix = _kb._host_prefix()
     for row in rows:
-        if not _kbp._claim_pid_checkable(row["claim_lock"], host_prefix=host_prefix):
+        if not _kbp._claim_pid_checkable(
+            row["claim_lock"], row["claim_pidns"], host_prefix=host_prefix,
+        ):
             continue
         # Runtime is per attempt: ``tasks.started_at`` records the FIRST start,
         # so retries must be measured from the active task_runs row.
@@ -465,7 +493,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
             retry_status = _kb._retry_status_for_run(conn, tid)
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, claim_pidns = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
@@ -516,7 +544,8 @@ def detect_stale_running(
     Stale = running longer than ``stale_timeout_seconds`` (active run's
     ``started_at``, else ``tasks.started_at``) AND ``last_heartbeat_at`` NULL or
     older than ``_STALE_HEARTBEAT_GAP_SECONDS``. Task returns to its source
-    phase, run closes ``outcome='stale'``, a live host-local worker is killed.
+    phase, run closes ``outcome='stale'``, a live worker whose PID this process
+    can resolve is killed.
     ``0`` disables the check; ``signal_fn`` is a test hook. Deliberately NOT
     counted via ``_record_task_failure``: an absent heartbeat is not a worker
     failure, and counting it would let long-running tasks trip the breaker.
@@ -528,7 +557,7 @@ def detect_stale_running(
     reclaimed: list[str] = []
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, t.last_heartbeat_at, t.claim_lock, "
+        "SELECT t.id, t.worker_pid, t.last_heartbeat_at, t.claim_lock, t.claim_pidns, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
@@ -551,7 +580,9 @@ def detect_stale_running(
         tid = row["id"]
         lock = row["claim_lock"] or ""
 
-        termination = _kb._terminate_reclaimed_worker(pid, lock, signal_fn=signal_fn)
+        termination = _kb._terminate_reclaimed_worker(
+            pid, lock, claim_pidns=row["claim_pidns"], signal_fn=signal_fn,
+        )
 
         # Never release a claim while our own worker is still alive: that would
         # spawn a duplicate beside it. Hold the claim and retry next tick.
@@ -566,7 +597,7 @@ def detect_stale_running(
             retry_status = _kb._retry_status_for_run(conn, tid)
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, claim_pidns = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND claim_lock IS ?",
@@ -631,7 +662,7 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
         with _kb.write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, claim_pidns = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND claim_lock IS ? AND claim_expires IS ?",
@@ -802,17 +833,26 @@ class _CrashSweep:
 
 
 def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
-    """Release every host-local ``running`` task whose worker PID is dead."""
+    """Release every ``running`` task whose worker PID is dead *and probeable*.
+
+    "Dead" is only knowable for a claim made on this host AND in this PID
+    namespace (:func:`_kbp._claim_pid_checkable`). ``/proc`` answers for the
+    caller's namespace, so a claim from a sibling container that shares our
+    hostname would otherwise look like four dead workers when they are alive.
+    Such claims are left to the claim TTL.
+    """
     sweep = _CrashSweep()
     with _kb.write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at, assignee "
+            "SELECT id, worker_pid, claim_lock, claim_pidns, started_at, assignee "
             "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = _kb._host_prefix()
         for row in rows:
-            if not _kbp._claim_pid_checkable(row["claim_lock"], host_prefix=host_prefix):
+            if not _kbp._claim_pid_checkable(
+                row["claim_lock"], row["claim_pidns"], host_prefix=host_prefix,
+            ):
                 continue
             # Launch-window grace so a freshly-spawned worker isn't reclaimed
             # before its PID is visible on /proc.
@@ -828,7 +868,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
+                "claim_expires = NULL, worker_pid = NULL, claim_pidns = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
                 (retry_status, row["id"], pid, row["claim_lock"]),
@@ -936,7 +976,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
     Restores the source phase immediately (no waiting for the claim TTL), for
-    tasks claimed by *this host* only — other hosts' PIDs are meaningless.
+    tasks whose claim was made on this host AND in this PID namespace only —
+    any other PID is meaningless here, whether it belongs to another host or to
+    a container that merely shares our hostname (``_kbp._claim_pid_checkable``).
     Clean exit while ``running`` is a protocol violation with a bounded
     violation-only retry budget; ``KANBAN_RATE_LIMIT_EXIT_CODE`` is a quota
     wall, released WITHOUT counting a failure and surfaced via the
@@ -1034,7 +1076,7 @@ def _record_task_failure(
                 # Spawn path: restore the claimed source phase + clear claim.
                 conn.execute(
                     "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                    "claim_expires = NULL, worker_pid = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, claim_pidns = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status = 'running'",
                     (retry_status, failures, error, task_id),
@@ -1062,7 +1104,7 @@ def _record_task_failure(
         # state; the timeout/crash path already did.
         conn.execute(
             "UPDATE tasks SET status = 'blocked', "
-            + ("claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+            + ("claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, claim_pidns = NULL, "
                if release_claim else "")
             + "consecutive_failures = ?, last_failure_error = ? "
             "WHERE id = ? AND status IN ('running', 'ready', 'review')",

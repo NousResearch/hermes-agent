@@ -715,8 +715,7 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
             # Idempotent; runs under _INIT_LOCK so same-process dispatcher
             # threads can't race the ALTER TABLE pass with stale PRAGMA snapshots.
             if resolved not in _INITIALIZED_PATHS:
-                conn.executescript(_kb.SCHEMA_SQL)
-                _migrate_add_optional_columns(conn)
+                migrate_schema(conn)
                 _INITIALIZED_PATHS.add(resolved)
 
         conn, _ = _open_configured(path, _init_if_needed)
@@ -802,6 +801,12 @@ _LATER_TASK_COLUMNS = (
     # Typed block reason (VALID_BLOCK_KINDS); NULL = generic human blocker.
     ("block_kind", "block_kind TEXT"),
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
+    # PID namespace of the process holding ``claim_lock`` (kanban_db_pidns).
+    # NULL on legacy rows and on claims from older writers: fails closed where
+    # the reader can identify its own namespace (Linux) — the PID is neither
+    # probed nor signalled and the claim waits for its TTL — and keeps the
+    # hostname-only PID trust only where it cannot (macOS/Windows).
+    ("claim_pidns", "claim_pidns TEXT"),
 )
 
 _NOTIFY_SUB_COLUMNS = (
@@ -824,6 +829,16 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return conn.execute(
         f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'"
     ).fetchone() is not None
+
+
+def migrate_schema(conn: sqlite3.Connection) -> None:
+    """Bring an open connection (``row_factory = sqlite3.Row``) to this install's
+    schema: ``SCHEMA_SQL`` is ``IF NOT EXISTS`` throughout, then the additive
+    column pass. ``connect`` runs it on the first open per path; board export
+    runs it on its snapshot, which never went through ``connect`` and would
+    otherwise carry the previous release's columns into the scrub."""
+    conn.executescript(_kb.SCHEMA_SQL)
+    _migrate_add_optional_columns(conn)
 
 
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:

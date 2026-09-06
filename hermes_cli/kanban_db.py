@@ -868,6 +868,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     project_id           TEXT,
     claim_lock           TEXT,
     claim_expires        INTEGER,
+    -- PID namespace the claim was made in (_pid_namespace_id): the caller's
+    -- /proc only answers for its own namespace, so a worker_pid from another
+    -- one must never be read as "dead". NULL = unknown (pre-upgrade rows,
+    -- non-Linux); kanban_db_pidns._claim_pid_checkable fails closed on it
+    -- when the local platform can identify namespaces, and keeps the
+    -- hostname-only fallback only where it cannot (macOS/Windows).
+    claim_pidns          TEXT,
     tenant               TEXT,
     result               TEXT,
     idempotency_key      TEXT,
@@ -1054,7 +1061,15 @@ def _new_task_id() -> str:
 
 
 def _claimer_id() -> str:
-    """Return a ``host:pid`` string that identifies this claimer."""
+    """Return a ``host:pid`` string that identifies this claimer.
+
+    Deliberately does NOT carry the PID namespace (``kanban_db_pidns._pid_namespace_id``):
+    the string is compared for equality by workers (``HERMES_KANBAN_CLAIM_LOCK``)
+    and shown in events and dashboards, and a stable hostname is what lets a
+    recreated container recognise its predecessor's claims. Whether a PID from
+    such a claim can be *probed* is a separate question — see
+    ``kanban_db_pidns._claim_pid_checkable``.
+    """
     import socket
     try:
         host = socket.gethostname() or "unknown"
@@ -2092,19 +2107,28 @@ def _claim_and_open_run(
     *, event_extra: Optional[dict] = None,
 ) -> Optional[int]:
     """CAS ``source_status -> running``, open a run row, emit ``claimed``; None
-    when the CAS lost. Caller holds the txn."""
+    when the CAS lost. Caller holds the txn.
+
+    Also stamps ``claim_pidns`` (``kanban_db_pidns._pid_namespace_id``) beside the lock:
+    only a process in that namespace can read ``worker_pid`` as evidence. It is
+    claim state and is cleared wherever ``claim_lock`` is, so a claim written
+    later by a binary that does not know the column starts from NULL instead of
+    inheriting the previous claimer's namespace.
+    """
+    pidns = _kbpidns._pid_namespace_id()
     cur = conn.execute(
         f"""
         UPDATE tasks
            SET status        = 'running',
                claim_lock    = ?,
                claim_expires = ?,
+               claim_pidns   = ?,
                started_at    = COALESCE(started_at, ?)
          WHERE id = ?
            AND status = '{source_status}'
            AND claim_lock IS NULL
         """,
-        (lock, expires, now, task_id),
+        (lock, expires, pidns, now, task_id),
     )
     if cur.rowcount != 1:
         return None
@@ -2129,7 +2153,11 @@ def _claim_and_open_run(
     conn.execute("UPDATE tasks SET current_run_id = ? WHERE id = ?", (run_id, task_id))
     _append_event(
         conn, task_id, "claimed",
-        {"lock": lock, "expires": expires, "run_id": run_id, **(event_extra or {})}, run_id=run_id,
+        {
+            "lock": lock, "expires": expires, "run_id": run_id, "pidns": pidns,
+            **(event_extra or {}),
+        },
+        run_id=run_id,
     )
     return run_id
 
@@ -2305,7 +2333,7 @@ def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
     reclaimed = 0
     host_prefix = _host_prefix()
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at, "
+        "SELECT id, claim_lock, claim_pidns, worker_pid, claim_expires, last_heartbeat_at, "
         "       assignee "
         "FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
@@ -2313,9 +2341,10 @@ def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
     ).fetchall()
     for row in stale:
         host_local = (row["claim_lock"] or "").startswith(host_prefix)
-        # ``host_local`` is the provenance reported in the ``reclaimed`` payload;
-        # whether the PID may be probed is the claim-provenance owner's call.
-        pid_checkable = _kbpidns._claim_pid_checkable(row["claim_lock"], host_prefix=host_prefix)
+        # Host-local is not enough to read this PID: see kanban_db_pidns._claim_pid_checkable.
+        pid_checkable = _kbpidns._claim_pid_checkable(
+            row["claim_lock"], row["claim_pidns"], host_prefix=host_prefix,
+        )
         hb = row["last_heartbeat_at"]
         # Backstop: a heartbeat older than the max-stale threshold means no
         # observable progress — reclaim even if the PID is alive (logic loop).
@@ -2325,7 +2354,8 @@ def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
             continue
 
         termination = _terminate_reclaimed_worker(
-            row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
+            row["worker_pid"], row["claim_lock"],
+            claim_pidns=row["claim_pidns"], signal_fn=signal_fn,
         )
         # A live worker of ours must keep its claim (else a duplicate spawns beside it).
         if _worker_survived_termination(termination):
@@ -2338,7 +2368,7 @@ def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
             retry_status = _retry_status_for_run(conn, row["id"])
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
+                "claim_expires = NULL, worker_pid = NULL, claim_pidns = NULL "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
                 "AND claim_expires IS NOT NULL AND claim_expires < ?",
                 (retry_status, row["id"], row["claim_lock"], now),
@@ -2355,6 +2385,7 @@ def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
                     "last_heartbeat_at": _opt_int(row["last_heartbeat_at"]),
                     "now": now,
                     "host_local": host_local,
+                    "pid_checkable": bool(pid_checkable),
                     "heartbeat_stale": bool(heartbeat_stale),
                     "retry_status": retry_status,
                 },
@@ -2374,12 +2405,21 @@ def _record_reclaim(
     conn: sqlite3.Connection, task_id: str, termination: dict, *, error: str, payload: dict,
 ) -> Optional[int]:
     """Close the active run as ``reclaimed`` and emit the ``reclaimed`` event
-    (payload merged with the termination report). Caller holds the txn."""
+    (payload merged with the termination report). Caller holds the txn.
+
+    The caller's ``payload`` wins on key collisions. ``host_local`` and
+    ``pid_checkable`` exist in both dicts with different meanings: in the
+    termination report they answer "did we get far enough to signal", which is
+    hard ``False`` whenever there was no PID to signal at all, while the caller
+    computed them from the claim itself. Letting the report overwrite them made
+    a reclaimed row with ``worker_pid = NULL`` report ``host_local: false`` for
+    a claim that was plainly this host's — the opposite of what the diagnostic
+    is for.
+    """
     run_id = _end_run(
         conn, task_id, outcome="reclaimed", status="reclaimed", error=error, metadata=termination,
     )
-    payload.update(termination)
-    _append_event(conn, task_id, "reclaimed", payload, run_id=run_id)
+    _append_event(conn, task_id, "reclaimed", {**termination, **payload}, run_id=run_id)
     return run_id
 
 
@@ -2419,7 +2459,7 @@ def reclaim_task(
     """Operator reclaim regardless of TTL: release the claim, restore the source
     phase, reset the failure counter. False when not running."""
     row = conn.execute(
-        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?", (task_id,),
+        "SELECT status, claim_lock, claim_pidns, worker_pid FROM tasks WHERE id = ?", (task_id,),
     ).fetchone()
     if not row:
         return False
@@ -2427,12 +2467,17 @@ def reclaim_task(
         # Nothing to reclaim — already ready / blocked / done.
         return False
     prev_lock = row["claim_lock"]
-    termination = _terminate_reclaimed_worker(row["worker_pid"], prev_lock, signal_fn=signal_fn)
+    # ``claim_pidns``: the operator's reclaim releases the claim either way, but
+    # it must not SIGTERM a PID number it cannot verify — in another PID
+    # namespace that number belongs to an unrelated process.
+    termination = _terminate_reclaimed_worker(
+        row["worker_pid"], prev_lock, claim_pidns=row["claim_pidns"], signal_fn=signal_fn,
+    )
     with write_txn(conn):
         retry_status = _retry_status_for_run(conn, task_id)
         cur = conn.execute(
             "UPDATE tasks SET status = ?, claim_lock = NULL, "
-            "claim_expires = NULL, worker_pid = NULL "
+            "claim_expires = NULL, worker_pid = NULL, claim_pidns = NULL "
             "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
             "AND claim_lock IS ?", (retry_status, task_id, prev_lock),
         )
@@ -2575,6 +2620,7 @@ def complete_task(
                        claim_lock   = NULL,
                        claim_expires= NULL,
                        worker_pid   = NULL,
+                       claim_pidns  = NULL,
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
@@ -2933,6 +2979,7 @@ def block_task(
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
+                       claim_pidns   = NULL,
                        {set_sql}
                  WHERE id = ?
                    AND status IN ('running', 'ready')
@@ -3061,7 +3108,8 @@ def request_review(
                SET status        = 'review',
                    claim_lock    = NULL,
                    claim_expires = NULL,
-                   worker_pid    = NULL
+                   worker_pid    = NULL,
+                   claim_pidns   = NULL
             """ + assignee_sql + """
              WHERE id = ?
                AND status IN ('running', 'ready')
@@ -3155,7 +3203,8 @@ def request_changes(
                    assignee = COALESCE(?, assignee),
                    claim_lock = NULL,
                    claim_expires = NULL,
-                   worker_pid = NULL
+                   worker_pid = NULL,
+                   claim_pidns= NULL
              WHERE id = ? AND status = 'running' AND current_run_id = ?
             """,
             (new_status, implementer, task_id, int(current_run_id)),
@@ -3321,7 +3370,7 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
             # consecutive_failures deliberately PRESERVED: review reopen is not
             # a success signal; only complete_task resets the breaker (#35072).
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, claim_pidns = NULL "
             + (", assignee = ?" if implementer else "")
             + " WHERE id = ? AND status = 'review'",
             params,
@@ -3354,12 +3403,14 @@ def invalidate_descendants_for_parent_reopen(
     action), the opposite of :func:`reopen_review_task`.
 
     Returns ``{"invalidated": [{id, prior_status, new_status, resume_status}],
-    "terminations": [(worker_pid, claim_lock)]}``.
+    "terminations": [(worker_pid, claim_lock, claim_pidns)]}`` — the namespace
+    rides along so the caller's post-commit kill can tell a PID it may signal
+    from one it merely shares a hostname with.
     """
     caller_owns_txn = bool(conn.in_transaction)
     now = int(time.time())
     invalidated: list[dict[str, Any]] = []
-    terminations: list[tuple[Optional[int], Optional[str]]] = []
+    terminations: list[tuple[Optional[int], Optional[str], Optional[str]]] = []
     with write_txn(conn, allow_nested=True):
         rows = conn.execute(
             """
@@ -3370,7 +3421,8 @@ def invalidate_descendants_for_parent_reopen(
                 FROM task_links l
                 JOIN descendants d ON d.id = l.parent_id
             )
-            SELECT t.id, t.status, t.current_run_id, t.worker_pid, t.claim_lock
+            SELECT t.id, t.status, t.current_run_id, t.worker_pid, t.claim_lock,
+                   t.claim_pidns
             FROM descendants d
             JOIN tasks t ON t.id = d.id
             ORDER BY t.id
@@ -3387,7 +3439,9 @@ def invalidate_descendants_for_parent_reopen(
                 resume_status = "review"
             elif previous_status == "running":
                 resume_status = _retry_status_for_run(conn, row["id"], row["current_run_id"])
-                terminations.append((row["worker_pid"], row["claim_lock"]))
+                terminations.append(
+                    (row["worker_pid"], row["claim_lock"], row["claim_pidns"])
+                )
                 run_id = _end_run(
                     conn, row["id"], outcome="reclaimed", status="todo",
                     summary=f"ancestor {task_id} reopened",
@@ -3396,7 +3450,7 @@ def invalidate_descendants_for_parent_reopen(
             # docstring for why this diverges from reopen_review_task.
             conn.execute(
                 "UPDATE tasks SET status = 'todo', completed_at = NULL, "
-                "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+                "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, claim_pidns = NULL, "
                 "current_run_id = NULL, consecutive_failures = 0 WHERE id = ?", (row["id"],),
             )
             entry = {
@@ -3427,8 +3481,8 @@ def invalidate_descendants_for_parent_reopen(
     if not caller_owns_txn:
         # Standalone: committed above, audit trail durable, safe to kill now.
         # Composed calls leave this to the caller post-commit.
-        for pid, claim_lock in terminations:
-            _terminate_reclaimed_worker(pid, claim_lock)
+        for pid, claim_lock, claim_pidns in terminations:
+            _terminate_reclaimed_worker(pid, claim_lock, claim_pidns=claim_pidns)
     return {"invalidated": invalidated, "terminations": terminations}
 
 
@@ -3640,7 +3694,7 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
-            "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, claim_pidns = NULL "
             "WHERE id = ? AND status != 'archived'", (task_id,),
         )
         if cur.rowcount != 1:
@@ -3700,7 +3754,8 @@ def schedule_task(
                SET status       = 'scheduled',
                    claim_lock   = NULL,
                    claim_expires= NULL,
-                   worker_pid   = NULL
+                   worker_pid   = NULL,
+                   claim_pidns  = NULL
              WHERE id = ?
                AND status IN ('todo', 'ready', 'running', 'blocked')
         """

@@ -179,6 +179,13 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashUnavailableMessage('/wake')).toBeNull()
   })
 
+  it('routes /stop through the desktop action that cancels the active turn', () => {
+    expect(resolveDesktopCommand('/stop')?.surface).toEqual({ kind: 'action', action: 'stop' })
+    expect(isDesktopSlashSuggestion('/stop')).toBe(true)
+    expect(isDesktopSlashCommand('/stop')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/stop')).toBeNull()
+  })
+
   it('treats /browser as an executable action command (local-gateway connect)', () => {
     // /browser used to be terminal-only; it now resolves to a desktop action
     // handler that routes browser.manage RPC when the gateway is local.
@@ -226,15 +233,15 @@ describe('desktop slash command curation', () => {
   })
 
   it('keeps commands with richer CLI semantics on the slash worker', () => {
-    for (const name of ['/agents', '/steer', '/stop', '/usage']) {
+    for (const name of ['/agents', '/steer', '/usage']) {
       expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
     }
   })
 
   it('still routes commands without dedicated RPCs through exec()', () => {
+    // /btw is an action (prompt.btw) — the slash-worker print never reached Desktop.
     const execNames = [
       '/bg',
-      '/btw',
       '/debug',
       '/goal',
       '/personality',
@@ -249,6 +256,13 @@ describe('desktop slash command curation', () => {
     for (const name of execNames) {
       expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
     }
+  })
+
+  it('routes /btw to the prompt.btw side-question action', () => {
+    expect(resolveDesktopCommand('/btw')?.surface).toEqual({ kind: 'action', action: 'btw' })
+    expect(isDesktopSlashCommand('/btw')).toBe(true)
+    expect(isDesktopSlashSuggestion('/btw')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/btw')).toBeNull()
   })
 
   it('distinguishes free prose from finite slash option lists', () => {

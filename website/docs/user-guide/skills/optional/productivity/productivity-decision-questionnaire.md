@@ -15,7 +15,7 @@ Turn an unanswerable decision into a questionnaire doc.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/productivity/decision-questionnaire` |
-| Path | `optional-skills/productivity/decision-questionnaire` |
+| Path | `optional-skills/productivity\decision-questionnaire` |
 | Version | `1.0.0` |
 | Author | Matt Pocock (mattpocock/skills, to-questionnaire) + Hermes Agent |
 | License | MIT |

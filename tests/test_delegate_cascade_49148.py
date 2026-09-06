@@ -11,7 +11,7 @@ the deletion set, permanently deleting the parent session and its messages.
 import json
 import sqlite3
 
-from hermes_state import _collect_delegate_child_ids, _delete_delegate_children
+from hermes_state_sessions import _collect_delegate_child_ids, _delete_delegate_children
 
 
 def _make_conn():

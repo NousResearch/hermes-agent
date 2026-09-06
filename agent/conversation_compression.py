@@ -1182,6 +1182,65 @@ def _session_was_rotated_by_compression(session_db: Any, session_id: str) -> boo
     return bool(session and session.get("ended_at") is not None and session.get("end_reason") == "compression")
 
 
+# Minimum tokens a compaction must reclaim to be worth its cost.
+# On a model whose KV cache cannot shift (M-RoPE), every compaction rewrites
+# earlier messages and invalidates the entire prompt cache, forcing a full
+# re-prefill of what follows. A compaction reclaiming less than this is a net
+# loss. Healthy observed behaviour reclaims ~20,000 tokens in a single pass.
+MIN_RECLAIM_TOKENS = 2000
+
+
+def classify_compression_outcome(
+    *,
+    pre_tokens: int | None,
+    post_tokens: int,
+    pre_messages: int,
+    post_messages: int,
+    made_progress: bool,
+    split_status: str,
+):
+    """Classify a finished compaction. Pure function so it can be tested.
+
+    Returns ``(commit_status, failure_class, reclaimed, bloated, below_min)``.
+
+    Contract:
+      * A no-op — no progress and the message count did not fall — is
+        ``skipped`` / ``no_op``. It must NEVER report ``committed``: that is
+        what made 50ms attempts indistinguishable from real compactions.
+      * A summary larger than what it replaced is ``skipped`` /
+        ``summary_larger_than_source``.
+      * A real compaction that reclaims less than ``MIN_RECLAIM_TOKENS`` still
+        commits (the work is done and the transcript is valid) but is flagged
+        ``below_min_reclaim`` so the anti-thrash breaker can stop a loop.
+      * A failed session split keeps its existing ``session_split_failed``
+        classification, which takes precedence over ``below_min_reclaim``.
+    """
+    reclaimed = (pre_tokens - post_tokens) if pre_tokens else None
+    no_op = (not made_progress) and post_messages >= pre_messages
+    bloated = bool(pre_tokens) and post_tokens >= pre_tokens
+    below_min = (
+        reclaimed is not None
+        and 0 <= reclaimed < MIN_RECLAIM_TOKENS
+        and not no_op
+        and not bloated
+    )
+    if no_op:
+        return "skipped", "no_op", reclaimed, bloated, below_min
+    if bloated:
+        return "skipped", "summary_larger_than_source", reclaimed, bloated, below_min
+    commit = (
+        "committed"
+        if split_status in {"not_applicable", "in_place_committed", "rotated_committed"}
+        else "aborted"
+    )
+    failure = (
+        "session_split_failed"
+        if split_status in {"failed_not_indexed", "aborted"}
+        else ("below_min_reclaim" if below_min else None)
+    )
+    return commit, failure, reclaimed, bloated, below_min
+
+
 def _emit_compression_attempt_telemetry(
     agent: Any, *, started_at: float, commit_status: str, split_status: str, failure_class: str | None = None,
     commit_started_at: float | None = None,
@@ -3708,9 +3767,68 @@ def compress_context(
         lifecycle.commit_status = (
             "committed" if split_status in {"not_applicable", "in_place_committed", "rotated_committed"} else "aborted"
         )
+        # ── Compression outcome hardening (2026-09-06) ───────────────────
+        # Three failures were observed in production and none of them were
+        # visible in telemetry, because every outcome reported "committed":
+        #
+        #   1. NO-OP. Attempts that took 50-57ms, made no model call and left
+        #      the message count unchanged still reported commit_status
+        #      "committed" with no failure_class. Nothing distinguished them
+        #      from a real compaction.
+        #   2. BLOATED SUMMARY. With thinking enabled on the auxiliary slot the
+        #      summariser returned MORE than it was given (measured out:in
+        #      1.48), so "compression" grew the transcript.
+        #   3. MICRO-COMPACTION. On a model whose KV cache cannot shift (M-RoPE
+        #      -> llama_kv_cache::get_can_shift() is false, so cache_reuse is
+        #      disabled), every compaction rewrites earlier messages and
+        #      invalidates the whole prefix, forcing a FULL re-prefill. A
+        #      compaction that reclaims a little therefore costs far more than
+        #      it saves. Healthy observed behaviour reclaims ~27% of the window
+        #      in one pass; anything near zero is pathological.
+        #
+        # All three are now classified, and 2 and 3 additionally record an
+        # ineffective verdict so the existing anti-thrash breaker in
+        # should_compress() can stop a loop of useless compactions.
+        _commit_status, _failure_class, _reclaimed_est, _bloated, _below_min_reclaim = (
+            classify_compression_outcome(
+                pre_tokens=approx_tokens,
+                post_tokens=_compressed_est,
+                pre_messages=_pre_msg_count,
+                post_messages=len(compressed),
+                made_progress=_compression_made_progress,
+                split_status=split_status,
+            )
+        )
+
+        if _bloated:
+            logger.warning(
+                "Compression produced a LARGER transcript (%s -> %s rough tokens) — "
+                "not counted as progress. This is the signature of a summariser "
+                "returning more than it was given; check that thinking is disabled "
+                "on the compression auxiliary slot.",
+                f"{approx_tokens:,}", f"{_compressed_est:,}",
+            )
+        elif _below_min_reclaim:
+            logger.warning(
+                "Compression reclaimed only ~%s tokens (< %s). On this model every "
+                "compaction invalidates the prompt cache and forces a full "
+                "re-prefill, so a reclaim this small costs more than it saves.",
+                f"{_reclaimed_est:,}", f"{MIN_RECLAIM_TOKENS:,}",
+            )
+
+        if _bloated or _below_min_reclaim:
+            # Feed the existing anti-thrash breaker so a run of useless
+            # compactions stops instead of repeating every turn.
+            try:
+                _rec = getattr(agent.context_compressor, "_record_ineffective_compression_verdict", None)
+                if callable(_rec):
+                    _rec(getattr(agent.context_compressor, "_ineffective_compression_count", 0) + 1)
+            except Exception:
+                pass
+
         _emit_compression_attempt_telemetry(
-            agent, started_at=attempt.started_at, commit_status=lifecycle.commit_status, split_status=split_status,
-            failure_class=("session_split_failed" if split_status in {"failed_not_indexed", "aborted"} else None),
+            agent, started_at=attempt.started_at, commit_status=_commit_status, split_status=split_status,
+            failure_class=_failure_class,
             commit_started_at=commit.commit_started_at,
         )
         return compressed, new_system_prompt

@@ -51,7 +51,7 @@ def discard(pairing_id: str) -> None:
 
 def load(pairing_id: str) -> TelegramOnboardingPairing:
     try:
-        record = TelegramOnboardingPairing(**json.loads(record_path(pairing_id).read_text()))
+        record = TelegramOnboardingPairing(**json.loads(record_path(pairing_id).read_text(encoding="utf-8")))
     except FileNotFoundError:
         raise HTTPException(404, "Telegram setup session was not found. Start a new setup.") from None
     # A waiting client may first poll *after* creation expired while the Worker

@@ -121,6 +121,19 @@ def _uri_parts(uri: str):
     return parsed, decoded
 
 
+def validate_skill_uri(uri: str) -> str:
+    """Validate the exact URI shape that may trigger ``skills/get``.
+
+    This deliberately validates only the request identity.  The returned entry
+    still goes through :func:`validate_skill_entry`, including its directory/name
+    relationship, before the host registers any metadata.
+    """
+    _parsed, decoded = _uri_parts(uri)
+    if not decoded.endswith("/SKILL.md"):
+        raise ValueError("skill uri must identify SKILL.md")
+    return uri
+
+
 def validate_skill_entry(entry: SkillEntry | dict[str, Any]) -> SkillEntry:
     item = entry if isinstance(entry, SkillEntry) else SkillEntry.model_validate(entry)
     parsed, skill_path = _uri_parts(item.uri)
@@ -200,11 +213,15 @@ async def list_skills(session: Any, server_name: str) -> tuple[list[SkillEntry],
 
 async def get_skill(session: Any, uri: str) -> SkillEntry:
     import mcp.types as types
+    validate_skill_uri(uri)
     result = await session.send_request(
         types.Request[dict, str](method="skills/get", params={"uri": uri}), _GET_ADAPTER)
     if result.result_type != "complete":
         raise ValueError("skills/get returned an incomplete result")
-    return validate_skill_entry(result.skill)
+    skill = validate_skill_entry(result.skill)
+    if skill.uri != uri:
+        raise ValueError("skills/get returned a different skill URI")
+    return skill
 
 
 async def read_directory(session: Any, uri: str, cursor: str | None = None) -> DirectoryReadResult:

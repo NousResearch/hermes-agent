@@ -302,7 +302,9 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         "_reconnect_retries", "_session_proven", "_was_parked", "_inflight_tasks", "_reconnecting",
         "_suspect_reason", "_teardown_race", "_permanent_grace_used", "_stdio_child_pids",
         "_ever_connected", "_skills_catalog", "_skills_diagnostic", "_skills_directory_read",
-        "_skills_config_fingerprint", "_skills_home")
+        "_skills_config_fingerprint", "_skills_home", "_skills_local_opt_in",
+        "_skills_advertised", "_skills_list_completed", "_skills_connected", "_skills_epoch",
+        "_skills_ready_session", "_skills_ready_epoch")
 
     def __init__(self, name: str):
         self.name = name
@@ -382,6 +384,15 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         self._skills_directory_read: bool = False
         self._skills_config_fingerprint: str = ""
         self._skills_home: Optional[str] = None
+        self._skills_local_opt_in: bool = False
+        self._skills_advertised: bool = False
+        self._skills_list_completed: bool = False
+        self._skills_connected: bool = False
+        self._skills_epoch: int = 0
+        # Positive Skills capability belongs to one negotiated connection
+        # generation, never to this long-lived server task generally.
+        self._skills_ready_session: Optional[Any] = None
+        self._skills_ready_epoch: Optional[int] = None
 
     # Content types a real Streamable-HTTP endpoint may return on the initial POST/GET;
     # anything else on a 2xx means the URL is not an MCP endpoint.

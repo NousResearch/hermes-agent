@@ -141,3 +141,23 @@ def test_optional_get_and_directory_helpers_send_exact_wire_methods():
     assert session.requests[1].params == {"uri": "skill://fixture/remote-demo", "cursor": "next"}
     assert skill.frontmatter["name"] == "remote-demo"
     assert directory.resources[0].uri.endswith("references/info.md")
+
+
+def test_get_rejects_mismatched_return_uri():
+    class Session:
+        async def send_request(self, request, adapter):
+            from tools.mcp_skills_protocol import SkillsGetResult
+            return SkillsGetResult(skill=SkillEntry.model_validate(_entry("other")))
+
+    with pytest.raises(ValueError, match="different skill URI"):
+        asyncio.run(get_skill(Session(), _entry()["uri"]))
+
+
+@pytest.mark.parametrize("uri", ["remote-demo", "skill://fixture/remote-demo", "skill://fixture/other.txt"])
+def test_malformed_get_uri_is_rejected_before_request(uri):
+    class Session:
+        async def send_request(self, request, adapter):
+            raise AssertionError("malformed URI reached the network")
+
+    with pytest.raises(ValueError):
+        asyncio.run(get_skill(Session(), uri))

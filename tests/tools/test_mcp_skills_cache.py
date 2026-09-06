@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import multiprocessing
@@ -17,6 +18,19 @@ def _activate_in_child(home: str, record: dict, session: str, barrier) -> None:
     from tools.mcp_skills_registry import mark_active
     barrier.wait(timeout=10)
     mark_active(record, home, session)
+
+
+def _register_lazy_in_child(home: str, session: str, entry: dict, barrier) -> None:
+    from tools.mcp_skills_registry import register_lazy_entry
+    if barrier is not None:
+        barrier.wait(timeout=10)
+    register_lazy_entry(home, session, "fixture", "config-a", entry)
+
+
+def _mark_verified_in_child(home: str, session: str, record: dict, barrier) -> None:
+    from tools.mcp_skills_registry import mark_get_verified
+    barrier.wait(timeout=10)
+    mark_get_verified(record, home, session)
 
 
 def _manifest(name: str = "remote-demo", body: bytes | None = None, support: bytes = b"support"):
@@ -43,15 +57,21 @@ def _state(tmp_path, monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "local")
     monkeypatch.chdir(workspace)
     from tools import mcp_skills_registry as registry
+    from tools.terminal_tool import set_approval_callback
     registry.clear_runtime_state()
+    set_approval_callback(lambda *_args, **_kwargs: "once")
     yield home, workspace
+    set_approval_callback(None)
     registry.clear_runtime_state()
 
 
 def _publish(home: Path, session: str = "session-a"):
-    from tools.mcp_skills_registry import mark_get_verified, pin_session, publish_live_catalog
+    from tools.mcp_skills_registry import (
+        mark_get_verified, pin_session, publish_live_catalog, server_config_fingerprint,
+    )
     entry, body, support = _manifest()
-    publish_live_catalog(home, "fixture", "config-a", [entry])
+    publish_live_catalog(
+        home, "fixture", server_config_fingerprint({"skills": {"enabled": True}}), [entry])
     records = pin_session(home, session)
     mark_get_verified(records[0], home, session)
     return records[0], body, support
@@ -228,24 +248,30 @@ def test_skills_get_must_match_pinned_list_manifest(_state, monkeypatch):
     from tools import mcp_skills_cache as cache
     from tools import mcp_tool_discovery as discovery
     from tools import mcp_tool_loop
-    from tools.mcp_skills_registry import pin_session, publish_live_catalog
+    from tools.mcp_skills_registry import pin_session, publish_live_catalog, server_config_fingerprint
 
     home, _workspace = _state
     entry, _body, _support = _manifest()
-    publish_live_catalog(home, "fixture", "config-a", [entry])
+    config = {"skills": {"enabled": True}}
+    fingerprint = server_config_fingerprint(config)
+    publish_live_catalog(home, "fixture", fingerprint, [entry])
     record = pin_session(home, "get-session")[0]
     server = SimpleNamespace(
         session=object(), _rpc_lock=asyncio.Lock(), tool_timeout=10,
-        _skills_home=str(home), _skills_config_fingerprint="config-a")
+        _skills_home=str(home), _skills_config_fingerprint=fingerprint, _config=config,
+        _skills_local_opt_in=True, _skills_advertised=True,
+        _skills_list_completed=True, _skills_connected=True)
+    server._skills_ready_session = server.session
+    server._skills_ready_epoch = 0
     monkeypatch.setattr(discovery, "_get_connected_server_for_call", lambda _name: server)
     monkeypatch.setattr(mcp_tool_loop, "_run_on_mcp_loop", lambda factory, timeout: asyncio.run(factory()))
-    monkeypatch.setattr(cache, "_get_on_session", lambda _server, _uri: _async_value(entry))
+    monkeypatch.setattr(cache, "_get_on_session", lambda _lock, _session, _uri: _async_value(entry))
     cache._ensure_get_verified(record, home, "get-session")
     assert record["get_verified"] is True
 
     changed, _, _ = _manifest("changed-name")
     other = pin_session(home, "other-session")[0]
-    monkeypatch.setattr(cache, "_get_on_session", lambda _server, _uri: _async_value(changed))
+    monkeypatch.setattr(cache, "_get_on_session", lambda _lock, _session, _uri: _async_value(changed))
     with pytest.raises(ValueError, match="does not match"):
         cache._ensure_get_verified(other, home, "other-session")
 
@@ -291,10 +317,14 @@ def test_live_origin_must_match_before_any_rpc(_state, monkeypatch):
     calls = []
     server = SimpleNamespace(
         session=object(), _rpc_lock=asyncio.Lock(), tool_timeout=10,
-        _skills_home=str(home), _skills_config_fingerprint="different-config")
+        _skills_home=str(home), _skills_config_fingerprint="different-config",
+        _config={"skills": {"enabled": True}}, _skills_local_opt_in=True,
+        _skills_advertised=True, _skills_list_completed=True, _skills_connected=True)
+    server._skills_ready_session = server.session
+    server._skills_ready_epoch = 0
     monkeypatch.setattr(discovery, "_get_connected_server_for_call", lambda _name: server)
     monkeypatch.setattr(cache, "_get_on_session", lambda *_args: calls.append("rpc"))
-    with pytest.raises(RuntimeError, match="origin no longer matches"):
+    with pytest.raises(RuntimeError, match="profile/configuration"):
         cache._ensure_get_verified(record, home, "origin-check")
     assert calls == []
 
@@ -312,7 +342,11 @@ def test_symlinked_profile_home_is_rejected_before_any_rpc(_state, monkeypatch):
     calls = []
     server = SimpleNamespace(
         session=object(), _rpc_lock=asyncio.Lock(), tool_timeout=10,
-        _skills_home=str(alias), _skills_config_fingerprint="config-a")
+        _skills_home=str(alias), _skills_config_fingerprint="config-a",
+        _config={"skills": {"enabled": True}}, _skills_local_opt_in=True,
+        _skills_advertised=True, _skills_list_completed=True, _skills_connected=True)
+    server._skills_ready_session = server.session
+    server._skills_ready_epoch = 0
     monkeypatch.setattr(discovery, "_get_connected_server_for_call", lambda _name: server)
     monkeypatch.setattr(cache, "_get_on_session", lambda *_args: calls.append("rpc"))
     with pytest.raises(ValueError, match="managed root"):
@@ -403,3 +437,226 @@ def test_active_state_transaction_merges_cross_process_writers_and_cold_reload(_
         assert child.exitcode == 0
     registry.clear_runtime_state()
     assert {row["uri"] for row in registry.active_skills(home, "process-race")} == {one.uri, two.uri}
+
+
+@pytest.mark.parametrize("operation", ["point_get", "listed_get", "resource_read"])
+@pytest.mark.parametrize(
+    "mutation", ["server", "session", "profile", "config", "epoch", "ready_session", "ready_epoch"])
+def test_remote_results_are_discarded_when_complete_source_token_changes(
+        _state, monkeypatch, operation, mutation):
+    import asyncio
+    from types import SimpleNamespace
+    from tools import mcp_skills_cache as cache
+    from tools import mcp_tool_discovery as discovery
+    from tools import mcp_tool_loop
+    from tools.mcp_skills_registry import pin_session, publish_live_catalog, server_config_fingerprint
+
+    home, _workspace = _state
+    entry, body, _support = _manifest()
+    config = {"skills": {"enabled": True}, "command": "stable"}
+    fingerprint = server_config_fingerprint(config)
+    publish_live_catalog(home, "fixture", fingerprint, [entry] if operation != "point_get" else [])
+    sid = f"token-{operation}-{mutation}"
+    record = pin_session(home, sid)[0] if operation != "point_get" else None
+    if record is not None:
+        record["get_verified"] = operation == "resource_read"
+    server = SimpleNamespace(
+        session=object(), _rpc_lock=asyncio.Lock(), tool_timeout=10, _skills_epoch=7,
+        _skills_home=str(home), _skills_config_fingerprint=fingerprint, _config=config,
+        _skills_local_opt_in=True, _skills_advertised=True,
+        _skills_list_completed=True, _skills_connected=True)
+    server._skills_ready_session = server.session
+    server._skills_ready_epoch = server._skills_epoch
+    current = {"server": server}
+    monkeypatch.setattr(discovery, "_get_connected_server_for_call", lambda _name: current["server"])
+    monkeypatch.setattr(cache, "_get_on_session", lambda *_args: _async_value(entry))
+    monkeypatch.setattr(cache, "_read_on_session", lambda *_args: _async_value(
+        SimpleNamespace(contents=[SimpleNamespace(uri=entry.uri, text=body.decode(), blob=None,
+                                                  mimeType="text/markdown")])))
+
+    def settle(factory, timeout):
+        result = asyncio.run(factory())
+        if mutation == "server":
+            current["server"] = SimpleNamespace(**vars(server))
+        elif mutation == "session":
+            server.session = object()
+        elif mutation == "profile":
+            server._skills_home = str(home / "other-profile")
+        elif mutation == "config":
+            server._config = {"skills": {"enabled": True}, "command": "changed"}
+            server._skills_config_fingerprint = server_config_fingerprint(server._config)
+        elif mutation == "epoch":
+            server._skills_epoch += 1
+        elif mutation == "ready_session":
+            server._skills_ready_session = object()
+        else:
+            server._skills_ready_epoch += 1
+        return result
+
+    monkeypatch.setattr(mcp_tool_loop, "_run_on_mcp_loop", settle)
+    with pytest.raises((RuntimeError, ValueError), match="changed|extension-ready|managed root"):
+        if operation == "point_get":
+            cache.register_skill_uri("fixture", entry.uri, home, sid)
+        elif operation == "listed_get":
+            assert record is not None
+            cache._ensure_get_verified(record, home, sid)
+        else:
+            assert record is not None
+            cache._fetch(record, record["resources"][0], home)
+    if operation == "point_get":
+        assert pin_session(home, sid) == ()
+    elif operation == "listed_get":
+        assert record is not None and record["get_verified"] is False
+
+
+@pytest.mark.parametrize("operation", ["point_get", "listed_get", "resource_read"])
+def test_reconnect_generation_rejects_remote_skill_rpc_before_skills_discovery(
+        _state, monkeypatch, operation):
+    from types import SimpleNamespace
+
+    from tools import mcp_skills_cache as cache
+    from tools import mcp_tool_discovery as discovery
+    from tools import mcp_tool_loop
+    from tools.mcp_skills_protocol import SKILLS_EXTENSION, SkillsListResult
+    from tools.mcp_skills_registry import (
+        pin_session, publish_live_catalog, server_config_fingerprint,
+    )
+    from tools.mcp_tool import MCPServerTask
+
+    home, _workspace = _state
+    entry, _body, _support = _manifest()
+    config = {"skills": {"enabled": True}, "command": "fixture"}
+    fingerprint = server_config_fingerprint(config)
+    publish_live_catalog(home, "fixture", fingerprint, [] if operation == "point_get" else [entry])
+    session_id = f"reconnect-{operation}"
+    record = pin_session(home, session_id)[0] if operation != "point_get" else None
+    if record is not None:
+        record["get_verified"] = operation == "resource_read"
+
+    class NewSession:
+        def __init__(self):
+            self.methods = []
+
+        async def send_request(self, request, adapter):
+            self.methods.append(request.method)
+            return SkillsListResult(skills=[entry])
+
+    old_session = object()
+    new_session = NewSession()
+    server = MCPServerTask("fixture")
+    server._config = config
+    server.session = old_session
+    server._skills_home = str(home)
+    server._skills_config_fingerprint = fingerprint
+    server._skills_local_opt_in = True
+    server._skills_advertised = True
+    server._skills_list_completed = True
+    server._skills_connected = True
+    server._skills_epoch = 4
+    reached = asyncio.Event()
+    release = asyncio.Event()
+
+    async def negotiate(_session, _timeout):
+        return SimpleNamespace(capabilities=SimpleNamespace(extensions={SKILLS_EXTENSION: {}}))
+
+    async def paused_discover_tools():
+        reached.set()
+        await release.wait()
+
+    async def no_wait():
+        return "shutdown"
+
+    server._negotiate_session = negotiate
+    server._discover_tools = paused_discover_tools
+    server._wait_for_lifecycle_event = no_wait
+    monkeypatch.setattr(discovery, "_get_connected_server_for_call", lambda _name: server)
+    rpc_calls = []
+    monkeypatch.setattr(
+        mcp_tool_loop, "_run_on_mcp_loop",
+        lambda *_args, **_kwargs: rpc_calls.append("rpc"),
+    )
+
+    async def run_reconnect():
+        task = asyncio.create_task(server._serve_session(new_session, 1))
+        await reached.wait()
+        assert server.session is new_session
+        assert server._skills_epoch == 5
+        with pytest.raises(RuntimeError, match="extension-ready"):
+            if operation == "point_get":
+                cache.register_skill_uri("fixture", entry.uri, home, session_id)
+            elif operation == "listed_get":
+                assert record is not None
+                cache._ensure_get_verified(record, home, session_id)
+            else:
+                assert record is not None
+                cache._fetch(record, record["resources"][0], home)
+        assert rpc_calls == []
+        release.set()
+        await task
+
+    asyncio.run(run_reconnect())
+    assert new_session.methods == ["skills/list"]
+
+
+def test_snapshot_reads_observe_cross_process_quarantine(_state):
+    home, _workspace = _state
+    from tools import mcp_skills_registry as registry
+    child, child_body, _ = _manifest("child")
+    child_raw = child.model_dump(mode="json")
+    child_root = "skill://fixture/parent/child"
+    old_root = "skill://fixture/child"
+    child_raw["uri"] = child_raw["uri"].replace(old_root, child_root)
+    for resource in child_raw["resources"]:
+        resource["uri"] = resource["uri"].replace(old_root, child_root)
+    parent_body = b"---\nname: parent\ndescription: Remote demo\n---\n\n# Parent\n"
+    parent = SkillEntry.model_validate({
+        "uri": "skill://fixture/parent/SKILL.md",
+        "frontmatter": {"name": "parent", "description": "Remote demo"},
+        "resources": [
+            {"uri": "skill://fixture/parent/SKILL.md",
+             "digest": "sha256:" + hashlib.sha256(parent_body).hexdigest(), "size": len(parent_body)},
+            {"uri": child_raw["uri"], "digest": "sha256:" + hashlib.sha256(child_body).hexdigest(),
+             "size": len(child_body)},
+        ],
+    })
+    registry.publish_live_catalog(home, "fixture", "config-a", [parent])
+    assert [row["frontmatter"]["name"] for row in registry.pin_session(home, "quarantine-race")] == ["parent"]
+    child_raw["resources"][0]["digest"] = "sha256:" + "0" * 64
+    context = multiprocessing.get_context("spawn")
+    process = context.Process(
+        target=_register_lazy_in_child,
+        args=(str(home), "quarantine-race", child_raw, None))
+    process.start()
+    process.join(timeout=15)
+    assert process.exitcode == 0
+    assert registry.pin_session(home, "quarantine-race") == ()
+    blocked = registry.resolve_catalog_resource("fixture", child_raw["uri"], home, "quarantine-race")
+    assert blocked is not None and blocked["metadata_allowed"] is False
+
+
+def test_cross_process_lazy_writers_and_get_verified_merge_losslessly(_state):
+    home, _workspace = _state
+    from tools import mcp_skills_registry as registry
+    base, _, _ = _manifest("base")
+    one, _, _ = _manifest("lazy-one")
+    two, _, _ = _manifest("lazy-two")
+    registry.publish_live_catalog(home, "fixture", "config-a", [base])
+    base_record = registry.pin_session(home, "lazy-race")[0]
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(3)
+    children = [
+        context.Process(target=_register_lazy_in_child,
+                        args=(str(home), "lazy-race", item.model_dump(mode="json"), barrier))
+        for item in (one, two)
+    ]
+    children.append(context.Process(
+        target=_mark_verified_in_child,
+        args=(str(home), "lazy-race", base_record, barrier)))
+    for child_process in children:
+        child_process.start()
+    for child_process in children:
+        child_process.join(timeout=15)
+        assert child_process.exitcode == 0
+    rows = registry.pin_session(home, "lazy-race")
+    assert {row["uri"] for row in rows} == {base.uri, one.uri, two.uri}
+    assert next(row for row in rows if row["uri"] == base.uri)["get_verified"] is True

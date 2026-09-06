@@ -54,6 +54,17 @@ metadata:
 
 Skill identity comes from discovery and the server origin, not the URI scheme.
 """
+UNLISTED_MD = b"""---
+name: uri-only
+description: A valid static skill intentionally omitted from skills/list
+---
+
+# URI-only skill
+"""
+PARENT_MD = b"---\nname: parent\ndescription: Canonical enclosing skill\n---\n\n# Parent\n"
+CHILD_MD = b"---\nname: child\ndescription: Canonical nested skill\n---\n\n# Child\n"
+BAD_PARENT_MD = b"---\nname: bad-parent\ndescription: Inconsistent enclosing skill\n---\n"
+BAD_CHILD_MD = b"---\nname: bad-child\ndescription: Inconsistent nested skill\n---\n"
 GUIDE = b"Portable interop phrase: cobalt-lantern-27.\n"
 BINARY = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c63606060f80f00010401005fe5c34b0000000049454e44ae426082")
 
@@ -63,6 +74,11 @@ FILES: dict[str, tuple[bytes, str]] = {
     "skill://portable-demo/assets/pixel.png": (BINARY, "image/png"),
     "skill://catalog-b/portable-demo/SKILL.md": (COLLISION_MD, "text/markdown"),
     "fixture-skill://catalog-c/portable-alt/SKILL.md": (ALTERNATE_MD, "text/markdown"),
+    "skill://uri-only/SKILL.md": (UNLISTED_MD, "text/markdown"),
+    "skill://nested/parent/SKILL.md": (PARENT_MD, "text/markdown"),
+    "skill://nested/parent/child/SKILL.md": (CHILD_MD, "text/markdown"),
+    "skill://bad/bad-parent/SKILL.md": (BAD_PARENT_MD, "text/markdown"),
+    "skill://bad/bad-parent/bad-child/SKILL.md": (BAD_CHILD_MD, "text/markdown"),
 }
 FRONTMATTER = {
     "skill://portable-demo/SKILL.md": {
@@ -82,6 +98,21 @@ FRONTMATTER = {
         "description": "A skill served under a non-skill URI scheme",
         "license": "CC0-1.0",
         "metadata": {"fixture": "public-interop-alternate-scheme"},
+    },
+    "skill://uri-only/SKILL.md": {
+        "name": "uri-only", "description": "A valid static skill intentionally omitted from skills/list",
+    },
+    "skill://nested/parent/SKILL.md": {
+        "name": "parent", "description": "Canonical enclosing skill",
+    },
+    "skill://nested/parent/child/SKILL.md": {
+        "name": "child", "description": "Canonical nested skill",
+    },
+    "skill://bad/bad-parent/SKILL.md": {
+        "name": "bad-parent", "description": "Inconsistent enclosing skill",
+    },
+    "skill://bad/bad-parent/bad-child/SKILL.md": {
+        "name": "bad-child", "description": "Inconsistent nested skill",
     },
 }
 
@@ -146,7 +177,15 @@ class Fixture:
             return ExtensionResult(
                 skills=[skill_entry("skill://catalog-b/portable-demo/SKILL.md")], nextCursor="page-3")
         if params.cursor == "page-3":
-            return ExtensionResult(skills=[skill_entry("fixture-skill://catalog-c/portable-alt/SKILL.md")])
+            bad_child = skill_entry("skill://bad/bad-parent/bad-child/SKILL.md")
+            bad_child["resources"][0]["digest"] = "sha256:" + "0" * 64
+            return ExtensionResult.model_validate({"skills": [
+                    skill_entry("fixture-skill://catalog-c/portable-alt/SKILL.md"),
+                    skill_entry("skill://nested/parent/SKILL.md"),
+                    skill_entry("skill://nested/parent/child/SKILL.md"),
+                    skill_entry("skill://bad/bad-parent/SKILL.md"),
+                    bad_child,
+                ]})
         raise MCPError(code=-32602, message="Invalid params")
 
     async def get_skill(self, _ctx: Any, params: SkillsGetParams) -> ExtensionResult:

@@ -638,7 +638,7 @@ SKILL_VIEW_SCHEMA = {
         "properties": {
             "name": {
                 "type": "string",
-                "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use 'plugin:skill'; for remote MCP skills, use the exact qualified_name returned by skills_list (mcp:<server>:<skill-uri>).",
+                "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use 'plugin:skill'. For remote MCP skills, use mcp:<server>:<exact-SKILL.md-URI>; this exact URI form may load a static skill omitted from skills_list.",
             },
             "file_path": {
                 "type": "string",

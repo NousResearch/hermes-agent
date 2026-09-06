@@ -28,9 +28,14 @@ def _run_independent_stdio_fixture(tmp_path):
     checks = receipt["checks"]
     assert checks["shutdown_returned"] is True
     assert checks["alternate_uri_scheme"] is True
-    assert checks["real_stdio_discovery"]["catalog_entries"] == 3
+    assert checks["real_stdio_discovery"]["catalog_entries"] == 7
     assert checks["native_skill_view"]["binary_materialized"] is True
     assert checks["collisions"]["ambiguous_bare_name_rejected"] is True
+    assert checks["uri_only"] == {
+        "approved_load": True, "denial_body_reads": 0, "registered_after_get": True}
+    assert checks["nested_overlap"]["separate_activation_prompts"] == 2
+    assert checks["nested_overlap"]["support_read_inert"] is True
+    assert checks["nested_overlap"]["execution_separately_denied"] is True
 
 
 @pytest.mark.linux_only

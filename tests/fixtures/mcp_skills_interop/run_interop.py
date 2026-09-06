@@ -103,15 +103,25 @@ def main() -> int:
         mcp_skills_protocol = importlib.import_module("tools.mcp_skills_protocol")
         system_prompt = importlib.import_module("agent.system_prompt")
         skills_tool = importlib.import_module("tools.skills_tool")
+        terminal_tool = importlib.import_module("tools.terminal_tool")
+        activation_prompts: list[dict[str, str]] = []
+        approval_choices: list[str] = []
+
+        def approve_activation(command, _description, *, surface=None, **_kwargs):
+            activation_prompts.append({"surface": str(surface or ""), "command": command})
+            return approval_choices.pop(0) if approval_choices else "once"
+
+        terminal_tool.set_approval_callback(approve_activation)
 
         registered = mcp_discovery.register_mcp_servers({label: server_config})
         server = mcp_tool._servers.get(label)
-        check(server is not None, "Hermes did not retain the connected fixture server")
+        if server is None:
+            raise AssertionError("Hermes did not retain the connected fixture server")
         check(server._ready.is_set(), "fixture server was not ready")
         if server._skills_diagnostic:
             receipt["host_conformance_issue"] = server._skills_diagnostic
         check(server._skills_diagnostic is None, f"skill discovery diagnostic: {server._skills_diagnostic}")
-        check(len(server._skills_catalog) == 3, "paginated discovery did not return all three skills")
+        check(len(server._skills_catalog) == 7, "paginated discovery did not return all seven listed manifests")
         receipt["checks"]["real_stdio_discovery"] = {
             "registered_tools": registered,
             "catalog_entries": len(server._skills_catalog),
@@ -124,6 +134,8 @@ def main() -> int:
               f"startup was not metadata-only: {startup_methods}")
         receipt["checks"]["metadata_only_startup"] = startup_methods
 
+        if mcp_tool._mcp_loop is None:
+            raise AssertionError("Hermes MCP event loop was not running")
         directory_future = asyncio.run_coroutine_threadsafe(
             mcp_skills_protocol.read_directory(server.session, "skill://portable-demo"),
             mcp_tool._mcp_loop,
@@ -153,6 +165,10 @@ def main() -> int:
         }
 
         listed = load_json(skills_tool.skills_list(session_id=session_a), "skills_list")
+        listed_names = {row.get("name") for row in listed.get("skills", []) if row.get("source") == "mcp"}
+        check({"parent", "child"}.issubset(listed_names), "safe nested manifests were not both visible")
+        check(not {"bad-parent", "bad-child"} & listed_names,
+              "inconsistent overlapping manifests escaped quarantine")
         matching = [row for row in listed.get("skills", []) if row.get("name") == "portable-demo"]
         check(len(matching) == 3, f"expected local plus two remote collisions, got {len(matching)}")
         check(sum(row.get("source") == "mcp" for row in matching) == 2, "remote collisions were dropped")
@@ -164,6 +180,37 @@ def main() -> int:
         check(ambiguous.get("success") is False and "ambiguous" in ambiguous.get("error", "").lower(),
               "bare same-origin collision did not fail as ambiguous")
         receipt["checks"]["collisions"] = {"visible_entries": 3, "ambiguous_bare_name_rejected": True}
+
+        uri_only_name = f"mcp:{label}:skill://uri-only/SKILL.md"
+        reads_before_denial = len([
+            event for event in read_events(events_path)
+            if event.get("method") == "resources/read" and event.get("uri") == "skill://uri-only/SKILL.md"
+        ])
+        approval_choices.append("deny")
+        denied_uri_only = load_json(
+            skills_tool.skill_view(uri_only_name, task_id=session_a, session_id=session_a),
+            "denied URI-only skill_view",
+        )
+        check("error" in denied_uri_only, "denied URI-only activation unexpectedly loaded")
+        reads_after_denial = len([
+            event for event in read_events(events_path)
+            if event.get("method") == "resources/read" and event.get("uri") == "skill://uri-only/SKILL.md"
+        ])
+        check(reads_after_denial == reads_before_denial, "denied URI-only activation read its body")
+        uri_only = load_json(
+            skills_tool.skill_view(uri_only_name, task_id=session_a, session_id=session_a),
+            "approved URI-only skill_view",
+        )
+        check(uri_only.get("success") is True and "URI-only skill" in uri_only.get("raw_content", ""),
+              f"URI-only point load failed: {uri_only}")
+        listed_after_get = load_json(skills_tool.skills_list(session_id=session_a), "post-get skills_list")
+        check(any(row.get("qualified_name") == uri_only_name for row in listed_after_get.get("skills", [])),
+              "URI-only manifest was not registered in the session catalog")
+        receipt["checks"]["uri_only"] = {
+            "registered_after_get": True,
+            "denial_body_reads": reads_after_denial - reads_before_denial,
+            "approved_load": True,
+        }
 
         primary_name = f"mcp:{label}:skill://portable-demo/SKILL.md"
         primary = load_json(
@@ -206,6 +253,7 @@ def main() -> int:
             "support_text_loaded": True,
             "binary_materialized": True,
             "binary_sha256": hashlib.sha256(expected_binary).hexdigest(),
+            "activation_surface": activation_prompts[0]["surface"],
         }
 
         session_b = "interop-collision-session"
@@ -229,10 +277,48 @@ def main() -> int:
         receipt["checks"]["alternate_uri_scheme"] = True
         receipt["checks"]["separate_activation_sessions"].append(session_c)
 
+        nested_session = "interop-nested-session"
+        parent_name = f"mcp:{label}:skill://nested/parent/SKILL.md"
+        child_name = f"mcp:{label}:skill://nested/parent/child/SKILL.md"
+        prompts_before_nested = len(activation_prompts)
+        parent = load_json(skills_tool.skill_view(
+            parent_name, task_id=nested_session, session_id=nested_session), "nested parent")
+        check(parent.get("success") is True, f"nested parent activation failed: {parent}")
+        inert_child = load_json(skills_tool.skill_view(
+            parent_name, file_path="child/SKILL.md", task_id=nested_session, session_id=nested_session),
+            "nested child as parent support")
+        check(inert_child.get("success") is True and "name: child" in inert_child.get("content", ""),
+              "parent support read of nested SKILL.md failed")
+        prompts_after_support = len(activation_prompts)
+        check(prompts_after_support == prompts_before_nested + 1,
+              "supporting nested SKILL.md incorrectly triggered child activation")
+        child = load_json(skills_tool.skill_view(
+            child_name, task_id=nested_session, session_id=nested_session), "nested child activation")
+        check(child.get("success") is True, f"nested child activation failed: {child}")
+        nested_prompts = activation_prompts[prompts_before_nested:]
+        check([item["surface"] for item in nested_prompts] == [
+            "mcp-skill-activation", "mcp-skill-activation"],
+            f"nested activation prompts were not separate: {nested_prompts}")
+        check("skill://nested/parent/SKILL.md" in nested_prompts[0]["command"]
+              and "skill://nested/parent/child/SKILL.md" in nested_prompts[1]["command"],
+              "nested activation prompts were not exact-manifest bound")
+        mcp_skills_consent = importlib.import_module("tools.mcp_skills_consent")
+        approval_choices.append("deny")
+        execution_block = mcp_skills_consent.enforce_remote_skill_gate(
+            "terminal", {"command": "printf must-not-run"}, session_id=nested_session)
+        check(execution_block is not None, "activation consent incorrectly satisfied execution consent")
+        receipt["checks"]["nested_overlap"] = {
+            "flat_visibility": True,
+            "support_read_inert": True,
+            "separate_activation_prompts": 2,
+            "execution_separately_denied": True,
+            "inconsistent_hidden": True,
+        }
+
         all_events = read_events(events_path)
         methods = [event["method"] for event in all_events]
         check(methods[:3] == ["skills/list", "skills/list", "skills/list"], "startup ordering changed")
-        check(methods.count("skills/get") >= 3, "native loads did not verify point manifests")
+        check(methods.count("skills/get") >= 6, "native loads did not verify listed and URI-only manifests")
         check(methods.count("resources/directory/read") == 1, "directory handler was not exercised exactly once")
         read_uris = [event["uri"] for event in all_events if event["method"] == "resources/read"]
         check("skill://portable-demo/references/GUIDE.md" in read_uris, "guide was not read over MCP")
@@ -251,6 +337,9 @@ def main() -> int:
     finally:
         if mcp_tool is not None:
             try:
+                terminal = locals().get("terminal_tool")
+                if terminal is not None:
+                    terminal.set_approval_callback(None)
                 lifecycle = locals().get("mcp_lifecycle")
                 if lifecycle is None:
                     lifecycle = importlib.import_module("tools.mcp_tool_lifecycle")

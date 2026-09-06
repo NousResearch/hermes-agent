@@ -224,3 +224,166 @@ def test_execution_consent_is_not_persisted_or_forgeable_by_native_file_tools(he
     state_file = home / "cache" / "mcp-skills" / "active-origins" / "forged.json"
     blocked = guards._check_sensitive_path(str(state_file), "session-a")
     assert blocked and "Hermes-managed MCP skill state" in blocked
+
+
+@pytest.mark.parametrize("answer", ["decline", "cancel"])
+def test_first_activation_denial_reads_no_body_and_leaves_no_marker(held, monkeypatch, answer):
+    home, record, _tool_name = held
+    from tools import mcp_skills_view as remote_view
+    from tools.mcp_skills_registry import is_active, qualified_name
+    import tools.approval_prompt as approval_prompt
+
+    reads = []
+    monkeypatch.setattr(approval_prompt, "request_elicitation_consent", lambda *a, **k: answer)
+    monkeypatch.setattr(remote_view, "get_verified_resource", lambda *a, **k: reads.append(a))
+    result = json.loads(remote_view.serve_remote_skill(
+        qualified_name(record), file_path=None, task_id=None, session_id="session-a",
+        materialize=False, destination=None))
+    assert "error" in result
+    assert "activation was not approved" in result["error"]
+    assert reads == []
+    assert not is_active(record, home, "session-a")
+
+
+def test_every_exact_manifest_gets_separate_activation_and_execution_consent(held, monkeypatch, tmp_path):
+    home, _first, _tool_name = held
+    from tools import mcp_skills_registry as registry
+    from tools import mcp_skills_view as remote_view
+    from tools.mcp_skills_consent import enforce_remote_skill_gate
+    import tools.approval_prompt as approval_prompt
+
+    second_entry = _entry("remote-two")
+    registry.publish_live_catalog(home, "fixture", "config-a", [_entry(), second_entry])
+    records = registry.pin_session(home, "separate")
+    prompts = []
+    monkeypatch.setattr(approval_prompt, "request_elicitation_consent", lambda message, _description, **kwargs: (
+        prompts.append((message, kwargs["surface"])) or "accept"))
+
+    def fetched(record, resource, *_args):
+        raw = (f"---\nname: {record['frontmatter']['name']}\n"
+               "description: Remote demo\n---\n\n# Demo\n").encode()
+        return raw, "text/markdown", True, tmp_path / "cache", {
+            "scope": "single_resource_text", "verdict": "safe", "allowed": True}
+
+    monkeypatch.setattr(remote_view, "get_verified_resource", fetched)
+    for record in records:
+        result = json.loads(remote_view.serve_remote_skill(
+            registry.qualified_name(record), file_path=None, task_id=None, session_id="separate",
+            materialize=False, destination=None))
+        assert result["success"] is True
+    assert [surface for _message, surface in prompts] == [
+        "mcp-skill-activation", "mcp-skill-activation"]
+    assert all(record["manifest_fingerprint"] in prompts[index][0]
+               for index, record in enumerate(records))
+
+    # Activation is deduplicated, but each reload remains a fresh cross-origin
+    # read decision once multiple remote manifests are active.
+    for record in records:
+        remote_view.serve_remote_skill(
+            registry.qualified_name(record), file_path=None, task_id=None, session_id="separate",
+            materialize=False, destination=None)
+    assert [surface for _message, surface in prompts] == [
+        "mcp-skill-activation", "mcp-skill-activation",
+        "mcp-skill-cross-origin-read", "mcp-skill-cross-origin-read"]
+
+    blocked = enforce_remote_skill_gate("terminal", {"command": "printf ok"}, session_id="separate")
+    assert blocked is None
+    assert [surface for _message, surface in prompts][-2:] == [
+        "mcp-skill-execution", "mcp-skill-execution"]
+
+
+def test_active_main_reload_requires_per_call_origin_consent(held, monkeypatch):
+    home, _first, _tool_name = held
+    from tools import mcp_skills_registry as registry
+    from tools import mcp_skills_view as remote_view
+    import tools.approval_prompt as approval_prompt
+    other = _entry("other")
+    registry.publish_live_catalog(home, "other-server", "config-b", [other])
+    rows = registry.pin_session(home, "reload")
+    for row in rows:
+        registry.mark_active(row, home, "reload")
+    target = next(row for row in rows if row["server"] == "other-server")
+    prompts = []
+    monkeypatch.setattr(approval_prompt, "request_elicitation_consent",
+                        lambda *args, **kwargs: prompts.append(kwargs["surface"]) or "decline")
+    monkeypatch.setattr(remote_view, "get_verified_resource", lambda *_args: pytest.fail("body read"))
+    result = json.loads(remote_view.serve_remote_skill(
+        registry.qualified_name(target), file_path=None, task_id=None, session_id="reload",
+        materialize=False, destination=None))
+    assert "error" in result
+    assert prompts == ["mcp-skill-cross-origin-read"]
+
+
+def test_child_loaded_before_unknown_parent_still_requires_activation_consent(held, monkeypatch):
+    home, _record, _tool_name = held
+    from tools import mcp_skills_registry as registry
+    from tools import mcp_skills_view as remote_view
+    import tools.approval_prompt as approval_prompt
+    child = _entry("child").model_dump(mode="json")
+    child["uri"] = child["uri"].replace("skill://fixture/child", "skill://fixture/unknown-parent/child")
+    for resource in child["resources"]:
+        resource["uri"] = resource["uri"].replace(
+            "skill://fixture/child", "skill://fixture/unknown-parent/child")
+    from tools.mcp_skills_protocol import SkillEntry
+    registry.publish_live_catalog(
+        home, "child-server", "config-child", [SkillEntry.model_validate(child)])
+    child_record = next(row for row in registry.pin_session(home, "child-first")
+                        if row["server"] == "child-server")
+    prompts = []
+    monkeypatch.setattr(approval_prompt, "request_elicitation_consent",
+                        lambda *args, **kwargs: prompts.append(kwargs["surface"]) or "decline")
+    monkeypatch.setattr(remote_view, "get_verified_resource", lambda *_args: pytest.fail("body read"))
+    result = json.loads(remote_view.serve_remote_skill(
+        registry.qualified_name(child_record), file_path=None, task_id=None, session_id="child-first",
+        materialize=False, destination=None))
+    assert "error" in result
+    assert prompts == ["mcp-skill-activation"]
+
+
+def test_activation_without_gateway_channel_fails_closed_in_bound_session_context(held):
+    home, record, _tool_name = held
+    from gateway import session_context
+    from tools import approval_context
+    from tools.mcp_skills_consent import enforce_skill_activation_gate
+    token = approval_context.set_current_session_key("gateway-no-channel")
+    session_context.set_session_vars(platform="telegram")
+    try:
+        blocked = enforce_skill_activation_gate(
+            record, home=home, session_id="gateway-no-channel")
+        assert blocked is not None
+        assert "activation was not approved" in json.loads(blocked)["error"]
+    finally:
+        session_context.reset_session_vars()
+        approval_context.reset_current_session_key(token)
+
+
+def test_activation_gateway_context_reaches_real_dispatch_with_surface(held, monkeypatch):
+    home, record, _tool_name = held
+    from gateway import session_context
+    from tools import approval, approval_context, approval_gateway_wait
+    from tools import mcp_skills_view as remote_view
+    import model_tools
+    observed = []
+    monkeypatch.setattr(approval_gateway_wait, "_await_gateway_decision",
+                        lambda session_key, notify_cb, data, *, surface: (
+                            observed.append((session_key, surface, data["command"])),
+                            {"resolved": True, "choice": "once"})[1])
+    body = b"---\nname: remote-demo\ndescription: Remote demo\n---\n\n# Demo\n"
+    monkeypatch.setattr(remote_view, "get_verified_resource", lambda *_args: (
+        body, "text/markdown", True, Path("cache"),
+        {"scope": "single_resource_text", "verdict": "safe", "allowed": True}))
+    token = approval_context.set_current_session_key("gateway-real-context")
+    session_context.set_session_vars(platform="telegram")
+    approval.register_gateway_notify("gateway-real-context", lambda _data: None)
+    try:
+        result = json.loads(model_tools.handle_function_call(
+            "skill_view", {"name": f"mcp:fixture:{record['uri']}"},
+            task_id="turn-task", session_id="gateway-real-context"))
+        assert result["success"] is True
+        assert observed == [(
+            "gateway-real-context", "mcp-skill-activation", observed[0][2])]
+        assert record["uri"] in observed[0][2]
+    finally:
+        approval.unregister_gateway_notify("gateway-real-context")
+        session_context.reset_session_vars()
+        approval_context.reset_current_session_key(token)

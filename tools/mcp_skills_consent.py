@@ -13,6 +13,37 @@ from tools.registry import tool_error
 _EXECUTION_TOOLS = {"terminal", "execute_code", "browser_exec"}
 
 
+def enforce_skill_activation_gate(record: dict[str, Any], *, home, session_id: str) -> str | None:
+    """Require first-use consent for one exact remote manifest."""
+    from tools.mcp_skills_registry import is_active
+    if is_active(record, home, session_id):
+        return None
+    try:
+        from tools.approval_prompt import request_elicitation_consent
+        frontmatter = record["frontmatter"]
+        origins = active_skills(home, session_id)
+        active_note = ""
+        if origins:
+            active_note = " Active remote origins: " + ", ".join(
+                f"{item['server']}:{item['uri']}" for item in origins) + "."
+        answer = request_elicitation_consent(
+            f"Remote MCP skill activation requested for server {record['server']!r}, "
+            f"skill URI {record['uri']!r}, name {frontmatter.get('name')!r}, "
+            f"description {frontmatter.get('description')!r}, manifest {record['manifest_fingerprint']}."
+            f"{active_note}",
+            "Approve loading the main SKILL.md body for this exact remote manifest once for this session. "
+            "When another remote origin is active, this same explicit decision also approves only this exact "
+            "main-body read for this call. It does not approve host execution or grant remote allowed-tools permissions.",
+            surface="mcp-skill-activation")
+    except Exception:
+        answer = "decline"
+    if answer != "accept":
+        return tool_error(
+            f"BLOCKED: activation was not approved for remote MCP skill {record['uri']!r} "
+            f"from server {record['server']!r}. Silence, timeout, and missing approval channels are not consent.")
+    return None
+
+
 def _is_host_execution(tool_name: str, args: dict[str, Any]) -> bool:
     if tool_name in _EXECUTION_TOOLS:
         return True

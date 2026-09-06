@@ -7,9 +7,11 @@ persistence, timeout policy and the final authorization stay host-owned in
 """
 
 import logging
+import inspect
 import os
 import sys
 import threading
+from typing import Any
 from tools import approval_context as _ctx, approval_gateway_wait as _gw
 from tools.approval_human_wait import activity_heartbeat, human_wait_window
 from tools.interrupt import is_interrupted
@@ -19,7 +21,8 @@ logger = logging.getLogger("tools.approval")
 
 def prompt_dangerous_approval(command: str, description: str, timeout_seconds: int | None = None,
                               allow_permanent: bool = True, approval_callback=None,
-                              *, allow_session: bool = True, smart_denied: bool = False) -> str:
+                              *, allow_session: bool = True, smart_denied: bool = False,
+                              surface: str | None = None) -> str:
     """Prompt the user to approve a dangerous command (CLI only).
 
     allow_permanent=False hides [a]lways (tirith warnings present: broad permanent
@@ -45,7 +48,7 @@ def prompt_dangerous_approval(command: str, description: str, timeout_seconds: i
     # See #79719.
     with human_wait_window():
         return _ask_human(command, description, timeout_seconds, allow_permanent,
-                          approval_callback, allow_session, smart_denied)
+                          approval_callback, allow_session, smart_denied, surface)
 
 
 _CLI_CHOICE_ALIASES = {
@@ -79,7 +82,8 @@ def _read_choice(prompt: str, timeout_seconds: int) -> str | None:
 
 
 def _ask_human(command: str, description: str, timeout_seconds: int, allow_permanent: bool,
-               approval_callback, allow_session: bool, smart_denied: bool) -> str:
+               approval_callback, allow_session: bool, smart_denied: bool,
+               surface: str | None = None) -> str:
     # Redact before any user-visible rendering; the original `command` still executes after approval. Same redactor as
     # memory/log sanitization so tokens mask consistently across surfaces.
     from agent.redact import redact_sensitive_text
@@ -91,9 +95,20 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
     if approval_callback is not None:
         try:
             # Non-default scopes only: legacy callbacks lack the newer keywords.
-            callback_kwargs = {"allow_permanent": allow_permanent,
-                               **({"allow_session": False} if not allow_session else {}),
-                               **({"smart_denied": True} if smart_denied else {})}
+            callback_kwargs: dict[str, Any] = {
+                "allow_permanent": allow_permanent,
+                **({"allow_session": False} if not allow_session else {}),
+                **({"smart_denied": True} if smart_denied else {}),
+            }
+            if surface:
+                try:
+                    signature = inspect.signature(approval_callback)
+                    if "surface" in signature.parameters or any(
+                            parameter.kind == inspect.Parameter.VAR_KEYWORD
+                            for parameter in signature.parameters.values()):
+                        callback_kwargs["surface"] = surface
+                except (TypeError, ValueError):
+                    pass
             return approval_callback(display_command, display_description, **callback_kwargs)
         except Exception as e:
             logger.error("Approval callback failed: %s", e, exc_info=True)
@@ -288,8 +303,9 @@ def request_elicitation_consent(message: str, description: str, *,
 
     # allow_permanent=False: elicitation is a per-call confirmation — no pattern to remember.
     try:
-        choice = prompt_dangerous_approval(message, description, timeout_seconds=timeout_seconds,
-                                           allow_permanent=False)
+        choice = prompt_dangerous_approval(
+            message, description, timeout_seconds=timeout_seconds, allow_permanent=False,
+            approval_callback=_ctx._resolve_cli_approval_callback(), surface=surface)
     except Exception as exc:
         logger.error("Elicitation CLI prompt failed: %s", exc, exc_info=True)
         return "decline"

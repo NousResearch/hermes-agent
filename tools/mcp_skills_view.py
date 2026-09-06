@@ -7,7 +7,7 @@ from typing import Any
 
 from agent.skill_utils import parse_frontmatter
 from hermes_constants import get_hermes_home
-from tools.mcp_skills_cache import get_verified_resource, materialize_resource
+from tools.mcp_skills_cache import get_verified_resource, materialize_resource, register_skill_uri
 from tools.mcp_skills_registry import (
     is_active, mark_active, qualified_name, relative_resource_path, resolve_remote_skill, resource_for_path,
 )
@@ -66,6 +66,21 @@ def serve_remote_skill(name: str, *, file_path: str | None, task_id: str | None,
     sid = session_id or task_id
     home = get_hermes_home()
     record, error = resolve_remote_skill(name, home, sid)
+    if record is None and isinstance(name, str):
+        try:
+            _prefix, server, target = name.split(":", 2)
+            from tools.mcp_skills_protocol import validate_skill_uri
+            validate_skill_uri(target)
+        except (ValueError, TypeError):
+            pass
+        else:
+            try:
+                record = register_skill_uri(server, target, home, sid)
+                error = None
+            except Exception as exc:
+                from tools.mcp_skills_scan import RemoteSkillSecurityError
+                error = ("Remote MCP skill metadata was blocked by Skills Guard"
+                         if isinstance(exc, RemoteSkillSecurityError) else str(exc))
     if error or record is None:
         return json.dumps({"success": False, "error": error}, ensure_ascii=False)
     if destination and not materialize:
@@ -82,10 +97,18 @@ def serve_remote_skill(name: str, *, file_path: str | None, task_id: str | None,
                            "available_files": [relative_resource_path(record, r["uri"]) for r in record["resources"]]},
                           ensure_ascii=False)
     try:
-        from tools.mcp_skills_consent import enforce_native_skill_read_gate
-        blocked = enforce_native_skill_read_gate(record, resource, session_id=str(sid))
-        if blocked is not None:
-            return blocked
+        already_active = False
+        if not file_path:
+            from tools.mcp_skills_consent import enforce_skill_activation_gate
+            already_active = is_active(record, home, sid)
+            blocked = enforce_skill_activation_gate(record, home=home, session_id=str(sid))
+            if blocked is not None:
+                return blocked
+        if file_path or already_active:
+            from tools.mcp_skills_consent import enforce_native_skill_read_gate
+            blocked = enforce_native_skill_read_gate(record, resource, session_id=str(sid))
+            if blocked is not None:
+                return blocked
         raw, mime, is_text, _cache_path, scan = get_verified_resource(record, resource, home, sid)
         raw_content = None
         if not file_path:

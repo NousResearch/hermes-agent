@@ -5,6 +5,7 @@ import hashlib
 import os
 import time
 import unicodedata
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -13,8 +14,13 @@ from hermes_constants import get_hermes_home
 from tools.mcp_skills_fs import (
     secure_atomic_bytes, secure_atomic_json, secure_read_bytes, secure_read_json, validate_managed_root,
 )
-from tools.mcp_skills_protocol import decode_read_resource_result, get_skill, manifest_fingerprint, validate_skill_entry
-from tools.mcp_skills_registry import mark_get_verified, relative_resource_path
+from tools.mcp_skills_protocol import (
+    decode_read_resource_result, get_skill, manifest_fingerprint, skills_opted_in,
+    validate_skill_entry, validate_skill_uri,
+)
+from tools.mcp_skills_registry import (
+    mark_get_verified, register_lazy_entry, relative_resource_path, server_config_fingerprint,
+)
 from tools.mcp_skills_scan import scan_resource_bytes
 
 
@@ -51,8 +57,7 @@ def _read_cached(record: dict[str, Any], resource: dict[str, Any], home=None) ->
         _verify(raw, resource)
         expected = {
             "server": record["server"], "config_fingerprint": record["config_fingerprint"],
-            "skill_uri": record["uri"], "uri": resource["uri"], "digest": resource["digest"],
-            "size": resource["size"],
+            "uri": resource["uri"], "digest": resource["digest"], "size": resource["size"],
         }
         if any(meta.get(key) != value for key, value in expected.items()):
             raise ValueError("verified cache metadata mismatch")
@@ -61,14 +66,81 @@ def _read_cached(record: dict[str, Any], resource: dict[str, Any], home=None) ->
         return None
 
 
-async def _read_on_session(server: Any, uri: str):
-    async with server._rpc_lock:
-        return await server.session.read_resource(uri)
+@dataclass(frozen=True)
+class _SourceToken:
+    server_name: str
+    home: str
+    config_fingerprint: str
+    epoch: int
+    server: Any
+    session: Any
+    rpc_lock: Any
 
 
-async def _get_on_session(server: Any, uri: str):
-    async with server._rpc_lock:
-        return await get_skill(server.session, uri)
+async def _read_on_session(rpc_lock: Any, session: Any, uri: str):
+    async with rpc_lock:
+        return await session.read_resource(uri)
+
+
+async def _get_on_session(rpc_lock: Any, session: Any, uri: str):
+    async with rpc_lock:
+        return await get_skill(session, uri)
+
+
+def _capture_source(server_name: str, server: Any, home=None,
+                    expected_fingerprint: str | None = None) -> _SourceToken:
+    session = getattr(server, "session", None)
+    epoch = int(getattr(server, "_skills_epoch", 0))
+    _require_live_source(server, home, expected_session=session, expected_epoch=epoch)
+    if expected_fingerprint is not None and server._skills_config_fingerprint != expected_fingerprint:
+        raise RuntimeError(
+            "MCP skill origin no longer matches the connected profile/configuration; start a new session after reconnect")
+    return _SourceToken(
+        server_name=server_name,
+        home=str(validate_managed_root(Path(home or get_hermes_home()).expanduser()).absolute()),
+        config_fingerprint=server._skills_config_fingerprint,
+        epoch=epoch,
+        server=server,
+        session=session,
+        rpc_lock=server._rpc_lock,
+    )
+
+
+def _require_source_token(token: _SourceToken) -> None:
+    from tools import mcp_tool_discovery as discovery
+    current = discovery._get_connected_server_for_call(token.server_name)
+    if current is not token.server or getattr(current, "session", None) is not token.session:
+        raise RuntimeError("MCP skill source changed while the remote operation was in flight; result discarded")
+    _require_live_source(
+        current, token.home, expected_session=token.session, expected_epoch=token.epoch)
+    if (getattr(current, "_skills_config_fingerprint", "") != token.config_fingerprint
+            or int(getattr(current, "_skills_epoch", 0)) != token.epoch):
+        raise RuntimeError("MCP skill source changed while the remote operation was in flight; result discarded")
+
+
+def register_skill_uri(server_name: str, uri: str, home=None,
+                       session_id: str | None = None) -> dict[str, Any]:
+    """Point-fetch and atomically pin one exact unlisted static manifest."""
+    validate_skill_uri(uri)
+    if not session_id:
+        raise ValueError("URI-only remote skill registration requires a session id")
+    from tools import mcp_tool_discovery as discovery
+    from tools import mcp_tool_loop
+    server = discovery._get_connected_server_for_call(server_name)
+    if server is None or server.session is None:
+        raise RuntimeError(f"MCP server {server_name!r} is not connected")
+    token = _capture_source(server_name, server, home)
+    result = mcp_tool_loop._run_on_mcp_loop(
+        lambda: _get_on_session(token.rpc_lock, token.session, uri),
+        timeout=float(getattr(server, "tool_timeout", 300)))
+    _require_source_token(token)
+    record = register_lazy_entry(
+        home, session_id, server_name, token.config_fingerprint,
+        validate_skill_entry(result))
+    if record.get("metadata_allowed") is not True:
+        from tools.mcp_skills_scan import RemoteSkillSecurityError
+        raise RemoteSkillSecurityError("catalog metadata")
+    return record
 
 
 def _ensure_get_verified(record: dict[str, Any], home=None, session_id: str | None = None) -> None:
@@ -80,9 +152,11 @@ def _ensure_get_verified(record: dict[str, Any], home=None, session_id: str | No
     if server is None or server.session is None:
         raise RuntimeError(
             f"MCP server {record['server']!r} is not connected and skills/get identity has not been verified")
-    _require_live_origin(server, record, home)
+    token = _capture_source(record["server"], server, home, record["config_fingerprint"])
     result = mcp_tool_loop._run_on_mcp_loop(
-        lambda: _get_on_session(server, record["uri"]), timeout=float(getattr(server, "tool_timeout", 300)))
+        lambda: _get_on_session(token.rpc_lock, token.session, record["uri"]),
+        timeout=float(getattr(server, "tool_timeout", 300)))
+    _require_source_token(token)
     current = validate_skill_entry(result)
     if manifest_fingerprint(current) != record["manifest_fingerprint"]:
         raise ValueError("skills/get manifest does not match the session-pinned skills/list manifest")
@@ -90,12 +164,33 @@ def _ensure_get_verified(record: dict[str, Any], home=None, session_id: str | No
 
 
 def _require_live_origin(server: Any, record: dict[str, Any], home=None) -> None:
+    _require_live_source(server, home)
+    if getattr(server, "_skills_config_fingerprint", "") != record["config_fingerprint"]:
+        raise RuntimeError(
+            "MCP skill origin no longer matches the connected profile/configuration; start a new session after reconnect")
+
+
+def _require_live_source(server: Any, home=None, *, expected_session: Any = None,
+                         expected_epoch: int | None = None) -> None:
     requested_home = str(validate_managed_root(Path(home or get_hermes_home()).expanduser()).absolute())
     live_home = str(validate_managed_root(
         Path(getattr(server, "_skills_home", "") or ".").expanduser()).absolute())
-    if live_home != requested_home or getattr(server, "_skills_config_fingerprint", "") != record["config_fingerprint"]:
+    retained_fingerprint = getattr(server, "_skills_config_fingerprint", "")
+    current_fingerprint = server_config_fingerprint(getattr(server, "_config", {}) or {})
+    current_session = getattr(server, "session", None)
+    current_epoch = int(getattr(server, "_skills_epoch", 0))
+    ready = all(getattr(server, attr, False) is True for attr in (
+        "_skills_local_opt_in", "_skills_advertised", "_skills_list_completed", "_skills_connected"))
+    if (not ready or current_session is None
+            or not skills_opted_in(getattr(server, "_config", {}) or {})
+            or live_home != requested_home or not retained_fingerprint
+            or current_fingerprint != retained_fingerprint
+            or getattr(server, "_skills_ready_session", None) is not current_session
+            or getattr(server, "_skills_ready_epoch", None) != current_epoch
+            or (expected_session is not None and current_session is not expected_session)
+            or (expected_epoch is not None and current_epoch != expected_epoch)):
         raise RuntimeError(
-            "MCP skill origin no longer matches the connected profile/configuration; start a new session after reconnect")
+            "MCP skill source is not extension-ready for the current profile/configuration; reconnect or start a new session")
 
 
 def _fetch(record: dict[str, Any], resource: dict[str, Any], home=None) -> tuple[bytes, str, bool]:
@@ -104,9 +199,11 @@ def _fetch(record: dict[str, Any], resource: dict[str, Any], home=None) -> tuple
     server = discovery._get_connected_server_for_call(record["server"])
     if server is None or server.session is None:
         raise RuntimeError(f"MCP server {record['server']!r} is not connected and the resource is not cached")
-    _require_live_origin(server, record, home)
+    token = _capture_source(record["server"], server, home, record["config_fingerprint"])
     result = mcp_tool_loop._run_on_mcp_loop(
-        lambda: _read_on_session(server, resource["uri"]), timeout=float(getattr(server, "tool_timeout", 300)))
+        lambda: _read_on_session(token.rpc_lock, token.session, resource["uri"]),
+        timeout=float(getattr(server, "tool_timeout", 300)))
+    _require_source_token(token)
     return decode_read_resource_result(result, resource["uri"])
 
 

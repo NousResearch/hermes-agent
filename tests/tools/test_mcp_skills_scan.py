@@ -41,8 +41,11 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "local")
     monkeypatch.chdir(workspace)
     from tools import mcp_skills_registry as registry
+    from tools.terminal_tool import set_approval_callback
     registry.clear_runtime_state()
+    set_approval_callback(lambda *_args, **_kwargs: "once")
     yield home, workspace
+    set_approval_callback(None)
     registry.clear_runtime_state()
 
 
@@ -133,6 +136,26 @@ def test_quarantined_ownership_survives_get_verification_and_duplicate_owners_bl
     assert ambiguous is not None and ambiguous["ownership_ambiguous"] is True
     registry.clear_runtime_state()
     assert registry.pin_session(home, "duplicate-session") == ()
+
+
+def test_stale_metadata_attestation_remains_quarantined_after_overlap_classification(isolated):
+    home, _workspace = isolated
+    from tools import mcp_skills_registry as registry
+    safe = _entry("attested")
+    registry.publish_live_catalog(home, "fixture", "config-a", [safe])
+    registry.pin_session(home, "stale-attestation")
+    snapshot = next((home / "cache" / "mcp-skills" / "session-snapshots").glob("*.json"))
+    payload = json.loads(snapshot.read_text())
+    payload["entries"][0]["metadata_scan"]["content_hash"] = "forged"
+    snapshot.write_text(json.dumps(payload))
+    assert registry.pin_session(home, "stale-attestation") == ()
+    owned = registry.resolve_catalog_resource(
+        "fixture", safe.model_dump(mode="json")["resources"][0]["uri"], home, "stale-attestation")
+    assert owned is not None
+    assert owned["metadata_scan_allowed"] is True
+    assert owned["attestation_bound"] is False
+    assert owned["overlap_safe"] is True
+    assert owned["metadata_allowed"] is False
 
 
 def test_dangerous_body_and_support_never_reach_native_model_output(isolated, monkeypatch):

@@ -136,7 +136,7 @@ def _load_config() -> dict:
 def _resolve_profile_from_cfg(cfg: dict, key: str) -> str:
     """``kanban.<key>`` if it names an existing profile, else the active
     default profile — so a task is never stranded for lack of an owner.
-    ``orchestrator_profile`` owns the root after fan-out; ``default_assignee``
+    ``orchestrator_profile`` owns unassigned roots after fan-out; ``default_assignee``
     catches children the decomposer can't route."""
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     explicit = (kanban_cfg.get(key) or "").strip()
@@ -279,6 +279,7 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) ->
                 conn,
                 task_id,
                 root_assignee=routing.orchestrator,
+                preserve_root_assignee=True,
                 children=children,
                 author=author,
                 auto_promote=routing.auto_promote,

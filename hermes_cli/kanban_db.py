@@ -93,6 +93,7 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
 # Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
+# ``needs_input`` stays blocked for a human regardless of the recurrence count.
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
@@ -936,7 +937,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     block_kind           TEXT,
     -- Unblock-loop counter. Incremented each time a task is re-blocked for the
     -- same truly-blocked reason after having been unblocked. When it reaches
-    -- BLOCK_RECURRENCE_LIMIT the task is routed to ``triage`` instead of
+    -- BLOCK_RECURRENCE_LIMIT non-needs_input tasks route to ``triage`` instead of
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
@@ -2966,7 +2967,8 @@ def _route_block(
     returned the task to the pool), so a stored ``block_kind`` equal to the
     incoming one means blocked -> unblocked -> re-block for the same cause
     (un-typed None compares equal to a prior un-typed block). At
-    ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
+    ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage``, except
+    ``needs_input``: triage is auto-decomposed, not a human-only queue.
     """
     payload = {"reason": reason, "kind": kind, "source_status": source_status}
     if kind == "dependency":
@@ -2974,7 +2976,7 @@ def _route_block(
     recurrences = prev_recurrences + 1 if prev_kind == kind else 1
     set_sql = "block_kind    = ?,\n                       block_recurrences = ?"
     payload = {"reason": reason, "kind": kind, "recurrences": recurrences, "source_status": source_status}
-    if recurrences >= BLOCK_RECURRENCE_LIMIT:
+    if kind != "needs_input" and recurrences >= BLOCK_RECURRENCE_LIMIT:
         payload["limit"] = BLOCK_RECURRENCE_LIMIT
         return "triage", "block_loop_detected", set_sql, (kind, recurrences), payload
     return "blocked", "blocked", set_sql, (kind, recurrences), payload
@@ -3525,6 +3527,7 @@ def _validate_children_graph(children: list) -> None:
 def decompose_triage_task(
     conn: sqlite3.Connection, task_id: str, *, root_assignee: Optional[str], children: list[dict],
     author: Optional[str] = None, auto_promote: bool = True,
+    preserve_root_assignee: bool = False,
 ) -> Optional[list[str]]:
     """Fan a triage task out into children and move the root to ``todo``; the root
     waits on every child and wakes (``ready``) when all are done.
@@ -3533,6 +3536,9 @@ def decompose_triage_task(
     ``parents`` (indices into this list), optional workspace overrides.
     Returns child ids in input order, or None when the root is missing / not
     in triage. Atomic: a malformed entry aborts the whole fan-out.
+    ``preserve_root_assignee`` makes ``root_assignee`` a fallback only;
+    automated routing must not replace an existing owner. Explicit callers
+    retain reassignment semantics by default.
     """
     if not children:
         return None
@@ -3545,11 +3551,13 @@ def decompose_triage_task(
     now = int(time.time())
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "SELECT id, status, tenant, workspace_kind, workspace_path, assignee "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if root_row is None or root_row["status"] != "triage":
             return None
+        if preserve_root_assignee:
+            root_assignee = root_row["assignee"] or root_assignee
         child_ids = [
             _insert_decomposed_child(conn, task_id, root_row, child, author, now)
             for child in children
@@ -3564,7 +3572,7 @@ def decompose_triage_task(
         # than computing leaves; cycle-free since the root is only ever a child).
         for cid in child_ids:
             _link(conn, cid, task_id)
-        # Flip the root triage -> todo, assignee -> orchestrator.
+        # Resolve ownership in the same transaction as the fan-out.
         sets = ["status = 'todo'"]
         params: list[Any] = []
         if root_assignee is not None:

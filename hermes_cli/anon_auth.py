@@ -560,6 +560,55 @@ def _account_state_from_token(
     return state
 
 
+def settle_after_upgrade(account_state: Dict[str, Any]) -> Dict[str, Any]:
+    """After a sign-in from the free tier persisted the account: move the config off the free tier's route.
+
+    Picking the free-tier row may have written ``model.default: nous/welcome`` and ``model.base_url``
+    = welcome host. An account cannot keep either: the welcome host refuses account tokens, and the
+    portal host serves ``nous/welcome`` as a paid model. When the config is on the free tier's route,
+    ``model.base_url`` becomes the account's inference host and ``model.default`` the recommended
+    default for the account's tier (:func:`hermes_cli.models.recommended_nous_default_model`, the
+    same pick as ``GET /api/model/recommended-default``), through the same config write a plain Nous
+    login uses. A config on the user's own model and host is left alone.
+
+    Every sign-in completion (CLI ``hermes auth upgrade``, the desktop poller) calls this once, after
+    ``persist_nous_credentials``. Returns ``{"model": str, "changed": bool}``: ``model`` is the default
+    the config now carries (``""`` when it carries none); ``changed`` says whether this call wrote it.
+    Never raises: a failed pick or write is logged and reported as ``changed: False`` so the sign-in
+    itself still counts.
+    """
+    from hermes_cli.config import load_config_readonly
+    try:
+        raw = load_config_readonly().get("model")
+    except Exception as exc:
+        logger.warning("sign-in completion: config unreadable, default model left as is: %s", exc)
+        return {"model": "", "changed": False}
+    model_cfg = raw if isinstance(raw, dict) else ({"default": raw} if isinstance(raw, str) else {})
+    current = str(model_cfg.get("default") or "").strip()
+    on_welcome_model = current == GUEST_MODEL
+    on_welcome_host = route_is_welcome_host(model_cfg.get("base_url"))
+    if not (on_welcome_model or on_welcome_host):
+        return {"model": current, "changed": False}
+    model = current
+    if on_welcome_model:
+        from hermes_cli.models import get_default_model_for_provider, recommended_nous_default_model
+        try:
+            model = str(recommended_nous_default_model().get("model") or "")
+        except Exception as exc:
+            logger.debug("sign-in completion: recommended default unavailable: %s", exc)
+            model = ""
+        model = model or get_default_model_for_provider("nous")
+    try:
+        from hermes_cli.auth import _update_config_for_provider
+        _update_config_for_provider(
+            "nous", str(account_state.get("inference_base_url") or ""),
+            default_model=model if on_welcome_model else None)
+    except Exception as exc:
+        logger.warning("sign-in completion: could not update the default model: %s", exc)
+        return {"model": current, "changed": False}
+    return {"model": model, "changed": True}
+
+
 def _print_promotion_outcome(outcome: Dict[str, Any]) -> None:
     status = str(outcome.get("status") or "unknown")
     reason = str(outcome.get("reason") or "")
@@ -645,6 +694,9 @@ def upgrade_guest(args) -> int:
         print(f"Sign-in failed: {exc}")
         return 1
     persist_nous_credentials(account_state)
+    settled = settle_after_upgrade(account_state)
     email = str(outcome.get("account_email") or "").strip()
     print(f"Signed in as {email}. Your connectors are kept." if email else "Signed in. Your connectors are kept.")
+    if settled["changed"] and settled["model"]:
+        print(f"Default model is now {settled['model']}.")
     return 0

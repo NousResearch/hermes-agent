@@ -130,3 +130,10 @@ matchers; parser-derived flag sets; never blanket-exclude gateway ancestors, #87
 every `get_hermes_home()` scopes to the active profile (rules in root). Profiles are independent
 islands by design — no live config inheritance; `--clone` copies at creation. Multiplex
 (`gateway.multiplex_profiles`) secret-scope rules: `gateway/AGENTS.md`.
+
+## Nous free tier (`hermes_cli/anon_auth.py`)
+
+Sign-in completion is one function, `settle_after_upgrade`, called by every caller that persists an
+account over a free-tier identity (CLI `upgrade_guest`, the desktop poller): it moves a config on the
+welcome route to the account's host and the tier's recommended default
+(`models.recommended_nous_default_model`, shared with `GET /api/model/recommended-default`).

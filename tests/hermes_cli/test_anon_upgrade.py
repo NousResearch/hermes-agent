@@ -176,3 +176,53 @@ class TestUpgrade:
         shared = _shared_store(tmp_path)
         assert shared.get("refresh_token") == REFRESH_TOKEN
         assert "anon_token" not in shared
+
+
+FREE_PICK = "upstage/solar-pro4:free"
+
+
+@pytest.fixture
+def free_account(monkeypatch):
+    """The signed-in account is a $0 (free-plan) account: the Portal's tier read and its recommended
+    free list are the only network egress the default pick has, stubbed at their seams."""
+    from hermes_cli import models as m
+    from hermes_cli import models_pricing as mp
+    monkeypatch.setattr(m, "check_nous_free_tier", lambda **kw: True)
+    monkeypatch.setattr(m, "fetch_nous_recommended_models", lambda *a, **kw: {
+        "freeRecommendedModels": [{"modelName": FREE_PICK}]})
+    monkeypatch.setattr(mp, "get_pricing_for_provider", lambda *a, **kw: {})
+    monkeypatch.setattr(mp, "nous_policy_allowed_ids", lambda **kw: None)
+
+
+def _write_model_config(model_cfg: dict) -> None:
+    from hermes_cli.config import load_config, save_config
+    config = load_config()
+    config["model"] = model_cfg
+    save_config(config)
+
+
+def _model_config() -> dict:
+    from hermes_cli.config import load_config_readonly
+    return dict(load_config_readonly().get("model") or {})
+
+
+class TestSignInCompletionSettlesTheModel:
+    def test_config_on_the_free_tier_route_moves_to_the_account_host_and_the_recommended_free_model(
+            self, portal, free_account, capsys):
+        anon_auth.ensure_portal_identity(blocking=True)
+        # What picking the free-tier row leaves behind: the welcome model pinned to the welcome host.
+        _write_model_config({"provider": "nous", "default": anon_auth.GUEST_MODEL, "base_url": WELCOME})
+        assert anon_auth.upgrade_guest(_args()) == 0
+        model_cfg = _model_config()
+        assert model_cfg["default"] == FREE_PICK
+        assert model_cfg["base_url"] == INFERENCE.rstrip("/")
+        assert not anon_auth.route_is_welcome_host(model_cfg["base_url"])
+        assert f"Default model is now {FREE_PICK}." in capsys.readouterr().out
+
+    def test_config_on_the_users_own_model_is_left_alone(self, portal, free_account, capsys):
+        anon_auth.ensure_portal_identity(blocking=True)
+        own = {"provider": "openrouter", "default": "anthropic/claude-sonnet-4"}
+        _write_model_config(own)
+        assert anon_auth.upgrade_guest(_args()) == 0
+        assert {k: _model_config().get(k) for k in own} == own
+        assert "Default model is now" not in capsys.readouterr().out

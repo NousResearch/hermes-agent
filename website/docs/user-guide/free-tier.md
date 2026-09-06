@@ -72,9 +72,14 @@ The command name is provisional and may change in a later release; the behaviour
    or you are in an SSH session. Never share the code.
 2. Sign in to Nous Portal in the browser and confirm.
 3. Back in the terminal: `Signed in as you@example.com. Your connectors are kept.`
+   If your default model was `nous/welcome`, a fourth line names the model your account now
+   uses, for example `Default model is now upstage/solar-pro4:free.`
 
 Connectors you linked on the free tier carry over. Inference moves to the Nous Portal catalog,
 paid tools unlock, and `hermes auth status` shows your account instead of the free-tier line.
+`nous/welcome` stays with the free tier: an account that was using it lands on the recommended
+model for its plan (the same one a fresh `hermes model` pick would suggest), and a default model
+you chose yourself is left alone.
 
 `hermes auth upgrade` is offered wherever the free tier is present, including installs that
 run inference on their own API key. Signing in still unlocks paid tools for those installs.

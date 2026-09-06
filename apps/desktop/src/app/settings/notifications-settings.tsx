@@ -116,13 +116,13 @@ export function NotificationsSettings() {
                 triggerHaptic('selection')
                 setCompletionSoundVolume(Number(event.target.value))
               }}
-              step={0.1}
+              step={0.01}
               style={{ accentColor: 'var(--dt-primary)' }}
               type="range"
               value={volume}
             />
             <span className="w-11 text-right text-[length:var(--conversation-caption-font-size)] tabular-nums text-(--ui-text-tertiary)">
-              {volume.toFixed(1)}×
+              {volume.toFixed(2)}×
             </span>
           </div>
         }

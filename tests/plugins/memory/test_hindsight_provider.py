@@ -1383,6 +1383,27 @@ class TestBankIdTemplate:
         assert p._bank_id == "hermes-coder"
         assert p._bank_id_template == "hermes-{profile}"
 
+    def test_provider_can_scope_bank_to_gateway_chat(self, tmp_path, monkeypatch):
+        config = {
+            "mode": "cloud",
+            "apiKey": "k",
+            "api_url": "http://x",
+            "bank_id_template": "hermes-{platform}-{chat}",
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+
+        provider = HindsightMemoryProvider()
+        provider.initialize(
+            session_id="replaceable-session",
+            hermes_home=str(tmp_path),
+            platform="msteams",
+            chat_id="19:room@example",
+        )
+        assert provider._bank_id == "hermes-msteams-19-room-example"
+
 
 # ---------------------------------------------------------------------------
 # Availability tests

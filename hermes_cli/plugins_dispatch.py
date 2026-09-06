@@ -42,7 +42,7 @@ logger = logging.getLogger("hermes_cli.plugins")
 _HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
     "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
-    "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end",
+    "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "pre_finish", "on_session_start", "on_session_end",
     # Fail-open consumer on every inbound gateway message: a hung plugin must not stall the profile.
     "post_gateway_admission",
     # Observer on every local session's commands, fired by the gateway (gateway/session_commands.py).
@@ -685,3 +685,39 @@ class PluginDispatchMixin:
                 # Runs once per tool call like a hook, so a mis-declared callback floods identically.
                 self._report_hook_failure(kind, cb, kwargs, exc, surface="Middleware")
         return results
+
+
+def _continue_message_from_hook(
+    hook_name: str, *, session_id: str = "", platform: str = "", model: str = "",
+    coding: bool = False, attempt: int = 0, final_response: str = "",
+    changed_paths: Optional[list[str]] = None,
+) -> Optional[str]:
+    """First valid continue/block-stop directive from *hook_name*, else None."""
+    from hermes_cli.plugins import invoke_hook
+
+    hook_results = invoke_hook(
+        hook_name, session_id=session_id, platform=platform, model=model, coding=coding,
+        attempt=attempt, final_response=final_response, changed_paths=list(changed_paths or []),
+    )
+    for result in hook_results:
+        if not isinstance(result, dict):
+            continue
+        action = str(result.get("action") or result.get("decision") or "").strip().lower()
+        message = result.get("message") or result.get("reason")
+        if action in ("continue", "block") and isinstance(message, str) and message.strip():
+            return message.strip()
+    return None
+
+
+def get_pre_finish_continue_message(
+    *, session_id: str = "", platform: str = "", model: str = "", coding: bool = False,
+    attempt: int = 0, final_response: str = "", changed_paths: Optional[list[str]] = None,
+) -> Optional[str]:
+    """Check ``pre_finish`` hooks for the same continue/block-stop directive as ``pre_verify``.
+
+    Fires on every ordinary text finish after the verify gates have settled. ``changed_paths``
+    may be empty. First non-empty message wins. Bounded by ``agent.max_finish_nudges``."""
+    return _continue_message_from_hook(
+        "pre_finish", session_id=session_id, platform=platform, model=model, coding=coding,
+        attempt=attempt, final_response=final_response, changed_paths=changed_paths,
+    )

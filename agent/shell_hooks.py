@@ -652,8 +652,9 @@ def _parse_pre_tool_call(data: dict[str, Any]) -> Optional[dict[str, Any]]:
     return None
 
 
-def _parse_pre_verify(data: dict[str, Any]) -> Optional[dict[str, Any]]:
+def _parse_continue_gate(data: dict[str, Any]) -> Optional[dict[str, Any]]:
     # "continue" (Hermes) / "block" (Claude-Code Stop) both mean keep going; no message is a no-op.
+    # Shared by pre_verify and pre_finish.
     action = str(data.get("action") or data.get("decision") or "").strip().lower()
     message = data.get("message") or data.get("reason")
     if action in {"continue", "block"} and isinstance(message, str) and message.strip():
@@ -666,7 +667,11 @@ def _parse_context(data: dict[str, Any]) -> Optional[dict[str, Any]]:
     return {"context": context} if isinstance(context, str) and context.strip() else None
 
 
-_RESPONSE_PARSERS: dict[str, Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = {"pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify}
+_RESPONSE_PARSERS: dict[str, Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = {
+    "pre_tool_call": _parse_pre_tool_call,
+    "pre_verify": _parse_continue_gate,
+    "pre_finish": _parse_continue_gate,
+}
 
 
 def _parse_response(event: str, stdout: str) -> Optional[dict[str, Any]]:

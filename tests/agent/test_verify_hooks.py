@@ -33,6 +33,29 @@ class TestMaxVerifyNudges:
         )
 
 
+class TestMaxFinishNudges:
+    def test_default_when_unset(self):
+        assert (
+            verify_hooks.max_finish_nudges({})
+            == verify_hooks.DEFAULT_MAX_FINISH_NUDGES
+        )
+        assert (
+            verify_hooks.max_finish_nudges({"agent": {}})
+            == verify_hooks.DEFAULT_MAX_FINISH_NUDGES
+        )
+
+    def test_independent_of_verify_budget(self):
+        cfg = {"agent": {"max_verify_nudges": 1, "max_finish_nudges": 5}}
+        assert verify_hooks.max_verify_nudges(cfg) == 1
+        assert verify_hooks.max_finish_nudges(cfg) == 5
+
+    def test_bad_value_falls_back(self):
+        assert (
+            verify_hooks.max_finish_nudges({"agent": {"max_finish_nudges": "x"}})
+            == verify_hooks.DEFAULT_MAX_FINISH_NUDGES
+        )
+
+
 class TestCodingVerifyGuidance:
     def test_enabled_by_default(self):
         assert (

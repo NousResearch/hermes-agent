@@ -77,8 +77,10 @@ WATCH_GLOBAL_COOLDOWN_SECONDS = 30
 # exist on the PATH while the user D-Bus session is unavailable — common for system services and
 # containers), and cache the result for the process lifetime. See #70716.
 _SYSTEMD_SCOPE_AVAILABLE: Optional[bool] = None
+_SYSTEMD_SYSTEM_SCOPE_AVAILABLE: Optional[bool] = None
 _SYSTEMD_SCOPE_PROBE_LOCK = threading.Lock()
 _SYSTEMD_SCOPE_PROBED_AT = 0.0
+_SYSTEMD_SYSTEM_SCOPE_PROBED_AT = 0.0
 _SYSTEMD_SCOPE_FAILURE_TTL_SECONDS = 60.0
 _MIN_WORKER_MEMORY_MAX_BYTES = 64 * 1024 * 1024
 _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
@@ -124,11 +126,13 @@ def _worker_memory_max_bytes() -> int:
     return min(override_bound, safe_bound) if override_bound else safe_bound
 
 
-def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
-    """``systemd-run --user --scope`` argv shared by the probe and real spawns.
-    ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl."""
+def _systemd_scope_argv(
+    binary: str, unit_name: str, *argv: str, user_manager: bool = True
+) -> List[str]:
+    """Build a transient scope argv for the gateway's owning systemd manager."""
+    manager_args = ["--user"] if user_manager else []
     return [
-        binary, "--user", "--scope", "--quiet", "--unit", unit_name, "--collect",
+        binary, *manager_args, "--scope", "--quiet", "--unit", unit_name, "--collect",
         "--property", "MemoryAccounting=yes",
         "--property", f"MemoryMax={_worker_memory_max_bytes()}",
         "--property", "OOMPolicy=kill",
@@ -136,53 +140,96 @@ def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
     ]
 
 
-def _systemd_scope_cached() -> Optional[bool]:
-    """Cached probe verdict, or None when a (re)probe is due. True is permanent; False
-    expires after ``_SYSTEMD_SCOPE_FAILURE_TTL_SECONDS`` so a D-Bus blip isn't sticky."""
-    if _SYSTEMD_SCOPE_AVAILABLE is True:
+def _systemd_scope_manager() -> str:
+    """Return the manager owning this process's cgroup.
+
+    A system service belongs under ``/system.slice``; a user manager belongs
+    under ``/user.slice``.  Preserve the established user-manager route for
+    non-systemd test/container cgroups, while treating the decisive system
+    cgroup evidence as authoritative.
+    """
+    if not _IS_LINUX:
+        return "user"
+    try:
+        for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines():
+            if not line.startswith("0::"):
+                continue
+            cgroup_path = line.partition("::")[2]
+            if cgroup_path == "/system.slice" or cgroup_path.startswith("/system.slice/"):
+                return "system"
+            if cgroup_path == "/user.slice" or cgroup_path.startswith("/user.slice/"):
+                return "user"
+    except OSError:
+        pass
+    return "user"
+
+
+def _systemd_scope_cached(available: Optional[bool], probed_at: float) -> Optional[bool]:
+    """Cached probe verdict, or None when a (re)probe is due."""
+    if available is True:
         return True
-    stale = time.monotonic() - _SYSTEMD_SCOPE_PROBED_AT >= _SYSTEMD_SCOPE_FAILURE_TTL_SECONDS
-    return None if _SYSTEMD_SCOPE_AVAILABLE is None or stale else False
+    stale = time.monotonic() - probed_at >= _SYSTEMD_SCOPE_FAILURE_TTL_SECONDS
+    return None if available is None or stale else False
 
 
-def _systemd_run_user_scope_available() -> bool:
-    """True if ``systemd-run --user --scope`` can create a cgroup.
-    ``shutil.which`` alone is insufficient: system services and containers may lack
-    the user D-Bus bus even with the binary on PATH (every spawn would fail with
-    ``Failed to connect to user bus``), so a cheap ``/bin/true`` probe is run and cached."""
-    global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
-    verdict = _systemd_scope_cached()
+def _systemd_run_scope_available(manager: str) -> bool:
+    """True if the selected systemd manager can create a transient scope."""
+    global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SYSTEM_SCOPE_AVAILABLE
+    global _SYSTEMD_SCOPE_PROBED_AT, _SYSTEMD_SYSTEM_SCOPE_PROBED_AT
+    if manager not in {"user", "system"} or not _IS_LINUX:
+        return False
+    user_manager = manager == "user"
+    available = _SYSTEMD_SCOPE_AVAILABLE if user_manager else _SYSTEMD_SYSTEM_SCOPE_AVAILABLE
+    probed_at = _SYSTEMD_SCOPE_PROBED_AT if user_manager else _SYSTEMD_SYSTEM_SCOPE_PROBED_AT
+    verdict = _systemd_scope_cached(available, probed_at)
     if verdict is not None:
         return verdict
-    # Double-checked locking: a concurrent first-use spawn must not observe a temporary
-    # False mid-probe, or it would launch back inside the gateway cgroup.
     with _SYSTEMD_SCOPE_PROBE_LOCK:
-        verdict = _systemd_scope_cached()
+        available = _SYSTEMD_SCOPE_AVAILABLE if user_manager else _SYSTEMD_SYSTEM_SCOPE_AVAILABLE
+        probed_at = _SYSTEMD_SCOPE_PROBED_AT if user_manager else _SYSTEMD_SYSTEM_SCOPE_PROBED_AT
+        verdict = _systemd_scope_cached(available, probed_at)
         if verdict is not None:
             return verdict
         available = False
-        if _IS_LINUX:
-            try:
-                import shutil
+        try:
+            import shutil
 
-                binary = shutil.which("systemd-run")
-                if binary:
-                    # Unique unit avoids collisions; the timeout bounds D-Bus.
-                    probe_unit = f"hermes-probe-scope-{os.getpid()}-{uuid.uuid4().hex[:8]}"
-                    result = subprocess.run(
-                        _systemd_scope_argv(binary, probe_unit, "/bin/true"), capture_output=True, timeout=3,
+            binary = shutil.which("systemd-run")
+            if binary:
+                probe_unit = f"hermes-probe-scope-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+                result = subprocess.run(
+                    _systemd_scope_argv(
+                        binary, probe_unit, "/bin/true", user_manager=user_manager
+                    ),
+                    capture_output=True,
+                    timeout=3,
+                )
+                available = result.returncode == 0
+                if not available:
+                    logger.debug(
+                        "systemd-run %s--scope probe failed (rc=%s): %s",
+                        "--user " if user_manager else "",
+                        result.returncode,
+                        (result.stderr or b"").decode("utf-8", "replace").strip(),
                     )
-                    available = result.returncode == 0
-                    if not available:
-                        logger.debug(
-                            "systemd-run --user --scope probe failed (rc=%s): %s",
-                            result.returncode, (result.stderr or b"").decode("utf-8", "replace").strip(),
-                        )
-            except Exception as exc:
-                logger.debug("systemd-run --user --scope probe error: %s", exc)
-        _SYSTEMD_SCOPE_AVAILABLE = available
-        _SYSTEMD_SCOPE_PROBED_AT = time.monotonic()
+        except Exception as exc:
+            logger.debug(
+                "systemd-run %s--scope probe error: %s",
+                "--user " if user_manager else "",
+                exc,
+            )
+        if user_manager:
+            _SYSTEMD_SCOPE_AVAILABLE = available
+            _SYSTEMD_SCOPE_PROBED_AT = time.monotonic()
+        else:
+            _SYSTEMD_SYSTEM_SCOPE_AVAILABLE = available
+            _SYSTEMD_SYSTEM_SCOPE_PROBED_AT = time.monotonic()
         return available
+
+
+def _systemd_run_user_scope_available() -> bool:
+    """Compatibility wrapper for the established user-manager availability probe."""
+    return _systemd_run_scope_available("user")
 
 
 def _is_supervised_gateway_process() -> bool:
@@ -202,20 +249,22 @@ def _is_supervised_gateway_process() -> bool:
         return False
 
 
-def _build_systemd_scope_argv(shell_argv: List[str], unit_suffix: str) -> List[str]:
-    """Wrap *shell_argv* in a ``systemd-run --user --scope`` invocation with its own
-    memory accounting, so an OOM in the worker cannot kill the gateway cgroup.
-
-    ``--collect`` makes the transient scope self-clean after exit; ``--unit`` gives it a recognisable name
-    for ``systemctl --user status`` / journalctl. See #70716.
-    """
+def _build_systemd_scope_argv(
+    shell_argv: List[str], unit_suffix: str, *, user_manager: bool = True
+) -> List[str]:
+    """Wrap *shell_argv* in a transient scope for its owning systemd manager."""
     import shutil
 
     binary = shutil.which("systemd-run")
     if binary is None:
         # Caller should have probed availability; never pass None into Popen anyway.
         return shell_argv
-    return _systemd_scope_argv(binary, f"hermes-worker-{unit_suffix}", *shell_argv)
+    return _systemd_scope_argv(
+        binary,
+        f"hermes-worker-{unit_suffix}",
+        *shell_argv,
+        user_manager=user_manager,
+    )
 
 
 def restart_safe_gateway_child_argv(
@@ -225,20 +274,26 @@ def restart_safe_gateway_child_argv(
 
     Children that must survive an intentional gateway restart cannot rely on
     ``start_new_session`` alone: systemd still kills every process in the
-    service cgroup.  In that topology, require a transient user scope and fail
-    closed if it cannot be established.  Standalone processes, non-systemd
-    supervisors, and non-Linux hosts retain the direct command.
+    service cgroup.  The transient scope must be created through the manager
+    that owns the gateway cgroup; fail closed if that manager cannot create it.
+    Standalone processes, non-systemd supervisors, and non-Linux hosts retain
+    the direct command.
     """
     if not _IS_LINUX:
         return command
     if not _is_supervised_gateway_process() or not os.environ.get("INVOCATION_ID"):
         return command
-    if not _systemd_run_user_scope_available():
+    manager = _systemd_scope_manager()
+    if not _systemd_run_scope_available(manager):
         raise RuntimeError(
             "cannot create restart-safe systemd scope for gateway child: "
-            "systemd-run --user --scope is unavailable"
+            "systemd-run --scope is unavailable"
         )
-    scoped = _build_systemd_scope_argv(command, unit_suffix=unit_suffix)
+    scoped = _build_systemd_scope_argv(
+        command,
+        unit_suffix=unit_suffix,
+        user_manager=manager == "user",
+    )
     if scoped == command:
         raise RuntimeError(
             "cannot create restart-safe systemd scope for gateway child: "
@@ -248,31 +303,34 @@ def restart_safe_gateway_child_argv(
 
 
 def _stop_systemd_unit(unit_name: str) -> bool:
-    """Stop a transient systemd user scope by unit name.
-    Reaps the *entire* cgroup — catching double-forked descendants reparented to init
-    inside the scope that survive a plain PID signal (SIGTERM all, SIGKILL after
-    ``TimeoutStopSec``). True if stopped or already gone; False if ``systemctl`` is
-    unavailable or the stop failed.
+    """Stop a transient scope through the manager owning the gateway cgroup.
 
-    See #70716.
+    Reaps the *entire* cgroup — catching double-forked descendants reparented
+    to init inside the scope that survive a plain PID signal.  True means the
+    scope was stopped or was already absent; False means the appropriate
+    ``systemctl`` route was unavailable or failed.
     """
     import shutil
 
     binary = shutil.which("systemctl")
     if binary is None:
         return False
+    manager = _systemd_scope_manager()
+    argv = [binary]
+    if manager == "user":
+        argv.append("--user")
+    argv.extend(("stop", unit_name))
     try:
-        result = subprocess.run([binary, "--user", "stop", unit_name], capture_output=True, timeout=15,
-                                stdin=subprocess.DEVNULL)
+        result = subprocess.run(argv, capture_output=True, timeout=15, stdin=subprocess.DEVNULL)
         if result.returncode != 0:
             stderr = (result.stderr or b"").decode(errors="replace").strip()
             if any(marker in stderr.lower() for marker in ("not loaded", "not found", "does not exist")):
                 return True
-            logger.debug("systemctl --user stop %s exited %d: %s", unit_name, result.returncode, stderr)
+            logger.debug("systemctl %sstop %s exited %d: %s", "--user " if manager == "user" else "", unit_name, result.returncode, stderr)
             return False
         return True
     except Exception as exc:
-        logger.debug("systemctl --user stop %s failed: %s", unit_name, exc)
+        logger.debug("systemctl %sstop %s failed: %s", "--user " if manager == "user" else "", unit_name, exc)
         return False
 
 
@@ -764,15 +822,27 @@ class ProcessRegistry:
         argv = [_find_shell(), "-lic", f"set +m; {safe_command}"]
         # This applies to both pipe mode and the PTY path above. See #70716.
         in_supervised_gateway = _IS_LINUX and _is_supervised_gateway_process()
-        if in_supervised_gateway and _systemd_run_user_scope_available():
+        if not in_supervised_gateway:
+            return argv
+        manager = _systemd_scope_manager()
+        scope_available = (
+            _systemd_run_user_scope_available()
+            if manager == "user"
+            else _systemd_run_scope_available(manager)
+        )
+        if scope_available:
             session.systemd_unit = f"hermes-worker-{unit_suffix}.scope"
-            return _build_systemd_scope_argv(argv, unit_suffix=unit_suffix)
-        if in_supervised_gateway:
-            # Under a supervisor but no private cgroup: a worker OOM can still take
-            # the whole gateway down.
-            logger.debug(
-                "%s background executor not isolated in a systemd scope "
-                "(systemd-run --user unavailable); worker shares the gateway cgroup.", label)
+            return _build_systemd_scope_argv(
+                argv, unit_suffix=unit_suffix, user_manager=manager == "user"
+            )
+        # Under a supervisor but no private cgroup: a worker OOM can still take
+        # the whole gateway down.
+        logger.debug(
+            "%s background executor not isolated in a systemd scope "
+            "(systemd-run %s--scope unavailable); worker shares the gateway cgroup.",
+            label,
+            "--user " if manager == "user" else "",
+        )
         return argv
 
     @staticmethod

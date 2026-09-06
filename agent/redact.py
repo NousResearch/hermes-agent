@@ -417,6 +417,10 @@ _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}")
 # E.164 phone numbers, 7-15 digits; the lookahead rejects hex strings / identifiers.
 _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
 
+# WhatsApp Cloud wa_id values are digit-only E.164 identities. Opt in only at
+# their diagnostic boundaries: ordinary numeric identifiers must stay exact.
+_BARE_PHONE_RE = re.compile(r"(?<![A-Za-z0-9_+])([1-9]\d{6,14})(?![A-Za-z0-9_])")
+
 # CDP-URL path: web URLs with a query string / with ``user:password@`` userinfo
 # (DB protocols are covered by _DB_CONNSTR_RE).
 _URL_WITH_QUERY_RE = re.compile(r"(https?|wss?|ftp)://([^\s/?#]+)([^\s?#]*)\?([^\s#]+)(#\S*)?")
@@ -648,8 +652,13 @@ def _redact_phone(m):
 
 
 def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False,
-                          file_read: bool = False, redact_url_credentials: bool = False) -> str:
+                          file_read: bool = False, redact_url_credentials: bool = False,
+                          redact_bare_phone_numbers: bool = False) -> str:
     """Apply all redaction patterns to a block of text.
+
+    ``redact_bare_phone_numbers=True`` masks digit-only phone identities at
+    explicit WhatsApp diagnostic boundaries. It defaults off because 7-15
+    digit values can be ordinary build, account, or database identifiers.
 
     Safe on any string. Enabled by default (``security.redact_secrets: false``
     disables); ``force=True`` is for safety boundaries that must never return
@@ -734,6 +743,8 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 
     if "+" in text:
         text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
+    if redact_bare_phone_numbers:
+        text = _BARE_PHONE_RE.sub(lambda m: m[1][:2] + "****" + m[1][-2:], text)
 
     return text
 

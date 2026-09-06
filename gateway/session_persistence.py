@@ -17,6 +17,8 @@ from utils import atomic_replace
 if TYPE_CHECKING:
     from gateway.session import SessionEntry
 
+from gateway.log_redaction import session_error_for_log, session_key_for_log
+
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.session")
 
@@ -131,7 +133,7 @@ class SessionPersistenceMixin:
             if profile_exists(profile):
                 home = Path(get_profile_dir(profile))
         except Exception as exc:
-            logger.debug("Could not resolve profile home for %r: %s", session_key, exc)
+            logger.debug("Could not resolve profile home for %r: %s", session_key_for_log(session_key), session_error_for_log(session_key, exc))
             home = None
         # Only hits are memoized: a profile directory can be provisioned *after* startup (enrollment
         # bridge), and a cached miss would pin that profile's rows to the ambient store for life.
@@ -172,7 +174,7 @@ class SessionPersistenceMixin:
             # physical stores — fail closed; callers already handle a missing DB.
             logger.warning(
                 "gateway.session: profile %r has no resolvable home (key %r); refusing to fall "
-                "back to the ambient store", profile, session_key)
+                "back to the ambient store", profile, session_key_for_log(session_key))
             return None
         try:
             return self._open_session_db_for_active_scope(db_path=home / "state.db")
@@ -261,7 +263,7 @@ class SessionPersistenceMixin:
             if isinstance(entry_data, dict):
                 return SessionEntry.from_dict(entry_data)
         except (ValueError, KeyError, TypeError) as e:
-            logger.warning("Skipping invalid routing entry %r: %s", key, e)
+            logger.warning("Skipping invalid routing entry %r: %s", session_key_for_log(key), session_error_for_log(key, e))
         return None
 
     def _ensure_loaded_locked(self) -> None:
@@ -301,14 +303,14 @@ class SessionPersistenceMixin:
                     continue
                 if not isinstance(entry_data, dict):  # corrupt file must not abort the whole load
                     logger.warning(
-                        "Skipping invalid session entry %r: expected dict, got %s", key,
+                        "Skipping invalid session entry %r: expected dict, got %s", session_key_for_log(key),
                         type(entry_data).__name__)
                     continue
                 try:
                     self._entries[key] = SessionEntry.from_dict(entry_data)
                     imported += 1
                 except (ValueError, KeyError, TypeError) as e:
-                    logger.warning("Skipping invalid session entry %r: %s", key, e)
+                    logger.warning("Skipping invalid session entry %r: %s", session_key_for_log(key), session_error_for_log(key, e))
             if imported and db_had_entries:
                 logger.info(
                     "gateway.session: imported %d legacy sessions.json entr%s missing from "
@@ -361,14 +363,14 @@ class SessionPersistenceMixin:
                 # Indeterminate: keep the only routing handle.
                 logger.debug(
                     "gateway.session: recovery lookup failed for stale sessions.json entry %r -> "
-                    "%s: %s", key, entry.session_id, exc)
+                    "%s: %s", session_key_for_log(key), entry.session_id, session_error_for_log(key, exc))
                 return None
         # Compression-ended parent with a newer live child for the same peer: repoint instead of
         # dropping, or queued/resume-pending work vanishes until the next message.
         if recovered_entry is not None and recovered_entry.session_id != entry.session_id:
             logger.warning(
                 "gateway.session: repointing stale sessions.json entry %r from ended %s "
-                "(end_reason=%r) to recovered %s", key, entry.session_id, row["end_reason"],
+                "(end_reason=%r) to recovered %s", session_key_for_log(key), entry.session_id, row["end_reason"],
                 recovered_entry.session_id)
             return recovered_entry
         # Same-id recovery == successful resume: keep the ORIGINAL entry object (the recovered one
@@ -379,11 +381,11 @@ class SessionPersistenceMixin:
         if recovered_entry is not None:
             logger.info(
                 "gateway.session: reopened ended session %s for sessions.json entry %r "
-                "(end_reason=%r); keeping route", entry.session_id, key, row["end_reason"])
+                "(end_reason=%r); keeping route", entry.session_id, session_key_for_log(key), row["end_reason"])
             return None
         logger.warning(
             "gateway.session: pruning stale sessions.json entry %r -> %s (end_reason=%r); left by "
-            "a crashed gateway", key, entry.session_id, row["end_reason"])
+            "a crashed gateway", session_key_for_log(key), entry.session_id, row["end_reason"])
         return "prune"
 
     def _entries_as_dicts(self) -> Dict[str, Any]:
@@ -533,7 +535,7 @@ class SessionPersistenceMixin:
             except Exception as exc:
                 logger.warning(
                     "gateway.session: single-entry routing save failed for %r (%s); falling back "
-                    "to full index rewrite", session_key, exc)
+                    "to full index rewrite", session_key_for_log(session_key), session_error_for_log(session_key, exc))
         if entry_data is not None:
             # Full-snapshot fallback carrying the candidate transition.
             with guard:

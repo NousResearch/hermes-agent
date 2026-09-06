@@ -17,6 +17,7 @@ import {
   $attentionSessionIds,
   $sessionTiles,
   $stalledSessionIds,
+  $turnStartedAtBySessionId,
   $workingSessionIds,
   clearAllSessionStates,
   publishSessionState,
@@ -824,6 +825,43 @@ describe('rehydrateLiveSessionStatuses', () => {
     expect($workingSessionIds.get()).toEqual([])
     expect($attentionSessionIds.get()).toEqual([])
     expect($stalledSessionIds.get()).toEqual([])
+  })
+
+  // The snapshot is the only source of a turn's clock for a row this window
+  // never watched start — the sidebar's per-row elapsed timer reads it.
+  it('seeds a running turn clock from the snapshot, but never rewinds one the stream already set', () => {
+    rehydrateLiveSessionStatuses({
+      sessions: [
+        { id: 'runtime-bg', session_key: 'background-turn', status: 'working', turn_started_at: 1_700_000_000 }
+      ]
+    })
+
+    expect($turnStartedAtBySessionId.get()).toEqual({ 'background-turn': 1_700_000_000_000 })
+
+    // A later poll reports the same turn; the renderer's own seed stands.
+    rehydrateLiveSessionStatuses({
+      sessions: [
+        { id: 'runtime-bg', session_key: 'background-turn', status: 'working', turn_started_at: 1_700_000_500 }
+      ]
+    })
+
+    expect($turnStartedAtBySessionId.get()).toEqual({ 'background-turn': 1_700_000_000_000 })
+
+    // Settling drops the clock with the busy flag.
+    rehydrateLiveSessionStatuses({
+      sessions: [{ id: 'runtime-bg', session_key: 'background-turn', status: 'idle' }]
+    })
+
+    expect($turnStartedAtBySessionId.get()).toEqual({})
+  })
+
+  it('leaves the clock unset when an older backend reports no turn_started_at', () => {
+    rehydrateLiveSessionStatuses({
+      sessions: [{ id: 'runtime-legacy', session_key: 'legacy-turn', status: 'working' }]
+    })
+
+    expect($workingSessionIds.get()).toEqual(['legacy-turn'])
+    expect($turnStartedAtBySessionId.get()).toEqual({})
   })
 })
 

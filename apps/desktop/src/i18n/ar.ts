@@ -1861,6 +1861,7 @@ export const ar = defineLocale({
       deleteDesc: title => `سيتم حذف «${title}» نهائيًا. لا يمكن التراجع عن هذا الإجراء.`,
       deleting: 'جارٍ الحذف…',
       deleted: 'تم حذف الجلسة',
+      runningSince: since => `قيد التشغيل منذ ${since}`,
       ageNow: 'الآن',
       ageDay: 'يوم',
       ageHour: 'ساعة',

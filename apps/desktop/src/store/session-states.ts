@@ -32,7 +32,7 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { $workspaceMode, resolveRememberedActivePane, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
 import type { WorkspaceMode } from '@/contrib/types'
-import { stableArray } from '@/lib/stable-array'
+import { stableArray, stableRecord } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -675,6 +675,30 @@ export const $attentionSessionIds = computed(
       storedIds(states, sessions, s => s.needsInput)
     ))
 )
+
+// Epoch ms each RUNNING session's turn started, under every id the
+// conversation answers to. The sidebar's opt-in "Elapsed" row figure reads
+// this — a clock per row, so a background turn keeps counting while another
+// session is focused. Same edge-only republish as the id sets above: the
+// value only moves when a turn starts or ends, never per token. A turn whose
+// clock is unknown (a state published from a snapshot that carried none) is
+// simply absent, so the row shows nothing rather than a timer from 0:00.
+let turnClocks: Readonly<Record<string, number>> = {}
+export const $turnStartedAtBySessionId = computed([$sessionStates, $sessions], (states, sessions) => {
+  const next: Record<string, number> = {}
+
+  for (const [runtimeId, state] of Object.entries(states)) {
+    if (!state.busy || typeof state.turnStartedAt !== 'number') {
+      continue
+    }
+
+    for (const alias of lineageAliases(state.storedSessionId ?? runtimeId, sessions)) {
+      next[alias] = state.turnStartedAt
+    }
+  }
+
+  return (turnClocks = stableRecord(turnClocks, next))
+})
 
 // An open session nothing has ever been sent to — the ⌘T tab whose backend
 // session exists but is unlisted, or a tile still waiting on its first send.

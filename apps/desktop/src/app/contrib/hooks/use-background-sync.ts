@@ -324,6 +324,9 @@ interface LiveSessionStatusItem {
   last_active?: number
   session_key?: string
   status?: 'idle' | 'starting' | 'waiting' | 'working'
+  /** Epoch seconds the live turn started (gateway `inflight_turn`); absent on
+   *  older backends and on idle rows. */
+  turn_started_at?: null | number
 }
 
 interface LiveSessionStatusResponse {
@@ -404,6 +407,15 @@ export function rehydrateLiveSessionStatuses(
     // here a poll lands between submit and first token and darkens the row.
     const busy = working || Boolean(existing?.awaitingResponse && !existing.sawAssistantPayload)
 
+    // The turn's clock, for rows this window never watched start (a turn
+    // begun elsewhere, or before a reconnect). The stream path keeps its own
+    // seed once it has one — the snapshot only fills a blank, never rewinds a
+    // running clock. Idle rows carry no clock; the settle below clears it.
+    const snapshotTurnStartedAt =
+      typeof session.turn_started_at === 'number' && session.turn_started_at > 0 ? session.turn_started_at * 1000 : null
+
+    const turnStartedAt = busy ? (existing?.turnStartedAt ?? snapshotTurnStartedAt) : null
+
     // Avoid re-arming the watchdog on every poll. Publish only when the
     // authoritative live snapshot differs from the renderer mirror; normal
     // gateway events continue to own subsequent transitions.
@@ -411,13 +423,15 @@ export function rehydrateLiveSessionStatuses(
       !existing ||
       existing.storedSessionId !== storedSessionId ||
       existing.busy !== busy ||
-      existing.needsInput !== needsInput
+      existing.needsInput !== needsInput ||
+      (busy && existing.turnStartedAt !== turnStartedAt)
     ) {
       publishSessionState(runtimeSessionId, {
         ...(existing ?? createClientSessionState(storedSessionId)),
         busy,
         needsInput,
-        storedSessionId
+        storedSessionId,
+        turnStartedAt
       })
     }
 

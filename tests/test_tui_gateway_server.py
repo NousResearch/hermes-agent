@@ -16627,6 +16627,7 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
         "started_at": 10.0,
         "status": "idle",
         "title": "Research",
+        "turn_started_at": None,
     }
     assert rows["sid-b"]["current"] is True
     assert rows["sid-b"]["status"] == "working"

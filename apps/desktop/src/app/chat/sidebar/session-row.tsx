@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { memo } from 'react'
+import { memo, useState } from 'react'
 import type * as React from 'react'
 
 import { PrTag } from '@/app/chat/pr-tag'
@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { OverflowTip, Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
+import { useViewedInterval } from '@/hooks/use-viewed-interval'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { pathLeaf } from '@/lib/display-path'
@@ -21,6 +22,7 @@ import { middleClickHandlers } from '@/lib/middle-click'
 import { displayModelName } from '@/lib/model-status-label'
 import { sessionProjectLabel } from '@/lib/session-project-label'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
+import { formatDuration } from '@/lib/statusbar'
 import { coarseElapsed } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -30,7 +32,7 @@ import { $projects } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
 import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
 import { $sessionListDensity } from '@/store/session-list-density'
-import { $openStoredSessionIds } from '@/store/session-states'
+import { $openStoredSessionIds, $turnStartedAtBySessionId } from '@/store/session-states'
 import { sessionCostUsd } from '@/store/sidebar-archive'
 import { $todoProgressBySession } from '@/store/todos'
 
@@ -120,6 +122,29 @@ function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
   return unit === 'second' ? r.ageNow : `${value}${r[AGE_KEY[unit]]}`
 }
 
+/** How long the row's turn has been running, ticking once a second — the
+ *  Show menu's "Elapsed" figure. Mounted only while a clock exists, so an idle
+ *  row owns no interval; the tick itself pauses while the window isn't viewed.
+ *  Same `m:ss` the statusbar's running timer speaks, so the two agree. */
+function RowElapsed({ since, tip }: { since: number; tip: string }) {
+  const [now, setNow] = useState(() => Date.now())
+
+  useViewedInterval(() => setNow(Date.now()), 1000)
+
+  return (
+    <Tip label={tip} side="top">
+      <time
+        aria-label={tip}
+        className="pointer-events-auto tabular-nums focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring"
+        dateTime={new Date(since).toISOString()}
+        tabIndex={0}
+      >
+        {formatDuration(now - since)}
+      </time>
+    </Tip>
+  )
+}
+
 function SidebarSessionRowImpl({
   session,
   branchStem,
@@ -182,6 +207,15 @@ function SidebarSessionRowImpl({
   const totalTokens = session.input_tokens + session.output_tokens
   const cost = sessionCostUsd(session)
 
+  // The running turn's clock, if the row was asked to show one. Keyed to this
+  // row: the map only moves on turn edges, and a selector keeps every other
+  // row out of the repaint. Null on an idle row, or with the option off.
+  const turnStartedAt = useStoreSelector($turnStartedAtBySessionId, clocks =>
+    rowMeta.includes('elapsed') ? (clocks[session.id] ?? null) : null
+  )
+
+  const showElapsed = turnStartedAt !== null
+
   // Tokens, cost and age share one figure rather than each claiming a column:
   // several switched on read as one number, not as a widening gutter.
   const figures = [
@@ -208,14 +242,17 @@ function SidebarSessionRowImpl({
     trailing.push({ key: 'pr', node: <PrTag pr={pr} /> })
   }
 
-  const showAge = pinnedAge || card
+  // A running row's age is always "now", so the elapsed clock takes that seat
+  // rather than adding a second one; the age returns the moment the turn ends.
+  const showAge = (pinnedAge || card) && !showElapsed
+  const showTail = showAge || showElapsed
 
-  if (figures.length || showAge) {
+  if (figures.length || showTail) {
     // The card's meta lines separate by spacing alone, so its header figures
     // match (non-breaking pair — plain spaces collapse to one); the one-line
     // row keeps the interpunct between joined figures.
     const sep = card ? '\u00A0\u00A0' : ' · '
-    const head = (showAge ? figures : figures.slice(0, -1)).join(sep)
+    const head = (showTail ? figures : figures.slice(0, -1)).join(sep)
 
     trailing.push({
       key: 'figures',
@@ -225,7 +262,12 @@ function SidebarSessionRowImpl({
           {/* The figures own their tail: the separator goes with it. */}
           <span className={cn('inline-block text-right', TAIL_HIDES)}>
             {head && sep}
-            {showAge ? (
+            {showElapsed ? (
+              <RowElapsed
+                since={turnStartedAt}
+                tip={r.runningSince(formatMessageTimestamp(new Date(turnStartedAt), t.assistant.thread))}
+              />
+            ) : showAge ? (
               <Tip label={absoluteAge} side="top">
                 <time
                   aria-label={`${age}, ${absoluteAge}`}
@@ -246,7 +288,7 @@ function SidebarSessionRowImpl({
   }
 
   // A chip that ends the slot hides whole; the figures handle their own tail.
-  const chipEndsSlot = trailing.length > 0 && !figures.length && !pinnedAge
+  const chipEndsSlot = trailing.length > 0 && !figures.length && !pinnedAge && !showElapsed
   // A handed-off session's live source is local, but it originated on a
   // messaging platform — surface that origin as a small badge so e.g. a
   // Telegram thread continued here still reads as Telegram.

@@ -2500,6 +2500,7 @@ export const en: Translations = {
       untitledChat: id => `Chat ${id}`,
       messageCount: count => `${count} ${count === 1 ? 'message' : 'messages'}`,
       todoProgress: 'Tasks completed',
+      runningSince: since => `Running since ${since}`,
       ageNow: 'now',
       ageDay: 'd',
       ageHour: 'h',

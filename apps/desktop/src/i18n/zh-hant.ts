@@ -2084,6 +2084,7 @@ export const zhHant = defineLocale({
       deleting: '正在刪除…',
       deleted: '會話已刪除',
       untitledChat: id => `工作階段 ${id}`,
+      runningSince: since => `自 ${since} 起執行中`,
       ageNow: '剛才',
       ageDay: '天',
       ageHour: '時',

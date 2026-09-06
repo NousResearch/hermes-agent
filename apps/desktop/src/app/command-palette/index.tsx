@@ -13,6 +13,7 @@ import {
   HUD_SURFACE,
   HUD_TEXT
 } from '@/app/floating-hud'
+import { SESSION_IMPORT_ROUTE } from '@/app/routes'
 import { codiconIcon } from '@/components/ui/codicon'
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
@@ -897,6 +898,13 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             keywords: ['command center', 'sessions', 'pin'],
             label: cc.sections.sessions,
             run: go(`${COMMAND_CENTER_ROUTE}?section=sessions`)
+          },
+          {
+            icon: Download,
+            id: 'session-import',
+            keywords: ['import', 'claude', 'codex', 'conversation'],
+            label: t.sessionImport.action,
+            run: go(SESSION_IMPORT_ROUTE)
           },
           {
             icon: Activity,

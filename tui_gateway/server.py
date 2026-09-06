@@ -158,6 +158,7 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # interrupts); voice.*/wake.* = SYNCHRONOUS faster-whisper install (300s); session.workspace.move =
 # git subprocess probes on an arbitrary (maybe slow) mount.
 _LONG_HANDLERS = frozenset({
+    "session.foreign.list", "session.foreign.preview", "session.foreign.import",
     "billing.state", "subscription.state", "subscription.preview", "subscription.change",
     "subscription.resume", "subscription.upgrade", "usage.bars", "session.usage", "billing.step_up",
     "browser.manage", "cli.exec", "complete.path", "complete.slash", "llm.oneshot", "model.options",
@@ -2444,8 +2445,8 @@ def _claim_or_reuse_live(sid: str, session_key: str, record: dict, lease) -> tup
         if live is not None:
             if lease is not None:
                 lease.release()
-            # The winner is being reattached: a pending ws-orphan reap must not fire against the reclaimed client.
-            _cancel_ws_orphan_reap(live[0])
+            # The reap is cancelled by the guarded reuse (_reattach_refusal), not here: a rejected
+            # reattach must leave an in-flight orphan interrupt polling.
             return live
         with _sessions_lock:
             _sessions[sid] = record
@@ -2693,13 +2694,7 @@ def _live_session_payload(
         if cols is not None:
             session["cols"] = cols
         if transport is not None:
-            session["transport"] = transport
-            # Every transport that showed this session (pop-outs resume the same sid); on disconnect the last
-            # viewer becomes the transport instead of the drop sentinel.
-            session.setdefault("viewers", {})[transport] = time.time()
-            # See #83716.
-            if transport is not _detached_ws_transport:
-                _cancel_ws_orphan_reap(sid)  # the client is back — a pending ws-orphan reap must not fire
+            _rebind_live_transport(sid, session, transport)
         if touch:
             # #84417: do not re-fire the live turn's original user text from a stale server-queue
             # self-duplicate after settle.
@@ -3212,7 +3207,8 @@ from . import (  # noqa: E402
     methods_config_set as _methods_config_set, methods_images as _methods_images,
     methods_profiles as _methods_profiles, methods_prompt as _methods_prompt, methods_session as _methods_session,
     methods_tools as _methods_tools, prompt_turn as _prompt_turn, billing_view as _billing_view,
-    methods_projects as _methods_projects)
+    methods_projects as _methods_projects, methods_session_foreign as _methods_session_foreign,
+    methods_session_control as _methods_session_control)
 
 for _m in (
     _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
@@ -3221,6 +3217,7 @@ for _m in (
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
     _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
-    _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects):
+    _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
+    _methods_session_control):
     _m.register(sys.modules[__name__])
 del _m

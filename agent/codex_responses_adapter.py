@@ -541,16 +541,10 @@ def classify_responses_route(agent: Any) -> ResponsesRouteFlags:
     )
 
 
-def estimate_native_responses_preflight_tokens(
-    agent: Any, messages: List[Dict[str, Any]], *, system_prompt: str = "", tools: Optional[List[Dict[str, Any]]] = None,
-) -> Optional[int]:
-    """Estimate tokens for the checkpoint-pruned Responses payload (the full transcript overstates a natively compacted
-    session and fires local compression needlessly). None when native compaction is not proven eligible or conversion fails.
-
-    Automatic preflight previously counted the full durable transcript. On a natively compacted Codex
-    session that overstates the wire by several times and fires local compression against history the main
-    request will never send (#96155).
-    """
+def _native_responses_replay_items(
+    agent: Any, messages: List[Dict[str, Any]]
+) -> Optional[List[Dict[str, Any]]]:
+    """Build the native-compaction-eligible wire items, or ``None`` when ineligible."""
     if getattr(agent, "api_mode", None) != "codex_responses" or not isinstance(messages, list):
         return None
     route = classify_responses_route(agent)._asdict()
@@ -565,7 +559,37 @@ def estimate_native_responses_preflight_tokens(
             native_compaction_eligible=True,
         )
     except Exception:
-        logger.debug("native Responses preflight conversion failed; falling back to generic estimate", exc_info=True)
+        logger.debug(
+            "native Responses replay conversion failed; using the generic fallback",
+            exc_info=True,
+        )
+        return None
+    return items
+
+
+def has_replayable_native_compaction_checkpoint(
+    agent: Any, messages: List[Dict[str, Any]]
+) -> bool:
+    """Whether the current route would replay a persisted native checkpoint."""
+    items = _native_responses_replay_items(agent, messages)
+    if items is None:
+        return False
+    from agent.native_compaction import has_compaction_checkpoint
+    return has_compaction_checkpoint(items)
+
+
+def estimate_native_responses_preflight_tokens(
+    agent: Any, messages: List[Dict[str, Any]], *, system_prompt: str = "", tools: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[int]:
+    """Estimate tokens for the checkpoint-pruned Responses payload (the full transcript overstates a natively compacted
+    session and fires local compression needlessly). None when native compaction is not proven eligible or conversion fails.
+
+    Automatic preflight previously counted the full durable transcript. On a natively compacted Codex
+    session that overstates the wire by several times and fires local compression against history the main
+    request will never send (#96155).
+    """
+    items = _native_responses_replay_items(agent, messages)
+    if items is None:
         return None
     from agent.model_metadata import estimate_request_tokens_rough
     return estimate_request_tokens_rough(items, system_prompt=system_prompt or "", tools=tools)

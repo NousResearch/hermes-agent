@@ -156,6 +156,11 @@ def _idle_compaction(
     if _idle_gap < _idle_after:
         return
     _compressor = agent.context_compressor
+    # A live or restored native checkpoint must reach its issuer once so real usage,
+    # rather than an opaque ciphertext estimate, decides whether local compression is
+    # still needed.  Threshold and post-tool preflight honor the same latch.
+    if bool(getattr(_compressor, "awaiting_real_usage_after_compression", False)):
+        return
     # Route-aware pressure: on compacted native-Codex sessions the durable figure
     # overstates the wire, so reuse the preflight estimator.
     _idle_tokens = _tc._preflight_request_tokens(

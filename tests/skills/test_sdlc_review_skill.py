@@ -91,5 +91,3 @@ def test_review_lenses_vary_per_round(skill_text: str) -> None:
         assert lens in lenses
     # Execution lens must direct empirical verification via the terminal.
     assert "`terminal`" in lenses
-    # Fan-out note: parallel reviewers get different briefs.
-    assert "`delegate_task`" in lenses

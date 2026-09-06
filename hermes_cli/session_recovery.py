@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
-from hermes_state import SessionDB
+from hermes_state import SessionDB, load_fts5_cjk_extension
 from hermes_state_common import FTS_STORAGE_VERSION, SCHEMA_VERSION
 from hermes_state_repair import _db_opens_cleanly
 
@@ -214,8 +214,17 @@ def _count_rows(conn: sqlite3.Connection, table: str) -> int:
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    """Autocommit connection with a short busy timeout (source snapshot or fresh output)."""
-    return sqlite3.connect(str(path), isolation_level=None, timeout=1.0)
+    """Autocommit connection with a short busy timeout (source snapshot or fresh output).
+
+    Load the CJK tokenizer when present. ``SessionDB`` registers ``cjk_unicode61``
+    per connection; recovery reopens the destination with raw SQLite, and
+    ``messages_fts_cjk`` triggers plus integrity-check need the tokenizer on
+    that connection too. Best-effort: missing ``.so`` or ``HERMES_CJK_FTS=0``
+    is a no-op, same as ``SessionDB``.
+    """
+    conn = sqlite3.connect(str(path), isolation_level=None, timeout=1.0)
+    load_fts5_cjk_extension(conn)
+    return conn
 
 
 @contextmanager
@@ -866,7 +875,7 @@ def _verify_recovered_database(
     verification["opens_cleanly"] = open_error is None
     if open_error is not None:
         verification["errors"].append(f"database health probe: {open_error}")
-    conn = sqlite3.connect(str(output), isolation_level=None)
+    conn = _connect(output)
     try:
         _verify_structure(conn, verification)
         _verify_row_counts(
@@ -985,7 +994,7 @@ def _recover_via_lost_and_found(
             f"Partial recovery could not read the table schemas for: {missing}, "
             f"and page-level .recover salvage failed: {exc}"
         ) from exc
-    lf_conn = sqlite3.connect(str(lf_path), isolation_level=None)
+    lf_conn = _connect(lf_path)
     destination_conn = _fresh_destination(output)
     try:
         mapping = map_lost_and_found_rows(lf_conn, destination_conn)
@@ -1020,7 +1029,7 @@ def _recover_via_lost_and_found(
     # Structural checks cannot see a positional mis-mapping: every row still inserts, so integrity/FK/FTS
     # stay green. A systematic timestamp violation is the semantic tell — never report such a salvage as verified.
     # See #101409.
-    plausibility_conn = sqlite3.connect(str(output), isolation_level=None)
+    plausibility_conn = _connect(output)
     try:
         plausibility_errors = _lost_and_found_plausibility_errors(plausibility_conn)
     finally:

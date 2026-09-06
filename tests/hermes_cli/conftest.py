@@ -1,8 +1,45 @@
-"""Fixtures shared across hermes_cli kanban tests."""
+"""Fixtures shared across hermes_cli tests."""
 
 from __future__ import annotations
 
+import shutil
+import sqlite3
+import subprocess
+from pathlib import Path
+
 import pytest
+
+_REPO = Path(__file__).resolve().parents[2]
+_CJK_SRC = _REPO / "native" / "fts5_cjk" / "fts5_cjk.c"
+_CJK_VENDOR = _REPO / "native" / "fts5_cjk" / "vendor"
+
+
+@pytest.fixture(scope="session")
+def cjk_so(tmp_path_factory):
+    """Build the cjk_unicode61 loadable tokenizer, or skip when the toolchain cannot."""
+    if shutil.which("gcc") is None or not _CJK_SRC.exists():
+        pytest.skip("no C toolchain / tokenizer source")
+    output = tmp_path_factory.mktemp("hermes-cli-fts5cjk") / "libfts5_cjk.so"
+    try:
+        subprocess.run(
+            [
+                "gcc", "-shared", "-fPIC", "-O2",
+                f"-I{_CJK_VENDOR}", str(_CJK_SRC), "-o", str(output),
+            ],
+            check=True, capture_output=True, text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        pytest.skip(f"cjk tokenizer build failed: {(exc.stderr or '')[:200]}")
+    probe = sqlite3.connect(":memory:")
+    try:
+        probe.enable_load_extension(True)
+        probe.load_extension(str(output))
+        probe.enable_load_extension(False)
+    except (AttributeError, sqlite3.OperationalError) as exc:
+        pytest.skip(f"extension loading unavailable: {exc}")
+    finally:
+        probe.close()
+    return output
 
 
 @pytest.fixture

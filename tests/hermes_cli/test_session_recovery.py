@@ -20,6 +20,8 @@ from hermes_cli.session_recovery import (
     SessionRecoverySourceError,
     inspect_session_database,
     recover_session_database,
+    _connect,
+    _verify_fts_indexes,
 )
 
 
@@ -834,3 +836,163 @@ def test_lost_and_found_direct_copy_creates_lazy_delivery_ledger(tmp_path: Path)
         lf_conn.close()
         dest.close()
     assert rows == [("ob-1", "pending", None), ("ob-2", "failed", "boom")]
+
+
+# ── CJK tokenizer on recovery connections ───────────────────────────────────
+
+
+def _enable_cjk(monkeypatch: pytest.MonkeyPatch, cjk_so: Path) -> None:
+    monkeypatch.setenv("HERMES_FTS5_CJK_SO", str(cjk_so))
+    monkeypatch.setenv("HERMES_CJK_FTS", "1")
+
+
+def _seed_cjk_source(path: Path) -> None:
+    db = SessionDB(db_path=path)
+    try:
+        assert db._fts_cjk_loaded
+        assert db._fts_cjk_available
+        db.create_session("cjk-recovery-session", "cli")
+        db.append_message("cjk-recovery-session", "user", "한국어 복구 경로를 확인한다")
+        db.append_message("cjk-recovery-session", "assistant", "日本語の検索も残す")
+        db.append_message("cjk-recovery-session", "user", "中文内容也要可搜")
+    finally:
+        db.close()
+
+
+def _assert_recovered_cjk_search(output: Path) -> None:
+    recovered = SessionDB(db_path=output)
+    try:
+        assert recovered._fts_cjk_available
+        assert [row["session_id"] for row in recovered.search_messages("복구", limit=10)] == [
+            "cjk-recovery-session"
+        ]
+        assert recovered.search_messages("日本語", limit=10)
+        assert recovered.search_messages("中文", limit=10)
+    finally:
+        recovered.close()
+
+
+def test_connect_loads_cjk_tokenizer_for_integrity_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cjk_so: Path,
+) -> None:
+    _enable_cjk(monkeypatch, cjk_so)
+    source = tmp_path / "cjk-source.db"
+    _seed_cjk_source(source)
+
+    conn = _connect(source)
+    try:
+        verification: dict = {"errors": []}
+        _verify_fts_indexes(conn, verification)
+        assert verification["fts_checks"]["messages_fts_cjk"] == "ok"
+        assert verification["errors"] == []
+    finally:
+        conn.close()
+
+
+def test_connect_is_noop_when_cjk_extension_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HERMES_CJK_FTS", "1")
+    monkeypatch.setenv("HERMES_FTS5_CJK_SO", str(tmp_path / "missing-libfts5_cjk.so"))
+    source = tmp_path / "plain.db"
+    SessionDB(db_path=source).close()
+
+    conn = _connect(source)
+    try:
+        assert conn.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+    finally:
+        conn.close()
+
+
+def test_connect_is_noop_when_cjk_fts_is_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cjk_so: Path,
+) -> None:
+    monkeypatch.setenv("HERMES_FTS5_CJK_SO", str(cjk_so))
+    monkeypatch.setenv("HERMES_CJK_FTS", "0")
+    source = tmp_path / "cjk-off.db"
+    db = SessionDB(db_path=source)
+    try:
+        assert not db._fts_cjk_available
+        db.create_session("plain-session", "cli")
+        db.append_message("plain-session", "user", "한국어")
+    finally:
+        db.close()
+
+    conn = _connect(source)
+    try:
+        names = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name = 'messages_fts_cjk'"
+            )
+        }
+        assert names == set()
+    finally:
+        conn.close()
+
+
+def test_recovery_preserves_cjk_search_and_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cjk_so: Path,
+) -> None:
+    _enable_cjk(monkeypatch, cjk_so)
+    source = tmp_path / "cjk-source.db"
+    output = tmp_path / "cjk-recovered.db"
+    _seed_cjk_source(source)
+    source_hash = _sha256(source)
+
+    report = recover_session_database(source, output, work_dir=tmp_path)
+
+    assert report["source_unchanged"] is True
+    assert _sha256(source) == source_hash
+    assert report["copy"]["messages"]["status"] == "complete", report["copy"]["messages"].get("error")
+    assert report["copy"]["messages"]["copied_rows"] == 3
+    assert report["verification"]["table_counts"]["sessions"] == 1
+    assert report["verification"]["table_counts"]["messages"] == 3
+    assert report["verification"]["integrity_check"] == ["ok"]
+    assert report["verification"]["fts_checks"]["messages_fts_cjk"] == "ok"
+    assert report["verification"]["complete"] is True
+    assert report["complete"] is True
+    assert report["installed"] is False
+    _assert_recovered_cjk_search(output)
+
+
+def test_recovery_without_cjk_index_still_completes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HERMES_CJK_FTS", "0")
+    source = tmp_path / "no-cjk.db"
+    output = tmp_path / "no-cjk-recovered.db"
+    db = SessionDB(db_path=source)
+    try:
+        db.create_session("plain-session", "cli")
+        db.append_message("plain-session", "user", "한국어 복구")
+    finally:
+        db.close()
+
+    report = recover_session_database(source, output, work_dir=tmp_path)
+
+    assert report["complete"] is True
+    assert report["copy"]["messages"]["status"] == "complete"
+    assert "messages_fts_cjk" not in report["verification"].get("fts_checks", {})
+
+
+def test_verify_fts_indexes_fail_closed_without_tokenizer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cjk_so: Path,
+) -> None:
+    """A verify connection that skipped _connect must surface the tokenizer gap."""
+    _enable_cjk(monkeypatch, cjk_so)
+    source = tmp_path / "cjk-source.db"
+    _seed_cjk_source(source)
+
+    conn = sqlite3.connect(str(source), isolation_level=None)
+    try:
+        verification: dict = {"errors": []}
+        try:
+            _verify_fts_indexes(conn, verification)
+        except sqlite3.OperationalError as exc:
+            assert "cjk_unicode61" in str(exc).lower()
+            return
+        assert "cjk_unicode61" in verification["fts_checks"]["messages_fts_cjk"].lower()
+        assert any("messages_fts_cjk" in error for error in verification["errors"])
+    finally:
+        conn.close()

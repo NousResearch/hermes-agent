@@ -116,7 +116,7 @@ class TestSurfaceSwitch:
         agent = self._restore(stored="desktop", current="cli", history=history)
         assert agent._surface_switch_note.startswith(f"{_SURFACE_SWITCH_NOTE_PREFIX}cli (")
 
-    def test_tool_prefix_is_not_pinned_across_a_switch(self):
+    def test_tool_prefix_is_replaced_on_the_turn_that_announces_a_switch(self):
         """The saved names are the PREVIOUS surface's toolset.
 
         The tool registry is process-global, so ``_merge_preserving_prefix`` would keep a
@@ -125,9 +125,27 @@ class TestSurfaceSwitch:
         """
         from unittest.mock import patch
 
-        with patch("tools.mcp_tool_agent.restore_agent_tool_prefix") as pin:
+        with (
+            patch("tools.mcp_tool_agent.restore_agent_tool_prefix") as pin,
+            patch("tools.mcp_tool_agent.persist_agent_tool_names") as persist,
+        ):
             self._restore(stored="desktop", current="tui", tool_names='["desktop_ui_tool"]')
         pin.assert_not_called()
+        persist.assert_called_once()
+
+    def test_tool_prefix_is_pinned_again_on_the_next_turn(self):
+        # The freeze is skipped once, not disabled for the rest of the session: the announcing
+        # turn persisted this surface's tools, so the next turn pins those.
+        from unittest.mock import patch
+
+        history = [
+            {"role": "user", "content": f"hi\n\n{_SURFACE_SWITCH_NOTE_PREFIX}tui (...)]"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        with patch("tools.mcp_tool_agent.restore_agent_tool_prefix") as pin:
+            self._restore(stored="desktop", current="tui", history=history,
+                          tool_names='["read_file"]')
+        pin.assert_called_once()
 
     def test_tool_prefix_is_still_pinned_on_the_same_surface(self):
         from unittest.mock import patch

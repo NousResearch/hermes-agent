@@ -690,16 +690,21 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         agent._cached_system_prompt = stored_prompt
         # The reused bytes may describe the surface this conversation STARTED on; correct that
         # at the tail of the request instead of rebuilding the prompt in front of it (#104414).
-        surface_changed = _stage_surface_switch_note(agent, stored_prompt, conversation_history)
+        announced_switch = _stage_surface_switch_note(agent, stored_prompt, conversation_history)
         # Same contract for tools[]: pin the array to the order this session already
         # sent (tools freeze) instead of re-probing every check_fn on a fresh AIAgent.
-        # NOT across a surface switch: the saved names are the PREVIOUS surface's toolset
-        # (``coding_context: focus`` gives desktop a desktop_ui toolset the TUI has no use for)
-        # and the tool registry is process-global, so the merge would re-advertise tools this
-        # surface cannot run. The fresh, toolset-correct array wins there.
+        # NOT on the turn that announces a surface switch: the saved names are the PREVIOUS
+        # surface's toolset (``coding_context: focus`` gives desktop a desktop_ui toolset the
+        # TUI has no use for) and the tool registry is process-global, so the merge would
+        # re-advertise tools this surface cannot run.  The fresh, toolset-correct array wins,
+        # and is persisted so the very next turn pins THAT one — the freeze is skipped once,
+        # not disabled for the rest of the session.
         try:
             saved_tools = session_row.get("tool_names") if session_row else None
-            if saved_tools and not surface_changed:
+            if announced_switch:
+                from tools.mcp_tool_agent import persist_agent_tool_names
+                persist_agent_tool_names(agent)
+            elif saved_tools:
                 from tools.mcp_tool_agent import restore_agent_tool_prefix
                 restore_agent_tool_prefix(agent, json.loads(saved_tools))
         except Exception:
@@ -818,17 +823,17 @@ def _surface_already_announced(conversation_history, platform: str) -> bool:
 def _stage_surface_switch_note(agent, stored_prompt: str, conversation_history) -> bool:
     """Stage the correction note when the reused prompt describes a different surface.
 
-    Returns whether the surface actually drifted — the caller also uses it to decide whether
-    the saved tool prefix may be pinned.  The note itself is one-shot per turn (consumed by
-    ``agent.turn_context.consume_surface_switch_note``) and is skipped when the transcript
-    already carries one for this surface, but that does not make the drift go away.
+    Returns whether the note was staged — the caller pairs that with re-persisting the tool
+    names, because this is the turn the surface's toolset actually changes under it.  The note
+    is one-shot per turn (consumed by ``agent.turn_context.consume_surface_switch_note``) and
+    is skipped when the transcript already carries one for this surface.
     """
     current = str(getattr(agent, "platform", "") or "").strip()
     stored = _stored_prompt_platform(stored_prompt)
     if not current or not stored or stored == current:
         return False
     if _surface_already_announced(conversation_history, current):
-        return True
+        return False
     from agent.system_prompt import platform_surface_hint
     note = (
         f"{_SURFACE_SWITCH_NOTE_PREFIX}{current} (the system prompt above was written for "

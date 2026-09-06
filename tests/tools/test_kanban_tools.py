@@ -1161,3 +1161,215 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Exact-head PR-CI completion gate (Issue #104595)
+# ---------------------------------------------------------------------------
+
+class TestPrCiClassifier:
+    """Pure classifier: only an all-success snapshot at the exact head is
+    completion evidence; every other outcome is a non-success (Issue #104595)."""
+
+    def test_all_success_is_green(self):
+        from tools import kanban_tools as kt
+        state, lines = kt._classify_pr_ci(
+            "abc123", [{"name": "pytest", "status": "completed", "conclusion": "success"}],
+            "success", [])
+        assert state == "success"
+        assert lines[0].startswith("all checks green")
+
+    def test_failed_pytest_is_code_failure(self):
+        from tools import kanban_tools as kt
+        state, lines = kt._classify_pr_ci(
+            "abc123",
+            [{"name": "pytest (3.13.x)", "status": "completed", "conclusion": "failure",
+              "html_url": "https://github.com/o/r/actions/runs/1"}],
+            "failure", [])
+        assert state == "failure"
+        assert any("pytest (3.13.x)" in ln and "failure" in ln for ln in lines)
+
+    def test_failed_quality_is_code_failure(self):
+        from tools import kanban_tools as kt
+        state, _ = kt._classify_pr_ci(
+            "abc123",
+            [{"name": "quality / unit tests (ubuntu)", "status": "completed",
+              "conclusion": "failure"}],
+            "failure", [])
+        assert state == "failure"
+
+    def test_cancelled_is_infra_not_evidence(self):
+        from tools import kanban_tools as kt
+        state, _ = kt._classify_pr_ci(
+            "abc123",
+            [{"name": "ci", "status": "completed", "conclusion": "cancelled"}],
+            "failure", [])
+        assert state == "infra"
+
+    def test_missing_checks_is_not_evidence(self):
+        from tools import kanban_tools as kt
+        state, lines = kt._classify_pr_ci("abc123", [], "", [])
+        assert state == "missing"
+        assert "no check runs" in lines[0]
+
+    def test_zero_run_suite_is_missing_not_evidence(self):
+        """total_count=0 with an empty run list is a zero-run suite: not green."""
+        from tools import kanban_tools as kt
+        state, _ = kt._classify_pr_ci("abc123", [], "", [])
+        assert state == "missing"
+
+    def test_stale_conclusion_is_infra(self):
+        from tools import kanban_tools as kt
+        state, _ = kt._classify_pr_ci(
+            "abc123",
+            [{"name": "ci", "status": "completed", "conclusion": "stale"}],
+            "failure", [])
+        assert state == "infra"
+
+    def test_pending_run_is_pending(self):
+        from tools import kanban_tools as kt
+        state, _ = kt._classify_pr_ci(
+            "abc123",
+            [{"name": "ci", "status": "in_progress", "conclusion": None},
+             {"name": "lint", "status": "completed", "conclusion": "success"}],
+            "pending", [])
+        assert state == "pending"
+
+    def test_infra_upload_failure_lists_run_name(self):
+        """artifact-upload (e.g. SARIF) failures are failures of the run; the
+        receipt names the run so the worker sees it is infrastructure, not code."""
+        from tools import kanban_tools as kt
+        state, lines = kt._classify_pr_ci(
+            "abc123",
+            [{"name": "SARIF upload", "status": "completed", "conclusion": "failure"}],
+            "failure", [])
+        assert state == "failure"
+        assert any("SARIF upload" in ln for ln in lines)
+
+
+class TestPrCiGateHandler:
+    """Machine-enforced gate on kanban_complete (Issue #104595)."""
+
+    def _complete(self, worker_env, monkeypatch, verdict, **extra):
+        from tools import kanban_tools as kt
+        monkeypatch.setattr(kt, "_fetch_pr_ci_state", lambda url: verdict)
+        args = {"summary": "opened the PR and verified it", **extra}
+        return json.loads(kt._handle_complete(args)), worker_env
+
+    def _status(self, worker_env):
+        from hermes_cli import kanban_db as kb
+        from hermes_cli import kanban_db_connect as kbc
+        conn = kbc.connect()
+        try:
+            return kb.get_task(conn, worker_env).status
+        finally:
+            conn.close()
+
+    def test_green_ci_allows_done(self, worker_env, monkeypatch):
+        url = "https://github.com/NousResearch/hermes-agent/pull/104620"
+        out, tid = self._complete(
+            worker_env, monkeypatch, ("success", ["all checks green"]),
+            published_pr=url)
+        assert out.get("ok") is True, out
+        assert self._status(tid) == "done"
+
+    def test_code_failure_rejects_and_keeps_task_running(self, worker_env, monkeypatch):
+        url = "https://github.com/NousResearch/hermes-agent/pull/104620"
+        out, tid = self._complete(
+            worker_env, monkeypatch,
+            ("failure", ["- pytest: conclusion='failure' https://github.com/o/r/actions/runs/9"]),
+            published_pr=url)
+        assert out.get("ok") is not True
+        err = out.get("error", "")
+        assert "exact-head PR-CI gate (failure)" in err
+        assert "https://github.com/o/r/actions/runs/9" in err
+        assert "cannot be marked done" in err
+        assert self._status(tid) == "running"
+
+    def test_pending_rejects_with_wait_guidance(self, worker_env, monkeypatch):
+        url = "https://github.com/NousResearch/hermes-agent/pull/104620"
+        out, tid = self._complete(
+            worker_env, monkeypatch, ("pending", ["- ci: status='in_progress'"]),
+            published_pr=url)
+        assert out.get("ok") is not True
+        assert "exact-head PR-CI gate (pending)" in out.get("error", "")
+        assert self._status(tid) == "running"
+
+    def test_cancelled_rejects_as_infra(self, worker_env, monkeypatch):
+        url = "https://github.com/NousResearch/hermes-agent/pull/104620"
+        out, tid = self._complete(
+            worker_env, monkeypatch, ("infra", ["- ci: conclusion='cancelled'"]),
+            published_pr=url)
+        assert out.get("ok") is not True
+        assert "exact-head PR-CI gate (infra)" in out.get("error", "")
+        assert self._status(tid) == "running"
+
+    def test_missing_checks_rejects(self, worker_env, monkeypatch):
+        url = "https://github.com/NousResearch/hermes-agent/pull/104620"
+        out, tid = self._complete(
+            worker_env, monkeypatch, ("missing", ["no check runs ... head abc123"]),
+            published_pr=url)
+        assert out.get("ok") is not True
+        assert "exact-head PR-CI gate (missing)" in out.get("error", "")
+        assert self._status(tid) == "running"
+
+    def test_local_only_task_completes_without_pr(self, worker_env, monkeypatch):
+        """Escape hatch (Issue #104595): no PR in the handoff -> no gate."""
+        from tools import kanban_tools as kt
+        calls = []
+        monkeypatch.setattr(kt, "_fetch_pr_ci_state",
+                            lambda url: calls.append(url) or ("failure", ["x"]))
+        args = {"summary": "local analysis only, no code published"}
+        out = json.loads(kt._handle_complete(args))
+        assert out.get("ok") is True, out
+        assert calls == []  # gate never ran
+
+    def test_pr_url_in_summary_is_gated(self, worker_env, monkeypatch):
+        """Omitting published_pr does not bypass the gate: the URL is picked up
+        from the handoff text."""
+        from tools import kanban_tools as kt
+        seen = []
+        monkeypatch.setattr(kt, "_fetch_pr_ci_state",
+                            lambda url: seen.append(url) or ("failure", ["- pytest: conclusion='failure'"]))
+        args = {"summary": "done; PR at https://github.com/NousResearch/hermes-agent/pull/1"}
+        out = json.loads(kt._handle_complete(args))
+        assert out.get("ok") is not True
+        assert seen == ["https://github.com/NousResearch/hermes-agent/pull/1"]
+        assert "exact-head PR-CI gate (failure)" in out.get("error", "")
+
+
+class TestPrCiFetch:
+    def test_fetch_scopes_checks_to_the_exact_head(self, monkeypatch):
+        """The gate snapshots check-runs OF THE PR'S CURRENT HEAD SHA — a green
+        result reported for any prior head is not evidence (Issue #104595:
+        exact-head binding). Verified by asserting the queried endpoints."""
+        from tools import kanban_tools as kt
+        calls: list[str] = []
+
+        def fake_gh(args, timeout=30.0):
+            calls.append(args[0])
+            if args[0].startswith("repos/o/r/pulls/"):
+                return {"head_sha": "headNEW", "html_url": "https://github.com/o/r/pull/42"}
+            if "check-runs" in args[0]:
+                return {"total_count": 1, "check_runs": [
+                    {"name": "ci", "status": "completed", "conclusion": "success"}]}
+            return {"state": "success", "statuses": []}
+
+        monkeypatch.setattr(kt, "_gh_api_json", fake_gh)
+        state, _ = kt._fetch_pr_ci_state("https://github.com/o/r/pull/42")
+        assert state == "success"
+        assert any("commits/headNEW/check-runs" in c for c in calls)
+        assert any("commits/headNEW/status" in c for c in calls)
+
+    def test_fetch_gh_failure_is_infra(self, monkeypatch):
+        from tools import kanban_tools as kt
+        monkeypatch.setattr(kt, "_gh_api_json", lambda args, timeout=30.0: None)
+        state, lines = kt._fetch_pr_ci_state("https://github.com/o/r/pull/42")
+        assert state == "infra"
+        assert "gh api failed" in lines[0]
+
+    def test_fetch_invalid_url_is_infra(self):
+        from tools import kanban_tools as kt
+        state, lines = kt._fetch_pr_ci_state("https://gitlab.com/o/r/-/merge_requests/1")
+        assert state == "infra"
+        assert "not a GitHub pull request URL" in lines[0]

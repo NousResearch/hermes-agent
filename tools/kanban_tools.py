@@ -11,6 +11,8 @@ import functools
 import json
 import logging
 import os
+import re
+import subprocess
 import time
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
@@ -488,6 +490,194 @@ def inject_new_comments_from_env(agent: Any) -> bool:
         return False
 
 
+# --- Exact-head PR-CI completion gate (Issue #104595) ---
+#
+# kanban_complete is a terminal transition: once a task is done the dispatcher
+# moves on and no worker is retained to fix a broken PR. A PR-publishing worker
+# must therefore prove green CI at the PR's *exact head SHA* before the kernel
+# lets it complete. The gate is machine-enforced in the kanban lifecycle (not a
+# worker-prose contract): kanban_complete whose handoff publishes a PR (via the
+# ``published_pr`` argument or a GitHub PR URL in the handoff text) is rejected
+# unless every reported check is ``success`` at the PR's current head. Anything
+# else — code failure, cancellation, timeout, stale checks, missing or zero-run
+# suites, ambiguous/infrastructure outcomes — is a non-success and can never be
+# completion evidence. The task stays running (actionable) or the worker blocks
+# it; it is never marked done.
+#
+# Tasks whose contract is intentionally local-only (no PR published) are the
+# documented escape hatch: with no PR URL in the handoff the gate does not run.
+
+_PUBLISHED_PR_RE = re.compile(
+    r"https?://github\.com/([^/?#\s]+)/([^/?#\s]+)/pull/(\d+)", re.I)
+
+# gh api check-run conclusions that are NOT completion evidence, classified so
+# the worker/human sees what kind of action each one needs.
+_CODE_FAILURE_CONCLUSIONS = frozenset({"failure"})
+_INFRA_CONCLUSIONS = frozenset({
+    "cancelled", "timed_out", "action_required", "stale", "neutral", "skipped"})
+
+
+def _gh_api_json(args: list[str], timeout: float = 30.0) -> Optional[dict]:
+    """One ``gh api`` call returning parsed JSON, or None on any failure.
+
+    The gate runs in the worker's process; workers that publish PRs already run
+    on hosts with an authenticated ``gh`` CLI. Missing CLI, auth problems, rate
+    limits, network errors and HTTP errors all surface as None (never raise):
+    the caller classifies them as an infrastructure outcome, which is a
+    non-success but is reported distinctly from a code failure.
+    """
+    try:
+        proc = subprocess.run(
+            ["gh", "api", *args], capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:  # no gh / timeout
+        logger.warning("PR-CI gate: gh api unavailable: %r", exc)
+        return None
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip() or (proc.stdout or "").strip()
+        logger.warning("PR-CI gate: gh api exited %d: %.400s", proc.returncode, stderr)
+        return None
+    try:
+        return json.loads(proc.stdout)
+    except ValueError:
+        logger.warning("PR-CI gate: gh api returned non-JSON output")
+        return None
+
+
+def _classify_pr_ci(head_sha: str, runs: list[dict], combined_state: str,
+                    statuses: list[dict]) -> tuple[str, list[str]]:
+    """Pure classifier: ``(state, detail_lines)`` for one exact-head snapshot.
+
+    ``state`` is one of:
+      - ``success`` — every reported run concluded ``success`` (and any legacy
+        commit-status contexts are green); the ONLY completion evidence.
+      - ``failure`` — at least one run concluded ``failure`` (code-level: fix,
+        push, re-complete). Lines carry the failing runs.
+      - ``pending`` — a run has not concluded yet (wait, then re-complete).
+      - ``infra`` — cancelled/timed_out/stale/action_required/neutral/skipped
+        runs, or a gh/network/auth failure: not code, not evidence (re-run or
+        block; never done).
+      - ``missing`` — the head reports no check runs AND no commit statuses
+        (missing / zero-run suite): not evidence.
+    Any run that is not ``success`` dominates; the message lists everything.
+    """
+    lines: list[str] = []
+    pending = [r for r in runs if (r.get("status") or "") != "completed"]
+    concluded = [r for r in runs if (r.get("status") or "") == "completed"]
+    code_failures = [r for r in concluded if r.get("conclusion") in _CODE_FAILURE_CONCLUSIONS]
+    infra_runs = [r for r in concluded if r.get("conclusion") in _INFRA_CONCLUSIONS]
+    unknown = [r for r in concluded
+               if r.get("conclusion") not in _CODE_FAILURE_CONCLUSIONS
+               and r.get("conclusion") not in _INFRA_CONCLUSIONS
+               and r.get("conclusion") != "success"]
+
+    def _run_line(run: dict) -> str:
+        name = run.get("name") or run.get("external_id") or "(unnamed check)"
+        url = run.get("html_url")
+        return f"- {name}: conclusion={run.get('conclusion')!r}" + (f" {url}" if url else "")
+
+    for run in code_failures:
+        lines.append(_run_line(run))
+    for run in infra_runs:
+        lines.append(_run_line(run))
+    for run in unknown:
+        lines.append(_run_line(run))
+    for run in pending[:20]:
+        lines.append(f"- {run.get('name') or '(unnamed check)'}: status={run.get('status')!r}"
+                     + (f" {run.get('html_url')}" if run.get("html_url") else ""))
+    if len(pending) > 20:
+        lines.append(f"- ... and {len(pending) - 20} more in progress/queued")
+
+    if code_failures:
+        return ("failure", lines)
+    if pending:
+        return ("pending", lines)
+    if infra_runs or unknown:
+        return ("infra", lines)
+    # No runs concluded outside success: green only if something was actually
+    # reported. Zero-run / missing suites are non-success (Issue #104595).
+    if not runs and not statuses:
+        return ("missing", [f"no check runs and no commit statuses reported for head {head_sha}"])
+    bad_statuses = [s for s in statuses if (s.get("state") or "") not in ("success",)]
+    for s in bad_statuses[:20]:
+        lines.append(f"- status {s.get('context')!r}: state={s.get('state')!r}")
+    if bad_statuses or combined_state not in ("success", ""):
+        return ("failure" if any(
+            (s.get("state") or "") in ("failure", "error") for s in statuses) else "pending",
+            lines or [f"commit status reports combined state {combined_state!r}"])
+    return ("success", ["all checks green at head " + head_sha])
+
+
+def _fetch_pr_ci_state(pr_url: str) -> tuple[str, list[str]]:
+    """Snapshot the PR's exact-head CI state via ``gh api``.
+
+    Returns ``(state, lines)`` exactly like :func:`_classify_pr_ci`; any gh
+    failure is an ``infra`` outcome with the cause in the lines.
+    """
+    m = _PUBLISHED_PR_RE.match(pr_url.strip())
+    if not m:
+        return ("infra", [f"{pr_url!r} is not a GitHub pull request URL"])
+    owner, repo, number = m.group(1), m.group(2), m.group(3)
+    pr = _gh_api_json(
+        [f"repos/{owner}/{repo}/pulls/{number}",
+         "--jq", "{head_sha:.head.sha,html_url:.html_url}"])
+    if pr is None or not pr.get("head_sha"):
+        return ("infra", [f"could not query {owner}/{repo} pull #{number}: "
+                          "gh api failed (missing CLI, auth, rate limit or network)"])
+    head_sha: str = pr["head_sha"]
+    runs_payload = _gh_api_json(
+        [f"repos/{owner}/{repo}/commits/{head_sha}/check-runs",
+         "--jq", "{total_count,check_runs:[.check_runs[]|"
+                 "{name,status,conclusion,html_url,external_id}]}"])
+    status_payload = _gh_api_json(
+        [f"repos/{owner}/{repo}/commits/{head_sha}/status",
+         "--jq", "{state,statuses:[.statuses[]|{context,state}]}"])
+    if runs_payload is None or status_payload is None:
+        return ("infra", [f"could not read check state for {owner}/{repo}@{head_sha}: "
+                          "gh api failed (missing CLI, auth, rate limit or network)"])
+    runs: list[dict] = runs_payload.get("check_runs") or []
+    total = runs_payload.get("total_count") or len(runs)
+    statuses: list[dict] = (status_payload.get("statuses") or [])
+    state, lines = _classify_pr_ci(head_sha, runs, status_payload.get("state") or "",
+                                   statuses)
+    if total > len(runs):
+        lines.append(f"- (only the first {len(runs)} of {total} check runs were inspected)")
+    return (state, lines)
+
+
+_PR_CI_NON_SUCCESS_NOTE = (
+    "CI is not green at the PR's exact head, so this task cannot be marked done "
+    "(Issue #104595: a terminal transition needs machine-verified completion "
+    "evidence; a worker's prose claim is not evidence). "
+    "Fix the failure and push, then call kanban_complete again — the gate "
+    "re-checks the current head. If checks are still running, wait and retry, "
+    "or kanban_block the task so it stays actionable instead of being falsely "
+    "completed. Never mark a PR task done while any check is not success.")
+
+
+def _pr_ci_gate_error(args: dict, summary: Optional[str], result: Optional[str],
+                      ) -> Optional[str]:
+    """Issue #104595 gate for kanban_complete; None = gate passed.
+
+    A published PR is detected from ``args["published_pr"]`` (preferred —
+    deterministic) or, failing that, from the first GitHub PR URL found in the
+    handoff text (summary/result). No PR at all = intentionally local-only
+    contract = the gate does not run (documented escape hatch).
+    """
+    url = (args.get("published_pr") or "").strip()
+    if not url:
+        hint = "\n".join(t for t in (summary or "", result or "") if t)
+        m = _PUBLISHED_PR_RE.search(hint)
+        url = m.group(0) if m else ""
+    if not url:
+        return None
+    state, lines = _fetch_pr_ci_state(url)
+    if state == "success":
+        return None
+    return (
+        "kanban_complete rejected by the exact-head PR-CI gate "
+        f"({state}): {url}\n" + "\n".join(lines) + "\n\n" + _PR_CI_NON_SUCCESS_NOTE)
+
+
 # --- Handlers ---
 
 @_kanban_handler("kanban_show")
@@ -562,6 +752,14 @@ def _handle_complete(args: dict, **kw) -> str:
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
         task = kb.get_task(conn, tid)
         _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
+        # Exact-head PR-CI completion gate (Issue #104595): a terminal
+        # transition needs machine-verified completion evidence. If the handoff
+        # publishes a PR, every check must be success at the PR's exact head —
+        # otherwise the task stays running and the rejection tells the worker
+        # what to fix (or to block) instead of letting it falsely complete.
+        _pr_ci_reject = _pr_ci_gate_error(args, summary, result)
+        if _pr_ci_reject:
+            raise _Reject(_pr_ci_reject)
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,

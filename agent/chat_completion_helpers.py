@@ -15,6 +15,7 @@ sites unchanged.  Symbols that tests patch on ``run_agent`` (e.g.
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import json
 import logging
@@ -556,22 +557,24 @@ def _validated_openrouter_provider_sort(raw_sort: Any) -> Optional[str]:
 
 
 def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
-    """Build the validated provider-routing object shared by request paths."""
-    preferences: Dict[str, Any] = {}
-    if agent.providers_allowed:
-        preferences["only"] = agent.providers_allowed
-    if agent.providers_ignored:
-        preferences["ignore"] = agent.providers_ignored
-    if agent.providers_order:
-        preferences["order"] = agent.providers_order
-    provider_sort = _validated_openrouter_provider_sort(agent.provider_sort)
-    if provider_sort:
-        preferences["sort"] = provider_sort
-    if agent.provider_require_parameters:
-        preferences["require_parameters"] = True
-    if agent.provider_data_collection:
-        preferences["data_collection"] = agent.provider_data_collection
-    return preferences
+    """Build the validated provider-routing object shared by request paths.
+
+    ``provider_routing.models.<id>`` overlays the flat constructor values for the CURRENT
+    ``agent.model`` (so ``/model`` switches, fallbacks, and delegated children on another
+    model each get their own pins without any surface re-plumbing the kwargs)."""
+    flat = {"only": agent.providers_allowed, "ignore": agent.providers_ignored, "order": agent.providers_order,
+        "sort": agent.provider_sort, "require_parameters": agent.provider_require_parameters,
+        "data_collection": agent.provider_data_collection}
+    per_model = {}
+    with contextlib.suppress(Exception):
+        from hermes_cli.config import load_config_readonly
+        from hermes_constants import resolve_per_model_provider_routing
+        _pr = load_config_readonly().get("provider_routing")
+        per_model = resolve_per_model_provider_routing(agent.model, (_pr or {}).get("models") if isinstance(_pr, dict) else None)
+    merged = {**flat, **{k: v for k, v in per_model.items() if k in flat}}
+    merged["sort"] = _validated_openrouter_provider_sort(merged["sort"])
+    merged["require_parameters"] = True if merged["require_parameters"] else None
+    return {key: value for key, value in merged.items() if value}
 
 
 def _prompt_cache_scope_for_agent(agent) -> "str | None":

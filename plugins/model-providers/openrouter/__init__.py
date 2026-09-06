@@ -127,8 +127,9 @@ class OpenRouterProfile(ProviderProfile):
             body["session_id"] = sticky_key
         prefs = context.get("provider_preferences")
         pin = OPENROUTER_ENDPOINT_PINS.get(context.get("model") or "")
-        if pin:
-            # The tier pin owns ``only``; the user's other routing prefs (ignore/sort/...) still apply.
+        # The tier pin owns ``only`` (ignore/sort/... still apply) — except on the BASE slug, where the pin
+        # merely keeps default routing off flex/fast and an explicit user ``only`` is the stronger intent.
+        if pin and not (pin[0] == context.get("model") and (prefs or {}).get("only")):
             prefs = {**(prefs or {}), "only": list(pin[1])}
         if prefs:
             body["provider"] = prefs

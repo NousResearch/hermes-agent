@@ -11111,8 +11111,10 @@ def cmd_update(args):
     # None = not a SystemExit-shaped outcome; real exceptions keep the
     # normal raise path so their traceback still prints.
     _update_handoff_exit_code: int | None = None
+    from hermes_cli import update_cmd as _update_cmd
+
     try:
-        _self()._cmd_update_impl(args, gateway_mode=gateway_mode)
+        _update_cmd._cmd_update_impl(args, gateway_mode=gateway_mode)
     except SystemExit as _update_exit:
         # Receipt boundary (#91283 review): the impl has many early
         # sys.exit paths (concurrent-instance preflight, venv-holder

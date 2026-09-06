@@ -1337,6 +1337,9 @@ def _probe_remote_backend(env_type: str) -> str | None:
             container_config=container_config,
             task_id="prompt-backend-probe",
             host_cwd=config.get("host_cwd"),
+            # Only ssh honors this: use an isolated ControlMaster socket and
+            # skip remote directory setup, file sync, and state snapshots.
+            probe_only=True,
         )
         # Single-line POSIX probe — works on any Unixy backend. Wrapped in
         # `2>/dev/null` so a missing binary doesn't pollute the output.
@@ -1363,10 +1366,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
         # The probe only needs a one-shot `uname`; without teardown the
         # backend leaves a second idle sandbox (task_id="prompt-backend-probe")
         # running for the whole process lifetime next to the agent's own one.
-        # ssh is left alone: it has no task-scoped sandbox and its cleanup()
-        # closes a ControlMaster socket (keyed by user@host:port) shared with
-        # the agent's real environment; ControlPersist expires it anyway.
-        if env is not None and env_type != "ssh":
+        if env is not None:
             try:
                 from tools.terminal_tool import _cleanup_env
 

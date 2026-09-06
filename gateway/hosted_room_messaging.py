@@ -1460,6 +1460,16 @@ def format_room_detail(
         room,
         remote_status=action_status,
     )
+    route_status = action_status if remote_mode else ({} if desktop_mode else service.status(room_id))
+    peer_routes = route_status.get("peer_routes") if isinstance(route_status, Mapping) else None
+    if isinstance(peer_routes, list) and any(
+        isinstance(route, Mapping) and route.get("status") == "needs_reauthorization"
+        for route in peer_routes
+    ):
+        lines.extend([
+            "",
+            "Some Bots need to reconnect. Open this Group Chat in Hermes Desktop and choose Reconnect.",
+        ])
     if unconfirmed:
         lines.extend([
             "",

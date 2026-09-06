@@ -501,6 +501,7 @@ def issue_home_control_token(
     authority_epoch: Any,
     expires_at: Any,
     request_id: Any | None = None,
+    reuse_existing: bool = False,
     now: float | None = None,
 ) -> IssuedRoomControlToken:
     """Create one replay-safe member credential and retain only its hash."""
@@ -545,13 +546,29 @@ def issue_home_control_token(
                 "active Group Chat authority scope is unavailable"
             )
         existing = conn.execute(
-            """SELECT request_id, status, expires_at
+            """SELECT request_id, token_hash, status, created_at, expires_at
                  FROM hosted_room_control_tokens
                 WHERE room_id=? AND member_id=? AND authority_gateway_id=?
                   AND authority_epoch=?""",
             (room_id, member_id, authority_gateway_id, authority_epoch),
         ).fetchone()
         if existing is not None and existing["status"] == "active":
+            if reuse_existing is True and float(existing["expires_at"]) > created_at:
+                recovered = _derived_control_token(
+                    room_id=room_id, member_id=member_id,
+                    authority_gateway_id=authority_gateway_id, authority_epoch=authority_epoch,
+                    request_id=str(existing["request_id"]),
+                )
+                if not hmac.compare_digest(
+                    hashlib.sha256(recovered.encode("ascii")).digest(), bytes(existing["token_hash"])
+                ):
+                    raise HostedRoomControlConflictError("existing control credential cannot be recovered")
+                return IssuedRoomControlToken(
+                    room_id=room_id, member_id=member_id,
+                    authority_gateway_id=authority_gateway_id, authority_epoch=authority_epoch,
+                    control_token=recovered, status="active",
+                    created_at=float(existing["created_at"]), expires_at=float(existing["expires_at"]),
+                )
             if (
                 str(existing["request_id"]) == normalized_request_id
                 and float(existing["expires_at"]) == expires_at
@@ -573,6 +590,8 @@ def issue_home_control_token(
                 raise HostedRoomControlConflictError(
                     "an active control credential already exists for this scope"
                 )
+        if reuse_existing is True and existing is not None:
+            raise HostedRoomControlConflictError("control access was invalidated; explicit authorization is required")
         conn.execute(
             """INSERT INTO hosted_room_control_tokens(
                    room_id, member_id, authority_gateway_id, authority_epoch,
@@ -1015,6 +1034,98 @@ def revoke_peer_control_links(
             (timestamp, timestamp, *params),
         )
         return cursor.rowcount
+
+
+def _same_peer_control(
+    current: StoredPeerRoomControl, expected: StoredPeerRoomControl
+) -> bool:
+    return bool(
+        current.room_id == expected.room_id
+        and current.member_id == expected.member_id
+        and current.home_url == expected.home_url
+        and current.authority_gateway_id == expected.authority_gateway_id
+        and current.authority_epoch == expected.authority_epoch
+        and current.created_at == expected.created_at
+        and current.expires_at == expected.expires_at
+        and hmac.compare_digest(current.control_token, expected.control_token)
+    )
+
+
+def revoke_peer_control_link_value(
+    db_path: Path | str,
+    *,
+    expected: StoredPeerRoomControl,
+    now: float | None = None,
+) -> StoredPeerRoomControl | None:
+    """Locally revoke one exact credential while retaining its bearer for retry."""
+
+    if not isinstance(expected, StoredPeerRoomControl):
+        raise HostedRoomControlError("expected control link is invalid")
+    timestamp = _timestamp(time.time() if now is None else now, label="now")
+    with _transaction(db_path, immediate=True) as conn:
+        row = conn.execute(
+            """SELECT rowid, * FROM hosted_room_peer_controls
+                WHERE room_id=? AND member_id=?""",
+            (expected.room_id, expected.member_id),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            current = _peer_link_from_row(row)
+        except HostedRoomControlError:
+            return None
+        if not _same_peer_control(current, expected):
+            return None
+        if current.status == "revoked":
+            return current
+        if current.status != "active":
+            return None
+        conn.execute(
+            """UPDATE hosted_room_peer_controls
+                  SET status='revoked', updated_at=?, revoked_at=?
+                WHERE rowid=?""",
+            (timestamp, timestamp, row["rowid"]),
+        )
+        return _peer_link_from_row(
+            conn.execute(
+                "SELECT * FROM hosted_room_peer_controls WHERE rowid=?",
+                (row["rowid"],),
+            ).fetchone()
+        )
+
+
+def delete_peer_control_link_value(
+    db_path: Path | str,
+    *,
+    expected: StoredPeerRoomControl,
+    required_status: str,
+) -> int:
+    """Delete one unchanged credential after its terminal state is verified."""
+
+    if not isinstance(expected, StoredPeerRoomControl):
+        raise HostedRoomControlError("expected control link is invalid")
+    if required_status not in {"expired", "revoked"}:
+        raise HostedRoomControlError("required control status is invalid")
+    with _transaction(db_path, immediate=True) as conn:
+        row = conn.execute(
+            """SELECT rowid, * FROM hosted_room_peer_controls
+                WHERE room_id=? AND member_id=?""",
+            (expected.room_id, expected.member_id),
+        ).fetchone()
+        if row is None:
+            return 0
+        try:
+            current = _peer_link_from_row(row)
+        except HostedRoomControlError:
+            return 0
+        if current.status != required_status or not _same_peer_control(
+            current, expected
+        ):
+            return 0
+        return conn.execute(
+            "DELETE FROM hosted_room_peer_controls WHERE rowid=?",
+            (row["rowid"],),
+        ).rowcount
 
 
 def delete_peer_control_links(

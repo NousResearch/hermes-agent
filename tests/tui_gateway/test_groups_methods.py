@@ -1195,6 +1195,12 @@ def test_reciprocal_control_link_is_scoped_to_the_live_peer_reservation(
         },
         expires_at=invitation["expires_at"],
     )
+    reused = _result(srv._methods["groups.control.invite"](4, {
+        "room_id": "room-control", "member_id": "member-peer", "caller_install_id": "install-peer",
+        "request_id": "later-desktop", "reuse_existing": True,
+    }))
+    assert reused["control_token"] == invitation["control_token"]
+    assert reused["expires_at"] == invitation["expires_at"]
     registered = _result(
         srv._methods["groups.control.register"](
             2,

@@ -112,12 +112,29 @@ def _config_str(*keys: str, default: str) -> str:
     return _config_value(*keys, default=default) or default
 
 
+def _write_raw_config_value(path: tuple[str, ...], value: Any) -> None:
+    """Change one setting without canonicalizing unrelated user configuration."""
+    from hermes_cli import config as config_mod
+
+    with config_mod._CONFIG_LOCK:
+        if config_mod.is_managed():
+            config_mod.managed_error("save configuration")
+            return
+        config_mod._exit_if_key_managed(".".join(path), "set")
+        config_path = config_mod.get_config_path()
+        raw = config_mod.require_readable_config_before_write(config_path)
+        entry = raw
+        for segment in path[:-1]:
+            entry = _child_dict(entry, segment)
+        entry[path[-1]] = value
+        config_mod._write_user_config(config_path, raw)
+        config_mod._secure_file(config_path)
+        config_mod._RAW_CONFIG_CACHE.pop(str(config_path), None)
+        config_mod._LAST_EXPANDED_CONFIG_BY_PATH.pop(str(config_path), None)
+
+
 def _write_config_value(section: str, key: str, value: Any) -> None:
-    """Persist ``config[section][key] = value`` to config.yaml (creating the section)."""
-    from hermes_cli.config import load_config, save_config
-    config = load_config()
-    config.setdefault(section, {})[key] = value
-    save_config(config)
+    _write_raw_config_value((section, key), value)
 
 
 def _scan_on_install_enabled() -> bool:
@@ -977,11 +994,7 @@ def _resolve_plugin_key_and_source(name: str) -> Optional[tuple]:
 
 def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
     """Write ``plugins.entries.<plugin_id>.<key> = value`` into config.yaml."""
-    from hermes_cli.config import load_config, save_config
-    config = load_config()
-    entry = _child_dict(_child_dict(_child_dict(config, "plugins"), "entries"), plugin_id)
-    entry[key] = bool(value)
-    save_config(config)
+    _write_raw_config_value(("plugins", "entries", plugin_id, key), bool(value))
 
 
 def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:

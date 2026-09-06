@@ -363,14 +363,16 @@ def _extract_usage(response: Any) -> PluginLlmUsage:
 
 def _extract_text(response: Any) -> str:
     """Assistant text of an OpenAI-shaped response (string or text-part list content)."""
+    from agent.provider_redaction import redact_known_secret_values
+
     try:
         content = getattr(response.choices[0].message, "content", None)
         if isinstance(content, str):
-            return content
+            return redact_known_secret_values(content)
         if isinstance(content, list):
             texts = ((part.get("text") if part.get("type") == "text" else None)
                      if isinstance(part, dict) else getattr(part, "text", None) for part in content)
-            return "".join(t for t in texts if isinstance(t, str))
+            return redact_known_secret_values("".join(t for t in texts if isinstance(t, str)))
     except (AttributeError, IndexError, TypeError):
         pass
     return ""

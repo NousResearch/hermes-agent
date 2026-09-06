@@ -2403,3 +2403,103 @@ def test_maybe_auto_title_thread_preserves_profile_redaction_context(
     assert "***" in captured["messages"][1]["content"]
     assert captured["persisted"] == ("session-title-context-77487", "***")
     assert source_user == f"request contains {secret}"
+
+
+
+def test_oneshot_output_masks_exact_secret(applied_secret_home, monkeypatch):
+    from agent.oneshot import run_oneshot
+
+    _home, secret = applied_secret_home
+    monkeypatch.setattr("agent.oneshot.call_llm", lambda **_kwargs: _response(secret))
+
+    assert run_oneshot(instructions="answer", user_input="request") == "***"
+
+
+def test_plugin_sync_and_async_outputs_mask_exact_secret(
+    applied_secret_home,
+):
+    from agent.plugin_llm import _TrustPolicy, make_plugin_llm_for_test
+
+    _home, secret = applied_secret_home
+
+    def sync_caller(**_kwargs):
+        return "fixture", "model", _response(secret)
+
+    async def async_caller(**_kwargs):
+        return "fixture", "model", _response(secret)
+
+    llm = make_plugin_llm_for_test(
+        plugin_id="redaction-fixture",
+        policy=_TrustPolicy(plugin_id="redaction-fixture"),
+        sync_caller=sync_caller,
+        async_caller=async_caller,
+    )
+
+    assert llm.complete([{"role": "user", "content": "request"}]).text == "***"
+    assert (
+        asyncio.run(llm.acomplete([{"role": "user", "content": "request"}])).text
+        == "***"
+    )
+
+
+def test_plugin_structured_output_preserves_json_structure_while_masking_values(
+    tmp_path, monkeypatch
+):
+    """Plugin JSON output remains parseable when secrets resemble JSON syntax."""
+    from agent.plugin_llm import _TrustPolicy, make_plugin_llm_for_test
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+    raw_text = (
+        '{"ok":true,"missing":null,'
+        '"secret":"plugin-secret","literal":"true","punctuation":"{"}'
+    )
+    response = _response(raw_text)
+
+    def sync_caller(**_kwargs):
+        return "fixture", "model", response
+
+    llm = make_plugin_llm_for_test(
+        plugin_id="structured-redaction-fixture",
+        policy=_TrustPolicy(plugin_id="structured-redaction-fixture"),
+        sync_caller=sync_caller,
+    )
+    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", True)
+    token = set_secret_scope(
+        {
+            "PLUGIN_TOKEN": "plugin-secret",
+            "TRUE_TOKEN": "true",
+            "NULL_TOKEN": "null",
+            "OPEN_TOKEN": "{",
+        }
+    )
+    try:
+        result = llm.complete_structured(
+            instructions="return JSON",
+            input=[{"type": "text", "text": "request"}],
+            json_mode=True,
+        )
+    finally:
+        reset_secret_scope(token)
+
+    assert result.content_type == "json"
+    assert result.parsed == {
+        "ok": True,
+        "missing": None,
+        "secret": "***",
+        "literal": "***",
+        "punctuation": "***",
+    }
+    assert json.loads(result.text) == result.parsed
+    assert response.choices[0].message.content == raw_text
+
+
+def test_auxiliary_text_outputs_respect_redaction_opt_out(
+    applied_secret_home, monkeypatch
+):
+    from agent.oneshot import run_oneshot
+
+    _home, secret = applied_secret_home
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    monkeypatch.setattr("agent.oneshot.call_llm", lambda **_kwargs: _response(secret))
+
+    assert run_oneshot(instructions="answer", user_input="request") == secret

@@ -40,7 +40,6 @@ from agent.inline_tool_executors import (
 )
 from agent.tool_dispatch_helpers import (
     _NEVER_PARALLEL_TOOLS,
-    _is_destructive_command,
     _is_multimodal_tool_result,
     _multimodal_text_summary,
     _append_subdir_hint_to_multimodal,
@@ -105,6 +104,30 @@ def _ensure_file_checkpoint(agent, function_name: str, function_args: dict, effe
     agent._checkpoint_mgr.ensure_checkpoint(
         agent._checkpoint_mgr.get_working_dir_for_path(str(resolved_path)), f"before {function_name}",
     )
+
+
+def _ensure_terminal_checkpoint(agent, function_args: dict, effective_task_id: str | None = None) -> None:
+    """Checkpoint the terminal working dir before every terminal call.
+
+    Correctness must not depend on a command classifier: absolute paths
+    (/bin/rm), find -delete, interpreters, aliases, and functions all mutate
+    the working dir without matching the destructive-command regex, so gating
+    on it left those changes unprotected (#69171). ensure_checkpoint is
+    per-turn idempotent, so this snapshots once per working dir per turn and is
+    a cheap no-op thereafter.
+
+    A container-backed task's paths are container paths, not the host's: a host
+    snapshot would checkpoint an unrelated host tree that merely shares the
+    spelling, so those tasks are skipped exactly as the file-checkpoint hook
+    skips them.
+    """
+    from tools.file_tools_paths import container_backend_for_task
+    if container_backend_for_task(effective_task_id or "default") is not None:
+        return
+    command = function_args.get("command", "")
+    from agent.runtime_cwd import scope_terminal_cwd
+    cwd = function_args.get("workdir") or scope_terminal_cwd() or os.getcwd()
+    agent._checkpoint_mgr.ensure_checkpoint(cwd, f"before terminal: {command[:60]}")
 
 
 def _budget_for_agent(agent) -> BudgetConfig:
@@ -996,13 +1019,7 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
         if function_name in {"write_file", "patch"}:
             _ensure_file_checkpoint(agent, function_name, function_args, effective_task_id)
         elif function_name == "terminal":
-            command = function_args.get("command", "")
-            if _is_destructive_command(command):
-                from tools.file_tools_paths import container_backend_for_task
-                if container_backend_for_task(effective_task_id or "default") is None:
-                    from agent.runtime_cwd import scope_terminal_cwd
-                    cwd = function_args.get("workdir") or scope_terminal_cwd() or os.getcwd()
-                    agent._checkpoint_mgr.ensure_checkpoint(cwd, f"before terminal: {command[:60]}")
+            _ensure_terminal_checkpoint(agent, function_args, effective_task_id)
 
 
 def _emit_tool_complete_and_risk(agent, ref: _ToolCallRef, result, risk_metadata, blocked: bool) -> None:

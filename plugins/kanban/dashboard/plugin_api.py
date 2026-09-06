@@ -549,20 +549,6 @@ def _drag_to(conn, task_id: str, s: str) -> bool:
     return _set_status_direct(conn, task_id, s)
 
 
-# Status verb dispatch shared by PATCH /tasks/{id} and POST /tasks/bulk: (conn, task_id,
-# payload) -> ok. ``review`` uses request_review (never a block, so it can't trip unblock-loop
-# detection) with ``force=True``: a dashboard action is a human override of a live worker claim.
-_STATUS_HANDLERS: dict[str, Any] = {
-    "done": lambda conn, tid, p: kanban_db.complete_task(conn, tid, result=p.result, summary=p.summary, metadata=p.metadata),
-    "blocked": lambda conn, tid, p: kanban_db.block_task(conn, tid, reason=getattr(p, "block_reason", None)),
-    "scheduled": lambda conn, tid, p: kanban_db.schedule_task(conn, tid, reason=getattr(p, "block_reason", None)),
-    "review": lambda conn, tid, p: kanban_db.request_review(
-        conn, tid, summary=p.summary, metadata=p.metadata, reviewer=(p.assignee or None), force=True),
-    "ready": lambda conn, tid, p: _drag_to(conn, tid, "ready"),
-    "todo": lambda conn, tid, p: _drag_to(conn, tid, "todo"),
-    "triage": lambda conn, tid, p: _drag_to(conn, tid, "triage")}
-
-
 def _apply_status(conn, task_id: str, s: str, p, unknown_detail: str) -> bool:
     """Dispatch a status verb; raises ``_StatusRejected`` (user-facing message)
     for ``running`` or an unknown status (``unknown_detail``)."""
@@ -572,6 +558,30 @@ def _apply_status(conn, task_id: str, s: str, p, unknown_detail: str) -> bool:
     if handler is None:
         raise _StatusRejected(unknown_detail)
     return handler(conn, task_id, p)
+
+
+def _request_review_status(conn, task_id: str, payload) -> bool:
+    """Preserve completion-policy rejection reasons for dashboard callers."""
+    result = kanban_db.request_review(
+        conn, task_id, summary=payload.summary, metadata=payload.metadata,
+        reviewer=(payload.assignee or None), force=True, with_reason=True)
+    ok, reason = result if isinstance(result, tuple) else (result, None)
+    if not ok:
+        raise CompletionPolicyError(reason or "review transition refused")
+    return True
+
+
+# Status verb dispatch shared by PATCH /tasks/{id} and POST /tasks/bulk: (conn, task_id,
+# payload) -> ok. ``review`` uses request_review (never a block, so it can't trip unblock-loop
+# detection) with ``force=True``: a dashboard action is a human override of a live worker claim.
+_STATUS_HANDLERS: dict[str, Any] = {
+    "done": lambda conn, tid, p: kanban_db.complete_task(conn, tid, result=p.result, summary=p.summary, metadata=p.metadata),
+    "blocked": lambda conn, tid, p: kanban_db.block_task(conn, tid, reason=getattr(p, "block_reason", None)),
+    "scheduled": lambda conn, tid, p: kanban_db.schedule_task(conn, tid, reason=getattr(p, "block_reason", None)),
+    "review": _request_review_status,
+    "ready": lambda conn, tid, p: _drag_to(conn, tid, "ready"),
+    "todo": lambda conn, tid, p: _drag_to(conn, tid, "todo"),
+    "triage": lambda conn, tid, p: _drag_to(conn, tid, "triage")}
 
 
 def _set_priority(conn, task_id: str, priority: int, board: Optional[str]) -> None:

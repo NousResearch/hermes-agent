@@ -102,6 +102,15 @@ def _open_child_session_db(parent_agent) -> Any:
         return acquire(_parent_db_path) if _parent_db_path is not None else acquire()
     return None
 
+def _apply_child_cache_ttl(child) -> None:
+    """A delegated child never uses the 1h cache tier. The tier is priced for a person who steps
+    away between turns (2x write vs 1.25x for 5m, #14971); a subagent calls every few seconds for
+    minutes and is gone, so it pays the 2x on every tool result and never collects the retention.
+    Caching itself stays exactly as configured (disabled stays disabled)."""
+    if getattr(child, "_cache_ttl", None) == "1h":
+        child._cache_ttl = "5m"
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -195,6 +204,7 @@ def _build_child_agent(
                     release_or_close(child_session_db)
             raise
     child._print_fn = getattr(parent_agent, "_print_fn", None)
+    _apply_child_cache_ttl(child)
     if child_session_db is not None:
         child._owns_session_db = True  # released by the child's close(), never by the parent
     # Ownership transfer for the dedicated handle: the child's close() must release it (nothing else holds a

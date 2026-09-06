@@ -1312,8 +1312,9 @@ class AIAgent(
 
     @staticmethod
     def _wrap_verbose(label: str, text: str, indent: str = "     ") -> str:
-        """Word-wrap verbose tool output to the terminal width (each existing line separately), continuation
-        lines indented."""
+        """Wrap for a terminal; preserve result text in redirected logs."""
+        if not sys.stdout.isatty():
+            return f"{indent}{label}\n{text}"
         import shutil, textwrap
         wrap_width = max(40, shutil.get_terminal_size((120, 24)).columns - len(indent))
         out_lines: list[str] = []

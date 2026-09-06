@@ -67,6 +67,8 @@ import subprocess
 import sys
 
 _FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
+# Shipped page outside those packages, exercised by the desktop Electron suite.
+_FRONTEND_FILES = {"scripts/desktop-update/ui.html"}
 _ROOT_NPM = {"package.json", "package-lock.json"}  # shifts every package's tree
 _DOCKER_META = ("docker/", ".hadolint.yml", "Dockerfile") # docker setup
 _NIX_PATHS = ("nix/",) # nix files
@@ -214,7 +216,10 @@ def classify(files: list[str]) -> dict[str, bool]:
     files = [f.strip() for f in files if f.strip()]
     python = any(not _py_irrelevant(f) for f in files)
     python_prod = any(not _py_irrelevant(f) and not _py_test_only(f) for f in files)
-    frontend = any(f.startswith(_FRONTEND) or f in _ROOT_NPM for f in files)
+    frontend = any(
+        f.startswith(_FRONTEND) or f in _ROOT_NPM or f in _FRONTEND_FILES
+        for f in files
+    )
     deps = any(f == "pyproject.toml" for f in files)
     npm_lock = any(f.split("/")[-1] == "package-lock.json" for f in files)
     docker_meta = any(f.startswith(_DOCKER_META) for f in files)

@@ -607,7 +607,11 @@ describe('profile-aware plugin session opens', () => {
 
     await host.openSession('remote-chat', { route })
 
-    expect(openGatewayForAgent).toHaveBeenCalledWith('source-a', 'default', expect.objectContaining({ spawnPriority: 'foreground' }))
+    expect(openGatewayForAgent).toHaveBeenCalledWith(
+      'source-a',
+      'default',
+      expect.objectContaining({ spawnPriority: 'foreground' })
+    )
     expect(ensureGatewayProfile).not.toHaveBeenCalled()
     expect(setShowAllProfiles).toHaveBeenCalledWith(true)
     expect($activeGatewayProfile.get()).toBe('remote-worker')
@@ -1158,7 +1162,10 @@ describe('profile-aware plugin session opens', () => {
     })
 
     expect(ensureGatewayProfile).not.toHaveBeenCalled()
-    expect(openGatewayForProfile).toHaveBeenCalledWith('worker', expect.objectContaining({ spawnPriority: 'foreground' }))
+    expect(openGatewayForProfile).toHaveBeenCalledWith(
+      'worker',
+      expect.objectContaining({ spawnPriority: 'foreground' })
+    )
     expect(setShowAllProfiles).toHaveBeenCalledWith(true)
     expect($activeGatewayProfile.get()).toBe('default')
   })
@@ -1169,7 +1176,10 @@ describe('profile-aware plugin session opens', () => {
     await host.openSession('bot-chat', { profile: 'worker' })
 
     expect(ensureGatewayProfile).not.toHaveBeenCalled()
-    expect(openGatewayForProfile).toHaveBeenCalledWith('worker', expect.objectContaining({ spawnPriority: 'foreground' }))
+    expect(openGatewayForProfile).toHaveBeenCalledWith(
+      'worker',
+      expect.objectContaining({ spawnPriority: 'foreground' })
+    )
     expect(setShowAllProfiles).toHaveBeenCalledWith(true)
     expect($activeGatewayProfile.get()).toBe('default')
   })

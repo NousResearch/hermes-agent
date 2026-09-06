@@ -31,6 +31,17 @@ class TestSlashCommands:
         response_text = send.call_args[1].get("content") or send.call_args[0][1]
         assert "/new" in response_text
         assert "/status" in response_text
+        assert "/timer" in response_text
+
+    @pytest.mark.asyncio
+    async def test_timer_routes_to_gateway_handler(self, adapter, runner, platform):
+        runner._handle_timer_command = AsyncMock(return_value="timer response")
+
+        send = await send_and_capture(adapter, "/timer 6h", platform)
+
+        send.assert_called_once()
+        assert (send.call_args[1].get("content") or send.call_args[0][1]) == "timer response"
+        runner._handle_timer_command.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_status_shows_session_info(self, adapter, platform):

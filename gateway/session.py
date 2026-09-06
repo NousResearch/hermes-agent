@@ -44,6 +44,16 @@ def _now() -> datetime:
 # ``HERMES_AUTO_CONTINUE_FRESHNESS`` at startup.
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
 
+# Persisted on a routing entry rather than config.yaml.  This makes a timer set
+# by /timer apply to one chat/topic session only and lets it survive gateway
+# restarts through state.db's gateway_routing entry_json.
+_SESSION_IDLE_RESET_OVERRIDE_KEY = "session_idle_reset_minutes"
+# The replacement entry retains this one-shot snapshot so the user-facing
+# reset notice reports the policy that actually expired, not the fresh
+# session's now-global policy.  It is deliberately separate from the timer
+# override, which must NOT carry over to the new session.
+_AUTO_RESET_POLICY_SNAPSHOT_KEY = "auto_reset_policy_snapshot"
+
 
 def auto_continue_freshness_window() -> float:
     """Return the configured auto-continue freshness window in seconds.
@@ -2631,6 +2641,55 @@ class SessionStore:
                     entry.session_id, exc,
                 )
     
+    def get_entry_reset_policy(
+        self,
+        entry: SessionEntry,
+        *,
+        source: Optional[SessionSource] = None,
+    ) -> SessionResetPolicy:
+        """Return the effective reset policy for one routing entry.
+
+        A ``/timer`` override is deliberately entry-scoped: it wins over the
+        configured platform/type/default policy, forces idle-only behaviour,
+        and is kept in the durable routing metadata.  Bad legacy metadata is
+        ignored rather than making a session impossible to route.
+        """
+        platform = source.platform if source is not None else entry.platform
+        chat_type = source.chat_type if source is not None else entry.chat_type
+        policy = self.config.get_reset_policy(platform=platform, session_type=chat_type)
+        raw_minutes = entry.metadata.get(_SESSION_IDLE_RESET_OVERRIDE_KEY)
+        if isinstance(raw_minutes, bool):
+            return policy
+        try:
+            minutes = int(raw_minutes)
+        except (TypeError, ValueError):
+            return policy
+        if minutes < 1:
+            return policy
+        return replace(policy, mode="idle", idle_minutes=minutes)
+
+    def set_session_idle_reset(self, session_key: str, minutes: Optional[int]) -> bool:
+        """Set or clear this session's durable idle-reset override.
+
+        ``None`` clears the override and immediately restores the policy from
+        config.yaml.  The metadata write intentionally does not touch the
+        activity clock, so changing a timer cannot postpone an existing reset.
+        """
+        if minutes is not None and (isinstance(minutes, bool) or minutes < 1):
+            raise ValueError("minutes must be a positive integer or None")
+        return self.set_session_metadata(session_key, _SESSION_IDLE_RESET_OVERRIDE_KEY, minutes)
+
+    def get_session_idle_reset(self, session_key: str) -> Optional[int]:
+        """Return this entry's explicit idle-reset timer, if one is set."""
+        value = self.get_session_metadata(session_key, _SESSION_IDLE_RESET_OVERRIDE_KEY)
+        if isinstance(value, bool):
+            return None
+        try:
+            minutes = int(value)
+        except (TypeError, ValueError):
+            return None
+        return minutes if minutes >= 1 else None
+
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.
         
@@ -2645,10 +2704,7 @@ class SessionStore:
             )
             return False
 
-        policy = self.config.get_reset_policy(
-            platform=entry.platform,
-            session_type=entry.chat_type,
-        )
+        policy = self.get_entry_reset_policy(entry)
 
         if policy.mode == "none":
             return False
@@ -2695,10 +2751,7 @@ class SessionStore:
         sweep falls back to reaping the agent rather than pinning it).
         """
         try:
-            policy = self.config.get_reset_policy(
-                platform=entry.platform,
-                session_type=entry.chat_type,
-            )
+            policy = self.get_entry_reset_policy(entry)
             return policy.mode != "none"
         except Exception:
             return False
@@ -2751,10 +2804,7 @@ class SessionStore:
             )
             return None
 
-        policy = self.config.get_reset_policy(
-            platform=source.platform,
-            session_type=source.chat_type
-        )
+        policy = self.get_entry_reset_policy(entry, source=source)
         
         if policy.mode == "none":
             return None
@@ -2995,6 +3045,7 @@ class SessionStore:
         # ---- Phase 1b: no-lock I/O -- stale check + reset policy ----
         _is_stale = False
         _reset_reason = None
+        _auto_reset_policy_snapshot = None
         if _entry_for_checks is not None and _stale_session_id is not None:
             _is_stale = self._is_session_ended_in_db(_stale_session_id)
             if _entry_for_checks.suspended:
@@ -3008,9 +3059,8 @@ class SessionStore:
                     # resume marker must fall through to a normal resume of
                     # the preserved transcript, never a silent fresh session
                     # (#61052).
-                    _policy = self.config.get_reset_policy(
-                        platform=source.platform,
-                        session_type=source.chat_type,
+                    _policy = self.get_entry_reset_policy(
+                        _entry_for_checks, source=source
                     )
                     if _policy.mode != "none":
                         _fw = auto_continue_freshness_window()
@@ -3022,6 +3072,10 @@ class SessionStore:
                             _reset_reason = "resume_pending_expired"
             else:
                 _reset_reason = self._should_reset(_entry_for_checks, source)
+            if _reset_reason in {"idle", "daily"}:
+                _auto_reset_policy_snapshot = self.get_entry_reset_policy(
+                    _entry_for_checks, source=source
+                ).to_dict()
 
         # ---- Phase 2: lock write -- apply decisions to _entries ----
         _needs_save = False
@@ -3121,6 +3175,10 @@ class SessionStore:
                     reset_had_activity = recovered.reset_had_activity
                     db_end_session_id = recovered.session_id
                     prev_session_id = recovered.session_id
+                    if recovered_reset_reason in {"idle", "daily"}:
+                        _auto_reset_policy_snapshot = self.get_entry_reset_policy(
+                            recovered, source=source
+                        ).to_dict()
                 else:
                     try:
                         self._db_for_key(session_key).reopen_session(recovered.session_id)
@@ -3155,6 +3213,11 @@ class SessionStore:
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
                 prev_session_id=prev_session_id,
+                metadata=(
+                    {_AUTO_RESET_POLICY_SNAPSHOT_KEY: _auto_reset_policy_snapshot}
+                    if _auto_reset_policy_snapshot is not None
+                    else {}
+                ),
             )
             with self._lock:
                 current = self._entries.get(session_key)

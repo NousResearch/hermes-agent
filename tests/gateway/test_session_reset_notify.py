@@ -158,6 +158,61 @@ class TestInternalActivityResetPolicy:
         assert reset.auto_reset_reason == "idle"
 
 
+class TestPerSessionIdleReset:
+    def test_override_is_entry_scoped_and_persists(self, tmp_path):
+        store = _make_store(SessionResetPolicy(mode="none"), tmp_path)
+        source_a = _make_source(chat_id="a")
+        source_b = _make_source(chat_id="b")
+        entry_a = store.get_or_create_session(source_a)
+        entry_b = store.get_or_create_session(source_b)
+
+        assert store.set_session_idle_reset(entry_a.session_key, 90) is True
+        assert store.get_session_idle_reset(entry_a.session_key) == 90
+        assert store.get_entry_reset_policy(entry_a).mode == "idle"
+        assert store.get_entry_reset_policy(entry_a).idle_minutes == 90
+        assert store.get_entry_reset_policy(entry_b).mode == "none"
+
+        reloaded = _make_store(SessionResetPolicy(mode="none"), tmp_path)
+        restored_a = reloaded.get_or_create_session(source_a, touch_activity=False)
+        assert reloaded.get_session_idle_reset(restored_a.session_key) == 90
+        assert reloaded.get_entry_reset_policy(restored_a).idle_minutes == 90
+
+    def test_clear_override_restores_global_policy(self, tmp_path):
+        store = _make_store(SessionResetPolicy(mode="daily", at_hour=7), tmp_path)
+        entry = store.get_or_create_session(_make_source())
+        store.set_session_idle_reset(entry.session_key, 30)
+        store.set_session_idle_reset(entry.session_key, None)
+
+        policy = store.get_entry_reset_policy(entry)
+        assert policy.mode == "daily"
+        assert policy.at_hour == 7
+
+    def test_override_expires_independently_of_global_none(self, tmp_path):
+        store = _make_store(SessionResetPolicy(mode="none"), tmp_path)
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+        store.set_session_idle_reset(entry.session_key, 30)
+        entry.updated_at = datetime.now() - timedelta(minutes=31)
+
+        assert store._should_reset(entry, source) == "idle"
+
+    def test_auto_reset_keeps_policy_snapshot_but_not_timer(self, tmp_path):
+        store = _make_store(SessionResetPolicy(mode="none"), tmp_path)
+        source = _make_source()
+        original = store.get_or_create_session(source)
+        store.set_session_idle_reset(original.session_key, 30)
+        original.updated_at = datetime.now() - timedelta(minutes=31)
+
+        replacement = store.get_or_create_session(source, touch_activity=False)
+        assert replacement.session_id != original.session_id
+        assert replacement.auto_reset_reason == "idle"
+        assert store.get_session_idle_reset(replacement.session_key) is None
+        assert store.get_entry_reset_policy(replacement).mode == "none"
+        snapshot = replacement.metadata["auto_reset_policy_snapshot"]
+        assert snapshot["mode"] == "idle"
+        assert snapshot["idle_minutes"] == 30
+
+
 # ---------------------------------------------------------------------------
 # SessionResetPolicy notify config
 # ---------------------------------------------------------------------------

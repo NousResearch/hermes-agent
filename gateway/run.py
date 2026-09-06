@@ -18521,6 +18521,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Return ordinary slash handlers shared by idle and busy dispatch."""
         return {
             "status": self._handle_status_command,
+            "timer": self._handle_timer_command,
             "context": self._handle_context_command,
             "restart": self._handle_restart_command,
             "approve": self._handle_approve_command,
@@ -21483,10 +21484,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # - the platform is excluded (e.g. api_server, webhook)
             # - the expired session had no activity (nothing was cleared)
             try:
-                policy = self.session_store.config.get_reset_policy(
-                    platform=source.platform,
-                    session_type=getattr(source, 'chat_type', 'dm'),
+                _snapshot = getattr(session_entry, "metadata", {}).get(
+                    "auto_reset_policy_snapshot"
                 )
+                if isinstance(_snapshot, dict):
+                    from gateway.config import SessionResetPolicy
+                    policy = SessionResetPolicy.from_dict(_snapshot)
+                else:
+                    policy = await self.async_session_store.get_entry_reset_policy(
+                        session_entry, source=source
+                    )
                 platform_name = source.platform.value if source.platform else ""
                 had_activity = getattr(session_entry, 'reset_had_activity', False)
                 # Suspended and restart-recovery-expired sessions always notify

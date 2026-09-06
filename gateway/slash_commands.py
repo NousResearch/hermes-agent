@@ -62,6 +62,43 @@ HISTORY_UNREADABLE = (
 _RESET_CLEANUP_TIMEOUT_S = 30.0
 
 
+def _parse_session_timer_minutes(value: str) -> Optional[int]:
+    """Parse a human-facing `/timer` duration into whole idle minutes."""
+    match = re.fullmatch(
+        r"\s*(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)\s*",
+        value.lower(),
+    )
+    if not match:
+        return None
+    # Avoid Python's integer-string conversion limit and pointless giant timer
+    # requests before calling int(). A year cap below is still the contract.
+    if len(match.group(1)) > 7:
+        return None
+    try:
+        amount = int(match.group(1))
+    except ValueError:
+        return None
+    unit = match.group(2)
+    multiplier = 1440 if unit.startswith("d") else 60 if unit.startswith("h") else 1
+    minutes = amount * multiplier
+    # One minute is the gateway's smallest meaningful idle window; cap bad
+    # typos while still allowing timers long enough for legitimate projects.
+    return minutes if 1 <= minutes <= 525_600 else None
+
+
+def _format_session_timer(minutes: int) -> str:
+    hours, remainder = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if remainder or not parts:
+        parts.append(f"{remainder}m")
+    return " ".join(parts)
+
+
 def _clean_str(value: Any) -> str:
     """Strip and return a non-empty string value, or empty string."""
     return value.strip() if isinstance(value, str) and value.strip() else ""
@@ -146,6 +183,47 @@ class GatewaySlashCommandsMixin:
         """
         adapter = self.adapters.get(platform) if getattr(self, "adapters", None) else None
         return getattr(adapter, "typed_command_prefix", "/") if adapter is not None else "/"
+
+    async def _handle_timer_command(self, event: MessageEvent) -> str:
+        """Set, inspect, or clear the idle-reset timer for this chat/topic only.
+
+        `/timer 6h` stores an override on the current routed session. It does
+        not change config.yaml or any other session, and `/new` starts a new
+        entry without the override.
+        """
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        args = event.get_command_args().strip().lower()
+
+        # A command can be the first inbound message for this chat/topic.  Make
+        # a routing entry first so the override is durable immediately.
+        await self.async_session_store.get_or_create_session(source)
+
+        if args in {"", "status"}:
+            minutes = await self.async_session_store.get_session_idle_reset(session_key)
+            if minutes is None:
+                return (
+                    "No per-session timer is set. This session uses the global "
+                    "reset policy. Set one with `/timer 6h`, or use `/timer off`."
+                )
+            return (
+                f"This session resets after `{_format_session_timer(minutes)}` of inactivity. "
+                "Use `/timer off` to return to the global policy."
+            )
+
+        if args in {"off", "none", "clear"}:
+            await self.async_session_store.set_session_idle_reset(session_key, None)
+            return "Per-session timer cleared. This session now uses the global reset policy."
+
+        minutes = _parse_session_timer_minutes(args)
+        if minutes is None:
+            return "Usage: `/timer 30m`, `/timer 6h`, `/timer 1d`, `/timer status`, or `/timer off`."
+
+        await self.async_session_store.set_session_idle_reset(session_key, minutes)
+        return (
+            f"Per-session timer set: this session will reset after "
+            f"`{_format_session_timer(minutes)}` of inactivity."
+        )
 
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""

@@ -61,6 +61,15 @@ class TestSurfaceSwitch:
             f"Platform: {platform}"
         )
 
+    @staticmethod
+    def _announced(platform: str) -> list:
+        """A transcript whose newest surface note says the model is on ``platform``."""
+        return [
+            {"role": "user", "content": "hi",
+             "api_content": f"hi\n\n{_SURFACE_SWITCH_NOTE_PREFIX}{platform}. superseded]"},
+            {"role": "assistant", "content": "hello"},
+        ]
+
     def _restore(self, *, stored: str, current: str, history=None, tool_names=None):
         db = MagicMock()
         row = {"system_prompt": self._stored(stored)}
@@ -85,7 +94,7 @@ class TestSurfaceSwitch:
     def test_switch_stages_the_new_surface_guidance(self):
         agent = self._restore(stored="desktop", current="tui")
         note = agent._surface_switch_note
-        assert note.startswith(f"{_SURFACE_SWITCH_NOTE_PREFIX}tui (")
+        assert note.startswith(f"{_SURFACE_SWITCH_NOTE_PREFIX}tui.")
         # The correction carries the CURRENT surface's hint, so the model is not left
         # following the desktop guidance still sitting in the reused prompt.
         assert "terminal UI (TUI)" in note
@@ -99,22 +108,41 @@ class TestSurfaceSwitch:
     def test_not_restaged_once_the_transcript_carries_it(self):
         # The note is stamped into the byte-stable api_content sidecar, and the gateway
         # builds a fresh AIAgent per turn — without the dedup every turn would add a copy.
-        history = [
-            {"role": "user", "content": "hi",
-             "api_content": f"hi\n\n{_SURFACE_SWITCH_NOTE_PREFIX}tui (...)]"},
-            {"role": "assistant", "content": "hello"},
-        ]
-        agent = self._restore(stored="desktop", current="tui", history=history)
+        agent = self._restore(stored="desktop", current="tui", history=self._announced("tui"))
         assert agent._surface_switch_note == ""
 
     def test_a_further_switch_is_announced_again(self):
         # Only the NEWEST note counts: it names the surface the conversation has left.
-        history = [
-            {"role": "user", "content": f"hi\n\n{_SURFACE_SWITCH_NOTE_PREFIX}tui (...)]"},
-            {"role": "assistant", "content": "hello"},
-        ]
-        agent = self._restore(stored="desktop", current="cli", history=history)
-        assert agent._surface_switch_note.startswith(f"{_SURFACE_SWITCH_NOTE_PREFIX}cli (")
+        agent = self._restore(stored="desktop", current="cli", history=self._announced("tui"))
+        assert agent._surface_switch_note.startswith(f"{_SURFACE_SWITCH_NOTE_PREFIX}cli.")
+
+    def test_returning_to_the_prompts_own_surface_is_announced(self):
+        """desktop -> tui -> desktop.
+
+        The trailer now agrees with the runtime, so comparing against the prompt alone would
+        stage nothing and leave the model acting on the stale "you are on tui" note.
+        """
+        agent = self._restore(stored="desktop", current="desktop", history=self._announced("tui"))
+        assert agent._surface_switch_note.startswith(f"{_SURFACE_SWITCH_NOTE_PREFIX}desktop.")
+        # The prompt already describes this surface, so the note retires the stale one and
+        # points at the prompt instead of duplicating the whole hint.
+        assert "the interface section in the system prompt above" in agent._surface_switch_note
+
+    def test_rebuild_also_retires_a_stale_note(self):
+        # A rebuild for an unrelated reason (a model switch) refreshes the prompt but not the
+        # note already sitting in the transcript.
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": self._stored("desktop")}
+        agent = _make_agent(session_db=db, prebuilt_prompt=self._stored("desktop"))
+        agent.model = "other-model"
+        agent.platform = "desktop"
+        agent._platform_hint_overrides = None
+        agent._surface_switch_note = ""
+
+        _restore_or_build_system_prompt(agent, None, self._announced("tui"))
+
+        agent._build_system_prompt.assert_called_once()
+        assert agent._surface_switch_note.startswith(f"{_SURFACE_SWITCH_NOTE_PREFIX}desktop.")
 
     def test_tool_prefix_is_replaced_on_the_turn_that_announces_a_switch(self):
         """The saved names are the PREVIOUS surface's toolset.
@@ -138,12 +166,8 @@ class TestSurfaceSwitch:
         # turn persisted this surface's tools, so the next turn pins those.
         from unittest.mock import patch
 
-        history = [
-            {"role": "user", "content": f"hi\n\n{_SURFACE_SWITCH_NOTE_PREFIX}tui (...)]"},
-            {"role": "assistant", "content": "hello"},
-        ]
         with patch("tools.mcp_tool_agent.restore_agent_tool_prefix") as pin:
-            self._restore(stored="desktop", current="tui", history=history,
+            self._restore(stored="desktop", current="tui", history=self._announced("tui"),
                           tool_names='["read_file"]')
         pin.assert_called_once()
 

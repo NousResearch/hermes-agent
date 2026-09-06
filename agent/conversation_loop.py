@@ -739,6 +739,12 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # First turn of a new session (or recovering from a broken stored prompt).
     agent._cached_system_prompt = agent._build_system_prompt(system_message)
 
+    # The rebuilt prompt describes the CURRENT surface, but a surface note left in the
+    # transcript by an earlier switch does not — retire it here too, or a rebuild for an
+    # unrelated reason (a model switch) would leave the newest interface statement in the
+    # request naming a surface the conversation has left (#104414).
+    _stage_surface_switch_note(agent, agent._cached_system_prompt, conversation_history)
+
     # Plugin hook: on_session_start — fired once for a brand-new session, not on continuation.
     try:
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
@@ -805,47 +811,55 @@ def _transcript_row_texts(msg):
                 yield part["text"]
 
 
-def _surface_already_announced(conversation_history, platform: str) -> bool:
-    """True when the NEWEST surface note in the transcript already names ``platform``.
+def _last_announced_surface(conversation_history) -> str:
+    """The surface named by the NEWEST surface note in the transcript ("" when there is none).
 
-    The note is stamped into the ``api_content`` sidecar, so every later turn replays it; the
-    gateway builds a fresh AIAgent per turn and would otherwise stack one copy per turn until
-    the next compaction.  Only the newest note is consulted — an older one names the surface
-    the conversation has since left.
+    The note is stamped into the ``api_content`` sidecar and persisted, so it is the last thing
+    the model was TOLD it is running on — and it outranks the stored prompt's own ``Platform:``
+    trailer once a switch has been announced.  Only the newest note counts: an older one names
+    a surface the conversation has since left.  Reading it back is also what stops a fresh
+    AIAgent per turn (the gateway shape) from stacking one copy of the note per turn.
     """
     for msg in reversed(conversation_history or []):
         for text in _transcript_row_texts(msg):
             if _SURFACE_SWITCH_NOTE_PREFIX in text:
-                return text.rsplit(_SURFACE_SWITCH_NOTE_PREFIX, 1)[1].startswith(f"{platform} (")
-    return False
+                return text.rsplit(_SURFACE_SWITCH_NOTE_PREFIX, 1)[1].split(".", 1)[0].strip()
+    return ""
 
 
-def _stage_surface_switch_note(agent, stored_prompt: str, conversation_history) -> bool:
-    """Stage the correction note when the reused prompt describes a different surface.
+def _stage_surface_switch_note(agent, prompt: str, conversation_history) -> bool:
+    """Stage a correction when the request would otherwise misdescribe the current surface.
 
-    Returns whether the note was staged — the caller pairs that with re-persisting the tool
-    names, because this is the turn the surface's toolset actually changes under it.  The note
-    is one-shot per turn (consumed by ``agent.turn_context.consume_surface_switch_note``) and
-    is skipped when the transcript already carries one for this surface.
+    Compares the runtime surface against what the model was last told — the newest surface note
+    if one exists, else ``prompt``'s own ``Platform:`` trailer.  Consulting the note matters in
+    both directions: switching BACK to the surface the prompt was built for (desktop -> tui ->
+    desktop) leaves the trailer agreeing with the runtime while a stale note still tells the
+    model otherwise, and a rebuild for an unrelated reason (a model switch) refreshes the prompt
+    but not that note.
+
+    The full surface guidance is attached only when the prompt itself is out of date; when the
+    prompt already describes the current surface the note just retires the stale one.  Returns
+    whether it staged — the caller pairs that with re-persisting the tool names, because this is
+    the turn the surface's toolset changes under it.
     """
     current = str(getattr(agent, "platform", "") or "").strip()
-    stored = _stored_prompt_platform(stored_prompt)
-    if not current or not stored or stored == current:
-        return False
-    if _surface_already_announced(conversation_history, current):
+    described = _stored_prompt_platform(prompt)
+    told = _last_announced_surface(conversation_history) or described
+    if not current or not told or told == current:
         return False
     from agent.system_prompt import platform_surface_hint
+    hint = platform_surface_hint(agent) if described != current else ""
+    where = "the guidance below" if hint else "the interface section in the system prompt above"
     note = (
-        f"{_SURFACE_SWITCH_NOTE_PREFIX}{current} (the system prompt above was written for "
-        f"{stored}). Its interface section no longer applies — use the guidance below for "
-        "formatting, file delivery and any interface-specific capability.]"
+        f"{_SURFACE_SWITCH_NOTE_PREFIX}{current}. Any earlier interface guidance in this "
+        f"conversation is superseded — follow {where} for formatting, file delivery and any "
+        "interface-specific capability.]"
     )
-    hint = platform_surface_hint(agent)
     agent._surface_switch_note = f"{note}\n{hint}" if hint else note
     logger.info(
         "Session %s switched surface %s -> %s; keeping the stored system prompt and delivering "
         "the new surface guidance as a turn note (prefix cache preserved).",
-        agent.session_id, stored, current,
+        agent.session_id, told, current,
     )
     return True
 

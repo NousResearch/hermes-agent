@@ -3043,7 +3043,8 @@ class TestAuxiliaryAuthRefreshRetry:
 
 
 
-    def test_refresh_provider_credentials_force_refreshes_anthropic_oauth_and_evicts_cache(self, monkeypatch):
+    def test_refresh_provider_credentials_force_refreshes_anthropic_oauth_and_evicts_cache(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("agent.anthropic_credentials.claude_code_credentials_path", lambda: tmp_path / "credentials.json")
         stale_client = MagicMock()
         cache_key = ("anthropic", False, None, None, None)
 

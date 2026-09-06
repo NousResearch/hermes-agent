@@ -3132,7 +3132,18 @@ class TestRunConversation:
         agent.compression_enabled = False
         agent.save_trajectories = False
 
-    def test_task_start_failure_closes_relay_turn_and_lease(self, agent):
+    def test_task_start_failure_closes_relay_turn_and_lease(self, agent, tmp_path):
+        from agent.source_provenance import SourceProvenanceRegistry, DEFAULT_POLICY_DIGEST
+        registry = agent._source_provenance_registry = SourceProvenanceRegistry()
+        pending_turn = "context-turn"
+        agent._source_provenance_pending_turn_id = pending_turn
+        source = tmp_path / "source.py"
+        source.write_text("safe\n")
+        registry.issue_file_slice(
+            path=source, line_start=1, line_end=1, content=b"safe\n",
+            session_id=agent.session_id, turn_id=pending_turn,
+            request_id="context-turn:api:1", policy_digest=DEFAULT_POLICY_DIGEST,
+        )
         relay_lease = SimpleNamespace(
             parent_session_id="",
             profile_key="/profile",
@@ -3175,6 +3186,9 @@ class TestRunConversation:
         )
         coordinator.release_conversation.assert_called_once_with(relay_lease)
         assert agent._relay_pending_turn_id is None
+        assert agent._source_provenance_pending_turn_id is None
+        assert coordinator.begin_turn.call_args.kwargs["turn_id"] == pending_turn
+        assert registry.grants_for_request("context-turn:api:1") == ()
 
     def test_stop_finish_reason_returns_response(self, agent):
         self._setup_agent(agent)

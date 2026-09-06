@@ -33,10 +33,11 @@ _SESSION_COST_KEYS = ("estimated_cost_usd", "cost_status", "cost_source")
 
 
 def _assistant_row_missing_visible_text(msg: dict) -> bool:
-    """True when an assistant row has no visible text (blank final or tool-only)."""
+    """True when an assistant row has no visible text (blank, tool-only, or ``(empty)``)."""
     if not isinstance(msg, dict) or msg.get("role") != "assistant":
         return False
-    return not flatten_message_text(msg.get("content")).strip()
+    text = flatten_message_text(msg.get("content")).strip()
+    return (not text) or text == "(empty)"
 
 
 def _is_empty_placeholder_tail(msg: dict) -> bool:

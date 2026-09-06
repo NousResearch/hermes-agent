@@ -3253,7 +3253,7 @@ class TestRunConversation:
             status_messages.append(msg)
 
         with (
-            patch("run_agent.handle_function_call", return_value='{"ok": true}'),
+            patch("model_tools.handle_function_call", return_value='{"ok": true}'),
             patch("tools.registry.registry.is_end_turn", return_value=True),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -3294,7 +3294,7 @@ class TestRunConversation:
             return name == "read_file"
 
         with (
-            patch("run_agent.handle_function_call", return_value='{"ok": true}'),
+            patch("model_tools.handle_function_call", return_value='{"ok": true}'),
             patch("tools.registry.registry.is_end_turn", side_effect=_is_end_turn),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -3342,7 +3342,7 @@ class TestRunConversation:
             return name == "trigger_handover"
 
         with (
-            patch("run_agent.handle_function_call", return_value='{"ok": true}'),
+            patch("model_tools.handle_function_call", return_value='{"ok": true}'),
             patch("tools.registry.registry.is_end_turn", side_effect=_is_end_turn),
             patch.object(agent, "_tool_batch_has_end_turn", return_value=False),
             patch.object(agent, "_persist_session"),
@@ -3371,7 +3371,7 @@ class TestRunConversation:
             status_messages.append(msg)
 
         with (
-            patch("run_agent.handle_function_call", return_value='{"result": "data"}'),
+            patch("model_tools.handle_function_call", return_value='{"result": "data"}'),
             patch("tools.registry.registry.is_end_turn", return_value=False),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -3415,6 +3415,7 @@ class TestRunConversation:
     def test_end_turn_visible_handoff_persists_clean_text(self, agent):
         """Visible handoff text must be the durable closer, not ``(empty)``."""
         self._setup_agent(agent)
+        agent.valid_tool_names = set(agent.valid_tool_names or []) | {"trigger_handover"}
         handoff = "Let me check with my side and come back to you shortly."
         tc = _mock_tool_call(name="trigger_handover", arguments="{}", call_id="c1")
         resp1 = _mock_response(
@@ -3430,7 +3431,7 @@ class TestRunConversation:
             persisted.append([dict(m) for m in messages])
 
         with (
-            patch("run_agent.handle_function_call", return_value='{"ok": true}'),
+            patch("model_tools.handle_function_call", return_value='{"ok": true}'),
             patch("tools.registry.registry.is_end_turn", return_value=True),
             patch.object(agent, "_persist_session", side_effect=_capture_persist),
             patch.object(agent, "_save_trajectory"),
@@ -3454,6 +3455,7 @@ class TestRunConversation:
     def test_silent_end_turn_batch_keeps_persistable_closer(self, agent):
         """Silent end_turn batches keep a persistable closer through replay drop."""
         self._setup_agent(agent)
+        agent.valid_tool_names = set(agent.valid_tool_names or []) | {"trigger_handover"}
         tc = _mock_tool_call(name="trigger_handover", arguments="{}", call_id="c1")
         resp1 = _mock_response(
             content="",
@@ -3468,7 +3470,7 @@ class TestRunConversation:
             persisted.append([dict(m) for m in messages])
 
         with (
-            patch("run_agent.handle_function_call", return_value='{"ok": true}'),
+            patch("model_tools.handle_function_call", return_value='{"ok": true}'),
             patch("tools.registry.registry.is_end_turn", return_value=True),
             patch.object(agent, "_persist_session", side_effect=_capture_persist),
             patch.object(agent, "_save_trajectory"),
@@ -4032,9 +4034,12 @@ class TestRunConversation:
         # status emissions during retries are unchanged.
         assert result["final_response"] != "(empty)"
         assert "No reply:" in result["final_response"]
-        # Should have emitted retry statuses (3 retries) + final failure
+        # Repeated empty now skips remaining retries (charge guard). Expect the
+        # first retry status, the skip notice, and a terminal failure status.
         retry_msgs = [m for m in status_messages if "retrying" in m.lower()]
-        assert len(retry_msgs) == 3, f"Expected 3 retry status messages, got {len(retry_msgs)}: {status_messages}"
+        assert len(retry_msgs) >= 1, f"Expected at least 1 retry status, got: {status_messages}"
+        skip_msgs = [m for m in status_messages if "skipping further retries" in m.lower() or "repeatedly returning empty" in m.lower()]
+        assert len(skip_msgs) >= 1, f"Expected skip-remaining-retries status, got: {status_messages}"
         failure_msgs = [m for m in status_messages if "no content" in m.lower() or "no fallback" in m.lower()]
         assert len(failure_msgs) >= 1, f"Expected at least 1 failure status, got: {status_messages}"
 

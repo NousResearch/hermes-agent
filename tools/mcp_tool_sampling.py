@@ -1,8 +1,6 @@
 """MCP client-side handlers for server-initiated requests: sampling
 (sampling/createMessage, text and tool-use results) and elicitation."""
 
-from __future__ import annotations
-
 import asyncio
 import functools
 import json
@@ -255,12 +253,13 @@ class ElicitationHandler:
     _ANSWER_RESULTS = {"accept": ("accept", "accepted"), "cancel": ("cancel", "errors")}
 
     def __init__(self, server_name: str, config: dict,
-                 call_context: Optional[Callable[[], Optional[Context]]] = None):
+                 call_context: Callable[[], Optional[Context]] = lambda: None):
         self.server_name = server_name
         # 5 min mirrors the gateway approval default so async surfaces (Telegram, Slack) can respond.
         self.timeout = _safe_numeric(config.get("timeout", 300), 300, float)
         # Returns the owning MCPServerTask's contextvars snapshot for the in-flight tool call (None
-        # between calls). A thunk, not the task: the task module imports this one.
+        # between calls). A thunk, not the task: mcp_tool_server_run imports this module, so
+        # MCPServerTask cannot be named here.
         self._call_context = call_context
         self.metrics = {"requests": 0, "accepted": 0, "declined": 0, "errors": 0}
 
@@ -281,7 +280,7 @@ class ElicitationHandler:
 
         consent = functools.partial(request_elicitation_consent, message, description,
                                     timeout_seconds=int(self.timeout), surface=f"mcp-elicitation/{self.server_name}")
-        captured = self._call_context() if self._call_context else None
+        captured = self._call_context()
         return consent if captured is None else (lambda: captured.copy().run(consent))
 
     async def __call__(self, context, params):

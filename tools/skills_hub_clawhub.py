@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
+from tools.skills_hub import _guarded_http_stream
 from tools.skills_hub_models import (
     GuardedFetchMixin, SkillBundle, SkillMeta, SkillSource, _cache_metas, _cached_metas, _get_json,
     _validate_bundle_rel_path,
@@ -65,6 +66,8 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
     # Wall-clock budget for a full catalog walk: 50k+ skills, sequential
     # (~250 requests each under timeout=30), so unbounded it blocks for minutes.
     CATALOG_WALK_BUDGET_SECONDS = 12
+    ZIP_DOWNLOAD_MAX_BYTES = 25 * 1024 * 1024
+    ZIP_DOWNLOAD_CHUNK_BYTES = 64 * 1024
     _SLUG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*$")
 
     _query_terms = staticmethod(_query_terms)
@@ -468,7 +471,7 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         return files
 
     def _download_zip(self, slug: str, version: str, owner: Optional[str] = None) -> Dict[str, str]:
-        """Download the skill ZIP from /download and extract its text files."""
+        """Download the skill ZIP from /download (bounded, streamed) and extract its text files."""
         import io
         import zipfile
 
@@ -478,22 +481,65 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
             params["owner"] = owner
         max_retries = 3
         for attempt in range(max_retries):
+            retry_after_delay: Optional[int] = None
             try:
-                resp = httpx.get(f"{self.BASE_URL}/download", params=params,
-                                 timeout=30, follow_redirects=True)
-                if resp.status_code == 429:
-                    try:
-                        retry_after = min(int(resp.headers.get("retry-after", "5")), 15)  # Cap wait time
-                    except (ValueError, TypeError):
-                        retry_after = 5
-                    logger.debug("ClawHub download rate-limited for %s, retrying in %ds (attempt %d/%d)",
-                                 slug, retry_after, attempt + 1, max_retries)
-                    time.sleep(retry_after)
+                with _guarded_http_stream(
+                    f"{self.BASE_URL}/download",
+                    params=params,
+                    timeout=30,
+                ) as resp:
+                    if resp is None:
+                        return files
+                    if resp.status_code == 429:
+                        try:
+                            retry_after = int(resp.headers.get("retry-after", "5"))
+                        except (ValueError, TypeError):
+                            retry_after = 5
+                        retry_after = max(0, min(retry_after, 15))  # Cap wait time
+                        logger.debug(
+                            "ClawHub download rate-limited for %s, retrying in %ds (attempt %d/%d)",
+                            slug, retry_after, attempt + 1, max_retries,
+                        )
+                        retry_after_delay = retry_after
+                    else:
+                        if resp.status_code != 200:
+                            logger.debug("ClawHub ZIP download for %s v%s returned %s", slug, version, resp.status_code)
+                            return files
+
+                        content_length = resp.headers.get("content-length")
+                        if content_length:
+                            try:
+                                declared_size = int(content_length)
+                            except (ValueError, TypeError):
+                                declared_size = 0
+                            if declared_size > self.ZIP_DOWNLOAD_MAX_BYTES:
+                                logger.debug(
+                                    "Skipping oversized ClawHub ZIP for %s v%s: %d bytes",
+                                    slug, version, declared_size,
+                                )
+                                return files
+
+                        archive = io.BytesIO()
+                        total = 0
+                        for chunk in resp.iter_bytes(chunk_size=self.ZIP_DOWNLOAD_CHUNK_BYTES):
+                            if not chunk:
+                                continue
+                            total += len(chunk)
+                            if total > self.ZIP_DOWNLOAD_MAX_BYTES:
+                                logger.debug(
+                                    "Skipping oversized ClawHub ZIP for %s v%s: exceeded %d bytes",
+                                    slug, version, self.ZIP_DOWNLOAD_MAX_BYTES,
+                                )
+                                return files
+                            archive.write(chunk)
+                        archive.seek(0)
+
+                if retry_after_delay is not None:
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_after_delay)
                     continue
-                if resp.status_code != 200:
-                    logger.debug("ClawHub ZIP download for %s v%s returned %s", slug, version, resp.status_code)
-                    return files
-                with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+
+                with zipfile.ZipFile(archive) as zf:
                     for info in zf.infolist():
                         if info.is_dir():
                             continue

@@ -950,7 +950,14 @@ class GatewayNotificationsMixin:
         evt_type = str(evt.get("type") or "")
         if evt_type == "async_delegation":
             producer_id = str(evt.get("delegation_id") or "")
-            return (evt_type, producer_id, "") if producer_id else None
+            if not producer_id:
+                return None
+            if evt.get("task_failure_notice"):
+                # An interim per-task notice is its own producer event: it must not mark the
+                # batch's final result as already delivered, nor a sibling's notice.
+                task_idx = ((evt.get("results") or [{}])[0] or {}).get("task_index", "")
+                return (evt_type, producer_id, f"task_failure:{task_idx}")
+            return (evt_type, producer_id, "")
         if evt_type == "completion":
             producer_id = str(evt.get("session_id") or "")
             started_at = evt.get("started_at")
@@ -1035,7 +1042,9 @@ class GatewayNotificationsMixin:
         """
         claim = self._CompletionClaim()
         evt_type = evt.get("type")
-        if evt_type == "async_delegation":
+        # An interim per-task notice shares the batch's delegation_id but is not the durable
+        # completion; claiming that row here would acknowledge the FINAL result before it exists.
+        if evt_type == "async_delegation" and not evt.get("task_failure_notice"):
             claim.delegation_id = str(evt.get("delegation_id") or "")
             if claim.delegation_id:
                 try:

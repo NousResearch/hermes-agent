@@ -15,7 +15,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
-from agent.model_metadata import capture_usage_anchor
+from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -81,6 +81,9 @@ def record_response_usage(
             # pending verdict so later readings aren't charged to it and
             # preflight deferral isn't latched indefinitely.
             compressor.update_from_response({})
+        _note_usage_less = getattr(compressor, "note_usage_less_response", None)
+        if callable(_note_usage_less):
+            _note_usage_less()
         logger.info(
             "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable",
             agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration,
@@ -120,9 +123,7 @@ def record_response_usage(
         aggregator_usage.prompt_tokens, aggregator_usage.output_tokens, messages
     )
     if _new_anchor is not None:
-        agent._usage_anchor = _new_anchor
-        if api_call_count == 1:
-            agent._turn_base_usage_anchor = _new_anchor
+        set_usage_anchor(agent, _new_anchor, turn_base=api_call_count == 1)
     _compression_threshold = int(getattr(compressor, "threshold_tokens", 0) or 0)
     if _loop_mod()._should_rearm_compression_budget(
         compression_attempts, completed_compaction_pending=_completed_compaction_pending,
@@ -143,6 +144,9 @@ def record_response_usage(
 
     # Stash canonical usage for on_turn_complete(); keep the latest call's.
     agent._last_turn_usage = dict(usage_dict)
+    # The parent's CURRENT prompt size for headroom math (delegate summary budgets): the
+    # aggregator's own prompt, never the MoA-folded total (advisor prompts are not in this context).
+    agent._last_prompt_size_tokens = int(aggregator_usage.prompt_tokens or 0)
 
     # Persist only provider-confirmed context lengths, not probe tiers.
     if getattr(compressor, "_context_probed", False):

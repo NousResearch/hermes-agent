@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -126,6 +127,8 @@ class DispatchResult:
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
     a failure — a long quota window must never trip the circuit breaker."""
+    provider_deferred: list[tuple[str, str]] = field(default_factory=list)
+    """Task ids parked before claim because every allowed provider route is open."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -1522,6 +1525,41 @@ def _dispatch_lane_task(
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
+    route_resolution = None
+    if not dry_run:
+        try:
+            from hermes_cli.kanban_provider_health import resolve_task_route
+
+            task_for_route = _kb.get_task(conn, task_id)
+            if task_for_route is not None:
+                route_resolution = resolve_task_route(task_for_route)
+        except Exception:
+            # Availability bookkeeping must not strand healthy ordinary work.
+            _kb._log.warning(
+                "kanban dispatch: provider-health preflight failed for %s; failing open",
+                task_id,
+                exc_info=True,
+            )
+        if route_resolution is not None and route_resolution.route is None:
+            reset = (
+                route_resolution.deferred_until.isoformat()
+                if route_resolution.deferred_until is not None
+                else "unknown"
+            )
+            result.provider_deferred.append((task_id, reset))
+            payload = {"until": reset, "reason": route_resolution.reason or "provider circuit open"}
+            latest = conn.execute(
+                "SELECT kind, payload FROM task_events WHERE task_id=? ORDER BY id DESC LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            duplicate = False
+            if latest is not None and latest["kind"] == "provider_deferred":
+                with contextlib.suppress(Exception):
+                    duplicate = json.loads(latest["payload"] or "{}") == payload
+            if not duplicate:
+                with _kb.write_txn(conn):
+                    _kb._append_event(conn, task_id, "provider_deferred", payload)
+            return False
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
@@ -1551,6 +1589,10 @@ def _dispatch_lane_task(
     claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
     if claimed is None:
         return False
+    if route_resolution is not None:
+        from hermes_cli.kanban_provider_health import apply_task_route
+
+        apply_task_route(claimed, route_resolution)
     try:
         resolved_branch_name = None
         if claimed.workspace_kind == "worktree":

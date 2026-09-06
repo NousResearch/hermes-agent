@@ -5,6 +5,7 @@ import contextlib
 import copy
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+import errno
 import json
 import logging
 import shutil
@@ -200,6 +201,11 @@ def _jobs_lock_file() -> Path:
     return _current_cron_store().cron_dir / ".jobs.lock"
 
 
+def _is_fire_fence_contention(exc: OSError) -> bool:
+    """Return whether a nonblocking platform lock reports an active holder."""
+    return exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}
+
+
 def _acquire_flock(lock_fd, timeout: float) -> Optional[bool]:
     """Bounded exclusive lock: True when acquired, False on timeout, None when no backend exists. A
     blocking flock(LOCK_EX) taken under the in-process lock would let a wedged sibling freeze
@@ -211,7 +217,9 @@ def _acquire_flock(lock_fd, timeout: float) -> Optional[bool]:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 return True
-            except (OSError, IOError):
+            except (OSError, IOError) as exc:
+                if not _is_fire_fence_contention(exc):
+                    raise
                 if time.monotonic() >= deadline:
                     return False
                 time.sleep(0.1)
@@ -289,7 +297,7 @@ def _jobs_lock():
 
 
 @contextlib.contextmanager
-def _fire_job_lock(job_id: str):
+def _fire_job_lock(job_id: str, *, raise_unavailable: bool = False):
     """Serialize one job's owner mutations and external side effects. Unlike the global jobs lock
     this may be held across network delivery; scoped to one profile + job so unrelated jobs keep
     progressing. Fails closed when cross-process locking is unavailable."""
@@ -316,17 +324,27 @@ def _fire_job_lock(job_id: str):
         lock_path = cron_dir / f".fire-{uuid.uuid5(uuid.NAMESPACE_URL, lock_key).hex}.lock"
         lock_fd = None
         acquired = False
+        unavailable_error = None
         try:
             lock_fd = open(lock_path, "a+", encoding="utf-8")
             lock_fd.seek(0)
             result = _acquire_flock(lock_fd, _JOBS_LOCK_TIMEOUT_SECONDS)
             if result is None:  # pragma: no cover - supported platforms provide one backend
+                unavailable_error = RuntimeError(
+                    "No cross-process lock backend for cron fire fence")
                 logger.error("No cross-process lock backend for cron fire fence")
             elif not result:
                 logger.error("Timed out waiting for fire fence %s; failing closed", lock_path)
             acquired = bool(result)
         except (OSError, IOError) as exc:
+            unavailable_error = exc
             logger.error("Cron fire fence unavailable for %s: %s", job_id, exc)
+
+        if unavailable_error is not None and raise_unavailable:
+            if lock_fd is not None:
+                lock_fd.close()
+                lock_fd = None
+            raise unavailable_error
 
         held_locks[lock_key] = acquired
         try:
@@ -2229,14 +2247,16 @@ def mark_job_run(
     status: Optional[str] = None,
     *,
     expected_fire_owner: Optional[str] = None,
-) -> bool:
+    provider_backoff: Optional[Dict[str, Any]] = None,
+) -> Optional[bool]:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
 
     ``delivery_error`` is separate from the agent error: agent succeeded but delivery failed records
     ``last_status = "delivery_failed"`` (never "ok") while ``failure_streak`` is left alone. An
-    explicit ``status`` (e.g. "blocked_config") overrides the derived value. False when the fence
-    can't be taken, the job is missing, or ``expected_fire_owner`` no longer holds the fire claim.
+    explicit ``status`` (e.g. "blocked_config") overrides the derived value. Returns None when
+    the fence cannot be taken, False when the job is missing or the owner changed, and True after
+    an authoritative write.
     """
     def apply(jobs, _i, job):
         if expected_fire_owner is not None:
@@ -2248,6 +2268,10 @@ def mark_job_run(
                 return False
         now = _hermes_now().isoformat()
         _record_run_outcome(job, success, error, delivery_error, status, now)
+        if success:
+            job.pop("provider_backoff", None)
+        elif provider_backoff is not None:
+            job["provider_backoff"] = copy.deepcopy(provider_backoff)
         _advance_after_run(job, now)
         save_jobs(jobs)
         return True
@@ -2259,7 +2283,10 @@ def mark_job_run(
             return False
         return found
 
-    return _under_fire_fence(job_id, locked)
+    with _fire_job_lock(job_id) as acquired:
+        if not acquired:
+            return None
+        return locked()
 
 
 def _write_oneshot_diagnostic(job: Dict[str, Any], text: str, what: str) -> bool:
@@ -2476,7 +2503,8 @@ def _machine_id() -> str:
 
 
 def claim_job_for_fire(
-    job_id: str, *, claim_ttl_seconds: int = 300, force: bool = False, return_job: bool = False,
+    job_id: str, *, claim_ttl_seconds: int = 300, force: bool = False,
+    allow_provider_backoff: bool = False, return_job: bool = False,
 ) -> Union[bool, Dict[str, Any]]:
     """Atomically claim a job for one external 'fire' (multi-machine at-most-once); True iff THIS
     caller won (``CronScheduler.fire_due``: exactly one of N replicas runs a job). Under the
@@ -2494,6 +2522,14 @@ def claim_job_for_fire(
         if not force and not is_job_runnable(job):
             return False
         now = _hermes_now()
+        from cron.rate_limit_backoff import provider_backoff_active
+
+        if (
+            not force
+            and not allow_provider_backoff
+            and provider_backoff_active(job, now=now)
+        ):
+            return False
         if _claim_is_live(job.get("fire_claim"), now, claim_ttl_seconds):
             return False  # someone holds a fresh claim
         if force:
@@ -2511,13 +2547,15 @@ def claim_job_for_fire(
     return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
 
 
-def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
-    """Refresh an active ``fire_claim`` without extending another owner's lease: an execution may
-    outlive the TTL, and the owner check stops a stale runner from refreshing a recovered claim."""
+def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> Optional[bool]:
+    """Refresh an active fire claim; None means fence contention prevented inspection."""
     def apply(jobs, _i, job):
         return _refresh_claim(jobs, job.get("fire_claim"), expected_owner)
 
-    return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
+    with _fire_job_lock(job_id, raise_unavailable=True) as acquired:
+        if not acquired:
+            return None
+        return _with_job(job_id, apply, False)
 
 
 # Completed one-shots are retained in jobs.json (final status stays inspectable) and pruned by
@@ -2972,6 +3010,14 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 continue
             if _has_pause_marker(job):
                 _self_disable_half_paused(job, scan)
+                continue
+            from cron.rate_limit_backoff import provider_backoff_active
+
+            manual_override = bool(
+                job.get("manual_run_at")
+                and job.get("manual_run_at") == job.get("next_run_at")
+            )
+            if not manual_override and provider_backoff_active(job, now=scan.now):
                 continue
             if _evaluate_due_job(job, scan, run_claim_ttl):
                 due.append(job)

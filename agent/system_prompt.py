@@ -30,6 +30,26 @@ from hermes_constants import get_default_hermes_root, get_hermes_home
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_kanban_worker_guidance(valid_tool_names) -> str:
+    """Return lifecycle guidance only for the task-bound dispatcher worker."""
+    if "kanban_show" not in valid_tool_names:
+        return ""
+    if not os.environ.get("HERMES_KANBAN_TASK"):
+        return ""
+    try:
+        from agent.delegation_context import is_dispatcher_owned_worker_context
+
+        if not is_dispatcher_owned_worker_context():
+            return ""
+    except Exception:
+        # Lifecycle instructions can mutate durable board state; ambiguous
+        # ownership must fail closed rather than borrow an ambient task.
+        return ""
+    return KANBAN_GUIDANCE
+
+
 _PLUGIN_SECTION_FRAME_RE = re.compile(
     r"^## Plugin Context: (?P<id>[a-z0-9][a-z0-9._-]{0,127})\n<!-- hermes-plugin-section-chars:(?P<chars>[0-9]{1,4}) -->\n\n",
     re.MULTILINE,
@@ -281,11 +301,12 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
             memory_guidance = MEMORY_GUIDANCE
         elif getattr(agent, "_user_profile_enabled", True):
             memory_guidance = USER_PROFILE_GUIDANCE
-    # Kanban lifecycle: resolved once at __init__ (_kanban_worker_guidance);
-    # the kanban_show fallback covers code paths that bypass agent_init.
+    # Kanban lifecycle is task-bound, not merely tool-bound. Configured
+    # orchestrators expose kanban_show without owning a current task.
     _kanban_guidance = getattr(agent, "_kanban_worker_guidance", None)
-    if _kanban_guidance is None and "kanban_show" in names:
-        _kanban_guidance = KANBAN_GUIDANCE
+    if _kanban_guidance is None:
+        # Compatibility fallback for lightweight agents that bypass _load_tools.
+        _kanban_guidance = resolve_kanban_worker_guidance(names)
     tool_guidance = [
         memory_guidance,
         SESSION_SEARCH_GUIDANCE if "session_search" in names else None,

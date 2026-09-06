@@ -130,6 +130,14 @@ def perform_api_call(
             provider=agent.provider, base_url=agent.base_url, api_mode=agent.api_mode,
             api_call_count=api_call_count, middleware_trace=list(_llm_middleware_trace),
         )
+        try:
+            from agent.provider_health import record_agent_success
+
+            record_agent_success(agent)
+        except Exception:
+            # Health bookkeeping cannot turn a valid model response into an
+            # API failure.
+            logger.warning("Provider-health success recording failed", exc_info=True)
     finally:
         with _bracket:
             if _model_request_active is not None:

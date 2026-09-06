@@ -41,6 +41,120 @@ def _drain_queue(q):
 
 
 
+def test_dashboard_trigger_bypasses_backoff_without_forcing_job_state(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    until = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    job = {
+        "id": "job-a",
+        "enabled": True,
+        "state": "scheduled",
+        "last_run_at": None,
+        "provider_backoff": {"until": until},
+    }
+    calls = []
+    monkeypatch.setattr(_rt_cron, "_job_profile", lambda _job_id, _profile=None: "default")
+    monkeypatch.setattr(_rt_cron, "_call_cron_for_profile", lambda *_args: job)
+    monkeypatch.setattr(
+        _rt_cron,
+        "_fire_cron_job_for_profile",
+        lambda profile, job_id, **kwargs: calls.append((profile, job_id, kwargs)) or True,
+    )
+
+    result = _rt_cron._trigger_cron_job_sync("job-a")
+
+    assert result == job
+    assert calls == [
+        (
+            "default",
+            "job-a",
+            {"force": False, "allow_provider_backoff": True},
+        )
+    ]
+
+
+def test_dashboard_manual_intent_allows_backoff_added_during_claim(monkeypatch):
+    job = {
+        "id": "job-race",
+        "enabled": True,
+        "state": "scheduled",
+        "last_run_at": None,
+    }
+    calls = []
+    monkeypatch.setattr(_rt_cron, "_job_profile", lambda _job_id, _profile=None: "default")
+    monkeypatch.setattr(_rt_cron, "_call_cron_for_profile", lambda *_args: job)
+    monkeypatch.setattr(
+        _rt_cron,
+        "_fire_cron_job_for_profile",
+        lambda profile, job_id, **kwargs: calls.append((profile, job_id, kwargs)) or True,
+    )
+
+    assert _rt_cron._trigger_cron_job_sync("job-race") == job
+    assert calls == [
+        (
+            "default",
+            "job-race",
+            {"force": False, "allow_provider_backoff": True},
+        )
+    ]
+
+
+def test_dashboard_backoff_snapshot_cannot_resume_concurrently_paused_job(
+    isolated_profiles,
+    monkeypatch,
+):
+    from datetime import datetime, timedelta, timezone
+
+    from cron import jobs as cron_jobs
+
+    default_home = isolated_profiles["default"]
+    now = datetime.now(timezone.utc)
+    with cron_jobs.use_cron_store(default_home):
+        job = cron_jobs.create_job("work", "every 10m")
+        backoff = {
+            "until": (now + timedelta(hours=1)).isoformat(),
+            "reason": "provider reset",
+        }
+        assert cron_jobs.mark_job_run(
+            job["id"],
+            False,
+            "HTTP 429",
+            provider_backoff=backoff,
+        )
+        stale = cron_jobs.get_job(job["id"])
+
+    def call_cron(_profile, operation, job_id):
+        assert job_id == job["id"]
+        if operation == "resolve_job_ref":
+            return stale
+        with cron_jobs.use_cron_store(default_home):
+            return cron_jobs.get_job(job_id)
+
+    def pause_then_claim(_profile, job_id, **kwargs):
+        with cron_jobs.use_cron_store(default_home):
+            assert cron_jobs.pause_job(job_id) is not None
+            claimed = cron_jobs.claim_job_for_fire(
+                job_id,
+                return_job=True,
+                **kwargs,
+            )
+            return isinstance(claimed, dict)
+
+    monkeypatch.setattr(_rt_cron, "_job_profile", lambda _job_id, _profile=None: "default")
+    monkeypatch.setattr(_rt_cron, "_call_cron_for_profile", call_cron)
+    monkeypatch.setattr(_rt_cron, "_fire_cron_job_for_profile", pause_then_claim)
+    monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+    with pytest.raises(HTTPException, match="already running or was claimed"):
+        _rt_cron._trigger_cron_job_sync(job["id"])
+
+    with cron_jobs.use_cron_store(default_home):
+        persisted = cron_jobs.get_job(job["id"])
+    assert persisted is not None
+    assert persisted["enabled"] is False
+    assert persisted["state"] == "paused"
+
+
 def test_fire_cron_job_scopes_store_and_runtime_home_together(
     isolated_profiles,
     monkeypatch,

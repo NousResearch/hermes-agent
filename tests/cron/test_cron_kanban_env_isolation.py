@@ -273,6 +273,23 @@ class TestRunJobKanbanIsolation:
             "workdir": None, "schedule_display": "manual",
         }
 
+    def test_unbound_cron_keeps_final_response(self, monkeypatch):
+        """An ordinary cron run completes normally without a current task binding."""
+        import cron.scheduler as sched
+
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        observed: dict = {}
+        self._install_stubs(monkeypatch, observed)
+
+        success, _output, final_response, error = sched.run_job(
+            self._job("unbound-cron-final")
+        )
+
+        assert success is True
+        assert final_response == "done"
+        assert error is None
+        assert observed["dispatcher_owned_during_init"] is False
+
     def test_agent_runs_as_non_dispatcher(self, monkeypatch, worker_env):
         import cron.scheduler as sched
         from cron import scheduler_delivery as sched_delivery

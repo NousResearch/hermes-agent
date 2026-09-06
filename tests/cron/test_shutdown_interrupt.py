@@ -26,10 +26,12 @@ def _reset_scheduler_state():
     sched._running_job_ids.clear()
     sched._running_fire_owners.clear()
     sched._interrupted_job_ids.clear()
+    sched._interrupting_job_ids.clear()
     yield
     sched._running_job_ids.clear()
     sched._running_fire_owners.clear()
     sched._interrupted_job_ids.clear()
+    sched._interrupting_job_ids.clear()
 
 
 class TestGetRunningJobIds:
@@ -96,7 +98,7 @@ class TestMarkRunningJobsInterrupted:
             assert "gateway shutdown" in c.args[2]
             assert c.kwargs["expected_fire_owner"] in {"owner-1", "owner-2"}
 
-    def test_sets_interrupted_flag_for_consumption_by_run_one_job(self):
+    def test_sets_pending_interrupt_for_worker_without_registered_owner(self):
         import cron.scheduler as sched
 
         sched._running_job_ids.add("job-1")
@@ -104,7 +106,11 @@ class TestMarkRunningJobsInterrupted:
         with patch("cron.scheduler.mark_job_run"):
             sched.mark_running_jobs_interrupted("shutdown")
 
-        assert "job-1" in sched._interrupted_job_ids
+        assert "job-1" in sched._interrupting_job_ids
+        assert sched._is_interrupted("job-1") is True
+        # Shutdown could not persist without an owner, so the worker remains
+        # responsible for its own terminal write.
+        assert sched._consume_interrupted_flag("job-1") is False
 
     def test_one_job_marking_failure_does_not_block_the_others(self):
         """mark_job_run raising for one job (e.g. a jobs.json write race)
@@ -130,6 +136,182 @@ class TestMarkRunningJobsInterrupted:
             marked = sched.mark_running_jobs_interrupted("shutdown")
 
         assert marked == ["job-2"]
+
+    def test_unavailable_terminal_fence_leaves_worker_responsible(self, tmp_path):
+        """A None result means shutdown wrote nothing; do not install the
+        confirmed token that makes the worker skip its terminal write."""
+        import cron.scheduler as sched
+
+        token = object()
+        sched._running_job_ids.add("job-1")
+        sched._running_fire_owners["job-1"] = {
+            token: ("owner-1", tmp_path),
+        }
+
+        with patch("cron.scheduler.mark_job_run", return_value=None):
+            marked = sched.mark_running_jobs_interrupted("shutdown")
+
+        assert marked == []
+        assert sched._is_interrupted("job-1", token) is True
+        assert sched._consume_interrupted_flag("job-1", token) is False
+
+    def test_worker_terminalizes_after_shutdown_fence_contention(
+        self, tmp_path, monkeypatch
+    ):
+        """A shutdown write blocked by the real fire fence leaves the worker
+        responsible for durable terminal state and at-most-once delivery."""
+        from unittest.mock import MagicMock
+
+        import cron.executions as executions
+        import cron.jobs as jobs
+        import cron.scheduler as sched
+
+        profile_home = tmp_path / "profile"
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setattr(
+            executions,
+            "EXECUTIONS_FILE",
+            profile_home / "cron" / "executions.db",
+        )
+        monkeypatch.setattr(jobs, "_JOBS_LOCK_TIMEOUT_SECONDS", 0.05)
+        monkeypatch.setattr(sched, "_get_hermes_home", lambda: profile_home)
+
+        with jobs.use_cron_store(profile_home):
+            job = jobs.create_job(
+                prompt="do work",
+                schedule="every 5m",
+                name="contended job",
+                deliver="telegram:123",
+            )
+            claimed = jobs.claim_job_for_fire(job["id"], force=True, return_job=True)
+            assert isinstance(claimed, dict)
+            owner = claimed["fire_claim"]["by"]
+            execution = executions.create_execution(job["id"], source="builtin")
+            claimed["execution_id"] = execution["id"]
+
+            token = object()
+            with sched._running_lock:
+                sched._running_job_ids.add(job["id"])
+                sched._running_fire_owners[job["id"]] = {
+                    token: (owner, profile_home),
+                }
+
+            fence_acquired = threading.Event()
+            release_fence = threading.Event()
+
+            def hold_fire_fence():
+                with jobs.use_cron_store(profile_home):
+                    with jobs.fire_claim_fence(
+                        job["id"], expected_owner=owner
+                    ) as owns_claim:
+                        assert owns_claim is True
+                        fence_acquired.set()
+                        assert release_fence.wait(timeout=5)
+
+            holder = threading.Thread(target=hold_fire_fence)
+            holder.start()
+            assert fence_acquired.wait(timeout=5)
+            try:
+                assert sched.mark_running_jobs_interrupted("shutdown") == []
+                assert sched._is_interrupted(job["id"], token) is True
+            finally:
+                release_fence.set()
+                holder.join(timeout=5)
+            assert holder.is_alive() is False
+
+            delivered = MagicMock(return_value=None)
+            with (
+                patch(
+                    "cron.scheduler.run_job",
+                    return_value=(
+                        True,
+                        "full output",
+                        "plausible response",
+                        None,
+                    ),
+                ),
+                patch("cron.scheduler._deliver_result", delivered),
+                patch("agent.secret_scope.set_secret_scope", return_value=None),
+                patch(
+                    "agent.secret_scope.build_profile_secret_scope", return_value=None
+                ),
+                patch("agent.secret_scope.reset_secret_scope"),
+                patch(
+                    "tools.terminal_scope.install_profile_terminal_scope",
+                    return_value=None,
+                ),
+                patch("tools.terminal_scope.reset_terminal_scope"),
+            ):
+                assert sched._run_one_job_body(claimed, execution_token=token) is True
+
+            persisted = jobs.get_job(job["id"])
+            finished = executions.get_execution(execution["id"])
+
+        assert isinstance(persisted, dict)
+        assert isinstance(finished, dict)
+        assert persisted["last_status"] == "error"
+        assert "Interrupted by gateway shutdown" in persisted["last_error"]
+        assert persisted["fire_claim"] is None
+        assert finished["status"] == "failed"
+        assert delivered.call_count == 1
+        assert "plausible response" not in delivered.call_args.args[1]
+        assert sched._is_interrupted(job["id"], token) is False
+
+    def test_shutdown_starting_at_delivery_fence_cannot_leak_normal_result(self):
+        """The fence-local interrupt recheck closes the race after the first
+        delivery-gate check but before the external side effect."""
+        import contextlib
+        from unittest.mock import MagicMock
+
+        import cron.scheduler as sched
+
+        token = object()
+        job = {
+            "id": "job-delivery-race",
+            "name": "delivery race",
+            "execution_id": "exec-delivery-race",
+            "prompt": "do work",
+            "deliver": "telegram:123",
+            "fire_claim": {"by": "owner-1"},
+        }
+        fence_entries = 0
+
+        def fence(*_args, **_kwargs):
+            @contextlib.contextmanager
+            def held():
+                nonlocal fence_entries
+                fence_entries += 1
+                if fence_entries == 2:
+                    with sched._running_lock:
+                        sched._interrupting_job_ids.add(token)
+                yield True
+
+            return held()
+
+        delivered = MagicMock(return_value=None)
+        marked = MagicMock(return_value=True)
+        with patch("cron.scheduler.claim_dispatch", return_value=True), \
+             patch("cron.scheduler.mark_execution_running", return_value={}), \
+             patch("agent.secret_scope.set_secret_scope", return_value=None), \
+             patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
+             patch("agent.secret_scope.reset_secret_scope"), \
+             patch(
+                 "cron.scheduler.run_job",
+                 return_value=(True, "full output", "plausible response", None),
+             ), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result", delivered), \
+             patch("cron.scheduler.heartbeat_fire_claim", return_value=True), \
+             patch("cron.scheduler.fire_claim_fence", side_effect=fence), \
+             patch("cron.scheduler.mark_job_run", marked), \
+             patch("cron.scheduler.finish_execution"):
+            assert sched._run_one_job_body(job, execution_token=token) is True
+
+        assert fence_entries == 2
+        delivered.assert_called_once()
+        assert "plausible response" not in delivered.call_args.args[1]
+        assert marked.call_args.args[:2] == (job["id"], False)
+        assert sched._is_interrupted(job["id"], token) is False
 
     def test_stale_shutdown_cannot_clear_replacement_owner(self, tmp_path):
         import cron.jobs as jobs

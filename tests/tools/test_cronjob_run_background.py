@@ -79,11 +79,55 @@ class TestBackgroundDispatch:
             assert res["claimed"] is True
             assert res["dispatched"] is True
             assert res["delegation_id"]
-            m_claim.assert_called_once_with("job-bg-01", return_job=True)
+            m_claim.assert_called_once_with(
+                "job-bg-01", return_job=True, allow_provider_backoff=True
+            )
             # The job actually starts on the daemon executor.
             assert run_started.wait(timeout=5.0), "job never started in background"
         finally:
             run_release.set()
+
+    def test_background_runner_reconciles_provider_after_completion(self):
+        """A detached failure may add provider backoff only after dispatch."""
+        captured = {}
+        order = []
+        job = _job("job-bg-backoff")
+        claimed = {**job, "fire_claim": {"by": "bg-owner"}}
+
+        def capture_dispatch(**kwargs):
+            captured["runner"] = kwargs["runner"]
+            return {"status": "dispatched", "delegation_id": "deleg-backoff"}
+
+        with _bound_session_key():
+            with patch(
+                "tools.cronjob_tools.claim_job_for_fire",
+                return_value=claimed,
+            ), patch(
+                "tools.async_delegation.dispatch_async_delegation",
+                side_effect=capture_dispatch,
+            ), patch(
+                "cron.scheduler.run_one_job",
+                side_effect=lambda *args, **kwargs: order.append("run") or True,
+            ), patch(
+                "tools.cronjob_tools.get_job",
+                return_value={
+                    "id": job["id"],
+                    "last_status": "error",
+                    "last_error": "HTTP 429",
+                    "provider_backoff": {"until": "2099-01-01T00:00:00+00:00"},
+                },
+            ), patch(
+                "tools.cronjob_tools._notify_provider_jobs_changed_safe",
+                side_effect=lambda: order.append("notify"),
+            ):
+                dispatched = _try_dispatch_background_run(job)
+                assert dispatched is not None
+                assert dispatched["dispatched"] is True
+                assert order == []
+                completion = captured["runner"]()
+
+        assert completion["status"] == "error"
+        assert order == ["run", "notify"]
 
     def test_completion_event_reaches_shared_queue(self):
         """The finished run pushes a type='async_delegation' event carrying
@@ -326,5 +370,7 @@ class TestCronjobRunToolIntegration:
         assert out["success"] is True
         assert out["job"]["executed"] is True
         assert out["job"]["execution_success"] is True
-        m_claim.assert_called_once_with("job-bg-13", return_job=True)
+        m_claim.assert_called_once_with(
+            "job-bg-13", return_job=True, allow_provider_backoff=True
+        )
         m_run.assert_called_once()

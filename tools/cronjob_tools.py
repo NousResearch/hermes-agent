@@ -182,7 +182,9 @@ def _claim_for_manual_run(job_id: str, log_label: str):
     ``(None, error_dict)`` in the ``_execute_job_now`` shape. A lost claim is labelled precisely —
     claim_job_for_fire also returns False for paused/disabled/missing jobs, not just in-flight ones."""
     try:
-        claimed_job = claim_job_for_fire(job_id, return_job=True)
+        claimed_job = claim_job_for_fire(
+            job_id, allow_provider_backoff=True, return_job=True
+        )
         if isinstance(claimed_job, dict):
             return claimed_job, None
         refreshed = get_job(job_id)
@@ -484,6 +486,9 @@ def _try_dispatch_background_run(
 
     def _runner() -> Dict[str, Any]:
         res = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
+        # A detached run can persist provider_backoff only at terminal
+        # completion, after the dispatch-time reconciliation already ran.
+        _notify_provider_jobs_changed_safe()
         return _manual_run_completion(res, job_id, job_name, deliver, started_at)
 
     dispatch = dispatch_async_delegation(

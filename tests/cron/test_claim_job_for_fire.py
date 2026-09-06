@@ -7,6 +7,7 @@ claim for a given fire. Single-machine deployments always win (unaffected).
 These exercise the real store against a temp HERMES_HOME (no mocks) per the
 E2E-over-mocks discipline for file-touching code.
 """
+import contextlib
 import threading
 import time
 
@@ -263,3 +264,31 @@ def test_same_thread_fire_fence_reentrancy_preserves_ownership(temp_home):
     assert result == {"outer": True, "inner": True}
     thread.join(timeout=2)
     assert thread.is_alive() is False
+
+
+def test_mark_job_run_returns_none_when_fence_unavailable(temp_home, monkeypatch):
+    """Fence-unavailable is unconfirmed, not an authoritative CAS loss (c-027).
+
+    ``False`` stays reserved for a confirmed owner mismatch; a contended
+    fire fence must return ``None`` so callers cannot mistake lock
+    contention for ownership loss.
+    """
+    import cron.jobs as jobs
+
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="fence none")
+    assert jobs.claim_job_for_fire(job["id"]) is True
+    owner = jobs.get_job(job["id"])["fire_claim"]["by"]
+
+    @contextlib.contextmanager
+    def contended_fence(*_args, **_kwargs):
+        yield False
+
+    monkeypatch.setattr(jobs, "_fire_job_lock", contended_fence)
+
+    assert jobs.mark_job_run(
+        job["id"], True, expected_fire_owner=owner
+    ) is None
+
+    persisted = jobs.get_job(job["id"])
+    assert persisted["fire_claim"]["by"] == owner
+    assert persisted.get("last_run_at") is None

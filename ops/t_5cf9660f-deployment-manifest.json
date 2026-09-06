@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "task_id": "t_5cf9660f",
+  "created_at": "2026-09-05T17:02:22+07:00",
+  "deployment_authorized": false,
+  "candidate": {
+    "implementation_commit": "9f18f10549b77039c162408b07fafbabb677ac49",
+    "tree": "7fcf84020425d098a865d61b70101ccccefc28b5",
+    "cumulative_parent": "f50bf4c80f28287b474058fb64b3689695f9946b",
+    "pr": "https://github.com/NousResearch/hermes-agent/pull/103426",
+    "branch": "jayleaton:fix/cumulative-cron-safeguards-current-main"
+  },
+  "scope": {
+    "repository_allowlist": [
+      "agent/provider_health.py",
+      "agent/chat_completion_helpers.py",
+      "agent/turn_api_call.py",
+      "agent/turn_api_error.py",
+      "cron/provider_health_circuit.py",
+      "cron/scheduler.py",
+      "hermes_cli/kanban_provider_health.py",
+      "hermes_cli/kanban_db_dispatch.py",
+      "ops/coder-fallback-watch.py",
+      "ops/coder-fallback-watch.patch",
+      "ops/t_5cf9660f-deployment-manifest.json",
+      "tests/agent/test_provider_health.py",
+      "tests/cron/test_provider_health_circuit.py",
+      "tests/hermes_cli/test_coder_fallback_watch.py",
+      "tests/hermes_cli/test_kanban_provider_health.py"
+    ],
+    "external_install_target": "/home/sireggy/.hermes/scripts/coder-fallback-watch.py",
+    "profiles_with_configured_fallbacks_observed": ["buggy", "coder", "qa"],
+    "non_applicable_profiles": "Profiles without fallback_providers retain their one explicitly configured route; the circuit may defer but never invents a provider.",
+    "hotspot": "hermes_cli/kanban_db_dispatch.py overlaps active task t_ab2d132d and must be reconciled before deployment."
+  },
+  "external_script": {
+    "source": "ops/coder-fallback-watch.py",
+    "patch": "ops/coder-fallback-watch.patch",
+    "source_sha256": "52a2bd7a39692d9ddb832f4896c87cb2a18a654a79afd0d9db9640f669bb8172",
+    "patch_sha256": "9a6c3902e4a07539037560daf8a46cbc64cdb8d3a5d166af8c407599d1da81c8",
+    "live_state": "not_modified"
+  },
+  "backup": {
+    "status": "not_executed_no_deployment_authority",
+    "required_before_install": [
+      "Wait for active cron fires and Kanban workers to drain; do not reclaim or terminate productive work.",
+      "Record managed gateway unit, MainPID, loaded repository path, code_sha, editable-install target, and active coder-fallback watcher unit/timer state.",
+      "Create the normal full pre-update backup for every affected profile and abort if any backup fails.",
+      "Copy /home/sireggy/.hermes/scripts/coder-fallback-watch.py to a timestamped backup and verify its SHA-256 before replacement.",
+      "Retain the pre-install repository checkout and f50bf4c80f28287b474058fb64b3689695f9946b until all readbacks pass."
+    ]
+  },
+  "install": {
+    "status": "not_executed_no_deployment_authority",
+    "procedure": [
+      "Fetch the exact reviewed PR head and verify it is descended from implementation commit 9f18f10549b77039c162408b07fafbabb677ac49.",
+      "After drain and backup, switch the existing editable install to the reviewed checkout; do not start a second gateway.",
+      "Install ops/coder-fallback-watch.py atomically at /home/sireggy/.hermes/scripts/coder-fallback-watch.py with its existing owner and executable mode after verifying SHA-256.",
+      "Use one authorized managed-service handoff, then restore the existing watcher timer schedule without changing model/provider configuration or cron enabled state."
+    ],
+    "required_readback": [
+      "Exactly one managed gateway process is running and its loaded path/code_sha match the reviewed exact head.",
+      "The installed watcher SHA-256 equals 52a2bd7a39692d9ddb832f4896c87cb2a18a654a79afd0d9db9640f669bb8172.",
+      "Synthetic disposable-state checks show a declared GLM reset prevents early watchdog restoration and all-open routes create one provider_deferred event across ticks/restart.",
+      "A healthy allowed Sol route is selected once with medium effort and no GLM model construction.",
+      "Inherited unbound-cron guidance and completed+delivered shutdown durability regressions remain green."
+    ]
+  },
+  "rollback": {
+    "status": "prepared_not_executed",
+    "trigger": "Any failed exact-head/path/process-count/hash readback, provider-route regression, duplicate worker/delivery, profile isolation failure, or incomplete backup.",
+    "procedure": [
+      "Drain using the same managed-service procedure and restore the recorded pre-install editable checkout.",
+      "Atomically restore the timestamped coder-fallback-watch.py backup and verify its recorded SHA-256.",
+      "Start only the original managed gateway/timer units and verify one gateway process, prior code_sha/path, and unchanged cron/model/provider configuration.",
+      "Do not overwrite newer profile databases or provider_health.db during code rollback unless the deployment task separately proves state restoration is necessary."
+    ]
+  },
+  "verification": {
+    "new_and_fallback_matrix": "46 passed, 0 failed",
+    "broad_cron_dispatch_matrix": "1406 passed, 0 failed, 3 platform-only skipped",
+    "static": [
+      "ruff passed",
+      "compileall passed",
+      "compat-pointer checker passed",
+      "git diff --check passed"
+    ],
+    "live_provider_burn_testing": false,
+    "ci": "pending after push; no green claim"
+  }
+}

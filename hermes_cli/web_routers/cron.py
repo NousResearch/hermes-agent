@@ -172,12 +172,16 @@ def _resume_cron_job_sync(job_id: str, profile: Optional[str] = None):
 def _trigger_cron_job_sync(job_id: str, profile: Optional[str] = None):
     selected = _job_profile(job_id, profile)
     job = _found(_call_cron_for_profile(selected, "resolve_job_ref", job_id))
-    # Never expose the job as due before claiming it: the built-in ticker and
-    # external/manual fire paths share one durable claim, so only one executes
-    # this run even racing across processes. Active jobs keep the legacy call
-    # shape; paused jobs need the explicit force flag to resume + claim atomically.
+    # Provider-backoff bypass follows the explicit manual intent rather than
+    # this pre-claim snapshot. The provider's atomic claim still enforces the
+    # current pause/disable state and duplicate-fire ownership.
     force = not job.get("enabled", True) or job.get("state") == "paused"
-    ran = _fire_cron_job_for_profile(selected, job["id"], force=force)
+    ran = _fire_cron_job_for_profile(
+        selected,
+        job["id"],
+        force=force,
+        allow_provider_backoff=True,
+    )
     refreshed = _call_cron_for_profile(selected, "get_job", job["id"])
     if refreshed and refreshed.get("last_run_at") != job.get("last_run_at"):
         return refreshed

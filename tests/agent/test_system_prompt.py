@@ -129,6 +129,83 @@ def _prompt_parts(agent):
         return build_system_prompt_parts(agent)
 
 
+class TestKanbanWorkerGuidance:
+    @staticmethod
+    def _initialized_agent():
+        from run_agent import AIAgent
+
+        kanban_show = {
+            "type": "function",
+            "function": {
+                "name": "kanban_show",
+                "description": "Inspect a task",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        with (
+            patch("model_tools.get_tool_definitions", return_value=[kanban_show]),
+            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("agent.process_bootstrap.OpenAI"),
+        ):
+            return AIAgent(
+                api_key="test-key",
+                base_url="https://example.test/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                platform="cron",
+            )
+
+    def test_agent_init_caches_no_protocol_without_task_binding(self, monkeypatch):
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        assert getattr(self._initialized_agent(), "_kanban_worker_guidance") == ""
+
+    def test_agent_init_caches_protocol_for_bound_worker(self, monkeypatch):
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_bound")
+
+        assert "Kanban task execution protocol" in getattr(
+            self._initialized_agent(), "_kanban_worker_guidance"
+        )
+
+    def test_unbound_kanban_orchestrator_does_not_get_worker_protocol(
+        self, monkeypatch
+    ):
+        """Having kanban_show available is not a dispatcher task binding."""
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        agent = _make_agent(
+            valid_tool_names=["kanban_show"],
+            _kanban_worker_guidance=None,
+            platform="cron",
+        )
+
+        assert "Kanban task execution protocol" not in _stable_prompt(agent)
+
+    def test_bound_dispatcher_worker_gets_worker_protocol(self, monkeypatch):
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_bound")
+        agent = _make_agent(
+            valid_tool_names=["kanban_show"],
+            _kanban_worker_guidance=None,
+        )
+
+        assert "Kanban task execution protocol" in _stable_prompt(agent)
+
+    def test_cron_context_does_not_borrow_parent_worker_protocol(
+        self, monkeypatch
+    ):
+        from agent.delegation_context import non_dispatcher_owned_context
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent_worker")
+        agent = _make_agent(
+            valid_tool_names=["kanban_show"],
+            _kanban_worker_guidance=None,
+            platform="cron",
+        )
+
+        with non_dispatcher_owned_context():
+            assert "Kanban task execution protocol" not in _stable_prompt(agent)
+
+
 def _init_code_repo(path):
     """A git repo that actually holds code — the coding posture requires a source
     file (or manifest), not a bare ``.git`` (a prose/notes repo stays general)."""

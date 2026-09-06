@@ -591,18 +591,27 @@ def settle_after_upgrade(account_state: Dict[str, Any]) -> Dict[str, Any]:
         return {"model": current, "changed": False}
     model = current
     if on_welcome_model:
-        from hermes_cli.models import get_default_model_for_provider, recommended_nous_default_model
+        from hermes_cli.models import recommended_nous_default_model
         try:
             model = str(recommended_nous_default_model().get("model") or "")
         except Exception as exc:
             logger.debug("sign-in completion: recommended default unavailable: %s", exc)
             model = ""
-        model = model or get_default_model_for_provider("nous")
     try:
         from hermes_cli.auth import _update_config_for_provider
+        from hermes_cli.config import load_config, save_config
         _update_config_for_provider(
             "nous", str(account_state.get("inference_base_url") or ""),
             default_model=model if on_welcome_model else None)
+        if on_welcome_model and not model:
+            # No eligible recommendation (Portal unreachable, or the plan and org policy admit
+            # nothing): leave NO default rather than a model the account may not use. The runtime's
+            # silent default applies until the user picks one with `hermes model`.
+            config = load_config()
+            model_cfg = config.get("model")
+            if isinstance(model_cfg, dict) and model_cfg.get("default") == GUEST_MODEL:
+                model_cfg.pop("default", None)
+                save_config(config)
     except Exception as exc:
         logger.warning("sign-in completion: could not update the default model: %s", exc)
         return {"model": current, "changed": False}
@@ -697,6 +706,7 @@ def upgrade_guest(args) -> int:
     settled = settle_after_upgrade(account_state)
     email = str(outcome.get("account_email") or "").strip()
     print(f"Signed in as {email}. Your connectors are kept." if email else "Signed in. Your connectors are kept.")
-    if settled["changed"] and settled["model"]:
-        print(f"Default model is now {settled['model']}.")
+    if settled["changed"]:
+        print(f"Default model is now {settled['model']}." if settled["model"]
+              else "No default model is set yet; run `hermes model` to pick one.")
     return 0

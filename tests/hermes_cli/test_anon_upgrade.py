@@ -226,3 +226,19 @@ class TestSignInCompletionSettlesTheModel:
         assert anon_auth.upgrade_guest(_args()) == 0
         assert {k: _model_config().get(k) for k in own} == own
         assert "Default model is now" not in capsys.readouterr().out
+
+    def test_no_eligible_recommendation_leaves_no_default_rather_than_a_model_the_account_may_not_use(
+            self, portal, free_account, monkeypatch, capsys):
+        from hermes_cli import models as m
+        anon_auth.ensure_portal_identity(blocking=True)
+        _write_model_config({"provider": "nous", "default": anon_auth.GUEST_MODEL, "base_url": WELCOME})
+        def _portal_down():
+            raise RuntimeError("recommended models unavailable")
+        monkeypatch.setattr(m, "recommended_nous_default_model", _portal_down)
+        assert anon_auth.upgrade_guest(_args()) == 0
+        model_cfg = _model_config()
+        assert "default" not in model_cfg
+        assert model_cfg["base_url"] == INFERENCE.rstrip("/")
+        out = capsys.readouterr().out
+        assert "Default model is now" not in out
+        assert "run `hermes model` to pick one" in out

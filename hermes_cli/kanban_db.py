@@ -4314,6 +4314,7 @@ _PLUGIN_COMPAT_LAZY = {
     'reconcile_orphaned_running': ('hermes_cli.kanban_db_dispatch', 'reconcile_orphaned_running'),
     'remove_notify_sub': ('hermes_cli.kanban_db_notify', 'remove_notify_sub'),
     'repair_db': ('hermes_cli.kanban_db_connect', 'repair_db'),
+    'resolve_dispatch_max_in_progress': ('hermes_cli.kanban_db_dispatch', 'resolve_dispatch_max_in_progress'),
     'resolve_max_in_progress': ('hermes_cli.kanban_db_dispatch', 'resolve_max_in_progress'),
     '_ensure_git_worktree': ('hermes_cli.kanban_db_workspace', '_ensure_git_worktree'),
     'resolve_workspace': ('hermes_cli.kanban_db_workspace', 'resolve_workspace'),

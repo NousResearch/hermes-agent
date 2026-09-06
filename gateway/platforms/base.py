@@ -432,7 +432,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after
-from gateway.session import SessionSource, build_session_key
+from gateway.session import SessionSource, build_session_key, is_shared_audience
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
@@ -1742,6 +1742,25 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
+_PRIVATE_REPLY_PUBLIC_FALLBACK = "Gateway acknowledged the request; operational details are private."
+
+
+class PrivateReply(EphemeralReply):
+    """System reply whose full text must not default to a shared origin chat."""
+
+    public_fallback: Optional[str]
+
+    def __new__(
+        cls,
+        text: str,
+        ttl_seconds: Optional[int] = None,
+        public_fallback: Optional[str] = None,
+    ):
+        instance = super().__new__(cls, text, ttl_seconds=ttl_seconds)
+        instance.public_fallback = public_fallback
+        return instance
+
+
 def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], session_key: str,
                                 event: MessageEvent, *, merge_text: bool = False) -> None:
     """Store or merge a pending event: photo bursts/albums merge into the queued event so the next
@@ -2624,6 +2643,69 @@ class BasePlatformAdapter(ABC):
         """Send a notice privately when the platform supports it; default is a normal send."""
         return await self.send(chat_id=chat_id, content=content, reply_to=reply_to, metadata=metadata)
 
+    def _supports_private_notice_delivery(self) -> bool:
+        """Return True when ``send_private_notice`` is not the public fallback."""
+        method = getattr(type(self), "send_private_notice", None)
+        if method is not BasePlatformAdapter.send_private_notice:
+            return True
+        # Tests and plugin shims sometimes install an instance method after
+        # construction. Treat that as explicit support, but keep the class
+        # default from leaking confidential text through its public fallback.
+        return "send_private_notice" in getattr(self, "__dict__", {})
+
+    async def _send_private_reply_or_fallback(
+        self,
+        event: MessageEvent,
+        reply: PrivateReply,
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Deliver a private reply without falling back to shared full text."""
+        source = event.source
+        if source is None:
+            logger.warning("[%s] Dropping private reply: event has no source", self.name)
+            return SendResult(success=False, error="missing message source")
+        if not is_shared_audience(source):
+            return await self._send_with_retry(
+                chat_id=source.chat_id,
+                content=reply.text,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+
+        if self._supports_private_notice_delivery() and source.user_id:
+            try:
+                result = await self.send_private_notice(
+                    chat_id=source.chat_id,
+                    user_id=source.user_id,
+                    content=reply.text,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+                if getattr(result, "success", False):
+                    return result
+                logger.warning(
+                    "[%s] send_private_notice failed for private reply; "
+                    "using public fallback: %s",
+                    self.name,
+                    getattr(result, "error", "send returned success=False"),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[%s] send_private_notice raised for private reply; "
+                    "using public fallback: %s",
+                    self.name,
+                    exc,
+                )
+
+        return await self._send_with_retry(
+            chat_id=source.chat_id,
+            content=reply.public_fallback or _PRIVATE_REPLY_PUBLIC_FALLBACK,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send a typing indicator; ``metadata`` carries platform context (Slack thread_id)."""
 
@@ -3203,6 +3285,11 @@ class BasePlatformAdapter(ABC):
         if log_cmd is not None:
             logger.info("[%s] Sending command '/%s' response (%d chars) to %s", self.name, log_cmd,
                         len(text), event.source.chat_id)
+        if isinstance(response, PrivateReply):
+            await self._send_private_reply_or_fallback(
+                event, response, reply_to=_reply_anchor_for_event(event),
+                metadata=_mark_notify_metadata(thread_meta))
+            return
         result = await self._send_with_retry(
             chat_id=event.source.chat_id, content=text, reply_to=_reply_anchor_for_event(event),
             metadata=_mark_notify_metadata(thread_meta))
@@ -3993,12 +4080,19 @@ class BasePlatformAdapter(ABC):
             await self._run_processing_hook("on_processing_start", event)
             response = await self._message_handler(event)
             is_ephemeral_response = isinstance(response, EphemeralReply)
+            private_response = response if isinstance(response, PrivateReply) else None
             # Unwrap EphemeralReply for downstream text processing; TTL applies after send.
             response, _ephemeral_ttl = self._unwrap_ephemeral(response)
             # None/empty is normal (streamed/queued). Suppress a stale response after an interrupt.
             if response and interrupt_event.is_set() and session_key in self._pending_messages:
                 logger.info("[%s] Suppressing stale response for interrupted session %s", self.name,
                             session_key)
+                response = None
+            if response and private_response is not None:
+                result = await self._send_private_reply_or_fallback(
+                    event, private_response, reply_to=_reply_anchor_for_event(event),
+                    metadata=_mark_notify_metadata(_thread_metadata))
+                _record_delivery(result)
                 response = None
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)

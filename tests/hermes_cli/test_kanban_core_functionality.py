@@ -1211,11 +1211,14 @@ def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
     import time
     import secrets
     import hermes_cli.kanban_db as _kb
+    import hermes_cli.kanban_db_pidns as _kbp
     conn = kbc.connect()
     try:
         t = kb.create_task(conn, title="stuck", assignee="broken")
-        # Simulate a live claim (not expired).
+        # Simulate a live claim (not expired), stamped the way a real claimer
+        # stamps it — including the PID namespace, so the PID is checkable.
         lock = f"{_kb._claimer_id().split(':', 1)[0]}:{secrets.token_hex(8)}"
+        pidns = _kbp._pid_namespace_id()
         future = int(time.time()) + 3600
         killed: list[int] = []
         state = {"alive": True}
@@ -1228,8 +1231,8 @@ def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
         monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: state["alive"])
         conn.execute(
             "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
-            "worker_pid=? WHERE id=?",
-            (lock, future, 12345, t),
+            "worker_pid=?, claim_pidns=? WHERE id=?",
+            (lock, future, 12345, pidns, t),
         )
         conn.execute(
             "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "

@@ -77,6 +77,7 @@ def _scrub_local_state(conn: sqlite3.Connection) -> None:
         UPDATE tasks
            SET claim_lock           = NULL,
                claim_expires        = NULL,
+               claim_pidns          = NULL,
                worker_pid           = NULL,
                current_run_id       = NULL,
                last_heartbeat_at    = NULL,
@@ -140,6 +141,11 @@ def export_board(
         # The snapshot is a private file with no other writers, so plain
         # commit/close is enough — no need for the board DB's WAL dance.
         with contextlib.closing(sqlite3.connect(str(staged / "kanban.db"))) as snapshot:
+            # Nothing above opened the source through ``connect``, so a board
+            # this release has not touched yet still has the previous release's
+            # schema — and the scrub writes columns added since.
+            snapshot.row_factory = sqlite3.Row
+            kbc.migrate_schema(snapshot)
             _scrub_local_state(snapshot)
             snapshot.commit()
             counts = _count_rows(snapshot)

@@ -151,6 +151,217 @@ async def test_send_retries_without_reference_when_reply_target_is_deleted():
     assert send_calls[2]["reference"] is None
 
 
+@pytest.mark.asyncio
+async def test_kanban_delivery_marker_is_sent_and_reconciled_from_bot_thread_history():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent_message = SimpleNamespace(id=7001)
+    history_message = SimpleNamespace(
+        id=7001,
+        nonce=None,
+        content="durable notice\n[kanban-delivery:notice-token]",
+        author=SimpleNamespace(id=42),
+    )
+
+    async def history(**_kwargs):
+        yield history_message
+
+    channel = SimpleNamespace(
+        send=AsyncMock(return_value=sent_message),
+        history=history,
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda channel_id: channel if channel_id == 777 else None,
+        fetch_channel=AsyncMock(),
+        user=SimpleNamespace(id=42),
+    )
+
+    result = await adapter.send(
+        "555",
+        "durable notice\n[kanban-delivery:notice-token]",
+        metadata={
+            "thread_id": "777",
+            "delivery_token": "notice-token",
+            "delivery_identity": "content_marker_v1",
+        },
+    )
+    assert result.success is True
+    assert channel.send.await_args.kwargs["nonce"] == "notice-token"
+
+    reconciled = await adapter.reconcile_delivery(
+        "555",
+        "notice-token",
+        metadata={
+            "thread_id": "777",
+            "delivery_created_at": 1,
+            "delivery_identity": "content_marker_v1",
+        },
+    )
+    assert reconciled.success is True
+    assert reconciled.message_id == "7001"
+
+
+@pytest.mark.asyncio
+async def test_long_kanban_notice_is_one_formatted_marker_preserving_send():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    accepted = []
+
+    async def accept_then_lose_response(**kwargs):
+        accepted.append(SimpleNamespace(
+            id=7002,
+            nonce=None,
+            content=kwargs["content"],
+            author=SimpleNamespace(id=42),
+            reference=kwargs.get("reference"),
+        ))
+        raise RuntimeError("session is closed after Discord accepted the message")
+
+    async def accepted_history(**_kwargs):
+        for message in accepted:
+            yield message
+
+    channel = SimpleNamespace(
+        send=AsyncMock(side_effect=accept_then_lose_response),
+        history=accepted_history,
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda channel_id: channel if channel_id == 777 else None,
+        fetch_channel=AsyncMock(),
+        user=SimpleNamespace(id=42),
+    )
+    adapter._record_discord_response = lambda **_kwargs: None
+    marker = "[kanban-delivery:notice-token]"
+    table = "| Name | Value |\n| --- | --- |\n" + "| alpha | beta |\n" * 180
+
+    result = await adapter.send(
+        "555",
+        f"{table}\n{marker}",
+        reply_to="99",
+        metadata={
+            "thread_id": "777",
+            "delivery_token": "notice-token",
+            "delivery_identity": "content_marker_v1",
+        },
+    )
+
+    assert result.success is False
+    assert result.raw_response == {"delivery_ambiguous": True}
+    assert channel.send.await_count == 1
+    sent_content = accepted[0].content
+    assert len(sent_content) <= adapter.MAX_MESSAGE_LENGTH
+    assert sent_content.splitlines()[-1] == marker
+    assert "| Name | Value |" not in sent_content, "body must be formatted first"
+    assert accepted[0].reference is None
+
+    reconciled = await adapter.reconcile_delivery(
+        "555",
+        "notice-token",
+        metadata={
+            "thread_id": "777",
+            "delivery_created_at": 1,
+            "delivery_identity": "content_marker_v1",
+        },
+    )
+    assert reconciled.success is True
+    assert reconciled.message_id == "7002"
+    assert channel.send.await_count == 1, "reconciliation must not replay the prefix"
+
+
+@pytest.mark.asyncio
+async def test_content_marker_identity_rejects_incomplete_marker_before_send():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    channel = SimpleNamespace(send=AsyncMock())
+    adapter._client = SimpleNamespace(
+        get_channel=lambda channel_id: channel if channel_id == 777 else None,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send(
+        "555",
+        "notice\n[kanban-delivery:notice-token] trailing text",
+        metadata={
+            "thread_id": "777",
+            "delivery_token": "notice-token",
+            "delivery_identity": "content_marker_v1",
+        },
+    )
+
+    assert result.success is False
+    assert result.raw_response == {"delivery_rejected": True}
+    assert channel.send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_kanban_legacy_nonce_only_history_is_unknown_not_retryable():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    history_message = SimpleNamespace(
+        id=7001,
+        nonce="notice-token",
+        content="legacy durable notice",
+        author=SimpleNamespace(id=42),
+    )
+
+    async def history(**_kwargs):
+        yield history_message
+
+    channel = SimpleNamespace(history=history)
+    adapter._client = SimpleNamespace(
+        get_channel=lambda channel_id: channel if channel_id == 777 else None,
+        fetch_channel=AsyncMock(),
+        user=SimpleNamespace(id=42),
+    )
+
+    reconciled = await adapter.reconcile_delivery(
+        "555",
+        "notice-token",
+        metadata={"thread_id": "777", "delivery_created_at": 1},
+    )
+
+    assert reconciled.success is False
+    assert reconciled.raw_response == {"delivery_unknown": True}
+
+
+@pytest.mark.asyncio
+async def test_kanban_delivery_marker_requires_complete_line_and_bot_author():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    history_messages = [
+        SimpleNamespace(
+            id=7001,
+            nonce=None,
+            content="durable notice\n[kanban-delivery:notice-token]suffix",
+            author=SimpleNamespace(id=42),
+        ),
+        SimpleNamespace(
+            id=7002,
+            nonce=None,
+            content="durable notice\n[kanban-delivery:notice-token]",
+            author=SimpleNamespace(id=99),
+        ),
+    ]
+
+    async def history(**_kwargs):
+        for message in history_messages:
+            yield message
+
+    channel = SimpleNamespace(history=history)
+    adapter._client = SimpleNamespace(
+        get_channel=lambda channel_id: channel if channel_id == 777 else None,
+        fetch_channel=AsyncMock(),
+        user=SimpleNamespace(id=42),
+    )
+
+    reconciled = await adapter.reconcile_delivery(
+        "555",
+        "notice-token",
+        metadata={
+            "thread_id": "777",
+            "delivery_created_at": 1,
+            "delivery_identity": "content_marker_v1",
+        },
+    )
+
+    assert reconciled.success is False
+
+
 # ---------------------------------------------------------------------------
 # Forum channel tests
 # ---------------------------------------------------------------------------
@@ -416,5 +627,3 @@ async def test_send_file_attachment_forum_uses_files_kwarg(tmp_path, monkeypatch
     thread_kwargs = forum_channel.create_thread.await_args.kwargs
     assert thread_kwargs.get("file") is None
     assert isinstance(thread_kwargs.get("files"), list) and len(thread_kwargs["files"]) == 1
-
-

@@ -120,7 +120,7 @@ def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, m
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     assert len(adapter.sent) == 1
-    assert adapter.sent[0]["metadata"] == {
+    assert {k: v for k, v in adapter.sent[0]["metadata"].items() if not k.startswith("delivery_")} == {
         "chat_type": "dm",
         "direct_messages_topic_id": "20197",
         "telegram_dm_topic_reply_fallback": True,
@@ -548,14 +548,14 @@ def test_kanban_notifier_isolates_per_subscription_failure(tmp_path, monkeypatch
     finally:
         conn.close()
 
-    original_claim = kbn.claim_unseen_events_for_sub
+    original_claim = kbn.list_notify_deliveries
 
     def selective_claim(conn, task_id, **kwargs):
         if task_id == tid_bad:
             raise RuntimeError("simulated DB corruption for bad task")
         return original_claim(conn, task_id=task_id, **kwargs)
 
-    monkeypatch.setattr(kbn, "claim_unseen_events_for_sub", selective_claim)
+    monkeypatch.setattr(kbn, "list_notify_deliveries", selective_claim)
 
     # Force the failing subscription to be iterated FIRST regardless of the
     # unordered SELECT's scan order.
@@ -683,8 +683,9 @@ def test_review_requested_wakes_the_origin_session(tmp_path, monkeypatch):
     runner = _make_runner(adapter)
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
-    assert len(adapter.sent) == 1, "the passive review ping is unchanged"
-    assert "ready for review" in adapter.sent[0]["text"]
+    assert len(adapter.sent) == 1
+    assert "REVIEW HANDOFF" in adapter.sent[0]["text"]
+    assert "canonical reviewer is unassigned" in adapter.sent[0]["text"]
 
     wake = _wake_text(adapter)
     assert tid in wake
@@ -694,8 +695,8 @@ def test_review_requested_wakes_the_origin_session(tmp_path, monkeypatch):
     )
 
 
-def test_block_loop_detected_wakes_the_origin_session(tmp_path, monkeypatch):
-    """A triage escalation wakes the origin so a decision gets made."""
+def test_block_loop_detected_notifies_without_waking_the_agent(tmp_path, monkeypatch):
+    """Current operator policy pages a human for triage without agent wake."""
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "triage-wake.db"))
     kb.init_db()
 
@@ -728,7 +729,8 @@ def test_block_loop_detected_wakes_the_origin_session(tmp_path, monkeypatch):
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     assert len(adapter.sent) == 1
-    assert tid in _wake_text(adapter)
+    assert tid in adapter.sent[0]["text"]
+    assert adapter.handled == []
 
 
 def test_review_requested_does_not_wake_a_notify_only_subscription(

@@ -355,6 +355,23 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
                     "use 1 to trip on the first failure.", 2)
+    review_required = bool(getattr(args, "review_required", False))
+    review_owner = getattr(args, "review_owner", None)
+    review_task_id = getattr(args, "review_task_id", None)
+    if (review_owner or review_task_id) and not review_required:
+        print(
+            "kanban: --review-owner/--review-task-id require --review-required",
+            file=sys.stderr,
+        )
+        return 2
+    if review_required and not review_owner:
+        print("kanban: --review-required requires --review-owner", file=sys.stderr)
+        return 2
+    review_requirement = None
+    if review_required:
+        review_requirement = {"required": True, "owner": review_owner}
+        if review_task_id:
+            review_requirement["review_task_id"] = review_task_id
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(
             conn, title=args.title, body=args.body, assignee=args.assignee,
@@ -369,6 +386,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            review_requirement=review_requirement,
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):

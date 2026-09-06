@@ -2806,6 +2806,34 @@ class DiscordAdapter(BasePlatformAdapter):
         kept.append(notice)
         return kept
 
+    def _format_durable_delivery_message(
+        self, content: str, delivery_token: str,
+    ) -> Optional[str]:
+        """Return one bounded, marker-preserving Discord delivery payload.
+
+        ``content_marker_v1`` is an exactly-once reconciliation contract, so
+        it cannot use the ordinary multi-message splitter: acceptance of an
+        early chunk followed by failure of the marker-bearing final chunk is
+        ambiguous. The marker must already be the complete final input line;
+        format only the notice body, reserve the marker budget, and truncate
+        before the first and only transport call.
+        """
+        marker = f"[kanban-delivery:{delivery_token}]"
+        body, separator, final_line = content.rpartition("\n")
+        if not separator or final_line != marker:
+            return None
+        formatted_body = self.format_message(body)
+        body_budget = self.MAX_MESSAGE_LENGTH - len(marker) - 1
+        if body_budget < 1:
+            return None
+        if len(formatted_body) > body_budget:
+            formatted_body = (
+                formatted_body[: body_budget - 1].rstrip() + "…"
+                if body_budget > 1
+                else "…"
+            )
+        return f"{formatted_body}\n{marker}"
+
     async def send(
         self,
         chat_id: str,
@@ -2841,23 +2869,54 @@ class DiscordAdapter(BasePlatformAdapter):
                 channel = await self._resolve_channel(chat_id)
                 if not channel:
                     return SendResult(success=False, error=f"Channel {chat_id} not found")
+            durable_identity = bool(
+                metadata
+                and metadata.get("delivery_identity") == "content_marker_v1"
+            )
+            delivery_token = str(
+                (metadata.get("delivery_token") if metadata else "") or ""
+            )
+            durable_content = None
+            if durable_identity:
+                durable_content = self._format_durable_delivery_message(
+                    content, delivery_token,
+                )
+                if durable_content is None:
+                    return SendResult(
+                        success=False,
+                        error=(
+                            "content_marker_v1 requires one complete terminal "
+                            "delivery marker line"
+                        ),
+                        raw_response={"delivery_rejected": True},
+                    )
+
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
+                if durable_identity:
+                    return SendResult(
+                        success=False,
+                        error=(
+                            "content_marker_v1 cannot target a forum parent; "
+                            "use the exact destination thread"
+                        ),
+                        raw_response={"delivery_rejected": True},
+                    )
                 result = await self._send_to_forum(channel, content)
                 return await self._record_response_async(reply_to, result, content, final_delivery)
-            formatted = self.format_message(content)
-            chunks = self._cap_split_chunks(
+            formatted = durable_content if durable_identity else self.format_message(content)
+            chunks = [formatted] if durable_identity else self._cap_split_chunks(
                 self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
             )
             message_ids = []
-            reference = self._reply_reference_for_send(reply_to, channel)
+            reference = None if durable_identity else self._reply_reference_for_send(reply_to, channel)
             for i, chunk in enumerate(chunks):
                 if self._reply_to_mode == "all":
                     chunk_reference = reference
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
-                    msg = await channel.send(content=chunk, reference=chunk_reference)
+                    msg = await channel.send(content=chunk, reference=chunk_reference, **({"nonce": delivery_token} if delivery_token else {}))
                 except Exception as e:
                     if chunk_reference is not None and self._is_reply_reference_rejected(e):
                         logger.warning(
@@ -2889,7 +2948,7 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             if _is_discord_transport_error(e):
                 # Connection-shaped failure: runtime-retryable marker so the reconnect sweep can replay it.
-                result = SendResult(success=False, error="send_path_degraded", retryable=True)
+                result = SendResult(success=False, error="send_path_degraded", retryable=True, raw_response={"delivery_ambiguous": True} if metadata and metadata.get("delivery_token") else None)
             else:
                 result = SendResult(success=False, error=str(e))
             return await self._record_response_async(reply_to, result, content, bool(metadata and metadata.get("notify")))
@@ -2903,6 +2962,97 @@ class DiscordAdapter(BasePlatformAdapter):
         starter_msg = getattr(thread, "message", None)
         message_id = str(getattr(starter_msg, "id", thread_id)) if starter_msg else thread_id
         return thread_channel, thread_id, starter_msg, message_id
+
+    async def reconcile_delivery(
+        self,
+        chat_id: str,
+        delivery_token: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Resolve ambiguous Kanban acceptance by durable content identity.
+
+        Discord message nonces are ephemeral, so they remain only a short-term
+        submission dedupe hint. New ledger rows append an exact delivery marker
+        to the notice. Reconciliation accepts only that marker on a message
+        authored by this bot in the exact destination. Legacy nonce-only rows
+        are indeterminate and park rather than becoming duplicate sends.
+        """
+        if not self._client:
+            return SendResult(
+                success=False,
+                error="not connected",
+                raw_response={"delivery_unknown": True},
+            )
+        metadata = metadata or {}
+        if metadata.get("delivery_identity") != "content_marker_v1":
+            return SendResult(
+                success=False,
+                error="legacy delivery has no durable content identity",
+                raw_response={"delivery_unknown": True},
+            )
+        thread_id = metadata.get("thread_id")
+        target_id = thread_id or chat_id
+        marker = f"[kanban-delivery:{delivery_token}]"
+        bot_user = getattr(self._client, "user", None)
+        bot_user_id = getattr(bot_user, "id", None)
+        if bot_user_id is None:
+            return SendResult(
+                success=False,
+                error="connected bot identity unavailable",
+                raw_response={"delivery_unknown": True},
+            )
+        try:
+            channel = self._client.get_channel(int(target_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_id))
+            history = getattr(channel, "history", None) if channel else None
+            if not callable(history):
+                return SendResult(
+                    success=False,
+                    error="destination has no readable history",
+                    raw_response={"delivery_unknown": True},
+                )
+            created_at = int(metadata.get("delivery_created_at") or 0)
+            after = (
+                dt.datetime.fromtimestamp(
+                    max(0, created_at - 120), tz=dt.timezone.utc,
+                )
+                if created_at else None
+            )
+            count = 0
+            nonce_only_match = False
+            async for message in history(
+                limit=100, after=after, oldest_first=False,
+            ):
+                count += 1
+                content = str(getattr(message, "content", "") or "")
+                author_id = getattr(getattr(message, "author", None), "id", None)
+                if marker in content.splitlines() and str(author_id) == str(bot_user_id):
+                    return SendResult(
+                        success=True,
+                        message_id=str(getattr(message, "id", "") or "") or None,
+                    )
+                if str(getattr(message, "nonce", "") or "") == str(delivery_token):
+                    nonce_only_match = True
+            if nonce_only_match:
+                return SendResult(
+                    success=False,
+                    error="nonce matched without durable bot-authored marker",
+                    raw_response={"delivery_unknown": True},
+                )
+            if count < 100:
+                return SendResult(success=False, error="delivery marker absent")
+            return SendResult(
+                success=False,
+                error="history window truncated before absence could be proved",
+                raw_response={"delivery_unknown": True},
+            )
+        except Exception as exc:
+            return SendResult(
+                success=False,
+                error=f"delivery reconciliation failed: {exc}",
+                raw_response={"delivery_unknown": True},
+            )
 
     async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
         """Create a forum thread post with the message as starter (forum channels reject direct

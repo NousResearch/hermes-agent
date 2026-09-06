@@ -621,6 +621,110 @@ def _rule_block_unblock_cycling(task, events, runs, now, cfg) -> list[Diagnostic
     )]
 
 
+def _rule_respawn_guard_hold(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """A queued task the dispatcher is deliberately holding back.
+
+    ``_rule_stranded_in_ready`` already notices that a ready card is not
+    getting a worker, but only after 30 minutes and without saying why. The
+    dispatcher knows the exact reason at the moment it defers the spawn and
+    stamps it as a ``respawn_guarded`` event — this rule reads that event so
+    the reason reaches the operator through the same surface as every other
+    diagnostic, instead of only in the output of a live ``dispatch`` tick they
+    happened to be watching.
+
+    Cleared as soon as anything moves: a claim/spawn after the hold, or the
+    task leaving a queued status. So a card that was briefly held and then
+    dispatched does not keep flagging.
+    """
+    status = _task_field(task, "status")
+    if status not in {"ready", "review"}:
+        return []
+
+    hold_ts = 0
+    reason = ""
+    count = 0
+    first_ts = 0
+    for ev in events:
+        kind = _event_kind(ev)
+        ts = _event_ts(ev)
+        if kind == "respawn_guarded":
+            payload = _parse_payload(ev)
+            reason = str(payload.get("reason") or "") or reason
+            hold_ts = max(hold_ts, ts)
+            first_ts = ts if first_ts == 0 else min(first_ts, ts)
+            count += 1
+        elif kind in {"claimed", "spawned"} and ts >= hold_ts and hold_ts:
+            # The task got a worker after the hold — nothing to report.
+            hold_ts = 0
+            reason = ""
+            count = 0
+            first_ts = 0
+    if not hold_ts:
+        return []
+
+    age_min = max(0, int((now - hold_ts) / 60))
+    hints = {
+        "active_pr": (
+            "At the last observed hold, a recent pull-request URL caused "
+            "the dispatcher to hold this card to avoid a second worker opening "
+            "a duplicate PR. If you want the SAME card and the SAME PR carried "
+            "forward — review findings to fold in, or a Draft to finish — "
+            "explicitly promote the ready card (unblock applies only to blocked cards). That "
+            "authorizes exactly one continuation spawn."
+        ),
+        "recent_success": (
+            "At the last observed hold, a recent completed run had no newer "
+            "authorization. Re-queue the card explicitly if it really "
+            "should run again."
+        ),
+        "blocker_auth": (
+            "The last failure on this card looks like a quota or authentication "
+            "wall. Retrying will not help until the credential is fixed — check "
+            "`hermes -p <profile> auth`."
+        ),
+        "rate_limit_cooldown": (
+            "The last worker bailed on a provider rate limit. The card will "
+            "respawn on its own once the cooldown elapses; no action needed."
+        ),
+    }
+    detail = hints.get(
+        reason,
+        f"The dispatcher is holding this card back (reason: {reason or 'unknown'}).",
+    )
+    actions: list[DiagnosticAction] = []
+    if reason == "active_pr" and _task_field(task, "status") == "ready":
+        actions.append(DiagnosticAction(
+            kind="cli_hint",
+            label="Authorize one continuation of this card",
+            payload={"command": f"hermes kanban promote {_task_field(task, 'id') or ''}".strip()},
+            suggested=True,
+        ))
+    elif reason == "blocker_auth":
+        actions.append(DiagnosticAction(
+            kind="cli_hint",
+            label="Re-authenticate the assignee profile",
+            payload={"command": f"hermes -p {_task_field(task, 'assignee') or '<profile>'} auth"},
+            suggested=True,
+        ))
+
+    return [Diagnostic(
+        kind="respawn_guard_hold",
+        severity="warning",
+        title=(
+            f"Respawn guard last observed ({reason or 'unknown'})"
+            + (f", {age_min}m" if age_min else "")
+        ),
+        detail=detail + " This is the last observed dispatch hold, not a live check; it may have cleared since then.",
+        actions=actions,
+        first_seen_at=first_ts or hold_ts,
+        last_seen_at=hold_ts,
+        count=count or 1,
+        data={"reason": reason, "held_at": hold_ts, "holds": count},
+    )]
+
+
+
+
 def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     """Assigned, unclaimed, ``ready`` for >= cfg["stranded_threshold_seconds"]
     (default 30 min). Deliberately age-based and identity-agnostic so it
@@ -689,6 +793,7 @@ _RULES: list[RuleFn] = [
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
     _rule_stranded_in_ready,
+    _rule_respawn_guard_hold,
 ]
 
 
@@ -790,5 +895,6 @@ DIAGNOSTIC_KINDS = (
     "stuck_in_blocked",
     "block_unblock_cycling",
     "stranded_in_ready",
+    "respawn_guard_hold",
 )
 # ---- END PLUGIN-COMPAT ----

@@ -105,8 +105,25 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
             "auto_assigned_default": res.auto_assigned_default,
+            # Hold buckets. Every one of these can be the sole reason a tick
+            # spawned nothing; omitting them from the machine-readable payload
+            # is what made a fully-held board look identical to an idle one.
+            "respawn_guarded": [
+                {"task_id": tid, "reason": why}
+                for (tid, why) in (getattr(res, "respawn_guarded", None) or [])
+            ],
+            "rate_limited": list(getattr(res, "rate_limited", None) or []),
+            "skipped_locked": bool(getattr(res, "skipped_locked", False)),
+            "memory_pressure": getattr(res, "memory_pressure", None),
+            "capacity_hold": getattr(res, "capacity_hold", None),
+            "delivery_holds": list(getattr(res, "delivery_holds", [])),
         }, ascii=True)
         return 0
+    if getattr(res, "capacity_hold", None):
+        hold = res.capacity_hold
+        print(f"Capacity hold ({hold['scope']}): {hold['running']} running / {hold['limit']} limit; resumes when a slot frees. --max is total concurrency, not extra spawns.")
+    for tid, why in getattr(res, "delivery_holds", []):
+        print(f"Delivery hold: {tid}: {why}")
     print(f"Reclaimed:    {res.reclaimed}")
     for label, items in (
         ("Crashed:     ", res.crashed),
@@ -136,6 +153,27 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
+    for tid, why in getattr(res, "respawn_guarded", []):
+        print(f"Respawn guard: {tid}: {why}; use `hermes kanban promote {tid}` for one authorized continuation")
+    # The remaining three holds had no text output at all. Each can be the
+    # only reason a tick spawned nothing, so each gets a named line.
+    rate_limited = getattr(res, "rate_limited", None) or []
+    if rate_limited:
+        print(f"Released on provider rate limit: {len(rate_limited)}")
+        print(f"  {', '.join(rate_limited)}")
+    if getattr(res, "skipped_locked", False):
+        print(
+            "Tick skipped: another dispatcher holds the board dispatch lock. "
+            "No reclaim/spawn writes happened this tick."
+        )
+    memory_pressure = getattr(res, "memory_pressure", None)
+    if memory_pressure:
+        detail = (
+            "no new workers were spawned this tick"
+            if memory_pressure == "critical"
+            else "at most one new worker was spawned this tick"
+        )
+        print(f"Memory pressure ({memory_pressure}): {detail}.")
     return 0
 
 

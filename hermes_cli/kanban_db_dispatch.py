@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -87,6 +88,8 @@ class DispatchResult:
     is
     """
 
+    capacity_hold: Optional[dict] = None
+    delivery_holds: list[tuple[str, str]] = field(default_factory=list)
     reclaimed: int = 0
     promoted: int = 0
     reconciled_orphans: list[str] = field(default_factory=list)
@@ -828,12 +831,17 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
             dead = _classify_dead_worker(pid, row["claim_lock"])
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
+            genuine_crash = not dead.protocol_violation and not dead.rate_limited
+            target_status = "blocked" if genuine_crash else retry_status
+            if genuine_crash:
+                dead.event_payload["operator_held"] = True
+                dead.event_payload["error"] = dead.error_text[:500]
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
-                (retry_status, row["id"], pid, row["claim_lock"]),
+                (target_status, row["id"], pid, row["claim_lock"]),
             )
             if cur.rowcount != 1:
                 continue
@@ -868,9 +876,13 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
                 sweep.rate_limited.append(row["id"])
             else:
                 sweep.crashed.append(row["id"])
-                sweep.crash_details.append(
-                    (row["id"], pid, row["claim_lock"], dead.protocol_violation, dead.error_text)
-                )
+                if dead.protocol_violation:
+                    sweep.crash_details.append(
+                        (row["id"], pid, row["claim_lock"], True, dead.error_text)
+                    )
+                else:
+                    conn.execute("UPDATE tasks SET last_failure_error = ?, consecutive_failures = consecutive_failures + 1 WHERE id = ?", (dead.error_text[:500], row["id"]))
+                    _kb._append_event(conn, row["id"], "blocked", {"reason": dead.error_text[:500], "kind": "needs_input", "source_status": retry_status, "operator_held": True}, run_id=run_id)
     return sweep
 
 
@@ -1122,22 +1134,186 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+
+
+#: Only explicit lifecycle actions grant continuation. Automatic promotion and
+#: stale recovery must not manufacture a fresh authorization after a claim.
+_EXPLICIT_REQUEUE_KINDS = (
+    "status", "promoted_manual", "unblocked", "reclaimed",
+    "changes_requested", "review_reopened",
+    "delivery_changes_requested", "delivery_review_enqueued",
+)
+
+
+def _is_explicit_requeue(event: sqlite3.Row) -> bool:
+    try:
+        payload = json.loads(event["payload"] or "{}")
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    kind = event["kind"]
+    if kind in {"delivery_changes_requested", "delivery_review_enqueued"}:
+        return bool(event["run_id"] and payload.get("transition") and payload.get("head"))
+    if kind == "reclaimed":
+        return payload.get("manual") is True
+    if kind == "status":
+        # Dashboard status changes include the requested status even when the
+        # actual landing is todo because a parent has not completed yet.
+        return payload.get("requested_status", payload.get("status")) == "ready"
+    if kind == "promoted_manual":
+        return bool(payload.get("actor"))
+    if kind == "changes_requested":
+        # request_changes validates review-run ownership and handoff provenance
+        # before writing this event. Bare/legacy synthetic events fail closed.
+        return (
+            bool(event["run_id"] and payload.get("implementer"))
+            and payload.get("status") in {"ready", "todo"}
+        )
+    if kind in {"unblocked", "review_reopened"}:
+        return (
+            payload.get("status", "ready") in {"ready", "todo"}
+            and payload.get("resume_status", "ready") == "ready"
+        )
+    return False
+
+
+def _authorized_continuation_at(
+    conn: sqlite3.Connection, task_id: str, *, since: int,
+    comment_id: Optional[int] = None,
+    after_event_id: Optional[int] = None,
+) -> Optional[int]:
+    """Unspent authorization after a PR comment/completion (one claim only).
+
+    New comments carry their comment_id in the same transaction's event, so
+    event ids unambiguously order comment/requeue/claim even within one second.
+    Legacy comments without that marker retain a strict timestamp comparison:
+    an ambiguous tie is never treated as permission. Automatic promotions may
+    release a real parent gate, but cannot replenish a spent authorization.
+    """
+    anchor_id = after_event_id
+    if comment_id is not None:
+        anchor = conn.execute(
+            "SELECT id FROM task_events WHERE task_id = ? AND kind = 'commented' "
+            "AND json_valid(payload) AND json_extract(payload, '$.comment_id') = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id, comment_id),
+        ).fetchone()
+        if anchor is not None:
+            anchor_id = int(anchor["id"])
+    consuming = conn.execute(
+        "SELECT MAX(id) FROM task_events WHERE task_id = ? "
+        "AND kind IN ('claimed', 'spawned')", (task_id,),
+    ).fetchone()[0] or 0
+    placeholders = ",".join("?" for _ in _EXPLICIT_REQUEUE_KINDS)
+    for event in conn.execute(
+        "SELECT id, kind, payload, run_id, created_at FROM task_events "
+        f"WHERE task_id = ? AND id > ? AND kind IN ({placeholders}) "
+        "ORDER BY id DESC",
+        (task_id, max(consuming, anchor_id or 0), *_EXPLICIT_REQUEUE_KINDS),
+    ).fetchall():
+        if anchor_id is None and int(event["created_at"]) <= since:
+            continue
+        if _is_explicit_requeue(event):
+            return int(event["created_at"])
+    return None
+
+
+def _stamp_respawn_guard_event(
+    conn: sqlite3.Connection, task_id: str, reason: str,
+) -> bool:
+    """Record a ``respawn_guarded`` event, deduped. True if one was written.
+
+    The hold has to be visible in ``hermes kanban tail`` — a silently skipped
+    task is the same failure shape as a monitor that never reports. But the
+    dispatcher ticks about once a minute, and re-stamping an identical hold
+    every tick buries the task's real history under thousands of duplicate
+    rows within a day (an ``active_pr`` hold runs for a 24h window).
+
+    So: write only when this is genuinely new information — the most recent
+    event on the task is not already the same hold. A different reason, or any
+    other event in between (a comment, a re-queue, a claim), makes the hold
+    news again and it is re-stamped once.
+    """
+    last = conn.execute(
+        "SELECT kind, payload FROM task_events WHERE task_id = ? "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if last is not None and last["kind"] == "respawn_guarded":
+        try:
+            prev = json.loads(last["payload"] or "{}")
+        except (TypeError, ValueError):
+            prev = {}
+        if prev.get("reason") == reason:
+            return False
+    with _kb.write_txn(conn):
+        _kb._append_event(conn, task_id, "respawn_guarded", {"reason": reason})
+    return True
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
-    Called per ready/review row before any claim attempt. Priority order:
-    ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
-    checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
-    ``last_failure_error`` that would otherwise park the task forever — that
-    path never increments ``consecutive_failures``), ``"blocker_auth"``
-    (quota/auth pattern; the breaker still trips eventually), then for the
-    ready lane only ``"recent_success"`` (completed run within the window, unless
-    a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR). The review
-    lane skips the last two: they are the *inputs* to a review handoff. Stale /
-    dead claim locks are NOT a guard reason — the reclaim passes own those.
+    Called per ready/review task in ``dispatch_once`` before any claim attempt.
+    Returning a reason defers the spawn this tick; the task stays in its
+    source phase and gets another chance on the next dispatcher tick.
+
+    ``lane`` names the dispatch column the task is being spawned from
+    (``"ready"`` or ``"review"``). In the review lane the
+    ``recent_success`` and ``active_pr`` rules are skipped: a recent PR
+    URL comment (and often a recent completed run) is the *precondition*
+    of the canonical review handoff — a worker opened a PR and requested
+    review — not a duplicate-work signal. Rate-limit cooldown and the
+    auth-blocker check still apply in every lane.
+
+    Checks in priority order:
+
+    ``"rate_limit_cooldown"``
+        The task's most recent run ended with the ``rate_limited`` outcome
+        (a worker bailed on a provider quota wall via the EX_TEMPFAIL
+        sentinel) within ``_kb._resolve_rate_limit_cooldown_seconds()``. The
+        quota almost certainly hasn't reset yet, so defer the respawn until
+        the cooldown elapses — then allow a cheap probe. This is checked
+        BEFORE ``blocker_auth`` because the rate-limit requeue stamps a
+        quota-flavored ``last_failure_error`` that would otherwise match the
+        auth-blocker regex and park the task forever (the rate-limit path
+        never increments ``consecutive_failures``, so the breaker can't free
+        it). Once the cooldown elapses the task falls through and respawns.
+
+    ``"blocker_auth"``
+        The task's last failure error matches a quota / authentication
+        pattern. Retrying immediately is unlikely to help (rate limits
+        reset on a timer; auth needs human action), so we defer to the
+        next tick. The existing ``consecutive_failures`` counter still
+        trips the auto-block circuit breaker after ``failure_limit``
+        consecutive failures, so a persistent auth error eventually
+        blocks via the normal path — but a transient 429 gets a few
+        ticks of recovery first.
+
+    ``"recent_success"``
+        A completed run exists within ``_RESPAWN_GUARD_SUCCESS_WINDOW``
+        seconds. Useful work already succeeded for this task; wait for an
+        explicit re-queue rather than immediately re-spawning. Bypassed when an
+        explicit re-queue event (status change, promote, unblock, reclaim)
+        arrives AFTER that completion — that's a deliberate re-run request.
+
+    ``"active_pr"``
+        A GitHub PR URL appears in a recent task comment (within
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
+        opened a PR; re-spawning risks a duplicate PR on the same task.
+        Bypassed — for ONE spawn — when an explicit re-queue event arrives
+        after that comment and no run has started since; see
+        ``_authorized_continuation_at``. That is the authorized-continuation
+        path for finishing an existing PR after review findings or an
+        operator re-queue, and it is deliberately not a blanket disable.
+
+    Stale / dead claim locks are NOT a guard reason — they are handled
+    by ``release_stale_claims`` and ``detect_crashed_workers`` which
+    reset the task to ``ready`` only after verifying the lock is
+    genuinely dead (no live PID on this host).
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1148,8 +1324,16 @@ def check_respawn_guard(
 
     now = int(time.time())
 
-    # 1. Rate-limit cooldown — see docstring for why this precedes blocker_auth.
-    #    LATEST run only: a newer crash/completion supersedes the rate-limit run.
+    # 1. Rate-limit cooldown. The most recent run ended ``rate_limited``
+    #    (quota wall) — defer while inside the cooldown window, then allow a
+    #    cheap probe. Must run BEFORE the blocker_auth regex check, because a
+    #    rate-limit requeue stamps a quota-flavored last_failure_error that
+    #    the regex would otherwise match → defer forever (no failure counter
+    #    increment on this path means the breaker can never free it).
+    #
+    #    We look at the LATEST run only (ORDER BY ended_at DESC LIMIT 1): if a
+    #    newer crash/completion superseded the rate-limit run, this guard
+    #    no longer applies and the normal paths take over.
     rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
     latest_run = conn.execute(
         "SELECT outcome, ended_at FROM task_runs "
@@ -1157,17 +1341,23 @@ def check_respawn_guard(
         "ORDER BY ended_at DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    if latest_run is not None and latest_run["outcome"] == "rate_limited":
+    if (
+        latest_run is not None
+        and latest_run["outcome"] == "rate_limited"
+    ):
         if rl_cooldown <= 0:
-            # Cooldown disabled — respawn immediately, skipping blocker_auth so
-            # the stamped rate-limit text doesn't re-trap the task.
+            # Cooldown disabled — respawn immediately, and skip the
+            # blocker_auth regex so the stamped rate-limit text doesn't
+            # re-trap the task.
             return None
         ended_at = latest_run["ended_at"]
         if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
             return "rate_limit_cooldown"
-        # Cooldown elapsed — return early so blocker_auth doesn't catch the
-        # stamped rate-limit text; this path intentionally retries forever
-        # (spaced by the cooldown) until quota returns or a real run supersedes it.
+        # Cooldown elapsed — allow the respawn. Return early so the
+        # blocker_auth check below doesn't catch the rate-limit text we
+        # stamped on the task; this path intentionally retries forever
+        # (cheaply, spaced by the cooldown) until quota returns or a real
+        # crash/completion supersedes it.
         return None
 
     # 2. Quota / auth blocker: retrying immediately will not help.
@@ -1175,41 +1365,70 @@ def check_respawn_guard(
     if err and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
-    # Review-lane spawns stop here: a recent completed run and a fresh PR URL
-    # are the canonical *inputs* to a review handoff, not duplicate-work signals.
+    # Review-lane spawns stop here: a recent completed run and a fresh PR
+    # URL comment are the canonical *inputs* to a review handoff (worker
+    # opened a PR, then requested review), not signals of duplicate work.
     if lane == "review":
         return None
 
-    # 3. Completed run within guard window. Exception: an explicit re-queue
-    #    AFTER that success (done→ready drag, re-promotion, unblock, reclaim) is
-    #    a deliberate "run it again" — otherwise a manual done→ready would sit
-    #    silently held until the window elapses.
+    # 3. Completed run within guard window — proof of recent success.
+    #    Exception: an explicit re-queue AFTER that success (an operator
+    #    dragging done→ready, a manual promotion, an unblock, a
+    #    manual reclaim or review findings) is a deliberate "run it again" — honor it instead of
+    #    deferring. Without this, a manual done→ready just sits there,
+    #    silently held by the guard, until the window elapses.
     cutoff = now - _RESPAWN_GUARD_SUCCESS_WINDOW
     recent_completed = conn.execute(
-        "SELECT ended_at FROM task_runs "
+        "SELECT id, ended_at FROM task_runs "
         "WHERE task_id = ? AND outcome = 'completed' AND ended_at >= ? "
         "ORDER BY ended_at DESC LIMIT 1",
         (task_id, cutoff),
     ).fetchone()
     if recent_completed:
         completed_at = int(recent_completed["ended_at"] or 0)
-        requeued_after = conn.execute(
-            "SELECT 1 FROM task_events "
-            "WHERE task_id = ? AND created_at >= ? "
-            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
-            "LIMIT 1",
-            (task_id, completed_at),
+        completed_event = conn.execute(
+            "SELECT id FROM task_events WHERE task_id = ? AND run_id = ? "
+            "AND kind = 'completed' ORDER BY id DESC LIMIT 1",
+            (task_id, recent_completed["id"]),
         ).fetchone()
-        if not requeued_after:
+        if _authorized_continuation_at(
+            conn, task_id, since=completed_at,
+            after_event_id=int(completed_event["id"]) if completed_event else None,
+        ) is None:
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT id, body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+            # The URL alone only proves a PR was OPENED, not that it is still
+            # open. Without the liveness check below, a task stays parked for
+            # the full 24h window even after its PR is merged or closed —
+            # observed 2026-08-16: t_9228cc88 held by PR #3109, which was
+            # already CLOSED, while the board showed a bare "Spawned: 0".
+            #
+            # Fail-safe by construction: ONLY an explicit CLOSED/MERGED answer
+            # releases the guard. Any failure — gh missing, not authenticated,
+            # rate limited, offline, timeout, unparseable — falls through and
+            # keeps guarding, i.e. exactly the old behaviour.
+            # An explicit re-queue that landed AFTER this PR comment is a
+            # deliberate "continue the same card / same PR" request — the
+            # operator dragging it back to ready, an unblock, a manual
+            # promotion, or a review returning findings to the implementation
+            # card. Before this, ``active_pr`` was the one guard reason with no
+            # override at all: an explicitly requeued implementation card with
+            # a Draft PR stayed parked for the full 24h window while
+            # ``dispatch`` reported a bare "Spawned: 0", and ``unblock`` could
+            # not free it. See ``_authorized_continuation_at`` for why this
+            # stays bounded to ONE spawn per authorization.
+            if _authorized_continuation_at(
+                conn, task_id, since=int(c["created_at"] or 0), comment_id=int(c["id"])
+            ) is not None:
+                continue
             return "active_pr"
 
     return None
@@ -1487,6 +1706,38 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _delivery_role_hold(conn: sqlite3.Connection, task_id: str, assignee: str) -> Optional[str]:
+    """Validate explicitly typed delivery handoffs; never infer a role from PR prose.
+
+    This check can only hold work, never authorize a retry or satisfy a gate.
+    Legacy untyped cards retain their existing dispatch semantics.
+    """
+    row = conn.execute(
+        "SELECT metadata FROM task_runs WHERE task_id=? AND json_valid(metadata) "
+        "AND json_type(metadata, '$.delivery_dispatch') IS NOT NULL ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    contract = json.loads(row["metadata"]).get("delivery_dispatch")
+    if not isinstance(contract, dict):
+        return "delivery dispatch contract must be an object"
+    capabilities = {"open_pr_remediation": {"pr_head"}, "post_merge_validation": {"merged_checkout"}}
+    role, phase = contract.get("role"), contract.get("phase")
+    if contract.get("assignee") != assignee:
+        return "delivery role binding no longer matches assignee; update the explicit handoff"
+    if not isinstance(role, str) or not isinstance(phase, str):
+        return "delivery role and phase must be strings"
+    if role not in capabilities or phase not in capabilities[role]:
+        return f"incompatible delivery phase/role: {phase}/{role}; select a compatible worker"
+    target = contract.get("validation_target")
+    if not isinstance(target, dict) or target.get("kind") != phase:
+        return "delivery validation target must distinguish PR head from merged checkout"
+    if not isinstance(target.get("commit"), str) or not re.fullmatch(r"[0-9a-f]{40}", target["commit"]):
+        return "delivery validation target requires an exact commit"
+    return None
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -1522,6 +1773,12 @@ def _dispatch_lane_task(
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
+    role_hold = _delivery_role_hold(conn, task_id, assignee)
+    if role_hold:
+        result.delivery_holds.append((task_id, role_hold))
+        if not dry_run:
+            _stamp_respawn_guard_event(conn, task_id, role_hold)
+        return False
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
@@ -1533,8 +1790,7 @@ def _dispatch_lane_task(
         # in-memory view) keeps diagnostics and the board state consistent: the task is now legitimately
         # owned by ``kanban.default_assignee``, not "unassigned but secretly routed".
         if not dry_run:
-            with _kb.write_txn(conn):
-                _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
+            _stamp_respawn_guard_event(conn, task_id, guard_reason)
         return False
 
     def _count_spawn(name: str) -> None:
@@ -1674,12 +1930,14 @@ def _tick_spawn_budget(
     # Both ready and review loops consume from the same budget.
     if max_spawn is not None:
         if running_count >= max_spawn:
+            result.capacity_hold = {"scope": "board", "running": running_count, "limit": max_spawn}
             return False, None
         spawn_budget = max_spawn - running_count
 
     if max_in_progress is not None:
         total_running = running_count + count_running_tasks_other_boards(board)
         if total_running >= max_in_progress:
+            result.capacity_hold = {"scope": "host", "running": total_running, "limit": max_in_progress}
             return False, None
         remaining = max_in_progress - total_running
         if spawn_budget is None or spawn_budget > remaining:
@@ -1772,6 +2030,8 @@ def _dispatch_once_locked(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans,
     )
+    from hermes_cli.kanban_review_reconcile import reconcile
+    managed_review_parents, result.delivery_holds = reconcile(conn)
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
     )
@@ -1836,6 +2096,8 @@ def _dispatch_once_locked(
     # checks the FULL shared ``spawn_budget`` — the reservation above caps the
     # ready lane, it grants no extra capacity here.
     for row in review_rows:
+        if row["id"] in managed_review_parents:
+            continue
         if spawn_budget is not None and spawned >= spawn_budget:
             break
         if not row["assignee"]:

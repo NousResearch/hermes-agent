@@ -38,6 +38,65 @@ _HEALTH_WINDOW = 6
 
 
 class GatewayKanbanWatchersMixin:
+    def _kanban_ack_delivery(
+        self,
+        sub: dict,
+        event_id: int,
+        claim_token: str,
+        message_id: Optional[str],
+        board: Optional[str] = None,
+    ) -> bool:
+        from hermes_cli import kanban_db_connect as _kbc, kanban_db_notify as _kbn
+        conn = _kbc.connect(board=board)
+        try:
+            return _kbn.acknowledge_notify_delivery(
+                conn,
+                task_id=sub["task_id"], platform=sub["platform"],
+                chat_id=sub["chat_id"], thread_id=sub.get("thread_id") or "",
+                event_id=event_id, claim_token=claim_token,
+                message_id=message_id,
+            )
+        finally:
+            conn.close()
+
+
+    def _kanban_begin_delivery(
+        self, sub: dict, event_id: int, board: Optional[str] = None,
+    ) -> Optional[str]:
+        from hermes_cli import kanban_db_connect as _kbc, kanban_db_notify as _kbn
+        conn = _kbc.connect(board=board)
+        try:
+            return _kbn.begin_notify_delivery(
+                conn,
+                task_id=sub["task_id"], platform=sub["platform"],
+                chat_id=sub["chat_id"], thread_id=sub.get("thread_id") or "",
+                event_id=event_id,
+            )
+        finally:
+            conn.close()
+
+
+    def _kanban_retry_delivery(
+        self,
+        sub: dict,
+        event_id: int,
+        claim_token: str,
+        error: str,
+        board: Optional[str] = None,
+    ) -> bool:
+        from hermes_cli import kanban_db_connect as _kbc, kanban_db_notify as _kbn
+        conn = _kbc.connect(board=board)
+        try:
+            return _kbn.retry_notify_delivery(
+                conn,
+                task_id=sub["task_id"], platform=sub["platform"],
+                chat_id=sub["chat_id"], thread_id=sub.get("thread_id") or "",
+                event_id=event_id, claim_token=claim_token, error=error,
+            )
+        finally:
+            conn.close()
+
+
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
     def _owns_kanban_dispatcher_lock(self) -> bool:

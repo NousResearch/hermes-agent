@@ -799,6 +799,7 @@ _LATER_TASK_COLUMNS = (
     ("goal_mode", "goal_mode INTEGER NOT NULL DEFAULT 0"),
     ("goal_max_turns", "goal_max_turns INTEGER"),
     ("session_id", "session_id TEXT"),
+    ("review_requirement", "review_requirement TEXT"),
     # Typed block reason (VALID_BLOCK_KINDS); NULL = generic human blocker.
     ("block_kind", "block_kind TEXT"),
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
@@ -899,6 +900,34 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         ("spawn_auto_blocked", "gave_up"),
     ):
         conn.execute("UPDATE task_events SET kind = ? WHERE kind = ?", (new, old))
+
+    delivery_table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name='kanban_notify_deliveries'"
+    ).fetchone() is not None
+    if delivery_table_exists:
+        delivery_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(kanban_notify_deliveries)")
+        }
+        if "claim_token" not in delivery_cols:
+            _add_column_if_missing(
+                conn, "kanban_notify_deliveries", "claim_token", "claim_token TEXT"
+            )
+        if "claim_owner" not in delivery_cols:
+            _add_column_if_missing(
+                conn, "kanban_notify_deliveries", "claim_owner", "claim_owner TEXT"
+            )
+        if "delivery_identity" not in delivery_cols:
+            # Existing rows may already represent a notice submitted with the
+            # old ephemeral Discord nonce only. Leave them NULL so recovery
+            # parks them as unknown instead of blindly resending after expiry.
+            _add_column_if_missing(
+                conn,
+                "kanban_notify_deliveries",
+                "delivery_identity",
+                "delivery_identity TEXT",
+            )
 
     _rebuild_drifted_tables(conn)
 

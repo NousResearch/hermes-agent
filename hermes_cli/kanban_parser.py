@@ -186,6 +186,9 @@ _SPECS = [
         _arg("--provider", dest="provider_override",
              help="Provider the --model belongs to (passed as --provider <name> to "
                   "the worker). Requires --model."),
+        _arg("--review-required", action="store_true", help="Require independent review before final acceptance"),
+        _arg("--review-owner", help="Profile owning the explicit review handoff"),
+        _arg("--review-task-id", help="Canonical existing review child id"),
         _arg("--goal", action="store_true", dest="goal_mode",
              help="Run the worker in a goal loop: after each turn a judge checks the "
                   "response against the card title/body and, if not done, the worker "

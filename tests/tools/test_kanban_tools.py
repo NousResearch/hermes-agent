@@ -429,6 +429,25 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_wires_explicit_review_requirement(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_create({
+        "title": "implementation child",
+        "assignee": "builder",
+        "parents": [worker_env],
+        "review_requirement": {"required": True, "owner": "techlead"},
+    })
+    task_id = json.loads(out)["task_id"]
+    from hermes_cli import kanban_db as kb
+
+    with kb.connect() as conn:
+        assert kb.get_task(conn, task_id).review_requirement == {
+            "required": True,
+            "owner": "techlead",
+        }
+
+
 def test_link_happy_path(worker_env):
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc

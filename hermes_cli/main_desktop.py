@@ -433,14 +433,22 @@ def _rollback_desktop_from_backup(packaged_executable: Path) -> Optional[Path]:
     if not backup_exe.exists() or _desktop_exe_integrity_error(backup_exe) is not None:
         return None
     corrupt_dir = unpacked.parent / (unpacked.name + ".corrupt")
+    had_current = unpacked.exists()
     try:
-        shutil.rmtree(corrupt_dir, ignore_errors=True)
-        try:
+        # Do not destroy the live candidate if Windows refuses to park it.
+        # Keep both generations recoverable when promotion itself fails.
+        if corrupt_dir.exists():
+            shutil.rmtree(corrupt_dir)
+        if had_current:
             unpacked.rename(corrupt_dir)
-        except OSError:
-            shutil.rmtree(unpacked, ignore_errors=True)
+    except OSError:
+        return None
+    try:
         backup_dir.rename(unpacked)
     except OSError:
+        if had_current:
+            with contextlib.suppress(OSError):
+                corrupt_dir.rename(unpacked)
         return None
     restored = unpacked / packaged_executable.name
     return restored if restored.exists() else None

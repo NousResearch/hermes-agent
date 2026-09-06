@@ -107,11 +107,14 @@ def _extract_health_report_from_result(result: Report) -> Report:
         raise HealthReportUnavailable(f"health_report structuredContent lacks schema_version/overall/checks (keys={sorted(sc.keys())})")
     raise RuntimeError(f"health_report response carried neither structuredContent nor a parseable JSON text block. Result keys: {list(result.keys())}")
 
-def _open_mcp(binary: str) -> subprocess.Popen:
+def _open_mcp(
+    binary: str,
+    invocation: Optional[Tuple[str, Sequence[str]]] = None,
+) -> subprocess.Popen:
     """Spawn the resolved MCP invocation; pin UTF-8 for arbitrary driver output."""
     from tools.computer_use.cua_backend_driver import _resolve_mcp_invocation
 
-    command, args = _resolve_mcp_invocation(binary)
+    command, args = invocation or _resolve_mcp_invocation(binary)
     return subprocess.Popen([command, *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8", errors="replace", bufsize=1, creationflags=windows_hide_flags(),
                             env=_sanitized_cua_env())
@@ -140,9 +143,13 @@ def _call_tool(proc: subprocess.Popen, msg_id: int, name: str, arguments: Any = 
     return _mcp_rpc(proc, msg_id, "tools/call", {"name": name, "arguments": arguments or {}}).get("result") or {}
 
 @contextmanager
-def _mcp_session(binary: str, timeout: float) -> Iterator[subprocess.Popen]:
+def _mcp_session(
+    binary: str,
+    timeout: float,
+    invocation: Optional[Tuple[str, Sequence[str]]] = None,
+) -> Iterator[subprocess.Popen]:
     """Spawn ``<binary> mcp`` and always close stdin / wait / kill it on exit."""
-    proc = _open_mcp(binary)
+    proc = _open_mcp(binary, invocation)
     try:
         yield proc
     finally:
@@ -154,10 +161,17 @@ def _mcp_session(binary: str, timeout: float) -> Iterator[subprocess.Popen]:
             proc.kill()
             proc.wait()
 
-def _drive_health_report(binary: str, *, include: Sequence[str] = (), skip: Sequence[str] = (), timeout: float = 12.0) -> Report:
+def _drive_health_report(
+    binary: str,
+    *,
+    include: Sequence[str] = (),
+    skip: Sequence[str] = (),
+    timeout: float = 12.0,
+    invocation: Optional[Tuple[str, Sequence[str]]] = None,
+) -> Report:
     """Handshake + `health_report` → report; HealthReportUnavailable (caller falls back) or RuntimeError."""
     args = {k: list(v) for k, v in (("include", include), ("skip", skip)) if v}
-    with _mcp_session(binary, timeout) as proc:
+    with _mcp_session(binary, timeout, invocation) as proc:
         _mcp_rpc(proc, 1, "initialize", {})
         result = _call_tool(proc, 2, "health_report", args)
     if not isinstance(result, dict):
@@ -175,10 +189,15 @@ def _probe_tool(proc: subprocess.Popen, msg_id: int, name: str) -> Tuple[Optiona
         return None, str(e)
     return (None, _first_text(result, f"{name} isError")) if result.get("isError") is True else (result, None)
 
-def _drive_fallback_probes(binary: str, *, timeout: float = 12.0) -> Report:
+def _drive_fallback_probes(
+    binary: str,
+    *,
+    timeout: float = 12.0,
+    invocation: Optional[Tuple[str, Sequence[str]]] = None,
+) -> Report:
     """One MCP session: initialize serverInfo version + check_permissions + list_apps probe results."""
     out: Report = dict.fromkeys(("init_version", "permissions", "permissions_error", "list_apps_ok", "list_apps_error", "list_apps_count"))
-    with _mcp_session(binary, timeout) as proc:
+    with _mcp_session(binary, timeout, invocation) as proc:
         server_info = (_mcp_rpc(proc, 1, "initialize", {}).get("result") or {}).get("serverInfo") or {}
         out["init_version"] = server_info.get("version") if isinstance(server_info, dict) else None
         perms, out["permissions_error"] = _probe_tool(proc, 2, "check_permissions")  # primary TCC signal on 0.10
@@ -246,11 +265,17 @@ def _overall_from(checks: List[Report]) -> str:
     ok = by_name.get("tcc_accessibility") in ("pass", "skip", None) and not any(c.get("status") == "fail" for c in checks)
     return "ok" if ok else "degraded"
 
-def _compose_fallback_report(binary: str, *, reason: str = "", timeout: float = 12.0) -> Report:
+def _compose_fallback_report(
+    binary: str,
+    *,
+    reason: str = "",
+    timeout: float = 12.0,
+    invocation: Optional[Tuple[str, Sequence[str]]] = None,
+) -> Report:
     """schema_version=1 report from CLI + MCP probes (``_FALLBACK_PROBES``) when health_report is denied (0.10)."""
     plat = _platform_name()
     ver_status, ver_value = _cli_driver_version(binary)
-    probes = _drive_fallback_probes(binary, timeout=timeout)
+    probes = _drive_fallback_probes(binary, timeout=timeout, invocation=invocation)
     if probes.get("init_version"):  # MCP initialize version beats a messy CLI parse
         ver_status, ver_value = "pass", str(probes["init_version"])
     perms = probes.get("permissions") if isinstance(probes.get("permissions"), dict) else None
@@ -332,16 +357,32 @@ def run_doctor(driver_cmd: Optional[str] = None, *, include: Sequence[str] = (),
     for stream in (sys.stdout, sys.stderr):
         with suppress(AttributeError, OSError):
             stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
-    from tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd
+    from tools.computer_use.cua_backend_driver import (
+        _resolve_mcp_invocation,
+        resolve_cua_driver_cmd,
+    )
     binary = resolve_cua_driver_cmd(driver_cmd)
     if not binary:
         print(f"cua-driver: not installed (looked for {driver_cmd or 'cua-driver (PATH and canonical install paths)'!r}).\n  Run: hermes computer-use install")
         return 2
     try:  # prefer real health_report; on denial/non-schema, synthesize via probes
+        command, args = _resolve_mcp_invocation(binary)
+        invocation = (command, tuple(args))
         try:
-            report = _drive_health_report(binary, include=include, skip=skip, timeout=12.0)
+            report = _drive_health_report(
+                binary,
+                include=include,
+                skip=skip,
+                timeout=12.0,
+                invocation=invocation,
+            )
         except HealthReportUnavailable as e:
-            report = _compose_fallback_report(binary, reason=str(e), timeout=12.0)
+            report = _compose_fallback_report(
+                binary,
+                reason=str(e),
+                timeout=12.0,
+                invocation=invocation,
+            )
     except RuntimeError as e:
         print(f"cua-driver health_report failed: {e}", file=sys.stderr)
         return 2

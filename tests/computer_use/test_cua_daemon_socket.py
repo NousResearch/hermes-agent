@@ -167,6 +167,25 @@ def test_transport_recovery_keeps_first_resolved_endpoint():
     ]
 
 
+def test_doctor_reuses_one_resolved_endpoint_across_fallback():
+    from tools.computer_use import cua_backend_driver, doctor
+
+    invocation = ("resolved-cua", ("mcp", "--socket", "first"))
+    report = {"overall": "ok"}
+    health_error = doctor.HealthReportUnavailable("fallback")
+    with patch.object(cua_backend_driver, "resolve_cua_driver_cmd", return_value="resolved-cua"), \
+         patch.object(cua_backend_driver, "_resolve_mcp_invocation", return_value=invocation) as resolve, \
+         patch.object(doctor, "_drive_health_report", side_effect=health_error) as health, \
+         patch.object(doctor, "_compose_fallback_report", return_value=report) as fallback, \
+         patch.object(doctor, "_build_identity", return_value={}), \
+         patch.object(doctor, "_print_text_report"):
+        assert doctor.run_doctor("input-cua") == 0
+
+    assert resolve.call_count == 1
+    assert health.call_args.kwargs["invocation"] == invocation
+    assert fallback.call_args.kwargs["invocation"] == invocation
+
+
 def test_invalid_daemon_socket_fails_to_disabled(monkeypatch):
     from tools.computer_use import cua_backend
 

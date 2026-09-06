@@ -74,6 +74,45 @@ afterEach(() => {
 })
 
 describe('hosted Group Chat composer durability', () => {
+  it.each(['room-1', 'other'])('shows messaging setup only for its pending room: %s', async pendingRoom => {
+    const { GroupChatWorkspace } = await import('./group-chat-view')
+    const chat = await import('./group-chat')
+    const recovery = await import('./hosted-room-cleanup')
+    chat.$groupChats.set({
+      Core: {
+        continuityMode: 'gateway',
+        hosted: 'install:home',
+        hostedConnectionId: 'gateway-a',
+        roomId: 'room-1',
+        members: MEMBERS,
+        log: [],
+        watermarks: {}
+      }
+    })
+    recovery.$hostedRoomCleanup.set({
+      version: 1,
+      operations: [
+        {
+          armed: true,
+          kind: 'peer-reconnect',
+          operationId: 'pending-control',
+          setupId: 'setup',
+          connectionId: 'peer',
+          ownerId: '',
+          ownerLeaseUntil: 0,
+          roomId: pendingRoom,
+          reciprocalControl: true
+        }
+      ]
+    })
+    const view = render(<GroupChatWorkspace group="Core" members={MEMBERS} />)
+    const notice = 'Messaging is reconnecting. Keep Desktop open until it finishes.'
+    expect(Boolean(screen.queryByText(notice))).toBe(pendingRoom === 'room-1')
+    recovery.$hostedRoomCleanup.set({ version: 1, operations: [] })
+    view.rerender(<GroupChatWorkspace group="Core" members={MEMBERS} />)
+    expect(screen.queryByText(notice)).toBeNull()
+  })
+
   it.each(['groups.state', 'groups.log'])(
     'keeps settings read-only after a revoked %s response and preserves recovery',
     async window => {

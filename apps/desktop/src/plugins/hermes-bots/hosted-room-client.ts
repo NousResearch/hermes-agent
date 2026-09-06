@@ -18,6 +18,24 @@ const MAX_REPLAY_PAGES = 100
 const FORBIDDEN_TRANSPORT_FIELD_TOKENS = new Set(['base64', 'byte', 'bytes', 'data', 'path', 'paths'])
 const ATTACHMENT_ID_RE = /^att_[0-9a-f]{32}$/
 export const ROOM_LINK_PROTOCOL_VERSION = 2
+export const ROOM_GRANT_TTL_SECONDS = 3600
+export const ROOM_GRANT_STATUS_TTL_SECONDS = 30 * 24 * 60 * 60
+
+export function hasRequestedRoomGrantLifetime(invitation: unknown): boolean {
+  const value = record(invitation)
+  const expires = value?.expires_at
+  const statusExpires = value?.status_expires_at
+
+  // Compare issuer-relative horizons, not the Desktop's potentially skewed clock.
+  return (
+    typeof expires === 'number' &&
+    Number.isFinite(expires) &&
+    expires > 0 &&
+    typeof statusExpires === 'number' &&
+    Number.isFinite(statusExpires) &&
+    Math.abs(statusExpires - expires - (ROOM_GRANT_STATUS_TTL_SECONDS - ROOM_GRANT_TTL_SECONDS)) <= 1
+  )
+}
 
 export interface HostedRoomClientLimitations {
   attachmentList?: boolean
@@ -56,6 +74,8 @@ export interface HostedRoomCapability {
   limits: typeof HOSTED_ROOM_CLIENT_LIMITATIONS
   maxLogLimit?: number
   persistentProcess: boolean | null
+  peerGrantRenewal?: boolean
+  reciprocalRoomControl?: boolean
   routeGrantFingerprint: boolean
   reason: null | string
   roomLink: null | RoomLinkCapability
@@ -428,6 +448,9 @@ export function classifyHostedRoomCapability(
     persistentProcess: capabilities.persistent_process === true,
     routeGrantFingerprint:
       Array.isArray(capabilities.features) && capabilities.features.includes('peer_route_grant_fingerprint'),
+    peerGrantRenewal: Array.isArray(capabilities.features) && capabilities.features.includes('peer_grant_renewal'),
+    reciprocalRoomControl:
+      Array.isArray(capabilities.features) && capabilities.features.includes('reciprocal_room_control_setup'),
     roomLink: roomLinkCapability(capabilities.room_link),
     maxLogLimit: positiveInteger(capabilities.max_log_limit, 100) || 100,
     limits: hostedCapabilityLimits(capabilities)

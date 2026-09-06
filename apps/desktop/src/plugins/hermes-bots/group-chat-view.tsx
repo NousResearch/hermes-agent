@@ -65,6 +65,7 @@ import {
   $groupClarify,
   $groupHostedNeedsYou,
   $groupNeedsYou,
+  activateClassicGroupAuthorities,
   groupChatContinuityMode,
   groupChatHostedGateway,
   groupSpeakerLabel,
@@ -77,6 +78,7 @@ import {
 import type { GroupChatRoom } from './group-chat'
 import { GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group-chat-parts'
 import type { GroupRoomPrompt } from './group-chat-parts'
+import { storedClassicDesktopAuthority } from './group-desktop-authority'
 import { SharedFilesControl } from './group-files-view'
 import { GroupHoldStatus } from './group-hold-status'
 import {
@@ -102,6 +104,7 @@ import {
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { sendToGroupChatDurably, stopGroupThread } from './group-rounds'
 import { clearGroupClarify } from './group-turns'
+import { $hostedRoomCleanup } from './hosted-room-cleanup'
 import { reconnectHostedGroupChatPeer } from './hosted-room-reauthorization'
 import {
   beginHostedRoomMutation,
@@ -233,11 +236,13 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
     for (const [name, room] of Object.entries($groupChats.get())) {
       if (name !== group && Array.isArray(room.log)) {
         durable[name] = {
+          ...storedClassicDesktopAuthority(room),
           log: room.log,
           watermarks: room.watermarks,
           sessions: room.sessions || {},
           sessionOwners: room.sessionOwners || {},
           members: Array.isArray(room.members) ? room.members : [],
+          desktopCommandSettled: room.desktopCommandSettled || {},
           roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
           hosted: groupChatHostedGateway(room) || null,
           hostedEpoch: Math.max(0, Number(room.hostedEpoch || 0)) || null,
@@ -791,6 +796,12 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   const [reconnecting, setReconnecting] = useState(false)
   // Subscribe: activity rows re-render as turn events land.
   useValue($groupActivity)
+  const cleanup = useValue($hostedRoomCleanup)
+
+  const messagingReconnecting =
+    Boolean(room.roomId) &&
+    cleanup.operations.some(operation => operation.reciprocalControl && operation.roomId === room.roomId)
+
   // Pending member questions for THIS room (#90694), oldest first.
   const clarifyAll: Record<string, GroupRoomPrompt> = useValue($groupClarify)
 
@@ -975,6 +986,11 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       </div>
       {room.continuityIssue ? (
         <div className="px-2.5 pb-1 text-[0.625rem] text-(--ui-text-quaternary)">{room.continuityIssue}</div>
+      ) : null}
+      {messagingReconnecting ? (
+        <div className="px-2.5 pb-1 text-xs text-(--ui-text-secondary)" role="status">
+          {b.group.messagingReconnecting}
+        </div>
       ) : null}
       {activityOpen ? (
         <div className="grid gap-0.5 px-2.5 pb-1.5" id={`group-activity:${group}`}>
@@ -1651,6 +1667,7 @@ function GroupChatMainView({ group }: GroupChatMainViewProps) {
  *  write itself repaints nothing, the duplicate stuck until an unrelated
  *  re-render. */
 export function openGroupChat(group: string): void {
+  void activateClassicGroupAuthorities([group]).catch(() => undefined)
   // A room selection supersedes any bot-open transition still hydrating.
   // The in-flight host navigation may complete underneath this workspace,
   // but it may not later close or visually steal the room the user chose.

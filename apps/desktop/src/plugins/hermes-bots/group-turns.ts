@@ -16,9 +16,12 @@ import {
   readClassicTurn
 } from './classic-output'
 import type { ClassicTurn, GroupTurnReply } from './classic-output'
+import { desktopRoomIdentity } from './desktop-room-command-client'
 import { recordGroupActivity } from './group-activity'
 import { $groupChats, $groupClarify, $groupNeedsYou, appendGroupChatEntry, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
+import { groupCommandFenceLive, groupCommandFenceMatches } from './group-command-fence'
+import type { GroupCommandFence } from './group-command-fence'
 import { GroupFileDeliveryError } from './group-file-delivery'
 import { groupMemberKey, groupSessionOwner } from './group-membership'
 import { approveHostedGroupChat } from './hosted-room-runtime'
@@ -136,7 +139,18 @@ interface GroupMemberSessionHandle {
  *  title, which also covers rehydrated rooms whose sid was lost — reopens
  *  it after restarts. Cross-connection members route to their OWN source
  *  via requestForBot; the window's gateway never switches. */
-export async function ensureGroupChatSession(group: string, member: GroupMember): Promise<GroupMemberSessionHandle> {
+export async function ensureGroupChatSession(
+  group: string,
+  member: GroupMember,
+  fence?: GroupCommandFence
+): Promise<GroupMemberSessionHandle> {
+  const current = () => groupCommandFenceLive(fence) &&
+    (!fence || fence.roomId === desktopRoomIdentity(group, $groupChats.get()[group]))
+
+  if (!current()) {
+    return { runtime: null }
+  }
+
   const room = $groupChats.get()[group] || {}
   // New rooms title member sessions by their immutable roomId so a
   // same-name recreate never resumes the old room's sessions by title;
@@ -158,6 +172,10 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
   // room. Only a genuine 4007 on BOTH targets means there truly is nothing
   // to resume yet, so the loop falls through to session.create below.
   for (const target of [known, title]) {
+    if (!current()) {
+      return { runtime: null }
+    }
+
     if (!target || target === true) {
       continue
     }
@@ -168,6 +186,10 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
         profile: member.name,
         omit_messages: true
       })) as GroupSessionSnapshot
+
+      if (!current()) {
+        return { runtime: null }
+      }
 
       if (res?.session_id) {
         // TODO(bot-mode-types): `known` is `room.sessions[key]`, which the
@@ -208,6 +230,10 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
     }
   }
 
+  if (!current()) {
+    return { runtime: null }
+  }
+
   const created = (await requestForBot(member, 'session.create', {
     profile: member.name,
     title,
@@ -220,6 +246,10 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
     room_plumbing: true,
     follow_profile_config: true
   })) as { session_id?: string; stored_session_id?: string }
+
+  if (!current()) {
+    return { runtime: null }
+  }
 
   const stored = created?.stored_session_id || null
 
@@ -383,7 +413,8 @@ async function submitGroupTurnPrompt(
   runtime: string,
   stored: null | string | true | undefined,
   text: string,
-  classicTurn?: ClassicTurn | null
+  classicTurn?: ClassicTurn | null,
+  fence?: GroupCommandFence
 ): Promise<string> {
   try {
     await requestForBot(member, 'prompt.submit', {
@@ -425,6 +456,10 @@ async function submitGroupTurnPrompt(
 
     if (!fresh) {
       throw error
+    }
+
+    if (!groupCommandFenceLive(fence)) {
+      return fresh
     }
 
     await requestForBot(member, 'prompt.submit', {
@@ -623,7 +658,8 @@ export async function runGroupChatMemberTurn(
   member: GroupMember,
   prompt: string,
   thread: string,
-  images?: Attachment[]
+  images?: Attachment[],
+  fence?: GroupCommandFence
 ): Promise<null | GroupTurnReply> {
   // #93602: hold the member's route socket for the whole turn. Without the
   // lease, every RPC below rides its own request-scoped socket lease; the
@@ -632,7 +668,11 @@ export async function runGroupChatMemberTurn(
   const releaseTurnLease = await retainGroupTurnRoute(member)
 
   try {
-    return await runGroupChatMemberTurnLeased(group, member, prompt, thread, images)
+    if (!groupCommandFenceLive(fence)) {
+      return null
+    }
+
+    return await runGroupChatMemberTurnLeased(group, member, prompt, thread, images, fence)
   } finally {
     releaseTurnLease()
   }
@@ -643,11 +683,13 @@ async function runGroupChatMemberTurnLeased(
   member: GroupMember,
   prompt: string,
   thread: string,
-  images?: Attachment[]
+  images?: Attachment[],
+  fence?: GroupCommandFence
 ): Promise<null | GroupTurnReply> {
-  const { runtime, stored } = await ensureGroupChatSession(group, member)
+  const leaseLive = () => groupCommandFenceMatches(fence, desktopRoomIdentity(group, $groupChats.get()[group]), thread)
+  const { runtime, stored } = await ensureGroupChatSession(group, member, fence)
 
-  if (!runtime) {
+  if (!runtime || !leaseLive()) {
     return null
   }
 
@@ -694,6 +736,10 @@ async function runGroupChatMemberTurnLeased(
   const fileRefs: string[] = []
 
   for (const original of Array.isArray(images) ? images : []) {
+    if (!leaseLive()) {
+      return null
+    }
+
     let img = original
 
     if (img?.classicExport) {
@@ -771,10 +817,14 @@ async function runGroupChatMemberTurnLeased(
   // #93602: one-shot recovery when the runtime session was reaped between
   // minting and submitting. Tracks the runtime id the submit landed on so
   // the poll fallback below targets a live session.
+  if (!leaseLive()) {
+    return null
+  }
+
   let liveRuntime: string
 
   try {
-    liveRuntime = await submitGroupTurnPrompt(member, runtime, stored, turnText, classicTurn)
+    liveRuntime = await submitGroupTurnPrompt(member, runtime, stored, turnText, classicTurn, fence)
   } catch (error: any) {
     if (error?.notAdmitted) {
       updateGroupChat(group, r => {
@@ -811,7 +861,7 @@ async function runGroupChatMemberTurnLeased(
     // delivered (the #93127 commit check decides its fate, not this loop).
     const roomDuringPoll = $groupChats.get()[group] || {}
 
-    if ((roomDuringPoll.epoch || 0) !== dispatchEpoch && (roomDuringPoll.holds || {})[memberKey]) {
+    if (!leaseLive() || ((roomDuringPoll.epoch || 0) !== dispatchEpoch && (roomDuringPoll.holds || {})[memberKey])) {
       return null
     }
 
@@ -824,6 +874,10 @@ async function runGroupChatMemberTurnLeased(
       })) as GroupSessionSnapshot
     } catch {
       continue
+    }
+
+    if (!leaseLive()) {
+      return null
     }
 
     if (state?.session_id) {
@@ -903,6 +957,13 @@ async function runGroupChatMemberTurnLeased(
     thread
   })
   syncGroupClarify(group, member, null)
+
+  // Mailbox output must commit under its command lease, never through a later
+  // unleased harvest. Ordinary Desktop turns retain their stranded recovery.
+  if (fence) {
+    return null
+  }
+
   updateGroupChat(group, (r: GroupChatRoom) => {
     r.stranded = {
       ...(r.stranded || {}),

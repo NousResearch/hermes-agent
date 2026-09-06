@@ -1138,7 +1138,16 @@ describe('hosted Group Chat runtime', () => {
     }
   )
 
-  it('creates a multi-host Group Chat with target-issued scoped grants', async () => {
+  it.each([
+    'renewable',
+    'legacy',
+    'legacy-home',
+    'single-gateway',
+    'journal',
+    'journal-offline',
+    'reciprocal',
+    'control-offline'
+  ])('checks renewal: %s', async mode => {
     const routes = [
       { connectionId: 'host-a', mode: 'remote' as const, profile: 'default', targetProfile: 'default' },
       { connectionId: 'host-b', mode: 'remote' as const, profile: 'default', targetProfile: 'default' },
@@ -1151,6 +1160,15 @@ describe('hosted Group Chat runtime', () => {
       if (method === 'groups.capabilities') {
         return {
           authority_gateway_id: `install:${connectionId}`,
+          features:
+            mode === 'legacy-home'
+              ? []
+              : [
+                  'peer_grant_renewal',
+                  ...(['reciprocal', 'control-offline'].includes(mode)
+                    ? ['reciprocal_room_control', 'reciprocal_room_control_setup']
+                    : [])
+                ],
           driver: true,
           persistent_process: true,
           room_link: {
@@ -1178,6 +1196,7 @@ describe('hosted Group Chat runtime', () => {
 
       if (method === 'groups.peer.invite') {
         return {
+          ...(mode === 'legacy' ? {} : { expires_at: 3601, status_expires_at: 2592001 }),
           grant: 'grant:builder',
           target_profile: 'builder',
           catalog: {
@@ -1206,6 +1225,36 @@ describe('hosted Group Chat runtime', () => {
         return { registered: true }
       }
 
+      if (method === 'groups.control.invite') {
+        return {
+          room_id: 'room-multi',
+          member_id: 'member-2-builder',
+          authority_gateway_id: 'install:host-a',
+          authority_epoch: 1,
+          control_token: 'c'.repeat(43),
+          home_url: 'https://host-a.example.test:19445',
+          expires_at: 253402300799,
+          room_name: 'Multi',
+          member_count: 2
+        }
+      }
+
+      if (method === 'groups.control.register') {
+        if (mode === 'control-offline') {
+          throw new Error('control target offline')
+        }
+
+        return { registered: true, room_id: 'room-multi' }
+      }
+
+      if (method === 'groups.disband' || method === 'groups.peer.revoke') {
+        if (method === 'groups.peer.revoke' && mode === 'journal-offline') {
+          throw new Error('peer offline')
+        }
+
+        return { ok: true }
+      }
+
       throw new Error(`unexpected method: ${method}`)
     }, routes)
 
@@ -1222,9 +1271,9 @@ describe('hosted Group Chat runtime', () => {
         targetProfile: 'research'
       },
       {
-        connectionId: 'host-b',
+        connectionId: mode === 'single-gateway' ? 'host-a' : 'host-b',
         name: 'builder',
-        route: routes[2],
+        route: mode === 'single-gateway' ? routes[0] : routes[2],
         sourceScoped: true,
         targetProfile: 'builder'
       }
@@ -1234,26 +1283,106 @@ describe('hosted Group Chat runtime', () => {
 
     expect(probe.route).toMatchObject({
       homeConnectionId: 'host-a',
-      kind: 'multi-gateway',
-      remoteConnectionIds: ['host-b']
-    })
-    await expect(
-      loaded.runtime.createAutonomousHostedGroupChat({
-        members: [
-          { handle: 'research', member: members[0], profile: 'research' },
-          { handle: 'builder', member: members[1], profile: 'builder' }
-        ],
-        name: 'Multi',
-        probe,
-        roomId: 'room-multi'
-      })
-    ).resolves.toMatchObject({
-      authorityId: 'install:host-a',
-      connectionId: 'host-a',
-      continuityMode: 'distributed'
+      kind: mode === 'single-gateway' ? 'single-gateway' : 'multi-gateway',
+      remoteConnectionIds: mode === 'single-gateway' ? [] : ['host-b']
     })
 
+    if (mode.startsWith('journal')) {
+      const save = storage.set
+      let rejected = false
+
+      storage.set = async (key, value) => {
+        const operations = (value as { operations?: Array<{ kind: string }> })?.operations
+
+        if (
+          !rejected &&
+          key === 'hosted-room-cleanup-v1' &&
+          operations?.some(operation => operation.kind === 'peer-revoke')
+        ) {
+          rejected = true
+          throw Object.freeze(new Error('journal unavailable'))
+        }
+
+        return save(key, value)
+      }
+    }
+
+    const creation = loaded.runtime.createAutonomousHostedGroupChat({
+      members: [
+        { handle: 'research', member: members[0], profile: 'research' },
+        { handle: 'builder', member: members[1], profile: 'builder' }
+      ],
+      name: 'Multi',
+      probe,
+      roomId: 'room-multi'
+    })
+
+    if (mode === 'control-offline') {
+      await expect(creation).rejects.toThrow('control target offline')
+      expect(loaded.calls.some(call => call.method === 'groups.disband')).toBe(true)
+      expect(loaded.calls.some(call => call.method === 'groups.peer.revoke')).toBe(true)
+      expect((loaded.storage.get('hosted-room-cleanup-v1') as { operations: unknown[] }).operations).toEqual([])
+      loaded.runtime.stopHostedRoomRuntime()
+
+      return
+    }
+
+    if (mode.startsWith('journal')) {
+      const failure = await creation.catch(error => error)
+      expect(failure).toBeInstanceOf(Error)
+      expect(failure.fallbackSafe).toBe(mode === 'journal-offline' ? false : undefined)
+      expect(loaded.calls.find(call => call.method === 'groups.peer.revoke')?.params).toMatchObject({
+        grant: 'grant:builder'
+      })
+      expect(loaded.calls.some(call => call.method === 'groups.create' || call.method === 'groups.peer.register')).toBe(
+        false
+      )
+      loaded.runtime.stopHostedRoomRuntime()
+
+      return
+    }
+
+    if (mode === 'legacy-home') {
+      await expect(creation).rejects.toThrow('Update host-a')
+      expect(loaded.calls.some(call => call.method === 'groups.peer.invite' || call.method === 'groups.create')).toBe(
+        false
+      )
+      loaded.runtime.stopHostedRoomRuntime()
+
+      return
+    }
+
+    if (mode === 'legacy') {
+      await expect(creation).rejects.toThrow('Update builder')
+      expect(loaded.calls.some(call => call.method === 'groups.create')).toBe(false)
+      expect(loaded.calls.some(call => call.method === 'groups.peer.register')).toBe(false)
+      expect(loaded.calls.find(call => call.method === 'groups.peer.revoke')?.params).toMatchObject({
+        grant: 'grant:builder'
+      })
+      expect((loaded.storage.get('hosted-room-cleanup-v1') as { operations: unknown[] }).operations).toEqual([])
+      loaded.runtime.stopHostedRoomRuntime()
+
+      return
+    }
+
+    await expect(creation).resolves.toMatchObject({
+      authorityId: 'install:host-a',
+      connectionId: 'host-a',
+      continuityMode: mode === 'single-gateway' ? 'gateway' : 'distributed'
+    })
+
+    if (mode === 'single-gateway') {
+      expect(loaded.calls.some(call => call.method.startsWith('groups.peer.'))).toBe(false)
+      loaded.runtime.stopHostedRoomRuntime()
+
+      return
+    }
+
     expect(loaded.calls.find(call => call.method === 'groups.peer.invite')?.connectionId).toBe('host-b')
+    expect(loaded.calls.find(call => call.method === 'groups.peer.invite')?.params).toMatchObject({
+      ttl_seconds: 3600,
+      status_ttl_seconds: 2592000
+    })
     expect(loaded.calls.find(call => call.method === 'groups.create')?.connectionId).toBe('host-a')
     expect(loaded.calls.find(call => call.method === 'groups.peer.register')?.params).toMatchObject({
       grant: 'grant:builder',
@@ -1263,6 +1392,22 @@ describe('hosted Group Chat runtime', () => {
       target_url: 'https://host-b.example.test:19445/p/builder'
     })
     expect((loaded.storage.get('hosted-room-cleanup-v1') as { operations: unknown[] }).operations).toEqual([])
+
+    if (mode === 'reciprocal') {
+      const control = loaded.calls.find(call => call.method === 'groups.control.register')
+      expect(control?.connectionId).toBe('host-b')
+      expect(control?.params).toMatchObject({
+        profile: 'builder',
+        room_id: 'room-multi',
+        member_id: 'member-2-builder'
+      })
+      expect(loaded.calls.find(call => call.method === 'groups.control.invite')?.params).toMatchObject({
+        caller_install_id: 'install:host-b',
+        reuse_existing: true
+      })
+    } else {
+      expect(loaded.calls.some(call => call.method.startsWith('groups.control.'))).toBe(false)
+    }
 
     loaded.runtime.stopHostedRoomRuntime()
   })
@@ -1282,6 +1427,7 @@ describe('hosted Group Chat runtime', () => {
       if (method === 'groups.capabilities') {
         return {
           authority_gateway_id: `install:${connectionId}`,
+          features: ['peer_grant_renewal'],
           driver: true,
           persistent_process: true,
           room_link: {
@@ -1306,6 +1452,8 @@ describe('hosted Group Chat runtime', () => {
 
       if (method === 'groups.peer.invite') {
         return {
+          expires_at: 3601,
+          status_expires_at: 2592001,
           grant: 'grant:builder',
           target_profile: 'builder',
           catalog: {

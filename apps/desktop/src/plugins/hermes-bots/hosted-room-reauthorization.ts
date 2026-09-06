@@ -11,9 +11,13 @@ import {
 } from './hosted-room-cleanup'
 import {
   classifyHostedRoomCapability,
+  hasRequestedRoomGrantLifetime,
   isHostedRoomContinuityEligible,
-  profileScopedRoomLinkEndpoint
+  profileScopedRoomLinkEndpoint,
+  ROOM_GRANT_STATUS_TTL_SECONDS,
+  ROOM_GRANT_TTL_SECONDS
 } from './hosted-room-client'
+import { registerHostedPeerControl } from './hosted-room-peer-setup'
 import {
   $hostedRoomCapabilities,
   hostedRoomLifecycleIsCurrent,
@@ -22,6 +26,7 @@ import {
   refreshHostedRooms,
   requestHostedConnection
 } from './hosted-room-runtime'
+import { botsText } from './i18n'
 import { requestForBot } from './routing'
 import type { GroupMember, ProfileRoute } from './types'
 
@@ -98,7 +103,11 @@ async function reconnectPeer(group: string, memberId: string, lifecycle: number)
 
   const homeCapability = $hostedRoomCapabilities.get()[String(homeRoute.connectionId || '')]
 
-  if (!homeCapability?.routeGrantFingerprint || homeCapability.authorityId !== homeAuthority) {
+  if (
+    !homeCapability?.routeGrantFingerprint ||
+    !homeCapability.peerGrantRenewal ||
+    homeCapability.authorityId !== homeAuthority
+  ) {
     throw new Error('Update the gateway that owns this Group Chat, then try again.')
   }
 
@@ -181,6 +190,8 @@ async function reconnectPeer(group: string, memberId: string, lifecycle: number)
       authority_gateway_id: authorityId,
       authority_epoch: authorityEpoch,
       member_id: memberId,
+      ttl_seconds: ROOM_GRANT_TTL_SECONDS,
+      status_ttl_seconds: ROOM_GRANT_STATUS_TTL_SECONDS,
       profile
     })
   )
@@ -238,6 +249,12 @@ async function reconnectPeer(group: string, memberId: string, lifecycle: number)
 
   await abandonIfStale()
 
+  if (!hasRequestedRoomGrantLifetime(invitation)) {
+    await armHostedRoomCleanup(setupId)
+    await dispatchHostedRoomCleanup()
+    throw new Error(botsText().group.hostUpdateNeeded(localMember.display_name || localMember.name))
+  }
+
   let grantSha256 = ''
 
   if (grant) {
@@ -273,6 +290,9 @@ async function reconnectPeer(group: string, memberId: string, lifecycle: number)
       operationId,
       setupId,
       kind: 'peer-reconnect',
+      reciprocalControl: homeCapability.reciprocalRoomControl === true && peerCapability.reciprocalRoomControl === true,
+      controlAuthorityId: authorityId,
+      controlAuthorityEpoch: authorityEpoch,
       connectionId: peerConnectionId,
       profile: targetProfile,
       grant,
@@ -303,6 +323,21 @@ async function reconnectPeer(group: string, memberId: string, lifecycle: number)
       grant,
       catalog,
       expected_grant_sha256: expectedGrantSha256
+    })
+    await abandonIfStale()
+    await registerHostedPeerControl({
+      homeRoute,
+      homeCapability,
+      peerCapability,
+      roomId,
+      authorityId,
+      authorityEpoch,
+      memberId,
+      targetProfile,
+      targetAuthority,
+      requestId: setupId,
+      assertCurrent,
+      requestPeer: (method, params) => requestForBot(localMember, method, params)
     })
     await abandonIfStale()
   } catch (error) {

@@ -1993,6 +1993,69 @@ def _latest_event(
     return conn.execute(sql + " ORDER BY id DESC LIMIT 1", params).fetchone()
 
 
+def _breaker_trip_threshold(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
+    """Return the failure count at which the breaker actually parked this card.
+
+    ``_record_task_failure`` resolves its own
+    threshold — the systemic-crash path passes ``failure_limit=1`` when the
+    same error fingerprint has hit three tasks, so one crash is enough to
+    park the card. ``recompute_ready`` then re-resolved the threshold from
+    *its own* caller, and every call site but ``dispatch_once`` passes
+    nothing at all (``DEFAULT_FAILURE_LIMIT`` = 2). A card blocked at 1 was
+    therefore promoted straight back on ``1 < 2``, inside the same
+    dispatcher tick.
+
+    Measured on this board over 40 h: 71 ``gave_up`` events followed by a
+    ``promoted`` within two seconds, every one of them
+    ``effective_limit=1, trigger_outcome=crashed``; 15 cards cycled 3–4
+    times each. On ``t_7a81e147`` the resurrected run then burned its full
+    3600 s ceiling (6.5 M weighted) before dying.
+
+    Read ``failures``, NOT ``effective_limit``. On the ``force_trip`` path
+    the two disagree by design: ``detect_crashed_workers`` trips the
+    protocol-violation streak with ``failure_limit=3`` while the unified
+    counter sits at 1–2, because below-budget violations deliberately do not
+    consume it. ``effective_limit`` is then *reported*, not applied, and
+    trusting it would promote a card the breaker had just parked — a
+    regression the first cut of this fix actually introduced.
+    ``failures`` is the count the breaker blocked at on both paths.
+
+    Only events after the last ``unblocked`` count — an operator unblock is
+    a deliberate reset of that verdict.
+
+    Returns ``None`` when there is no usable verdict (never tripped, reset,
+    or a payload predating this field), which leaves the caller's own
+    resolution order untouched.
+    """
+    row = conn.execute(
+        "SELECT kind, payload FROM task_events "
+        "WHERE task_id = ? AND kind IN ('gave_up', 'unblocked') "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None or row["kind"] != "gave_up":
+        return None
+    try:
+        payload = json.loads(row["payload"]) if row["payload"] else {}
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    for key in ("failures", "effective_limit"):
+        raw = payload.get(key)
+        if isinstance(raw, bool):
+            # ``int(True) == 1`` would pin every such card at the strictest
+            # possible threshold off a payload that never meant a number.
+            continue
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value >= 1:
+            return value
+    return None
+
+
 def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
     """``review`` when the newest lifecycle event carries a review
     ``resume_status``/``retry_status``/``source_status``, else ``ready`` (legacy)."""
@@ -2050,10 +2113,24 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
                     # counter is preserved so it accumulates across cycles.
                     failures = int(row["consecutive_failures"] or 0)
                     task_limit = row["max_retries"]
-                    effective_limit = (
-                        int(task_limit) if task_limit is not None
-                        else int(failure_limit)
-                    )
+                    if task_limit is not None:
+                        # Explicit per-task override — a human said how many
+                        # retries this card gets; that outranks everything.
+                        effective_limit = int(task_limit)
+                    else:
+                        # Honour the count the breaker
+                        # actually parked this card at (see
+                        # ``_breaker_trip_threshold``) instead of re-resolving
+                        # a threshold from whichever call site happens to be
+                        # sweeping. ``min`` on purpose: the recorded verdict
+                        # may only TIGHTEN the caller's limit, never loosen
+                        # it, so a card the caller would have held stays held
+                        # no matter what the payload says. No verdict → the
+                        # caller's value, i.e. behaviour unchanged.
+                        effective_limit = int(failure_limit)
+                        tripped_at = _breaker_trip_threshold(conn, task_id)
+                        if tripped_at is not None:
+                            effective_limit = min(effective_limit, tripped_at)
                     if failures >= effective_limit:
                         continue
                     conn.execute(

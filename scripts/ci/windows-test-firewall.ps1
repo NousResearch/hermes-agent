@@ -62,9 +62,6 @@ if ($Mode -eq "Run") {
     ) | ConvertFrom-Json
     if ($arguments -isnot [array]) { $arguments = @($arguments) }
     $password = ConvertTo-SecureString $state.ProtectedPassword
-    $credential = [Management.Automation.PSCredential]::new(
-        ".\$($state.User)", $password
-    )
     $python = (Resolve-Path ".venv/Scripts/python.exe").Path
     $entry = (Resolve-Path "scripts/ci/windows-restricted-test-entry.py").Path
     $repo = (Resolve-Path ".").Path
@@ -123,10 +120,22 @@ if ($Mode -eq "Run") {
         arguments = @($arguments)
     } | ConvertTo-Json -Compress -Depth 5
     $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($contract))
-    $process = Start-Process -FilePath $python `
-        -ArgumentList @("`"$entry`"", $encoded) `
-        -WorkingDirectory $repo -Credential $credential `
-        -LoadUserProfile -Wait -PassThru
+    # Start-Process flattens alternate-credential arguments into one command
+    # line and returns ERROR_INVALID_PARAMETER on hosted Windows. Build the
+    # ProcessStartInfo explicitly so .NET passes the local account domain and
+    # the two arguments to CreateProcessWithLogonW without re-parsing.
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $python
+    $start.ArgumentList.Add($entry)
+    $start.ArgumentList.Add($encoded)
+    $start.WorkingDirectory = $repo
+    $start.UserName = $state.User
+    $start.Domain = $env:COMPUTERNAME
+    $start.Password = $password
+    $start.UseShellExecute = $false
+    $start.LoadUserProfile = $true
+    $process = [Diagnostics.Process]::Start($start)
+    $process.WaitForExit()
     exit $process.ExitCode
 }
 

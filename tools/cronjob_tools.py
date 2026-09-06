@@ -376,16 +376,16 @@ def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[s
     block (parent sees what the job produced). Never raises."""
     try:
         from cron.jobs import get_cron_output_dir
-
         out_dir = get_cron_output_dir() / job_id
-        files = sorted(out_dir.glob("*.md"))
+        files = list(out_dir.glob("*.md"))
         if not files:
             return None
-        text = files[-1].read_text(encoding="utf-8-sig", errors="replace").strip()
+        latest = max(files, key=lambda path: (path.stat().st_mtime_ns, path.name)) if files else None
+        text = latest.read_text(encoding="utf-8-sig", errors="replace").strip()
         if not text:
             return None
         if len(text) > max_chars:
-            text = text[:max_chars] + f"\n… (truncated; full output: {files[-1]})"
+            text = text[:max_chars] + f"\n… (truncated; full output: {latest})"
         return text
     except Exception:
         return None

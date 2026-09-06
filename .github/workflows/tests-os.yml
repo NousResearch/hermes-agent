@@ -184,7 +184,7 @@ jobs:
             if [ "${{ inputs.desktop_updater }}" != "true" ]; then
               RESTRICTED_ARGS+=(-IgnoreDesktopUpdater)
             fi
-            powershell.exe -NoProfile -NonInteractive -File \
+          pwsh.exe -NoProfile -NonInteractive -File \
               scripts/ci/windows-run-hermetic-tests.ps1 \
               "${RESTRICTED_ARGS[@]}" || status=$?
           fi

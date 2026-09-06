@@ -8,6 +8,7 @@ import os
 import shutil
 import threading
 import time
+from typing import Any
 
 from rich.markup import escape as _escape
 
@@ -25,6 +26,20 @@ def _print_decision_message(decision: dict) -> bool:
     if msg:
         _cprint(f"  {msg}")
     return bool(msg)
+
+
+# Leading frames of the prompts the CLI itself puts on ``_pending_input``: goal continuations,
+# heartbeat / loop wakeups, process + delegation notifications, /browser system notes. None of
+# these is the user answering, so none may un-pause a goal waiting on user input.
+_SELF_INJECTED_TURN_PREFIXES = (
+    "[Continuing toward your standing goal]", "[Continuing toward this kanban task",
+    "[Heartbeat —", "[/loop wakeup", "[IMPORTANT: Background process",
+    "[ASYNC DELEGATION BATCH COMPLETE", "[System note:", "[System:",
+)
+
+
+def _is_self_injected_turn(text: Any) -> bool:
+    return isinstance(text, str) and text.lstrip().startswith(_SELF_INJECTED_TURN_PREFIXES)
 
 
 class CLILoopsMixin:
@@ -495,7 +510,16 @@ class CLILoopsMixin:
         via ``/goal resume``. Empty-response skip mirrors ``gateway/run.py``."""
         from cli import _DIM, _RST, _cprint, _looks_like_slash_command
         mgr = self._get_goal_manager()
-        if mgr is None or not mgr.is_active():
+        if mgr is None:
+            return
+        # A BLOCKED pause means the judge saw "needs user input"; the user just supplied it. Only a
+        # message the user typed counts — self-injected prompts (notifications, wakeups) do not.
+        last_input = getattr(self, "_last_turn_input_text", "")
+        if (last_input and not _is_self_injected_turn(last_input)
+                and not getattr(self, "_last_turn_interrupted", False)
+                and mgr.resume_for_user_input()):
+            _cprint(f"  ▶ Goal resumed: {mgr.state.goal}")
+        if not mgr.is_active():
             return
 
         # Slash commands don't count as "real user messages": they're dispatched via

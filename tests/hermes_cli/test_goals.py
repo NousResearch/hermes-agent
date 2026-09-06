@@ -833,3 +833,101 @@ class TestBlockedVerdict:
         assert mgr.state is not None
         assert mgr.state.status == "paused"
         assert "unachievable" in (mgr.state.paused_reason or "").lower()
+
+
+class TestBlockedGoalResumesOnUserInput:
+    """A BLOCKED pause means "the next step needs user input". When the user then sends a
+    real message, that message IS the input — the loop must pick the goal back up instead
+    of leaving it paused until the user discovers ``/goal resume``."""
+
+    @staticmethod
+    def _blocked_goal(session_id: str):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id=session_id)
+        mgr.set("run the two agent sessions end to end")
+        with patch(
+            "hermes_cli.goals.judge_goal",
+            return_value=("blocked", "needs the user to approve the login card", False, None, False),
+        ):
+            decision = mgr.evaluate_after_turn("I need your approval before copying the login.")
+        assert decision["status"] == "paused"
+        assert mgr.state.turns_used == 1
+        return mgr
+
+    def test_user_message_reactivates_a_blocked_goal(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = self._blocked_goal("blocked-resume-sid")
+
+        assert mgr.resume_for_user_input() is True
+        assert mgr.is_active()
+        assert mgr.state.paused_reason is None
+        # Continuing the same goal: the budget already spent stays spent.
+        assert mgr.state.turns_used == 1
+        assert GoalManager(session_id="blocked-resume-sid").is_active(), "reactivation must persist"
+
+    def test_reactivated_goal_judges_the_users_turn_and_continues(self, hermes_home):
+        mgr = self._blocked_goal("blocked-resume-judged")
+        assert mgr.resume_for_user_input() is True
+        with patch(
+            "hermes_cli.goals.judge_goal",
+            return_value=("continue", "approval given, sessions still pending", False, None, False),
+        ):
+            decision = mgr.evaluate_after_turn("Thanks — copying the login now and starting session A.")
+        assert decision["should_continue"] is True
+        assert decision["continuation_prompt"]
+        assert mgr.state.turns_used == 2
+
+    @pytest.mark.parametrize("pause_reason", ["user-paused", "user-interrupted (Ctrl+C)"])
+    def test_explicit_user_pause_is_not_undone_by_a_message(self, hermes_home, pause_reason):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id=f"explicit-pause-{pause_reason[:4]}")
+        mgr.set("ship the release")
+        mgr.pause(reason=pause_reason)
+
+        assert mgr.resume_for_user_input() is False
+        assert mgr.state.status == "paused"
+        assert mgr.state.paused_reason == pause_reason
+
+    def test_budget_pause_is_not_undone_by_a_message(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="budget-pause-sid")
+        mgr.set("ship the release", max_turns=1)
+        with patch(
+            "hermes_cli.goals.judge_goal",
+            return_value=("continue", "still going", False, None, False),
+        ):
+            decision = mgr.evaluate_after_turn("did one thing")
+        assert decision["status"] == "paused"
+
+        assert mgr.resume_for_user_input() is False
+        assert mgr.state.status == "paused"
+
+    def test_judge_failure_pause_is_not_undone_by_a_message(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="judge-failure-sid")
+        mgr.set("ship the release")
+        with patch(
+            "hermes_cli.goals.judge_goal",
+            return_value=("continue", "judge error: ConnectionError", False, None, True),
+        ):
+            for _ in range(goals.DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES):
+                decision = mgr.evaluate_after_turn("did one thing")
+        assert decision["status"] == "paused"
+
+        assert mgr.resume_for_user_input() is False
+        assert mgr.state.status == "paused"
+
+    def test_no_goal_or_active_goal_is_a_noop(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        assert GoalManager(session_id="no-goal-sid").resume_for_user_input() is False
+        mgr = GoalManager(session_id="active-goal-sid")
+        mgr.set("ship the release")
+        assert mgr.resume_for_user_input() is False
+        assert mgr.is_active()

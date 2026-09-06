@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -2010,6 +2011,20 @@ def _run_doc_header(job: dict, title: str, job_id: str, prompt: str) -> str:
     )
 
 
+def _run_error_section(error_msg: str, error_detail: str) -> str:
+    """``## Error`` block for a failed run's persisted output doc.
+
+    ``error_detail`` (the full traceback) is written to the on-disk output file only — it is never
+    delivered: the alert/notice stays shaped by ``_compose_run_delivery`` from the one-line
+    ``error_msg`` (the run tuple's error field). #104538: the doc previously carried only
+    ``"<Type>: <message>"`` (e.g. ``RuntimeError: Connection error.``), so an operator reading the
+    output file could not tell which connection failed or where. Falls back to ``error_msg`` if a
+    traceback is somehow unavailable.
+    """
+    detail = (error_detail or "").strip() or error_msg
+    return f"## Error\n\n```\n{detail}\n```\n"
+
+
 _RunResult = tuple[bool, str, str, Optional[str]]
 
 
@@ -2375,7 +2390,7 @@ def run_job(
             _audit.write({}, error_msg)
         output = (
             _run_doc_header(job, f"{job_name} (FAILED)", job_id, prompt)
-            + f"## Error\n\n```\n{error_msg}\n```\n"
+            + _run_error_section(error_msg, traceback.format_exc())
         )
         return False, output, "", error_msg
 

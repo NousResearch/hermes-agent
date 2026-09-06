@@ -62,7 +62,7 @@ corrupts `state.db`.
 
 **Result: PASS** (run 3×, stable — 7.2 s / 7.9 s runs).
 
-**Evidence B — in-process crash seam** (`test_session_provider_tdd.py::TestCrashRecovery::test_mid_write_crash_is_atomic_and_recovers`):
+**Evidence B — in-process crash seam** (`test_session_provider.py::TestCrashRecovery::test_mid_write_crash_is_atomic_and_recovers`):
 
 - The testing-only `_test_force_sigkill` flag (set from a `pre_commit` hook) hard-closes the
   connection **inside the transaction boundary, without commit** — the durable state a real
@@ -194,7 +194,7 @@ main:  7 failed, 22 passed, 1 skipped   ← identical failure set
 tests/session/test_session_multiprocess.py
   TestMultiProcessContention::test_concurrent_process_writers_commit_everything
   TestMidWriteProcessKill::test_sigkill_mid_write_leaves_database_consistent
-tests/session/test_session_provider_tdd.py
+tests/session/test_session_provider.py
   TestInterfaceEnforcement (4)  — ABC strictness, SessionDB conformance, signature parity
   TestFactory (3)               — default sqlite, explicit config, loud failure on unknown
   TestPayloadConcurrency (2)    — 4×10MB concurrent, 1×50MB roundtrip

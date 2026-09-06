@@ -3,7 +3,7 @@
 The ticket's failure modes are all CROSS-PROCESS: the CLI, gateway, cron scheduler, TUI and
 API server share one ``state.db``; SQLite WAL serializes writers at the OS level; and the
 "hot-update death spiral" is a process killed mid-write leaving a torn WAL. The in-process
-thread test in ``test_session_provider_tdd.py`` cannot see any of that — this module spawns
+thread test in ``test_session_provider.py`` cannot see any of that — this module spawns
 real worker processes against one database and pins the two contracts the RFC must not
 regress:
 

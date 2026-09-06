@@ -1,4 +1,5 @@
 """Worker configuration must admit the policy through real plugin discovery."""
+import importlib.metadata
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -91,6 +92,20 @@ def test_worker_readiness_rejects_user_override_without_completion_hooks(tmp_pat
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     assert worker_contract_enabled(tmp_path, "worker") is False
     assert not (plugin / "executed").exists()
+
+
+def test_worker_readiness_rejects_entrypoint_override_without_completion_hooks(tmp_path, monkeypatch):
+    from github_pr_feedback.worker_contract import worker_contract_enabled
+
+    worker = tmp_path / "profiles/worker"
+    worker.mkdir(parents=True)
+    (worker / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": ["github-pr-feedback"], "disabled": []}}))
+    monkeypatch.setattr(importlib.metadata, "entry_points", lambda: [
+        SimpleNamespace(group="hermes_agent.plugins", name="github-pr-feedback")
+    ])
+
+    assert worker_contract_enabled(tmp_path, "worker") is False
 
 
 def test_worker_readiness_accepts_manifest_declared_hooks_without_importing_worker(tmp_path):

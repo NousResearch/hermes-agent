@@ -1,4 +1,5 @@
 """Read worker opt-in state without loading another profile's plugins or secrets."""
+import importlib.metadata
 import json
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from hermes_cli.managed_scope import apply_managed_overlay
 
 
 _PLUGIN_NAME = "github-pr-feedback"
+_PLUGIN_ENTRY_POINT_GROUP = "hermes_agent.plugins"
 _REQUIRED_HOOKS = frozenset({"pre_tool_call", "pre_kanban_complete"})
 
 
@@ -65,6 +67,25 @@ def _resolved_declared_hooks(home: Path, project_root: Path | None = None) -> se
     return _declared_hooks(Path(__file__).resolve().parents[1])
 
 
+def _entrypoint_override_present() -> bool:
+    """Return whether an installed plugin wins the directory manifest."""
+    try:
+        entry_points = importlib.metadata.entry_points()
+        if hasattr(entry_points, "select"):
+            candidates = entry_points.select(group=_PLUGIN_ENTRY_POINT_GROUP)
+        elif isinstance(entry_points, dict):
+            candidates = entry_points.get(_PLUGIN_ENTRY_POINT_GROUP, ())
+        else:
+            candidates = (
+                entry_point for entry_point in entry_points
+                if getattr(entry_point, "group", None) == _PLUGIN_ENTRY_POINT_GROUP
+            )
+        return any(getattr(entry_point, "name", None) == _PLUGIN_NAME for entry_point in candidates)
+    except Exception:
+        # A metadata failure must not make doctor trust the bundled hooks.
+        return True
+
+
 def worker_contract_enabled(
     root: Path, assignee: str, *, project_root: Path | None = None
 ) -> bool:
@@ -87,6 +108,9 @@ def worker_contract_enabled(
             or not isinstance(disabled, list)
             or not all(isinstance(item, str) for item in disabled)
             or _PLUGIN_NAME in disabled):
+        return False
+
+    if _entrypoint_override_present():
         return False
 
     hooks = _resolved_declared_hooks(home, project_root)

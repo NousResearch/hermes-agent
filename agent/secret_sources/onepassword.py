@@ -221,9 +221,12 @@ def _run_op_read(op: Path, reference: str, *, account: str = "",
     Sends a desktop notification before calling ``op read`` so the user has context
     when the 1Password authorization prompt appears (Servetus informed-consent principle).
     """
-    # Notify the user BEFORE the op read call — this gives them context for the
-    # 1Password prompt that's about to appear
-    _notify_secret_access(reference, profile=profile, reason=reason)
+    # Only notify when the 1Password desktop prompt will actually fire —
+    # i.e., when there is NO service account token (op will fall back to
+    # desktop app integration and prompt the user). With a token, op read
+    # resolves silently and no notification is needed.
+    if not token_value:
+        _notify_secret_access(reference, profile=profile, reason=reason)
 
     cmd: List[str] = [str(op), "read"]
     if account:

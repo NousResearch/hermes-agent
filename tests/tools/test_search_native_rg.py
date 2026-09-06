@@ -26,16 +26,29 @@ def tree(tmp_path):
     return tmp_path
 
 
-def _ops(tree, spy):
-    env = LocalEnvironment(cwd=str(tree))
-    real = type(env).execute.__get__(env, type(env))
+@pytest.fixture(scope="module")
+def _local_env(tmp_path_factory):
+    """One real LocalEnvironment per module (constructing one costs ~0.8 s)."""
+    return LocalEnvironment(cwd=str(tmp_path_factory.mktemp("native-rg")))
 
-    def recording(command, *a, **kw):
-        spy.append(command)
-        return real(command, *a, **kw)
 
-    env.execute = recording
-    return ShellFileOperations(env, cwd=str(tree))
+@pytest.fixture
+def ops_factory(_local_env):
+    """``make(tree, spy)`` → ShellFileOperations over the shared env, every execute recorded in ``spy``."""
+    real = type(_local_env).execute.__get__(_local_env, type(_local_env))
+
+    def make(tree, spy):
+        _local_env.cwd = str(tree)
+
+        def recording(command, *a, **kw):
+            spy.append(command)
+            return real(command, *a, **kw)
+
+        _local_env.execute = recording
+        return ShellFileOperations(_local_env, cwd=str(tree))
+
+    yield make
+    _local_env.__dict__.pop("execute", None)
 
 
 def _normalized(result):
@@ -46,7 +59,7 @@ def _normalized(result):
     return d
 
 
-def test_native_search_never_touches_the_shell_and_matches_shell_results(tree, monkeypatch):
+def test_native_search_never_touches_the_shell_and_matches_shell_results(tree, ops_factory, monkeypatch):
     cases = [
         dict(pattern="needle", path=str(tree)),
         # (no offset/limit slicing here: rg's parallel walk orders files
@@ -59,17 +72,17 @@ def test_native_search_never_touches_the_shell_and_matches_shell_results(tree, m
     ]
     for case in cases:
         monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
-        shell = _normalized(_ops(tree, []).search(**case))
+        shell = _normalized(ops_factory(tree, []).search(**case))
         monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "1")
         calls = []
-        native = _normalized(_ops(tree, calls).search(**case))
+        native = _normalized(ops_factory(tree, calls).search(**case))
         assert native == shell, case
         # rg resolution (``command -v rg``) still goes through the shell once; the
         # existence probe and the rg pipeline itself must not.
         assert not [c for c in calls if "pipefail" in c or c.startswith("test -e")], case
 
 
-def test_native_runner_honours_deadline_and_interrupt_while_rg_is_silent(tree, monkeypatch):
+def test_native_runner_honours_deadline_and_interrupt_while_rg_is_silent(tree, ops_factory, monkeypatch):
     """A search producing no output must still stop at the deadline / on /stop
     (the shell path gets this from ``_wait_for_process``)."""
     import threading
@@ -77,7 +90,7 @@ def test_native_runner_honours_deadline_and_interrupt_while_rg_is_silent(tree, m
 
     from tools import interrupt
 
-    ops = _ops(tree, [])
+    ops = ops_factory(tree, [])
     started = time.monotonic()
     result = ops._run_rg_native(["sh", "-c", "'sleep 30'"], 5, timeout=1)
     assert result.exit_code == 124 and time.monotonic() - started < 5
@@ -92,10 +105,10 @@ def test_native_runner_honours_deadline_and_interrupt_while_rg_is_silent(tree, m
     assert result.exit_code == 130 and time.monotonic() - started < 5
 
 
-def test_kill_switch_routes_search_back_to_the_shell(tree, monkeypatch):
+def test_kill_switch_routes_search_back_to_the_shell(tree, ops_factory, monkeypatch):
     monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
     calls = []
-    result = _ops(tree, calls).search(pattern="needle", path=str(tree))
+    result = ops_factory(tree, calls).search(pattern="needle", path=str(tree))
     assert result.total_count == 4
     assert any(c.startswith("test -e") for c in calls)
     assert any("pipefail" in c and "rg" in c for c in calls)

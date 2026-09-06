@@ -387,6 +387,18 @@ class SearchMixin:
         # left the pipeline at 0 unless rg itself already failed.
         return ExecuteResult(stdout=stdout, exit_code=0 if bounded.is_set() else proc.returncode)
 
+    def _run_rg_bounded(self, words: List[str], fetch_limit: int, timeout: int, *,
+                        merge_stderr: bool = False, native_ok: bool = True,
+                        shell_prefix: str = "") -> ExecuteResult:
+        """Run an rg command (shell-quoted words) and keep the first ``fetch_limit``
+        lines: natively on a local POSIX host, else through the backend shell as
+        ``<prefix><words> | head -n N``. ``native_ok=False`` keeps a form the native
+ lane cannot express (the multi-root ``cd`` prefix); ``shell_prefix`` is shell-only."""
+        if native_ok and self._native_read_enabled():
+            return self._run_rg_native(words, fetch_limit, timeout, merge_stderr=merge_stderr)
+        stderr = "" if merge_stderr else " 2>/dev/null"
+        return self._exec(f"{shell_prefix}{' '.join(words)}{stderr} | head -n {fetch_limit}", timeout=timeout)
+
     def _quote_executable(self, executable: str) -> str:
         """Quote an executable without leaking controller path semantics."""
         if re.fullmatch(r"[A-Za-z0-9_.-]+", executable):
@@ -588,10 +600,7 @@ class SearchMixin:
                 glob_expr_probe = glob_expr
             probe_words = [rg, flags, "--count-matches", glob_expr_probe,
                            self._escape_shell_arg(pattern), self._escape_native_tool_arg(path)]
-            if self._native_read_enabled():
-                probe = self._run_rg_native(probe_words, 50, timeout=30)
-            else:
-                probe = self._exec(" ".join(probe_words) + " 2>/dev/null | head -50", timeout=30)
+            probe = self._run_rg_bounded(probe_words, 50, timeout=30)
             total, per_file = 0, []
             for line in (probe.stdout or "").strip().splitlines():
                 p, _sep, n = line.rpartition(":")
@@ -771,10 +780,8 @@ class SearchMixin:
         # ``--`` terminates options so a dash-prefixed root is never parsed as a flag.
         rg_cmd = (f"{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
                   f"{exclusion_args} -- {root_args}")
-        if not scoped_common and self._native_read_enabled():
-            result = self._run_rg_native([rg_cmd], fetch_limit, timeout=60)
-        else:
-            result = self._exec(f"set -o pipefail; {cd_prefix}{rg_cmd} 2>/dev/null | head -n {fetch_limit}", timeout=60)
+        result = self._run_rg_bounded([rg_cmd], fetch_limit, timeout=60, native_ok=not scoped_common,
+                                      shell_prefix=f"set -o pipefail; {cd_prefix}")
         stdout, limit_reason = _search_stdout_and_limit(result)
         all_files = [f for f in stdout.splitlines() if f]
         if scoped_common:
@@ -830,13 +837,14 @@ class SearchMixin:
         (grep): bounds giant single-line matches at the pipe layer; skipped for
         files_only/count where lines are paths/counts."""
         fetch_limit = limit + offset + (200 if context > 0 else 0)
-        if not line_cap and self._native_read_enabled():
-            result = self._run_rg_native(cmd_parts, fetch_limit, timeout=60, merge_stderr=True)
-            return _parse_search_output(result, output_mode, limit, offset, context, warning=warning)
-        parts = cmd_parts + ["|", "head", "-n", str(fetch_limit)]
-        if line_cap and output_mode not in ("files_only", "count"):
-            parts += ["|", "cut", "-c1-2000"]
-        result = self._exec("set -o pipefail; " + " ".join(parts), timeout=60)
+        if line_cap:  # grep/find pipelines: shell only, with the column cap
+            parts = cmd_parts + ["|", "head", "-n", str(fetch_limit)]
+            if output_mode not in ("files_only", "count"):
+                parts += ["|", "cut", "-c1-2000"]
+            result = self._exec("set -o pipefail; " + " ".join(parts), timeout=60)
+        else:
+            result = self._run_rg_bounded(cmd_parts, fetch_limit, timeout=60, merge_stderr=True,
+                                          shell_prefix="set -o pipefail; ")
         return _parse_search_output(result, output_mode, limit, offset, context, warning=warning)
 
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],

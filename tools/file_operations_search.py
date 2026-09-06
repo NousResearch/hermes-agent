@@ -514,7 +514,7 @@ class SearchMixin:
                 glob_expr_probe = glob_expr
             probe = self._exec(
                 f"{rg} {flags} --count-matches{glob_expr_probe} "
-                f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
+                f"-e {self._escape_shell_arg(pattern)} -- {self._escape_native_tool_arg(path)} "
                 f"2>/dev/null | head -50",
                 timeout=30)
             total, per_file = 0, []
@@ -784,7 +784,9 @@ class SearchMixin:
             cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
         if output_mode in _OUTPUT_MODE_FLAGS:
             cmd_parts.append(_OUTPUT_MODE_FLAGS[output_mode])
-        cmd_parts.append(self._escape_shell_arg(pattern))
+        # -e takes the pattern as a VALUE so leading dashes are never parsed
+        # as flags; -- ends option parsing so dash-prefixed paths stay paths.
+        cmd_parts.extend(["-e", self._escape_shell_arg(pattern), "--"])
         # rg is a native Windows binary (winget/cargo/choco): needs C:/... not MSYS /c/...
         cmd_parts.append(self._escape_native_tool_arg(path))
         ml_note = (
@@ -803,7 +805,9 @@ class SearchMixin:
             parts.extend(["--include", self._escape_shell_arg(file_glob)])
         if output_mode in _OUTPUT_MODE_FLAGS:
             parts.append(_OUTPUT_MODE_FLAGS[output_mode])
-        parts.append(self._escape_shell_arg(pattern))
+        # -e takes the pattern as a VALUE so leading dashes are never parsed
+        # as flags; -- ends option parsing so dash-prefixed paths stay paths.
+        parts.extend(["-e", self._escape_shell_arg(pattern), "--"])
         return parts
 
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],

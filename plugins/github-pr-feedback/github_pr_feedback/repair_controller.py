@@ -253,6 +253,14 @@ class RepairController:
                 ):
                     skipped["branch_not_allowed"] += 1
                     continue
+                from .ledger_conflict_supersession import reconcile_inactive_conflicts
+
+                reconciled = reconcile_inactive_conflicts(
+                    self._ledger, self._kanban, self._github, pull,
+                    board=self._policy.board or "",
+                )
+                if reconciled:
+                    skipped["superseded_inactive_conflicts"] += reconciled
                 base_refresh_required = bool(
                     base_head is not None
                     and merge_policy is not None

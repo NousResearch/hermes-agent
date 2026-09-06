@@ -652,7 +652,10 @@ class EmailAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Send an email reply to the given address."""
+        """Email's text egress: deliver user replies, suppress classified gateway control/status traffic."""
+        if metadata and any(metadata.get(key) for key in ("is_approval_prompt", "_interim_send", "non_conversational")):
+            logger.debug("[Email] Suppressed gateway system message")
+            return SendResult(success=True)
         return await self._run_send(self._send_email, (chat_id, content, reply_to), "[Email] Send failed to %s: %s", chat_id)
 
     def _message_id_domain(self) -> str:

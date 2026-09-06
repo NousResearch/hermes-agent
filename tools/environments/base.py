@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from hermes_constants import get_hermes_home
-from tools.interrupt import consume_yield, is_interrupted, is_thread_interrupted
+from tools.interrupt import consume_yield, is_interrupted, is_thread_interrupted, start_if_not_interrupted
 from tools.environments.base_output import (
     ProcessHandle, _finalize_wait_result, _new_output_collector, _start_drain_thread,
 )
@@ -530,7 +530,11 @@ class BaseEnvironment(ABC):
         def _spawn_and_wait() -> dict:
             if parent_activity_cb is not None:
                 set_activity_callback(parent_activity_cb)
-            spawned = self._run_bash(wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin)
+            started, spawned = start_if_not_interrupted(
+                lambda: self._run_bash(wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin),
+                thread_id=parent_tid)
+            if not started:
+                return {"output": "", "returncode": 130, "_process_start_cancelled": True}
             proc_holder.append(spawned)
             return self._wait_for_process(
                 spawned, timeout=effective_timeout, bounded_capture=bounded_capture,

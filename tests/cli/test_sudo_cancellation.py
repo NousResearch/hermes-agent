@@ -10,6 +10,7 @@ import pytest
 
 from cli import HermesCLI
 from tools.environments.base import BaseEnvironment
+from tools.interrupt import set_interrupt
 import tools.terminal_tool as terminal
 import tools.terminal_tool_sudo as sudo
 
@@ -36,7 +37,7 @@ def _wait(predicate):
     assert predicate(), "worker did not reach expected state"
 
 
-@pytest.mark.parametrize("response", ["escape", "interrupt", "empty", "password", "timeout"])
+@pytest.mark.parametrize("response", ["escape", "interrupt", "empty", "password", "timeout", "post-submit-interrupt"])
 def test_sudo_ui_decision_controls_execution(monkeypatch, tmp_path, response):
     cli = _cli()
     calls = []
@@ -44,6 +45,12 @@ def test_sudo_ui_decision_controls_execution(monkeypatch, tmp_path, response):
     class Env(BaseEnvironment):
         def _before_execute(self):
             pass
+
+        def _prepare_command(self, command):
+            result = super()._prepare_command(command)
+            if response == "post-submit-interrupt":
+                set_interrupt(True)
+            return result
 
         def _run_bash(self, command, **kwargs):
             calls.append((command, kwargs.get("stdin_data")))
@@ -76,6 +83,7 @@ def test_sudo_ui_decision_controls_execution(monkeypatch, tmp_path, response):
             result.update(json.loads(terminal.terminal_tool("sudo true", force=True)))
         finally:
             terminal.set_sudo_password_callback(None)
+            set_interrupt(False)
 
     worker = threading.Thread(target=run, daemon=True)
     worker.start()
@@ -91,11 +99,11 @@ def test_sudo_ui_decision_controls_execution(monkeypatch, tmp_path, response):
             # The prompt owns its deadline; shortening its published state simulates expiry.
             cli._sudo_state["deadline"] = cli._sudo_deadline
         else:
-            cli._app.current_buffer.text = "secret" if response == "password" else ""
+            cli._app.current_buffer.text = "secret" if response in ("password", "post-submit-interrupt") else ""
             assert cli._tui_enter_overlay(SimpleNamespace(app=cli._app))
         worker.join(3)
         assert not worker.is_alive()
-        if response in ("escape", "interrupt"):
+        if response in ("escape", "interrupt", "post-submit-interrupt"):
             assert result.get("status") == "cancelled", result
             assert result["exit_code"] == 130
             assert calls == []

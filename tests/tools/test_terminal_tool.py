@@ -158,6 +158,7 @@ def test_count_real_sudo_invocations_ignores_mentions(monkeypatch):
 def test_sudo_callback_outcome_and_credential_precedence(monkeypatch, tmp_path, kind, response):
     """Both dispatch wrappers preserve dismissal; existing credential sources bypass prompting."""
     import tools.process_registry as registry_module
+    from tools.interrupt import is_interrupted, set_interrupt
     sudo = terminal_tool_sudo
     calls = []
     callback_calls = []
@@ -169,6 +170,7 @@ def test_sudo_callback_outcome_and_credential_precedence(monkeypatch, tmp_path, 
         sudo._set_cached_sudo_password("cached-secret")
 
     def execute(*_args, **_kwargs):
+        assert not is_interrupted()  # stale approval-wait interrupt cleared in either dispatch mode
         # NOPASSWD is now a backend-scoped probe supplied by BaseEnvironment;
         # exercise that callback seam without probing the host in this fake env.
         transformed = sudo._transform_sudo_command(
@@ -190,6 +192,7 @@ def test_sudo_callback_outcome_and_credential_precedence(monkeypatch, tmp_path, 
     monkeypatch.setitem(terminal_tool._last_activity, "sudo-dispatch", 0)
     monkeypatch.setattr(registry_module, "process_registry", Registry())
     try:
+        set_interrupt(True)
         result = json.loads(terminal_tool.terminal_tool("sudo true", background=kind == "background", force=True))
         if response is None:
             assert result["status"] == "cancelled"
@@ -203,3 +206,4 @@ def test_sudo_callback_outcome_and_credential_precedence(monkeypatch, tmp_path, 
         assert len(callback_calls) == (0 if response in ("cached", "configured", "nopasswd") else 1)
     finally:
         terminal_tool.set_sudo_password_callback(None)
+        set_interrupt(False)

@@ -354,6 +354,31 @@ class TestProxyModeIsolation(unittest.TestCase):
         restored = SessionSource.from_dict(_email_source().to_dict())
         self.assertFalse(gr._proxy_delegation_allowed(restored))
 
+    def test_absent_adapter_local_resolution_fails_closed_for_email(self):
+        """Reviewer-blocker regression (PR #103977): denying the proxy must not fall
+        through to a tool-bearing LOCAL run. A restored source (wire flags dropped by
+        serialization) with no live adapter and a config full of email tools resolves
+        to zero toolsets — TestFinalToolAssembly proves [] means zero schemas at the
+        AIAgent assembly point, so the local fallback is tool-free too."""
+        gr = _make_runner(None)
+        restored = SessionSource.from_dict(_email_source().to_dict())
+        self.assertFalse(restored.email_zero_tools)
+        res = GatewayRunner._resolve_enabled_toolsets_for_source(
+            gr, BASE_CONFIG, restored, "email"
+        )
+        self.assertEqual(res, [])
+
+    def test_absent_adapter_keeps_defaults_for_other_platforms(self):
+        """The unresolved-authority rule is email-scoped: other platforms with a
+        missing adapter keep the legacy default resolution."""
+        gr = _make_runner(None)
+        src = SessionSource(
+            platform=SessionPlatform.TELEGRAM, chat_id="123", chat_type="dm"
+        )
+        cfg = {"platform_toolsets": {"telegram": ["web"]}}
+        res = GatewayRunner._resolve_enabled_toolsets_for_source(gr, cfg, src, "telegram")
+        self.assertEqual(res, sorted(_get_platform_tools(cfg, "telegram")))
+
     def test_raising_adapter_denies_proxy_delegation(self):
         adapter = _make_adapter()
         adapter.toolsets_for_source = lambda source: (_ for _ in ()).throw(

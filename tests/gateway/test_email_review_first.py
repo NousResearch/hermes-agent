@@ -627,6 +627,44 @@ class TestStrictAuthservPinning(unittest.TestCase):
         ])
         self.assertFalse(ok)
 
+    def test_dkim_pass_with_only_header_from_fails_strict(self):
+        """header.from is the attacker-visible identity, not a signing identity — strict
+        DKIM accepts only header.d (identity semantics per #56608, enforced here because
+        the verdict becomes SMTP send authority)."""
+        ok, _ = self._verify([
+            ("Authentication-Results", "purelymail.com; dkim=pass header.from=gmail.com"),
+            ("Received", self.RECEIVED),
+        ])
+        self.assertFalse(ok)
+
+    def test_aligned_scoped_dkim_authenticates_strict(self):
+        ok, reason = self._verify([
+            ("Authentication-Results", "purelymail.com; dkim=pass header.d=gmail.com"),
+            ("Received", self.RECEIVED),
+        ])
+        self.assertTrue(ok)
+        self.assertEqual(reason, "dkim=pass aligned")
+
+    def test_cross_method_property_leak_fails_strict(self):
+        """A header.d recorded in the SPF clause proves nothing about DKIM: strict
+        properties are scoped to the clause that produced them (per #56608)."""
+        ok, _ = self._verify([
+            ("Authentication-Results",
+             "purelymail.com; spf=pass smtp.mailfrom=evil.example header.d=gmail.com; dkim=pass"),
+            ("Received", self.RECEIVED),
+        ])
+        self.assertFalse(ok)
+
+    def test_duplicate_method_clauses_are_ambiguous_strict(self):
+        """Two dmarc clauses inside one server-stamped value cannot be disambiguated —
+        that method fails closed even when both claim pass."""
+        ok, _ = self._verify([
+            ("Authentication-Results",
+             "purelymail.com; dmarc=pass header.from=gmail.com; dmarc=pass header.from=gmail.com"),
+            ("Received", self.RECEIVED),
+        ])
+        self.assertFalse(ok)
+
     def test_dmarc_pass_for_misaligned_domain_never_authenticates(self):
         """DMARC vouches only for the identity it evaluated (header.from). A
         legitimately-passing message for evil.example must not authenticate a
@@ -753,6 +791,65 @@ class TestUntrustedAbuseLimits(unittest.TestCase):
         self.assertEqual(adapter._untrusted_draft_limit_per_sender_hour, 4)
         adapter = _make_adapter(untrusted_draft_limit_global_hour=-5)
         self.assertEqual(adapter._untrusted_draft_limit_global_hour, 20)
+
+
+class TestProvenanceMinting(unittest.TestCase):
+    """gateway_internal_send is send AUTHORITY under review_first, so only gateway-OWNED
+    outbound work (home-channel lifecycle broadcasts, DeliveryRouter delivery) may mint it.
+    The shared status helper — which also wraps turn-local heartbeats/status/progress —
+    must never mint it (reviewer blocker on PR #103977)."""
+
+    def test_shared_status_helper_never_mints_email_provenance(self):
+        from gateway.run import _non_conversational_metadata
+        from gateway.session import Platform as SessionPlatform
+
+        meta = _non_conversational_metadata({"thread_id": "x"}, platform=SessionPlatform.EMAIL)
+        self.assertNotIn("gateway_internal_send", meta or {})
+        self.assertIsNone(_non_conversational_metadata(None, platform=SessionPlatform.EMAIL))
+
+    def test_lifecycle_helper_mints_for_email_only(self):
+        from gateway.run import _gateway_internal_send_metadata
+        from gateway.session import Platform as SessionPlatform
+
+        meta = _gateway_internal_send_metadata(None, platform=SessionPlatform.EMAIL)
+        self.assertIs(meta.get("gateway_internal_send"), True)
+        self.assertIsNone(_gateway_internal_send_metadata(None, platform=SessionPlatform.TELEGRAM))
+
+    def test_interim_sends_suppressed_under_review_first(self):
+        """A mid-turn heartbeat/status send (marked _interim_send) produces neither SMTP
+        traffic nor a draft — even fully anchored and trusted, its authority is the
+        in-flight turn's and email is not a streaming surface."""
+        import asyncio
+
+        adapter = _make_adapter()
+        adapter._record_message_trust(ARMEN, "<hb@gmail.com>", True)
+        smtp = MagicMock()
+        imap = _mock_imap()
+        with patch.dict(os.environ, _BASE_ENV, clear=False), \
+             patch("imaplib.IMAP4_SSL", return_value=imap), \
+             patch("smtplib.SMTP", return_value=smtp):
+            result = asyncio.run(adapter.send(
+                ARMEN, "still on it",
+                metadata={"_interim_send": True, "reply_to_message_id": "<hb@gmail.com>"},
+            ))
+        self.assertTrue(result.success)
+        self.assertIsNone(result.disposition)
+        smtp.send_message.assert_not_called()
+        imap.append.assert_not_called()
+
+    def test_interim_sends_unchanged_under_direct_policy(self):
+        import asyncio
+
+        adapter = _make_adapter(outbound_policy="")
+        smtp = MagicMock()
+        imap = _mock_imap()
+        with patch.dict(os.environ, _BASE_ENV, clear=False), \
+             patch("imaplib.IMAP4_SSL", return_value=imap), \
+             patch("smtplib.SMTP", return_value=smtp):
+            result = asyncio.run(adapter.send(STRANGER, "progress", metadata={"_interim_send": True}))
+        self.assertTrue(result.success)
+        self.assertEqual(result.disposition, "sent")
+        smtp.send_message.assert_called_once()
 
 
 class TestYamlConfigBridge(unittest.TestCase):

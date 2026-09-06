@@ -2084,6 +2084,13 @@ class GatewayTurnMixin:
             if getattr(adapter, "toolsets_override_fail_closed", False):
                 return []
             override = None
+        if adapter is None and platform_key == "email":
+            # The email adapter is the only authority on the outbound policy (review_first ⇒
+            # zero tools). With no live adapter — e.g. a restored/redelivered source before the
+            # platform connects — that authority is unresolved, so the turn's tools fail closed
+            # to zero rather than falling through to configured defaults. This also makes
+            # _proxy_delegation_allowed derive the same refusal from effective toolsets.
+            return []
         if isinstance(override, list) and not override:
             return []
         if override and isinstance(override, list):

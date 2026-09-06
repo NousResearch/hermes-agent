@@ -325,13 +325,61 @@ def _select_strict_auth_header(msg: email_lib.message.Message, authserv_id: str)
     return candidates[0][1], ""
 
 
+_STRICT_CLAUSE_METHOD_RE = re.compile(r"^\s*(dmarc|dkim|spf)\s*=\s*([a-z0-9]+)", re.IGNORECASE)
+
+
+def _strict_authentication_verdict(trusted: str, from_domain: str) -> Tuple[bool, str]:
+    """Method-scoped evaluation of one server-stamped Authentication-Results value (review_first).
+
+    RFC 8601 resinfo units are ``;``-separated clauses, each opening with ``method=result``; a
+    property binds only to the clause that produced it (a ``header.d`` sitting in an spf clause
+    proves nothing about DKIM), and DKIM accepts ONLY an aligned ``header.d`` — never
+    ``header.from``, which is the attacker-controlled visible identity, not a signing identity.
+    Duplicate clauses for the same method are ambiguous and fail that method closed, as do
+    clauses this parser cannot recognize as opening with a known method. Scoping and identity
+    semantics follow the direction of #56608 (method-scoped AR properties, DKIM identity), which
+    owns the repo-wide legacy parser under the #103093 tracker with authserv trust-topology in
+    #88560; they are enforced here independently because under review_first this verdict becomes
+    automatic SMTP send authority."""
+    clauses: Dict[str, Optional[Tuple[str, Dict[str, str]]]] = {}
+    for raw_clause in trusted.split(";")[1:]:  # segment 0 is the authserv-id
+        m = _STRICT_CLAUSE_METHOD_RE.match(raw_clause)
+        if not m:
+            continue
+        method, result = m.group(1).lower(), m.group(2).lower()
+        props = {p.lower(): v.strip().strip('"') for p, v in _AUTH_PROP_RE.findall(raw_clause)}
+        clauses[method] = None if method in clauses else (result, props)
+
+    def _clause(method: str) -> Tuple[str, Dict[str, str]]:
+        entry = clauses.get(method)
+        return entry if entry else ("", {})
+
+    result, props = _clause("dmarc")
+    if result == "pass":
+        hf = props.get("header.from", "")
+        dmarc_domain = _domain_of(hf) if "@" in hf else hf
+        if dmarc_domain and _domains_aligned(dmarc_domain, from_domain):
+            return True, "dmarc=pass"
+    result, props = _clause("spf")
+    if result == "pass":
+        spf_domain = _domain_of(props.get("smtp.mailfrom", "")) or props.get("smtp.from", "") or props.get("envelope-from", "")
+        if _domains_aligned(_domain_of(spf_domain) if "@" in spf_domain else spf_domain, from_domain):
+            return True, "spf=pass aligned"
+    result, props = _clause("dkim")
+    if result == "pass" and _domains_aligned(props.get("header.d", ""), from_domain):
+        return True, "dkim=pass aligned"
+    return False, f"authentication failed ({trusted[:120]})"
+
+
 def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str, *, authserv_id: str = "",
                                   strict: bool = False) -> Tuple[bool, str]:
     """Verify the ``From:`` domain is authenticated; returns ``(authenticated, reason)``.
     ``From:`` is attacker-controlled (GHSA-rxqh-5572-8m77); the only trustworthy signal is the
     ``Authentication-Results`` header stamped by the *receiving* server. It prepends, so the FIRST
     instance is trusted and an injected copy sorts below it; pinned to *authserv_id* when given.
-    *strict* (review_first) hardens the selection via :func:`_select_strict_auth_header`.
+    *strict* (review_first) hardens the selection via :func:`_select_strict_auth_header` and
+    evaluates it with :func:`_strict_authentication_verdict` (method-scoped properties, no DKIM
+    ``header.from`` fallback).
     True on DMARC pass, aligned SPF pass, or aligned DKIM (``header.d``) pass. No header → fail-closed
     (opt out via ``EmailAdapter._require_authenticated_sender``)."""
     from_domain = _domain_of(from_addr)
@@ -343,10 +391,10 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
         trusted, reason = _select_strict_auth_header(msg, authserv_id)
         if trusted is None:
             return False, reason
-    else:
-        values = (" ".join(str(raw).split()) for raw in headers)  # authserv-id precedes the first ';'
-        trusted = next((v for v in values if not authserv_id or (serv := v.split(";", 1)[0].strip().lower()) == authserv_id.lower()
-                        or _domains_aligned(serv, authserv_id)), None)
+        return _strict_authentication_verdict(trusted, from_domain)
+    values = (" ".join(str(raw).split()) for raw in headers)  # authserv-id precedes the first ';'
+    trusted = next((v for v in values if not authserv_id or (serv := v.split(";", 1)[0].strip().lower()) == authserv_id.lower()
+                    or _domains_aligned(serv, authserv_id)), None)
     if trusted is None:
         return False, "no Authentication-Results from trusted authserv-id"
     methods = {m.lower(): r.lower() for m, r in _AUTH_METHOD_RE.findall(trusted)}
@@ -355,14 +403,12 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
         # DMARC enforces alignment only for the identity it evaluated (header.from) — that
         # domain must itself align with the parsed From: domain, or a legitimately-passing
         # third-party message whose From: was mis-extracted (display-name spoof) would be
-        # trusted. Strict mode requires the recorded header.from; legacy accepts a server
-        # that did not record one, but a recorded misaligned domain never authenticates —
-        # aligned SPF/DKIM below may still vouch for the actual From: domain.
+        # trusted. Legacy accepts a server that did not record header.from, but a recorded
+        # misaligned domain never authenticates — aligned SPF/DKIM below may still vouch for
+        # the actual From: domain.
         hf = props.get("header.from", "")
         dmarc_domain = _domain_of(hf) if "@" in hf else hf
-        if dmarc_domain and _domains_aligned(dmarc_domain, from_domain):
-            return True, "dmarc=pass"
-        if not dmarc_domain and not strict:
+        if not dmarc_domain or _domains_aligned(dmarc_domain, from_domain):
             return True, "dmarc=pass"
     if methods.get("spf") == "pass":  # envelope/MAIL FROM domain must align with From
         spf_domain = _domain_of(props.get("smtp.mailfrom", "")) or props.get("smtp.from", "") or props.get("envelope-from", "")
@@ -854,6 +900,13 @@ class EmailAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an email reply to the given address (or draft it for review)."""
+        if self._outbound_policy == "review_first" and (metadata or {}).get("_interim_send"):
+            # Mid-turn status/heartbeat sends (marked by the gateway's _interim_metadata) are
+            # dropped under review_first: email is not a streaming surface, their authority is
+            # the inbound turn's, and neither an SMTP send nor a Drafts entry per heartbeat is
+            # acceptable. The turn-final reply still passes the full trust decision.
+            logger.debug("[Email] Suppressing mid-turn interim send to %s under review_first", chat_id)
+            return SendResult(success=True)
         return await self._run_send(self._send_email, (chat_id, content, reply_to, metadata), "[Email] Send failed to %s: %s", chat_id)
 
     def _message_id_domain(self) -> str:

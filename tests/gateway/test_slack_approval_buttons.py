@@ -95,6 +95,7 @@ class TestSlackExecApproval:
             command="rm -rf /important",
             session_key="agent:main:slack:group:C1:1111",
             description="dangerous deletion",
+            metadata={"_gateway_approval_request_id": "request-1"},
         )
 
         assert result.success is True
@@ -117,9 +118,11 @@ class TestSlackExecApproval:
         assert "hermes_approve_session" in action_ids
         assert "hermes_approve_always" in action_ids
         assert "hermes_deny" in action_ids
-        # Each button carries the session key as value
-        for e in elements:
-            assert e["value"] == "agent:main:slack:group:C1:1111"
+        tokens = {element["value"] for element in elements}
+        assert len(tokens) == 1
+        token = tokens.pop()
+        assert token != "agent:main:slack:group:C1:1111"
+        assert adapter._approval_state[token][:2] == ("agent:main:slack:group:C1:1111", "request-1")
 
     @pytest.mark.asyncio
     async def test_smart_deny_owner_override_hides_persistent_buttons(self):
@@ -130,6 +133,7 @@ class TestSlackExecApproval:
         await adapter.send_exec_approval(
             chat_id="C1", command="rm -rf /", session_key="s",
             allow_permanent=False, smart_denied=True,
+            metadata={"_gateway_approval_request_id": "request-1"},
         )
 
         kwargs = mock_client.chat_postMessage.call_args.kwargs
@@ -153,7 +157,7 @@ class TestSlackApprovalAction:
         """Interaction payload re-escapes HTML entities; text must be capped."""
         adapter = _make_adapter()
         _attach_auth_runner(adapter)
-        adapter._approval_resolved["1.2"] = False
+        adapter._approval_state["approval-token"] = ("session-key", "request-1", frozenset({"once"}))
 
         # Simulate Slack re-escaping: original was ~2990 chars, but & → &amp;
         # etc. inflates it past 3000.
@@ -167,13 +171,14 @@ class TestSlackApprovalAction:
             "channel": {"id": "C1"},
             "user": {"name": "alice", "id": "U_ALICE"},
         }
-        action = {"action_id": "hermes_approve_once", "value": "session-key"}
+        action = {"action_id": "hermes_approve_once", "value": "approval-token"}
 
         mock_client = adapter._team_clients["T1"]
         mock_client.chat_update = AsyncMock()
 
-        with patch("tools.approval.resolve_gateway_approval", return_value=1):
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
             await adapter._handle_approval_action(ack, body, action)
+        resolve.assert_called_once_with("session-key", "once", request_id="request-1")
 
         update_kwargs = mock_client.chat_update.call_args[1]
         section_text = update_kwargs["blocks"][0]["text"]["text"]
@@ -182,7 +187,7 @@ class TestSlackApprovalAction:
     @pytest.mark.asyncio
     async def test_global_allowlist_blocks_unauthorized_click(self, monkeypatch):
         adapter = _make_adapter()
-        adapter._approval_resolved["1234.5678"] = False
+        adapter._approval_state["approval-token"] = ("session-key", "request-1", frozenset({"once"}))
         monkeypatch.delenv("SLACK_ALLOWED_USERS", raising=False)
         monkeypatch.delenv("SLACK_ALLOW_ALL_USERS", raising=False)
         monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
@@ -196,7 +201,7 @@ class TestSlackApprovalAction:
         }
         action = {
             "action_id": "hermes_approve_once",
-            "value": "agent:main:slack:group:C1:1111",
+            "value": "approval-token",
         }
 
         with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
@@ -236,7 +241,7 @@ class TestSlackSlashConfirmAction:
         """Interaction payload re-escapes HTML entities; text must be capped."""
         adapter = _make_adapter()
         _attach_auth_runner(adapter)
-        adapter._approval_resolved["2222.3333"] = False
+        adapter._slash_confirm_state["confirm-token"] = ("session-key", "confirm-1")
 
         # Simulate Slack re-escaping inflating text past 3000 chars.
         inflated_text = "b" * 2990 + "&lt;" * 10  # 2990 + 40 = 3030 chars
@@ -251,7 +256,7 @@ class TestSlackSlashConfirmAction:
         }
         action = {
             "action_id": "hermes_confirm_once",
-            "value": "agent:main:slack:group:C1:1111|confirm-1",
+            "value": "confirm-token",
         }
 
         mock_client = adapter._team_clients["T1"]
@@ -840,3 +845,88 @@ class TestSlackReactionAuthorizationGate:
         assert "U_RANDO" in runner.auth_checked
         assert runner.handled == []
         adapter.handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", [
+    "expired", "text_resolved", "forged", "replayed", "valid", "unauthorized", "missing_id", "unoffered_choice"])
+async def test_exec_button_resolves_only_its_registered_request(case, monkeypatch):
+    from tools import approval
+    from tools.approval_gateway_wait import _ApprovalEntry
+
+    monkeypatch.setattr(approval, "_gateway_queues", {})
+    adapter = _make_adapter()
+    auth = _attach_auth_runner(adapter, lambda source: case != "unauthorized")
+    client = adapter._team_clients["T1"]
+    client.chat_postMessage = AsyncMock(return_value={"ts": "1.2"})
+    metadata = {} if case == "missing_id" else {"_gateway_approval_request_id": "request-a"}
+    if case == "valid":
+        from gateway.run_turn_runner import TurnRunner
+        from gateway.turn_context import TurnContext
+
+        ctx = TurnContext(session_key="session", _status_adapter=adapter, _status_chat_id="C1",
+                          _status_thread_metadata={"thread_id": "1.0"}, _loop_for_step=asyncio.get_running_loop())
+        await asyncio.to_thread(TurnRunner(MagicMock(), ctx)._approval_notify_sync,
+                                {"request_id": "request-a", "command": "command A"})
+        assert ctx._status_thread_metadata == {"thread_id": "1.0"}
+    else:
+        sent = await adapter.send_exec_approval("C1", "command A", "session", metadata=metadata,
+                                               smart_denied=case == "unoffered_choice")
+        if case == "missing_id":
+            assert not sent.success
+            client.chat_postMessage.assert_not_awaited()
+            return
+        assert sent.success
+    blocks = client.chat_postMessage.await_args.kwargs["blocks"]
+    token = blocks[1]["elements"][0]["value"]
+    first = _ApprovalEntry({"request_id": "request-a"})
+    later = _ApprovalEntry({"request_id": "request-b"})
+    approval._gateway_queues["session"] = [first, later]
+    if case == "text_resolved":
+        assert approval.resolve_gateway_approval("session", "deny") == 1
+    elif case == "expired":
+        approval._gateway_queues["session"].remove(first)
+    elif case == "forged":
+        token = "other-session"
+        approval._gateway_queues["other-session"] = [later]
+    body = {"message": {"ts": "1.2", "blocks": blocks}, "channel": {"id": "C1"},
+            "user": {"name": "alice", "id": "U_ALICE"}}
+    action = {"action_id": "hermes_approve_always" if case == "unoffered_choice" else "hermes_approve_once", "value": token}
+    await adapter._handle_approval_action(AsyncMock(), body, action)
+    if case == "replayed":
+        await adapter._handle_approval_action(AsyncMock(), body, action)
+    assert not later.event.is_set()
+    if case in {"valid", "replayed"}:
+        assert first.event.is_set() and first.result == "once"
+    elif case in {"unauthorized", "unoffered_choice"}:
+        assert not first.event.is_set()
+    assert auth.seen_sources
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["valid", "forged", "malformed", "replayed", "unauthorized"])
+async def test_slash_confirm_button_is_a_one_shot_registered_capability(case, monkeypatch):
+    adapter = _make_adapter()
+    _attach_auth_runner(adapter, lambda source: case != "unauthorized")
+    client = adapter._team_clients["T1"]
+    client.chat_postMessage = AsyncMock(return_value={"ts": "2.3"})
+    sent = await adapter.send_slash_confirm("C1", "Reset", "Reset session?", "session", "confirm-a")
+    assert sent.success
+    blocks = client.chat_postMessage.await_args.kwargs["blocks"]
+    token = blocks[1]["elements"][0]["value"]
+    if case == "forged":
+        token = "other-session|confirm-b"
+    elif case == "malformed":
+        token = ["not-a-token"]
+    body = {"message": {"ts": "2.3", "blocks": blocks}, "channel": {"id": "C1"},
+            "user": {"name": "alice", "id": "U_ALICE"}}
+    action = {"action_id": "hermes_confirm_once", "value": token}
+    resolve = AsyncMock(return_value="confirmed")
+    monkeypatch.setattr("tools.slash_confirm.resolve", resolve)
+    await adapter._handle_slash_confirm_action(AsyncMock(), body, action)
+    if case == "replayed":
+        await adapter._handle_slash_confirm_action(AsyncMock(), body, action)
+    if case in {"valid", "replayed"}:
+        resolve.assert_awaited_once_with("session", "confirm-a", "once")
+    else:
+        resolve.assert_not_awaited()

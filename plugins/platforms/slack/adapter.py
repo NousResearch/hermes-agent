@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import time
 import unicodedata
 from dataclasses import dataclass, field
@@ -873,7 +874,7 @@ class SlackAdapter(BasePlatformAdapter):
     _ASSISTANT_THREADS_MAX = _AGENT_VIEW_CONTEXTS_MAX = _THREAD_REHYDRATION_CHECKED_MAX = 5000
     _REACTING_MESSAGE_IDS_MAX = _TITLED_ASSISTANT_THREADS_MAX = 5000
     _CHANNEL_TEAM_MAX = 10000
-    _APPROVAL_RESOLVED_MAX = _CLARIFY_RESOLVED_MAX = _ACTIVE_STATUS_THREADS_MAX = 1000
+    _APPROVAL_STATE_MAX = _CLARIFY_RESOLVED_MAX = _ACTIVE_STATUS_THREADS_MAX = 1000
     # Tighter cap than the approval/clarify dicts: each entry holds the
     # full provider list, and a picker is only live for minutes.
     _MODEL_PICKER_STATE_MAX = 100
@@ -918,13 +919,14 @@ class SlackAdapter(BasePlatformAdapter):
         self._dedup = MessageDeduplicator(ttl_seconds=_slack_dedup_ttl_seconds())
         # ts of messages already routed to the agent, so later edits don't re-trigger a reply.
         self._processed_message_ts: Dict[str, float] = {}
-        # approval / clarify message_ts (or (team_id, ts)) → resolved; blocks double-clicks.
+        # Opaque one-shot tokens select exact server-owned requests, never a client session key.
+        self._approval_state: Dict[str, Tuple[str, str, frozenset[str]]] = {}
+        self._slash_confirm_state: Dict[str, Tuple[str, str]] = {}
         # Bounded: never-clicked prompts would otherwise leak forever.
-        self._approval_resolved: Dict[Any, bool] = {}
         self._clarify_resolved: Dict[Any, bool] = {}
         # Model picker state keyed by workspace message marker (team_id, ts) →
         # picker context (providers, session_key, on_model_selected, stage).
-        # Mirrors _approval_resolved / _clarify_resolved: bounded, and the
+        # Like approval and clarify state, this is bounded, and the
         # marker scopes entries per workspace so multi-workspace installs
         # never resolve a picker against another tenant's session.
         self._model_picker_state: Dict[Any, dict] = {}
@@ -4595,6 +4597,19 @@ class SlackAdapter(BasePlatformAdapter):
         The buttons call ``resolve_gateway_approval()`` to unblock the waiting agent thread — same
         mechanism as the text ``/approve`` flow."""
 
+        request_id = str((metadata or {}).get("_gateway_approval_request_id") or "")
+        if not request_id:
+            return SendResult(success=False, error="Missing exact gateway approval request identifier")
+        token = secrets.token_urlsafe(24)
+        choices = {"once", "deny"}
+        if not smart_denied and allow_session:
+            choices.add("session")
+            if allow_permanent:
+                choices.add("always")
+        # Register before awaiting Slack: a click can arrive before the post response.
+        self._approval_state[token] = (session_key, request_id, frozenset(choices))
+        self._trim_oldest_dict_entries(self._approval_state, self._APPROVAL_STATE_MAX)
+
         def _build() -> Tuple[str, list]:
             # Slack caps a section's text at 3000 chars (overflow → invalid_blocks → no buttons);
             # execute_code approvals embed the whole script, so budget the preview.
@@ -4605,13 +4620,13 @@ class SlackAdapter(BasePlatformAdapter):
             budget = 3000 - len(header) - len(reason) - len("``````\n") - len("...")
             cmd_preview = command[:budget] + "..." if len(command) > budget else command
             actions = [
-                self._button("Allow Once", "hermes_approve_once", session_key, style="primary")]
+                self._button("Allow Once", "hermes_approve_once", token, style="primary")]
             if not smart_denied and allow_session:
-                actions.append(self._button("Allow Session", "hermes_approve_session", session_key))
+                actions.append(self._button("Allow Session", "hermes_approve_session", token))
                 if allow_permanent:
                     actions.append(
-                        self._button("Always Allow", "hermes_approve_always", session_key))
-            actions.append(self._button("Deny", "hermes_deny", session_key, style="danger"))
+                        self._button("Always Allow", "hermes_approve_always", token))
+            actions.append(self._button("Deny", "hermes_deny", token, style="danger"))
             blocks = [
                 {
                     "type": "section",
@@ -4619,14 +4634,19 @@ class SlackAdapter(BasePlatformAdapter):
                 {"type": "actions", "elements": actions}]
             return f"⚠️ Command approval required: {cmd_preview[:100]}", blocks
 
-        return await self._send_interactive_prompt(
-            chat_id, metadata, _build, "send_exec_approval",
-            resolved=self._approval_resolved, resolved_max=self._APPROVAL_RESOLVED_MAX)
+        result = await self._send_interactive_prompt(chat_id, metadata, _build, "send_exec_approval")
+        if not result.success or not result.message_id:
+            self._approval_state.pop(token, None)
+        return result
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send a Block Kit three-option slash-command confirmation prompt."""
+
+        token = secrets.token_urlsafe(24)
+        self._slash_confirm_state[token] = (session_key, confirm_id)
+        self._trim_oldest_dict_entries(self._slash_confirm_state, self._APPROVAL_STATE_MAX)
 
         def _build() -> Tuple[str, list]:
             # Same 3000-char section cap as send_exec_approval: budget the body
@@ -4634,20 +4654,20 @@ class SlackAdapter(BasePlatformAdapter):
             _title = (title or "Confirm")[:150]
             budget = 3000 - len(f"*{_title}*\n\n") - len("...")
             body = message[:budget] + "..." if len(message) > budget else message
-            # session_key|confirm_id in the button value lets the callback resolve
-            # without extra bookkeeping.
-            value = f"{session_key}|{confirm_id}"
             blocks = [
                 {"type": "section", "text": {"type": "mrkdwn", "text": f"*{_title}*\n\n{body}"}},
                 {
                     "type": "actions",
                     "elements": [
-                        self._button("Approve Once", "hermes_confirm_once", value, style="primary"),
-                        self._button("Always Approve", "hermes_confirm_always", value),
-                        self._button("Cancel", "hermes_confirm_cancel", value, style="danger")]}]
+                        self._button("Approve Once", "hermes_confirm_once", token, style="primary"),
+                        self._button("Always Approve", "hermes_confirm_always", token),
+                        self._button("Cancel", "hermes_confirm_cancel", token, style="danger")]}]
             return f"{title or 'Confirm'}: {body[:100]}", blocks
 
-        return await self._send_interactive_prompt(chat_id, metadata, _build, "send_slash_confirm")
+        result = await self._send_interactive_prompt(chat_id, metadata, _build, "send_slash_confirm")
+        if not result.success or not result.message_id:
+            self._slash_confirm_state.pop(token, None)
+        return result
 
     def _build_model_picker_provider_blocks(
         self, providers: list, current_model: str, provider_label: str
@@ -5207,11 +5227,14 @@ class SlackAdapter(BasePlatformAdapter):
         if started is None:
             return
         team_id, action_id, value, message, msg_ts, channel_id, user_name, user_id = started
-        if "|" not in value:
-            logger.warning("[Slack] Malformed slash-confirm value: %s", value)
+        choice = self._CONFIRM_CHOICES.get(action_id)
+        if not isinstance(value, str) or choice is None:
             return
-        session_key, confirm_id = value.split("|", 1)
-        choice = self._CONFIRM_CHOICES.get(action_id, "cancel")
+        state = self._slash_confirm_state.pop(value, None)
+        if state is None:
+            logger.warning("[Slack] Ignoring slash-confirm click with unknown token")
+            return
+        session_key, confirm_id = state
         decision_text = self._CONFIRM_DECISIONS[choice].format(user=user_name)
         await self._finalize_interactive_message(
             channel_id, msg_ts, self._section_text(message), decision_text,
@@ -5249,20 +5272,19 @@ class SlackAdapter(BasePlatformAdapter):
         started = await self._begin_interaction(ack, body, action, "approval")
         if started is None:
             return
-        team_id, action_id, session_key, message, msg_ts, channel_id, user_name, user_id = started
-        choice = self._APPROVAL_CHOICES.get(action_id, "deny")
-        # Double-click guard (atomic pop). Also accept the bare ts: the approval may
-        # have been stored without a team id while the click carries one.
-        approval_key = self._workspace_message_marker(team_id, msg_ts)
-        if msg_ts in self._approval_resolved:
-            approval_key = msg_ts
-        if self._approval_resolved.pop(approval_key, True):
+        team_id, action_id, token, message, msg_ts, channel_id, user_name, user_id = started
+        choice = self._APPROVAL_CHOICES.get(action_id)
+        state = self._approval_state.get(token) if isinstance(token, str) else None
+        if state is None or choice not in state[2]:
+            logger.warning("[Slack] Ignoring unknown approval token or unoffered choice")
             return
+        # No await between lookup and consume: replay cannot select a later queue entry.
+        session_key, request_id, _choices = self._approval_state.pop(token)
         # Resolve FIRST (unblocks the agent); render after so a click past the
         # timeout (count == 0) shows "expired", not "approved".
         try:
             from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(session_key, choice)
+            count = resolve_gateway_approval(session_key, choice, request_id=request_id)
             logger.info(
                 "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)", count,
                 session_key, choice, user_name)

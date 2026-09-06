@@ -224,3 +224,32 @@ class TestInternalDynamicSecrets:
         assert {
             "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET", "GATEWAY_RELAY_DELIVERY_KEY",
         } <= _ALWAYS_STRIP_KEYS
+
+
+class TestRemoteCuaTokenStripped:
+    """HERMES_CUA_REMOTE_TOKEN is a bearer token granting remote-desktop control
+    (computer_use.remote transport). It is registered as an ordinary tool secret
+    (_tool(...) in config_defaults.py), so without Tier-1 it lands in the Tier-2
+    blocklist that inherit_credentials=True SKIPS — leaking it to model-driving
+    subprocesses (codex_app_server calls hermes_subprocess_env with
+    inherit_credentials=True). Tier-1 strips it unconditionally. H2."""
+
+    _TOKEN_SAMPLE = {"HERMES_CUA_REMOTE_TOKEN": "a" * 64}
+
+    def test_stripped_by_default(self):
+        result = _build(self._TOKEN_SAMPLE)
+        assert "HERMES_CUA_REMOTE_TOKEN" not in result
+
+    def test_stripped_when_inheriting_credentials(self):
+        """The core of H2: the token must be ABSENT even on the
+        inherit_credentials=True path that a codex/copilot subprocess uses."""
+        result = _build({**_PROVIDER_SAMPLE, **self._TOKEN_SAMPLE},
+                        inherit_credentials=True)
+        assert "HERMES_CUA_REMOTE_TOKEN" not in result
+        # Provider keys must still survive — proves we strip the token
+        # specifically, not everything.
+        for var in _PROVIDER_SAMPLE:
+            assert var in result, f"{var} should survive inherit_credentials=True"
+
+    def test_token_in_always_strip_set(self):
+        assert "HERMES_CUA_REMOTE_TOKEN" in _ALWAYS_STRIP_KEYS

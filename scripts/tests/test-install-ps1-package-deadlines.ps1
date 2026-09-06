@@ -14,10 +14,12 @@ $ErrorActionPreference = 'Stop'
 $name = [IO.Path]::GetFileNameWithoutExtension($MyInvocation.MyCommand.Path)
 $root = $env:DEADLINE_PACKAGE_ROOT
 $pids = Join-Path $root 'owned.pids'
+$identities = Join-Path $root 'owned.identities'
 if (Test-Path -LiteralPath $pids) {
-    foreach ($oldPid in [IO.File]::ReadAllLines($pids)) {
-        $previous = Get-Process -Id ([int]$oldPid) -ErrorAction SilentlyContinue
-        if ($previous -and -not $previous.HasExited) { throw 'previous package writer survived into next attempt' }
+    foreach ($identity in [IO.File]::ReadAllLines($identities)) {
+        $parts = $identity.Split('|')
+        $previous = Get-Process -Id ([int]$parts[0]) -ErrorAction SilentlyContinue
+        if ($previous -and -not $previous.HasExited -and $previous.StartTime.ToUniversalTime().Ticks -eq [long]$parts[1]) { throw 'previous package writer survived into next attempt' }
     }
 }
 [IO.File]::AppendAllText((Join-Path $root 'calls.log'), $name + ' ' + ($args -join ' ') + "`n")

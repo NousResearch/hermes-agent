@@ -33,9 +33,10 @@ if (($call -eq 'ci' -and $env:DEADLINE_MODE -eq 'ci-hang') -or ($call -eq 'run p
     exit 99
 }
 if ($call -eq 'install') {
-    foreach ($oldPid in [IO.File]::ReadAllLines((Join-Path $env:DEADLINE_CASE_ROOT 'owned.pids'))) {
-        $previous = Get-Process -Id ([int]$oldPid) -ErrorAction SilentlyContinue
-        if ($previous -and -not $previous.HasExited) { throw 'previous npm attempt is still alive' }
+    foreach ($identity in [IO.File]::ReadAllLines((Join-Path $env:DEADLINE_CASE_ROOT 'owned.identities'))) {
+        $parts = $identity.Split('|')
+        $previous = Get-Process -Id ([int]$parts[0]) -ErrorAction SilentlyContinue
+        if ($previous -and -not $previous.HasExited -and $previous.StartTime.ToUniversalTime().Ticks -eq [long]$parts[1]) { throw 'previous npm attempt is still alive' }
     }
 }
 if ($call -eq 'run pack') {
@@ -57,7 +58,8 @@ if (-not $env:ELECTRON_MIRROR) {
 }
 $oldPid = [int][IO.File]::ReadAllText((Join-Path $env:DEADLINE_CASE_ROOT 'electron.pid'))
 $previous = Get-Process -Id $oldPid -ErrorAction SilentlyContinue
-if ($previous -and -not $previous.HasExited) { throw 'old Electron writer survives into mirror retry' }
+$identity = [IO.File]::ReadAllLines((Join-Path $env:DEADLINE_CASE_ROOT 'owned.identities')) | Where-Object { ($_ -split '\|')[0] -eq [string]$oldPid } | Select-Object -Last 1
+if ($previous -and -not $previous.HasExited -and $previous.StartTime.ToUniversalTime().Ticks -eq [long]($identity -split '\|')[1]) { throw 'old Electron writer survives into mirror retry' }
 $dist = Join-Path $env:DEADLINE_INSTALL 'node_modules/electron/dist'
 [IO.Directory]::CreateDirectory($dist) | Out-Null
 [IO.File]::WriteAllText((Join-Path $dist 'electron.exe'), 'fixture electron')

@@ -48,7 +48,8 @@ try {
         # A terminated Windows process can remain enumerable while another
         # handle references it. The execution contract is that it has exited.
         $descendant = Get-Process -Id $childPid -ErrorAction SilentlyContinue
-        Check (-not $descendant -or $descendant.HasExited) 'owned native descendant has exited before return'
+        $sameProcess = $descendant -and -not $descendant.HasExited -and $descendant.StartTime.ToUniversalTime().Ticks -eq [long][IO.File]::ReadAllText($identityFile)
+        Check (-not $sameProcess) 'owned native descendant has exited before return'
     }
     $before = if (Test-Path -LiteralPath $writeFile) { (Get-Item -LiteralPath $writeFile).Length } else { 0 }
     Start-Sleep -Seconds 2

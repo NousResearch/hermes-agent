@@ -91,6 +91,13 @@ def record_response_usage(
         )
         return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)
 
+    # Stamp the ROUTED model id (OpenRouter echoes the resolved upstream in response.model —
+    # e.g. requested "~z-ai/glm-flash-latest" routes to "z-ai/glm-5.3-flash"). The runtime
+    # footer reads this so the owner sees the exact model that answered, not the alias.
+    try:
+        agent._last_routed_model = getattr(response, "model", None) or getattr(agent, "_last_routed_model", None)
+    except Exception:
+        pass
     canonical_usage = normalize_usage(response.usage, provider=agent.provider, api_mode=agent.api_mode)
     # Aggregator-only usage kept for pricing: advisor tokens are priced at each advisor's
     # OWN model rate and added as dollars below.

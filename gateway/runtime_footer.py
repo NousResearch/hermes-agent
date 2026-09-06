@@ -10,10 +10,13 @@ delivered the text, it goes out as a trailing message via ``send_trailing_footer
 from __future__ import annotations
 
 import os
+import logging
 from typing import Any, Iterable, Optional
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
 _SEP = " · "
+
+logger = logging.getLogger(__name__)
 
 
 def _home_relative_cwd(cwd: str) -> str:
@@ -74,6 +77,7 @@ def _format_latency(seconds: float) -> str:
 def format_runtime_footer(*, model: Optional[str], context_tokens: int,
                           context_length: Optional[int], cwd: Optional[str] = None,
                           turn_seconds: Optional[float] = None,
+                          user_config: Optional[dict[str, Any]] = None,
                           fields: Iterable[str] = _DEFAULT_FIELDS) -> str:
     """Render the footer line, or "" if no fields have data. Fields whose data is missing (and
     unknown field names) are skipped silently — a partial footer beats ``?%`` or empty slots."""
@@ -82,9 +86,40 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
             return f"{max(0, min(100, round((context_tokens / context_length) * 100)))}%"
         return ""
 
+    def effort() -> str:
+        try:
+            from hermes_constants import resolve_reasoning_config
+            agent_cfg = ((user_config or {}).get("agent") or {})
+            rc = resolve_reasoning_config(
+                {"agent": {**agent_cfg, "reasoning_overrides": agent_cfg.get("reasoning_overrides") or {}}},
+                model or "",
+            )
+            if rc is None:
+                return "medium"  # Hermes' documented default when unset
+            if rc.get("enabled") is False:
+                return "none"
+            return str(rc.get("effort") or "medium")
+        except Exception as exc:
+            logger.warning("footer effort render failed: %s", exc)
+            return ""
+
+    def model_full() -> str:
+        # The owner wants the RESOLVED id, not the vendor-stripped short form.
+        return model or ""
+
+    def context_window() -> str:
+        # "27% of 1M" — percentage plus the absolute window so the pct has meaning.
+        pct = context_pct()
+        if not context_length or context_length <= 0:
+            return pct
+        total = context_length
+        human = f"{total / 1_000_000:.0f}M" if total >= 1_000_000 else f"{total // 1000}k"
+        return f"{pct} of {human}" if pct else human
+
     renderers = {
-        "model": lambda: _model_short(model),
-        "context_pct": context_pct,
+        "model": model_full,
+        "effort": effort,
+        "context_pct": context_window,
         # Skipped when the caller did not measure (None) or the value is negative.
         "latency": lambda: _format_latency(turn_seconds) if turn_seconds is not None and turn_seconds >= 0 else "",
         "cwd": lambda: _home_relative_cwd(cwd or _env_cwd()),
@@ -94,7 +129,8 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
 
 def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str | None,
                       model: Optional[str], context_tokens: int, context_length: Optional[int],
-                      cwd: Optional[str] = None, turn_seconds: Optional[float] = None) -> str:
+                      cwd: Optional[str] = None, turn_seconds: Optional[float] = None,
+                      routed_model: Optional[str] = None) -> str:
     """Entry point for gateway/run.py: footer text, or "" when disabled / no data. Callers append it
     to the final response themselves, preserving a single blank line of separation.
     ``turn_seconds`` is the caller-measured (``time.monotonic()``) run duration; ``None`` skips the
@@ -102,6 +138,7 @@ def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str |
     cfg = resolve_footer_config(user_config, platform_key)
     if not cfg.get("enabled"):
         return ""
-    return format_runtime_footer(model=model, context_tokens=context_tokens,
+    return format_runtime_footer(model=routed_model or model, context_tokens=context_tokens,
                                  context_length=context_length, cwd=cwd, turn_seconds=turn_seconds,
+                                 user_config=user_config,
                                  fields=cfg.get("fields") or _DEFAULT_FIELDS)

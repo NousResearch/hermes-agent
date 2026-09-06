@@ -791,7 +791,10 @@ def _borrowed_single_use_pool_root() -> Optional[Path]:
         return None
 
 
-def _update_root_pool_rows(provider: str, payloads: List[Dict[str, Any]], global_path: Path) -> None:
+def _update_root_pool_rows(
+    provider: str, payloads: List[Dict[str, Any]], global_path: Path,
+    *, status_cleared_ids: Optional[Iterable[str]] = None,
+) -> None:
     """UPDATE-ONLY merge of *payloads* into the root store's rows for *provider*.
 
     A borrower may refresh the root's rows (rotation, cooldown state) but
@@ -808,6 +811,7 @@ def _update_root_pool_rows(provider: str, payloads: List[Dict[str, Any]], global
         existing = pool.get(provider)
         existing_list = existing if isinstance(existing, list) else []
         incoming_by_id = {p.get("id"): p for p in payloads if isinstance(p, dict) and p.get("id")}
+        cleared = {cid for cid in (status_cleared_ids or ()) if cid}
         merged: List[Dict[str, Any]] = []
         changed = False
         for disk_entry in existing_list:
@@ -816,7 +820,10 @@ def _update_root_pool_rows(provider: str, payloads: List[Dict[str, Any]], global
             if incoming is None:
                 merged.append(disk_entry)
                 continue
-            updated = auth_mod._merge_disk_cooldown_state(incoming, disk_entry, provider)
+            # A deliberately cleared entry has no disk cooldown worth keeping.
+            updated = auth_mod._merge_disk_cooldown_state(
+                incoming, None if did in cleared else disk_entry, provider,
+            )
             if updated != disk_entry:
                 changed = True
             merged.append(updated)
@@ -830,6 +837,7 @@ def persist_pool_entries(
     payloads: List[Dict[str, Any]],
     *,
     removed_ids: Optional[Iterable[str]] = None,
+    status_cleared_ids: Optional[Iterable[str]] = None,
 ) -> None:
     """Persist a provider's pool rows to the store that OWNS them.
 
@@ -845,7 +853,10 @@ def persist_pool_entries(
         global_path = _borrowed_single_use_pool_root()
         if global_path is not None:
             try:
-                _update_root_pool_rows(provider, payloads, global_path)
+                _update_root_pool_rows(
+                    provider, payloads, global_path,
+                    status_cleared_ids=status_cleared_ids,
+                )
             except Exception as exc:
                 # Fail closed on the FORK, not on the save: never fall back to
                 # writing a local copy (that IS the bug). The in-memory pool
@@ -856,7 +867,9 @@ def persist_pool_entries(
                     provider, exc,
                 )
             return
-    write_credential_pool(provider, payloads, removed_ids=removed_ids)
+    write_credential_pool(
+        provider, payloads, removed_ids=removed_ids, status_cleared_ids=status_cleared_ids,
+    )
 
 
 # --- Per-provider singleton refresh plumbing -------------------------------
@@ -1018,13 +1031,19 @@ class CredentialPool:
                     self._entries[idx] = new
                     return
 
-    def _persist(self, *, removed_ids: Optional[List[str]] = None) -> None:
+    def _persist(
+        self,
+        *,
+        removed_ids: Optional[List[str]] = None,
+        status_cleared_ids: Optional[List[str]] = None,
+    ) -> None:
         # Self-locking: snapshotting self._entries must not race a rotation.
         with self._lock:
             persist_pool_entries(
                 self.provider,
                 [entry.to_dict() for entry in self._entries],
                 removed_ids=removed_ids,
+                status_cleared_ids=status_cleared_ids,
             )
 
     def _adopt(self, entry: PooledCredential, *, persist: bool = True, **updates: Any) -> PooledCredential:
@@ -2139,14 +2158,29 @@ class CredentialPool:
         return refreshed
 
     def reset_statuses(self) -> int:
+        """Clear exhaustion state on every entry. Returns how many were cleared.
+
+        ``failure_reason`` lives in ``extra``, not a dataclass field, so it is
+        stripped explicitly. The persist declares the cleared ids because the
+        disk-recency merge reads a cleared ``last_status_at`` (None -> epoch 0)
+        as a stale snapshot and would copy a still-binding cooldown back.
+        """
         with self._lock:
-            stale = [e for e in self._entries if e.last_status or e.last_status_at or e.last_error_code]
+            stale = [
+                e for e in self._entries
+                if e.last_status or e.last_status_at or e.last_error_code or e.failure_reason
+            ]
             if stale:
                 stale_ids = {e.id for e in stale}
                 self._entries = [
-                    replace(e, **_CLEAR_STATUS) if e.id in stale_ids else e for e in self._entries
+                    replace(
+                        e, **_CLEAR_STATUS,
+                        extra={k: v for k, v in e.extra.items() if k != "failure_reason"},
+                    )
+                    if e.id in stale_ids else e
+                    for e in self._entries
                 ]
-                self._persist()
+                self._persist(status_cleared_ids=list(stale_ids))
             return len(stale)
 
     def remove_index(self, index: int) -> Optional[PooledCredential]:

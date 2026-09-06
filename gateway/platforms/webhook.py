@@ -548,8 +548,8 @@ class WebhookAdapter(BasePlatformAdapter):
             prompt = self._render_prompt(route_config.get("prompt", ""), payload, event_type, route_name)
             if skills := route_config.get("skills", []):
                 prompt = self._apply_skills(prompt, skills)
-        delivery_id = headers.get("X-GitHub-Delivery", headers.get(
-            "svix-id", headers.get("X-Request-ID", str(int(time.time() * 1000)))))
+        delivery_id = headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
+            "webhook-id", headers.get("X-Request-ID", str(int(time.time() * 1000))))))
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
         if not self._record_delivery_id(delivery_id, now):
             logger.info("[webhook] Skipping duplicate delivery %s", delivery_id)
@@ -617,14 +617,20 @@ class WebhookAdapter(BasePlatformAdapter):
     # --- Signature validation ---
 
     def _validate_signature(self, request: "web.Request", body: bytes, secret: str) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, Linear, generic HMAC-SHA256)."""
+        """Validate webhook signature (GitHub, GitLab, Svix, Standard Webhooks, Linear, generic HMAC-SHA256)."""
         headers = request.headers
 
         def _header(name: str) -> str:
             return headers.get(name, "") or headers.get(name.lower(), "") or headers.get(name.upper(), "")
 
-        # Svix / AgentMail: signed content is "{id}.{timestamp}.{raw_body}".
+        # Svix / AgentMail: signed content is "{id}.{timestamp}.{raw_body}". Standard Webhooks
+        # (webhook-*; GitLab signing tokens) is the same scheme under other header names, but GitLab
+        # sends webhook-id/webhook-timestamp on EVERY delivery and webhook-signature only when a signing
+        # token is configured, so only the signature header commits to this path — a legacy
+        # X-Gitlab-Token install must keep validating below (#47451, #101837).
         svix = [_header(name) for name in ("svix-id", "svix-timestamp", "svix-signature")]
+        if not any(svix) and _header("webhook-signature"):
+            svix = [_header(name) for name in ("webhook-id", "webhook-timestamp", "webhook-signature")]
         if any(svix):
             return _validate_svix_signature(body, secret, *svix)
         # Linear (any header case): hex HMAC of the body. GitHub: sha256=<hex>. GitLab: plain token.

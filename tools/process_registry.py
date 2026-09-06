@@ -126,12 +126,12 @@ def _worker_memory_max_bytes() -> int:
 
 def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
     """``systemd-run --user --scope`` argv shared by the probe and real spawns.
-    ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl."""
+    ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl.
+    No ``OOMPolicy=``: transient scopes reject it on systemd <253 (#102486)."""
     return [
         binary, "--user", "--scope", "--quiet", "--unit", unit_name, "--collect",
         "--property", "MemoryAccounting=yes",
         "--property", f"MemoryMax={_worker_memory_max_bytes()}",
-        "--property", "OOMPolicy=kill",
         "--", *argv,
     ]
 
@@ -889,6 +889,25 @@ class ProcessRegistry:
                 proc.kill()
         with suppress(Exception):
             proc.wait(timeout=5)
+
+    def adopt_local(
+        self, proc: subprocess.Popen, *, command: str, cwd: Optional[str], task_id: str = "",
+        session_key: str = "", owner_task_id: str = "", output_so_far: str = "",
+        notify_on_complete: bool = True) -> ProcessSession:
+        """Take over a still-running foreground Popen as a tracked background session
+        (yield-to-background: the user sent a message while the command was running).
+        The caller has stopped its own drain thread; the registry's reader continues from
+        the pipe's current position and ``output_so_far`` seeds the buffer so nothing
+        already captured is lost."""
+        session = self._new_session(command, task_id, owner_task_id, session_key, cwd)
+        session.process = proc
+        session.pid = proc.pid
+        session.host_start_time = self._safe_host_start_time(session.pid)
+        session.notify_on_complete = notify_on_complete
+        if output_so_far:
+            session.append_output(output_so_far)
+        self._track_started(session, self._reader_loop, f"proc-reader-{session.id}")
+        return session
 
     def spawn_via_env(
         self, env: Any, command: str, cwd: str = None, task_id: str = "", session_key: str = "",

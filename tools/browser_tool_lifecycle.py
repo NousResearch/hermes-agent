@@ -396,6 +396,10 @@ def _browser_cleanup_thread_worker():
             _cleanup_inactive_browser_sessions()
         except Exception as e:
             _bt.logger.warning("Cleanup thread error: %s", e)
+        try:
+            _real_profile._cleanup_idle_real_profile_browser()
+        except Exception as e:
+            _bt.logger.warning("Real-profile cleanup error: %s", e)
 
         for _ in range(30):  # 1s granularity so stop is quick
             if not _bt._cleanup_running:

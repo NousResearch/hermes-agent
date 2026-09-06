@@ -2,7 +2,7 @@
 hermes-owned copy, launch the real browser binary on it, and attach agent-browser.
 
 State (``_REAL_PROFILE_SESSION``, ``_real_profile_cdp_lock``, ``_real_profile_cdp_cache``,
-``_real_profile_chrome_procs``) lives in ``tools.browser_tool``; it is read
+``_real_profile_chrome_procs``, and the lease/activity counters) lives in ``tools.browser_tool``; it is read
 through ``_bt`` (resolved per call — never import ``tools.browser_tool`` at import time).
 """
 
@@ -28,6 +28,63 @@ def _terminate_real_profile_chrome() -> None:
     _bt = _origin()
     while _bt._real_profile_chrome_procs:
         _terminate(_bt._real_profile_chrome_procs.pop(), what="real-profile chrome")
+
+
+def _begin_real_profile_use() -> None:
+    """Hold the shared copy-browser open while one caller is actively using it."""
+    _bt = _origin()
+    with _bt._real_profile_cdp_lock:
+        _bt._real_profile_active_leases += 1
+        _bt._real_profile_last_activity = time.time()
+    # Browser Use CLI bypasses _get_session_info(), which normally starts the
+    # janitor. Import lazily to avoid the lifecycle <-> real-profile cycle.
+    try:
+        from tools.browser_tool_lifecycle import _start_browser_cleanup_thread
+        _start_browser_cleanup_thread()
+    except BaseException:
+        _end_real_profile_use()
+        raise
+
+
+def _end_real_profile_use() -> None:
+    """Release one active caller and start its idle grace period."""
+    _bt = _origin()
+    with _bt._real_profile_cdp_lock:
+        _bt._real_profile_active_leases = max(0, _bt._real_profile_active_leases - 1)
+        _bt._real_profile_last_activity = time.time()
+
+
+def _touch_real_profile_activity() -> None:
+    """Refresh idle time for built-in browser-tool calls that reuse the shared browser."""
+    _bt = _origin()
+    with _bt._real_profile_cdp_lock:
+        _bt._real_profile_last_activity = time.time()
+
+
+def _cleanup_idle_real_profile_browser(*, now: Optional[float] = None,
+                                       timeout: Optional[float] = None) -> bool:
+    """Close the shared copy-browser once every caller has been idle long enough.
+
+    The lease check and teardown share the CDP lock, so a new caller cannot race
+    between the idle decision and process termination. Returns True when a
+    browser/attachment was actually reaped.
+    """
+    _bt = _origin()
+    current_time = time.time() if now is None else now
+    idle_timeout = _bt.BROWSER_SESSION_INACTIVITY_TIMEOUT if timeout is None else timeout
+    with _bt._real_profile_cdp_lock:
+        if _bt._real_profile_active_leases:
+            return False
+        if not (_bt._real_profile_chrome_procs or _bt._real_profile_cdp_cache.get("cdp")):
+            return False
+        if current_time - _bt._real_profile_last_activity <= idle_timeout:
+            return False
+        _agent_browser_close_session(_bt._REAL_PROFILE_SESSION)
+        _terminate_real_profile_chrome()
+        _bt._real_profile_cdp_cache.pop("cdp", None)
+        _bt._real_profile_last_activity = 0.0
+        _bt.logger.info("Cleaned up idle real-profile browser")
+        return True
 
 
 def _cdp_http_ready(http_cdp: str) -> bool:
@@ -219,6 +276,7 @@ def _real_profile_cdp() -> tuple:
     with _bt._real_profile_cdp_lock:
         cached = _bt._real_profile_cdp_cache.get("cdp")
         if cached and _cdp_http_ready(cached):
+            _bt._real_profile_last_activity = time.time()
             return cached, None
         _bt._real_profile_cdp_cache.pop("cdp", None)
 
@@ -234,6 +292,7 @@ def _real_profile_cdp() -> tuple:
         existing = _agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
         if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
             _bt._real_profile_cdp_cache["cdp"] = existing
+            _bt._real_profile_last_activity = time.time()
             return existing, None
         if existing:  # stale/wrong-dir session: close it so nothing holds the dir open
             _agent_browser_close_session(_bt._REAL_PROFILE_SESSION)
@@ -251,5 +310,6 @@ def _real_profile_cdp() -> tuple:
         if not cdp:
             return None, err
         _bt._real_profile_cdp_cache["cdp"] = cdp
+        _bt._real_profile_last_activity = time.time()
         _bt.logger.info("real-profile browser ready for %s at %s (%s)", browser, cdp, copy_dir)
         return cdp, None

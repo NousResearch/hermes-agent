@@ -455,7 +455,8 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     return err
 
 
-def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
+def _resolve_real_profile_cdp(env: dict, force_local: bool,
+                              lease_state: Optional[dict] = None) -> Optional[str]:
     """Point the harness at the user's real-profile copy-browser (a SNAPSHOT of their default Chromium
     profile, hermes_cli.browser_connect) when consented. Two ways in: the effective backend is already local
     (no provider, CDP override, or legacy BU cloud config) → silent upgrade; or ``force_local`` (consent-gated
@@ -467,7 +468,9 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
     try:
         from tools.browser_tool_cdp import _get_cdp_override_raw
         from tools.browser_tool_cloud import _get_cloud_provider
-        from tools.browser_tool_real_profile import _real_profile_cdp
+        from tools.browser_tool_real_profile import (
+            _begin_real_profile_use, _end_real_profile_use, _real_profile_cdp,
+        )
     except Exception as e:  # pragma: no cover — stubbed browser_tool in tests
         logger.debug("real-profile backend resolution unavailable: %s", e)
         return None
@@ -478,18 +481,31 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
     if not force_local and (_quiet(_get_cloud_provider, object()) is not None
                             or is_legacy_browser_use_cloud_config(_read_browser_cfg())):
         return None
-    cdp, err = _real_profile_cdp()
+    if lease_state is not None:
+        _begin_real_profile_use()
+        lease_state["real_profile"] = True
+    try:
+        cdp, err = _real_profile_cdp()
+    except BaseException:
+        if lease_state is not None:
+            lease_state["real_profile"] = False
+            _end_real_profile_use()
+        raise
     if cdp and not err:
         _set_cdp_env(env, cdp)
+    elif lease_state is not None:
+        lease_state["real_profile"] = False
+        _end_real_profile_use()
     return err or None
 
 
-def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool) -> Optional[str]:
+def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool,
+                   lease_state: Optional[dict] = None) -> Optional[str]:
     """Resolve where the harness connects; returns an error string or None. Real-profile consent runs
     BEFORE provider resolution so a hit short-circuits the cloud path via the BU_CDP_* env contract. Named
     sessions compose with the backend: BU_NAME namespaces the harness daemon (IPC socket, log, pid) and on
     provider backends additionally keys its own cloud browser."""
-    rp_err = _resolve_real_profile_cdp(env, force_local=local)
+    rp_err = _resolve_real_profile_cdp(env, force_local=local, lease_state=lease_state)
     if rp_err:
         return rp_err
     # local=True is only served by the real-profile route; consent off must not pretend.
@@ -539,7 +555,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
                               "dashes, or underscores (e.g. 'r7k2').")
         env["BU_NAME"] = session
-    route_err = _route_backend(env, session, task_id, bool(local))
+    lease_state = {}
+    route_err = _route_backend(env, session, task_id, bool(local), lease_state=lease_state)
     if route_err:
         return tool_error(route_err)
 
@@ -561,16 +578,21 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     timeout = _clamp_timeout(timeout_s)
     started = time.time()
     try:
-        proc = subprocess.run(
-            cmd, input=code, capture_output=True, text=True, timeout=timeout, env=env,
-            **_windows_popen_kwargs(),
-        )
-    except subprocess.TimeoutExpired:
-        return tool_error(f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
-                          f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "
-                          "append to workspace files — anything already written to the workspace is preserved.")
-    except OSError as e:
-        return tool_error(f"Failed to launch browser-use CLI: {e}")
+        try:
+            proc = subprocess.run(
+                cmd, input=code, capture_output=True, text=True, timeout=timeout, env=env,
+                **_windows_popen_kwargs(),
+            )
+        except subprocess.TimeoutExpired:
+            return tool_error(f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
+                              f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "
+                              "append to workspace files — anything already written to the workspace is preserved.")
+        except OSError as e:
+            return tool_error(f"Failed to launch browser-use CLI: {e}")
+    finally:
+        if lease_state.get("real_profile"):
+            from tools.browser_tool_real_profile import _end_real_profile_use
+            _end_real_profile_use()
 
     result = {"success": proc.returncode == 0, "exit_code": proc.returncode, "output": proc.stdout}
     if workspace:

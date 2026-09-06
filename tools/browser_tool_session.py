@@ -268,6 +268,11 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
 
     with _bt._cleanup_lock:
         existing_session = _bt._active_sessions.get(task_id)
+    if existing_session is not None and (existing_session.get("features") or {}).get("real_profile"):
+        # Take the CDP lock before the liveness check. If idle cleanup is already
+        # tearing down, this waits and the check below observes the dead browser;
+        # otherwise the fresh timestamp prevents cleanup from racing this command.
+        _real_profile._touch_real_profile_activity()
 
     def _replacement_after_teardown() -> Optional[Dict[str, Any]]:
         # Teardown removes the activity entry; re-touch so the reaper tracks the
@@ -594,11 +599,18 @@ def _run_browser_command(
 
     cmd_parts = _agent_browser_argv(browser_cmd) + backend_args + ["--json", command] + args
 
+    uses_real_profile = bool((session_info.get("features") or {}).get("real_profile"))
+    if uses_real_profile:
+        _real_profile._begin_real_profile_use()
     try:
-        result = _spawn_and_collect(task_id, session_info, cmd_parts, command, engine, timeout)
-    except Exception as e:
-        _bt.logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
-        result = {"success": False, "error": str(e)}
+        try:
+            result = _spawn_and_collect(task_id, session_info, cmd_parts, command, engine, timeout)
+        except Exception as e:
+            _bt.logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
+            result = {"success": False, "error": str(e)}
+    finally:
+        if uses_real_profile:
+            _real_profile._end_real_profile_use()
 
     # Lightpanda automatic Chrome fallback — runs for ALL exit paths (timeout,
     # empty, non-JSON, nonzero rc, parsed).

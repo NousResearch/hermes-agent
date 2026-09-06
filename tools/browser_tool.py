@@ -234,6 +234,8 @@ _REAL_PROFILE_SESSION = "hermes-real-profile"
 _real_profile_cdp_lock = threading.Lock()
 _real_profile_cdp_cache: dict = {}
 _real_profile_chrome_procs: list = []  # Popen handles of directly-launched real browsers
+_real_profile_active_leases = 0
+_real_profile_last_activity = 0.0
 
 
 

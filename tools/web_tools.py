@@ -18,7 +18,7 @@ _firecrawl_client = _firecrawl_client_config = _parallel_client = _async_paralle
 
 from plugins.web.firecrawl.provider import _is_tool_gateway_ready, check_firecrawl_api_key
 from tools.debug_helpers import DebugSession
-from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, selection_exists
+from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection, selection_exists
 from tools.url_safety import async_is_safe_url
 from tools.web_tools_rescue import _rescue_eligible, _rescue_search
 from tools.web_tools_truncate import _effective_char_limit, _trim_results, _truncate_results, convert_base64_images_to_links
@@ -430,6 +430,13 @@ def check_web_api_key() -> bool:
 
     See #28651, #31873.
     """
+    # Keep an explicitly selected managed route callable when its entitlement/token is
+    # unavailable. Dispatch then returns account-aware recovery guidance; filtering the
+    # tools here would leave the operator with no actionable error. Never-configured and
+    # direct/keyless selections retain their normal availability probes.
+    if read_selection("web") == NOUS_MANAGED_PROVIDER:
+        return True
+
     # Boolean OR over configured + built-ins — probe order is irrelevant here.
     candidates = [c for c in (_configured_backend(),) if c] + list(_LEGACY_WEB_BACKENDS)
     if any(_is_backend_available(backend) for backend in candidates):

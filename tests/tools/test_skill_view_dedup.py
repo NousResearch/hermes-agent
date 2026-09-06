@@ -125,3 +125,39 @@ class TestSkillViewDedup:
         repeat = _view("demo-dedup-skill")
         assert repeat.get("dedup") is True
         assert repeat.get("content_returned") is False
+
+
+def test_codex_app_server_compaction_rearms_skill_view(monkeypatch):
+    """A skill re-viewed after Codex app-server compaction must return full content (#101518)."""
+    import agent.conversation_compression as cc
+    import tools.skills_tool as st
+
+    seen = []
+    monkeypatch.setattr(st, "reset_skill_view_dedup", lambda t: seen.append(t))
+
+    class _Result:
+        interrupted = False
+        error = None
+        should_retire = False
+        thread_id = "th-1"
+        turn_id = "tu-1"
+
+    class _Session:
+        def compact_thread(self):
+            return _Result()
+
+    class _Agent:
+        session_id = "s-1"
+        codex_app_server_auto_compaction = "hermes"
+        _codex_session = _Session()
+        context_compressor = object()
+        _cached_system_prompt = "SYS"
+        status_callback = None
+
+        def _emit_status(self, *a, **k):
+            pass
+
+    messages = [{"role": "user", "content": "hi"}]
+    out, prompt = cc._compress_context_via_codex_app_server(_Agent(), messages, "SYS", task_id="t-2", force=True)
+    assert out is messages and prompt == "SYS"
+    assert seen == ["t-2"], "codex compaction left skill_view dedup armed"

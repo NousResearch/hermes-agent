@@ -97,6 +97,24 @@ class TestNoninteractiveGitEnv:
         assert values["sequence.editor"] == "true"
         assert values["diff.external"] == ""
 
+    def test_ssh_host_key_prompts_fail_closed(self):
+        """core.sshCommand is pinned to BatchMode ssh (#104591).
+
+        ssh bypasses ``stdin=DEVNULL`` and ``GIT_TERMINAL_PROMPT`` — an unknown host key (or
+        password auth) opens ``/dev/tty`` directly and steals the caller's terminal. Under this
+        env the ssh child of a git fetch must fail fast instead of prompting; an
+        agent-authenticated ssh still succeeds.
+        """
+        env = noninteractive_git_env({})
+        values = {
+            env[f"GIT_CONFIG_KEY_{idx}"]: env[f"GIT_CONFIG_VALUE_{idx}"]
+            for idx in range(int(env["GIT_CONFIG_COUNT"]))
+        }
+        assert values["core.sshCommand"] == "ssh -o BatchMode=yes"
+        # Config-layer pin only: GIT_SSH_COMMAND is never set or overridden here, so a user's
+        # explicit env var still takes precedence over core.sshCommand.
+        assert env.get("GIT_SSH_COMMAND") == os.environ.get("GIT_SSH_COMMAND")
+
 
 # ---------------------------------------------------------------------------
 # 2. Real-git E2E: 401 remote fails fast instead of prompting

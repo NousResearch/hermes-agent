@@ -224,6 +224,11 @@ _GIT_CONFIG_OVERRIDES = {
     "core.editor": "true",
     "sequence.editor": "true",
     "diff.external": "",
+    # ssh itself bypasses stdin=DEVNULL/GIT_TERMINAL_PROMPT and opens /dev/tty directly — an
+    # unknown host key (or password auth) prompts there and steals the caller's terminal (#104591).
+    # BatchMode makes ssh fail instead of prompting; a working ssh-agent still succeeds. Injected
+    # at the config layer so an explicit user GIT_SSH_COMMAND (env) still takes precedence.
+    "core.sshCommand": "ssh -o BatchMode=yes",
 }
 
 
@@ -234,8 +239,12 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
     prompting), ``GCM_INTERACTIVE=Never`` (no Git Credential Manager dialog), and isolated git
     config: inherited ``GIT_CONFIG_*`` injection, global/system config, pagers, editors, fsmonitor,
     external diff and hooks are all disabled so a user's repo/global config cannot hang or mutate
-    Hermes's plumbing calls. ``GIT_ASKPASS``/``SSH_ASKPASS`` are deliberately left alone: a
-    *working* askpass helper or ssh-agent should still succeed non-interactively. Pair with
+    Hermes's plumbing calls. ``core.sshCommand`` is pinned to ``ssh -o BatchMode=yes`` so the ssh
+    child of a fetch/ls-remote fails instead of prompting — ssh bypasses ``stdin=DEVNULL`` and
+    opens ``/dev/tty`` directly (#104591); an agent-authenticated ssh still succeeds, and an
+    explicit user ``GIT_SSH_COMMAND`` env var still takes precedence over this config-layer pin.
+    ``GIT_ASKPASS``/``SSH_ASKPASS`` are deliberately left alone: a *working* askpass helper or
+    ssh-agent should still succeed non-interactively. Pair with
     ``stdin=subprocess.DEVNULL``. Internal plumbing only — the agent-facing terminal tool has its
     own policy layer and visible PTY.
 

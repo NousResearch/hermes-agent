@@ -705,6 +705,7 @@ def _git_remote_overrides_present(
         "GIT_COMMON_DIR",
         "GIT_DIR",
         "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_EXEC_PATH",
         "GIT_OBJECT_DIRECTORY",
         "GIT_WORK_TREE",
     }
@@ -751,7 +752,8 @@ def _git_remote_is_test_local(
     # remote after this guard has resolved it. Fail closed instead of trying
     # to duplicate Git's full configuration precedence language.
     if _git_remote_overrides_present(tokens, child_env) or any(
-        token == "--git-dir" or token.startswith("--git-dir=")
+        token in {"--exec-path", "--git-dir"}
+        or token.startswith(("--exec-path=", "--git-dir="))
         for token in tokens[1:]
     ):
         return False
@@ -763,14 +765,14 @@ def _git_remote_is_test_local(
         token == "--repo" or token.startswith("--repo=") for token in args
     ):
         return False
-    transport_helper_options = {
-        "-u",
-        "--exec",
-        "--receive-pack",
-        "--upload-pack",
-    }
+    transport_helper_options = {"--exec", "--receive-pack", "--upload-pack"}
     if any(
         token.split("=", 1)[0] in transport_helper_options for token in args
+    ):
+        return False
+    if subcommand == "clone" and any(
+        token == "-u" or (token.startswith("-u") and len(token) > 2)
+        for token in args
     ):
         return False
     working_directory = _git_working_directory(tokens, cwd)
@@ -781,7 +783,10 @@ def _git_remote_is_test_local(
         return False
     operand = _first_git_positional(args, subcommand=subcommand)
     if subcommand in {"fetch", "pull", "push"}:
-        operand = operand or "origin"
+        # Git's implicit remote depends on branch and push-default config.
+        # Refuse rather than incompletely reimplementing that precedence.
+        if operand is None:
+            return False
         if _git_operand_is_literal(operand):
             return _local_git_remote(operand, working_directory)
         configured = _configured_git_remote(
@@ -828,6 +833,8 @@ def _check_wrapped_commands(
                 "--split-string="
             ):
                 raise _violation(f"{operation} env split-string wrapper", tokens)
+            if token.startswith("-S") and len(token) > 2:
+                raise _violation(f"{operation} env split-string wrapper", tokens)
             if token in {"-u", "--unset"}:
                 if index + 1 < len(tokens):
                     unwanted = tokens[index + 1].upper()
@@ -837,6 +844,15 @@ def _check_wrapped_commands(
                         if str(key).upper() != unwanted
                     }
                 index += 2
+                continue
+            if token.startswith("-u") and len(token) > 2:
+                unwanted = token[2:].upper()
+                inherited = {
+                    key: value
+                    for key, value in inherited.items()
+                    if str(key).upper() != unwanted
+                }
+                index += 1
                 continue
             if token.startswith("--unset="):
                 unwanted = token.split("=", 1)[1].upper()
@@ -901,7 +917,6 @@ def _check_wrapped_commands(
                 cwd=cwd,
                 child_env=child_env,
             )
-            return
 
 
 def _check_command(

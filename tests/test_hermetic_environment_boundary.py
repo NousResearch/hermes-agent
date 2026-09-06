@@ -63,6 +63,7 @@ def test_shell_wrapped_forbidden_operation_is_blocked():
         ["bash", "--norc", "-c", "git fetch https://example.invalid/live.git"],
         ["bash", "-c", '"$@"', "_", "launchctl", "kickstart", "ai.hermes.gateway"],
         ["env", "-S", "git fetch https://example.invalid/live.git"],
+        ["env", "-Sgit fetch https://example.invalid/live.git"],
         ["xargs", "git", "fetch"],
     ):
         with pytest.raises(RuntimeError, match="guard"):
@@ -93,6 +94,9 @@ def test_git_local_fixture_operations_are_allowed_but_remote_alias_is_blocked(
     (clone / "tracked.txt").write_text("two\n")
     git(clone, "stash", "push", "-m", "local-only")
     git(clone, "fetch", "-q", "origin")
+    subprocess.run(["git", "push", "-u", "origin", "HEAD"], cwd=clone, check=False)
+    with pytest.raises(RuntimeError, match="git remote network operation"):
+        subprocess.run(["git", "fetch"], cwd=clone, check=False)
 
     env = os.environ.copy()
     env["GIT_DIR"] = str(clone / ".git")
@@ -123,6 +127,37 @@ def test_git_local_fixture_operations_are_allowed_but_remote_alias_is_blocked(
     with pytest.raises(RuntimeError, match="git remote network operation"):
         subprocess.run(
             ["git", "fetch", "--upload-pack=/bin/false", str(origin)],
+            cwd=clone,
+            check=False,
+        )
+    with pytest.raises(RuntimeError, match="git remote network operation"):
+        subprocess.run(
+            ["git", "clone", "-u/bin/false", str(origin), str(tmp_path / "bad-clone")],
+            cwd=tmp_path,
+            check=False,
+        )
+    exec_env = os.environ.copy()
+    exec_env["GIT_EXEC_PATH"] = str(tmp_path)
+    with pytest.raises(RuntimeError, match="git remote network operation"):
+        subprocess.run(
+            ["git", "fetch", str(origin)], cwd=clone, env=exec_env, check=False
+        )
+    with pytest.raises(RuntimeError, match="git remote network operation"):
+        subprocess.run(
+            ["git", f"--exec-path={tmp_path}", "fetch", str(origin)],
+            cwd=clone,
+            check=False,
+        )
+    with pytest.raises(RuntimeError, match="guard"):
+        subprocess.run(
+            [
+                "env",
+                "-uGIT_CONFIG_NOSYSTEM",
+                "-uGIT_CONFIG_GLOBAL",
+                "git",
+                "fetch",
+                str(origin),
+            ],
             cwd=clone,
             check=False,
         )
@@ -165,6 +200,12 @@ def test_git_local_fixture_operations_are_allowed_but_remote_alias_is_blocked(
         subprocess.run(["git", "fetch", "origin"], cwd=clone, check=False)
     with pytest.raises(RuntimeError, match="git remote network operation"):
         subprocess.run(["git", "fetch", str(origin)], cwd=clone, check=False)
+    with pytest.raises(RuntimeError, match="git remote network operation"):
+        subprocess.run(
+            ["bash", "-c", "echo sh; git fetch https://example.invalid/live.git"],
+            cwd=clone,
+            check=False,
+        )
 
 
 @pytest.mark.windows_only

@@ -48,7 +48,6 @@ afterEach(() => {
 })
 
 async function renderConfigSettings() {
-  const { ConfigSettings } = await import('./config-settings')
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const importInputRef = createRef<HTMLInputElement>()
 
@@ -62,6 +61,10 @@ async function renderConfigSettings() {
 
   return { importInputRef }
 }
+
+// Load stable modules during collection, after mock fixtures are initialized.
+// Cold transforms must not consume a behavioral test or hook deadline.
+const { ConfigSettings } = await import('./config-settings')
 
 describe('ConfigSettings autosave', () => {
   it('sends a later revert instead of diffing it away against the stale page-load baseline', async () => {

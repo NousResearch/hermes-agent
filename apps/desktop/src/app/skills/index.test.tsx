@@ -76,7 +76,6 @@ function toolset(overrides: Record<string, unknown> = {}) {
 }
 
 async function renderSkills() {
-  const { SkillsView } = await import('./index')
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(
@@ -116,12 +115,14 @@ afterEach(() => {
   queryClient.clear()
 })
 
-// SkillsView is a heavy module: the first test pays the whole dynamic-import
-// cost, and the file legitimately runs ~14s on CI runners — right against the
-// global 15s per-test budget, so slow runners cascade-fail all 11 tests
-// (2× in a row on PR #93612, plus a main run the same hour). Give this file
-// headroom; the tests are not slow individually.
-describe('SkillsView toolset management', { timeout: 60_000 }, () => {
+// Load stable modules during collection, after mock fixtures are initialized.
+// Cold transforms must not consume a behavioral test or hook deadline.
+const { SkillsView } = await import('./index')
+const { notify } = await import('@/store/notifications')
+const { EmbeddedHubPicker } = await import('./embedded-hub-picker')
+const { installHubSkill } = await import('@/store/hub-actions')
+
+describe('SkillsView toolset management', () => {
   it('renders a switch for each toolset and toggles it off', async () => {
     await renderSkills()
 
@@ -173,7 +174,6 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       ]
     })
 
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -219,7 +219,6 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       }
     ])
 
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -263,7 +262,6 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       }
     ])
 
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -284,9 +282,6 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
   })
 
   it('hub picker refuses to reinstall an already-installed skill', async () => {
-    const { notify } = await import('@/store/notifications')
-    const { EmbeddedHubPicker } = await import('./embedded-hub-picker')
-
     render(<EmbeddedHubPicker installedNames={new Set(['web-research'])} profile={null} />)
 
     // The picker is expanded by default — the hub iframe is live on mount.
@@ -319,7 +314,6 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
 
     // Embedded mode drives tabs through local state (the route hooks are
     // mocked here), starting on Skills: the picker mounts with the tab.
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -378,7 +372,6 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     // the live surface pointed at ITS backend — the reads must carry the
     // (connection, profile) pin, not a bare profile name that would resolve
     // against the ACTIVE gateway (the wrong-machine bug).
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -451,7 +444,6 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     // carries an Install button (no toggle until installed) that routes
     // through the standard hub action pipeline scoped to the Capabilities
     // profile. Already-installed catalog entries are filtered out.
-    const { installHubSkill } = await import('@/store/hub-actions')
 
     getSkills.mockResolvedValue([
       {
@@ -492,7 +484,6 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       ]
     })
 
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>

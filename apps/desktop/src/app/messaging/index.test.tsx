@@ -75,7 +75,6 @@ afterEach(() => {
 })
 
 async function renderMessaging() {
-  const { MessagingView } = await import('./index')
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(
@@ -88,10 +87,14 @@ async function renderMessaging() {
   return result!
 }
 
+// Load stable modules during collection, after mock fixtures are initialized.
+// Cold transforms must not consume a behavioral test or hook deadline.
+const { MessagingView } = await import('./index')
+const { $settingsScopeOverride } = await import('@/store/settings-scope')
+const { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } = await import('@/store/live-sync')
+
 describe('MessagingView profile scope', () => {
   it('follows the active profile instead of targeting primary when there is no override', async () => {
-    const { $settingsScopeOverride } = await import('@/store/settings-scope')
-
     $settingsScopeOverride.set(null)
     getMessagingPlatforms.mockResolvedValue({ platforms: [platform()] })
 
@@ -204,7 +207,6 @@ describe('MessagingView pairing', () => {
     // connect/disconnect health via gateway_state.json, which a new pairing
     // request never moves. Riding it would leave someone invisible in the
     // pending list until an unrelated reconnect happened to fire.
-    const { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } = await import('@/store/live-sync')
 
     getMessagingPlatforms.mockResolvedValue({ platforms: [platform()] })
     getPairing.mockResolvedValue({ approved: [], pending: [] })

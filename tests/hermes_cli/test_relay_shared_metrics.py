@@ -145,6 +145,41 @@ def _legacy_dimensions() -> dict[str, str]:
     }
 
 
+class _ConcurrentStore(SharedMetricsStore):
+    """Exercise transaction integrity without the foreground telemetry time budget."""
+
+    def _connection(self, *, busy_timeout_ms=5_000):
+        return super()._connection(busy_timeout_ms=busy_timeout_ms)
+
+    def _write(self, *, busy_timeout_ms=5_000):
+        return super()._write(busy_timeout_ms=busy_timeout_ms)
+
+
+def _run_owned_processes(processes):
+    """Bound the complete startup/write protocol and always reap our children."""
+    started = []
+    # Ten writes x 5s, plus the 30s barrier and 5s schema budget, fit within
+    # this shared deadline with headroom. Do not add a budget per child.
+    deadline = time.monotonic() + 120
+    try:
+        for process in processes:
+            process.start()
+            started.append(process)
+        for process in started:
+            process.join(timeout=max(0, deadline - time.monotonic()))
+            assert not process.is_alive(), "metrics worker exceeded the protocol budget"
+            assert process.exitcode == 0
+    finally:
+        for process in started:
+            if process.is_alive():
+                process.terminate()
+        cleanup_deadline = time.monotonic() + 10
+        for process in started:
+            process.join(timeout=max(0, cleanup_deadline - time.monotonic()))
+        assert not any(process.is_alive() for process in started)
+
+
+
 def _record_model_calls_in_process(
     database_path: str,
     outbox_directory: str,
@@ -152,8 +187,8 @@ def _record_model_calls_in_process(
     start_barrier: Any | None = None,
 ) -> None:
     if start_barrier is not None:
-        start_barrier.wait()
-    store = SharedMetricsStore(Path(database_path), Path(outbox_directory))
+        start_barrier.wait(timeout=30)
+    store = _ConcurrentStore(Path(database_path), Path(outbox_directory))
     for _ in range(count):
         store.record_model_call(_dimensions(), _resource())
 
@@ -163,8 +198,8 @@ def _record_client_active_in_process(
     outbox_directory: str,
     start_barrier: Any,
 ) -> None:
-    store = SharedMetricsStore(Path(database_path), Path(outbox_directory))
-    start_barrier.wait()
+    store = _ConcurrentStore(Path(database_path), Path(outbox_directory))
+    start_barrier.wait(timeout=30)
     store.record_client_active(_resource())
 
 
@@ -1368,13 +1403,13 @@ def test_package_export_does_not_chase_concurrent_updates(tmp_path, monkeypatch)
 def test_concurrent_package_builders_commit_one_delta(tmp_path):
     database_path = tmp_path / "metrics.sqlite3"
     outbox_directory = tmp_path / "outbox"
-    store = SharedMetricsStore(database_path, outbox_directory)
+    store = _ConcurrentStore(database_path, outbox_directory)
     store.record_model_call(_dimensions(), _resource())
     ready = threading.Barrier(2)
 
     def export() -> list[Path]:
-        worker_store = SharedMetricsStore(database_path, outbox_directory)
-        ready.wait(timeout=5)
+        worker_store = _ConcurrentStore(database_path, outbox_directory)
+        ready.wait(timeout=30)
         return worker_store.create_and_export_package()
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -1397,13 +1432,13 @@ def test_concurrent_package_builders_commit_one_delta(tmp_path):
 def test_concurrent_due_exports_create_one_daily_package(tmp_path):
     database_path = tmp_path / "metrics.sqlite3"
     outbox_directory = tmp_path / "outbox"
-    store = SharedMetricsStore(database_path, outbox_directory)
+    store = _ConcurrentStore(database_path, outbox_directory)
     store.record_model_call(_dimensions(), _resource())
     ready = threading.Barrier(8)
 
     def export() -> None:
-        worker_store = SharedMetricsStore(database_path, outbox_directory)
-        ready.wait(timeout=5)
+        worker_store = _ConcurrentStore(database_path, outbox_directory)
+        ready.wait(timeout=30)
         worker_store.create_and_export_package_if_due()
 
     with ThreadPoolExecutor(max_workers=8) as executor:
@@ -1423,10 +1458,10 @@ def test_concurrent_due_exports_create_one_daily_package(tmp_path):
 def test_concurrent_model_call_updates_are_transactional(tmp_path):
     database_path = tmp_path / "metrics.sqlite3"
     outbox_directory = tmp_path / "outbox"
-    SharedMetricsStore(database_path, outbox_directory)
+    _ConcurrentStore(database_path, outbox_directory)
 
     def record_calls(count: int) -> None:
-        store = SharedMetricsStore(database_path, outbox_directory)
+        store = _ConcurrentStore(database_path, outbox_directory)
         for _ in range(count):
             store.record_model_call(_dimensions(), _resource())
 
@@ -1435,7 +1470,7 @@ def test_concurrent_model_call_updates_are_transactional(tmp_path):
         for future in futures:
             future.result()
 
-    restarted = SharedMetricsStore(database_path, outbox_directory)
+    restarted = _ConcurrentStore(database_path, outbox_directory)
     assert restarted.counter_snapshot()[0]["value"] == 20
 
 
@@ -1452,14 +1487,9 @@ def test_cross_process_model_call_updates_are_transactional(tmp_path):
         for _ in range(2)
     ]
 
-    for process in processes:
-        process.start()
-    for process in processes:
-        process.join(timeout=15)
-        assert not process.is_alive()
-        assert process.exitcode == 0
+    _run_owned_processes(processes)
 
-    restarted = SharedMetricsStore(database_path, outbox_directory)
+    restarted = _ConcurrentStore(database_path, outbox_directory)
     assert restarted.counter_snapshot()[0]["value"] == 20
 
 
@@ -1476,18 +1506,28 @@ def test_cross_process_client_active_attempts_record_one_install(tmp_path):
         for _ in range(2)
     ]
 
-    for process in processes:
-        process.start()
-    for process in processes:
-        process.join(timeout=15)
-        assert not process.is_alive()
-        assert process.exitcode == 0
+    _run_owned_processes(processes)
 
-    store = SharedMetricsStore(database_path, outbox_directory)
+    store = _ConcurrentStore(database_path, outbox_directory)
     [active] = store.counter_snapshot()
     assert active["metric_name"] == CLIENT_ACTIVE_METRIC
     assert active["dimensions"] == {}
     assert active["value"] == 1
+
+
+def test_foreground_store_retains_bounded_contention_policy(tmp_path):
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+    with store._connection() as connection:
+        [budget_ms] = connection.execute("PRAGMA busy_timeout").fetchone()
+    # Concurrent integrity tests override only their connection wait, while the
+    # foreground store still fails promptly instead of holding a live turn.
+    assert 0 < budget_ms < 1000
+    with sqlite3.connect(store.database_path) as blocker:
+        blocker.execute("BEGIN IMMEDIATE")
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            store.record_model_call(_dimensions(), _resource())
+        blocker.rollback()
+    assert store.counter_snapshot() == []
 
 
 def test_schema_initialization_waits_for_an_existing_writer(tmp_path):

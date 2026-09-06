@@ -78,7 +78,6 @@ afterEach(() => {
 // Removal goes through confirm() from @/store/confirm, so the host has to be
 // mounted for the prompt to render — same as in the real app shell.
 async function renderProvidersSettings() {
-  const { ProvidersSettings } = await import('./providers-settings')
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(
@@ -91,6 +90,10 @@ async function renderProvidersSettings() {
 
   return result!
 }
+
+// Load stable modules during collection, after mock fixtures are initialized.
+// Cold transforms must not consume a behavioral test or hook deadline.
+const { ProvidersSettings } = await import('./providers-settings')
 
 describe('ProvidersSettings', () => {
   it('disconnects a connected provider account and refreshes the accounts list', async () => {
@@ -172,7 +175,6 @@ describe('ProvidersSettings', () => {
     })
     listOAuthProviders.mockResolvedValue({ providers: [] })
 
-    const { ProvidersSettings } = await import('./providers-settings')
     await act(async () => {
       render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
     })
@@ -191,7 +193,6 @@ describe('ProvidersSettings', () => {
     })
     listOAuthProviders.mockResolvedValue({ providers: [] })
 
-    const { ProvidersSettings } = await import('./providers-settings')
     render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
 
     // Equal priority → alphabetical tiebreak: Acme, Middle, Zebra.
@@ -224,7 +225,6 @@ describe('ProvidersSettings', () => {
     getEnvVars.mockResolvedValue({})
     listOAuthProviders.mockResolvedValue({ providers: [] })
 
-    const { ProvidersSettings } = await import('./providers-settings')
     render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
 
     const row = await screen.findByText('Local / custom endpoint')

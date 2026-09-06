@@ -59,9 +59,12 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
+// Load stable modules during collection, after mock fixtures are initialized.
+// Cold transforms must not consume a behavioral test or hook deadline.
+const { TerminalBackendPanel } = await import('./terminal-backend-panel')
+
 describe('TerminalBackendPanel', () => {
   it('lists backends with status pills from the backends endpoint', async () => {
-    const { TerminalBackendPanel } = await import('./terminal-backend-panel')
     render(<TerminalBackendPanel onConfiguredChange={vi.fn()} />)
 
     expect(await screen.findByText('Local')).toBeTruthy()
@@ -74,14 +77,12 @@ describe('TerminalBackendPanel', () => {
   })
 
   it('shows setup guidance detail for a needs_setup backend', async () => {
-    const { TerminalBackendPanel } = await import('./terminal-backend-panel')
     render(<TerminalBackendPanel onConfiguredChange={vi.fn()} />)
 
     expect(await screen.findByText(/Docker daemon not reachable/)).toBeTruthy()
   })
 
   it('marks the active backend with an In use pill', async () => {
-    const { TerminalBackendPanel } = await import('./terminal-backend-panel')
     render(<TerminalBackendPanel onConfiguredChange={vi.fn()} />)
 
     const local = await screen.findByRole('button', { name: /Local/ })
@@ -91,7 +92,6 @@ describe('TerminalBackendPanel', () => {
 
   it('selects a backend when clicked and reports the change', async () => {
     const onConfiguredChange = vi.fn()
-    const { TerminalBackendPanel } = await import('./terminal-backend-panel')
     render(<TerminalBackendPanel onConfiguredChange={onConfiguredChange} />)
 
     fireEvent.click(await screen.findByRole('button', { name: /SSH/ }))
@@ -105,7 +105,6 @@ describe('TerminalBackendPanel', () => {
 
   it('allows selecting a needs_setup backend (guidance instead of blocking)', async () => {
     selectTerminalBackend.mockResolvedValue({ ok: true, backend: 'docker' })
-    const { TerminalBackendPanel } = await import('./terminal-backend-panel')
     render(<TerminalBackendPanel onConfiguredChange={vi.fn()} />)
 
     fireEvent.click(await screen.findByRole('button', { name: /Docker/ }))
@@ -116,7 +115,6 @@ describe('TerminalBackendPanel', () => {
   })
 
   it('does not re-select the already active backend', async () => {
-    const { TerminalBackendPanel } = await import('./terminal-backend-panel')
     render(<TerminalBackendPanel onConfiguredChange={vi.fn()} />)
 
     fireEvent.click(await screen.findByRole('button', { name: /Local/ }))

@@ -10,6 +10,10 @@ forever. The fix gives ``block_task`` a typed ``kind`` and a persistent
 * ``needs_input`` / ``capability`` / un-typed blocks land in ``blocked``;
   each same-cause re-block after an unblock increments ``block_recurrences``,
   and at ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
+* ``resource`` also lands in ``blocked``, but CARRIES ``block_recurrences``
+  forward instead of incrementing it: a peer holding a write lease or a
+  rate-limited seat is contention, not this task's own failure, so the wait
+  must not spend the breaker's budget.
 * ``unblock_task`` deliberately does NOT reset ``block_recurrences`` (the
   amnesia that let the loop run unbounded).
 * A successful ``complete_task`` resets the loop memory.
@@ -77,6 +81,56 @@ def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
         payload = events[-1].payload or {}
         assert payload.get("recurrences") == 2
         assert payload.get("kind") == "capability"
+
+
+def test_resource_block_carries_recurrences_instead_of_incrementing(kanban_home: Path) -> None:
+    """A ``resource`` re-block keeps the count it inherited.
+
+    The earlier ``capability`` block leaves the counter at 1, which is what
+    makes the carry observable: an incrementing path would reach
+    ``BLOCK_RECURRENCE_LIMIT`` on the second ``resource`` cycle and route the
+    task to ``triage``.
+    """
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="needs a human", kind="capability")
+        assert kb.get_task(conn, tid).block_recurrences == 1
+
+        for cycle in (1, 2):
+            kb.unblock_task(conn, tid)
+            _make_running_again(conn, tid)
+            kb.block_task(conn, tid, reason="write lease held by a peer", kind="resource")
+            task = kb.get_task(conn, tid)
+            assert task.status == "blocked", cycle
+            assert task.block_kind == "resource", cycle
+            assert task.block_recurrences == 1, cycle
+
+        assert not [e for e in kb.list_events(conn, tid)
+                    if e.kind == "block_loop_detected"]
+
+
+def test_resource_never_trips_the_breaker_that_other_kinds_do(kanban_home: Path) -> None:
+    """The same block -> unblock -> re-block cycle, differing only in the kind.
+
+    ``capability`` is the control: at ``BLOCK_RECURRENCE_LIMIT`` it routes to
+    ``triage``, which is right for a card nobody is progressing. A card
+    queueing behind a write lease must not be escalated to a human for waiting
+    its turn.
+    """
+    with kbc.connect_closing() as conn:
+        for kind, expected_status, expected_recurrences in (
+            ("capability", "triage", kb.BLOCK_RECURRENCE_LIMIT),
+            ("resource", "blocked", 0),
+        ):
+            tid = _running_task(conn, title=kind)
+            kb.block_task(conn, tid, reason="same cause", kind=kind)
+            for _ in range(kb.BLOCK_RECURRENCE_LIMIT - 1):
+                kb.unblock_task(conn, tid)
+                _make_running_again(conn, tid)
+                kb.block_task(conn, tid, reason="same cause", kind=kind)
+            task = kb.get_task(conn, tid)
+            assert task.status == expected_status, kind
+            assert task.block_recurrences == expected_recurrences, kind
 
 
 # ---------------------------------------------------------------------------

@@ -100,7 +100,7 @@ class GatewayAgentCacheMixin:
     def _agent_config_signature(
         model: str, runtime: dict, enabled_toolsets: list, ephemeral_prompt: str,
         cache_keys: dict | None = None, user_id: str | None = None, user_id_alt: str | None = None,
-        skip_context_files: bool = False,
+        skip_context_files: bool = False, reasoning_config: dict | None = None,
     ) -> str:
         """Stable key from agent config: change → cached AIAgent rebuilt; unchanged → reused (frozen
         prompt + schemas for cache hits). ``user_id`` / ``user_id_alt`` participate because Honcho
@@ -128,7 +128,7 @@ class GatewayAgentCacheMixin:
                 runtime.get("requested_provider", ""), runtime.get("api_mode", ""),
                 sorted((runtime.get("capabilities") or {}).items()),
                 sorted(enabled_toolsets) if enabled_toolsets else [],
-                # reasoning_config excluded — set per-message on the cached agent; no prompt/tool effect.
+                reasoning_config,
                 ephemeral_prompt or "",
                 sorted((cache_keys or {}).items()),
                 str(user_id or ""), str(user_id_alt or ""),

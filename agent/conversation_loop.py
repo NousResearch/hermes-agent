@@ -693,20 +693,21 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         announced_switch = _stage_surface_switch_note(agent, stored_prompt, conversation_history)
         # Same contract for tools[]: pin the array to the order this session already
         # sent (tools freeze) instead of re-probing every check_fn on a fresh AIAgent.
-        # NOT on the turn that announces a surface switch: the saved names are the PREVIOUS
-        # surface's toolset (``coding_context: focus`` gives desktop a desktop_ui toolset the
-        # TUI has no use for) and the tool registry is process-global, so the merge would
-        # re-advertise tools this surface cannot run.  The fresh, toolset-correct array wins,
-        # and is persisted so the very next turn pins THAT one — the freeze is skipped once,
-        # not disabled for the rest of the session.
+        # The pin holds ON the announcing turn too.  tools[] is serialized AHEAD of the system
+        # prompt this branch just preserved, so dropping the previous surface's toolset would
+        # change the request at token 0 and re-prefill everything behind it — the exact cost
+        # #104414 is about, paid on the exact turn we are here to make cheap.  The merge still
+        # ADDS what the new surface brought (a tui -> desktop switch pays a break no freeze can
+        # avoid), and what it carries FORWARD is named in the note instead, so a tool that can
+        # only answer ``tool_error("desktop only")`` here does not read as a live capability.
         try:
             saved_tools = session_row.get("tool_names") if session_row else None
-            if announced_switch:
-                from tools.mcp_tool_agent import persist_agent_tool_names
-                persist_agent_tool_names(agent)
-            elif saved_tools:
+            if saved_tools:
                 from tools.mcp_tool_agent import restore_agent_tool_prefix
+                built_for_this_surface = _agent_tool_names(agent)
                 restore_agent_tool_prefix(agent, json.loads(saved_tools))
+                if announced_switch:
+                    _note_inert_pinned_tools(agent, built_for_this_surface)
         except Exception:
             logger.debug("tool prefix restore skipped", exc_info=True)
         # Prompt-section callbacks are new-session-only; recover their frozen bytes
@@ -825,6 +826,40 @@ def _last_announced_surface(conversation_history) -> str:
             if _SURFACE_SWITCH_NOTE_PREFIX in text:
                 return text.rsplit(_SURFACE_SWITCH_NOTE_PREFIX, 1)[1].split(".", 1)[0].strip()
     return ""
+
+
+def _agent_tool_names(agent) -> list:
+    """The names in ``agent.tools``, in wire order ([] when the attribute is unreadable)."""
+    names = []
+    try:
+        for entry in getattr(agent, "tools", None) or []:
+            name = (entry.get("function") or {}).get("name", "") if isinstance(entry, dict) else ""
+            if name:
+                names.append(name)
+    except Exception:
+        return []
+    return names
+
+
+def _note_inert_pinned_tools(agent, built_for_this_surface: list) -> None:
+    """Name the pinned tools THIS surface did not build, at the end of the switch note.
+
+    The freeze keeps a previous surface's tools on the wire deliberately — removing them is the
+    one thing that would still re-prefill the request behind the preserved prompt — so the model
+    has to be TOLD they are inert here, or it plans around a ``focus_pane`` that a terminal turn
+    can only answer with ``tool_error("desktop only")``.  Rides the note, so it is one-shot and
+    lands behind the cached prefix like the rest of the correction.
+    """
+    surface_names = set(built_for_this_surface)
+    inert = [name for name in _agent_tool_names(agent) if name not in surface_names]
+    note = getattr(agent, "_surface_switch_note", "") or ""
+    if not inert or not note:
+        return
+    agent._surface_switch_note = note + (
+        "\n[System: These tools stay listed for this conversation (dropping them would discard "
+        "the cached request prefix) but were not loaded for this interface — expect a call to "
+        f"one of them to fail: {', '.join(inert)}.]"
+    )
 
 
 def _stage_surface_switch_note(agent, prompt: str, conversation_history) -> bool:

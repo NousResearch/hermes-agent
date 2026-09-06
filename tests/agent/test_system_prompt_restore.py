@@ -70,7 +70,11 @@ class TestSurfaceSwitch:
             {"role": "assistant", "content": "hello"},
         ]
 
-    def _restore(self, *, stored: str, current: str, history=None, tool_names=None):
+    @staticmethod
+    def _tool(name: str) -> dict:
+        return {"type": "function", "function": {"name": name, "parameters": {}}}
+
+    def _restore(self, *, stored: str, current: str, history=None, tool_names=None, tools=None):
         db = MagicMock()
         row = {"system_prompt": self._stored(stored)}
         if tool_names is not None:
@@ -78,6 +82,8 @@ class TestSurfaceSwitch:
         db.get_session.return_value = row
         agent = _make_agent(session_db=db)
         agent.platform = current
+        if tools is not None:
+            agent.tools = tools
         agent._platform_hint_overrides = None
         agent._surface_switch_note = ""
         agent._gateway_turn_context_notes = ""
@@ -144,12 +150,11 @@ class TestSurfaceSwitch:
         agent._build_system_prompt.assert_called_once()
         assert agent._surface_switch_note.startswith(f"{_SURFACE_SWITCH_NOTE_PREFIX}desktop.")
 
-    def test_tool_prefix_is_replaced_on_the_turn_that_announces_a_switch(self):
-        """The saved names are the PREVIOUS surface's toolset.
+    def test_tool_prefix_stays_pinned_on_the_turn_that_announces_a_switch(self):
+        """tools[] is serialized ahead of the prompt this branch went out of its way to keep.
 
-        The tool registry is process-global, so ``_merge_preserving_prefix`` would keep a
-        saved-but-not-loaded tool (e.g. the desktop_ui toolset a `coding_context: focus`
-        desktop session gets) and re-advertise it on a TUI session that cannot run it.
+        Rebuilding the array for the new surface would move token 0 and re-prefill the whole
+        request — the cost #104414 is about — on the very turn the fix exists to make cheap.
         """
         from unittest.mock import patch
 
@@ -158,12 +163,40 @@ class TestSurfaceSwitch:
             patch("tools.mcp_tool_agent.persist_agent_tool_names") as persist,
         ):
             self._restore(stored="desktop", current="tui", tool_names='["desktop_ui_tool"]')
-        pin.assert_not_called()
-        persist.assert_called_once()
+        pin.assert_called_once()
+        persist.assert_not_called()
+
+    def test_the_note_names_the_tools_the_pin_carried_forward(self):
+        """A pinned tool this surface did not build is inert here — say so.
+
+        Keeping it on the wire is what preserves the prefix, so the model has to learn from the
+        note that calling it only returns ``tool_error("desktop only")``.
+        """
+        from unittest.mock import patch
+
+        def _carry_desktop_tool(agent, saved_names):
+            agent.tools = [self._tool("read_file"), self._tool("focus_pane")]
+            return True
+
+        with patch("tools.mcp_tool_agent.restore_agent_tool_prefix", _carry_desktop_tool):
+            agent = self._restore(stored="desktop", current="tui", tool_names='["focus_pane"]',
+                                  tools=[self._tool("read_file")])
+        assert "focus_pane" in agent._surface_switch_note
+        assert "were not loaded for this interface" in agent._surface_switch_note
+        # Only the carried-over name: a tool this surface built is not inert.
+        assert "read_file" not in agent._surface_switch_note.split("were not loaded for this interface")[1]
+
+    def test_the_note_says_nothing_about_tools_when_the_pin_carries_none(self):
+        from unittest.mock import patch
+
+        with patch("tools.mcp_tool_agent.restore_agent_tool_prefix", lambda agent, names: False):
+            agent = self._restore(stored="desktop", current="tui", tool_names='["read_file"]',
+                                  tools=[self._tool("read_file")])
+        assert agent._surface_switch_note.startswith(f"{_SURFACE_SWITCH_NOTE_PREFIX}tui.")
+        assert "were not loaded for this interface" not in agent._surface_switch_note
 
     def test_tool_prefix_is_pinned_again_on_the_next_turn(self):
-        # The freeze is skipped once, not disabled for the rest of the session: the announcing
-        # turn persisted this surface's tools, so the next turn pins those.
+        # The pin is never skipped, on the announcing turn or after it.
         from unittest.mock import patch
 
         with patch("tools.mcp_tool_agent.restore_agent_tool_prefix") as pin:

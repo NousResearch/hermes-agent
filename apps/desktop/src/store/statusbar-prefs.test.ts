@@ -38,7 +38,10 @@ describe('statusbar hidden items', () => {
   })
 
   it('surfaces the approval pill for installs that hid it under the v1 defaults, keeping their other choices', async () => {
-    window.localStorage.setItem('hermes.desktop.statusbarHidden', JSON.stringify(['approval-mode', 'cron', 'gateway-health']))
+    window.localStorage.setItem(
+      'hermes.desktop.statusbarHidden',
+      JSON.stringify(['approval-mode', 'cron', 'gateway-health'])
+    )
 
     const { $statusbarHiddenIds } = await loadStore()
 

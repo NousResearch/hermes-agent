@@ -4797,6 +4797,7 @@ def _is_payment_error(exc: Exception) -> bool:
             "too many tokens per day", "daily limit",
             "tokens per day", "daily quota",
             "resource exhausted",  # Vertex AI / gRPC quota errors
+            "resource_exhausted", "resource-exhausted", "resourceexhausted",
             "weekly usage limit", "weekly limit",  # OpenCode Go weekly subscription cap
         )):
             return True

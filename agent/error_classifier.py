@@ -193,7 +193,7 @@ _RATE_LIMIT_PATTERNS = [
     "requests per day",
     "try again in",
     "please retry after",
-    "resource_exhausted",
+    "resource exhausted", "resource_exhausted", "resource-exhausted", "resourceexhausted",
     "rate increased too quickly",  # Alibaba/DashScope throttling
     # AWS Bedrock throttling
     "throttlingexception",
@@ -962,6 +962,22 @@ def classify_api_error(
             reason.value, provider, status_code,
         )
         return _result(reason, **plugin_classification)
+
+    # ChatGPT Codex masks a rejected encrypted-reasoning replay behind the same
+    # bare ``invalid_prompt: Request blocked.`` used for real blocks. Keep this
+    # exact envelope + provider-only so ordinary safety blocks remain distinct;
+    # the recovery loop can then strip cached replay state before retrying.
+    if provider_lower == "openai-codex" and status_code in (None, 400):
+        body_message = _body_msg.strip()
+        if (
+            error_code.lower() == "invalid_prompt"
+            and body_message == "request blocked."
+        ) or error_msg.strip() == "invalid_prompt: request blocked.":
+            return _result(
+                FailoverReason.invalid_encrypted_content,
+                retryable=False,
+                should_fallback=True,
+            )
 
     # ── 1. Provider-specific patterns (highest priority) ────────────
 

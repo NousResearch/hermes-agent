@@ -234,6 +234,17 @@ omitted, Hermes keeps its normal provider and model capability detection.
 Older configs used a top-level `custom_providers:` list (with `base_url` instead of `api`). It still works and is auto-migrated to the `providers:` dict on `hermes update` (config v12).
 :::
 
+### Nous Portal: which wire carries Claude
+
+Nous Portal serves its `anthropic/*` models on two routes: OpenAI-compatible `/v1/chat/completions` and the native Anthropic Messages wire `/v1/messages`. `nous.anthropic_wire` picks one:
+
+```yaml
+nous:
+  anthropic_wire: chat     # default. "native" = the Anthropic Messages wire
+```
+
+`chat` is the default for now. The native wire is the better transport (signed thinking blocks pass through unchanged, native `cache_control` scopes), but in concurrent tool loops it currently re-writes the previous turn's prompt cache on 14–20% of consecutive calls, which is 15–20% of a fan-out's cache-write bill; the chat route measured 0 on the same test. Set `native` to opt back in (for example once the portal-side fix has shipped). Only `anthropic/*` models are affected; everything else on Nous already uses chat/completions.
+
 ## When does it take effect?
 
 - **CLI** (`hermes chat`): next `hermes chat` invocation.

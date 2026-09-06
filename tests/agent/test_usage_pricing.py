@@ -358,6 +358,34 @@ def test_vertex_default_model_estimates_cached_usage(monkeypatch):
     assert result.amount_usd is not None and result.amount_usd > 0
 
 
+def test_curated_google_flash_models_resolve_official_snapshot_pricing(monkeypatch):
+    """Every ``google/gemini-*-flash`` model curated for the OpenRouter and Nous
+    pickers must also bill through the Google official-docs snapshot on the
+    direct Gemini and Vertex routes — a model pickable via the aggregators but
+    ``unknown`` to Google-route accounting is a catalog/pricing drift.
+    """
+    from hermes_cli.models_catalog_static import OPENROUTER_MODELS, _PROVIDER_MODELS
+
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: {},
+    )
+    curated = {m for m, _desc in OPENROUTER_MODELS} | set(_PROVIDER_MODELS["nous"])
+    flash = sorted(m for m in curated if m.startswith("google/gemini-") and m.endswith("-flash"))
+    assert flash, "expected curated google/gemini-*-flash picker entries"
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000)
+    for model in flash:
+        bare = model.split("/", 1)[1]
+        gemini = estimate_usage_cost(bare, usage, provider="gemini")
+        vertex = estimate_usage_cost(model, usage, provider="vertex")
+        assert gemini.status == "estimated", (model, gemini.status)
+        assert gemini.source == "official_docs_snapshot", model
+        assert vertex.amount_usd == gemini.amount_usd, model
+        # Direct-route models the picker offers must also be pickable directly.
+        assert bare in _PROVIDER_MODELS["gemini"], model
+        assert model in _PROVIDER_MODELS["vertex"], model
+
+
 def test_normalize_usage_minimax_logs_cache_observability(caplog):
     """MiniMax providers on the Anthropic wire emit a debug-level
     cache-observability line recording the observable fields

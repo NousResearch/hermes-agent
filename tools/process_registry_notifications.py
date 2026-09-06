@@ -116,14 +116,16 @@ def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_go
 def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> str:
     """Consolidated block for a delegate_task fan-out that finished as one unit."""
     results, goals = evt.get("results") or [], evt.get("goals") or []
-    n = len(results) if results else len(goals)
+    # ``goals`` is the whole delegate_task call (task_index indexes it); ``results`` is this unit's subset.
+    n, n_unit = len(goals) or len(results), len(results) or len(goals)
+    group = evt.get("group")
+    unit = f"group '{group}' ({n_unit} subagent(s))" if group is not None else f"{n_unit} subagent(s)"
     lines = _preamble(
         evt,
         f"[ASYNC DELEGATION BATCH COMPLETE — {deleg_id}]",
-        f"A background fan-out of {n} subagent(s) you dispatched earlier "
-        "has finished. All ran in parallel and waited on each other; their "
-        "consolidated results are below. You may have moved on since "
-        "dispatching — act on these or re-dispatch if things have changed.",
+        f"A background fan-out unit you dispatched earlier — {unit} — has finished; its consolidated results are "
+        "below. Other units from the same delegate_task call (other groups / ungrouped tasks) report separately as "
+        "they finish. You may have moved on since dispatching — act on these or re-dispatch if things have changed.",
         completed_at, with_goal=False)
     lines[-1] += f"   Total duration: {evt.get('total_duration_seconds', evt.get('duration_seconds', '?'))}s"
     if evt.get("error") and not results:

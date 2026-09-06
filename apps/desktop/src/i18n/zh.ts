@@ -3308,7 +3308,11 @@ export const zh: Translations = {
       smart: '智能',
       smartDescription: '自动评估操作，并在需要时询问',
       off: '关闭',
-      offDescription: '不显示审批提示，直接运行'
+      offDescription: '不显示审批提示，直接运行',
+      sessionYolo: 'YOLO',
+      sessionYoloAriaLabel: mode => `审批模式：${mode} · 此对话已开启 YOLO`,
+      sessionYoloRow: '此对话 YOLO',
+      sessionYoloDescription: '仅在此对话中跳过审批提示'
     },
     statusbar: {
       unknown: '未知',

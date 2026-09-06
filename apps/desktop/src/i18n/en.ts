@@ -3160,7 +3160,11 @@ export const en: Translations = {
       smart: 'Smart',
       smartDescription: 'Automatically assess actions and ask when needed',
       off: 'Off',
-      offDescription: 'Run without approval prompts'
+      offDescription: 'Run without approval prompts',
+      sessionYolo: 'YOLO',
+      sessionYoloAriaLabel: mode => `Approval mode: ${mode} · YOLO on for this chat`,
+      sessionYoloRow: 'YOLO for this chat',
+      sessionYoloDescription: 'Skip approval prompts in this chat only'
     },
     statusbar: {
       unknown: 'unknown',

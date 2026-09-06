@@ -3188,7 +3188,11 @@ export const ru = defineLocale({
       smart: 'Умный',
       smartDescription: 'Автоматически оценивать действия и спрашивать при необходимости',
       off: 'Выкл',
-      offDescription: 'Выполнять без запросов подтверждения'
+      offDescription: 'Выполнять без запросов подтверждения',
+      sessionYolo: 'YOLO',
+      sessionYoloAriaLabel: mode => `Режим подтверждения: ${mode} · YOLO включён для этого чата`,
+      sessionYoloRow: 'YOLO для этого чата',
+      sessionYoloDescription: 'Пропускать запросы подтверждения только в этом чате'
     },
     statusbar: {
       unknown: 'неизвестно',

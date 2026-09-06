@@ -2803,6 +2803,8 @@ export interface Translations {
   freeTier: {
     /** Settings › Providers row title while the Nous identity is the free tier. */
     providerRowTitle: string
+    /** The featured row's pitch while the identity is the free tier: what signing in adds. */
+    providerRowPitch: string
     // First-launch introduction (ready screen + composer strip).
     readyTitle: string
     readyCaption: string

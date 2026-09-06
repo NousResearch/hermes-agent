@@ -3276,6 +3276,7 @@ export const en: Translations = {
 
   freeTier: {
     providerRowTitle: 'Nous · free tier',
+    providerRowPitch: 'Sign in to keep your connectors and unlock more.',
     readyTitle: 'Hermes is ready.',
     readyCaption: 'Free · connectors included',
     begin: 'Begin',

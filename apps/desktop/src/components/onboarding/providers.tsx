@@ -58,7 +58,9 @@ export function FeaturedProviderRow({
             </span>
           )}
         </div>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">{t.onboarding.featuredPitch}</p>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+          {freeTier ? t.freeTier.providerRowPitch : t.onboarding.featuredPitch}
+        </p>
       </div>
       <ChevronRight className="size-4 shrink-0 text-primary transition group-hover:translate-x-0.5" />
     </button>

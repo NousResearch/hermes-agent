@@ -424,7 +424,8 @@ class SessionDB(
         except Exception as exc:
             logger.warning("%s close failed for %s: %s", label, self.db_path, exc)
 
-    def __init__(self, db_path: Path = None, read_only: bool = False):
+    def __init__(self, db_path: Path = None, read_only: bool = False,
+                 conn_factory: Optional[Callable[[], sqlite3.Connection]] = None):
         self.db_path = db_path or _default_db_path()
         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
         self.read_only = read_only
@@ -465,6 +466,13 @@ class SessionDB(
         # is queryable AND not marked stale.
         self._fts_cjk_loaded = self._fts_cjk_available = self._fts_unavailable_warned = False
         self._conn = None
+        # Testing/DI seams (tests/session/): conn_factory substitutes the raw writer connect
+        # (Pytest yields temporary schemas through it); _test_force_sigkill arms a one-shot
+        # mid-transaction crash in _execute_write. Neither is public surface.
+        self._conn_factory = conn_factory
+        self._pre_commit_hooks: List[Callable[[sqlite3.Connection], None]] = []
+        self._post_write_hooks: List[Callable[[], None]] = []
+        self._test_force_sigkill = False
         # Async token accounting; distinct from self._lock so enqueue/flush never contends with writes.
         self._token_queue: deque = deque()
         self._token_queue_cond = threading.Condition(threading.Lock())
@@ -598,9 +606,12 @@ class SessionDB(
         """Connect + WAL/pragma/tokenizer setup for a writer connection (no schema init). Short timeout:
         jittered application-level retry handles contention, not SQLite's busy handler;
         isolation_level=None: explicit BEGIN IMMEDIATE."""
-        conn = _connect_tracked_db(
-            str(self.db_path), check_same_thread=False, timeout=1.0, isolation_level=None,
-        )
+        if self._conn_factory is not None:
+            conn = self._conn_factory()
+        else:
+            conn = _connect_tracked_db(
+                str(self.db_path), check_same_thread=False, timeout=1.0, isolation_level=None,
+            )
         try:
             conn.row_factory = sqlite3.Row
             self._wal_active = apply_wal_with_fallback(conn, db_label="state.db") == "wal"
@@ -808,6 +819,23 @@ class SessionDB(
                     try:
                         fn_started = True
                         result = fn(self._conn)
+                        for hook in self._pre_commit_hooks:
+                            hook(self._conn)  # raising vetoes the write (rolled back below)
+                        if self._test_force_sigkill:
+                            # Testing seam (tests/session/): emulate kill -9 mid-transaction —
+                            # hard-close WITHOUT commit/rollback (the uncommitted txn dies with
+                            # the connection, exactly the durable state a real crash leaves) and
+                            # drop the handle so the next write reopens via
+                            # _reopen_after_close_locked. Clear the sidecar identity snapshot: a
+                            # last-connection close can checkpoint+unlink the WAL, which the
+                            # generation guard would otherwise misread as an out-of-band replace.
+                            # One-shot: self-disarms.
+                            self._test_force_sigkill = False
+                            crashed, self._conn = self._conn, None
+                            self._db_sidecar_identity = {}
+                            self._close_connection_quietly(crashed)
+                            raise sqlite3.OperationalError(
+                                "simulated mid-write crash (test seam _test_force_sigkill)")
                         self._conn.commit()
                     except BaseException:
                         try:
@@ -816,6 +844,12 @@ class SessionDB(
                             pass
                         raise
                 # Success — periodic best-effort checkpoint + FTS merge.
+                for hook in self._post_write_hooks:
+                    try:
+                        hook()
+                    except Exception:
+                        # A committed write is never masked by a hook failure.
+                        logger.warning("post_write hook failed for %s", self.db_path, exc_info=True)
                 self._write_count += 1
                 if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
                     self._try_wal_checkpoint()

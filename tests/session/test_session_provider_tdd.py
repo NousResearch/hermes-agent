@@ -164,14 +164,12 @@ class TestCrashRecovery:
         contents = [r["content"] for r in provider.get_messages("s1")]
         assert contents == ["before-crash", "after-crash"]
         # Search agrees: committed history is findable, the crashed write never existed.
+        # search_messages returns FTS snippets (>>>match<<< marks), not full content.
         assert any(
-            "before-crash" in (hit.get("content") or "")
+            "before-crash" in (hit.get("snippet") or "")
             for hit in provider.search_messages("before-crash")
         )
-        assert not any(
-            "crashed-payload" in (hit.get("content") or "")
-            for hit in provider.search_messages("crashed-payload")
-        )
+        assert provider.search_messages("crashed-payload") == []
 
 
 class TestWriteHooks:

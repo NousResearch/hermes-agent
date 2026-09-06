@@ -1251,6 +1251,56 @@ def _api_error_debug_info(error: Exception) -> Dict[str, Any]:
     return info
 
 
+_REQUEST_DUMP_SENSITIVE_EXACT_KEYS = frozenset({"token", "jwt"})
+_REQUEST_DUMP_SENSITIVE_KEY_PARTS = (
+    "api_token",
+    "bearer_token",
+    "session_token",
+    "csrf_token",
+    "authorization",
+    "cookie",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "auth_token",
+    "api_key",
+    "apikey",
+    "secret",
+    "password",
+    "credential",
+    "private_key",
+)
+
+
+def _request_dump_key_is_sensitive(key: Any) -> bool:
+    key_text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key))
+    key_text = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", key_text)
+    normalized = re.sub(r"[^a-z0-9]+", "_", key_text.lower()).strip("_")
+    if normalized in _REQUEST_DUMP_SENSITIVE_EXACT_KEYS:
+        return True
+    return any(part in normalized for part in _REQUEST_DUMP_SENSITIVE_KEY_PARTS)
+
+
+def _redact_request_dump_payload(value: Any, key: Any = None) -> Any:
+    """Redact secrets before persisting request debug dumps."""
+    if key is not None and _request_dump_key_is_sensitive(key):
+        return value if value is None or value == "" else "[REDACTED]"
+
+    if isinstance(value, dict):
+        return {
+            item_key: _redact_request_dump_payload(item_value, item_key)
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact_request_dump_payload(item) for item in value]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+
+    from agent.redact import redact_sensitive_text
+    text = value if isinstance(value, str) else str(value)
+    return redact_sensitive_text(text, force=True)
+
+
 def dump_api_request_debug(
     agent, api_kwargs: Dict[str, Any], *, reason: str, error: Optional[Exception] = None
 ) -> Optional[Path]:
@@ -1283,9 +1333,8 @@ def dump_api_request_debug(
         dump_file = agent.logs_dir / f"request_dump_{safe_sid}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
         # Redact secrets first: this fires unconditionally on API errors and captures the full
         # request body, so context-embedded secrets would otherwise land in cleartext on disk.
-        from agent.redact import redact_sensitive_text
-        _serialized = json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str)
-        _redacted_payload = json.loads(redact_sensitive_text(_serialized, force=True))
+        # Keep JSON structure intact: scrub string leaves before serialization.
+        _redacted_payload = _redact_request_dump_payload(dump_payload)
         atomic_json_write(dump_file, _redacted_payload, default=str)
         agent._vprint(f"{agent.log_prefix}🧾 Request debug dump written to: {dump_file}")
         if env_var_enabled("HERMES_DUMP_REQUEST_STDOUT"):

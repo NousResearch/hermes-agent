@@ -63,6 +63,7 @@ router = APIRouter()
 
 # Late-bound web_server helpers (resolved at call time; cycle-safe, monkeypatch-transparent).
 _cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
+_profile_roster_fields = late("_profile_roster_fields", "hermes_cli.web_server_profiles")
 _resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profiles")
 _spawn_hermes_action = late("_spawn_hermes_action", "hermes_cli.web_server_gateway")
 
@@ -73,7 +74,7 @@ _spawn_hermes_action = late("_spawn_hermes_action", "hermes_cli.web_server_gatew
 
 def _profile_to_dict(info) -> Dict[str, Any]:
     attr = functools.partial(getattr, info)
-    return {
+    row = {
         "name": attr("name", ""), "path": str(attr("path", "")),
         "is_default": bool(attr("is_default", False)),
         "model": attr("model", None), "provider": attr("provider", None),
@@ -87,6 +88,12 @@ def _profile_to_dict(info) -> Dict[str, Any]:
         "distribution_version": attr("distribution_version", None),
         "distribution_source": attr("distribution_source", None),
         "has_alias": attr("alias_path", None) is not None}
+    row.update(
+        _profile_roster_fields(Path(row["path"]))
+        if row["path"]
+        else {"ui_meta": {}, "has_avatar": False}
+    )
+    return row
 
 
 def _profile_setup_command(name: str) -> str:

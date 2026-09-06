@@ -98,6 +98,20 @@ def test_main_checkout_groups_by_recorded_branch_with_stable_lane_ids():
     assert all(g["isMain"] for repo in project["repos"] for g in repo["groups"])
 
 
+def test_configured_home_workspace_is_marked_as_home_not_an_auto_project():
+    resolve = _resolver({"/home/user": (None, None)})
+    session = _session("/home/user")
+
+    tree = pt.build_tree([], [session], [], resolve, hydrate=True, home_root="/home/user")
+
+    project = tree["projects"][0]
+    assert project["path"] == "/home/user"
+    assert project["label"] == "Home"
+    assert project["isHome"] is True
+    assert project["isNoProject"] is True
+    assert project["isAuto"] is False
+
+
 def test_linked_worktrees_fold_under_their_common_repo_root():
     # The linked worktree's own toplevel is /elsewhere/wt, but its COMMON root is
     # /repo, so it must group under /repo (not as a separate project).

@@ -626,6 +626,18 @@ def _print_nonretryable_auth_guidance(
                     f"         Nous catalog model, or run `/model openrouter:{model}` to use OpenRouter.",
                 )
         return
+    if provider == "bedrock":
+        # The credential is an AWS session (SSO, credential_process, an instance/
+        # task role), not an API key; "hermes setup" cannot refresh it.
+        _vlines(
+            agent,
+            "   💡 AWS credentials for Bedrock were rejected or could not be resolved. Check:",
+            "      • Same AWS_PROFILE / env as Hermes: aws sts get-caller-identity",
+            "      • SSO profile expired? Run: aws sso login --profile <profile>",
+            "      • credential_process or assumed role? Refresh it on the host running Hermes",
+            f"      • Does the role have access to {model} in this region?",
+        )
+        return
     _vlines(
         agent,
         "   💡 Your API key was rejected by the provider. Check:",

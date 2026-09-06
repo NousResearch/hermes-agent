@@ -259,6 +259,47 @@ _AUTH_PATTERNS = (
     "forbidden", "invalid token", "token expired", "token revoked", "access denied",
 )
 
+# botocore credential-chain / STS token-refresh exceptions (Bedrock, refreshable
+# session lapsed: SSO, credential_process, an assumed role). botocore raises
+# these while SIGNING, before any HTTP status exists, so they never reach
+# _by_status/_by_error_code; matched by bare class name like
+# _TRANSPORT_ERROR_TYPES — these names are botocore-specific.
+_AWS_CREDENTIAL_ERROR_TYPES = frozenset({
+    "NoCredentialsError", "PartialCredentialsError", "CredentialRetrievalError",
+    "TokenRetrievalError", "SSOTokenLoadError", "UnauthorizedSSOTokenError",
+    "RefreshWithMFAUnsupportedError",
+})
+
+# Lowercased STS/Bedrock codes botocore embeds in str(ClientError) (e.g. "An
+# error occurred (ExpiredTokenException) when calling the ConverseStream
+# operation: ..."). No space in "expiredtoken" etc. on purpose — it cannot
+# collide with a provider's prose "expired token" (see _AUTH_PATTERNS) because
+# of the missing space. Deliberately NOT here: the two "no credentials
+# resolvable" RuntimeError texts (the Bedrock SDK's lib/bedrock/_auth.py;
+# BedrockOpenAISigV4Auth.auth_flow in agent/bedrock_adapter.py) — both are
+# raised by code that re-runs the credential chain on every request (a fresh
+# botocore Session per auth_flow call; session.get_credentials() per sign,
+# which botocore only caches on a non-None result), so a first-request IMDS
+# miss clears on retry and they keep their retryable verdict. NoCredentialsError
+# from the boto3 Converse client is different: that client resolves credentials
+# once at creation and its signer holds credentials=None for its lifetime.
+_AWS_CREDENTIAL_PATTERNS = (
+    "expiredtoken", "unrecognizedclientexception", "invalidsignatureexception", "invalidclienttokenid",
+)
+
+# A family exception whose text names a REFRESHABLE metadata provider ("Error
+# when retrieving credentials from iam-role: ...", "... from container-role:
+# ...", botocore's RefreshableCredentials "Credential refresh failed, response
+# did not contain: ..." when IMDS answered late/empty) is a blip, not a dead
+# session: the next attempt normally refreshes fine. Same for a
+# credential_process helper whose stderr reports a network failure
+# (_TIMEOUT_MESSAGE_PATTERNS / _CONNECTION_MESSAGE_PATTERNS, joined below the
+# transport tables). Those shapes are left to the later stages, which keep the
+# retryable verdict they already have on main.
+_AWS_CREDENTIAL_REFRESHABLE_PATTERNS = (
+    "from iam-role", "from container-role", "credential refresh failed",
+)
+
 # Empty-response advisories (OpenRouter / nano-gpt). Checked before overflow
 # because the text often mentions "max_tokens" (caused compression spirals).
 _EMPTY_PROVIDER_RESPONSE_PATTERNS = (
@@ -293,6 +334,12 @@ _TRANSPORT_ERROR_TYPES = frozenset({
     "SSLError", "SSLZeroReturnError", "SSLWantReadError", "SSLWantWriteError", "SSLEOFError", "SSLSyscallError",
     "APIConnectionError", "APITimeoutError",
 })
+
+# Refresh-blip text inside an AWS credential-chain exception (see
+# _AWS_CREDENTIAL_REFRESHABLE_PATTERNS): provider name or helper stderr.
+_AWS_CREDENTIAL_TRANSIENT_PATTERNS = (
+    _AWS_CREDENTIAL_REFRESHABLE_PATTERNS + _TIMEOUT_MESSAGE_PATTERNS + _CONNECTION_MESSAGE_PATTERNS
+)
 
 # Ambiguous disconnects (no status): transient hiccup OR a gateway dropping an
 # oversized request. A large session + one of these → context-overflow path.
@@ -592,11 +639,39 @@ def _by_status(c: _Ctx) -> Optional[Verdict]:
     return _STATUS_HANDLERS[status](c) if status in _STATUS_HANDLERS else default
 
 
+def _aws_credential_failure(c: _Ctx) -> Optional[Verdict]:
+    """botocore credential-chain / STS token failure anywhere in the cause chain → auth.
+
+    Type and code beat message: botocore copies the credential_process's stderr
+    into CredentialRetrievalError, and that text can say "try again" — words
+    that mean something else everywhere else in this file. Runs AFTER
+    _by_status (an HTTP 403 "security token expired" keeps _status_403's
+    verdict) but BEFORE _by_message/_by_transport (the type is a stronger
+    signal than the embedded stderr, and the OpenAI-SDK-wrapped variant must be
+    claimed before _TRANSPORT_ERROR_TYPES turns it into ``timeout``).
+
+    Not provider-gated, like _AUTH_PATTERNS: the class names and spaceless
+    codes are botocore-specific, and credential rotation is pool-scoped anyway
+    (recover_with_credential_pool skips a pool whose provider is not the
+    agent's). ``_hit`` is tri-state for _from_cause_chain: True claims the
+    verdict, False stops the walk on a family member that only reports a
+    refresh blip (_AWS_CREDENTIAL_REFRESHABLE_PATTERNS / helper network text —
+    later stages keep it retryable), None keeps walking the cause chain.
+    """
+    def _hit(exc: Any) -> Optional[bool]:
+        text = str(exc).lower()
+        if type(exc).__name__ in _AWS_CREDENTIAL_ERROR_TYPES:
+            return not any(p in text for p in _AWS_CREDENTIAL_TRANSIENT_PATTERNS)
+        return True if any(p in text for p in _AWS_CREDENTIAL_PATTERNS) else None
+    return _V_AUTH_ROTATE if _from_cause_chain(c.error, _hit, False) else None
+
+
 # Stage order: plugin hooks → provider-specific special cases → HTTP status →
-# MoA shapes → structured error code → message patterns → SSL → disconnect +
-# large session → transport types → unknown (retryable with backoff).
+# AWS credential-chain failures → MoA shapes → structured error code →
+# message patterns → SSL → disconnect + large session → transport types →
+# unknown (retryable with backoff).
 _STAGES: Sequence[Callable[[_Ctx], Optional[Verdict]]] = (
-    _plugin_verdict, _provider_special_cases, _by_status, _moa_special_cases,
+    _plugin_verdict, _provider_special_cases, _by_status, _aws_credential_failure, _moa_special_cases,
     _by_error_code, _by_message, _by_transport,
 )
 

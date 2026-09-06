@@ -4671,11 +4671,20 @@ Write only the summary body. Do not include any preamble or prefix."""
     ) -> Optional[str]:
         """Run the summary LLM; a cancellation rolls back the handoff scan's self-heal mutation first."""
         # Focus-topic derivation scans user turns; only pay when a summary is generated.
+        import inspect
+        sig = inspect.signature(self._generate_summary)
+        has_bypass_cooldown = "bypass_cooldown" in sig.parameters
+        has_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        
+        kwargs = {
+            "focus_topic": focus_topic or self._derive_auto_focus_topic(messages),
+            "memory_context": memory_context,
+        }
+        if has_bypass_cooldown or has_kwargs:
+            kwargs["bypass_cooldown"] = bypass_cooldown
+
         try:
-            return self._generate_summary(
-                turns_to_summarize, focus_topic=focus_topic or self._derive_auto_focus_topic(messages),
-                memory_context=memory_context, bypass_cooldown=bypass_cooldown,
-            )
+            return self._generate_summary(turns_to_summarize, **kwargs)
         except AuxiliaryExplicitCancellation:
             # Cancellation is a true no-op: restore the scan's mutation before the exception escapes.
             self._previous_summary = scan.previous_summary_before

@@ -63,7 +63,7 @@ def _empty_usage():
 
 
 class SessionUsageEventsMixin:
-    def codex_usage_timeline(self) -> dict:
+    def codex_usage_timeline(self, *, profile: str | None = None) -> dict:
         """Backend-selected UTC, exact [as_of-6h, as_of); no maintenance or model calls.
 
         Numeric sums are known-token subtotals. Paired unknown counters MUST travel
@@ -90,7 +90,9 @@ class SessionUsageEventsMixin:
                 "SUM(usage_state='missing') AS missing_usage_events, "
                 "SUM(usage_state='invalid') AS invalid_usage_events "
                 "FROM usage_events WHERE provider=? AND completed_at_us>=? AND completed_at_us<? "
-                "GROUP BY bin", (start, BIN_US, "openai-codex", start, end),
+                + ("AND profile=? " if profile is not None else "")
+                + "GROUP BY bin", (start, BIN_US, "openai-codex", start, end)
+                + ((profile,) if profile is not None else ()),
             )
             for row in rows:
                 usage = bins[row["bin"]]["usage"]

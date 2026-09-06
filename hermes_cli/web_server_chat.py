@@ -286,6 +286,9 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     if not token:
         return "no_credential", "none"
     if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+        # Backend-device telemetry only; loopback does NOT prove renderer locality
+        # (SSH tunnels exist). Gated/cloud connections never acquire this capability.
+        ws._hermes_local_telemetry = bool(ws.client and ws.client.host in {"127.0.0.1", "::1"})
         return None, "token"
     return "token_mismatch", "token"
 

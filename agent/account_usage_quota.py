@@ -39,7 +39,7 @@ class CodexQuotaSuccess:
     banked_resets: int | None
     windows: tuple[CodexQuotaWindow, ...]
     credits_balance: float | None = None
-    credits_unlimited: bool = False
+    credits_unlimited: bool | None = None
     status: Literal["ok"] = field(default="ok", init=False)
     supported: Literal[True] = field(default=True, init=False)
 
@@ -145,5 +145,6 @@ def parse_codex_quota(
         banked_resets=_integer(_object(body.get("rate_limit_reset_credits")).get("available_count")),
         windows=windows,
         credits_balance=_number(credits.get("balance")) if has_credits else None,
-        credits_unlimited=has_credits and credits.get("unlimited") is True,
+        credits_unlimited=(credits["unlimited"] if has_credits and isinstance(credits.get("unlimited"), bool)
+                           else False if credits.get("has_credits") is False else None),
     )

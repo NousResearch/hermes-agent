@@ -2,8 +2,8 @@
 
 This is an exact aggregation of **recorded provider-reported usage**, not exact
 provider consumption, subscription quota, billing, or an account-wide ledger.
-It adds no UI, active-work snapshot, network call, materialized bucket, or backfill.
-The typed quota contract is independent and unchanged.
+The persistence slice adds no materialized bucket or backfill. The backend-RPC
+slice below adds sanitized quota retrieval and Active Work; no UI is included.
 
 ## Storage and contract
 
@@ -158,6 +158,40 @@ every token field has an `unknown_<field>` event counter. Empty/missing/invalid
 observations are not fabricated as measured zero. Consumers must retain these
 counters and the coverage block. A read failure or old read-only schema returns
 `coverage.status='unavailable'`, `total=None`, and NULL bin usage, not a zero chart.
+
+## Desktop/TUI read RPCs
+
+`usage.codex_quota`, `usage.codex_timeline`, and `usage.active_work` accept no
+parameters. The inherited TUI stdio pipe is a capability; WebSockets require the
+existing upgrade authentication plus backend-stamped local telemetry admission.
+Gated/cloud and non-loopback peers are unsupported. Loopback can be an SSH tunnel:
+these results describe the backend device, never assert renderer-device locality.
+All reads use the backend launch profile, not a renderer-selected session/profile.
+Responses have version, opaque profile scope, backend timestamp, freshness and
+coverage metadata; successful result JSON is capped at 32 KiB. Malformed IDs are
+rejected before parameter validation, without reflecting their contents.
+
+Timeline RPCs open only the launch profile state.db with SQLite mode=ro, no
+migrations or maintenance, a 100ms busy timeout and a 250ms SQL progress budget.
+Filesystem stalls are not a hard wall-clock guarantee. They filter the event
+profile fingerprint as well as provider/time; moved foreign history is excluded.
+Unavailable stores retain exactly 24 null bins, not fabricated zero usage.
+
+Quota reads only the launch-profile singleton credential and the fixed usage
+endpoint, without runtime recovery, pool rotation, refresh, or external CLI import.
+A credential change during retrieval discards the result. Account identity remains
+unverified: pool-only accounts, account-bound cache/single-flight/backoff and
+credential refresh are not completed by this slice. Each call is uncached, with
+a 15-second HTTP timeout; consumers must not poll aggressively. No retrieval
+method invokes an LLM or enumerates arbitrary OS processes.
+
+Active Work counts running TUI gateway turns and queued prompts, exact live
+owner-record delegations, and profile-scoped in-process cron fire owners. Registry
+absence, legacy unscoped cron claims, contention or saturation return null/unknown,
+not zero. At most 1024 records per registry are inspected; no task content or IDs
+are emitted. Coverage is always partial: other processes, other delegation parents
+and non-TUI queues are not observed. Calm/busy/heavy means the sum of known
+category counts (busy >=1, heavy >=4), not proof of whole-device idleness.
 
 ## Reproducible measurement
 

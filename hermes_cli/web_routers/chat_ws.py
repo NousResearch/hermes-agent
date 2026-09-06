@@ -550,6 +550,8 @@ async def gateway_ws(ws: WebSocket) -> None:
     await handle_ws(
         ws,
         auth_identity=getattr(ws, "_hermes_auth_identity", None),
+        authenticated=True,
+        local_telemetry=getattr(ws, "_hermes_local_telemetry", False) is True,
         subprotocol=getattr(ws, "_hermes_ws_subprotocol", None),
     )
 

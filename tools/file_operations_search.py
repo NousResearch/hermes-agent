@@ -4,12 +4,10 @@
 (no I/O).
 """
 
-import contextlib
 import os
 import posixpath
 import re
 import shlex
-import signal
 import subprocess
 import sys
 import threading
@@ -335,7 +333,7 @@ class SearchMixin:
         ``merge_stderr`` mirrors the shell path's stderr handling: merged for content
         search (diagnostics feed the error message), discarded (``2>/dev/null``) for
         file lists and probes."""
-        from tools.environments.local import _make_run_env
+        from tools.environments.local import _kill_process_group_posix, _make_run_env
         cwd = getattr(self.env, "cwd", None) or self.cwd
         args = shlex.split(" ".join(argv))
         try:
@@ -373,8 +371,7 @@ class SearchMixin:
                 exit_code = 124
                 break
         if proc.poll() is None:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(proc.pid, signal.SIGKILL)
+            _kill_process_group_posix(proc)  # native lane is POSIX-only (gate above)
         proc.wait()
         drainer.join()
         proc.stdout.close()

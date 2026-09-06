@@ -16,6 +16,7 @@ Usage:
 """
 
 import json
+import logging
 import random
 import sys
 from pathlib import Path
@@ -30,6 +31,8 @@ from trajectory_compressor_tokens import (
 # Load environment variables
 from dotenv import load_dotenv
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 # Default datasets to sample from
@@ -395,6 +398,12 @@ def main(
         save_samples_for_compression(samples, sampled_dir, batch_size)
     else:
         print(f"\n⏭️  Skipping download, using existing data in {sampled_dir}")
+        logger.warning(
+            "--skip_download reuses the cached selection and _original_tokens without "
+            "revalidating them against the current tokenizer or min_tokens. Compression "
+            "recounts tokens but does not reselect rows. Re-run without --skip_download "
+            "after changing tokenizers or sampling thresholds."
+        )
     
     # Step 3: Run compression
     run_compression(sampled_dir, compressed_dir, str(config_path), compression_config=compression_config)

@@ -17,9 +17,11 @@ _profile_scoped = _registry.profile_scoped
 @method("free_tier.status")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
-    """``{has_guest, enabled, carries_inference, notice_pending, model, label}`` for the focused
-    profile. ``carries_inference`` is the one flag surfaces key on (identity present AND ``nous.guest``
-    on); ``notice_pending`` is true until ``free_tier.ack_notice`` ran for this identity."""
+    """``{has_guest, enabled, available, notice_pending, model, label}`` for the focused profile.
+    ``available`` = an identity exists AND ``nous.guest`` is on: the free tier (connectors, and the
+    model when nothing else carries inference) is there for this install. Whether inference actually
+    runs on it is a ROUTE question answered by ``setup.runtime_check.free_tier``, never by this flag.
+    ``notice_pending`` is true until ``free_tier.ack_notice`` ran for this identity."""
     try:
         from hermes_cli import anon_auth
         has_guest = anon_auth.has_guest()
@@ -34,7 +36,7 @@ def _(rid, params: dict) -> dict:
             except Exception as exc:
                 logger.debug("free tier background setup skipped: %s", exc)
         return _ok(rid, {
-            "has_guest": has_guest, "enabled": enabled, "carries_inference": has_guest and enabled,
+            "has_guest": has_guest, "enabled": enabled, "available": has_guest and enabled,
             "notice_pending": bool(has_guest and enabled and anon_auth.guest_notice_pending()),
             "model": anon_auth.GUEST_MODEL, "label": anon_auth.FREE_TIER_LABEL})
     except Exception as e:

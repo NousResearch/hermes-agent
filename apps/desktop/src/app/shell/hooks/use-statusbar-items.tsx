@@ -467,7 +467,7 @@ export function useStatusbarItems({
         ),
         // Only when the free tier is the route actually serving inference —
         // a user whose own provider carries it is not "on the free tier".
-        hidden: !freeTier?.carries_inference,
+        hidden: !freeTier?.available,
         icon: <Codicon name="account" size="0.75rem" />,
         id: 'free-tier',
         label: freeTierCopy.statusLabel(freeTier?.model ?? FREE_TIER_MODEL),
@@ -562,7 +562,7 @@ export function useStatusbarItems({
       fileMenu.copyPath,
       fileMenu.revealFileManager,
       fileMenu.revealInSidebar,
-      freeTier?.carries_inference,
+      freeTier?.available,
       freeTier?.model,
       gatewayMenuContent,
       gatewayClassName,

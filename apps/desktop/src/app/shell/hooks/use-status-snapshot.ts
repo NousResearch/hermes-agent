@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 
 import { getStatus } from '@/hermes'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
-import { refreshFreeTierStatus } from '@/store/free-tier'
+import { refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
 import type { StatusResponse } from '@/types/hermes'
 
 // Statusbar health is ambient chrome, not live data — nothing the user acts on
@@ -88,6 +88,7 @@ export function useStatusSnapshot(
             // became unconfigured. Keep the last authoritative result instead
             // of flashing "Inference not ready" during a gateway flap.
             setInferenceStatus(inference)
+            setFreeTierRoute(inference.freeTier)
           }
         }
       } finally {

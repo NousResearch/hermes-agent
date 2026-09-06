@@ -15,7 +15,7 @@ import { translateNow } from '@/i18n'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { setMainModelAssignment } from '@/store/cron-model-impact'
-import { ackFreeTierNotice, refreshFreeTierStatus } from '@/store/free-tier'
+import { ackFreeTierNotice, freeTierReadyPending, refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
 import { notify, notifyError } from '@/store/notifications'
 import type { ModelOptionProvider, OAuthProvider, OAuthStartResponse } from '@/types/hermes'
 
@@ -660,7 +660,7 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
 
   if (runtime.ready) {
     completeDesktopOnboarding()
-    await applyFreeTierIntro(ctx)
+    await applyFreeTierIntro(ctx, runtime)
     ctx.onCompleted?.()
 
     return true
@@ -704,16 +704,17 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
  * identity, so a second window (or a reinstall against the same home) shows the
  * intro exactly once between them.
  *
- * `carries_inference` picks the shape. When the free tier is what serves the
- * user, the overlay stays up on a ready screen — this is their first launch and
- * they have nothing else. When a provider of their own carries inference, the
- * overlay is not warranted: the composer strip (keyed on the same flag) offers
- * the free models without interrupting.
+ * The runtime check's route flag picks the shape. When the free tier is the
+ * route inference runs on, the overlay stays up on a ready screen — this is
+ * their first launch and they have nothing else. When a provider of their own
+ * carries inference, the overlay is not warranted: the composer strip (keyed on
+ * the same notice flag) offers the free models without interrupting.
  */
-async function applyFreeTierIntro(ctx: OnboardingContext) {
+async function applyFreeTierIntro(ctx: OnboardingContext, runtime: RuntimeReadinessResult) {
+  setFreeTierRoute(runtime.freeTier)
   const status = await refreshFreeTierStatus(ctx.requestGateway)
 
-  if (status?.has_guest && status.notice_pending && status.carries_inference) {
+  if (freeTierReadyPending(status, runtime.freeTier ?? null)) {
     patch({ freeTierReady: true })
   }
 }

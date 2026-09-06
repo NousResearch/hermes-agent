@@ -63,9 +63,26 @@ export async function ackFreeTierNotice(requestGateway: FreeTierRequester): Prom
   await refreshFreeTierStatus(requestGateway)
 }
 
+/**
+ * Whether the SELECTED route runs on the free tier: `setup.runtime_check.free_tier`, keyed on the
+ * endpoint the backend resolved, not on profile state. `null` until a readiness round answers. A
+ * free-tier identity beside the user's own key reads `false` here while `$freeTierStatus.available`
+ * stays true — that split is what picks the intro's shape.
+ */
+export const $freeTierRoute = atom<boolean | null>(null)
+
+export function setFreeTierRoute(route: boolean | null | undefined) {
+  $freeTierRoute.set(typeof route === 'boolean' ? route : null)
+}
+
 /** True when the one-time introduction is still owed to this user. */
 export function freeTierNoticePending(status: FreeTierStatus | null): boolean {
   return Boolean(status?.has_guest && status.notice_pending)
+}
+
+/** The introduction is owed AND the free tier is the route: the overlay's ready screen. */
+export function freeTierReadyPending(status: FreeTierStatus | null, route: boolean | null): boolean {
+  return freeTierNoticePending(status) && route === true
 }
 
 /**
@@ -74,8 +91,8 @@ export function freeTierNoticePending(status: FreeTierStatus | null): boolean {
  * carries inference the onboarding overlay's ready screen owns the moment
  * instead, so the two can never both be on screen.
  */
-export function freeTierStripPending(status: FreeTierStatus | null): boolean {
-  return freeTierNoticePending(status) && !status?.carries_inference
+export function freeTierStripPending(status: FreeTierStatus | null, route: boolean | null): boolean {
+  return freeTierNoticePending(status) && route === false
 }
 
 // Several composers can be mounted at once (split zones, a popout mid-dock).

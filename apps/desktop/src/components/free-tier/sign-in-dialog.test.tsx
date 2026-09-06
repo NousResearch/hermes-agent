@@ -6,7 +6,7 @@ import type * as HermesApi from '@/hermes'
 import { $freeTierSignIn, openFreeTierSignIn } from '@/store/free-tier-sign-in'
 
 const pollOAuthSession = vi.fn()
-const requestGateway = vi.fn(async () => ({ carries_inference: true, has_guest: true }))
+const requestGateway = vi.fn(async () => ({ available: true, has_guest: true }))
 
 // Only the two calls this flow makes are replaced; everything else keeps its
 // real implementation so the modules the dialog pulls in (the onboarding

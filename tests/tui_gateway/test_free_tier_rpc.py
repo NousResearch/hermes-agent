@@ -48,7 +48,7 @@ def _set_guest_off(monkeypatch):
 
 def test_status_is_pull_from_local_state_and_ack_persists_on_the_identity(guest, monkeypatch):
     status = _call("free_tier.status")
-    assert status == {"has_guest": True, "enabled": True, "carries_inference": True, "notice_pending": True,
+    assert status == {"has_guest": True, "enabled": True, "available": True, "notice_pending": True,
                       "model": "nous/welcome", "label": anon_auth.FREE_TIER_LABEL}
 
     assert _call("free_tier.ack_notice") == {"acked": True}
@@ -59,7 +59,7 @@ def test_status_is_pull_from_local_state_and_ack_persists_on_the_identity(guest,
     _set_guest_off(monkeypatch)
     status = _call("free_tier.status")
     assert status["has_guest"] is True and status["enabled"] is False
-    assert status["carries_inference"] is False and status["notice_pending"] is False
+    assert status["available"] is False and status["notice_pending"] is False
 
 
 def test_billing_state_answers_the_free_tier_locally(guest, monkeypatch):
@@ -81,5 +81,5 @@ def test_status_without_an_identity_starts_the_background_setup_once(tmp_path, m
     calls = []
     monkeypatch.setattr(anon_auth, "ensure_portal_identity", lambda **kw: calls.append(kw) or None)
     status = _call("free_tier.status")
-    assert status["has_guest"] is False and status["carries_inference"] is False
+    assert status["has_guest"] is False and status["available"] is False
     assert calls == [{"blocking": False}]

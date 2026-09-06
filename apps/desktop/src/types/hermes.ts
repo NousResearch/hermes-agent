@@ -136,9 +136,10 @@ export interface OAuthPollResponse {
  *  and makes no network call, so it is safe to refresh on the ambient status
  *  cadence. */
 export interface FreeTierStatus {
-  /** True when the free-tier identity is the route inference actually runs on
-   *  (as opposed to a provider of the user's own carrying it). */
-  carries_inference: boolean
+  /** An identity exists AND the free tier is on: connectors ride on it, and so
+   *  does inference when nothing else carries it. Whether inference actually
+   *  runs on it is the ROUTE's answer (`setup.runtime_check.free_tier`). */
+  available: boolean
   enabled: boolean
   has_guest: boolean
   /** Display name for the route, e.g. "Nous · free tier". */

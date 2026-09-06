@@ -12,6 +12,7 @@ import pytest
 
 
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 
@@ -79,8 +80,7 @@ def _make_413_error(*, use_status_code=True, message="Request entity too large")
     return err
 
 
-@pytest.fixture()
-def agent():
+def _new_test_agent():
     with (
         patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
         patch("model_tools.check_toolset_requirements", return_value={}),
@@ -103,6 +103,11 @@ def agent():
         a.compression_enabled = True
         a.save_trajectories = False
         return a
+
+
+@pytest.fixture()
+def agent():
+    return _new_test_agent()
 
 
 # ---------------------------------------------------------------------------
@@ -1281,14 +1286,13 @@ class TestPreflightCompression:
         assert agent.context_compressor.awaiting_real_usage_after_compression is False
         assert agent.context_compressor.last_prompt_tokens == 65_000
 
-    def test_restored_native_checkpoint_defers_first_local_compaction(
-        self, agent, tmp_path
-    ):
-        """A checkpoint restored into a fresh agent must reach its issuer once.
+    def test_restored_native_checkpoint_defers_first_local_compaction(self, tmp_path):
+        """A checkpoint restored into a new agent instance must reach its issuer once.
 
-        The in-memory native-checkpoint latch is lost across process restart.  Rehydrate
-        it from the durable reasoning sidecar before either idle or threshold preflight
-        can summarize the opaque checkpoint using its ciphertext-sized rough estimate.
+        The in-memory native-checkpoint latch is lost when the process restarts. Rehydrate
+        it in an agent constructed after the durable history is reopened, before either
+        idle or threshold preflight can summarize the opaque checkpoint using its
+        ciphertext-sized rough estimate.
         """
         db_path = tmp_path / "state.db"
         session_id = "restored-native-checkpoint"
@@ -1313,6 +1317,8 @@ class TestPreflightCompression:
         reopened.close()
         assert history[-1]["codex_reasoning_items"] == [checkpoint]
 
+        agent: Any = _new_test_agent()
+        assert agent.context_compressor.awaiting_real_usage_after_compression is False
         agent.api_mode = "codex_responses"
         agent.provider = "openai-codex"
         agent.model = "gpt-5.6-sol"

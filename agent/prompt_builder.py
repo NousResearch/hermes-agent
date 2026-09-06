@@ -876,19 +876,20 @@ def _run_backend_probe(env_type: str, terminal_tool) -> str:
         container_config=(_container_config_from_config(config)
                           if terminal_tool._is_container_backend(env_type) else None),
         task_id="prompt-backend-probe", host_cwd=config.get("host_cwd"),
+        # Only ssh honors this: an isolated ControlMaster socket and no remote dir setup / file sync /
+        # snapshot. A normal SSHEnvironment would upload the whole ~/.hermes tree just to run `uname`,
+        # and its later __del__ would sync_back() and close the master shared with the agent's own env.
+        probe_only=True,
     )
     try:
         result = env.execute(_BACKEND_PROBE_CMD, timeout=4)
     finally:
         # One-shot `uname`; without teardown the backend leaves a second idle sandbox
         # (task_id="prompt-backend-probe") running for the whole process next to the agent's own.
-        # ssh is left alone: no task-scoped sandbox, and its cleanup() closes a ControlMaster socket
-        # (keyed by user@host:port) shared with the agent's real environment; ControlPersist expires it.
-        if env_type != "ssh":
-            try:
-                _cleanup_env(env, force_remove=True)
-            except Exception:
-                logger.debug("Backend probe cleanup failed", exc_info=True)
+        try:
+            _cleanup_env(env, force_remove=True)
+        except Exception:
+            logger.debug("Backend probe cleanup failed", exc_info=True)
     if result.get("returncode") != 0:
         logger.debug("Backend probe returned non-zero: %r", result)
         return ""

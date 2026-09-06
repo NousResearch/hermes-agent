@@ -78,7 +78,7 @@ class SkillsShSource(SkillSource):
         if not query.strip():
             # Empty query = bulk catalog dump (build_skills_index.py) — walk the sitemap.
             return self._sitemap_catalog(limit)
-        cache_key = f"skills_sh_search_{hashlib.md5(f'{query}|{limit}'.encode()).hexdigest()}"
+        cache_key = f"skills_sh_search_{hashlib.md5(f'{query}|{limit}'.encode(), usedforsecurity=False).hexdigest()}"
         cached = _cached_metas(cache_key)
         if cached is not None:
             return cached[:limit]
@@ -196,7 +196,7 @@ class SkillsShSource(SkillSource):
         def compute():
             html = _get_text(f"{self.BASE_URL}/{identifier}")
             return None if html is None else self._parse_detail_page(identifier, html) or None
-        key = f"skills_sh_detail_{hashlib.md5(identifier.encode()).hexdigest()}"
+        key = f"skills_sh_detail_{hashlib.md5(identifier.encode(), usedforsecurity=False).hexdigest()}"
         return _memo_json(key, compute, valid=lambda c: isinstance(c, dict))
 
     def _parse_detail_page(self, identifier: str, html: str) -> Optional[dict]:

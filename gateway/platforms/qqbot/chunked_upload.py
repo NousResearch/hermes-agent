@@ -181,7 +181,7 @@ class ChunkedUploader:
         # Per-part block_size wins; fall back to the response-level value.
         length = min(part.block_size if part.block_size > 0 else job.block_size, job.file_size - offset)
         data = await asyncio.get_running_loop().run_in_executor(None, _read_file_chunk, job.file_path, offset, length)
-        md5_hex = hashlib.md5(data).hexdigest()
+        md5_hex = hashlib.md5(data, usedforsecurity=False).hexdigest()
         logger.debug("[%s] Part %d/%d: uploading %s (offset=%d md5=%s)", self._log_tag, part_index, total_parts,
                      format_size(length), offset, md5_hex)
         await self._put_to_presigned_url(part.presigned_url, data, part_index, total_parts)
@@ -278,7 +278,7 @@ def _read_file_chunk(file_path: str, offset: int, length: int) -> bytes:
 
 def _compute_file_hashes(file_path: str, file_size: int) -> Dict[str, str]:
     """Compute md5, sha1, and md5_10m in a single pass (for small files md5_10m is just the full md5)."""
-    md5, sha1, md5_10m = hashlib.md5(), hashlib.sha1(), hashlib.md5()
+    md5, sha1, md5_10m = hashlib.md5(usedforsecurity=False), hashlib.sha1(), hashlib.md5(usedforsecurity=False)
     need_10m = file_size > _MD5_10M_SIZE
     bytes_read = 0
     with open(file_path, "rb") as fh:

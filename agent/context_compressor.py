@@ -2602,7 +2602,7 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
             # Non-string/multimodal-envelope shapes can't be hashed by text.
             if msg.get("role") != "tool" or not isinstance(content, str) or len(content) < _PRUNE_MIN_CHARS:
                 continue
-            h = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:12]
+            h = hashlib.md5(content.encode("utf-8", errors="replace"), usedforsecurity=False).hexdigest()[:12]
             if h in content_hashes:
                 result[i] = {**msg, "content": "[Duplicate tool output — same content as a more recent call]"}
                 pruned += 1

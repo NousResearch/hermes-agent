@@ -152,7 +152,7 @@ def _compute_relative_dest(skill_dir: Path, bundled_dir: Path) -> Path:
 
 def _dir_hash(directory: Path) -> str:
     """MD5 over relative paths + contents of every file in a directory."""
-    hasher = hashlib.md5()
+    hasher = hashlib.md5(usedforsecurity=False)
     with suppress(OSError):
         for fpath in sorted(directory.rglob("*")):
             if fpath.is_file():

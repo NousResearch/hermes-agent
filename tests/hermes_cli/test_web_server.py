@@ -1589,8 +1589,6 @@ class TestWebServerEndpoints:
         import hermes_cli.web_server as ws
         from hermes_cli.config import load_config, load_env
 
-        with _web_server_messaging._telegram_onboarding_lock:
-            _web_server_messaging._telegram_onboarding_pairings.clear()
 
         def fake_request(method, path, *, body=None, bearer_token=None):
             if method == "POST":

@@ -27,9 +27,10 @@ from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path, redact_key
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _restart_gateway_after
 from hermes_cli.web_server_messaging import (
-    _TelegramOnboardingPairing, _WhatsAppOnboardingSession, _messaging_platform_catalog, _telegram_onboarding_error_message, _telegram_onboarding_lock, _telegram_onboarding_pairings, _whatsapp_onboarding_payload, _whatsapp_onboarding_sessions,
+    _WhatsAppOnboardingSession, _messaging_platform_catalog, _telegram_onboarding_error_message, _whatsapp_onboarding_payload, _whatsapp_onboarding_sessions,
 )
 from hermes_cli.web_routers._common import http_failure
+from hermes_cli import telegram_onboarding_store as telegram_store
 from hermes_cli.web_models import (
     MessagingPlatformUpdate, TelegramOnboardingApply, TelegramOnboardingStart,
     WhatsAppOnboardingApply, WhatsAppOnboardingStart,
@@ -615,144 +616,149 @@ def _parse_expiry_ts(value: str) -> float:
         return time.time() + 600
 
 
-def _prune_telegram_onboarding_pairings() -> None:
-    now = time.time()
-    for pairing_id in [pid for pid, record in _telegram_onboarding_pairings.items() if record.expires_at_ts <= now]:
-        _telegram_onboarding_pairings.pop(pairing_id, None)
-
-
 def _normalize_telegram_user_id(value: Any) -> str | None:
     normalized = str(value or "").strip()
     return normalized if _TELEGRAM_USER_ID_RE.fullmatch(normalized) else None
-
-
-def _telegram_record_or_404(pairing_id: str):
-    """Call with ``_telegram_onboarding_lock`` held."""
-    _prune_telegram_onboarding_pairings()
-    record = _telegram_onboarding_pairings.get(pairing_id)
-    if not record:
-        raise HTTPException(status_code=404, detail=_TELEGRAM_SESSION_NOT_FOUND)
-    return record
 
 
 def _telegram_ready_payload(record) -> dict[str, Any]:
     return {
         "status": "ready", "bot_username": record.bot_username,
         "owner_user_id": record.owner_user_id, "expires_at": record.expires_at,
+        **({"saved": True} if record.saved else {}),
     }
-
-
-async def _telegram_onboarding_request(method: str, path: str, *, body=None, bearer_token=None) -> dict[str, Any]:
-    return await asyncio.to_thread(_telegram_onboarding_request_sync, method, path, body=body, bearer_token=bearer_token)
 
 
 @router.post("/api/messaging/telegram/onboarding/start")
-async def start_telegram_onboarding(body: TelegramOnboardingStart):
-    bot_name = (body.bot_name or "Hermes Agent").strip() or "Hermes Agent"
-    payload = await _telegram_onboarding_request("POST", "/v1/telegram/pairings", body={"bot_name": bot_name})
+def start_telegram_onboarding(body: TelegramOnboardingStart, profile: Optional[str] = None):
+    with _config_profile_scope(profile), telegram_store.lock:
+        telegram_store.prune()
+        payload = _telegram_onboarding_request_sync("POST", "/v1/telegram/pairings", body={"bot_name": (body.bot_name or "Hermes Agent").strip()})
+        fields = {key: str(payload.get(key) or "").strip() for key in (
+            "pairing_id", "poll_token", "expires_at", "deep_link", "qr_payload", "suggested_username")}
+        if not all(fields[key] for key in ("pairing_id", "poll_token", "expires_at", "deep_link")):
+            raise HTTPException(502, _TELEGRAM_INCOMPLETE_RESPONSE)
+        setup = {key: value for key, value in fields.items() if key != "poll_token"}
+        setup["qr_payload"] = setup["qr_payload"] or setup["deep_link"]
+        record = telegram_store.TelegramOnboardingPairing(
+            poll_token=fields["poll_token"], expires_at=fields["expires_at"],
+            expires_at_ts=_parse_expiry_ts(fields["expires_at"]), setup=setup)
+        telegram_store.save(fields["pairing_id"], record)
+        return setup
 
-    def field(key: str) -> str:
-        return str(payload.get(key) or "").strip()
 
-    pairing_id, poll_token, expires_at, deep_link = map(field, ("pairing_id", "poll_token", "expires_at", "deep_link"))
-    if not pairing_id or not poll_token or not expires_at or not deep_link:
-        raise HTTPException(status_code=502, detail=_TELEGRAM_INCOMPLETE_RESPONSE)
+def _telegram_remote(pairing_id: str, record, method: str, suffix: str = ""):
+    return _telegram_onboarding_request_sync(
+        method, f"/v1/telegram/pairings/{urllib.parse.quote(pairing_id, safe='')}{suffix}", bearer_token=record.poll_token)
 
-    with _telegram_onboarding_lock:
-        _prune_telegram_onboarding_pairings()
-        _telegram_onboarding_pairings[pairing_id] = _TelegramOnboardingPairing(
-            poll_token=poll_token, expires_at=expires_at, expires_at_ts=_parse_expiry_ts(expires_at))
 
-    return {
-        "pairing_id": pairing_id, "suggested_username": field("suggested_username"), "deep_link": deep_link,
-        "qr_payload": str(payload.get("qr_payload") or deep_link).strip(), "expires_at": expires_at,
-    }
+def _telegram_cleanup_remote(pairing_id: str, record, method: str, suffix: str = "") -> bool:
+    try:
+        _telegram_remote(pairing_id, record, method, suffix)
+        return True
+    except HTTPException as exc:
+        if exc.status_code in {404, 410}:
+            return True
+        _log.warning("Telegram handoff cleanup will retry (HTTP %s)", exc.status_code)
+        return False
 
 
 @router.get("/api/messaging/telegram/onboarding/{pairing_id}")
-async def get_telegram_onboarding_status(pairing_id: str):
-    with _telegram_onboarding_lock:
-        record = _telegram_record_or_404(pairing_id)
-        if record.bot_token:
+def get_telegram_onboarding_status(pairing_id: str, profile: Optional[str] = None):
+    with _config_profile_scope(profile), telegram_store.lock:
+        record = telegram_store.load(pairing_id)
+        if record.bot_token or record.saved:
+            if record.saved and record.requires_ack and _telegram_cleanup_remote(pairing_id, record, "POST", "/ack"):
+                record.requires_ack = False
+                record.poll_token = ""
+                telegram_store.save(pairing_id, record)
             return _telegram_ready_payload(record)
-        poll_token = record.poll_token
-
-    payload = await _telegram_onboarding_request(
-        "GET", f"/v1/telegram/pairings/{urllib.parse.quote(pairing_id, safe='')}", bearer_token=poll_token)
-    status = str(payload.get("status") or "").strip()
-    if status == "waiting":
-        with _telegram_onboarding_lock:
-            current = _telegram_onboarding_pairings.get(pairing_id)
-            expires_at = current.expires_at if current else ""
-        return {"status": "waiting", "expires_at": expires_at}
-
-    if status == "ready":
-        bot_token = str(payload.get("token") or "").strip()
-        if not bot_token:
-            raise HTTPException(status_code=502, detail=_TELEGRAM_INCOMPLETE_RESPONSE)
-        with _telegram_onboarding_lock:
-            record = _telegram_onboarding_pairings.get(pairing_id)
-            if not record:
-                raise HTTPException(status_code=404, detail=_TELEGRAM_SESSION_NOT_FOUND)
-            record.bot_token = bot_token
-            record.bot_username = str(payload.get("bot_username") or "").strip() or None
-            record.owner_user_id = _normalize_telegram_user_id(payload.get("owner_user_id"))
-            return _telegram_ready_payload(record)
-
-    if status in {"expired", "claimed"}:
-        with _telegram_onboarding_lock:
-            _telegram_onboarding_pairings.pop(pairing_id, None)
-        raise HTTPException(status_code=410, detail=_telegram_onboarding_error_message(
-            status, "Telegram setup is no longer available. Start a new setup."))
-
-    raise HTTPException(status_code=502, detail="Telegram setup service returned an unknown status.")
+        try:
+            payload = _telegram_remote(pairing_id, record, "GET")
+        except HTTPException as exc:
+            if exc.status_code in {404, 410}:
+                telegram_store.discard(pairing_id)
+            raise
+        status = payload.get("status")
+        if status == "waiting":
+            expiry = payload.get("expires_at")
+            if expiry and expiry != record.expires_at:
+                record.expires_at = str(expiry)
+                record.expires_at_ts = _parse_expiry_ts(record.expires_at)
+                telegram_store.save(pairing_id, record)
+            return {"status": "waiting", "expires_at": record.expires_at}
+        if status in {"expired", "claimed", "cancelled"}:
+            telegram_store.discard(pairing_id)
+            raise HTTPException(410, "Telegram setup is no longer available. Start a new setup.")
+        if status != "ready" or not payload.get("token"):
+            raise HTTPException(502, _TELEGRAM_INCOMPLETE_RESPONSE)
+        record.bot_token = str(payload["token"])
+        record.bot_username = str(payload.get("bot_username") or "") or None
+        record.owner_user_id = _normalize_telegram_user_id(payload.get("owner_user_id"))
+        record.requires_ack = payload.get("requires_ack") is True
+        ready_expiry = payload.get("expires_at") if record.requires_ack else None
+        record.expires_at_ts = _parse_expiry_ts(str(ready_expiry)) if ready_expiry else time.time() + telegram_store.CONFIRMATION_SECONDS
+        record.expires_at = datetime.fromtimestamp(record.expires_at_ts, timezone.utc).isoformat()
+        telegram_store.save(pairing_id, record)
+        return _telegram_ready_payload(record)
 
 
 @router.post("/api/messaging/telegram/onboarding/{pairing_id}/apply")
-async def apply_telegram_onboarding(pairing_id: str, body: TelegramOnboardingApply, profile: Optional[str] = None):
+def apply_telegram_onboarding(pairing_id: str, body: TelegramOnboardingApply, profile: Optional[str] = None):
     normalized_ids = [_normalize_telegram_user_id(raw_id) for raw_id in body.allowed_user_ids]
-    if not all(normalized_ids):
-        raise HTTPException(status_code=400, detail="Allowed Telegram user IDs must be numeric.")
+    if not normalized_ids or not all(normalized_ids):
+        raise HTTPException(400, "Add at least one valid numeric Telegram user ID.")
     allowed_user_ids = list(dict.fromkeys(normalized_ids))
-    if not allowed_user_ids:
-        raise HTTPException(status_code=400, detail="Add at least one allowed Telegram user ID.")
-
-    with _telegram_onboarding_lock:
-        record = _telegram_record_or_404(pairing_id)
-        bot_token = record.bot_token
-        bot_username = record.bot_username
-        if not bot_token:
-            raise HTTPException(status_code=409, detail="Telegram setup is not ready yet.")
-
     effective_profile = body.profile or profile
+    with _config_profile_scope(effective_profile), telegram_store.lock:
+        record = telegram_store.load(pairing_id)
+        if not record.saved:
+            if not record.bot_token:
+                raise HTTPException(409, "Telegram setup is not ready yet.")
+            if record.requires_ack:
+                try:
+                    remote = _telegram_remote(pairing_id, record, "GET")
+                except HTTPException as exc:
+                    if exc.status_code in {404, 410}:
+                        telegram_store.discard(pairing_id)
+                    raise
+                if remote.get("status") != "ready":
+                    raise HTTPException(409, "Telegram setup is not ready yet.")
+            def commit():
+                record.saved = True
+                record.bot_token = None
+                telegram_store.save(pairing_id, record)
 
-    def _apply():
-        with _profile_scope(effective_profile):
-            save_env_value("TELEGRAM_BOT_TOKEN", bot_token)
-            save_env_value("TELEGRAM_ALLOWED_USERS", ",".join(allowed_user_ids))
-            _write_platform_enabled("telegram", True)
-
-    with _onboarding_save_errors("Telegram onboarding apply failed", "Failed to save Telegram setup."):
-        await asyncio.to_thread(_apply)
-
-    with _telegram_onboarding_lock:
-        _telegram_onboarding_pairings.pop(pairing_id, None)
-
-    # Best-effort restart: the QR flow pulls users into Telegram on another device, so a
-    # saved token waiting on a manual restart click reads as "Hermes is broken" from the
-    # chat side. The save stays authoritative; a failed restart is reported for the UI banner.
-    restart_result = _restart_gateway_after(effective_profile, what="Telegram onboarding", label="Telegram onboarding")
-    return {
-        "ok": True, "platform": "telegram", "bot_username": bot_username,
-        "needs_restart": not restart_result["restart_started"], **restart_result,
-    }
+            # Include the durable receipt in rollback; ack only after it exists.
+            with _onboarding_save_errors("Telegram onboarding apply failed", "Failed to save Telegram setup. Retry or cancel this setup."):
+                telegram_store.save_configuration(record.bot_token, allowed_user_ids, commit)
+        if record.requires_ack and _telegram_cleanup_remote(pairing_id, record, "POST", "/ack"):
+            record.requires_ack = False
+            record.poll_token = ""
+        if record.result is None:
+            restart = _restart_gateway_after(effective_profile, what="Telegram onboarding", label="Telegram onboarding")
+            record.result = {"ok": True, "platform": "telegram", "bot_username": record.bot_username,
+                             "needs_restart": not restart["restart_started"], **restart}
+        telegram_store.save(pairing_id, record)
+        return record.result
 
 
 @router.delete("/api/messaging/telegram/onboarding/{pairing_id}")
-async def cancel_telegram_onboarding(pairing_id: str):
-    with _telegram_onboarding_lock:
-        _telegram_onboarding_pairings.pop(pairing_id, None)
-    return {"ok": True}
+def cancel_telegram_onboarding(pairing_id: str, profile: Optional[str] = None):
+    with _config_profile_scope(profile), telegram_store.lock:
+        try:
+            record = telegram_store.load(pairing_id)
+        except HTTPException as exc:
+            if exc.status_code in {404, 410}:
+                return {"ok": True}
+            raise
+        if record.saved:
+            if record.requires_ack and not _telegram_cleanup_remote(pairing_id, record, "POST", "/ack"):
+                raise HTTPException(502, "Telegram was saved, but cleanup failed. Retry cleanup.")
+        elif not _telegram_cleanup_remote(pairing_id, record, "DELETE"):
+            raise HTTPException(502, "Could not cancel Telegram setup. Retry cancellation.")
+        telegram_store.discard(pairing_id)
+        return {"ok": True}
 
 
 # ── platform list / update / test ──────────────────────────────

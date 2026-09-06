@@ -4885,7 +4885,7 @@ def _telegram_auto_setup(token_var: str) -> tuple[bool, object]:
         return False, None
     try:
         from hermes_cli.telegram_managed_bot import (
-            auto_setup_telegram_bot_result, is_valid_telegram_bot_token,
+            acknowledge_saved_setup, auto_setup_telegram_bot_result, is_valid_telegram_bot_token,
         )
     except ImportError:
         print_warning("  Automatic setup is unavailable in this install.")
@@ -4893,6 +4893,7 @@ def _telegram_auto_setup(token_var: str) -> tuple[bool, object]:
     result = auto_setup_telegram_bot_result()
     if result and is_valid_telegram_bot_token(result.token):
         save_env_value(token_var, result.token)
+        acknowledge_saved_setup(result)
         print_success("  Saved TELEGRAM_BOT_TOKEN")
         return True, result.owner_user_id
     if result:

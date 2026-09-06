@@ -384,20 +384,6 @@ _TELEGRAM_ONBOARDING_DEFAULT_URL = "https://setup.hermes-agent.nousresearch.com"
 _TELEGRAM_ONBOARDING_USER_AGENT = f"HermesDashboard/{__version__}"
 
 
-@dataclass
-class _TelegramOnboardingPairing:
-    poll_token: str
-    expires_at: str
-    expires_at_ts: float
-    bot_token: str | None = None
-    bot_username: str | None = None
-    owner_user_id: str | None = None
-
-
-_telegram_onboarding_pairings: dict[str, _TelegramOnboardingPairing] = {}
-_telegram_onboarding_lock = threading.RLock()
-
-
 def _telegram_onboarding_base_url() -> str:
     return os.getenv("TELEGRAM_ONBOARDING_URL", _TELEGRAM_ONBOARDING_DEFAULT_URL).strip().rstrip("/")
 
@@ -407,6 +393,7 @@ def _telegram_onboarding_error_message(error: str, fallback: str) -> str:
         "not_found": "Telegram pairing was not found. Start a new setup.",
         "expired": "Telegram setup expired. Start a new setup.",
         "claimed": "Telegram setup was already claimed. Start a new setup.",
+        "cancelled": "Telegram setup was cancelled. Start a new setup.",
         "unauthorized": "Telegram setup service rejected this request.",
         "telegram_manager_bot_token_not_configured": "Telegram setup service is not configured.",
         "telegram_token_fetch_failed": "Telegram could not finish bot setup. Try again.",
@@ -439,7 +426,7 @@ def _telegram_onboarding_request_sync(
             parsed = {}
         error = str(parsed.get("error") or parsed.get("status") or "")
         detail = _telegram_onboarding_error_message(error, "Telegram setup service returned an error.")
-        if error in {"expired", "claimed"}:
+        if error in {"expired", "claimed", "cancelled"}:
             status_code = 410
         else:
             status_code = 404 if exc.response.status_code == 404 else 502

@@ -8,6 +8,8 @@ from unittest.mock import MagicMock, patch
 from hermes_cli.telegram_managed_bot import (
     TELEGRAM_ONBOARDING_URL_ENV,
     TelegramPairing,
+    TelegramBotSetupResult,
+    acknowledge_saved_setup,
     create_pairing,
     poll_for_setup_result,
     print_qr_code,
@@ -153,6 +155,27 @@ class TestPollForToken:
                     "https://api.example.com", self.pairing(), timeout=30
                 )
                 assert result is not None and result.token == SECOND_VALID_TOKEN
+
+    def test_terminal_response_stops_polling_without_waiting_for_timeout(self):
+        response = MagicMock(status_code=410)
+        with patch("hermes_cli.telegram_managed_bot.httpx.get", return_value=response) as get:
+            with patch("hermes_cli.telegram_managed_bot.time.sleep") as sleep:
+                assert poll_for_setup_result("https://api.example.com", self.pairing()) is None
+        get.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_ack_requires_token_on_disk_and_uses_pairing_bearer(self):
+        from hermes_cli import config as cfg
+
+        result = TelegramBotSetupResult(VALID_TOKEN, pairing=self.pairing(), api_url="https://api.example.com")
+        with patch("hermes_cli.telegram_managed_bot.httpx.request", return_value=MagicMock(status_code=200)) as request:
+            acknowledge_saved_setup(result)
+            request.assert_not_called()
+            cfg.save_env_value("TELEGRAM_BOT_TOKEN", VALID_TOKEN)
+            acknowledge_saved_setup(result)
+        request.assert_called_once_with(
+            "POST", "https://api.example.com/v1/telegram/pairings/abcdefghijklmnop/ack",
+            headers={"Authorization": "Bearer secret-token"}, timeout=10.0)
 
 
 class TestSetupTelegramAuto:

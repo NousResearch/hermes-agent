@@ -632,10 +632,10 @@ class TestProfileScopedTelegramOnboarding:
         import time
         import hermes_cli.web_server as web_server
 
-        with _web_server_messaging._telegram_onboarding_lock:
-            _web_server_messaging._telegram_onboarding_pairings.clear()
-            _web_server_messaging._telegram_onboarding_pairings["pair-worker"] = (
-                _web_server_messaging._TelegramOnboardingPairing(
+        from hermes_cli import telegram_onboarding_store as store
+        from hermes_cli.web_server_profiles import _config_profile_scope
+        with _config_profile_scope("worker_beta"):
+            store.save("pair-worker", store.TelegramOnboardingPairing(
                     poll_token="poll-secret",
                     expires_at="2027-05-18T00:00:00.000Z",
                     expires_at_ts=time.time() + 600,

@@ -1997,6 +1997,7 @@ export type TelegramOnboardingStatusResponse =
       bot_username: string;
       owner_user_id?: string;
       expires_at: string;
+      saved?: boolean;
     };
 
 export interface TelegramOnboardingApplyResponse {

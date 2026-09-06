@@ -8,7 +8,24 @@ description: "Set up Hermes Agent as a Telegram bot"
 
 Hermes Agent integrates with Telegram as a full-featured conversational bot. Once connected, you can chat with your agent from any device, send voice memos that get auto-transcribed, receive scheduled task results, and use the agent in group chats. The integration is built on [python-telegram-bot](https://python-telegram-bot.org/) and supports text, voice, images, and file attachments.
 
-## Step 1: Create a Bot via BotFather
+## Automatic setup
+
+In the dashboard, open **Channels → Telegram → Create with QR** and scan the QR
+code or open its Telegram link. Tap **Start**, then **Create bot**. You can change
+both the suggested name and username. After creating the bot, tap **Connect this
+bot** in the setup conversation, then return to Hermes to save the configuration.
+Your numeric Telegram user ID is filled in automatically as the allowed user.
+
+Creation, confirmation in Telegram, and saving in the dashboard each have a
+30-minute window. Reloading the dashboard or restarting its server preserves an
+unfinished setup. A failed save restores the previous Telegram settings and lets
+you retry or cancel; an expired setup lets you start again. Cancelling removes the
+temporary pairing credentials. It does not delete a bot already created in Telegram;
+you can manage that bot there or use its token for manual setup below.
+
+The CLI also offers automatic setup through `hermes gateway setup`.
+
+## Manual setup: create a bot via BotFather
 
 Every Telegram bot requires an API token issued by [@BotFather](https://t.me/BotFather), Telegram's official bot management tool.
 

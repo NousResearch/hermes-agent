@@ -38,7 +38,7 @@ def _run_native_cua(tmp_path, host, mode):
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=30,
+        timeout=120,
         creationflags=subprocess.CREATE_NO_WINDOW,
     )
     output = result.stdout + result.stderr

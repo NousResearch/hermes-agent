@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { $terminalFontFamily, setTerminalFontFamilyFromConfig } from '@/app/right-sidebar/terminal/terminal-font'
 import { getHermesConfig } from '@/hermes'
 import { persistString } from '@/lib/storage'
+import { $busyInputConfig } from '@/store/busy-input-mode'
 import {
   $currentCwd,
   $currentFastMode,
@@ -24,6 +25,7 @@ import { useHermesConfig } from './use-hermes-config'
 
 vi.mock('@/hermes', () => ({
   getHermesConfig: vi.fn(),
+  setApiRequestProfile: vi.fn(),
   getHermesConfigDefaults: vi.fn().mockResolvedValue({})
 }))
 
@@ -33,6 +35,23 @@ const mockConfig = (config: Record<string, unknown>) =>
   vi.mocked(getHermesConfig).mockResolvedValue(config as Awaited<ReturnType<typeof getHermesConfig>>)
 
 describe('useHermesConfig refreshHermesConfig', () => {
+  it('publishes busy mode on existing config refresh and retains it on fetch failure', async () => {
+    $busyInputConfig.set(null)
+    mockConfig({ display: { busy_input_mode: 'steer' } })
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: 'live' } }))
+    await act(async () => result.current.refreshHermesConfig())
+    expect($busyInputConfig.get()?.mode).toBe('steer')
+    vi.mocked(getHermesConfig).mockRejectedValueOnce(new Error('offline'))
+    await act(async () => result.current.refreshHermesConfig())
+    expect($busyInputConfig.get()?.mode).toBe('steer')
+    mockConfig({ display: { busy_input_mode: 'queue' } })
+    await act(async () => result.current.refreshHermesConfig())
+    expect($busyInputConfig.get()?.mode).toBe('queue')
+    mockConfig({})
+    await act(async () => result.current.refreshHermesConfig())
+    expect($busyInputConfig.get()?.mode).toBe('interrupt')
+  })
+
   beforeEach(() => {
     // Reset atoms and localStorage between tests
     setCurrentCwd('')

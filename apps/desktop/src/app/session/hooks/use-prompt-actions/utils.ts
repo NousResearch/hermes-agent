@@ -689,6 +689,8 @@ export function visibleUserIndexAtOrdinal(messages: readonly ChatMessage[], targ
 }
 
 export interface SubmitTextOptions {
+  /** Ordinary busy Send follows loaded policy; never carried into queued turns. */
+  busyInput?: boolean
   attachments?: ComposerAttachment[]
   /** The composer scope key that was actually loaded when this text was
    *  submitted (see use-composer-draft's activeQueueSessionKeyRef). Compared

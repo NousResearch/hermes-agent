@@ -42,6 +42,7 @@ import { setSessionDraftingTool } from '@/store/tool-drafting'
 import type { SessionInfo } from '@/types/hermes'
 
 import type { GatewayRequester } from '../contrib/types'
+import { useBusyInputMode } from '../session/hooks/use-busy-input-mode'
 import { uploadComposerAttachment } from '../session/hooks/use-prompt-actions'
 import {
   appendMidTurnUserMessage,
@@ -57,6 +58,7 @@ import {
   runRewindSubmit,
   type SurvivorUserRowIds
 } from '../session/hooks/use-prompt-actions/rewind'
+import { submitBusyPrompt } from '../session/hooks/use-prompt-actions/steering'
 import { useSubmitPrompt } from '../session/hooks/use-prompt-actions/submit'
 import {
   markSessionRecentlyInterrupted,
@@ -190,6 +192,12 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
     [requestGateway]
   )
 
+  const getBusyInputMode = useBusyInputMode({
+    sessionId: runtimeId,
+    storedSessionId,
+    requestGateway: requestSessionGateway
+  })
+
   // A ⌘T tab's session is unlisted until its first turn persists — seed the
   // row from the user's first message so the tab and sidebar name it right
   // away (see listTileSessionRow).
@@ -304,25 +312,6 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       setMessages: () => undefined
     }
   })
-
-  const submitText = useCallback(
-    async (rawText: string, options?: SubmitTextOptions) => {
-      const visibleText = rawText.trim()
-      const attachments = options?.attachments ?? scope.attachments.$attachments.get()
-
-      listTileSession(visibleText)
-
-      if (!attachments.length && SLASH_COMMAND_RE.test(visibleText)) {
-        triggerHaptic('selection')
-        await sessionTileDelegate()?.executeSlash(visibleText, runtimeIdRef.current)
-
-        return true
-      }
-
-      return await submitPromptText(rawText, options)
-    },
-    [listTileSession, scope.attachments.$attachments, submitPromptText]
-  )
 
   const cancelRun = useCallback(async () => {
     const sessionId = runtimeIdRef.current
@@ -644,6 +633,56 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       update(state => ({ ...state, messages: state.messages.filter(m => m.id !== messageId) }))
     },
     [update]
+  )
+
+  const submitText = useCallback(
+    async (rawText: string, options?: SubmitTextOptions) => {
+      if (options?.busyInput) {
+        const sessionId = options.sessionId ?? runtimeIdRef.current
+        const delegate = sessionTileDelegate()
+
+        if (!sessionId || !delegate) {
+          return false
+        }
+
+        return submitBusyPrompt({
+          mode: getBusyInputMode(sessionId),
+          text: rawText,
+          sessionId,
+          storedSessionId: options.storedSessionId ?? storedIdRef.current,
+          composerScope: options.composerScope,
+          attachments: options.attachments ?? [],
+          foregroundBusy: busyRef.current,
+          request: requestSessionGateway,
+          update: (id, updater) => delegate.updateSession(id, updater),
+          submit: submitPromptText,
+          redirect: text => (sessionId === runtimeIdRef.current ? steerPrompt(text) : false)
+        })
+      }
+
+      const visibleText = rawText.trim()
+      const attachments = options?.attachments ?? scope.attachments.$attachments.get()
+
+      listTileSession(visibleText)
+
+      if (!attachments.length && SLASH_COMMAND_RE.test(visibleText)) {
+        triggerHaptic('selection')
+        await sessionTileDelegate()?.executeSlash(visibleText, runtimeIdRef.current)
+
+        return true
+      }
+
+      return await submitPromptText(rawText, options)
+    },
+    [
+      busyRef,
+      getBusyInputMode,
+      listTileSession,
+      requestSessionGateway,
+      scope.attachments.$attachments,
+      steerPrompt,
+      submitPromptText
+    ]
   )
 
   return useMemo(

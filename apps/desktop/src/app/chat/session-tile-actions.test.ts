@@ -4,6 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $busyInputConfig, busyInputOwnerKey } from '@/store/busy-input-mode'
+import { clearQueuedPrompts, getQueuedPrompts } from '@/store/composer-queue'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $connection, $gatewayState, setGatewayState } from '@/store/session'
 
 import { MAIN_COMPOSER_SCOPE } from './composer/scope'
 
@@ -101,6 +105,56 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     requestGatewayMock.mockReset()
     vi.restoreAllMocks()
   })
+
+  it.each(['steer', 'interrupt', 'queue'] as const)(
+    'routes ordinary busy tile Send using %s configuration',
+    async mode => {
+      const previousGatewayState = $gatewayState.get()
+      setGatewayState('open')
+      $busyInputConfig.set({
+        connection: $connection.get(),
+        owner: busyInputOwnerKey($connection.get()?.connectionId, $activeGatewayProfile.get()),
+        mode
+      })
+      publishSessionState(RUNTIME_SESSION_ID, {
+        ...createClientSessionState(),
+        busy: true,
+        storedSessionId: STORED_SESSION_ID
+      })
+      requestGatewayMock.mockImplementation(async (method: string) =>
+        method === 'command.dispatch' ? { type: 'exec', output: 'Steer queued' } : { status: 'redirected' }
+      )
+      const { result, unmount } = renderTileActions()
+      await act(async () => {
+        expect(
+          await result.current.submitText('tile correction', {
+            busyInput: true,
+            attachments: [],
+            sessionId: RUNTIME_SESSION_ID,
+            composerScope: STORED_SESSION_ID
+          })
+        ).toBe(true)
+      })
+
+      if (mode === 'queue') {
+        expect(getQueuedPrompts(STORED_SESSION_ID)).toEqual([expect.objectContaining({ text: 'tile correction' })])
+        expect(requestGatewayMock).not.toHaveBeenCalled()
+      } else {
+        expect(requestGatewayMock).toHaveBeenCalledExactlyOnceWith(
+          mode === 'steer' ? 'command.dispatch' : 'session.redirect',
+          mode === 'steer'
+            ? { session_id: RUNTIME_SESSION_ID, name: 'steer', arg: 'tile correction' }
+            : { session_id: RUNTIME_SESSION_ID, text: 'tile correction' }
+        )
+      }
+
+      unmount()
+      clearQueuedPrompts(STORED_SESSION_ID)
+      clearAllSessionStates()
+      $busyInputConfig.set(null)
+      setGatewayState(previousGatewayState)
+    }
+  )
 
   it('resumes the stored session and retries once when session.interrupt reports "session not found"', async () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []

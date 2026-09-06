@@ -3332,6 +3332,63 @@ class TestRunConversation:
         assert "Ollama runtime context too small for Hermes tool use" in caplog.text
         assert "runtime_context=4096" in caplog.text
 
+    @pytest.mark.parametrize("arrival", ["generation", "tool"])
+    def test_desktop_steer_handler_preserves_multistep_run(self, agent, arrival):
+        """Real agent loop and steer handler, with scripted model/tool boundaries.
+
+        This is deterministic integration evidence, not a live-provider test.
+        """
+        import copy
+        from tui_gateway import server
+
+        self._setup_agent(agent)
+        requests = []
+        tools_finished = []
+        guidance = "Also verify the reconnect case"
+        session = {"agent": agent, "running": True}
+
+        def steer():
+            reply = server._cmd_steer("steer-test", {}, session, "steer", guidance)
+            assert reply["result"]["type"] == "exec"
+            assert "Steer queued" in reply["result"]["output"]
+            assert agent._interrupt_requested is False
+
+        def model(**kwargs):
+            requests.append(copy.deepcopy(kwargs["messages"]))
+            count = len(requests)
+            if count == 1 and arrival == "generation":
+                steer()
+            if count <= 2:
+                return _mock_response(content="", finish_reason="tool_calls", tool_calls=[
+                    _mock_tool_call(name="web_search", arguments="{}", call_id=f"step-{count}")
+                ])
+            return _mock_response(content="TASK_COMPLETE: reconnect checked", finish_reason="stop")
+
+        def tool(*_args, **kwargs):
+            if not tools_finished and arrival == "tool":
+                steer()
+            tools_finished.append(kwargs["tool_call_id"])
+            return "step completed normally"
+
+        agent.client.chat.completions.create.side_effect = model
+        with (
+            patch("model_tools.handle_function_call", side_effect=tool),
+            patch.object(agent, "redirect", side_effect=AssertionError("unexpected redirect")),
+            patch.object(agent, "interrupt", side_effect=AssertionError("unexpected interruption")),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("Complete both steps")
+
+        assert result["completed"] is True
+        assert result["interrupted"] is False
+        assert result["final_response"] == "TASK_COMPLETE: reconnect checked"
+        assert len(requests) == 3
+        assert tools_finished == ["step-1", "step-2"]
+        assert any(guidance in str(message.get("content")) for message in requests[1])
+        assert not any("interrupted by a user correction" in str(message) for message in result["messages"])
+
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")

@@ -61,6 +61,7 @@ import type {
 
 import { queueKickoffIfSessionBusy } from './queue-if-busy'
 import { resolveTargetSessionId } from './resolve-target-session'
+import { dispatchSteering, sendSteeringFallback } from './steering'
 import {
   type GatewayRequest,
   isSessionIdCandidate,
@@ -263,6 +264,34 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
         if (!isDesktopSlashCommand(name)) {
           renderSlashOutput(desktopSlashUnavailableMessage(name) || `/${name} is not available in the desktop app.`)
+
+          return
+        }
+
+        if (name === 'steer') {
+          try {
+            const accepted = await dispatchSteering({
+              request: requestGateway,
+              sessionId,
+              text: arg,
+              render: renderSlashOutput,
+              send: text =>
+                sendSteeringFallback({
+                  text,
+                  sessionId,
+                  storedSessionId,
+                  foregroundBusy: busyRef.current,
+                  render: renderSlashOutput,
+                  submit: submitPromptText
+                })
+            })
+
+            if (!accepted) {
+              renderSlashOutput('error: steering was not accepted')
+            }
+          } catch {
+            renderSlashOutput('error: steering delivery could not be confirmed; not retried')
+          }
 
           return
         }

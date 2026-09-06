@@ -49,6 +49,19 @@ function makeSidebarActions(): SidebarActions {
 }
 
 describe('latestActions adapters', () => {
+  it('dereferences the latest busy-submit action without falling back to redirect', async () => {
+    const actions = makeChatActions()
+    const previous = vi.fn(async () => false)
+    const current = vi.fn(async () => true)
+    actions.onSubmit = previous
+    const adapted = latestChatActions(actions)
+    actions.onSubmit = current
+    await expect(adapted.onSubmit('unchanged text', { busyInput: true })).resolves.toBe(true)
+    expect(current).toHaveBeenCalledExactlyOnceWith('unchanged text', { busyInput: true })
+    expect(previous).not.toHaveBeenCalled()
+    expect(actions.onSteer).not.toHaveBeenCalled()
+  })
+
   it('dereferences the latest steer handler from a stable actions object', async () => {
     const staleSteer = vi.fn(async () => false)
     const latestSteer = vi.fn(async () => true)

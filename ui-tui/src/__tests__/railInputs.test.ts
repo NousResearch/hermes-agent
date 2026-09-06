@@ -63,6 +63,15 @@ describe('rail input discovery and parsing', () => {
     expect((await loadRailInputs(root))?.product).toBe('Hermes app')
   })
 
+  it('loads a valid block from a bounded guide larger than 64 KiB', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-rail-'))
+    roots.push(root)
+    await mkdir(join(root, '.git'))
+    await writeFile(join(root, 'AGENTS.md'), `${'guide text '.repeat(7_200)}\n${validBlock}`)
+
+    expect((await loadRailInputs(root))?.product).toBe('Test app')
+  })
+
   it('hides missing and malformed blocks instead of partially guessing', () => {
     expect(parseRailInputs('# no rail here')).toBeNull()
     expect(parseRailInputs(validBlock.replace('- product: Test app', 'product: missing dash'))).toBeNull()

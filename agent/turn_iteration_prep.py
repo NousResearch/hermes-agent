@@ -281,6 +281,12 @@ def begin_iteration(
         agent._budget_grace_call = False
     elif not agent.iteration_budget.consume():
         _turn_exit_reason = "budget_exhausted"
+        # The increment above counted a provider call that never happens
+        # (consume() does not increment on failure, so no refund() is owed —
+        # only the phantom count is taken back). Without this, api_calls
+        # reports max+1 and budget_exhausted accounting flips.
+        api_call_count -= 1
+        agent._api_call_count = api_call_count
         if not agent.quiet_mode:
             agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
         return _verdict("break")

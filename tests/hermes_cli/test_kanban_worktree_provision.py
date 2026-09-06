@@ -179,6 +179,76 @@ def test_provision_not_a_list_fails_open(repo, tmp_path, monkeypatch):
     assert kb._tenant_provision_paths(repo) == []
 
 
+# ── the links must not be committable ────────────────────────────────
+
+
+def _git(*args, cwd):
+    import subprocess
+    return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+
+
+@pytest.fixture
+def gitrepo(tmp_path):
+    """A real repo whose .gitignore uses DIRECTORY patterns — the live shape."""
+    r = tmp_path / "proj"
+    (r / "frontend").mkdir(parents=True)
+    (r / "data").mkdir()
+    (r / ".venv" / "bin").mkdir(parents=True)
+    (r / "frontend" / "node_modules" / "react").mkdir(parents=True)
+    (r / "data" / "corpus.db").write_text("x")
+    # Exactly BackupBrain's shape: trailing slashes = directory-only patterns.
+    (r / ".gitignore").write_text(".venv/\nnode_modules/\ndata/\n")
+    (r / "README.md").write_text("hi")
+    _git("init", "-q", cwd=r)
+    _git("add", "-A", cwd=r)
+    _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init", cwd=r)
+    return r
+
+
+def test_provisioned_symlinks_cannot_be_committed(gitrepo, tmp_path, monkeypatch):
+    """2026-09-07 regression, found live within an hour of shipping the links.
+
+    `.venv/` is a DIRECTORY pattern and git does not follow symlinks, so a
+    *symlink* named `.venv` is not matched by it and `git add -A` — which the
+    force-finalize teardown runs — commits a symlink pointing outside the repo.
+    One reached the BackupBrain working line and a deploy worker had to de-track
+    it by hand. Provisioning must leave nothing addable behind.
+    """
+    _tenant_map(tmp_path, monkeypatch, gitrepo, ["data/corpus.db", "frontend/node_modules"])
+    wt = gitrepo / ".worktrees" / "t_probe"
+    wt.mkdir(parents=True)
+    _git("worktree", "add", "-q", "--detach", str(wt), cwd=gitrepo)
+
+    linked = kb._provision_worktree_toolchain(gitrepo, wt)
+    assert ".venv" in linked and "frontend/node_modules" in linked
+
+    # The real test: after `git add -A`, nothing we created may be staged.
+    _git("add", "-A", cwd=wt)
+    staged = _git("diff", "--cached", "--name-only", cwd=wt).stdout.split()
+    for rel in linked:
+        assert rel not in staged, f"{rel} was staged — it would be committed"
+    # And no symlink of any kind is staged.
+    modes = _git("diff", "--cached", "--raw", cwd=wt).stdout
+    assert "120000" not in modes, f"a symlink was staged:\n{modes}"
+
+
+def test_exclude_write_is_idempotent(gitrepo, tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_KANBAN_TENANTS", raising=False)
+    wt = gitrepo / ".worktrees" / "t_probe2"
+    wt.mkdir(parents=True)
+    _git("worktree", "add", "-q", "--detach", str(wt), cwd=gitrepo)
+    kb._provision_worktree_toolchain(gitrepo, wt)
+    exclude = gitrepo / ".git" / "info" / "exclude"
+    first = exclude.read_text()
+    kb._exclude_provisioned_links(wt, [".venv"])
+    assert exclude.read_text() == first, "a second call duplicated the entry"
+
+
+def test_exclude_never_raises_outside_a_repo(tmp_path):
+    """Best effort: an un-excluded link is untidy; an exception is a failed dispatch."""
+    kb._exclude_provisioned_links(tmp_path, [".venv"])  # not a git repo at all
+
+
 # ── negative control ─────────────────────────────────────────────────
 
 

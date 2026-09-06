@@ -8693,8 +8693,60 @@ def _provision_worktree_toolchain(repo_root: Path, target: Path) -> list[str]:
             _link(rel, src, dst, src.is_dir())
 
     if linked:
+        _exclude_provisioned_links(target, linked)
         _log.info("worktree %s: linked %s from %s", target, ",".join(linked), repo_root)
     return linked
+
+
+def _exclude_provisioned_links(target: Path, linked: list[str]) -> None:
+    """Make git ignore the links we just created, in this repo's local excludes.
+
+    2026-09-07, found within an hour of shipping the links above. A `.gitignore`
+    entry written as ``.venv/`` or ``node_modules/`` is a DIRECTORY pattern, and
+    git does not follow symlinks — so a *symlink* named ``.venv`` is NOT matched
+    by ``.venv/`` and is perfectly addable. The force-finalize teardown runs
+    ``git add -A``, so it committed a symlink pointing outside the repo; the
+    BackupBrain working line carried one until a deploy worker had to de-track it
+    by hand (`37dd6d3`), and card `t_2c2086ac`'s worktree still has one staged.
+
+    Fixed here rather than in each tenant's `.gitignore` because provisioning is
+    what creates these paths, so provisioning is what should hide them — and
+    `info/exclude` is local-only: never committed, never pushed, invisible to the
+    tenant's repo history.
+
+    Best effort: an un-excluded link is untidy, a raised exception is a failed
+    dispatch.
+    """
+    try:
+        common = subprocess.run(
+            ["git", "-C", str(target), "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+        if common.returncode != 0:
+            return
+        gitdir = Path((common.stdout or "").strip())
+        if not gitdir.is_absolute():
+            gitdir = (target / gitdir).resolve(strict=False)
+        exclude = gitdir / "info" / "exclude"
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        existing = exclude.read_text().splitlines() if exclude.exists() else []
+        have = {ln.strip() for ln in existing}
+        # A bare name (no trailing slash) matches a symlink, a file OR a
+        # directory — which is the whole point of this function.
+        want = [rel for rel in linked if rel not in have and f"/{rel}" not in have]
+        if not want:
+            return
+        with exclude.open("a") as fh:
+            if existing and existing[-1].strip():
+                fh.write("\n")
+            fh.write("# hermes worktree provisioning (2026-09-07): these are symlinks\n")
+            fh.write("# into the repo root. A directory pattern like `.venv/` does NOT\n")
+            fh.write("# match a symlink, so without these a `git add -A` commits them.\n")
+            for rel in want:
+                fh.write(f"{rel}\n")
+        _log.info("worktree %s: excluded %s via %s", target, ",".join(want), exclude)
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("worktree %s: could not write local excludes: %s", target, exc)
 
 
 def _resolve_worktree_workspace(

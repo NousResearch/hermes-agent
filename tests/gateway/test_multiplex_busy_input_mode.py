@@ -179,6 +179,59 @@ async def test_secondary_profile_busy_mode_controls_priority_path(
 
 
 @pytest.mark.asyncio
+async def test_busy_status_dispatches_through_active_session_path(tmp_path):
+    """A running session still dispatches /busy through its normal handler."""
+    runner = _runner(default_mode="interrupt")
+    await _load_profile_snapshot(runner, tmp_path / "research", "queue")
+    event = _event(profile="research")
+    event.text = "/busy status"
+    session_key = runner._session_key_for_source(event.source)
+    runner._running_agents[session_key] = MagicMock()
+
+    response = await runner._handle_message(event)
+
+    assert "queue" in str(response).lower()
+
+
+@pytest.mark.asyncio
+async def test_busy_change_updates_only_routed_profile(tmp_path, monkeypatch):
+    """A routed /busy change persists and refreshes only that profile."""
+    default_home = tmp_path / "default"
+    default_home.mkdir()
+    default_config = default_home / "config.yaml"
+    default_config.write_text(
+        "display:\n  busy_input_mode: interrupt\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+
+    runner = _runner(default_mode="interrupt")
+    profile_home = tmp_path / "research"
+    adapter = await _load_profile_snapshot(
+        runner,
+        profile_home,
+        "queue",
+    )
+    event = _event(profile="research")
+    event.text = "/busy steer"
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_profile_dir",
+        lambda _profile_name: profile_home,
+    )
+    # Isolate the wrapper's profile scope; active-session dispatch is covered above.
+    runner._handle_message = runner._handle_busy_command
+
+    response = await runner._make_profile_message_handler("research")(event)
+
+    assert "steer" in str(response).lower()
+    assert "busy_input_mode: steer" in (profile_home / "config.yaml").read_text()
+    assert "busy_input_mode: interrupt" in default_config.read_text()
+    assert runner._busy_input_mode == "interrupt"
+    assert runner._effective_busy_input_mode(event.source) == "steer"
+    assert adapter._busy_text_mode == "interrupt"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("default_mode", "secondary_mode", "queued"),
     [

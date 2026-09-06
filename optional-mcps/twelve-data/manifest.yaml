@@ -1,0 +1,42 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: twelve-data
+description: Stocks, forex, and crypto market data from Twelve Data.
+source: https://twelvedata.com/docs
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint); Hermes's MCP client + mcp_oauth_manager handle
+# discovery, PKCE, token exchange, and refresh.
+
+transport:
+  type: http
+  url: https://mcp.twelvedata.com/mcp
+
+auth:
+  type: oauth
+
+# Excluded: OAuth plumbing exposed as tools on the cloud server, plus the
+# account-quota probe. All remaining tools are read-only market data.
+tools:
+  default_excluded:
+    - oauth_login
+    - auth_status
+    - oauth_configure
+    - get_api_usage
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - twelve data
+    - stock price
+  hosts:
+    - twelvedata.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Twelve Data (or run `hermes mcp login twelve-data`). Approve access,
+  then restart the session so tools load.

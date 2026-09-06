@@ -569,3 +569,117 @@ class TestForceBypassIntegration:
             "dangerous-command bypass is possible"
         )
         assert captured_args.get("command") == "rm -rf /"
+
+
+class TestScopedSchemaProjection:
+    """Regression for the scope-identity bug: projection must follow the
+    scope-resolved entry's schema, not a second bare-name registry lookup.
+
+    Two scopes register the same tool name with different strict schemas.
+    Dispatch with scope A must project against A's schema even when the
+    ambient/default registry lookup would resolve to B's schema.
+    """
+
+    def test_explicit_schema_overrides_registry_lookup(self):
+        """When schema= is passed, it is used instead of registry.get_schema."""
+        strict_schema = {
+            "name": "dual_tool",
+            "parameters": {
+                "type": "object",
+                "properties": {"command": {"type": "string"}},
+                "additionalProperties": False,
+            },
+        }
+        # If the registry were queried, it would return a looser schema.
+        loose_schema = {
+            "name": "dual_tool",
+            "parameters": {
+                "type": "object",
+                "properties": {"command": {"type": "string"}},
+                "additionalProperties": True,
+            },
+        }
+        with patch("model_tools.registry.get_schema", return_value=loose_schema) as mock_get:
+            args = {"command": "ls", "secret": True}
+            result = project_tool_args("dual_tool", args, schema=strict_schema)
+        # The explicit strict schema is used, so secret is stripped.
+        assert "secret" not in result
+        assert result["command"] == "ls"
+        # The registry was NOT queried because schema was supplied.
+        mock_get.assert_not_called()
+
+    def test_none_schema_falls_back_to_registry(self):
+        """When schema=None, the registry lookup is used as before."""
+        schema = {
+            "name": "fallback_tool",
+            "parameters": {
+                "type": "object",
+                "properties": {"x": {"type": "string"}},
+                "additionalProperties": False,
+            },
+        }
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            result = project_tool_args("fallback_tool", {"x": "1", "y": "2"})
+        assert result == {"x": "1"}
+
+    def test_dispatch_uses_entry_schema_not_registry_lookup(self):
+        """registry.dispatch passes entry.schema to project_tool_args.
+
+        Verify by registering two entries under the same name with different
+        scopes and confirming dispatch projects against the scope-resolved
+        entry's schema.
+        """
+        from tools.registry import ToolRegistry, ToolEntry
+        from unittest.mock import MagicMock
+
+        reg = ToolRegistry()
+
+        strict_schema = {
+            "name": "shared",
+            "parameters": {
+                "type": "object",
+                "properties": {"cmd": {"type": "string"}},
+                "additionalProperties": False,
+            },
+        }
+        loose_schema = {
+            "name": "shared",
+            "parameters": {
+                "type": "object",
+                "properties": {"cmd": {"type": "string"}},
+                "additionalProperties": True,
+            },
+        }
+
+        strict_handler = MagicMock(return_value='{"ok": true}')
+        loose_handler = MagicMock(return_value='{"ok": true}')
+
+        def _make_entry(schema, handler):
+            return ToolEntry(
+                name="shared", toolset="test", schema=schema,
+                handler=handler, check_fn=None, requires_env=[],
+                is_async=False, description="test", emoji="t",
+            )
+
+        strict_entry = _make_entry(strict_schema, strict_handler)
+        loose_entry = _make_entry(loose_schema, loose_handler)
+
+        # Ambient registration = loose; scoped registration = strict.
+        reg._tools["shared"] = loose_entry
+        reg._scoped_tools["profile_A"] = {"shared": strict_entry}
+
+        # Dispatch with scope=profile_A must use strict_schema.
+        reg.dispatch("shared", {"cmd": "ls", "secret": True}, scope="profile_A")
+        sent_args = strict_handler.call_args[0][0]
+        assert "secret" not in sent_args, (
+            "scope-resolved strict schema was not used for projection — "
+            "the handler received an argument its schema forbids"
+        )
+
+        # Dispatch without scope must use loose_schema (ambient).
+        loose_handler.reset_mock()
+        reg.dispatch("shared", {"cmd": "ls", "secret": True})
+        sent_args = loose_handler.call_args[0][0]
+        assert "secret" in sent_args, (
+            "ambient loose schema was not used — projection used the wrong scope"
+        )

@@ -4,8 +4,11 @@ persists the one-time notice flag on the free-tier identity itself, so it dies w
 Bodies are rebound onto server.py's globals (method_ctx.bind_module) and reference them bare.
 """
 
+import logging
+
 from .method_ctx import HandlerRegistry, bind_module
 
+logger = logging.getLogger(__name__)
 _registry = HandlerRegistry()
 method = _registry.method
 _profile_scoped = _registry.profile_scoped
@@ -21,6 +24,15 @@ def _(rid, params: dict) -> dict:
         from hermes_cli import anon_auth
         has_guest = anon_auth.has_guest()
         enabled = anon_auth.guest_enabled()
+        if enabled and not has_guest:
+            # The CLI sets the free tier up in the background beside an explicit provider at session
+            # setup (cli_agent_setup_mixin); a served backend has no such moment, so this read is the
+            # desktop's. One attempt per process, nothing waits on it: the answer below is the state
+            # as it stands, and a later read sees the identity once it lands.
+            try:
+                anon_auth.ensure_portal_identity(blocking=False)
+            except Exception as exc:
+                logger.debug("free tier background setup skipped: %s", exc)
         return _ok(rid, {
             "has_guest": has_guest, "enabled": enabled, "carries_inference": has_guest and enabled,
             "notice_pending": bool(has_guest and enabled and anon_auth.guest_notice_pending()),

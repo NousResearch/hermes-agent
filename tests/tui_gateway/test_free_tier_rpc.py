@@ -74,3 +74,12 @@ def test_billing_state_answers_the_free_tier_locally(guest, monkeypatch):
     monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: bv.BillingState(logged_in=False))
     res = _call("billing.state")
     assert res["free_tier"] is False and res["free_tier_model"] is None
+
+
+def test_status_without_an_identity_starts_the_background_setup_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
+    calls = []
+    monkeypatch.setattr(anon_auth, "ensure_portal_identity", lambda **kw: calls.append(kw) or None)
+    status = _call("free_tier.status")
+    assert status["has_guest"] is False and status["carries_inference"] is False
+    assert calls == [{"blocking": False}]

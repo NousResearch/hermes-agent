@@ -299,10 +299,9 @@ def test_subprocess_killall_hermes_blocked():
 def test_legacy_bypass_marker_cannot_disable_guard():
     """The legacy marker is inert; own-process liveness remains permitted."""
     assert _live_system_guard_is_active() is True
-    if os.environ.get("HERMES_TEST_OS_SANDBOX") == "macos-sandbox-exec":
-        with pytest.raises(PermissionError):
-            os.kill(os.getpid(), 0)
-    else:
-        os.kill(os.getpid(), 0)
+    # Seatbelt deliberately permits self-signals. The macOS kernel
+    # attestation therefore probes the out-of-sandbox runner PID instead;
+    # signal 0 against this process remains a harmless liveness check.
+    os.kill(os.getpid(), 0)
     with pytest.raises(RuntimeError, match="live-system guard|hermetic-test guard"):
         os.kill(FOREIGN_PID, signal.SIGTERM)

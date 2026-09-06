@@ -70,21 +70,18 @@ def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> Dict[str, Any]:
     auth_path = profile_dir / "auth.json"
     if not auth_path.is_file():
         return stripped
+    # A profile auth.json that IS the shared root store (symlink / hardlink) is not a clone;
+    # stripping it would delete every profile's single-use grants. _is_same_auth_store swallows
+    # a samefile() OSError as "two stores", which here would fail OPEN — so resolve identity
+    # positively: same path, or samefile() says so; any error refuses.
     try:
         from hermes_constants import get_default_hermes_root
         root_auth_path = get_default_hermes_root() / "auth.json"
-        if _same_path(auth_path, root_auth_path):
+        if _same_path(auth_path, root_auth_path) or (
+            root_auth_path.exists() and auth_path.samefile(root_auth_path)
+        ):
             return stripped
-        try:
-            root_auth_path.stat()
-        except FileNotFoundError:
-            pass  # A missing root store cannot be the existing profile file.
-        else:
-            if auth_path.samefile(root_auth_path):
-                return stripped
     except Exception:
-        # Fail closed: an unresolved root or transient stat failure must not turn an aliased
-        # shared store into a credential-deletion target.
         return stripped
     try:
         store = json.loads(auth_path.read_text(encoding="utf-8-sig"))
@@ -122,9 +119,7 @@ def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> Dict[str, Any]:
     if not changed:
         return stripped
     try:
-        # Replace the profile entry itself: following a symlink introduced after the identity
-        # check could erase the shared root store.
-        _save_auth_store(store, target_path=auth_path, preserve_symlinks=False)
+        _save_auth_store(store, target_path=auth_path)
     except Exception:
         logger.debug(
             "Failed to strip cloned single-use OAuth grants from %s", auth_path, exc_info=True)

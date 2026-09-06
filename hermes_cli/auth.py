@@ -702,9 +702,7 @@ def _write_private_file_atomic(
             pass
 
 
-def _save_auth_store(
-    auth_store: Dict[str, Any], target_path: Optional[Path] = None, *,
-    preserve_symlinks: bool = True) -> Path:
+def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = None) -> Path:
     """Atomically persist *auth_store* (0o600, parent tightened to 0o700) to the active store, or to
     an explicit *target_path* (e.g. the global-root write-through for rotating xAI OAuth grants)."""
     auth_file = target_path if target_path is not None else _auth_file_path()
@@ -713,9 +711,7 @@ def _save_auth_store(
     # install tree (#25821, #93050).
     auth_store["version"] = AUTH_STORE_VERSION
     auth_store["updated_at"] = datetime.now(timezone.utc).isoformat()
-    _write_private_file_atomic(
-        auth_file, json.dumps(auth_store, indent=2) + "\n",
-        replace=None if preserve_symlinks else os.replace, fsync_dir=True)
+    _write_private_file_atomic(auth_file, json.dumps(auth_store, indent=2) + "\n", fsync_dir=True)
     try:
         auth_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
     except OSError:

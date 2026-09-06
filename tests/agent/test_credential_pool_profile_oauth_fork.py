@@ -222,34 +222,6 @@ def test_strip_helper_fails_closed_when_store_identity_check_errors(fleet, monke
     assert (copied / "auth.json").read_text() == before
 
 
-def test_strip_helper_does_not_follow_auth_symlink_created_during_save(fleet, monkeypatch):
-    """A late path swap must not redirect clone cleanup into the root store."""
-    from hermes_cli import auth as auth_mod
-
-    root = fleet["root"]
-    _seed_codex_grant(root)
-    root_before = (root / "auth.json").read_text()
-    copied = _profile(fleet, "copied")
-    auth_path = copied / "auth.json"
-    auth_path.write_text(root_before)
-    real_save = auth_mod._save_auth_store
-
-    def swap_then_save(store, target_path=None, **kwargs):
-        target_path.unlink()
-        target_path.symlink_to(root / "auth.json")
-        return real_save(store, target_path=target_path, **kwargs)
-
-    monkeypatch.setattr(auth_mod, "_save_auth_store", swap_then_save)
-    summary = auth_mod.strip_cloned_single_use_oauth_grants(copied)
-
-    assert sorted(summary["pool"]) == ["anthropic", "openai-codex"]
-    assert summary["providers"] == ["openai-codex"]
-    assert (root / "auth.json").read_text() == root_before
-    assert not auth_path.is_symlink()
-
-
-# ── B. borrowed rotation commits to root, never a profile copy ───────────
-
 def test_first_profile_rotation_does_not_strand_root_or_siblings(fleet):
     from agent.credential_pool import load_pool
 

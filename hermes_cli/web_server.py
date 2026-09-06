@@ -604,7 +604,9 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
         # Source from the cached plugin list; unknown => user plugin (safe default — blocks).
         plugin = next((p for p in _get_dashboard_plugins() if p.get("name") == plugin_name), None)
         source = plugin.get("source") if plugin else "user"
-        blocked = plugin_name in disabled_set or (source == "user" and plugin_name not in enabled_set)
+        from hermes_cli.web_server_dashboard import _plugin_api_mount_skip_reason
+        blocked = _plugin_api_mount_skip_reason(
+            plugin or {"name": plugin_name, "source": source}, enabled_set, disabled_set)
         if blocked and source in ("user", "bundled"):
             return JSONResponse(status_code=404, content={"detail": "Plugin not found"})
     return await call_next(request)

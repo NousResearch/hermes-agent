@@ -1,0 +1,66 @@
+{
+  "name": "@novnc/novnc",
+  "version": "1.7.0",
+  "description": "An HTML5 VNC client",
+  "type": "module",
+  "files": [
+    "core",
+    "vendor",
+    "AUTHORS",
+    "VERSION",
+    "docs/API.md",
+    "docs/LIBRARY.md",
+    "docs/LICENSE*"
+  ],
+  "exports": "./core/rfb.js",
+  "scripts": {
+    "lint": "eslint app core po/po2js po/xgettext-html tests utils",
+    "test": "karma start karma.conf.cjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/novnc/noVNC.git"
+  },
+  "author": "Joel Martin <github@martintribe.org> (https://github.com/kanaka)",
+  "contributors": [
+    "Samuel Mannehed <samuel@cendio.se> (https://github.com/samhed)",
+    "Pierre Ossman <ossman@cendio.se> (https://github.com/CendioOssman)"
+  ],
+  "license": "MPL-2.0",
+  "bugs": {
+    "url": "https://github.com/novnc/noVNC/issues"
+  },
+  "homepage": "https://github.com/novnc/noVNC",
+  "devDependencies": {
+    "@babel/core": "latest",
+    "@babel/preset-env": "latest",
+    "babel-plugin-import-redirect": "latest",
+    "browserify": "latest",
+    "chai": "latest",
+    "commander": "latest",
+    "eslint": "latest",
+    "fs-extra": "latest",
+    "globals": "latest",
+    "jsdom": "latest",
+    "karma": "latest",
+    "karma-mocha": "latest",
+    "karma-chrome-launcher": "latest",
+    "@chiragrupani/karma-chromium-edge-launcher": "latest",
+    "karma-firefox-launcher": "latest",
+    "karma-ie-launcher": "latest",
+    "karma-mocha-reporter": "latest",
+    "karma-safari-launcher": "latest",
+    "karma-script-launcher": "latest",
+    "mocha": "latest",
+    "pofile": "latest",
+    "sinon": "latest",
+    "sinon-chai": "latest"
+  },
+  "dependencies": {},
+  "keywords": [
+    "vnc",
+    "rfb",
+    "novnc",
+    "websockify"
+  ]
+}

@@ -1331,12 +1331,14 @@ def _plugin_rows() -> list[dict]:
         status = pc._plugin_status(name, enabled, disabled, key=key)
         # Bundled backends/platforms/providers run without an explicit enable: report the
         # truthful default instead of "not enabled" (reads as OFF).
-        if status == "not enabled" and source == "bundled" and pc._bundled_default_on(_dir):
+        default_enabled = source == "bundled" and pc._bundled_default_on(_dir)
+        if status == "not enabled" and default_enabled:
             status = "enabled"
         # key = canonical registry key (names collide across category dirs); portable = Agent Plugins v1.
         out.append({
             "name": name, "key": key, "version": str(version or ""), "description": desc or "",
-            "source": source, "status": status, "portable": pc._is_portable_plugin_dir(_dir)})
+            "source": source, "status": status, "default_enabled": default_enabled,
+            "portable": pc._is_portable_plugin_dir(_dir)})
     return out
 
 

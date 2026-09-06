@@ -24,6 +24,8 @@ export interface AgentPluginRow {
   /** 'bundled' | 'user' | 'git' | 'project' | 'entrypoint' */
   source: string
   status: 'enabled' | 'disabled' | 'not enabled'
+  /** Bundled activation policy, separate from the user's current decision. */
+  default_enabled?: boolean
   /** Agent Plugins v1 package (portable skills/MCP format) vs native Hermes. */
   portable?: boolean
 }
@@ -39,15 +41,13 @@ export const $agentPluginsError = atom<string | null>(null)
 /** Best available address of the row whose toggle RPC is in flight. */
 export const $agentPluginBusy = atom<string | null>(null)
 
-// Rows the Plugins page actually lists (and search should surface): plugins
-// the USER installed. Repo-bundled built-ins ship enabled-by-default and are
-// configured from their own surfaces, so they're pure noise here. The prefix
-// list is the fallback for older backends whose rows predate a reliable
-// `source` field — same curation stance as desktop-slash-commands.ts.
+// User-installed and opt-in bundled plugins belong here even after activation.
+// Default-on category providers are configured from their own surfaces. Older
+// backends without activation metadata retain the legacy bundled filter.
 const HIDDEN_KEY_PREFIXES = ['dashboard_auth/', 'model-providers/', 'platforms/']
 
 export const isDesktopRelevantPlugin = (row: AgentPluginRow): boolean => {
-  if (row.source === 'bundled') {
+  if (row.source === 'bundled' && row.default_enabled !== false) {
     return false
   }
 

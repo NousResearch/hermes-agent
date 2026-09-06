@@ -1,0 +1,12 @@
+name: hermes-realms
+version: 0.1.0
+kind: standalone
+description: Profile-scoped private Linux desktops for Hermes conversations
+provides_tools:
+  - realm
+provides_hooks:
+  - pre_tool_call
+  - on_session_identity
+  - on_session_start
+  - on_session_finalize
+  - on_session_reset

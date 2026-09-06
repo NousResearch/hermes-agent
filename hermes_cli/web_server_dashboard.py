@@ -517,7 +517,18 @@ def _dashboard_plugin_entry(data: Dict[str, Any], name: str, dashboard_dir: Path
             "not be mounted",
             name, raw_api,
         )
+    # A unified standalone package has the same opt-in contract on every
+    # surface. Legacy dashboard-only bundles and category-owned providers keep
+    # their existing activation path; inventory must not import plugin code.
+    from hermes_cli.plugins_manifest import parse_manifest_file
+    native_file = next((dashboard_dir.parent / filename for filename in ("plugin.yaml", "plugin.yml")
+                        if (dashboard_dir.parent / filename).is_file()), None)
+    native = parse_manifest_file(native_file, dashboard_dir.parent, source, "") if native_file else None
+    requires_enable = source == "bundled" and native_file is not None and (
+        native is None or native.kind == "standalone")
     return {
+        "_requires_enable": requires_enable,
+        "_plugin_key": native.key if native else name,
         "name": name,
         "label": data.get("label", name),
         "description": data.get("description", ""),
@@ -742,15 +753,16 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
 def _plugin_api_mount_skip_reason(plugin: Dict[str, Any], enabled_set: set, disabled_set: set) -> Optional[str]:
     """Why a plugin's backend ``api`` must NOT be imported, or None when it may be.
 
-    User plugins must be in ``plugins.enabled`` and not ``plugins.disabled`` before their
-    Python runs (GHSA-mcfc-hp25-cjv7); bundled plugins are trusted but respect an explicit
-    disable; project plugins (``./.hermes/plugins/``) ship with the CWD and are
-    attacker-controlled when opening a malicious repo — never auto-imported (GHSA-5qr3-c538-wm9j).
+    User and bundled standalone plugins must be in ``plugins.enabled`` and not
+    ``plugins.disabled`` before their Python runs. Category-owned and legacy
+    dashboard-only bundles retain their activation path. Project plugin APIs
+    are refused separately by the importer.
     """
     source, plugin_name = plugin.get("source"), plugin.get("name", "")
-    if source in ("user", "bundled") and plugin_name in disabled_set:
+    names = {plugin_name, plugin.get("_plugin_key", plugin_name)}
+    if source in ("user", "bundled") and names & disabled_set:
         return "explicitly disabled"
-    if source == "user" and plugin_name not in enabled_set:
+    if (source == "user" or plugin.get("_requires_enable")) and not names & enabled_set:
         return "not in plugins.enabled"
     return None
 

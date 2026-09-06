@@ -155,7 +155,18 @@ _AUTH_TYPE_ENV_VARS = {
 }
 
 
-def _catalog_provider_env_metadata() -> dict:
+def _provider_catalog_or_empty() -> List[Any]:
+    """``provider_catalog()``, or ``[]`` when the catalog module cannot be imported —
+    the same fallback :func:`_catalog_provider_env_metadata` applies when it builds
+    the catalog itself, lifted out so one request builds the list exactly once."""
+    try:
+        from hermes_cli.provider_catalog import provider_catalog
+        return provider_catalog()
+    except Exception:
+        return []
+
+
+def _catalog_provider_env_metadata(catalog: Optional[List[Any]] = None) -> dict:
     """Map provider env vars -> desktop card metadata, derived from the catalog.
 
     Returns ``{env_var: {provider, provider_label, description, url, is_password,
@@ -164,11 +175,19 @@ def _catalog_provider_env_metadata() -> dict:
     for providers never hand-added to ``OPTIONAL_ENV_VARS``. Hand
     ``OPTIONAL_ENV_VARS`` prose is layered on top in the endpoint; this only
     supplies membership + grouping + fallbacks.
+
+    ``catalog`` defaults to the full ``provider_catalog()``; pass
+    ``visible_provider_catalog()`` for the same map restricted to the providers this
+    install shows. :func:`_apply_provider_exclusions` diffs the two outputs, so both
+    the ``setdefault`` api-key vars and the plainly assigned ``_AUTH_TYPE_ENV_VARS``
+    ones are resolved by exactly one piece of code.
     """
-    try:
-        from hermes_cli.provider_catalog import provider_catalog
-    except Exception:
-        return {}
+    if catalog is None:
+        try:
+            from hermes_cli.provider_catalog import provider_catalog
+            catalog = provider_catalog()
+        except Exception:
+            return {}
 
     # Env vars declared with a NON-provider category (e.g. the shared
     # GITHUB_TOKEN, a Skills-Hub "tool" credential) must not be promoted into a
@@ -179,7 +198,7 @@ def _catalog_provider_env_metadata() -> dict:
     }
 
     meta: dict = {}
-    for d in provider_catalog():
+    for d in catalog:
         if d.tab != "keys":
             continue
         # API-key vars: the first is the primary (password) field; aliases are
@@ -211,6 +230,54 @@ def _catalog_provider_env_metadata() -> dict:
     return meta
 
 
+def _apply_provider_exclusions(
+    catalog_meta: dict, env_on_disk: dict, catalog: Optional[List[Any]] = None
+) -> tuple[dict, set[str]]:
+    """``model_catalog.excluded_providers`` applied to the Keys tab's metadata map.
+
+    Returns ``(row_meta, hidden_vars)``. ``hidden_vars`` are the provider env vars the
+    tab must not offer because EVERY provider that declares them is excluded;
+    ``row_meta`` is ``catalog_meta`` with each surviving shared var re-tagged to a
+    provider that is still visible, so the desktop (which groups cards by
+    ``provider_label``) does not file DASHSCOPE_API_KEY under the very provider the
+    user excluded when its other owners keep the card alive.
+
+    Both derive from re-running :func:`_catalog_provider_env_metadata` over
+    ``visible_provider_catalog()`` and diffing against ``catalog_meta`` (the full
+    catalog's map). One derivation, so a var several providers claim survives while
+    any owner is still visible, and AWS_REGION / AWS_PROFILE / VERTEX_CREDENTIALS_PATH
+    (tagged through ``_AUTH_TYPE_ENV_VARS``, which assigns rather than setdefaults)
+    obey the same rule without a second hand-rolled walk of the catalog.
+
+    ``catalog`` is the ``provider_catalog()`` list ``catalog_meta`` was built from;
+    pass it so the visible catalog is a filter over that list instead of a second
+    plugin-discovery build. The exclusion set is read once and handed down for the
+    same reason.
+
+    A var the ``.env`` file already carries is never hidden: a stored secret is state
+    the user may need to clear, and a visibility setting must not remove the only way
+    to delete a credential. It also keeps such a var from resurfacing as a "custom"
+    row at the end of :func:`_get_env_vars_sync`. Such a var keeps its full-catalog
+    tag: the card IS the excluded provider's stored key.
+
+    Call inside the request's ``_profile_scope``: the exclusion list comes from the
+    scoped config.
+    """
+    try:
+        from hermes_cli.provider_catalog import excluded_provider_slugs, visible_provider_catalog
+        excluded = excluded_provider_slugs()
+        if not excluded:
+            return catalog_meta, set()  # default install: nothing to filter
+        visible_meta = _catalog_provider_env_metadata(
+            catalog=visible_provider_catalog(catalog=catalog, excluded=excluded)
+        )
+    except Exception:
+        return catalog_meta, set()
+    hidden = {var for var in catalog_meta if var not in visible_meta and var not in env_on_disk}
+    row_meta = {var: visible_meta.get(var, meta) for var, meta in catalog_meta.items()}
+    return row_meta, hidden
+
+
 @router.get("/api/env")
 async def get_env_vars(profile: Optional[str] = None):
     # _profile_scope takes _SKILLS_PROFILE_LOCK and load_env()/catalog
@@ -221,8 +288,15 @@ async def get_env_vars(profile: Optional[str] = None):
 def _get_env_vars_sync(profile: Optional[str] = None):
     with _profile_scope(profile):
         env_on_disk = load_env()
+        # Inside the scope on purpose: _profile_scope routes load_config_readonly
+        # through the HERMES_HOME contextvar (hermes_cli/web_server_profiles.py), so
+        # reading model_catalog.excluded_providers after the block would apply the
+        # DEFAULT profile's list to every ?profile=<name> request.
+        full_catalog = _provider_catalog_or_empty()
+        catalog_meta, hidden_provider_vars = _apply_provider_exclusions(
+            _catalog_provider_env_metadata(catalog=full_catalog), env_on_disk, catalog=full_catalog
+        )
     channel_keys = _channel_managed_env_keys()
-    catalog_meta = _catalog_provider_env_metadata()
 
     def _row(var_name: str, info: dict, *, custom: bool = False) -> dict:
         value = env_on_disk.get(var_name)
@@ -252,10 +326,12 @@ def _get_env_vars_sync(profile: Optional[str] = None):
 
     result = {}
     for var_name, info in OPTIONAL_ENV_VARS.items():
+        if var_name in hidden_provider_vars:
+            continue  # excluded provider, nothing stored — drop the card, don't just untag
         result[var_name] = _row(var_name, info)
     # Catalog provider env vars with no hand entry in OPTIONAL_ENV_VARS.
     for var_name in catalog_meta:
-        if var_name not in result:
+        if var_name not in result and var_name not in hidden_provider_vars:
             result[var_name] = _row(var_name, {})
     # Custom keys from .env: always "set" (on disk), treated as secrets by
     # default (is_password=True -> redacted, reveal-gated) since an

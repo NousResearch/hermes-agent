@@ -1833,6 +1833,11 @@ DEFAULT_CONFIG = {
         # Per-provider override URLs for self-hosted curation lists using the same schema, e.g.
         # providers: {openrouter: {url: https://example.com/my-curation.json}}.
         "providers": {},
+        # Provider slugs (or aliases, e.g. `aws` for bedrock) to hide from every /model
+        # picker and from the desktop Settings -> Providers tabs. Hides, does not disable:
+        # an excluded provider still resolves when named in model.provider, and a stored
+        # key / connected account stays visible so it can be cleared.
+        "excluded_providers": [],
     },
     # Per-model metadata overrides. Fields: context_window, supports_tools,
     # supports_vision, supports_reasoning, model_family. <provider>.<model_id> wins over

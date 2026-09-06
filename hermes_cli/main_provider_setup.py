@@ -775,22 +775,14 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
     """Rows for the ``hermes model`` provider picker plus the pre-selected index. Canonical providers
     fold into display groups (PROVIDER_GROUPS): a group row's ``members`` drive a sub-picker, leaf
     rows have ``members == []``; saved custom providers and trailing actions stay flat. Honors
-    ``model_catalog.excluded_providers`` (slug or alias, case-insensitive) like the gateway/TUI."""
-    from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_ALIASES
+    ``model_catalog.excluded_providers`` through the shared ``provider_catalog`` predicate (slug or
+    alias, case-insensitive), the same rule the desktop Providers tabs apply."""
+    from hermes_cli.models import CANONICAL_PROVIDERS
     from hermes_cli.models_catalog_static import group_providers, provider_group_for_slug
+    from hermes_cli.provider_catalog import excluded_provider_slugs, provider_is_excluded
     canonical_descs = {p.slug: p.tui_desc for p in CANONICAL_PROVIDERS}
-    _cli_excluded = {
-        str(p).strip().lower()
-        for p in (config.get("model_catalog", {}) or {}).get("excluded_providers") or []
-        if p}
-    if _cli_excluded:
-        # A canonical provider is hidden if its slug OR any alias is excluded.
-        _names_for: dict[str, set[str]] = {_p.slug: {_p.slug.lower()} for _p in CANONICAL_PROVIDERS}
-        for _alias, _canon in _PROVIDER_ALIASES.items():
-            _names_for.setdefault(_canon, {_canon.lower()}).add(_alias.lower())
-        _visible_slugs = [p.slug for p in CANONICAL_PROVIDERS if not _names_for.get(p.slug, {p.slug.lower()}) & _cli_excluded]
-    else:
-        _visible_slugs = [p.slug for p in CANONICAL_PROVIDERS]
+    _cli_excluded = excluded_provider_slugs(config)
+    _visible_slugs = [p.slug for p in CANONICAL_PROVIDERS if not provider_is_excluded(p.slug, _cli_excluded)]
 
     # The active provider's group when grouped, otherwise the active slug itself.
     active_group = provider_group_for_slug(active) if active else ""

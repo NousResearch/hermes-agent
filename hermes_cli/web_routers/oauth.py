@@ -492,14 +492,39 @@ def _build_oauth_catalog() -> list[Dict[str, Any]]:
     return rows
 
 
+def _excluded_provider_filter():
+    """``(excluded_slugs, predicate)`` for ``model_catalog.excluded_providers``.
+
+    Imported lazily for the same reason ``_build_oauth_catalog`` defers its
+    ``provider_catalog`` import: this router owns status and disconnect, so a
+    provider_catalog import failure must cost only the filter, never the routes.
+    Falls back to "hide nothing", which is the pre-exclusion behaviour.
+    """
+    try:
+        from hermes_cli.provider_catalog import excluded_provider_slugs, provider_is_excluded
+        return excluded_provider_slugs(), provider_is_excluded
+    except Exception:
+        return frozenset(), lambda slug, excluded=None: False
+
+
 @router.get("/api/providers/oauth")
 async def list_oauth_providers(profile: Optional[str] = None):
     """Every OAuth-capable provider with current status (token_preview is the last
     N chars, never the full token; disconnect_command only for external providers)."""
     def _run():
+        # ``model_catalog.excluded_providers`` hides sign-in offers for the rails this
+        # install does not use — the hand-written cards included, since those are the
+        # ones a single-provider install most needs gone. Read here because _run
+        # already executes inside _profile_scope (scoped_to_thread), so the list comes
+        # from the requested profile's config.
+        excluded, _is_excluded = _excluded_provider_filter()
         providers = []
         for p in _build_oauth_catalog():
             status = _resolve_provider_status(p["id"], p.get("status_fn"))
+            # A CONNECTED account stays listed even when excluded: hiding it would take
+            # away the only way to disconnect it.
+            if excluded and _is_excluded(p["id"], excluded) and not status.get("logged_in"):
+                continue
             disconnect_hint = _oauth_provider_disconnect_hint(p, status)
             providers.append({
                 "id": p["id"], "name": p["name"], "flow": p["flow"],

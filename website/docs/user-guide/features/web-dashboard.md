@@ -480,7 +480,7 @@ Saves a new configuration. Body: `{"config": {...}}`.
 
 ### GET /api/env
 
-Returns all known environment variables with their set/unset status, redacted values, descriptions, and categories.
+Returns all known environment variables with their set/unset status, redacted values, descriptions, and categories. A provider env var is omitted when every provider that declares it is listed in `model_catalog.excluded_providers` and the var has no value in `.env`; a stored value always keeps its entry so it can be cleared.
 
 ### PUT /api/env
 

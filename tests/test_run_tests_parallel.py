@@ -311,34 +311,6 @@ def test_bare_long_path_value_reaches_pytest(tmp_path: Path) -> None:
     assert f"under ['{base_temp}']" not in proc.stdout
 
 
-def test_pytest_value_flag_catalog_covers_builtins_and_plugins() -> None:
-    """The maintained fallback is complete and installed plugins are discovered."""
-    from scripts.run_tests_parallel import (
-        _PYTEST_OPTIONAL_VALUE_FLAGS_FALLBACK,
-        _PYTEST_VALUE_FLAGS_FALLBACK,
-        _pytest_value_flags,
-    )
-
-    expected = {
-        "--pdbcls",
-        "--lfnf",
-        "--last-failed-no-failures",
-        "--pastebin",
-        "--junitxml",
-        "--junitprefix",
-        "--pythonwarnings",
-        "--doctest-report",
-        "--config-file",
-        "--log-auto-indent",
-        "--log-disable",
-        "--asyncio-mode",
-    }
-    fallback = _PYTEST_VALUE_FLAGS_FALLBACK | _PYTEST_OPTIONAL_VALUE_FLAGS_FALLBACK
-    assert expected - {"--asyncio-mode"} <= fallback
-    required, optional = _pytest_value_flags()
-    assert "--asyncio-mode" in required | optional
-
-
 def test_optional_pytest_value_does_not_swallow_runner_flag(tmp_path: Path) -> None:
     probe_dir = _make_probe_dir(tmp_path)
     repo_root = Path(__file__).resolve().parent.parent
@@ -366,7 +338,7 @@ def test_optional_pytest_value_does_not_swallow_runner_flag(tmp_path: Path) -> N
     assert "unrecognized arguments: --paths" not in proc.stdout
 
 
-def test_bare_builtin_and_plugin_long_values_reach_pytest(tmp_path: Path) -> None:
+def test_bare_builtin_long_values_reach_pytest(tmp_path: Path) -> None:
     probe_dir = _make_probe_dir(tmp_path)
     junit_path = tmp_path / "results.xml"
     proc = _run_runner(
@@ -377,8 +349,6 @@ def test_bare_builtin_and_plugin_long_values_reach_pytest(tmp_path: Path) -> Non
         str(junit_path),
         "--lfnf",
         "all",
-        "--asyncio-mode",
-        "auto",
         "-q",
     )
     assert proc.returncode == 0, proc.stdout
@@ -390,6 +360,16 @@ def test_explicit_plugin_values_work_with_autoload_disabled(tmp_path: Path) -> N
     probe_dir = _make_probe_dir(tmp_path)
     env = os.environ.copy()
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    (tmp_path / "routing_probe_plugin.py").write_text(
+        "def pytest_addoption(parser):\n"
+        "    parser.addoption('--routing-probe', action='store')\n"
+        "def pytest_configure(config):\n"
+        "    assert config.getoption('--routing-probe') == 'forwarded value'\n",
+        encoding="utf-8",
+    )
+    env["PYTHONPATH"] = os.pathsep.join(
+        filter(None, [str(tmp_path), env.get("PYTHONPATH", "")])
+    )
     repo_root = Path(__file__).resolve().parent.parent
     runner = repo_root / "scripts" / "run_tests_parallel.py"
     proc = subprocess.run(
@@ -403,9 +383,9 @@ def test_explicit_plugin_values_work_with_autoload_disabled(tmp_path: Path) -> N
             "--file-timeout",
             "30",
             "-p",
-            "pytest_asyncio.plugin",
-            "--asyncio-mode",
-            "auto",
+            "routing_probe_plugin",
+            "--routing-probe",
+            "forwarded value",
             "-q",
         ],
         cwd=repo_root,

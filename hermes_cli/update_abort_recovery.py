@@ -146,6 +146,15 @@ def _parse_serve_units(raw_serve, *, recover_serve: bool) -> dict[str, list]:
     return {"verified": [], "failed": []}
 
 
+def _gateway_restart_recovery_profiles(
+    plan, *, skip_profiles: set[str] | None = None
+) -> list[str]:
+    """Return supervised gateway profiles that a fresh process may restart."""
+    from hermes_cli.update_cmd import _gateway_recovery_partition
+    candidates, _ = _gateway_recovery_partition(plan, skip_profiles=skip_profiles)
+    return sorted(candidates)
+
+
 def _recover_gateway_restart_after_abort(
     plan, *, gateway_mode: bool, skip_profiles: set[str] | None = None,
     skip_units: set[str] | None = None) -> dict[str, list]:

@@ -22,9 +22,9 @@ from hermes_constants import get_default_hermes_root, venv_python_path
 
 # Re-exports: every split-module name stays reachable (and monkeypatchable) as update_cmd.<name>.
 from hermes_cli.update_abort_recovery import (  # noqa: F401
-    _abort_recovery_is_complete, _qualified_serve_skips, _recover_gateway_restart_after_abort,
-    _serve_unit_recovery_available, _surviving_pre_update_serve_runtimes,
-    _warn_stale_serve_runtimes)
+    _abort_recovery_is_complete, _gateway_restart_recovery_profiles, _qualified_serve_skips,
+    _recover_gateway_restart_after_abort, _serve_unit_recovery_available,
+    _surviving_pre_update_serve_runtimes, _warn_stale_serve_runtimes)
 from hermes_cli.update_cmd_windows import (  # noqa: F401
     _HOLDER_VALUE_FLAGS_FALLBACK, _clear_windows_venv_holders_or_exit,
     _cold_start_windows_gateway_after_update, _desktop_owns_gateway_lifecycle,

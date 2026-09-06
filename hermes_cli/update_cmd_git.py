@@ -236,12 +236,13 @@ def _offer_upstream_remote(git_cmd: list[str], cwd: Path, *, assume_yes: bool, i
     """Prompt to add ``upstream`` and add it; False when the user declined, the run is non-interactive, or add failed.
 
     ``--yes`` means "don't block", not "mutate my remotes", so a non-interactive skip is NOT persisted."""
-    from hermes_cli.update_cmd import _add_upstream_remote, _mark_skip_upstream_prompt
+    from hermes_cli.update_cmd import (
+        _add_upstream_remote, _is_noninteractive_context, _mark_skip_upstream_prompt)
     print(
         "\nℹ Your fork is not tracking the official Hermes repository.\n"
         "  This means you may miss updates from NousResearch/hermes-agent.\n"
     )
-    if assume_yes or (input_fn is None and not (sys.stdin.isatty() and sys.stdout.isatty())):
+    if assume_yes or (input_fn is None and _is_noninteractive_context()):
         print(f"  Skipping upstream setup (non-interactive run).\n  Add it later with: {_UPSTREAM_ADD_CMD}")
         return False
     if input_fn is not None:
@@ -249,9 +250,15 @@ def _offer_upstream_remote(git_cmd: list[str], cwd: Path, *, assume_yes: bool, i
     else:
         try:
             response = input("Add official repo as 'upstream' remote? [Y/n]: ").strip().lower()
-        except (EOFError, KeyboardInterrupt, UnicodeDecodeError):
+        except (EOFError, UnicodeDecodeError):
+            # Closed or invalid stdin is not a user decline. Never persist a decision nobody made.
             print()
-            response = "n"
+            return False
+        except KeyboardInterrupt:
+            # Aborted, not declined -- must not create the durable skip marker.
+            print()
+            print("  Cancelled.")
+            return False
     if response not in {"", "y", "yes"}:
         print(f"  Skipped. Run '{_UPSTREAM_ADD_CMD}' to add later.")
         _mark_skip_upstream_prompt()
@@ -290,11 +297,21 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
         print("  ✗ Could not compare branches. Skipping upstream sync.")
         return False
     if origin_ahead > 0:
-        print(
-            f"\nℹ Your fork has {origin_ahead} commit(s) not on upstream.\n"
-            "  Skipping upstream sync to preserve your changes.\n"
-            "  If you want to merge upstream changes, run:\n    git pull upstream main"
-        )
+        print()
+        if upstream_ahead > 0:
+            print(
+                f"⚠ Fork diverged: {origin_ahead} commit(s) ahead, "
+                f"{upstream_ahead} commit(s) behind upstream."
+            )
+            print("  Not syncing automatically — this needs a manual decision.")
+            print("  To pull in upstream changes:")
+            print("    git pull upstream main")
+        else:
+            print(
+                f"ℹ Your fork has {origin_ahead} commit(s) not on upstream "
+                "(upstream has nothing new)."
+            )
+            print("  Nothing to sync.")
         return True
     if upstream_ahead == 0:
         print("  ✓ Fork is up to date with upstream")

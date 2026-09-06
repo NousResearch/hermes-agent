@@ -30,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Dict, NamedTuple, Optional, Any, List, Tuple, Union, cast
 
 from agent.async_utils import safe_schedule_threadsafe
+from agent.i18n import t
 from agent.conversation_compression import (
     COMPACTION_DONE_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_STATUS, COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,

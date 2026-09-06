@@ -296,7 +296,7 @@ def test_cmd_update_orphan_history_backs_up_before_reset(monkeypatch, tmp_path, 
     )
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    hermes_main.cmd_update(SimpleNamespace(), approved=True)
 
     update_ref_calls = [c for c in recorded if "update-ref" in " ".join(str(x) for x in c)]
     assert len(update_ref_calls) == 1
@@ -326,7 +326,7 @@ def test_cmd_update_orphan_rescue_ref_write_failure_message_is_honest(monkeypatc
     )
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    hermes_main.cmd_update(SimpleNamespace(), approved=True)
 
     out = capsys.readouterr().out
     assert "orphan divergence" in out
@@ -355,7 +355,7 @@ def test_cmd_update_orphan_rescue_refs_pruned_beyond_keep_limit(monkeypatch, tmp
     )
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    hermes_main.cmd_update(SimpleNamespace(), approved=True)
 
     delete_calls = [
         c for c in recorded
@@ -392,7 +392,7 @@ def test_cmd_update_orphan_rescue_refs_expired_by_age(monkeypatch, tmp_path, cap
     )
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    hermes_main.cmd_update(SimpleNamespace(), approved=True)
 
     delete_calls = [
         c for c in recorded
@@ -434,7 +434,7 @@ def test_cmd_update_ordinary_divergence_skips_rescue_ref(monkeypatch, tmp_path, 
     )
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    hermes_main.cmd_update(SimpleNamespace(), approved=True)
 
     update_ref_calls = [c for c in recorded if "update-ref" in " ".join(str(x) for x in c)]
     assert update_ref_calls == []
@@ -455,7 +455,7 @@ def test_cmd_update_orphan_rescue_ref_write_failure_is_non_fatal(monkeypatch, tm
     )
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    hermes_main.cmd_update(SimpleNamespace(), approved=True)
 
     update_ref_calls = [c for c in recorded if "update-ref" in " ".join(str(x) for x in c)]
     assert len(update_ref_calls) == 1
@@ -484,7 +484,7 @@ def test_cmd_update_orphan_guard_skips_rescue_ref_when_pre_pull_sha_missing(
     )
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    hermes_main.cmd_update(SimpleNamespace(), approved=True)
 
     update_ref_calls = [c for c in recorded if "update-ref" in " ".join(str(x) for x in c)]
     assert update_ref_calls == []
@@ -505,7 +505,7 @@ def test_cmd_update_orphan_rescue_ref_persists_when_reset_fails(monkeypatch, tmp
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
     with pytest.raises(SystemExit) as exc_info:
-        hermes_main.cmd_update(SimpleNamespace())
+        hermes_main.cmd_update(SimpleNamespace(), approved=True)
     assert exc_info.value.code == 1
 
     update_ref_calls = [c for c in recorded if "update-ref" in " ".join(str(x) for x in c)]

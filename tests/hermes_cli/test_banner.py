@@ -84,3 +84,38 @@ def test_build_welcome_banner_non_moa_unchanged(tmp_path, monkeypatch):
     out = console.export_text()
     assert "claude-opus-4.8" in out
     assert "MoA:" not in out
+
+
+def test_build_welcome_banner_renders_lazy_mcp_server_as_not_failed(tmp_path, monkeypatch):
+    """A lazily registered MCP server (tools from the schema cache, process not
+    yet spawned) must render with its cached tool count — not fall into the
+    red "failed" branch that catches every unknown status."""
+    import yaml
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        yaml.safe_dump({"mcp_servers": {"playwright": {"command": "npx", "lazy": True}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    lazy_entry = {
+        "name": "playwright", "transport": "stdio", "tools": 3,
+        "connected": False, "disabled": False, "status": "lazy",
+    }
+    with (
+        patch.object(model_tools, "check_tool_availability", return_value=([], [])),
+        patch.object(banner, "get_available_skills", return_value={}),
+        patch.object(banner, "get_update_result", return_value=None),
+        patch.object(tools.mcp_tool_discovery, "get_mcp_status", return_value=[lazy_entry]),
+    ):
+        console = Console(record=True, force_terminal=False, color_system=None, width=160)
+        banner.build_welcome_banner(
+            console=console, model="x", cwd="/tmp", tools=[], enabled_toolsets=[],
+        )
+    out = console.export_text()
+
+    assert "playwright" in out
+    assert "3 tool(s)" in out
+    assert "lazy, starts on first use" in out
+    assert "failed" not in out

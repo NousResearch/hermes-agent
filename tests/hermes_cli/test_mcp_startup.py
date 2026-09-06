@@ -266,7 +266,7 @@ def _retry_logger():
     )
 
 
-def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict):
+def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict, status: list | None = None):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",
@@ -284,7 +284,7 @@ def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict):
         "tools.mcp_tool_discovery",
         types.SimpleNamespace(
             discover_mcp_tools=lambda: calls.__setitem__("mcp", calls["mcp"] + 1),
-            get_mcp_status=lambda: [{"connected": connected}],
+            get_mcp_status=lambda: status if status is not None else [{"connected": connected}],
         ),
     )
 
@@ -397,3 +397,86 @@ def test_prepare_agent_startup_installs_server_filter(monkeypatch, _reset_mcp_se
     monkeypatch.setattr(main_mod, "_command_has_dedicated_mcp_startup", lambda args: True)
     main_mod._prepare_agent_startup(_agent_args(toolsets="terminal,code-mcp"))
     assert mcp_startup.get_mcp_server_filter() == ["terminal", "code-mcp"]
+def _recording_logger(warnings: list):
+    return types.SimpleNamespace(
+        debug=lambda *_a, **_k: None,
+        warning=lambda msg, *a, **_k: warnings.append(msg % a if a else msg),
+    )
+
+
+def _join_discovery_thread():
+    thread = mcp_startup._mcp_discovery_thread
+    if thread is not None:
+        thread.join(timeout=5.0)
+
+
+LAZY_STATUS = [{"name": "demo", "connected": False, "status": "lazy", "tools": 3}]
+CONFIGURED_STATUS = [{"name": "demo", "connected": False, "status": "configured", "tools": 0}]
+
+
+def test_discovery_registered_servers_counts_live_and_lazy():
+    assert mcp_startup._discovery_registered_servers([]) is False
+    assert mcp_startup._discovery_registered_servers(None) is False
+    assert mcp_startup._discovery_registered_servers([{"connected": True}]) is True
+    assert mcp_startup._discovery_registered_servers(LAZY_STATUS) is True
+    assert mcp_startup._discovery_registered_servers(CONFIGURED_STATUS) is False
+    assert mcp_startup._discovery_registered_servers([{"status": "failed"}, "junk", None]) is False
+
+
+def test_lazy_only_discovery_is_not_retried(monkeypatch):
+    """A finished run that registered every server lazily is a successful run.
+
+    Before the lazy status, the re-entry check saw no ``connected`` entry and
+    re-spawned the discovery thread on every call (#66981's retry was meant
+    for a run that connected NOTHING, e.g. after startup cancellation).
+    """
+    calls = {"mcp": 0}
+    _install_retry_stubs(monkeypatch, connected=False, calls=calls, status=LAZY_STATUS)
+    mcp_startup._mcp_discovery_started = True
+    mcp_startup._mcp_discovery_thread = None  # previous thread finished
+
+    warnings: list = []
+    mcp_startup.start_background_mcp_discovery(logger=_recording_logger(warnings), thread_name="t")
+
+    assert calls["mcp"] == 0
+    assert mcp_startup._mcp_discovery_thread is None
+    assert warnings == []
+
+
+def test_configured_only_discovery_is_still_retried(monkeypatch):
+    """Control: a run that left every server merely configured is retried."""
+    calls = {"mcp": 0}
+    _install_retry_stubs(monkeypatch, connected=False, calls=calls, status=CONFIGURED_STATUS)
+    mcp_startup._mcp_discovery_started = True
+    mcp_startup._mcp_discovery_thread = None
+
+    warnings: list = []
+    mcp_startup.start_background_mcp_discovery(logger=_recording_logger(warnings), thread_name="t")
+    _join_discovery_thread()
+
+    assert calls["mcp"] == 1
+    assert any("retrying discovery thread" in w for w in warnings)
+
+
+def test_lazy_only_run_does_not_log_zero_connected(monkeypatch):
+    calls = {"mcp": 0}
+    _install_retry_stubs(monkeypatch, connected=False, calls=calls, status=LAZY_STATUS)
+
+    warnings: list = []
+    mcp_startup.start_background_mcp_discovery(logger=_recording_logger(warnings), thread_name="t")
+    _join_discovery_thread()
+
+    assert calls["mcp"] == 1
+    assert not any("zero connected" in w for w in warnings)
+
+
+def test_configured_only_run_still_logs_zero_connected(monkeypatch):
+    calls = {"mcp": 0}
+    _install_retry_stubs(monkeypatch, connected=False, calls=calls, status=CONFIGURED_STATUS)
+
+    warnings: list = []
+    mcp_startup.start_background_mcp_discovery(logger=_recording_logger(warnings), thread_name="t")
+    _join_discovery_thread()
+
+    assert calls["mcp"] == 1
+    assert any("zero connected" in w for w in warnings)

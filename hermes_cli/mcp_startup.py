@@ -60,10 +60,26 @@ def _has_configured_mcp_servers() -> bool:
         return True  # conservative: still try discovery in the background; startup can't block
 
 
+def _discovery_registered_servers(status) -> bool:
+    """True when discovery actually registered something usable.
+
+    A lazily registered server never connects until first use, so counting only
+    ``connected`` makes an ALL-LAZY config — the memory-saving setup the feature exists
+    for — look like a discovery run that achieved nothing, and the retry path then
+    re-runs discovery on every call.
+    """
+    for entry in status or []:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("connected") or entry.get("status") == "lazy":
+            return True
+    return False
+
+
 def _any_mcp_connected() -> bool:
     from tools.mcp_tool_discovery import get_mcp_status
 
-    return any(entry.get("connected") for entry in (get_mcp_status() or []))
+    return _discovery_registered_servers(get_mcp_status() or [])
 
 
 def start_background_mcp_discovery(*, logger, thread_name: str) -> None:

@@ -1461,6 +1461,13 @@ platform_toolsets:
 #     Lower it below the server's session TTL for servers that expire idle
 #     sessions quickly (e.g. Unreal Engine editor MCP, ~15s), otherwise idle
 #     tool calls hit an expired session and pay a slow reconnect. Floored at 5s.
+#   lazy: register the server's tools from the on-disk schema cache at startup
+#     and only spawn/connect it on the first tool call (default: false). Saves
+#     one child process per server in processes that rarely call tools (the
+#     dashboard, a gateway serving many profiles). Needs one prior live connect
+#     to populate the cache; a missing or stale cache entry falls back to the
+#     normal eager connect. `hermes mcp status` / the banner show such a server
+#     as "lazy" with its cached tool count until it is first used.
 #
 # mcp_servers:
 #   time:

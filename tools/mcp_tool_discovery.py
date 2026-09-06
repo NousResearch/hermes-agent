@@ -346,10 +346,12 @@ def _connected_summary(names, *, lazy_tools: int = 0, lazy_servers: int = 0) -> 
 def _log_summary(prefix: str, names, **lazy) -> None:
     """Log ``<prefix> N tool(s) from M server(s) (K failed)`` when anything happened."""
     new_tool_count, connected_count, failed = _connected_summary(names, **lazy)
-    if new_tool_count or failed:
+    if new_tool_count or failed or lazy.get("lazy_servers"):
         summary = f"{prefix} {new_tool_count} tool(s) from {connected_count} server(s)"
         if failed:
             summary += f" ({failed} failed)"
+        if lazy.get("lazy_servers"):
+            summary += f" ({lazy['lazy_servers']} lazy, not spawned yet)"
         logger.info(summary)
 
 
@@ -434,9 +436,19 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[st
             connecting = set(_core._server_connecting)
             new_server_names = [name for name, cfg in servers.items()
                                 if name not in _core._servers and name not in connecting and _enabled(cfg)]
+            prior_lazy = set(_core._lazy_server_configs)
         tool_names = register_mcp_servers(servers)
         if new_server_names:
-            _log_summary("  MCP:", new_server_names)
+            # A lazily registered server never connected, so it must not be counted as failed
+            # (the old summary read "N failed" for a healthy all-lazy config). Reporting it
+            # separately also keeps an already-lazy server from being re-announced on a
+            # repeat discovery.
+            with _core._lock:
+                lazy_now = [n for n in new_server_names if n in _core._lazy_server_configs]
+                newly_lazy = [n for n in lazy_now if n not in prior_lazy]
+                lazy_tools = sum(len(_core._lazy_server_tool_names.get(n, [])) for n in newly_lazy)
+            _log_summary("  MCP:", [n for n in new_server_names if n not in lazy_now],
+                         lazy_tools=lazy_tools, lazy_servers=len(newly_lazy))
         return tool_names
     finally:
         if cookie not in (None, _core._LOCK_UNAVAILABLE):
@@ -455,7 +467,11 @@ def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
 
 def get_mcp_status() -> List[dict]:
     """Per-server status dicts for banner/TUI: name, transport, tools, connected, disabled,
-    status (connected / disabled / connecting / failed / configured) and error for failed."""
+    status (connected / disabled / connecting / failed / lazy / configured) and error for failed.
+
+    ``lazy`` is a registered-but-not-spawned server: its tools are known and callable, the
+    process starts on first use. Reporting it as ``configured`` (never registered) or
+    ``failed`` (registration broke) both misread a working setup."""
     configured = _config._load_mcp_config()
     if not configured:
         return []
@@ -463,14 +479,21 @@ def get_mcp_status() -> List[dict]:
         active_servers = dict(_core._servers)
         connecting = set(_core._server_connecting)
         connect_errors = dict(_core._server_connect_errors)
+        # A stale _lazy_server_tool_names entry with no surviving _lazy_server_configs entry
+        # is NOT lazy any more, so gate on the configs dict.
+        lazy_tool_names = {n: list(v) for n, v in _core._lazy_server_tool_names.items()
+                           if n in _core._lazy_server_configs}
 
     result: List[dict] = []
     for name, cfg in configured.items():
         enabled = _enabled(cfg)  # evaluated unconditionally: malformed values warn even when connected
         server = active_servers.get(name)
         live = server is not None and server.session is not None
+        # An in-flight or failed first-use connect outranks "lazy": that server is no longer
+        # merely waiting to be spawned.
         status = ("connected" if live else "disabled" if not enabled else "connecting" if name in connecting
-                  else "failed" if name in connect_errors else "configured")
+                  else "failed" if name in connect_errors else "lazy" if name in lazy_tool_names
+                  else "configured")
         entry = {"name": name, "transport": cfg.get("transport", "http") if "url" in cfg else "stdio",
                  "tools": 0, "connected": False, "disabled": status == "disabled", "status": status}
         if live:
@@ -481,6 +504,8 @@ def get_mcp_status() -> List[dict]:
                 entry["sampling"] = dict(server._sampling.metrics)
         elif status == "failed":
             entry["error"] = connect_errors[name]
+        elif status == "lazy":
+            entry["tools"] = len(lazy_tool_names[name])
         result.append(entry)
     return result
 

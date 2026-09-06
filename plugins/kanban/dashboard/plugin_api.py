@@ -730,13 +730,18 @@ def _parents_blocking_ready(conn: sqlite3.Connection, task_id: str) -> list:
 def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) -> bool:
     """Direct status write for drag-drop moves without a structured verb (todo<->ready,
     running<->ready) + a ``status`` event. Leaving ``running`` closes the run as 'reclaimed'
-    so attempt history isn't orphaned; the worker is killed only AFTER the txn commits."""
-    terminations: list[tuple[Optional[int], Optional[str], Optional[int]]] = []
+    so attempt history isn't orphaned; the worker is killed only AFTER the txn commits.
+
+    Each termination carries the claim's PID namespace and the spawn-time
+    fingerprint as well as its lock: the dashboard often runs in a different
+    container from the worker, and there the recorded ``worker_pid`` is a
+    different process (see ``kanban_db_pidns._claim_pid_checkable``)."""
+    terminations: list[tuple[Optional[int], Optional[str], Optional[str], Optional[int]]] = []
     effective_status = new_status
     with kanban_db.write_txn(conn):
         prev = conn.execute(
-            "SELECT status, current_run_id, worker_pid, claim_lock, worker_started_at FROM tasks WHERE id = ?",
-            (task_id,)).fetchone()
+            "SELECT status, current_run_id, worker_pid, claim_lock, claim_pidns, worker_started_at "
+            "FROM tasks WHERE id = ?", (task_id,)).fetchone()
         if prev is None:
             return False
         if prev["status"] == "running" and new_status == "ready":
@@ -753,9 +758,10 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
             "UPDATE tasks SET status = ?, "
             "  claim_lock = CASE WHEN ? = 'running' THEN claim_lock ELSE NULL END, "
             "  claim_expires = CASE WHEN ? = 'running' THEN claim_expires ELSE NULL END, "
-            "  worker_pid = CASE WHEN ? = 'running' THEN worker_pid ELSE NULL END "
+            "  worker_pid = CASE WHEN ? = 'running' THEN worker_pid ELSE NULL END, "
+            "  claim_pidns = CASE WHEN ? = 'running' THEN claim_pidns ELSE NULL END "
             "WHERE id = ?",
-            (effective_status,) * 4 + (task_id,))
+            (effective_status,) * 5 + (task_id,))
         if cur.rowcount != 1:
             return False
         run_id = None
@@ -763,7 +769,7 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
             run_id = kanban_db._end_run(
                 conn, task_id, outcome="reclaimed", status="reclaimed",
                 summary=f"status changed to {effective_status} (dashboard/direct)")
-            terminations.append((prev["worker_pid"], prev["claim_lock"], prev["worker_started_at"]))
+            terminations.append((prev["worker_pid"], prev["claim_lock"], prev["claim_pidns"], prev["worker_started_at"]))
         conn.execute(
             "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) VALUES (?, ?, 'status', ?, ?)",
             (task_id, run_id, json.dumps({"status": effective_status, "requested_status": new_status}), int(time.time())))
@@ -772,8 +778,9 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
             # back worker terminations to perform post-commit.
             result = kanban_db.invalidate_descendants_for_parent_reopen(conn, task_id, author="dashboard")
             terminations.extend(result["terminations"])
-    for pid, claim_lock, started_at in terminations:
-        kanban_db._terminate_reclaimed_worker(pid, claim_lock, started_at=started_at)
+    for pid, claim_lock, claim_pidns, started_at in terminations:
+        kanban_db._terminate_reclaimed_worker(
+            pid, claim_lock, claim_pidns=claim_pidns, started_at=started_at)
     # Re-opening something may have made children stale.
     if effective_status in {"done", "ready", "review"}:
         kanban_db.recompute_ready(conn)

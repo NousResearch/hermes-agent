@@ -1213,6 +1213,14 @@ def _emit_compression_attempt_telemetry(
         logger.info(
             "context compression attempt telemetry: %s", json.dumps(payload, sort_keys=True, separators=(",", ":"))
         )
+        # Durable audit counterpart (#104099): same content-free payload, persisted as the
+        # attempt's terminal ``end`` bracket. Best-effort; never raises into the caller.
+        from agent.compaction_audit import record_compaction_event
+
+        record_compaction_event(
+            getattr(agent, "_session_db", None), str(payload.get("session_id") or "") or None,
+            str(payload.get("attempt_id") or ""), "end", payload,
+        )
 
 
 def _existing_system_prompt(agent: Any, system_message: str) -> str:
@@ -3565,6 +3573,13 @@ def compress_context(
     session state after its caller has moved on.
     """
     attempt = _begin_compression_attempt(agent, force=force, defer_notification=defer_context_engine_notification)
+    from agent.compaction_audit import record_compaction_event
+
+    def _audit(event: str, payload: Optional[dict] = None) -> None:
+        record_compaction_event(
+            getattr(agent, "_session_db", None), getattr(agent, "session_id", None),
+            getattr(agent, "_compression_attempt_id", "") or str(attempt.generation), event, payload,
+        )
 
     # Codex owns the real thread; route compaction to its own compact (config
     # compression.codex_app_server_auto). Memory handoff is Hermes-only: no native
@@ -3608,6 +3623,11 @@ def compress_context(
     # Publish the holder-qualified release hook before a timeout can win the
     # fence. If no durable lock was acquired there is no hook to publish.
     lease.finish_lock_setup()
+    _audit("start", {
+        "message_count": _pre_msg_count, "approx_tokens": approx_tokens,
+        "trigger": "manual" if force else "auto", "in_place": in_place,
+        "model": getattr(agent, "model", None), "provider": getattr(agent, "provider", None),
+    })
     _adopted = _adopt_if_parent_rotated(agent, lease, messages, system_message)
     if _adopted is not None:
         return _adopted

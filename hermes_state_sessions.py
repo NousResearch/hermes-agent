@@ -601,6 +601,38 @@ class SessionSessionsMixin:
             ("", ActivityProvenance.UNKNOWN.value, session_id), patience_s=self._ACTIVITY_WRITE_PATIENCE_S,
         )
 
+    def append_compaction_event(
+        self, session_id: str, attempt_id: str, event: str, at: float, payload_json: str = "{}",
+    ) -> None:
+        """Append one durable compaction audit row (#104099).
+
+        Observation-only, written from the compression path under its lease; short patience so a
+        contended store degrades to a missing audit row rather than delaying compaction.
+        """
+        if not session_id or not attempt_id:
+            return
+        self._write_sql(
+            "INSERT INTO compaction_events (session_id, attempt_id, event, at, payload_json) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (session_id, attempt_id, event, float(at), payload_json or "{}"),
+            patience_s=self._ACTIVITY_WRITE_PATIENCE_S,
+        )
+
+    def find_orphaned_compaction_starts(self, session_id: Optional[str] = None) -> list[dict]:
+        """``start`` events whose attempt never settled (crash/timeout mid-compression)."""
+        sql = (
+            "SELECT ce.session_id, ce.attempt_id, ce.at, ce.payload_json FROM compaction_events ce "
+            "WHERE ce.event = 'start' AND (:sid IS NULL OR ce.session_id = :sid) AND NOT EXISTS ("
+            "  SELECT 1 FROM compaction_events e2 WHERE e2.attempt_id = ce.attempt_id "
+            "  AND e2.session_id = ce.session_id AND e2.event = 'end'"
+            ") ORDER BY ce.at DESC"
+        )
+        rows = self._read_all(sql, {"sid": session_id}) if hasattr(self, "_read_all") else []
+        return [
+            {"session_id": r[0], "attempt_id": r[1], "at": r[2], "payload": json.loads(r[3] or "{}")}
+            for r in rows
+        ]
+
     def update_session_meta(
         self, session_id: str, model_config_json: str, model: Optional[str] = None,
     ) -> None:

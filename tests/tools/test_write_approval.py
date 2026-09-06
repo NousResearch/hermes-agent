@@ -303,7 +303,8 @@ def test_single_query_memory_stages_without_inline_prompt(
         return "once"
 
     set_approval_callback(approve_if_prompted)
-    store = MemoryStore(); store.load_from_disk()
+    store = MemoryStore()
+    store.load_from_disk()
 
     r = json.loads(memory_tool("add", "memory", "headless fact", store=store))
 

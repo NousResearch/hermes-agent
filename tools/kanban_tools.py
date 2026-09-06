@@ -657,7 +657,14 @@ def _run_capture(args: list[str], cwd: str) -> tuple[int, str]:
         return 127, f"gate command not found: {args[0]}"
 
 
-_BASE_REF_CANDIDATES = ("origin/main", "main", "master", "HEAD~1")
+# Prefer the local integration branch before its remote-tracking ref: a
+# worktree card is forked from local `main`, and a stale `origin/main`
+# (way behind local main) would make the three-dot diff sweep in every
+# commit since origin/main — turning the focused-tests rung into a full
+# suite run (t_7ebab48e: 13 unrelated pre-existing backend baseline
+# failures bounced a frontend-only card).  Local `main` is the true fork
+# point whenever it shares an ancestor with HEAD.
+_BASE_REF_CANDIDATES = ("main", "master", "origin/main", "HEAD~1")
 
 
 def _resolve_base_ref(worktree_root: str) -> Optional[str]:

@@ -2051,6 +2051,18 @@ DEFAULT_CONFIG = {
             "max_messages": 10,
         },
     },
+    "profiles": {  # Profile creation defaults.
+        # Where a NEW profile's gateway will be supervised. "auto" = follow the gateway serving
+        # the active profile (a containerized one means the container's supervisor owns the new
+        # profile too); "container" = the container's supervisor; "native" = this machine's
+        # service manager. "auto" reads the runtime_kind the serving gateway stamps into its
+        # gateway_state.json, so it resolves to "native" wherever nothing containerized is
+        # running — which is today's behaviour for every plain host install.
+        "runtime": "auto",
+        # Container name used ONLY to render the exact `docker exec <name> ...` hand-off command
+        # after creating a containerized profile. Never shelled out to and never inspected.
+        "container_name": "hermes",
+    },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
         "unmanaged_idle_exit_seconds": 600,  # client-auto-started gateway only; 0 disables
         # Seconds a SIGTERM-interrupted agent unwinds before teardown (short: service stop budgets).

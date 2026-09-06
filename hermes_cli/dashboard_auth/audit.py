@@ -23,6 +23,7 @@ _REDACTED_FIELDS: frozenset = frozenset({
 
 class AuditEvent(enum.Enum):
     """Event types; values are the literal ``event`` field on the JSON line."""
+    DASHBOARD_MUTATION = "dashboard_mutation"
     LOGIN_START = "login_start"
     LOGIN_SUCCESS = "login_success"
     LOGIN_FAILURE = "login_failure"

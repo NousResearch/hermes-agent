@@ -1279,7 +1279,7 @@ class TestWebServerEndpoints:
         _web_server_gateway._ACTION_PROCS.pop("hermes-update", None)
         _web_server_gateway._ACTION_RESULTS.pop("hermes-update", None)
 
-        resp = self.client.post("/api/hermes/update")
+        resp = self.client.post("/api/hermes/update", json={"confirmation": "UPDATE", "idempotency_key": "confirmed-update-test-123"})
 
         assert resp.status_code == 200
         data = resp.json()
@@ -1320,7 +1320,7 @@ class TestWebServerEndpoints:
         _web_server_gateway._ACTION_PROCS.pop("hermes-update", None)
         _web_server_gateway._ACTION_RESULTS.pop("hermes-update", None)
 
-        resp = self.client.post("/api/hermes/update")
+        resp = self.client.post("/api/hermes/update", json={"confirmation": "UPDATE", "idempotency_key": "confirmed-update-test-123"})
 
         assert resp.status_code == 200
         data = resp.json()
@@ -1387,7 +1387,7 @@ class TestWebServerEndpoints:
         _web_server_gateway._ACTION_PROCS.pop("hermes-update", None)
         _web_server_gateway._ACTION_RESULTS.pop("hermes-update", None)
 
-        resp = self.client.post("/api/hermes/update")
+        resp = self.client.post("/api/hermes/update", json={"confirmation": "UPDATE", "idempotency_key": "confirmed-update-test-123"})
 
         assert resp.status_code == 200
         assert resp.json() == {
@@ -1420,7 +1420,7 @@ class TestWebServerEndpoints:
         _web_server_gateway._ACTION_IDS["hermes-update"] = "b" * 32
 
         try:
-            resp = self.client.post("/api/hermes/update")
+            resp = self.client.post("/api/hermes/update", json={"confirmation": "UPDATE", "idempotency_key": "confirmed-update-test-123"})
         finally:
             _web_server_gateway._ACTION_PROCS.pop("hermes-update", None)
             _web_server_gateway._ACTION_IDS.pop("hermes-update", None)

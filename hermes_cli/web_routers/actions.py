@@ -10,12 +10,14 @@ import logging
 import re
 import secrets
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 
+from hermes_cli.dashboard_mutations import SERVICE_MUTATION_CONFIRMATIONS, ServiceMutation, validate_service_mutation
 from hermes_cli import __version__
 from hermes_cli.config import format_docker_update_message, recommended_update_command_for_method
 from hermes_cli.web_deps import LateState, late
@@ -36,6 +38,59 @@ _ACTION_COMMANDS = LateState("_ACTION_COMMANDS", "hermes_cli.web_server_gateway"
 _ACTION_IDS = LateState("_ACTION_IDS", "hermes_cli.web_server_gateway")
 _ACTION_PROCS = LateState("_ACTION_PROCS", "hermes_cli.web_server_gateway")
 _ACTION_RESULTS = LateState("_ACTION_RESULTS", "hermes_cli.web_server_gateway")
+
+# Only live actions retain a key; this is process-local retry coalescing, not
+# a durable receipt store. The existing restart cooldown also applies after exit.
+_SERVICE_MUTATION_INTENTS: dict[str, tuple[str, str]] = {}
+_SERVICE_MUTATION_LOCK = threading.RLock()
+
+
+def _audit_service_mutation(request: Request, action: str, target: str, result: str) -> None:
+    from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
+
+    session = getattr(request.state, "session", None)
+    principal = getattr(request.state, "token_principal", None)
+    actor = "local-dashboard"
+    if session is not None:
+        actor = str(getattr(session, "user_id", None) or getattr(session, "email", "user"))
+    elif principal is not None:
+        actor = str(getattr(principal, "principal", "service"))
+    audit_log(AuditEvent.DASHBOARD_MUTATION, actor=actor, action=action, target=target, result=result)
+
+
+async def _service_mutation_request(request: Request, action: str, target: str) -> ServiceMutation:
+    try:
+        body = await request.json()
+        return validate_service_mutation(action, body)
+    except ValueError as exc:
+        _audit_service_mutation(request, action, target, "rejected")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@contextlib.contextmanager
+def _guard_service_mutation(request: Request, mutation: ServiceMutation, target: str):
+    # Check and spawn without yielding, including when called from worker threads.
+    with _SERVICE_MUTATION_LOCK:
+        try:
+            for action in SERVICE_MUTATION_CONFIRMATIONS:
+                proc = _ACTION_PROCS.get(action)
+                if proc is None or proc.poll() is not None:
+                    _SERVICE_MUTATION_INTENTS.pop(action, None)
+                    continue
+                if action != mutation.action or _SERVICE_MUTATION_INTENTS.get(action) != (target, mutation.idempotency_key):
+                    raise HTTPException(status_code=409, detail=f"{action} is already in progress")
+            yield
+        except Exception as exc:
+            result = "conflict" if isinstance(exc, HTTPException) and exc.status_code == 409 else "failed"
+            _audit_service_mutation(request, mutation.action, target, result)
+            raise
+
+
+def _service_mutation_result(request: Request, mutation: ServiceMutation, target: str, result: str, response: dict):
+    if result in {"started", "reused"}:
+        _SERVICE_MUTATION_INTENTS[mutation.action] = (target, mutation.idempotency_key)
+    _audit_service_mutation(request, mutation.action, target, result)
+    return response
 
 
 def _server_path(name: str) -> Path:
@@ -64,6 +119,7 @@ _UPDATE_REFUSAL_ERROR_CODES = {
 
 def _finish_action(name: str, exit_code: Optional[int], pid: Optional[int]) -> None:
     """Record a terminal result and drop the live-process registries for ``name``."""
+    _SERVICE_MUTATION_INTENTS.pop(name, None)
     _ACTION_RESULTS[name] = {"exit_code": exit_code, "pid": pid}
     for registry in (_ACTION_PROCS, _ACTION_COMMANDS, _ACTION_IDS):
         registry.pop(name, None)
@@ -136,11 +192,17 @@ def _durable_completed_update_action_id(lines: List[str]) -> Optional[str]:
 
 
 @router.post("/api/gateway/restart")
-async def restart_gateway(profile: Optional[str] = None):
-    """Kick off a ``hermes gateway restart`` in the background."""
-    with http_failure("Failed to spawn gateway restart", 500, "Failed to restart gateway"):
-        proc, _reused = _spawn_gateway_restart(profile)
-    return {"ok": True, "pid": proc.pid, "name": "gateway-restart"}
+async def restart_gateway(request: Request, profile: Optional[str] = None):
+    """Start a restart with exact RESTART confirmation and an idempotency key."""
+    target = profile or "default"
+    mutation = await _service_mutation_request(request, "gateway-restart", target)
+    with _guard_service_mutation(request, mutation, target):
+        with http_failure("Failed to spawn gateway restart", 500, "Failed to restart gateway"):
+            proc, reused = _spawn_gateway_restart(profile)
+        return _service_mutation_result(
+            request, mutation, target, "reused" if reused else "started",
+            {"ok": True, "pid": proc.pid, "name": "gateway-restart", "already_running": reused},
+        )
 
 
 @router.get("/api/gateway/migrate/plan")
@@ -216,37 +278,42 @@ def _update_refused(error: str, message: str, update_command: str) -> Dict[str, 
 
 
 @router.post("/api/hermes/update")
-async def update_hermes():
-    """Kick off ``hermes update`` in the background."""
-    if _dashboard_local_update_managed_externally():
-        message = _MANAGED_EXTERNALLY_MESSAGE + " The built-in local updater is disabled here."
-        return _update_refused("dashboard_update_managed_externally", message, "managed outside dashboard")
+async def update_hermes(request: Request):
+    """Start an update with exact UPDATE confirmation and an idempotency key."""
+    target = "installation"
+    mutation = await _service_mutation_request(request, "hermes-update", target)
+    with _guard_service_mutation(request, mutation, target):
+        existing = _ACTION_PROCS.get("hermes-update")
+        if existing is not None and existing.poll() is None:
+            response = {"ok": True, "pid": existing.pid, "name": "hermes-update", "already_running": True}
+            action_id = _ACTION_IDS.get("hermes-update")
+            if action_id:
+                response["action_id"] = action_id
+            return _service_mutation_result(request, mutation, target, "reused", response)
 
-    # Shared admission gate: marker-first, then the docker/nix/apt heuristics —
-    # one decision with the CLI paths.
-    from hermes_cli.update_contract import evaluate_update_admission, record_refusal_receipt
+        if _dashboard_local_update_managed_externally():
+            message = _MANAGED_EXTERNALLY_MESSAGE + " The built-in local updater is disabled here."
+            response = _update_refused("dashboard_update_managed_externally", message, "managed outside dashboard")
+            return _service_mutation_result(request, mutation, target, "unsupported", response)
 
-    refusal = evaluate_update_admission(_server_path("PROJECT_ROOT"))
-    if refusal is not None:
-        response = _update_refused(
-            _UPDATE_REFUSAL_ERROR_CODES.get(refusal.code, "update_not_in_place"), refusal.message, refusal.update_command,
+        # Keep the same marker-first admission policy as the CLI updater.
+        from hermes_cli.update_contract import evaluate_update_admission, record_refusal_receipt
+
+        refusal = evaluate_update_admission(_server_path("PROJECT_ROOT"))
+        if refusal is not None:
+            response = _update_refused(
+                _UPDATE_REFUSAL_ERROR_CODES.get(refusal.code, "update_not_in_place"), refusal.message, refusal.update_command,
+            )
+            record_refusal_receipt(refusal)
+            return _service_mutation_result(request, mutation, target, "unsupported", response)
+
+        action_id = secrets.token_hex(16)
+        with http_failure("Failed to spawn hermes update", 500, "Failed to start update"):
+            proc = _spawn_hermes_action(["update"], "hermes-update", env_overrides={"HERMES_ACTION_ID": action_id})
+        return _service_mutation_result(
+            request, mutation, target, "started",
+            {"ok": True, "pid": proc.pid, "name": "hermes-update", "action_id": action_id},
         )
-        record_refusal_receipt(refusal)
-        return response
-
-    existing = _ACTION_PROCS.get("hermes-update")
-    if existing is not None and existing.poll() is None:
-        response = {"ok": True, "pid": existing.pid, "name": "hermes-update", "already_running": True}
-        action_id = _ACTION_IDS.get("hermes-update")
-        if action_id:
-            response["action_id"] = action_id
-        return response
-
-    action_id = secrets.token_hex(16)
-    with http_failure("Failed to spawn hermes update", 500, "Failed to start update"):
-        proc = _spawn_hermes_action(["update"], "hermes-update", env_overrides={"HERMES_ACTION_ID": action_id})
-    return {"ok": True, "pid": proc.pid, "name": "hermes-update", "action_id": action_id}
-
 
 _NON_APPLYABLE_MESSAGES = {
     "docker": format_docker_update_message,

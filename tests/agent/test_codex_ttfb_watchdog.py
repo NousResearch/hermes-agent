@@ -376,6 +376,62 @@ def test_wait_notice_formatting_error_does_not_abort_request(monkeypatch):
 
 
 
+def _clear_ttfb_env(monkeypatch):
+    for name in (
+        "HERMES_CODEX_TTFB_TIMEOUT_SECONDS",
+        "HERMES_CODEX_TTFB_MAX_SECONDS",
+        "HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS",
+        "HERMES_CODEX_TTFB_STRICT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_large_request_keeps_scaled_ttfb_instead_of_recapping(tmp_path, monkeypatch):
+    """#91621 regression: with no TTFB env overrides, a >100k-token openai-codex
+    request scales the no-byte cutoff up to the 180s idle default — the cap must
+    not immediately claw it back to 120s and kill a healthy prefill."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    _clear_ttfb_env(monkeypatch)
+
+    huge_input = "x" * 440_000  # ~110k estimated tokens → largest idle bucket
+    wd = h._resolve_nonstream_watchdogs(agent, {"model": "gpt-5.5", "input": huge_input})
+
+    assert wd.est_tokens > 100_000, f"fixture too small: ~{wd.est_tokens} tokens"
+    assert wd.ttfb_enabled
+    assert wd.ttfb_timeout == 180.0, f"scale-up nullified by the cap: {wd.ttfb_timeout}"
+
+
+def test_explicit_ttfb_max_seconds_still_caps(tmp_path, monkeypatch):
+    """An explicit HERMES_CODEX_TTFB_MAX_SECONDS override still bounds the
+    scaled cutoff."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    _clear_ttfb_env(monkeypatch)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_MAX_SECONDS", "90")
+
+    huge_input = "x" * 440_000
+    wd = h._resolve_nonstream_watchdogs(agent, {"model": "gpt-5.5", "input": huge_input})
+
+    assert wd.ttfb_timeout == 90.0, f"explicit cap ignored: {wd.ttfb_timeout}"
+
+
+def test_ttfb_strict_keeps_the_small_cutoff(tmp_path, monkeypatch):
+    """HERMES_CODEX_TTFB_STRICT=1 opts out of the size-based scale-up."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    _clear_ttfb_env(monkeypatch)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_STRICT", "1")
+
+    huge_input = "x" * 440_000
+    wd = h._resolve_nonstream_watchdogs(agent, {"model": "gpt-5.5", "input": huge_input})
+
+    assert wd.ttfb_timeout == 120.0, f"strict mode scaled anyway: {wd.ttfb_timeout}"
+
+
 def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkeypatch):
     """#64507 regression: a large Codex request (TTFB watchdog disabled by the
     size gate, stale floor *raised*) that never emits a single byte must still

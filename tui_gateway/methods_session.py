@@ -893,12 +893,15 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict, session: dict) -> dict:
     """Attach the frontend to a live TUI session without closing the previously focused one."""
     sid = str(params.get("session_id") or "")
+    # Only the rebind is atomic with grace expiry; the payload (a DB history read unless
+    # ``omit_messages``) must not hold the process-wide resume lock.
     with _session_resume_lock:
         if (refusal := _reattach_refusal(rid, sid, session)) is not None:
             return refusal
-        return _ok(rid, _live_session_payload(
-            sid, session, touch=True, transport=current_transport() or _stdio_transport,
-            omit_messages=is_truthy_value(params.get("omit_messages", False))))
+        with session["history_lock"]:
+            _rebind_live_transport(sid, session, current_transport() or _stdio_transport)
+    return _ok(rid, _live_session_payload(
+        sid, session, touch=True, omit_messages=is_truthy_value(params.get("omit_messages", False))))
 
 
 @method("session.delete")

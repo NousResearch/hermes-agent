@@ -2686,6 +2686,17 @@ def _live_visible_history(session: dict, db, in_memory_fallback: list[dict]) -> 
     return in_memory_fallback
 
 
+def _rebind_live_transport(sid: str, session: dict, transport: Transport) -> None:
+    """Point a live session at ``transport`` (caller holds ``history_lock``)."""
+    session["transport"] = transport
+    # Every transport that showed this session (pop-outs resume the same sid); on disconnect the last
+    # viewer becomes the transport instead of the drop sentinel.
+    session.setdefault("viewers", {})[transport] = time.time()
+    # See #83716.
+    if transport is not _detached_ws_transport:
+        _cancel_ws_orphan_reap(sid)  # the client is back — a pending ws-orphan reap must not fire
+
+
 def _live_session_payload(
     sid: str, session: dict, *, cols: int | None = None, touch: bool = False,
     transport: Transport | None = None, omit_messages: bool = False) -> dict:
@@ -2693,13 +2704,7 @@ def _live_session_payload(
         if cols is not None:
             session["cols"] = cols
         if transport is not None:
-            session["transport"] = transport
-            # Every transport that showed this session (pop-outs resume the same sid); on disconnect the last
-            # viewer becomes the transport instead of the drop sentinel.
-            session.setdefault("viewers", {})[transport] = time.time()
-            # See #83716.
-            if transport is not _detached_ws_transport:
-                _cancel_ws_orphan_reap(sid)  # the client is back — a pending ws-orphan reap must not fire
+            _rebind_live_transport(sid, session, transport)
         if touch:
             # #84417: do not re-fire the live turn's original user text from a stale server-queue
             # self-duplicate after settle.

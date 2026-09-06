@@ -170,7 +170,10 @@ if _TEST_BOUNDARY == "macos-sandbox-exec":
         import errno
 
         libc = ctypes.CDLL(None, use_errno=True)
-        if libc.kill(os.getpid(), 0) != -1 or ctypes.get_errno() != errno.EPERM:
+        parent_pid = int(os.environ["HERMES_TEST_SANDBOX_PARENT_PID"])
+        if parent_pid <= 1 or parent_pid == os.getpid():
+            raise RuntimeError("invalid out-of-sandbox attestation PID")
+        if libc.kill(parent_pid, 0) != -1 or ctypes.get_errno() != errno.EPERM:
             raise RuntimeError("Seatbelt signal denial is not active")
     except Exception as exc:
         pytest.exit(f"Hermes macOS sandbox attestation failed: {exc}", returncode=3)

@@ -345,6 +345,11 @@ def _sandboxed_test_command(
                 "unsandboxed test process"
             )
         env["HERMES_TEST_OS_SANDBOX"] = "macos-sandbox-exec"
+        # Seatbelt intentionally permits a sandboxed process to signal
+        # itself, so self-targeted kill(2) cannot attest this boundary. The
+        # runner PID is outside the sandbox and remains alive through child
+        # collection; a signal-0 probe against it must fail with EPERM.
+        env["HERMES_TEST_SANDBOX_PARENT_PID"] = str(os.getpid())
         rules = [
             "(version 1)",
             "(allow default)",

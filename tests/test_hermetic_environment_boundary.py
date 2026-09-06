@@ -456,7 +456,10 @@ def test_macos_kernel_blocks_signal_syscall_and_launchctl_copy(tmp_path):
     import errno
 
     libc = ctypes.CDLL(None, use_errno=True)
-    assert libc.kill(os.getpid(), 0) == -1
+    parent_pid = int(os.environ["HERMES_TEST_SANDBOX_PARENT_PID"])
+    assert parent_pid > 1
+    assert parent_pid != os.getpid()
+    assert libc.kill(parent_pid, 0) == -1
     assert ctypes.get_errno() == errno.EPERM
 
     launchctl = shutil.which("launchctl")

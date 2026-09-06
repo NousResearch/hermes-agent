@@ -56,7 +56,7 @@ def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> Dict[str, Any]:
     "files": [...]}`` of what was stripped. Never raises: a clone must not fail because hygiene
     could not run — the caller logs the summary.
     """
-    from hermes_cli.auth import _save_auth_store
+    from hermes_cli.auth import _same_path, _save_auth_store
     stripped: Dict[str, Any] = {"pool": [], "providers": [], "files": []}
     profile_dir = Path(profile_dir)
     for name in SINGLE_USE_OAUTH_SINGLETON_FILES:
@@ -69,6 +69,22 @@ def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> Dict[str, Any]:
             logger.debug("Could not remove cloned %s from %s", name, profile_dir, exc_info=True)
     auth_path = profile_dir / "auth.json"
     if not auth_path.is_file():
+        return stripped
+    try:
+        from hermes_constants import get_default_hermes_root
+        root_auth_path = get_default_hermes_root() / "auth.json"
+        if _same_path(auth_path, root_auth_path):
+            return stripped
+        try:
+            root_auth_path.stat()
+        except FileNotFoundError:
+            pass  # A missing root store cannot be the existing profile file.
+        else:
+            if auth_path.samefile(root_auth_path):
+                return stripped
+    except Exception:
+        # Fail closed: an unresolved root or transient stat failure must not turn an aliased
+        # shared store into a credential-deletion target.
         return stripped
     try:
         store = json.loads(auth_path.read_text(encoding="utf-8-sig"))
@@ -106,7 +122,9 @@ def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> Dict[str, Any]:
     if not changed:
         return stripped
     try:
-        _save_auth_store(store, target_path=auth_path)
+        # Replace the profile entry itself: following a symlink introduced after the identity
+        # check could erase the shared root store.
+        _save_auth_store(store, target_path=auth_path, preserve_symlinks=False)
     except Exception:
         logger.debug(
             "Failed to strip cloned single-use OAuth grants from %s", auth_path, exc_info=True)

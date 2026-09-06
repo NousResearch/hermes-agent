@@ -49,6 +49,34 @@ def _get_event_state(app: "FastAPI"):
 
 
 _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_PTY_EPOCH_RE = re.compile(r"[0-9a-f]{32}")
+_PTY_MAX_CLIENT_OFFSET = (1 << 53) - 1
+
+
+def _parse_pty_replay_cursor(ws: WebSocket) -> tuple[Optional[str], Optional[int]]:
+    """Parse the optional all-or-nothing PTY replay cursor (epoch + offset)."""
+    epochs = ws.query_params.getlist("epoch")
+    offsets = ws.query_params.getlist("offset")
+    if len(epochs) > 1 or len(offsets) > 1:
+        raise ValueError("duplicate epoch or offset")
+
+    raw_epoch = epochs[0] if epochs else None
+    raw_offset = offsets[0] if offsets else None
+    if raw_epoch is None and raw_offset is None:
+        return None, None
+    if raw_epoch is None or raw_offset is None:
+        raise ValueError("epoch and offset must be provided together")
+    if not (ws.query_params.get("attach") or "").strip():
+        raise ValueError("epoch and offset require an attach token")
+    if _PTY_EPOCH_RE.fullmatch(raw_epoch) is None:
+        raise ValueError("epoch must be 32 lowercase hexadecimal characters")
+    if re.fullmatch(r"0|[1-9][0-9]*", raw_offset) is None:
+        raise ValueError("offset must be a canonical non-negative integer")
+
+    offset = int(raw_offset)
+    if offset > _PTY_MAX_CLIENT_OFFSET:
+        raise ValueError("offset exceeds the JavaScript safe-integer range")
+    return raw_epoch, offset
 
 
 def _ws_auth_mode() -> str:
@@ -408,6 +436,12 @@ async def pty_ws(ws: WebSocket) -> None:
     if gate is None:
         return
     peer, mode, cred = gate
+    try:
+        client_epoch, client_offset = _parse_pty_replay_cursor(ws)
+    except ValueError as exc:
+        _log.warning("pty refused: invalid replay cursor peer=%s error=%s", peer, exc)
+        await ws.close(code=4400, reason=_ws_close_reason(f"invalid replay cursor: {exc}"))
+        return
     await ws.accept()
     _log.info("pty accepted peer=%s mode=%s cred=%s", peer, mode, cred)
 
@@ -493,7 +527,12 @@ async def pty_ws(ws: WebSocket) -> None:
 
     # A fresh xterm can't rebuild the TUI from an arbitrary tail of alternate-
     # screen differential output; reused PTYs emit a full frame after replay.
-    if not await session.attach(ws, force_redraw=not _created):
+    if not await session.attach(
+        ws,
+        client_offset=client_offset,
+        client_epoch=client_epoch,
+        force_redraw=not _created,
+    ):
         await _close_stalled_pty_input(ws, path="keepalive-redraw")
         PTY_REGISTRY.detach(attach_token, ws)
         return

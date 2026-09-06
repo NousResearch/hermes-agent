@@ -134,6 +134,14 @@ class TurnFacadeMixin:
                     # the interrupt clear itself waits for the thread join in the outer finally.
                     if lease is not None:
                         lease.stop_refresher()
+            # Mandatory owner-facing stop boundary: no public turn may escape without
+            # exactly one canonical terminal outcome. Internal child/tool turns remain
+            # structured data and are excluded by the adapter.
+            from agent.terminal_boundary import enforce_public_terminal_response
+            result = enforce_public_terminal_response(
+                result if isinstance(result, dict) else {},
+                platform=task_context["platform"],
+            )
             terminal = result if isinstance(result, dict) else {}
             relay_outcome = (
                 "cancelled" if terminal.get("interrupted") is True
@@ -159,6 +167,17 @@ class TurnFacadeMixin:
             if task_started and not task_finished:
                 task_finished = True
                 finish_task_run(**task_context, error=exc)
+            if (
+                task_context["platform"] not in {"subagent", "internal", "tool"}
+                and not isinstance(exc, (KeyboardInterrupt, InterruptedError, SystemExit))
+                and type(exc).__name__ != "CancelledError"
+            ):
+                # An owner-facing runtime failure must not escape as ordinary prose.
+                from agent.terminal_boundary import enforce_public_terminal_response
+                return enforce_public_terminal_response(
+                    {"failed": True, "completed": False, "error": str(exc)},
+                    platform=task_context["platform"],
+                )
             raise
         finally:
             try:

@@ -624,9 +624,12 @@ class WebhookAdapter(BasePlatformAdapter):
             return headers.get(name, "") or headers.get(name.lower(), "") or headers.get(name.upper(), "")
 
         # Svix / AgentMail: signed content is "{id}.{timestamp}.{raw_body}". Standard Webhooks
-        # (webhook-*; GitLab signing tokens) is the same scheme under other header names.
+        # (webhook-*; GitLab signing tokens) is the same scheme under other header names, but GitLab
+        # sends webhook-id/webhook-timestamp on EVERY delivery and webhook-signature only when a signing
+        # token is configured, so only the signature header commits to this path — a legacy
+        # X-Gitlab-Token install must keep validating below (#47451, #101837).
         svix = [_header(name) for name in ("svix-id", "svix-timestamp", "svix-signature")]
-        if not any(svix):
+        if not any(svix) and _header("webhook-signature"):
             svix = [_header(name) for name in ("webhook-id", "webhook-timestamp", "webhook-signature")]
         if any(svix):
             return _validate_svix_signature(body, secret, *svix)

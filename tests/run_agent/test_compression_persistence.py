@@ -377,8 +377,8 @@ class TestGatewayHistoryOffsetAfterSplit:
 
 
 
-class TestStoredPromptCwdDrift:
-    """Verify that stored system prompts are rejected when cwd changed."""
+class TestStoredPromptRuntimeMetadata:
+    """Verify that informational runtime metadata does not invalidate stored prompts."""
 
     def _make_agent(self, model="test/model", provider="openrouter"):
         class _Agent:
@@ -391,22 +391,15 @@ class TestStoredPromptCwdDrift:
 
     @staticmethod
     def _host_block(cwd: str) -> str:
-        """A stored prompt fragment shaped like the real host-info block.
-
-        ``build_environment_hints`` always emits ``User home directory:``
-        immediately before the working-directory line, and the staleness check
-        anchors on that pair so user project files can't shadow the real value.
-        Fixtures must therefore include the anchor or they stop exercising the
-        cwd path at all.
-        """
+        """Return a stored prompt fragment shaped like the real host-info block."""
         return (
             "Host: Linux (6.16.0)\n"
             "User home directory: /home/tester\n"
             f"Current working directory: {cwd}\n"
         )
 
-    def test_stored_prompt_stale_when_cwd_differs(self):
-        """Different cwd should force a prompt rebuild."""
+    def test_stored_prompt_fresh_when_cwd_differs(self):
+        """A different cwd should preserve the session's frozen cache prefix."""
         from unittest.mock import patch
         from agent.conversation_loop import _stored_prompt_matches_runtime
 
@@ -418,8 +411,8 @@ class TestStoredPromptCwdDrift:
         )
 
         with patch("os.getcwd", return_value="/project/new"):
-            assert _stored_prompt_matches_runtime(agent, stored_prompt) is False, (
-                "Expected False when stored cwd differs from current cwd"
+            assert _stored_prompt_matches_runtime(agent, stored_prompt) is True, (
+                "Informational cwd drift must not invalidate a stored prompt"
             )
 
     def test_stored_prompt_fresh_when_cwd_matches(self):
@@ -441,17 +434,7 @@ class TestStoredPromptCwdDrift:
             )
 
     def test_project_context_cannot_force_a_rebuild(self):
-        """🔴 CACHE INVARIANT: user project text must never invalidate the prompt.
-
-        The prompt embeds AGENTS.md / CLAUDE.md / .cursorrules in the context
-        tier, which sits AFTER the host-info block. A whole-prompt scan for
-        ``Current working directory:`` therefore matched the user's own file
-        and compared runtime state against project prose. That mismatch never
-        clears, so the check rejected the stored prompt on EVERY turn —
-        rebuilding the system prompt each message and destroying the prefix
-        cache for the entire session. Strictly worse than the staleness this
-        check exists to catch.
-        """
+        """🔴 CACHE INVARIANT: user project text must never invalidate the prompt."""
         from unittest.mock import patch
         from agent.conversation_loop import _stored_prompt_matches_runtime
 
@@ -474,13 +457,8 @@ class TestStoredPromptCwdDrift:
                 "rebuild every turn and break the prefix cache"
             )
 
-    def test_project_context_cannot_mask_real_drift(self):
-        """The inverse: project text must not fake a match either.
-
-        A stored prompt built in /project/old whose embedded AGENTS.md happens
-        to name the NEW cwd must still be rejected — otherwise project prose
-        could suppress genuine drift detection.
-        """
+    def test_project_context_cannot_turn_cwd_into_identity(self):
+        """Neither host metadata nor matching project prose makes cwd cache identity."""
         from unittest.mock import patch
         from agent.conversation_loop import _stored_prompt_matches_runtime
 
@@ -494,9 +472,8 @@ class TestStoredPromptCwdDrift:
         )
 
         with patch("os.getcwd", return_value="/project/new"):
-            assert _stored_prompt_matches_runtime(agent, stored_prompt) is False, (
-                "Embedded project text naming the new cwd must not mask real "
-                "drift in the host-info block"
+            assert _stored_prompt_matches_runtime(agent, stored_prompt) is True, (
+                "Cwd metadata must remain informational regardless of project prose"
             )
 
 
@@ -504,7 +481,7 @@ class TestStoredPromptCwdDrift:
 
 
     def test_built_prompt_contains_platform_line(self):
-        """The built system prompt must carry a Platform: line so drift detection works."""
+        """The built system prompt should still describe the session's initial surface."""
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
@@ -529,5 +506,5 @@ class TestStoredPromptCwdDrift:
             agent.platform = "cli"
             parts = build_system_prompt_parts(agent)
             assert "Platform: cli" in parts["volatile"], (
-                "Built prompt missing 'Platform: cli' — drift detection cannot read it"
+                "Built prompt missing informational 'Platform: cli' metadata"
             )

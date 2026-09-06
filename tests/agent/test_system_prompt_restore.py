@@ -72,6 +72,27 @@ class TestStoredPromptReuse:
         _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
         assert agent._cached_system_prompt == stored
 
+    def test_surface_switch_reuses_stored_prompt_verbatim(self):
+        """Surface and cwd metadata must not invalidate a session's cache prefix."""
+        stored = (
+            "Host: Linux\n"
+            "User home directory: /home/tester\n"
+            "Current working directory: /project/desktop\n\n"
+            "Model: test-model\n"
+            "Provider: openrouter\n"
+            "Platform: desktop"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent.platform = "tui"
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "resume"}])
+
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
+        db.update_system_prompt.assert_not_called()
+
     def test_present_row_with_stale_runtime_identity_rebuilds(self, caplog):
         """Stored prompts are cache gold unless their runtime identity is stale.
 

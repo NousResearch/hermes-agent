@@ -47,6 +47,11 @@ try:  # sibling module; support both package and flat plugin-dir import
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
 
+try:  # sibling module; support both package and flat plugin-dir import
+    from .api_transport import keyless_api_base_url, has_keyless_credentials
+except ImportError:  # pragma: no cover - plugin loaded outside package context
+    from api_transport import keyless_api_base_url, has_keyless_credentials  # type: ignore
+
 
 logger = logging.getLogger(__name__)
 
@@ -1839,12 +1844,22 @@ class SlackAdapter(BasePlatformAdapter):
         # Scoped secret is authoritative; only an UNSCOPED read falls back to
         # process env, else a secondary profile inherits the default's app.
         try:
+            # A keyless edge endpoint IS a custom base_url (a Slack-compatible
+            # API that injects credentials server-side); with it set,
+            # SDK-compatible non-secret placeholders satisfy the checks below.
+            api_base_url = keyless_api_base_url(self.config.extra)
+        except ValueError as exc:
+            self._set_fatal_error("invalid_api_base_url", str(exc), retryable=False)
+            logger.error("[Slack] %s", exc)
+            return False
+        raw_token = "xoxb-keyless" if api_base_url else raw_token
+        try:
             # Multiplex: profile secrets live in the secret scope, not process os.environ. When a scope is
             # installed (secondary-profile connect), it is AUTHORITATIVE — do not fall through to os.getenv,
             # or a secondary profile missing SLACK_APP_TOKEN silently inherits the default profile's Socket
             # Mode app (#59739). Only an UNSCOPED read under multiplex (default-profile startup loop,
             # background reconnect rebuild) falls back to process env, which is that profile's own.
-            app_token = get_secret("SLACK_APP_TOKEN")
+            app_token = "xapp-keyless" if api_base_url else get_secret("SLACK_APP_TOKEN")
         except UnscopedSecretError:
             app_token = os.getenv("SLACK_APP_TOKEN")
         for env_name, value in (("SLACK_BOT_TOKEN", raw_token), ("SLACK_APP_TOKEN", app_token)):
@@ -1852,20 +1867,33 @@ class SlackAdapter(BasePlatformAdapter):
                 self._fatal_missing_env(env_name)
                 return False
 
-        base_url = self._resolve_slack_base_url()
+        # The keyless edge wins as the Web API endpoint when configured. The
+        # Socket Mode lane stays anchored to slack.com: its ticket WSS is a
+        # slack.com host, unrelated to the edge, so its NO_PROXY bypass list
+        # must not include the edge host.
+        wss_base_url = self._resolve_slack_base_url()
+        base_url = api_base_url or wss_base_url
         if base_url:
             logger.info(
                 "[Slack] Using custom Slack API base URL: %s",
                 safe_url_for_log(base_url),
             )
 
-        proxy_url = _resolve_slack_proxy_url(_slack_proxy_bypass_hosts(base_url))
+        proxy_url = _resolve_slack_proxy_url(_slack_proxy_bypass_hosts(wss_base_url))
         if proxy_url:
             logger.info("[Slack] Using proxy for Slack transport: %s", safe_url_for_log(proxy_url))
-        bot_tokens = _load_slack_bot_tokens(raw_token, quiet=False)
+        # An edge endpoint owns one identity; never forward local OAuth tokens there.
+        bot_tokens = [raw_token] if api_base_url else _load_slack_bot_tokens(raw_token, quiet=False)
+        # Web API calls scope NO_PROXY to the endpoint they actually target —
+        # an edge replaces slack.com and must not be relayed through the proxy
+        # it replaces. The WSS ticket leg keeps the Socket Mode decision.
+        api_proxy_url = _resolve_slack_proxy_url(_slack_endpoint_bypass_hosts(base_url))
         lock_acquired = False
         try:
-            if not self._acquire_platform_lock("slack-app-token", app_token, "Slack app token"):
+            lock_scope = "slack-keyless-endpoint" if api_base_url else "slack-app-token"
+            resource_desc = "Slack keyless endpoint" if api_base_url else "Slack app token"
+            if not self._acquire_platform_lock(
+                    lock_scope, api_base_url or app_token, resource_desc):
                 return False
             lock_acquired = True
             self._running = False
@@ -1889,12 +1917,12 @@ class SlackAdapter(BasePlatformAdapter):
             self._bot_user_id = self._bot_display_name = None
             self._team_clients, self._team_bot_user_ids, self._team_bot_names = {}, {}, {}
             self._app = AsyncApp(
-                token=bot_tokens[0], client=self._new_web_client(bot_tokens[0], proxy_url),
-                before_authorize=_slack_per_request_proxy_middleware(proxy_url))
-            _apply_slack_proxy(self._app.client, proxy_url)
+                token=bot_tokens[0], client=self._new_web_client(bot_tokens[0], api_proxy_url),
+                before_authorize=_slack_per_request_proxy_middleware(api_proxy_url))
+            _apply_slack_proxy(self._app.client, api_proxy_url)
             _apply_slack_base_url(self._app.client, base_url)
             for token in bot_tokens:
-                await self._authenticate_workspace(token, proxy_url)
+                await self._authenticate_workspace(token, api_proxy_url)
             self._register_bolt_handlers()
             # _running=True only once the handler is alive (watchdog needs the live
             # task); on failure keep it False so ``finally`` releases the lock.
@@ -6613,16 +6641,22 @@ async def _standalone_send(
     media_files = media_files or []
     warnings: List[str] = []
     # Under multiplex os.environ may hold ANOTHER profile's token: read via the secret scope.
-    raw_token = getattr(pconfig, "token", None) or get_secret("SLACK_BOT_TOKEN", "")
+    try:
+        api_base_url = keyless_api_base_url(pconfig.extra or {})
+    except ValueError as exc:
+        return {"error": str(exc)}
+    raw_token = "xoxb-keyless" if api_base_url else (
+        getattr(pconfig, "token", None) or get_secret("SLACK_BOT_TOKEN", ""))
+    # An edge owns one identity: single placeholder token, no local OAuth lists.
     # Comma-separated multi-workspace list plus slack_tokens.json; no team map, so try each.
-    tokens = _load_slack_bot_tokens(str(raw_token or ""), quiet=True)
+    tokens = [raw_token] if api_base_url else _load_slack_bot_tokens(str(raw_token or ""), quiet=True)
     if not tokens:
         return {"error": "Slack send failed: SLACK_BOT_TOKEN not configured"}
     token = tokens[0]
-    # base_url from PlatformConfig.extra (config.yaml), matching the in-process
-    # adapter. Resolved once so every leg below talks to the same endpoint.
-    _extra = getattr(pconfig, "extra", None) or {}
-    _base_url = _normalize_slack_base_url(_extra.get("base_url"))
+    # One effective endpoint for every leg below: a keyless edge wins, else
+    # PlatformConfig.extra base_url (config.yaml), else the slack_sdk default.
+    _base_url = api_base_url or _normalize_slack_base_url(
+        (getattr(pconfig, "extra", None) or {}).get("base_url"))
 
     # User-targeted delivery: chat.postMessage / files_upload_v2 reject bare
     # user IDs (U.../W...) — resolve to a DM conversation ID (D...) first via
@@ -6827,10 +6861,12 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
 
 
 def _is_connected(config) -> bool:
-    """Connected when SLACK_BOT_TOKEN is set. Resolved through ``gateway_mod`` at call
-    time (not a bound import) so tests patching ``get_env_value`` take effect."""
+    """Connected with a keyless endpoint or SLACK_BOT_TOKEN. Token lookup stays resolved
+    through ``gateway_mod`` at call time (not a bound import) so tests patching
+    ``get_env_value`` take effect."""
     import hermes_cli.gateway as gateway_mod
-    return bool((gateway_mod.get_env_value("SLACK_BOT_TOKEN") or "").strip())
+    return has_keyless_credentials(config) or bool(
+        (gateway_mod.get_env_value("SLACK_BOT_TOKEN") or "").strip())
 
 
 def _build_adapter(config):
@@ -6847,6 +6883,9 @@ def register(ctx) -> None:
         check_fn=slack_deps_present,
         ensure_deps_fn=check_slack_requirements,
         is_connected=_is_connected,
+        # Keyless edge: credentials live in the edge, not locally — this pure
+        # config probe admits a keyless profile to startup/reconnect retries.
+        has_credentials=has_keyless_credentials,
         required_env=["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
         install_hint="Run `hermes setup` to install Slack support.",
         setup_fn=interactive_setup,

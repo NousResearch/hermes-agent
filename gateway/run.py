@@ -1742,6 +1742,12 @@ def _platform_has_bot_credential(platform: "Platform", platform_config: "Platfor
         value = getattr(platform_config, attr, None) or ""
         if isinstance(value, str) and value.strip():
             return True
+    # Plugins may authenticate without a local bot token (e.g. an API edge).
+    # Only an explicit config-only probe may admit this profile to retries.
+    from gateway.platform_registry import platform_registry
+    entry = platform_registry.get(platform.value)
+    if entry is not None and entry.has_credentials is not None:
+        return entry.has_credentials(platform_config)
     # Matrix also authenticates by password; a token-only check would evict a reconnectable config from
     # the retry queue. Read ONLY extra (build_config() copies env there): env fallback = every config OK.
     # Those credentials land in ``extra`` rather than ``.token``, so a token-only check reads a perfectly

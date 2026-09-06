@@ -93,6 +93,9 @@ def test_resolve_remote_target_forms(root):
         "hermes@cloud-1",
         "researcher@ssh-vps",
     ]
+    titled_default = [{"profile": "default", "handle": "cos-bot", "connection_id": "cloud-1"}]
+    assert bot_relay.resolve_remote_target("cos-bot@cloud-1", titled_default)["profile"] == "default"
+    assert bot_relay.resolve_remote_target("hermes@cloud-1", titled_default)["profile"] == "default"
 
 
 def test_resolve_ambiguous_handle_across_connections(root):
@@ -353,6 +356,23 @@ def test_relay_route_ambiguous_target_errors_with_forms(tmp_path, monkeypatch):
     # connection-qualified form goes through
     out2 = json.loads(message_agent_tool(target="scout@ssh-vps", message="hi", agent=agent))
     assert out2.get("status") == "sent"
+
+
+def test_relay_route_ambiguous_default_alias_lists_friendly_forms(tmp_path, monkeypatch):
+    home = _managed_home(tmp_path)
+    bot_relay.write_remote_roster(home, [
+        {"profile": "default", "handle": "cos-bot", "connection_id": "cloud-1"},
+        {"profile": "default", "handle": "desk-bot", "connection_id": "ssh-vps"},
+    ])
+    monkeypatch.setattr(
+        "tools.bot_mode_dm._spawn_delivery",
+        lambda *a, **k: json.dumps({"status": "sent"}),
+    )
+
+    out = json.loads(message_agent_tool(target="default", message="hi", agent=_FakeAgent(home)))
+
+    assert "cos-bot@cloud-1" in out.get("error", "")
+    assert "desk-bot@ssh-vps" in out["error"]
 
 
 def test_unknown_target_error_mentions_connected_machines(tmp_path):

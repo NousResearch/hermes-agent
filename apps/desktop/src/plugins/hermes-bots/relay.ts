@@ -172,14 +172,13 @@ function qualifyRelaySender(message: unknown, envelope: RelayEnvelope, connectio
     return text
   }
 
-  const marker = `(@${handle}):`
-  const markerAt = text.indexOf(marker)
+  const stamp = `Message from 🤖 ${handle} (@${handle}):`
 
-  if (markerAt < 0 || /[\r\n]/.test(text.slice('Message from 🤖 '.length, markerAt))) {
+  if (!text.startsWith(stamp)) {
     return text
   }
 
-  return `${text.slice(0, markerAt)}(@${handle}@${connectionId}):${text.slice(markerAt + marker.length)}`
+  return `Message from 🤖 ${handle} (@${handle}@${connectionId}):${text.slice(stamp.length)}`
 }
 
 /** Reconcile retention with the CURRENT connection set: pin new connections,

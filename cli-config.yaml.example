@@ -1344,6 +1344,11 @@ platform_toolsets:
 #       # Route scripts default to a 30 second timeout. Scripts must live under
 #       # the active profile's scripts directory and receive webhook JSON on stdin.
 #       script_timeout_seconds: 30
+#   email:
+#     extra:
+#       # Isolate sessions and SMTP reply threading by normalized subject
+#       # instead of one rolling session per sender. Default false.
+#       session_by_subject: false
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

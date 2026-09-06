@@ -37,3 +37,7 @@ optional_env:
     description: "Default address for cron / notification delivery"
     prompt: "Home address"
     password: false
+  - name: EMAIL_SESSION_BY_SUBJECT
+    description: "Isolate sessions and reply threading by normalized subject (default false)"
+    prompt: "Session by subject (true/false)"
+    password: false

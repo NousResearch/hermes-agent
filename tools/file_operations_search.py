@@ -323,13 +323,6 @@ class SearchMixin:
 
     # --- native rg transport (local POSIX) --------------------------------------
 
-    def _native_rg_enabled(self) -> bool:
-        """Whether rg may run as a direct argv subprocess instead of through the
-        backend shell. Same gate and kill switch as ``_native_read_enabled``: local
-        POSIX host only (Windows keeps Git-Bash paths; remote backends have their
-        own filesystem), ``HERMES_NATIVE_FILE_READ=0`` turns both off."""
-        return self._native_read_enabled()
-
     def _run_rg_native(self, argv: List[str], fetch_limit: int, timeout: int,
                        merge_stderr: bool = False) -> ExecuteResult:
         """Run ``argv`` (shell-quoted rg words) natively and stop reading after
@@ -471,7 +464,7 @@ class SearchMixin:
 
     def _path_exists_probe(self, path: str) -> str:
         """Stdout of the existence probe: contains "exists" or "not_found"."""
-        if self._native_rg_enabled():
+        if self._native_read_enabled():
             full = path if os.path.isabs(path) else os.path.join(getattr(self.env, "cwd", None) or self.cwd, path)
             return "exists" if os.path.exists(full) else "not_found"
         return self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found").stdout
@@ -595,7 +588,7 @@ class SearchMixin:
                 glob_expr_probe = glob_expr
             probe_words = [rg, flags, "--count-matches", glob_expr_probe,
                            self._escape_shell_arg(pattern), self._escape_native_tool_arg(path)]
-            if self._native_rg_enabled():
+            if self._native_read_enabled():
                 probe = self._run_rg_native(probe_words, 50, timeout=30)
             else:
                 probe = self._exec(" ".join(probe_words) + " 2>/dev/null | head -50", timeout=30)
@@ -776,14 +769,12 @@ class SearchMixin:
         root_args = " ".join(self._escape_native_tool_arg(root) for root in command_roots)
         cd_prefix = f"cd {self._escape_shell_arg(scoped_common)} && " if scoped_common else ""
         # ``--`` terminates options so a dash-prefixed root is never parsed as a flag.
-        if not scoped_common and self._native_rg_enabled():
-            argv = [rg, "--files", *([sort_arg.strip()] if sort_arg else []), "-g",
-                    self._escape_shell_arg(glob_pattern), *exclusion_terms, "--", root_args]
-            result = self._run_rg_native(argv, fetch_limit, timeout=60)
+        rg_cmd = (f"{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
+                  f"{exclusion_args} -- {root_args}")
+        if not scoped_common and self._native_read_enabled():
+            result = self._run_rg_native([rg_cmd], fetch_limit, timeout=60)
         else:
-            cmd = (f"set -o pipefail; {cd_prefix}{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
-                   f"{exclusion_args} -- {root_args} 2>/dev/null | head -n {fetch_limit}")
-            result = self._exec(cmd, timeout=60)
+            result = self._exec(f"set -o pipefail; {cd_prefix}{rg_cmd} 2>/dev/null | head -n {fetch_limit}", timeout=60)
         stdout, limit_reason = _search_stdout_and_limit(result)
         all_files = [f for f in stdout.splitlines() if f]
         if scoped_common:
@@ -839,7 +830,7 @@ class SearchMixin:
         (grep): bounds giant single-line matches at the pipe layer; skipped for
         files_only/count where lines are paths/counts."""
         fetch_limit = limit + offset + (200 if context > 0 else 0)
-        if not line_cap and self._native_rg_enabled():
+        if not line_cap and self._native_read_enabled():
             result = self._run_rg_native(cmd_parts, fetch_limit, timeout=60, merge_stderr=True)
             return _parse_search_output(result, output_mode, limit, offset, context, warning=warning)
         parts = cmd_parts + ["|", "head", "-n", str(fetch_limit)]

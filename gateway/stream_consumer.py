@@ -358,9 +358,18 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     def _record_turn_final_payload(self, text: str) -> None:
         """Record what the user actually saw as this turn's final answer.  On a split ``text``
         is only the trailing chunk, so the un-truncated ``_stream_ledger`` is recorded — else
-        the gateway sees a mismatch and re-sends an answer the user already received.  getattr defaults
-        keep __new__-constructed test consumers (which skip __init__) working."""
-        if getattr(self, "_turn_split_delivery", False) and getattr(self, "_stream_ledger", ""):
+        the gateway sees a mismatch and re-sends an answer the user already received.
+
+        Native streaming shares the same hazard for a different reason: a native turn with a
+        tool call splits ``_accumulated`` into post-tool segments, and after a rotation the
+        finalize path passes only the tail here.  ``_adopt_final_text`` heals ``_stream_ledger``
+        with the authoritative full final on native turns (ledger-only, never re-sent as a
+        frame), so prefer the ledger there too — otherwise a tool-bearing / rotated native turn
+        records a tail-only payload, ``delivered_final_matches`` reports a mismatch, and the
+        gateway resends the tail as a fresh bubble (double bubble).  getattr defaults keep
+        __new__-constructed test consumers (which skip __init__) working."""
+        if (getattr(self, "_turn_split_delivery", False)
+                or getattr(self, "_use_native_streaming", False)) and getattr(self, "_stream_ledger", ""):
             text = self._stream_ledger
         self._delivered_final_text = self._display_payload(text)
 
@@ -727,11 +736,27 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         strictly prefix-extends the ledger."""
         if not (self._accumulated or self._message_id or self._last_sent_text):
             return
-        if not self._turn_split_delivery:
+        if not self._turn_split_delivery and not self._use_native_streaming:
+            # Non-native, non-split: adopt the authoritative final wholesale so the seal
+            # carries post-stream augmentation (verifier footer, completion explainer) the
+            # accumulator never saw.
             final_payload = self._clean_for_display(final_raw)
             if final_payload and final_payload != self._clean_for_display(self._accumulated):
                 self._accumulated = final_raw
                 self._stream_ledger = final_raw
+            return
+        if self._use_native_streaming and not self._turn_split_delivery:
+            # Native streaming, non-split: heal the LEDGER ONLY, never _accumulated. A native
+            # turn with a tool call (or a Layer-2 rotation) leaves _accumulated as the FULL
+            # cumulative body sliced at _native_split_offset per frame; final_raw is only the
+            # LAST API call's text. Adopting it into _accumulated would both shrink the body
+            # below the rotation split offset (fresh bubble loses its tail) and re-render the
+            # full final into the live bubble. But refusing entirely drops the ledger heal too,
+            # leaving _delivered_final_text = tail-only so delivered_final_matches mismatches
+            # and the gateway RESENDS → second bubble. Recording the authoritative final in the
+            # ledger (consumed by _record_turn_final_payload for reconciliation, NOT re-sent as
+            # a frame) fixes the double bubble while _accumulated stays full for the slice.
+            self._stream_ledger = final_raw
             return
         ledger = self._stream_ledger
         if ledger and final_raw.startswith(ledger) and len(final_raw) > len(ledger):

@@ -4386,3 +4386,36 @@ def test_local_ci_waits_for_mutation_acknowledgement_across_heads_without_blocki
         assert len(kanban.tasks) == (2 if phase == "completed" else 1)
     finally:
         ledger.close()
+
+
+@pytest.mark.parametrize("changed_head", [False, True])
+def test_metadata_labels_add_all_matching_areas_without_claiming_readiness(tmp_path, changed_head):
+    from dataclasses import replace
+    from github_pr_feedback.metadata_labels import parse_metadata_rules
+    local_path, sha = initialized_repository(tmp_path)
+    policy = configured_policy(local_path, not_before="2026-08-24T00:00:00Z", agent_labels=True)
+    def rule(label, terms, paths):
+        return dict(label=label, repositories=["acme/widgets"], title_terms=terms,
+                    path_patterns=paths, color="123456", description="Advisory metadata")
+    rules = parse_metadata_rules([
+        rule("type/bug", ["fix"], []), rule("area/ci", [], [".github/*"]),
+        rule("area/gui", [], ["frontend/*"]), rule("area/research", [], ["research/*"]),
+    ])
+    policy = replace(policy, agent_labels=replace(policy.agent_labels, metadata_rules=rules))
+    pull = replace(admitted_pull_request(sha), labels=("codex", "human-label"))
+    class MetadataGitHub(FakeGitHub):
+        def get_pull_request_metadata(self, repository, number):
+            current = replace(self.current, head_sha="f" * 40) if changed_head else self.current
+            return current, "fix: dashboard checks", (".github/workflows/test.yml", "frontend/app.tsx")
+    github = MetadataGitHub(pull, ())
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    controller = ScanController(policy, ledger, github, RecordingKanban(), RecordingLocalGit())
+    controller.reconcile_labels("acme/widgets")
+    if changed_head:
+        assert github.label_calls == []
+    else:
+        assert set(github.current.labels) == {"codex", "human-label", "type/bug", "area/ci", "area/gui"}
+        before = list(github.label_calls)
+        controller.reconcile_labels("acme/widgets")
+        assert github.label_calls == before
+    ledger.close()

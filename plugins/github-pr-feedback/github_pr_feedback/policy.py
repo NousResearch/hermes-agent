@@ -356,6 +356,7 @@ class AgentLabelPolicy:
     create_missing: bool = False
     repositories: frozenset[str] = frozenset()
     mappings: tuple[AgentLabelMapping, ...] = ()
+    metadata_rules: tuple = ()
 
     def applies_to(self, repository: str) -> bool:
         return not self.repositories or repository in self.repositories
@@ -836,6 +837,8 @@ def _parse_local_ci_audit(raw: object) -> LocalCIAuditPolicy | None:
 
 
 def _parse_agent_labels(raw: object) -> AgentLabelPolicy | None:
+    from .metadata_labels import parse_metadata_rules
+
     if not isinstance(raw, Mapping):
         raise ValueError("agent_labels must be a mapping")
     enabled = raw.get("enabled")
@@ -846,7 +849,7 @@ def _parse_agent_labels(raw: object) -> AgentLabelPolicy | None:
             raise ValueError("disabled agent_labels has unknown fields")
         return None
     required = {"enabled", "max_updates_per_scan", "create_missing", "mappings"}
-    optional = {"repositories"}
+    optional = {"repositories", "metadata_rules"}
     if not required.issubset(raw) or set(raw) - required - optional:
         raise ValueError("agent_labels has missing or unknown fields")
     max_updates = raw["max_updates_per_scan"]
@@ -901,6 +904,7 @@ def _parse_agent_labels(raw: object) -> AgentLabelPolicy | None:
             else frozenset()
         ),
         mappings=tuple(mappings),
+        metadata_rules=parse_metadata_rules(raw.get("metadata_rules", [])),
     )
 
 

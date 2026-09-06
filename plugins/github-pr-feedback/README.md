@@ -534,3 +534,17 @@ focused verification, push, reply, and acknowledge before requesting full CI; ot
 CI correctly waits for their own pending repair. Run acknowledgement commands as managed
 background processes and poll them to completion so shared GitHub waits are not cut off
 by a short foreground timeout.
+
+### Advisory PR metadata labels
+
+`agent_labels.metadata_rules` adds bounded title-word and changed-path rules beside
+branch-author labels. Each rule specifies `label`, explicit `repositories`,
+`title_terms`, `path_patterns` (shell globs), `color`, and `description`. Every
+matching rule applies, so changes spanning CI and GUI receive both area labels.
+Unrelated labels are preserved. `status/*`, `priority/*`, and `ci-reviewed` are
+rejected because text/path matches cannot establish workflow authority.
+
+The scheduled scan reconciles these rules after critical work. Run
+`hermes github-pr-feedback label-scan --repository OWNER/REPO` to reconcile only
+labels for configured, admitted open PRs. Writes revalidate the exact head and
+verify label readback; incomplete file listings are rejected.

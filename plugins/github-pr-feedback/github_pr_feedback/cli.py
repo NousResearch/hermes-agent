@@ -620,6 +620,8 @@ def setup_cli(_ctx: Any, parser: argparse.ArgumentParser) -> None:
     subcommands.add_parser(
         "doctor", help="Check configuration readiness without scanning"
     )
+    labels = subcommands.add_parser("label-scan", help="Reconcile configured advisory labels on owned open PRs")
+    labels.add_argument("--repository", required=True)
     inspect = subcommands.add_parser(
         "inspect-pr", help="Read one configured PR identity through the shared GitHub gate"
     )
@@ -774,6 +776,8 @@ def handle_cli_with_context(ctx: Any, args: argparse.Namespace) -> int:
         return _status()
     if action == "doctor":
         return _doctor(ctx)
+    if action == "label-scan":
+        return _label_scan(ctx, args)
     if action == "inspect-pr":
         return _inspect_pr(ctx, args)
     if action == "inspect-ci":
@@ -2666,3 +2670,14 @@ def _nearest_existing_parent_access(path: Path) -> bool:
     while not candidate.exists() and candidate != candidate.parent:
         candidate = candidate.parent
     return candidate.is_dir() and os.access(candidate, os.R_OK | os.W_OK | os.X_OK)
+
+
+def _label_scan(ctx, args):
+    policy = _load_policy_from_context(ctx)
+    ledger = FeedbackLedger.for_current_profile()
+    try:
+        result = _controller(policy, ledger).reconcile_labels(args.repository)
+    finally:
+        ledger.close()
+    print(json.dumps(result, sort_keys=True))
+    return 0

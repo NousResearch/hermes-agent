@@ -684,6 +684,19 @@ class GitHubClient:
         row = self._read_object(f"repos/{repository}/pulls/{number}")
         return _pull_request(row, expected_repository=repository, expected_number=number)
 
+    def get_pull_request_metadata(self, repository: str, number: int):
+        repository = _validated_repository(repository)
+        number = _positive_number(number)
+        row = self._read_object(f"repos/{repository}/pulls/{number}")
+        pull = _pull_request(row, expected_repository=repository, expected_number=number)
+        files = self._read_pages(f"repos/{repository}/pulls/{number}/files?per_page=100")
+        if not isinstance(row.get("title"), str) or any(not isinstance(f.get("filename"), str) for f in files):
+            raise GitHubClientError("invalid PR metadata")
+        paths = tuple(f["filename"] for f in files)
+        if isinstance(row.get("changed_files"), int) and len(paths) != row["changed_files"]:
+            raise GitHubClientError("incomplete PR file listing")
+        return pull, row["title"], paths
+
     def create_pull_request(
         self, repository: str, *, head: str, base: str, title: str, body: str
     ) -> PullRequest:

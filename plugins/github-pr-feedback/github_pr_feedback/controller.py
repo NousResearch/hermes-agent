@@ -1453,6 +1453,17 @@ class ScanController:
             local_ci_catalogue_deferred=local_ci_catalogue_deferred,
         )
 
+    def reconcile_labels(self, repository: str) -> dict[str, object]:
+        policy = self._policy.agent_labels
+        if policy is None or not policy.applies_to(repository) or repository not in self._policy.targets:
+            raise ValueError("repository is not configured for labels")
+        target = self._policy.targets[repository]
+        pulls = self._github.list_open_pull_requests(repository, target.owner_login)
+        self._label_batches = [(repository, target, tuple(
+            pull for pull in pulls if self._policy.admit_pull_request(pull).admitted
+        ))]
+        return self.apply_agent_labels()
+
     def apply_agent_labels(self) -> dict[str, object]:
         """Run bounded label maintenance after the critical scan lanes.
 
@@ -1471,7 +1482,8 @@ class ScanController:
                 desired_label = label_policy.label_for_branch(
                     pull_request.head_ref_name
                 )
-                if desired_label is None or desired_label in pull_request.labels:
+                has_metadata = any(repository in rule.repositories for rule in label_policy.metadata_rules)
+                if not has_metadata and (desired_label is None or desired_label in pull_request.labels):
                     continue
                 candidates.append((pull_request, desired_label))
             if not candidates:
@@ -1536,28 +1548,29 @@ class ScanController:
             current = self._github.get_pull_request(repository, listed.number)
             if not current_matches(current):
                 return "agent_label_head_changed"
-            if desired_label in current.labels:
-                return None
-            mapping = next(
-                mapping
-                for mapping in label_policy.mappings
-                if mapping.label == desired_label
-            )
-            if label_policy.create_missing:
-                self._github.ensure_issue_label(
-                    repository,
-                    mapping.label,
-                    color=mapping.color,
-                    description=mapping.description,
-                )
-                current = self._github.get_pull_request(repository, listed.number)
-                if not current_matches(current):
+            mappings = [mapping for mapping in label_policy.mappings
+                        if mapping.label == desired_label]
+            if any(repository in rule.repositories for rule in label_policy.metadata_rules):
+                metadata_pull, title, paths = self._github.get_pull_request_metadata(repository, listed.number)
+                if not current_matches(metadata_pull):
                     return "agent_label_head_changed"
-            self._github.add_issue_labels(repository, listed.number, (desired_label,))
+                mappings.extend(rule for rule in label_policy.metadata_rules
+                                if rule.matches(repository, title, paths))
+            missing = {mapping.label: mapping for mapping in mappings if mapping.label not in current.labels}
+            if not missing:
+                return "agent_labels_unchanged"
+            if label_policy.create_missing:
+                for mapping in missing.values():
+                    self._github.ensure_issue_label(repository, mapping.label,
+                        color=mapping.color, description=mapping.description)
+            current = self._github.get_pull_request(repository, listed.number)
+            if not current_matches(current):
+                return "agent_label_head_changed"
+            self._github.add_issue_labels(repository, listed.number, tuple(missing))
             readback = self._github.get_pull_request(repository, listed.number)
             if not current_matches(readback):
                 return "agent_label_head_changed"
-            if desired_label not in readback.labels:
+            if not set(missing).issubset(readback.labels):
                 return "agent_label_readback_failed"
         except GitHubClientError as error:
             code = getattr(error, "code", "github_error")

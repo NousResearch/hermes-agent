@@ -148,8 +148,7 @@ def _send_imap_id(imap: "imaplib.IMAP4") -> None:
     connection, which imaplib cannot surface here — the failure appears one command later
     as a misleading SELECT error and the adapter retries forever (Purelymail, #39856).
     ``imap.capabilities`` is populated by imaplib at connect, so the check is free."""
-    caps = getattr(imap, "capabilities", ()) or ()
-    if "ID" not in caps:
+    if "ID" not in imap.capabilities:
         logger.debug(
             "[Email] Server does not advertise IMAP ID capability; skipping ID"
         )

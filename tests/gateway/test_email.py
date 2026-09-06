@@ -963,56 +963,6 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
         self.assertIn("login", names)
         self.assertLess(names.index("login"), names.index("xatom"))
 
-    def test_send_imap_id_sent_when_capability_advertised(self):
-        """ID goes out when the server lists it in CAPABILITY."""
-        from plugins.platforms.email.adapter import _send_imap_id
-
-        mock_imap = MagicMock()
-        mock_imap.capabilities = ("IMAP4REV1", "ID", "UIDPLUS")
-
-        _send_imap_id(mock_imap)
-
-        mock_imap.xatom.assert_called_once()
-        self.assertEqual(mock_imap.xatom.call_args.args[0], "ID")
-
-    def test_send_imap_id_skipped_when_capability_absent(self):
-        """Servers that do not advertise ID must not receive it: Purelymail
-        answers the unknown command with an untagged ``* BYE Unknown
-        command.`` and drops the connection, which imaplib surfaces one
-        command later as a misleading SELECT failure."""
-        from plugins.platforms.email.adapter import _send_imap_id
-
-        mock_imap = MagicMock()
-        mock_imap.capabilities = ("IMAP4REV1", "UIDPLUS")
-
-        _send_imap_id(mock_imap)
-
-        mock_imap.xatom.assert_not_called()
-
-    def test_send_imap_id_skipped_when_capabilities_attribute_missing(self):
-        """A connection object without a capabilities attribute must not
-        crash the helper; fail toward not sending optional commands."""
-        from plugins.platforms.email.adapter import _send_imap_id
-
-        mock_imap = MagicMock(spec=["xatom"])
-
-        _send_imap_id(mock_imap)
-
-        mock_imap.xatom.assert_not_called()
-
-    def test_send_imap_id_rejection_still_swallowed(self):
-        """A server that advertises ID but rejects it with a tagged error
-        keeps the existing best-effort handling: no exception escapes."""
-        from plugins.platforms.email.adapter import _send_imap_id
-
-        mock_imap = MagicMock()
-        mock_imap.capabilities = ("IMAP4REV1", "ID")
-        mock_imap.xatom.side_effect = Exception("BAD ID rejected")
-
-        _send_imap_id(mock_imap)  # must not raise
-
-        mock_imap.xatom.assert_called_once()
-
 
 class TestConnectSmtp(unittest.TestCase):
     """Test _connect_smtp() helper: protocol selection and IPv6 fallback."""

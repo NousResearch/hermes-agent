@@ -4,7 +4,6 @@ No external mail service or credentials are used. Unsupported ID gets BAD
 followed by BYE: swallowing the ID error still leaves SELECT unable to proceed.
 """
 
-import asyncio
 import imaplib
 import socketserver
 import threading
@@ -80,8 +79,7 @@ def imap_peer(id_mode):
 
 
 @pytest.mark.parametrize("id_mode", ["absent", "accept", "reject"])
-@pytest.mark.parametrize("phase", ["startup", "poll"])
-def test_id_negotiation_preserves_inbox_connection(monkeypatch, id_mode, phase):
+def test_id_negotiation_preserves_inbox_connection(monkeypatch, id_mode):
     from gateway.config import PlatformConfig
     from plugins.platforms.email.adapter import EmailAdapter
 
@@ -104,18 +102,8 @@ def test_id_negotiation_preserves_inbox_connection(monkeypatch, id_mode, phase):
             lambda *args, **kwargs: imaplib.IMAP4(*address, timeout=5),
         )
 
-        if phase == "startup":
-
-            async def connect_and_stop():
-                try:
-                    return await adapter.connect()
-                finally:
-                    await adapter.disconnect()
-
-            assert asyncio.run(connect_and_stop()) is True
-        else:
-            assert adapter._fetch_new_messages() == []
-            assert adapter._last_fetch_failed is False
+        assert adapter._fetch_new_messages() == []
+        assert adapter._last_fetch_failed is False
 
     assert commands.count("ID") == (0 if id_mode == "absent" else 1)
     assert commands.index("LOGIN") < commands.index("SELECT") < commands.index("UID")

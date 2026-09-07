@@ -307,3 +307,19 @@ def test_run_return_value_is_not_part_of_the_setup_contract(native):
     consent = cmd.dashboard_set_agent_plugin_enabled("native-fixture", enabled=True)["consent"]
     result = cmd.dashboard_set_agent_plugin_enabled("native-fixture", enabled=True, setup_consent=consent)
     assert result["ok"], result
+
+
+def test_revision_change_between_describe_and_run_never_executes_unreviewed_setup(native, monkeypatch):
+    from hermes_cli import plugins_setup
+    home, plugin = native
+    consent = cmd.dashboard_set_agent_plugin_enabled("native-fixture", enabled=True)["consent"]
+    invoke = plugins_setup._invoke
+    def replace_after_describe(path, action, home, **kwargs):
+        result = invoke(path, action, home, **kwargs)
+        if action == "describe":
+            path.write_text(path.read_text().replace("fixture-v1", "fixture-v2"))
+        return result
+    monkeypatch.setattr(plugins_setup, "_invoke", replace_after_describe)
+    result = cmd.dashboard_set_agent_plugin_enabled("native-fixture", enabled=True, setup_consent=consent)
+    assert result["status"] == "setup_failed"
+    assert not (home / "runtime").exists(), "Setup executed after its revision changed"

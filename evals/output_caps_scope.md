@@ -63,6 +63,10 @@ Preserved:
 | Explicit internal task budget | 43 | 43 |
 
 The initial capture also covers real gateway/API/custom-provider resolvers and
-the registered custom provider profile. It does not prove remote provider
-behavior, billing, a native Desktop interaction, or curator/review scheduling.
-Those surfaces must be validated separately rather than inferred from builders.
+the registered custom provider profile, completed curator and review forks, and
+a review fork preserving an explicit internal budget of 43. Scheduling itself
+is not exercised. Separate native Electron A/B opened Model settings against
+isolated real backends and toggled the fixture MoA preset: both saved `enabled:
+false`; baseline retained preset caps 29/31 while fixed removed them. Desktop
+and dashboard TypeScript checks and the production Desktop build also passed.
+No local fixture proves remote provider behavior or billing.

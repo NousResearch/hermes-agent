@@ -3771,7 +3771,7 @@ class BasePlatformAdapter(ABC):
                 schedule = getattr(self.gateway_runner, "_schedule_flood_redelivery", None)
                 if callable(schedule):
                     schedule(event.source.platform,
-                             profile=getattr(delivery_adapter, "_owner_profile", None), error=error)
+                             profile=getattr(delivery_adapter, "_owner_profile", None))
         except Exception:
             logger.debug("delivery ledger update failed", exc_info=True)
 

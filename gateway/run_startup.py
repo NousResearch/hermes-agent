@@ -304,10 +304,9 @@ class GatewayStartupMixin:
         except Exception:
             logger.debug(log_fmt, obligation_id, exc_info=True)
 
-    def _schedule_flood_redelivery(self, platform, *, profile: Optional[str] = None, error: str = "",
-                                   wait_seconds: Optional[float] = None):
+    def _schedule_flood_redelivery(self, platform, *, profile: Optional[str] = None) -> None:
         """Wake one deadline-driven ledger worker per bot identity, never sleep in a send."""
-        from gateway.delivery_ledger import flood_retry_delay, flood_wait_seconds, pending_flood_retries
+        from gateway.delivery_ledger import flood_retry_delay, pending_flood_retries
         target = platform if isinstance(platform, Platform) else Platform(str(platform))
         key = (target.value, profile or "default")
         pending = getattr(self, "_flood_redelivery_tasks", None)
@@ -351,14 +350,12 @@ class GatewayStartupMixin:
         background = getattr(self, "_background_tasks", None)
         if background is not None:
             self._track_task_in(background, task)
-        return flood_retry_delay(wait_seconds if wait_seconds is not None else flood_wait_seconds(error))
 
     async def _arm_flood_timers_for_waiting_rows(self) -> None:
         """Recover adopted, newly refused and unsent released rows without blocking the loop."""
         from gateway.delivery_ledger import pending_flood_retries
         for row in await asyncio.to_thread(pending_flood_retries):
-            self._schedule_flood_redelivery(row["platform"], profile=row["profile"],
-                                            wait_seconds=row["not_before"] - time.time())
+            self._schedule_flood_redelivery(row["platform"], profile=row["profile"])
 
     async def _redeliver_claimed_obligations(self, claimed: list) -> int:
         """Redeliver final responses for claimed rows (network half of the split): runs inside the

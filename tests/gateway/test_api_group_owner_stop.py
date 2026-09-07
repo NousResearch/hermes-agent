@@ -251,3 +251,67 @@ async def test_invalid_owner_selection_does_not_write_a_freeze(adapter, change):
         response = await cli.post(STOP, headers=OWNER, json=body)
         assert response.status == 400, await response.json()
     assert adapter._run_idempotency_store.is_scope_frozen(scope) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", ["[]", '"text"', "null", "{", '{"padding":"' + "x" * 8192 + '"}'])
+async def test_invalid_or_oversized_http_body_cannot_create_owner_state(adapter, body):
+    participant = identity()
+    scope = seed(adapter, participant)
+    async with TestClient(TestServer(app_for(adapter))) as cli:
+        response = await cli.post(STOP, headers={**OWNER, "Content-Type": "application/json"}, data=body)
+        assert response.status in (400, 413), await response.text()
+    assert adapter._run_idempotency_store.is_scope_frozen(scope) is False
+
+
+@pytest.mark.asyncio
+async def test_valid_room_invitation_is_not_an_owner_stop_capability(adapter):
+    participant = identity()
+    scope = seed(adapter, participant)
+    async with TestClient(TestServer(app_for(adapter))) as cli:
+        invited = await invite(cli)
+        response = await cli.post(STOP, headers={"Authorization": f"HermesRoom {invited['grant']}"},
+                                  json=command(participant))
+        assert response.status == 401, await response.json()
+    assert adapter._run_idempotency_store.is_scope_frozen(scope) is False
+
+
+@pytest.mark.asyncio
+async def test_capacity_failure_keeps_other_participant_open_and_existing_readback_usable(adapter, monkeypatch):
+    participant = identity()
+    other = {**participant, "room_id": "other-group"}
+    seed(adapter, participant)
+    other_scope = seed(adapter, other, run_id="run-other")
+    monkeypatch.setattr(adapter._run_idempotency_store, "MAX_GROUP_STOP_COMMANDS", 1)
+    async with TestClient(TestServer(app_for(adapter))) as cli:
+        first = await cli.post(STOP, headers=OWNER, json=command(participant))
+        assert first.status == 200, await first.json()
+        second = await cli.post(STOP, headers=OWNER, json=command(other, "second-command"))
+        assert second.status == 507, await second.json()
+        assert adapter._run_idempotency_store.is_scope_frozen(other_scope) is False
+        replay = await cli.post(STOP, headers=OWNER, json=command(participant))
+        assert replay.status == 200, await replay.json()
+        conflict = await cli.post(STOP, headers=OWNER, json=command(other))
+        assert conflict.status == 409, await conflict.json()
+
+
+@pytest.mark.asyncio
+async def test_missing_and_truncated_records_remain_unresolved_in_http_readback(adapter, monkeypatch):
+    participant = identity()
+    scope = seed(adapter, participant)
+    seed(adapter, participant, run_id="run-second")
+    monkeypatch.setattr(adapter._run_idempotency_store, "GROUP_STOP_RUN_LIMIT", 1)
+    async with TestClient(TestServer(app_for(adapter))) as cli:
+        response = await cli.post(STOP, headers=OWNER, json=command(participant))
+        body = await response.json()
+        assert response.status == 200, body
+        assert body["truncated"] is True and body["work_state"] == "unresolved"
+        assert body["counts"]["nonterminal"] == 2 and len(body["runs"]) == 1
+        # Exercise the existing legacy table's deletion guard, not a mocked summary.
+        with adapter._run_idempotency_store._conn as db:
+            db.execute("DELETE FROM run_idempotency WHERE scope=?", (scope,))
+        readback = await cli.get(STOP + "/owner-stop-1", headers=OWNER)
+        remaining = await readback.json()
+        assert remaining["work_state"] == "unresolved" and remaining["truncated"] is True
+        assert remaining["counts"]["unknown"] == 2 and remaining["runs"] == []
+        assert "PRIVATE_" not in json.dumps(remaining)

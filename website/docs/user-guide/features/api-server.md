@@ -502,6 +502,76 @@ running.
 
 Resolve a pending approval for a run that is waiting on a human decision (for example, a tool call gated behind an approval policy). The body carries the approval decision; the run resumes once the decision is recorded. This endpoint is advertised in `/v1/capabilities` as the `run_approval` feature so external UIs can detect support before surfacing an approval prompt.
 
+### Stop a Group Chat participant without its home gateway
+
+If the gateway coordinating a Group Chat is unreachable, the installation owner
+can contact a reachable participant directly and freeze that participant's
+already-known group work. This uses the installation's configured `API_SERVER_KEY`
+on the **unprefixed installation-root connection**, not a named-profile connection
+or a group invitation token.
+
+**This is a permanent emergency freeze, not a resumable pause or a whole-group
+Stop.** Other participants, other groups and ordinary API conversations are not
+stopped. There is no unfreeze or takeover endpoint.
+
+Send `POST /v1/group-participants/stop` with this exact shape:
+
+```json
+{
+  "participant": {
+    "room_id": "group-123",
+    "home_install_id": "install:home",
+    "authority_gateway_id": "install:home",
+    "authority_epoch": 1,
+    "member_id": "writer",
+    "target_install_id": "install:participant",
+    "target_profile": "default"
+  },
+  "command_id": "owner-stop-unique-id",
+  "confirm": true
+}
+```
+
+Use the exact participant identity from its existing RoomLink dispatch, not a
+newly invented group/member identity. `target_install_id` must identify the
+gateway receiving the request. The durable Runs store must already know this
+scope; an unknown participant returns `404`, not a successful empty Stop.
+This API-first increment does not add a participant selector to Desktop or messaging.
+
+Keep the same `command_id` when retrying the same operation. It cannot be reused
+for another participant. Read back the current result with
+`GET /v1/group-participants/stop/{command_id}` and the same owner credentials.
+
+`admissions_frozen: true` confirms the persistent barrier: that old participant
+scope cannot admit new work, including after restart. An exact retry of a retained
+run receipt can still return its original run ID, but cannot relaunch it. The
+existing local interruption path stops known work; another updated listener
+sharing that store picks up the intent through its existing periodic sweep.
+
+Interpret `work_state` separately from the admission barrier:
+
+- `stopping`: this listener still tracks local work being interrupted.
+- `no_active_recorded_runs`: the bounded durable view has no outstanding run
+  records. This does not certify unrecorded work or undo external effects.
+- `unresolved`: another listener/process owns work, records are missing or
+  unrecognized, or the result is truncated. It can also be a snapshot taken just
+  before local cancellation finishes; check again. Never treat it as safe to retry
+  a task or promote a new host.
+
+Existing listeners which do not implement this feature cannot consume Stop
+intents for work they already accepted. Persisted SQL guards still block new
+reservations in the frozen scope. Separate stores and unrecorded legacy work are
+not covered. Status summaries omit prompts, outputs, commands, credentials and
+private paths.
+
+Requests are bounded to 8 KiB. The store retains up to 512 frozen scopes and 4,096
+operation IDs, without silently evicting a safety barrier; capacity exhaustion
+returns `507` and existing operation readback remains available. A snapshot lists
+at most 128 outstanding records and explicitly reports truncation. If durable
+storage is unavailable, owner Stop and new scoped group admissions return `503`;
+ordinary API conversations retain their existing behavior. No control request
+changes a Bot's approval defaults.
+
 ## Jobs API (background scheduled work)
 
 The server exposes a lightweight jobs CRUD surface for managing scheduled / background agent runs from a remote client. All endpoints are gated behind the same bearer auth.

@@ -176,3 +176,24 @@ class TestLinuxProfileDir:
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("XDG_CONFIG_HOME", "/home/t/.config")
         assert bc.real_profile_data_dir("edge", "Linux") == "/home/t/.config/microsoft-edge"
+
+    def test_real_profile_data_dir_uses_real_home_under_hermes_profile(self, tmp_path, monkeypatch):
+        real_home = "/home/realuser"
+        profile_dir = tmp_path / "hermes_profile"
+        profile_home = profile_dir / "home"
+        profile_home.mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setenv("HOME", str(profile_home))
+        monkeypatch.setenv("HERMES_REAL_HOME", real_home)
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+        assert bc.real_profile_data_dir("chromium", "Linux") == "/home/realuser/.config/chromium"
+        assert bc.real_profile_data_dir("chrome", "Darwin") == "/home/realuser/Library/Application Support/Google/Chrome"
+
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.setenv("USERPROFILE", r"C:\Users\realuser")
+        win_data = bc.real_profile_data_dir("chrome", "Windows")
+        assert win_data and win_data.endswith(r"Google\Chrome\User Data")
+        assert "hermes_profile" not in win_data
+

@@ -2479,8 +2479,12 @@ class GatewayTurnMixin:
         body = {"model": "hermes-agent", "messages": api_messages, "stream": True}
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
-        _stream_consumer = self._proxy_stream_consumer(source, event_message_id, _thread_metadata, _run_still_current)
-        stream_task = asyncio.create_task(_stream_consumer.run()) if _stream_consumer else None
+        # Proxy streaming is intentionally disabled here until it has the same
+        # persistence-release contract as the local-agent path.  The complete
+        # response is returned to the caller, which persists it before normal
+        # final delivery.  Starting a consumer here would bypass that gate.
+        _stream_consumer = None
+        stream_task = None
 
         _adapter = self._adapter_for_source(source)
         if _adapter:

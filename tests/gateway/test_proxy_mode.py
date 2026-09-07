@@ -175,6 +175,11 @@ class TestRunAgentViaProxy:
         monkeypatch.setenv("GATEWAY_PROXY_KEY", "test-key-123")
         runner = _make_runner()
         source = _make_source()
+        # Proxy streaming must stay disabled until it has the same persistence
+        # release contract as the local-agent path.
+        runner._proxy_stream_consumer = MagicMock(side_effect=AssertionError(
+            "proxy streaming must not start before persistence"
+        ))
 
         resp = _FakeSSEResponse(
             status=200,

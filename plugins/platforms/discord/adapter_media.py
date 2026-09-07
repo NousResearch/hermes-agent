@@ -15,7 +15,7 @@ logger = logging.getLogger("plugins.platforms.discord.adapter")
 class DiscordMediaMixin:
     async def _send_file_attachment(
         self, chat_id: str, file_path: str, caption: Optional[str] = None,
-        file_name: Optional[str] = None,
+        file_name: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local file as a Discord attachment (forum channels get a new thread). Path-based
         ``discord.File`` only: the open-handle form can race the multipart encoder after an image
@@ -23,13 +23,13 @@ class DiscordMediaMixin:
 
         See #66797.
         """
-        from plugins.platforms.discord.adapter import discord
+        from plugins.platforms.discord.adapter import _prompt_target_id, discord
 
         if not self._client:
             return SendResult(success=False, error="Not connected")
         if not os.path.isfile(file_path):
             return SendResult(success=False, error=f"File not found: {file_path}")
-        channel = await self._resolve_channel(chat_id)
+        channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
         if not channel:
             return SendResult(success=False, error=f"Channel {chat_id} not found")
         filename = file_name or os.path.basename(file_path)
@@ -68,7 +68,7 @@ class DiscordMediaMixin:
     ) -> None:
         """Send images as one Discord message (<=10 attachments): URLs are downloaded and uploaded
         inline (bare links don't render); on chunk failure the remainder uses the per-image loop."""
-        from plugins.platforms.discord.adapter import _image_ext_from_content_type, _read_url_image_with_redirect_guard, is_safe_url
+        from plugins.platforms.discord.adapter import _prompt_target_id, _image_ext_from_content_type, _read_url_image_with_redirect_guard, is_safe_url
 
         if not self._client:
             return
@@ -82,7 +82,7 @@ class DiscordMediaMixin:
             await super().send_multiple_images(chat_id, images, metadata, human_delay)
             return
         try:
-            channel = await self._resolve_channel(chat_id)
+            channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             if not channel:
                 logger.warning("[%s] Channel %s not found for multi-image send", self.name, chat_id)
                 return
@@ -168,11 +168,11 @@ class DiscordMediaMixin:
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs,
     ) -> SendResult:
         """Send audio as a Discord file attachment."""
-        from plugins.platforms.discord.adapter import discord
+        from plugins.platforms.discord.adapter import _prompt_target_id, discord
 
         try:
             import io
-            channel = await self._resolve_channel(chat_id)
+            channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             if not channel:
                 return SendResult(success=False, error=f"Channel {chat_id} not found")
             if not os.path.exists(audio_path):
@@ -228,19 +228,19 @@ class DiscordMediaMixin:
                         raise
                 return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:  # pragma: no cover - defensive logging
-            logger.error("[%s] Failed to send audio, falling back to base adapter: %s", self.name, e, exc_info=True)
-            return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)
+            logger.error("[%s] Failed to send audio: %s", self.name, e, exc_info=True)
+            return SendResult(success=False, error=str(e))
 
 
-    async def _send_local_file(self, chat_id, path, caption, *, file_name=None, not_found: str, kind: str, fallback):
-        """Native attachment upload for a local file; missing file -> error, other failure -> base adapter."""
+    async def _send_local_file(self, chat_id, path, caption, *, file_name=None, not_found: str, kind: str, metadata=None):
+        """A failed attachment is a failed delivery, never a successful text notice."""
         try:
-            return await self._send_file_attachment(chat_id, path, caption, file_name=file_name)
+            return await self._send_file_attachment(chat_id, path, caption, file_name=file_name, metadata=metadata)
         except FileNotFoundError:
             return SendResult(success=False, error=f"{not_found}: {path}")
         except Exception as e:  # pragma: no cover - defensive logging
-            logger.error("[%s] Failed to send %s, falling back to base adapter: %s", self.name, kind, e, exc_info=True)
-            return await fallback()
+            logger.error("[%s] Failed to send %s: %s", self.name, kind, e, exc_info=True)
+            return SendResult(success=False, error=str(e))
 
 
     async def send_image_file(
@@ -250,7 +250,7 @@ class DiscordMediaMixin:
         """Send a local image file natively as a Discord file attachment."""
         return await self._send_local_file(
             chat_id, image_path, caption, not_found="Image file not found", kind="local image",
-            fallback=lambda: super(DiscordMediaMixin, self).send_image_file(chat_id, image_path, caption, reply_to, metadata=metadata),
+            metadata=metadata,
         )
 
 
@@ -260,7 +260,7 @@ class DiscordMediaMixin:
     ) -> SendResult:
         """Download ``url`` and post it as a native attachment (Discord renders those inline).
         ``fallback(metadata)`` is the base-adapter URL send (``error_metadata`` after download failure)."""
-        from plugins.platforms.discord.adapter import _read_url_image_with_redirect_guard, discord, is_safe_url
+        from plugins.platforms.discord.adapter import _prompt_target_id, _read_url_image_with_redirect_guard, discord, is_safe_url
 
         if not self._client:
             return SendResult(success=False, error="Not connected")
@@ -269,7 +269,7 @@ class DiscordMediaMixin:
             return await fallback(metadata)
         try:
             import aiohttp
-            channel = await self._resolve_channel(chat_id)
+            channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             if not channel:
                 return SendResult(success=False, error=f"Channel {chat_id} not found")
             from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
@@ -299,13 +299,13 @@ class DiscordMediaMixin:
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an image natively as a Discord file attachment."""
-        from plugins.platforms.discord.adapter import _image_ext_from_content_type
+        from plugins.platforms.discord.adapter import _prompt_target_id, _image_ext_from_content_type
 
         return await self._send_url_media(
             chat_id, image_url, caption, kind="image",
             filename_for=lambda h: f"image.{_image_ext_from_content_type(h.get('content-type', 'image/png'))}",
             fallback=lambda md: super(DiscordMediaMixin, self).send_image(chat_id, image_url, caption, reply_to, metadata=md),
-            metadata=metadata, error_metadata=None,
+            metadata=metadata, error_metadata=metadata,
         )
 
 
@@ -328,7 +328,7 @@ class DiscordMediaMixin:
         """Send a local video file natively as a Discord attachment."""
         return await self._send_local_file(
             chat_id, video_path, caption, not_found="Video file not found", kind="local video",
-            fallback=lambda: super(DiscordMediaMixin, self).send_video(chat_id, video_path, caption, reply_to, metadata=metadata),
+            metadata=metadata,
         )
 
 
@@ -340,6 +340,6 @@ class DiscordMediaMixin:
         """Send an arbitrary file natively as a Discord attachment."""
         return await self._send_local_file(
             chat_id, file_path, caption, file_name=file_name, not_found="File not found", kind="document",
-            fallback=lambda: super(DiscordMediaMixin, self).send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata),
+            metadata=metadata,
         )
 

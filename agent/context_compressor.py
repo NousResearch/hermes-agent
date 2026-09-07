@@ -5,6 +5,7 @@ import contextlib
 import contextvars
 import copy
 import hashlib
+import inspect
 import json
 import logging
 import sqlite3
@@ -33,6 +34,21 @@ from agent.turn_context import drop_stale_api_content
 from tools.todo_tool import TODO_INJECTION_HEADER
 
 logger = logging.getLogger(__name__)
+
+
+def _accepts_keyword_argument(callable_obj: Any, name: str) -> bool:
+    """Return whether an inspectable callable accepts ``name`` as a keyword."""
+    try:
+        parameters = inspect.signature(callable_obj).parameters
+    except (TypeError, ValueError):
+        return False
+    if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+        return True
+    parameter = parameters.get(name)
+    return parameter is not None and parameter.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    )
 
 
 def _safe_int(value: Any) -> int | None:
@@ -4675,11 +4691,14 @@ Write only the summary body. Do not include any preamble or prefix."""
     ) -> Optional[str]:
         """Run the summary LLM; a cancellation rolls back the handoff scan's self-heal mutation first."""
         # Focus-topic derivation scans user turns; only pay when a summary is generated.
+        summary_kwargs: Dict[str, Any] = {
+            "focus_topic": focus_topic or self._derive_auto_focus_topic(messages),
+            "memory_context": memory_context,
+        }
+        if bypass_cooldown and _accepts_keyword_argument(self._generate_summary, "bypass_cooldown"):
+            summary_kwargs["bypass_cooldown"] = True
         try:
-            return self._generate_summary(
-                turns_to_summarize, focus_topic=focus_topic or self._derive_auto_focus_topic(messages),
-                memory_context=memory_context, bypass_cooldown=bypass_cooldown,
-            )
+            return self._generate_summary(turns_to_summarize, **summary_kwargs)
         except AuxiliaryExplicitCancellation:
             # Cancellation is a true no-op: restore the scan's mutation before the exception escapes.
             self._previous_summary = scan.previous_summary_before

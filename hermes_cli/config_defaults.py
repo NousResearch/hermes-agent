@@ -2273,6 +2273,12 @@ DEFAULT_CONFIG = {
         # gnome-libsecret|kwallet|kwallet5|kwallet6|basic force one (basic = unencrypted). Bridged
         # to HERMES_DESKTOP_PASSWORD_STORE; ignored off-Linux.
         "password_store": "auto",
+        # When true, file paths that appear as plain text in conversation
+        # messages (absolute paths with a file extension, outside code fences)
+        # are rendered as clickable links that open the file with the OS
+        # default application. Off by default — preserves the historical
+        # plain-text rendering.
+        "markdown_linkify_paths": False,
         # macOS only: code-signing identity (login-keychain cert; self-signed works) to re-sign
         # locally rebuilt apps so the Designated Requirement — and thus TCC grants — survives
         # updates. Empty = default ad-hoc identifier-pinned signing.

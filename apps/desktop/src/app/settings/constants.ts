@@ -386,7 +386,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   desktop: {
     repoScanEnabled: 'Automatic Repository Discovery',
     repoScanRoots: 'Repository Discovery Roots',
-    repoScanExcludePaths: 'Excluded Repository Paths'
+    repoScanExcludePaths: 'Excluded Repository Paths',
+    markdownLinkifyPaths: 'Linkify File Paths in Messages'
   },
   agent: {
     maxTurns: 'Max Agent Steps',
@@ -553,7 +554,8 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   desktop: {
     repoScanEnabled: 'Scan local folders for Git repositories to show in Projects.',
     repoScanRoots: 'Folders to scan. Leave empty to scan your home directory.',
-    repoScanExcludePaths: 'Folders and their descendants to skip during repository discovery.'
+    repoScanExcludePaths: 'Folders and their descendants to skip during repository discovery.',
+    markdownLinkifyPaths: 'Render absolute file paths that appear as plain text in conversation messages as clickable links that open the file with the OS default application. Off by default.'
   },
   timezone: 'IANA timezone identifier. Blank uses the system timezone.',
   browser: {
@@ -656,6 +658,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'desktop.repo_scan_enabled',
       'desktop.repo_scan_roots',
       'desktop.repo_scan_exclude_paths',
+      'desktop.markdown_linkify_paths',
       'code_execution.mode',
       'terminal.persistent_shell',
       'terminal.env_passthrough',

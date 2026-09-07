@@ -219,4 +219,56 @@ class TestBusyInputModeQueueFifo:
         ]
         assert runner._queue_depth(session_key, adapter=adapter) == len(texts)
 
+    def _media_event(self, kind: MessageType, index: int) -> MessageEvent:
+        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None)
+        suffix = "jpg" if kind == MessageType.PHOTO else "pdf"
+        mime = "image/jpeg" if kind == MessageType.PHOTO else "application/pdf"
+        return MessageEvent(
+            text="",
+            message_type=kind,
+            source=source,
+            raw_message=object(),
+            message_id=f"media-{index}",
+            platform_update_id=index,
+            media_urls=[f"https://example.invalid/{index}.{suffix}"],
+            media_types=[mime],
+            metadata={"native_id": f"attachment-{index}"},
+        )
+
+    def test_photo_burst_stays_one_turn_with_constituent_context(self):
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:album"
+        events = [self._media_event(MessageType.PHOTO, i) for i in range(3)]
+        for event in events:
+            runner._queue_or_replace_pending_event(session_key, event)
+
+        merged = adapter._pending_messages[session_key]
+        assert merged is events[0]
+        assert session_key not in runner._queued_events
+        assert merged.media_urls == [event.media_urls[0] for event in events]
+        assert merged._merged_media_source_events == events
+        assert [event.raw_message for event in merged._merged_media_source_events] == [
+            event.raw_message for event in events
+        ]
+        assert [event.platform_update_id for event in merged._merged_media_source_events] == [0, 1, 2]
+        assert [event.metadata["native_id"] for event in merged._merged_media_source_events] == [
+            "attachment-0", "attachment-1", "attachment-2"
+        ]
+
+    def test_non_album_media_events_remain_complete_fifo_turns(self):
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:documents"
+        events = [self._media_event(MessageType.DOCUMENT, i) for i in range(3)]
+        for event in events:
+            runner._queue_or_replace_pending_event(session_key, event)
+
+        assert adapter._pending_messages[session_key] is events[0]
+        assert runner._queued_events[session_key] == events[1:]
+        assert [event.raw_message for event in events] == [
+            event.raw_message
+            for event in [adapter._pending_messages[session_key], *runner._queued_events[session_key]]
+        ]
+        assert [event.metadata["native_id"] for event in events] == [
+            "attachment-0", "attachment-1", "attachment-2"
+        ]
 

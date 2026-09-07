@@ -1903,8 +1903,14 @@ class CredentialPool(CredentialPoolAdminMixin):
         self._last_no_entries_log_at = now
         logger.info("credential pool: no available entries (all exhausted or empty)")
 
-    def _select_unlocked(self, *, refresh: bool = True) -> Tuple[Optional[PooledCredential], List[PooledCredential]]:
-        """Select the best available entry; returns ``(entry, pending_refresh)``."""
+    def _select_unlocked(
+        self, *, refresh: bool = True, count: bool = True,
+    ) -> Tuple[Optional[PooledCredential], List[PooledCredential]]:
+        """Select the best available entry; returns ``(entry, pending_refresh)``.
+
+        ``count=False`` skips the ``request_count`` bump for selections that are
+        not going to serve a request (a forced-refresh target lookup).
+        """
         available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh)
         if not available:
             self._current_id = None
@@ -1919,19 +1925,19 @@ class CredentialPool(CredentialPoolAdminMixin):
             entry = random.choice(available)
         elif self._strategy == STRATEGY_LEAST_USED and len(available) > 1:
             entry = min(available, key=lambda e: e.request_count)
-            # Bump the usage counter so subsequent selections distribute load
-            self._current_id = entry.id
-            return self._adopt(entry, persist=False, request_count=entry.request_count + 1), pending_refresh
-        elif self._strategy == STRATEGY_ROUND_ROBIN and len(available) > 1:
+        else:
             entry = available[0]
+        # Count the selection under every strategy. The counter is ``least_used``'s
+        # baseline and reaches auth.json on the next persist (exhaustion, rotation,
+        # refresh); it used to move only while ``least_used`` was active.
+        if count:
+            entry = self._adopt(entry, persist=False, request_count=entry.request_count + 1)
+        if self._strategy == STRATEGY_ROUND_ROBIN and len(available) > 1:
             rotated = [candidate for candidate in self._entries if candidate.id != entry.id]
             rotated.append(replace(entry, priority=len(self._entries) - 1))
             self._entries = [replace(candidate, priority=idx) for idx, candidate in enumerate(rotated)]
             self._persist()
-            self._current_id = entry.id
-            return self._current_unlocked() or entry, pending_refresh
-        else:
-            entry = available[0]
+            entry = self._find(lambda candidate: candidate.id == entry.id) or entry
         self._current_id = entry.id
         return entry, pending_refresh
 
@@ -2144,7 +2150,7 @@ class CredentialPool(CredentialPoolAdminMixin):
                 if api_key_hint:
                     entry = self._find(lambda e: e.runtime_api_key == api_key_hint)
                 else:
-                    entry = self._current_unlocked() or self._select_unlocked(refresh=False)[0]
+                    entry = self._current_unlocked() or self._select_unlocked(refresh=False, count=False)[0]
             if entry is None:
                 return None
             self._current_id = entry.id

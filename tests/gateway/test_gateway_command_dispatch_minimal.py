@@ -1,4 +1,3 @@
-from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -6,7 +5,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from gateway.session import SessionSource, build_session_key
 
 
 def _make_source() -> SessionSource:
@@ -29,19 +28,8 @@ def _make_event(text: str) -> MessageEvent:
     )
 
 
-def _session_entry() -> SessionEntry:
-    return SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-1",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-        total_tokens=0,
-    )
-
-
-def _make_runner():
+def _make_runner(tmp_path):
+    from gateway.session import AsyncSessionStore, SessionStore
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
@@ -58,17 +46,15 @@ def _make_runner():
         emit_collect=AsyncMock(return_value=[]),
         loaded_hooks=False,
     )
-    runner.session_store = MagicMock()
-    runner.session_store.get_or_create_session.return_value = _session_entry()
-    runner.session_store.load_transcript.return_value = []
-    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
+    runner.session_store.get_or_create_session(_make_source())
+    runner._async_session_store = AsyncSessionStore(runner.session_store)
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._queued_events = {}
-    runner._session_db = MagicMock()
-    runner._session_db.get_session_title.return_value = None
+    runner._session_db = SimpleNamespace(_db=runner.session_store._db)
     runner._reasoning_config = None
     runner._provider_routing = {}
     runner._fallback_model = None
@@ -97,18 +83,18 @@ def _make_runner():
     runner._is_telegram_topic_root_lobby = lambda _source: False
     runner._should_send_telegram_lobby_reminder = lambda _source: False
     runner._check_slash_access = lambda _source, _command: None
-    runner._begin_session_run_generation = lambda _key: 1
-    runner._release_running_agent_state = lambda key: runner._running_agents.pop(key, None)
     return runner, adapter
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("command_text", ["/queue do this next", "/q do this next"])
-async def test_idle_queue_sends_payload_as_next_turn(command_text):
-    runner, _adapter = _make_runner()
+async def test_idle_queue_sends_payload_as_next_turn(command_text, tmp_path):
+    runner, _adapter = _make_runner(tmp_path)
     captured = {}
 
     async def fake_handle_message_with_agent(event, source, key, generation):
+        assert runner._is_session_run_current(key, generation)
+        assert runner._is_session_running(key)
         captured["text"] = event.text
         captured["command"] = event.get_command()
         captured["source"] = source
@@ -125,5 +111,5 @@ async def test_idle_queue_sends_payload_as_next_turn(command_text):
     assert captured["command"] is None
     assert captured["source"] == _make_source()
     assert captured["key"] == build_session_key(_make_source())
-    assert captured["generation"] == 1
+    assert runner._is_session_run_current(captured["key"], captured["generation"])
     assert runner._running_agents == {}

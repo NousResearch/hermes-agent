@@ -39,6 +39,45 @@ class TestCodexTransportBasic:
 
 class TestCodexBuildKwargs:
 
+    @pytest.mark.parametrize("model", ["gpt-6-astra", "openai/gpt-6-astra"])
+    @pytest.mark.parametrize("effort, expected", [
+        ("low", "low"), ("medium", "medium"), ("high", "high"),
+        ("xhigh", "xhigh"), ("max", "max"), ("ultra", "max"),
+        ("minimal", "low"), ("none", None),
+    ])
+    def test_astra_copilot_forwards_configured_reasoning(self, transport, model, effort, expected):
+        from agent.reasoning_params import ReasoningParamsMixin
+        from hermes_cli.config import get_config_path, load_config
+        from hermes_constants import resolve_reasoning_config
+
+        get_config_path().write_text(json.dumps({
+            "model": {"default": model}, "agent": {"reasoning_effort": effort},
+        }), encoding="utf-8")
+        reasoning = resolve_reasoning_config(load_config(), model)
+        agent = SimpleNamespace(model=model, reasoning_config=reasoning)
+        kw = transport.build_kwargs(
+            model=model, messages=[{"role": "user", "content": "Hi"}],
+            provider="github-copilot", is_github_responses=True,
+            reasoning_config=reasoning,
+            github_reasoning_extra=ReasoningParamsMixin._github_models_reasoning_extra_body(agent),
+        )
+        assert kw.get("reasoning") == ({"effort": expected} if expected else None)
+
+    @pytest.mark.parametrize("model", ["gpt-6-astra", "openai/gpt-6-astra"])
+    @pytest.mark.parametrize("effort, expected", [("max", "max"), ("ultra", "max"), ("minimal", "low")])
+    def test_astra_main_and_auxiliary_responses_preserve_effort(self, transport, model, effort, expected):
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        messages = [{"role": "user", "content": "Hi"}]
+        reasoning = {"enabled": True, "effort": effort}
+        main = transport.build_kwargs(model=model, messages=messages, reasoning_config=reasoning)
+        adapter = _CodexCompletionsAdapter(SimpleNamespace(base_url="https://api.openai.com/v1"), model)
+        auxiliary, _, _ = adapter._build_responses_kwargs({
+            "messages": messages, "extra_body": {"reasoning": reasoning},
+        })
+        assert main["reasoning"]["effort"] == expected
+        assert auxiliary["reasoning"]["effort"] == expected
+
     def test_900k_context_variant_suffix_stripped_on_wire(self, transport):
         """``-900k`` large-context picker variants are Hermes-side aliases —
         the Codex backend only knows the base slug, so build_kwargs must

@@ -154,6 +154,8 @@ def _shallow_git(head_sha, fetch_head_sha):
             return MagicMock(returncode=0, stdout=f"{head_sha}\n")
         if cmd[:3] == ["git", "rev-parse", "FETCH_HEAD"]:
             return MagicMock(returncode=0, stdout=f"{fetch_head_sha}\n")
+        if cmd == ["git", "merge-base", "--is-ancestor", fetch_head_sha, "HEAD"]:
+            return MagicMock(returncode=1, stdout="")
         raise AssertionError(f"unexpected git command: {cmd!r}")
 
     return fake_run

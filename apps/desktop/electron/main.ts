@@ -385,8 +385,11 @@ import {
 import {
   compareApiUrl,
   parseCompareBehindCount,
+  resolveAncestry,
   resolveBehindCount,
   resolveCommitLogSelection,
+  resolveSshBehindCount,
+  resolveSshUpdateAvailable,
   shouldCountCommits
 } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
@@ -3186,18 +3189,36 @@ async function checkUpdates() {
     // flagging that as an update nudges the user into wiping their work.
     const tipsEqual = Boolean(currentSha && currentSha === targetSha)
 
-    const sshBehind = tipsEqual
-      ? 0
-      : await fetchCompareBehindCount({ currentSha, originUrl: OFFICIAL_REPO_HTTPS_URL, targetSha })
+    // `ls-remote` gives a tip, not a direction. Ask git whether that tip is
+    // already reachable from HEAD before trusting the compare API, which
+    // cannot see a commit that exists only on this machine.
+    const targetIsAncestorOfHead = await resolveAncestry({
+      currentSha,
+      runGit: (args: string[]) => runGit(args, { cwd: updateRoot }),
+      targetSha,
+      tipsEqual
+    })
 
-    const upToDate = tipsEqual || sshBehind === 0
+    const compareBehind =
+      tipsEqual || targetIsAncestorOfHead
+        ? 0
+        : await fetchCompareBehindCount({ currentSha, originUrl: OFFICIAL_REPO_HTTPS_URL, targetSha })
+
+    const sshBehind = resolveSshBehindCount({
+      compareBehind,
+      currentSha,
+      targetIsAncestorOfHead,
+      targetSha
+    })
+
+    const upToDate = sshBehind === 0
 
     return {
       supported: true,
       branch,
       currentBranch,
       behind: upToDate ? 0 : sshBehind,
-      updateAvailable: !upToDate,
+      updateAvailable: resolveSshUpdateAvailable(sshBehind),
       currentSha,
       targetSha,
       commits: [],
@@ -3244,10 +3265,16 @@ async function checkUpdates() {
 
   // A positive directional ancestry result remains trustworthy in a shallow
   // graph and prevents a local commit on top of origin from looking outdated.
-  const targetIsAncestorOfHead =
-    isShallow &&
-    currentSha !== targetSha &&
-    (await runGit(['merge-base', '--is-ancestor', `origin/${branch}`, 'HEAD'], { cwd: updateRoot })).code === 0
+  // Keep execution failures distinct from a valid non-ancestor result, as in
+  // the passive SSH path above.
+  const targetIsAncestorOfHead = isShallow
+    ? await resolveAncestry({
+        currentSha,
+        runGit: (args: string[]) => runGit(args, { cwd: updateRoot }),
+        targetSha,
+        tipsEqual: currentSha === targetSha
+      })
+    : false
 
   let behind = resolveBehindCount({
     countStr,

@@ -9,6 +9,74 @@ function shouldCountCommits({ isShallow }) {
   return !isShallow
 }
 
+// Ask git whether `targetSha` is already reachable from HEAD.
+//
+// Three outcomes, deliberately not two: `true` (proven ancestor — a carried
+// local commit puts HEAD ahead), `false` (proven not an ancestor), and `null`
+// (git could not answer). A spawn failure rejects rather than exiting
+// non-zero, and a missing git binary is not evidence about the checkout.
+// Folding that into `false` would let a broken git read as "update available"
+// and nudge the user into an update that discards the commit they carry.
+async function resolveAncestry({
+  currentSha,
+  runGit,
+  targetSha,
+  tipsEqual
+}: {
+  currentSha?: string
+  runGit: (args: string[]) => Promise<{ code: number }>
+  targetSha?: string
+  tipsEqual: boolean
+}): Promise<boolean | null> {
+  if (tipsEqual || !currentSha || !targetSha) {
+    return false
+  }
+
+  try {
+    return (await runGit(['merge-base', '--is-ancestor', targetSha, 'HEAD'])).code === 0
+  } catch {
+    return null
+  }
+}
+
+// The SSH-official passive check only learns tip SHAs from `ls-remote`, so it
+// cannot count. Differing tips still do not prove the checkout is behind: a
+// carried local commit puts HEAD ahead of the remote tip. Git can prove that
+// case from local objects even on a shallow clone, and it is the only party
+// that knows about a commit which exists nowhere else — the compare API 404s
+// on it and returns null, which would otherwise read as "update available"
+// forever, since updating never removes the carried commit.
+//
+// `targetIsAncestorOfHead` carries three states, not two. `false` means git
+// answered "not an ancestor"; `null` means git could not answer at all. Only
+// the first is evidence. When ancestry is unknown and the compare API is also
+// silent, the honest answer is null — "something may be available, count
+// unknown" — never a confident behind count derived from a failed probe.
+function resolveSshBehindCount({
+  compareBehind,
+  currentSha,
+  targetIsAncestorOfHead = false,
+  targetSha
+}: {
+  compareBehind: number | null
+  currentSha?: string
+  targetIsAncestorOfHead?: boolean | null
+  targetSha?: string
+}) {
+  if (currentSha && targetSha && (currentSha === targetSha || targetIsAncestorOfHead === true)) {
+    return 0
+  }
+
+  return compareBehind
+}
+
+// The passive SSH path may know neither direction nor count. `null` keeps that
+// uncertainty explicit; it must not turn into an update prompt until Git or the
+// compare API proves that the remote has commits this checkout lacks.
+function resolveSshUpdateAvailable(behind: number | null): boolean {
+  return typeof behind === 'number' && behind > 0
+}
+
 // Resolve how many commits the local checkout is behind origin for the desktop
 // update indicator. Shallow checkouts use SHA equality plus any positively
 // proven local-ahead ancestry; exact counts remain exclusive to full clones.
@@ -89,4 +157,13 @@ function parseCompareBehindCount(payload) {
   return ahead
 }
 
-export { compareApiUrl, parseCompareBehindCount, resolveBehindCount, resolveCommitLogSelection, shouldCountCommits }
+export {
+  compareApiUrl,
+  parseCompareBehindCount,
+  resolveAncestry,
+  resolveBehindCount,
+  resolveCommitLogSelection,
+  resolveSshBehindCount,
+  resolveSshUpdateAvailable,
+  shouldCountCommits
+}

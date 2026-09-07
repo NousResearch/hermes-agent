@@ -503,8 +503,27 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             print("✓ Already up to date.")
             return
         from hermes_cli.banner import _github_compare_behind
-        # counted == 0 means local-ahead, not behind; None means the API could not count.
-        _print_update_check_result(_github_compare_behind(head_sha, target_sha), compare_branch)
+
+        # A carried local commit is invisible to GitHub's compare API.
+        ancestry_known = False
+        try:
+            ancestor = subprocess.run(
+                git_cmd + ["merge-base", "--is-ancestor", target_sha, "HEAD"],
+                cwd=_m().PROJECT_ROOT, capture_output=True, timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+        else:
+            if ancestor.returncode == 0:
+                print("✓ Already up to date.")
+                return
+            ancestry_known = ancestor.returncode == 1
+
+        counted = _github_compare_behind(head_sha, target_sha)
+        if counted is None and not ancestry_known:
+            print(f"⚕ Update status unknown (could not compare with {compare_branch}).")
+            return
+        _print_update_check_result(counted, compare_branch)
         return
 
     rev_result = _git_run(git_cmd, ["rev-list", f"HEAD..{compare_branch}", "--count"], check=True)

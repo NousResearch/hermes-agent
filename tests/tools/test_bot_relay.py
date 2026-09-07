@@ -749,3 +749,25 @@ def test_delivery_env_single_profile_host_passes_the_process_env_through(tmp_pat
     monkeypatch.setenv("OPENROUTER_API_KEY", "from-shell")
 
     assert bot_relay.delivery_env(None, None)["OPENROUTER_API_KEY"] == "from-shell"
+
+
+def test_remote_roster_drops_an_agent_that_went_private():
+    """Enforced on the CONSUMING side too: a peer on an older build advertises every managed
+    profile unconditionally, and must not be able to put a private agent back into our roster."""
+    from tools.bot_relay import _normalize_roster_row
+
+    public = {"profile": "researcher", "handle": "researcher", "connection_id": "mini"}
+    assert _normalize_roster_row(public) is not None
+
+    for value in (True, 1, "true", "yes", "on", "1"):
+        row = {"profile": "lucky", "handle": "lucky", "connection_id": "mini", "private": value}
+        assert _normalize_roster_row(row) is None, f"private={value!r} should be dropped"
+
+
+def test_remote_roster_keeps_an_agent_whose_private_flag_is_falsey():
+    """Fail OPEN: an unrecognised value must not silently hide a working teammate."""
+    from tools.bot_relay import _normalize_roster_row
+
+    for value in (False, 0, "false", "no", "0", "", None, "maybe"):
+        row = {"profile": "lucky", "handle": "lucky", "connection_id": "mini", "private": value}
+        assert _normalize_roster_row(row) is not None, f"private={value!r} should stay visible"

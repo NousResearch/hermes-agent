@@ -1,12 +1,17 @@
 import { execFile } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import path from 'node:path'
+
+import { windowsPowerShellExecutable } from './windows-powershell-path'
 
 const DEFAULT_PROBE_TIMEOUT_MS = 3_000
 // Main polls the update marker once per second. Keep a successful async query
 // available across at least one full poll interval; positive updater adoption
 // still bypasses this cache and performs a fresh awaited OS query.
 const DEFAULT_CACHE_MS = 2_000
+// The probe answers about whatever PID a marker, a scan, or a holder list
+// names, and main keeps one instance of it for the life of the app. Without a
+// ceiling every PID ever asked about stays resident forever.
+const DEFAULT_MAX_CACHE_ENTRIES = 256
 const INTEGER_EPOCH_PATTERN = /^[1-9][0-9]{8,11}$/
 
 type RunProbe = (command: string, args: string[], timeoutMs: number) => Promise<string>
@@ -21,12 +26,6 @@ interface CacheOptions {
   cacheMs?: number
   now?: () => number
   query?: (pid: number) => Promise<number | null>
-}
-
-function powershellExecutable(): string {
-  const windowsRoot = process.env.SystemRoot || 'C:\\Windows'
-
-  return path.join(windowsRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
 }
 
 function runProbe(command: string, args: string[], timeoutMs: number): Promise<string> {
@@ -59,7 +58,7 @@ export async function queryWindowsProcessCreatedAt(
 
   try {
     raw = (await run(
-      powershellExecutable(),
+      windowsPowerShellExecutable(),
       ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
       timeoutMs
     )).trim()
@@ -158,6 +157,46 @@ export async function queryProcessCreatedAt(
   return null
 }
 
+/** One cached OS identity answer, or the in-flight query that will replace it. */
+export interface ProcessIdentityCacheEntry {
+  pending: boolean
+  validUntil: number
+  value: number | null
+}
+
+/**
+ * Keep the identity cache bounded, in place.
+ *
+ * The cache is keyed by PID and every marker poll, scan, and holder list can
+ * introduce new ones, so an unbounded Map grows for as long as the app runs.
+ * Two rules, applied on every write:
+ *
+ *  1. A settled entry whose `validUntil` has passed is dead weight — the next
+ *     read would re-query it anyway — so drop it.
+ *  2. Whatever is left is trimmed to `maxEntries`, oldest write first. A Map
+ *     iterates in insertion order and every write here re-inserts its key, so
+ *     the head of the iteration is the least recently written entry.
+ *
+ * A pending entry is never swept: it is the in-flight-query de-duplication
+ * token, and dropping it would let a second query for the same PID start. The
+ * capacity trim still evicts it if the cache is full of pending work, so the
+ * ceiling is hard either way.
+ */
+export function pruneProcessIdentityCache(
+  entries: Map<number, ProcessIdentityCacheEntry>,
+  at: number,
+  maxEntries: number = DEFAULT_MAX_CACHE_ENTRIES
+): void {
+  for (const [pid, entry] of entries) {
+    if (!entry.pending && at > entry.validUntil) {entries.delete(pid)}
+  }
+
+  for (const pid of entries.keys()) {
+    if (entries.size <= maxEntries) {break}
+    entries.delete(pid)
+  }
+}
+
 /**
  * Adapt the async OS query to synchronous marker readers. The first read (and
  * every query failure) returns unknown/null, which keeps the gate closed. A
@@ -169,7 +208,21 @@ export function createCachedWindowsProcessCreateTimeProbe({
   now = Date.now,
   query = queryProcessCreatedAt
 }: CacheOptions = {}): (pid: number) => number | null {
-  const entries = new Map<number, { pending: boolean; validUntil: number; value: number | null }>()
+  const entries = new Map<number, ProcessIdentityCacheEntry>()
+
+  // Re-insert rather than update in place: insertion order is the recency
+  // order pruneProcessIdentityCache evicts by.
+  const write = (pid: number, entry: ProcessIdentityCacheEntry, at: number) => {
+    entries.delete(pid)
+    entries.set(pid, entry)
+    pruneProcessIdentityCache(entries, at, DEFAULT_MAX_CACHE_ENTRIES)
+  }
+
+  const settle = (pid: number, value: number | null) => {
+    const at = now()
+
+    write(pid, { pending: false, validUntil: at + cacheMs, value }, at)
+  }
 
   return (pid: number): number | null => {
     if (!Number.isInteger(pid) || pid <= 0) {return null}
@@ -179,10 +232,10 @@ export function createCachedWindowsProcessCreateTimeProbe({
     if (existing && !existing.pending && at <= existing.validUntil) {return existing.value}
 
     if (!existing?.pending) {
-      entries.set(pid, { pending: true, validUntil: at, value: null })
+      write(pid, { pending: true, validUntil: at, value: null }, at)
       void query(pid).then(
-        value => entries.set(pid, { pending: false, validUntil: now() + cacheMs, value }),
-        () => entries.set(pid, { pending: false, validUntil: now() + cacheMs, value: null })
+        value => settle(pid, value),
+        () => settle(pid, null)
       )
     }
 

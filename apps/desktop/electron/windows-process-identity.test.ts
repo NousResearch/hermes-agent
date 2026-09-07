@@ -4,6 +4,8 @@ import { describe, it } from 'vitest'
 
 import {
   createCachedWindowsProcessCreateTimeProbe,
+  type ProcessIdentityCacheEntry,
+  pruneProcessIdentityCache,
   queryDarwinProcessCreatedAt,
   queryProcessCreatedAt,
   queryWindowsProcessCreatedAt,
@@ -97,6 +99,79 @@ describe('createCachedWindowsProcessCreateTimeProbe', () => {
     await new Promise(resolve => setImmediate(resolve))
     now += 1_000
     assert.equal(probe(42), 1_723_330_000)
+  })
+
+  // The cache used to be an unbounded Map: every PID a marker poll, a scan, or
+  // a holder list ever named stayed resident for the life of the app.
+  it('never retains more identities than the cap, evicting the oldest first', async () => {
+    const calls = new Map<number, number>()
+
+    const probe = createCachedWindowsProcessCreateTimeProbe({
+      cacheMs: 1_000_000,
+      now: () => 1_000,
+      query: async pid => {
+        calls.set(pid, (calls.get(pid) ?? 0) + 1)
+
+        return 1_723_330_000 + pid
+      }
+    })
+
+    // 300 > the 256 production cap, so the earliest PIDs must have been evicted
+    // even though none of them expired.
+    for (let pid = 1; pid <= 300; pid += 1) {
+      assert.equal(probe(pid), null)
+    }
+
+    await new Promise(resolve => setImmediate(resolve))
+
+    assert.equal(probe(300), 1_723_330_300, 'the newest identity stays cached')
+    assert.equal(calls.get(300), 1, 'a retained identity is never re-queried')
+
+    assert.equal(probe(1), null, 'the oldest identity was evicted, so it reads unknown again')
+    assert.equal(calls.get(1), 2, 'an evicted identity is re-queried from the OS')
+  })
+})
+
+describe('pruneProcessIdentityCache', () => {
+  const settled = (validUntil: number): ProcessIdentityCacheEntry => ({
+    pending: false,
+    validUntil,
+    value: 1_723_330_000
+  })
+
+  it('drops settled entries whose validity has passed', () => {
+    const entries = new Map<number, ProcessIdentityCacheEntry>([
+      [1, settled(500)],
+      [2, settled(1_000)],
+      [3, settled(1_500)]
+    ])
+
+    pruneProcessIdentityCache(entries, 1_000, 64)
+
+    assert.deepEqual([...entries.keys()], [2, 3], 'only the entry past its validUntil is dropped')
+  })
+
+  it('keeps an in-flight query so a second query for the same PID never starts', () => {
+    const entries = new Map<number, ProcessIdentityCacheEntry>([
+      [1, { pending: true, validUntil: 0, value: null }],
+      [2, settled(0)]
+    ])
+
+    pruneProcessIdentityCache(entries, 10_000, 64)
+
+    assert.deepEqual([...entries.keys()], [1])
+  })
+
+  it('trims to the cap, oldest write first, even when nothing has expired', () => {
+    const entries = new Map<number, ProcessIdentityCacheEntry>()
+
+    for (let pid = 1; pid <= 10; pid += 1) {
+      entries.set(pid, settled(10_000))
+      pruneProcessIdentityCache(entries, 1_000, 4)
+      assert.ok(entries.size <= 4, `size stayed within the cap after inserting ${pid}`)
+    }
+
+    assert.deepEqual([...entries.keys()], [7, 8, 9, 10])
   })
 })
 

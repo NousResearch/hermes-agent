@@ -9,11 +9,10 @@ logic would misrender e.g. a TaskCreate call as "reading task list".
 """
 
 from agent.display import (
+    build_tool_preview, get_cute_tool_message, get_tool_verb, verb_drops_preview,
+)
+from agent.display_claude_sdk import (
     TASK_TOOLS,
-    build_tool_preview,
-    get_cute_tool_message,
-    get_tool_verb,
-    verb_drops_preview,
 )
 
 

@@ -50,7 +50,7 @@ def _handle_rpc_request(request: dict, *, allowed_tools: frozenset, tool_call_co
                           f"Available: {', '.join(sorted(allowed_tools))}")
     if tool_call_counter[0] >= max_tool_calls:
         return tool_error(f"Tool call limit reached ({max_tool_calls}). "
-                          "No more tool calls allowed in this execution.")
+                          f"Call to '{tool_name}' blocked — no more tool calls allowed in this execution.")
     if tool_name == "terminal" and isinstance(tool_args, dict):
         for param in _TERMINAL_BLOCKED_PARAMS:
             tool_args.pop(param, None)

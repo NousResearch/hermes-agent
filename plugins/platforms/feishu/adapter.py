@@ -1038,6 +1038,61 @@ def _install_lark_ws_isolation(ws_client_module: Any) -> None:
         _WS_ISOLATION_INSTALLED = True
 
 
+# Per-IP deadline (seconds) for the WS connect failover walk. Module constant so
+# tests can tighten it instead of waiting out a real 4s black-hole dial.
+_WS_CONNECT_PER_IP_TIMEOUT = 4.0
+
+
+def _install_ws_ip_failover(ws_client_module: Any) -> None:
+    """Per-IP connect failover for msg-frontier DNS black-holes.
+
+    msg-frontier.feishu.cn's DNS pool returns ~12 IPs of which a few are black
+    holes (TCP/TLS connect hangs indefinitely, no RST). ``websockets.connect``
+    tries the resolved IPs sequentially under a single ``open_timeout``, so when
+    the first IP is a black-hole the whole connect attempt times out even though
+    healthy IPs are one dial away. This installs a wrapper around the (already
+    isolation-dispatched, see ``_install_lark_ws_isolation``) ``connect`` that
+    walks the unique resolved IPs with a short per-IP budget and returns the
+    first connection that completes the TLS+WS handshake. Idempotent; safe to
+    call from every profile's WS thread.
+    """
+    import socket as _socket
+
+    real_connect = ws_client_module.websockets.connect
+    if getattr(real_connect, "_hermes_ip_failover", False):
+        return
+
+    async def _connect_with_ip_failover(uri: str, **kwargs: Any) -> Any:
+        from urllib.parse import urlparse as _urlparse
+        parsed = _urlparse(uri)
+        host, port = parsed.hostname, parsed.port or 443
+        try:
+            infos = _socket.getaddrinfo(host, port, type=_socket.SOCK_STREAM)
+            unique_ips = list(dict.fromkeys(sa[0] for *_, sa in infos))
+        except Exception:
+            unique_ips = [host]
+        last_err: Exception | None = None
+        for ip in unique_ips:
+            try:
+                kw = dict(kwargs)
+                kw["open_timeout"] = None  # per-IP timeout enforced via wait_for below
+                if ip != host:
+                    kw["host"], kw["port"] = ip, port
+                return await asyncio.wait_for(real_connect(uri, **kw), timeout=_WS_CONNECT_PER_IP_TIMEOUT)
+            except Exception as e:
+                last_err = e
+                ws_client_module.logger.debug(
+                    "[Feishu] WS connect to %s via IP %s failed (%s), trying next IP",
+                    host, ip, type(e).__name__,
+                )
+        raise last_err or ConnectionError(f"all IPs failed for {host}")
+
+    _connect_with_ip_failover._hermes_ip_failover = True
+    _connect_with_ip_failover.__wrapped__ = real_connect  # keep signature probes honest
+    _connect_with_ip_failover.__name__ = getattr(real_connect, "__name__", "connect")
+    ws_client_module.websockets.connect = _connect_with_ip_failover
+
+
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     """Run the official Lark WS client in its own thread-local loop (see isolation notes above)."""
     import lark_oapi.ws.client as ws_client_module
@@ -1064,6 +1119,7 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     _install_lark_ws_isolation(ws_client_module)
     _ws_isolation_state.loop = loop
     _ws_isolation_state.connect_kwargs = connect_overrides
+    _install_ws_ip_failover(ws_client_module)
 
     def _configure_with_overrides(conf: Any) -> Any:
         if original_configure is None:

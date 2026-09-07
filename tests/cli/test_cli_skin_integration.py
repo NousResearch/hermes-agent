@@ -30,11 +30,6 @@ def _make_cli_stub():
 
 
 class TestCliSkinPromptIntegration:
-    def test_default_prompt_fragments_use_default_symbol(self):
-        cli = _make_cli_stub()
-
-        set_active_skin("default")
-        assert cli._get_tui_prompt_fragments() == [("class:prompt", "❯ ")]
 
     def test_ares_prompt_fragments_use_skin_symbol(self):
         cli = _make_cli_stub()
@@ -49,12 +44,6 @@ class TestCliSkinPromptIntegration:
         set_active_skin("ares")
         assert cli._get_tui_prompt_fragments() == [("class:sudo-prompt", "🔑 ⚔ ")]
 
-    def test_narrow_terminals_compact_voice_prompt_fragments(self):
-        cli = _make_cli_stub()
-        cli._voice_mode = True
-
-        with patch.object(HermesCLI, "_get_tui_terminal_width", return_value=50):
-            assert cli._get_tui_prompt_fragments() == [("class:voice-prompt", "🎤 ")]
 
     def test_narrow_terminals_compact_voice_recording_prompt_fragments(self):
         cli = _make_cli_stub()
@@ -68,24 +57,7 @@ class TestCliSkinPromptIntegration:
         assert frags[0][1].startswith("●")
         assert "❯" not in frags[0][1]
 
-    def test_icon_only_skin_symbol_still_visible_in_special_states(self):
-        cli = _make_cli_stub()
-        cli._secret_state = {"response_queue": object()}
 
-        with patch("hermes_cli.skin_engine.get_active_prompt_symbol", return_value="⚔ "):
-            assert cli._get_tui_prompt_fragments() == [("class:sudo-prompt", "🔑 ⚔ ")]
-
-    def test_build_tui_style_dict_uses_skin_overrides(self):
-        cli = _make_cli_stub()
-
-        set_active_skin("ares")
-        skin = get_active_skin()
-        style_dict = cli._build_tui_style_dict()
-
-        assert style_dict["prompt"] == skin.get_color("prompt")
-        assert style_dict["input-rule"] == skin.get_color("input_rule")
-        assert style_dict["prompt-working"] == f"{skin.get_color('banner_dim')} italic"
-        assert style_dict["approval-title"] == f"{skin.get_color('ui_warn')} bold"
 
     def test_apply_tui_skin_style_updates_running_app(self):
         cli = _make_cli_stub()

@@ -87,6 +87,11 @@ def hermes_home(tmp_path, monkeypatch):
     from hermes_cli import goals
 
     goals._DB_CACHE.clear()
+    # Pre-warm the SessionDB cache from this sync (non-loop) context so the
+    # async tests' GoalManager.set() never races the bounded loop-thread
+    # bootstrap window on loaded CI runners (goal silently not persisted →
+    # continuation never enqueued; flaked on main run 33455779041).
+    goals._get_session_db()
     yield home
     goals._DB_CACHE.clear()
 
@@ -120,7 +125,10 @@ async def test_fifo_enqueued_continuation_is_drained_without_new_user_message():
     await adapter._process_message_background(event, key)
     # The in-band drain hands off to a fresh task (#17758); let it run.
     for _ in range(40):
-        if len(handled) >= 2:
+        # Wait for the SENDS, not just the handler calls: the delivery
+        # ledger hops to worker threads around each send, so the handler
+        # can return while reply-2's send is still in flight.
+        if len(adapter.sent) >= 2:
             break
         await asyncio.sleep(0.05)
 

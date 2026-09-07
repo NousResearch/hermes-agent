@@ -135,6 +135,31 @@ In the desktop app you can manage the pet two ways:
 Both adopt/toggle/resize the floating mascot in place — size changes apply
 instantly; adopting a new pet lights it up within a moment.
 
+### Roaming
+
+Settings → Appearance has a **Roam** toggle: when enabled, the pet wanders the
+window on its own while the agent is idle — walking surfaces, pausing, and
+hopping between spots. Roaming only runs while the pet is in-window, active,
+and the agent is at rest; any agent-driven state (working, celebrating)
+immediately takes over. The toggle is off by default and persists across
+restarts.
+
+### Alt+wheel resizing
+
+Hold **Alt** and scroll the mouse wheel over the pet to resize it in place —
+in the app window and on the popped-out overlay alike. The overlay zooms
+toward the cursor position and the resulting scale is persisted, so it
+survives restarts and stays in sync with the in-app pet.
+
+### Vibe reactions
+
+Say something nice to the agent — "good bot", "thank you", "ily", `<3`, or a
+heart emoji — and the pet reacts with floating hearts (desktop) or a heart
+flash (CLI/TUI). Detection is a curated, token-free lexicon matched locally on
+each user message (no model call); it fires on affection and gratitude aimed at
+the agent, not general positive sentiment. All surfaces — CLI pet, TUI, desktop
+floating pet, and the pop-out overlay — react off the same signal.
+
 ### Pop-out overlay
 
 **Shift-click** the floating pet to pop it out into its own transparent,

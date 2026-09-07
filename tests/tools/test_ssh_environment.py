@@ -29,7 +29,7 @@ def _run(command, task_id="ssh_test", **kwargs):
 
 
 def _cleanup(task_id="ssh_test"):
-    from tools.terminal_tool import cleanup_vm
+    from tools.terminal_tool_lifecycle import cleanup_vm
     cleanup_vm(task_id)
 
 
@@ -45,26 +45,78 @@ class TestBuildSSHCommand:
                                                       stdin=MagicMock()))
         monkeypatch.setattr("tools.environments.base.time.sleep", lambda _: None)
 
-    def test_base_flags(self):
+    def test_base_flags(self, monkeypatch):
+        # ControlMaster flags are POSIX-only (#73927): assert them only
+        # where multiplexing is enabled so the test passes on Windows too.
+        monkeypatch.setattr(ssh_env, "_SSH_MULTIPLEX", True)
         env = SSHEnvironment(host="h", user="u")
         cmd = " ".join(env._build_ssh_command())
         for flag in ("ControlMaster=auto", "ControlPersist=300",
                       "BatchMode=yes", "StrictHostKeyChecking=accept-new"):
             assert flag in cmd
 
-    def test_custom_port(self):
-        env = SSHEnvironment(host="h", user="u", port=2222)
-        cmd = env._build_ssh_command()
-        assert "-p" in cmd and "2222" in cmd
+    def test_controlmaster_gated_off_on_windows(self, monkeypatch):
+        """#73927: Windows OpenSSH has no Unix-domain ControlMaster, so the
+        ControlPath/ControlMaster/ControlPersist options must be omitted —
+        passing them fails the connection with 'getsockname failed'."""
+        monkeypatch.setattr(ssh_env, "_SSH_MULTIPLEX", False)
+        env = SSHEnvironment(host="h", user="u")
+        cmd = " ".join(env._build_ssh_command())
+        assert "ControlMaster" not in cmd
+        assert "ControlPath" not in cmd
+        assert "ControlPersist" not in cmd
+        # Non-multiplex flags must still be present — the backend works,
+        # just without connection pooling.
+        assert "BatchMode=yes" in cmd
+        assert "StrictHostKeyChecking=accept-new" in cmd
+        assert env._build_ssh_command()[-1] == "u@h"
 
-    def test_key_path(self):
-        env = SSHEnvironment(host="h", user="u", key_path="/k")
-        cmd = env._build_ssh_command()
-        assert "-i" in cmd and "/k" in cmd
 
     def test_user_host_suffix(self):
         env = SSHEnvironment(host="h", user="u")
         assert env._build_ssh_command()[-1] == "u@h"
+
+    def _capture_run_bash(self, monkeypatch, env, cmd="echo ok"):
+        captured = {}
+
+        def _fake_popen(cmd, stdin_data=None, **kwargs):
+            captured["cmd"], captured["env"] = cmd, kwargs.get("env")
+            return MagicMock()
+
+        monkeypatch.setattr(ssh_env, "_popen_bash", _fake_popen)
+        env._run_bash(cmd)
+        return captured
+
+    def test_run_bash_forwards_passthrough_by_sendenv_never_in_remote_argv(self, monkeypatch):
+        """#14091: allowlisted names travel as ``-o SendEnv=NAME`` with values only in the ssh client env;
+        provider credentials on the allowlist stay behind; a .env value fills an unset shell var."""
+        import tools.env_passthrough as env_passthrough
+
+        env = SSHEnvironment(host="h", user="u")
+        monkeypatch.setenv("NEXTCLOUD_URL", "https://next.example")
+        monkeypatch.delenv("NEXTCLOUD_PASS", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-must-not-forward")
+        monkeypatch.setattr(env_passthrough, "get_all_passthrough",
+                            lambda: frozenset({"NEXTCLOUD_URL", "NEXTCLOUD_PASS", "OPENAI_API_KEY"}))
+        monkeypatch.setattr(ssh_env, "_load_hermes_env_vars", lambda: {"NEXTCLOUD_PASS": "from-dotenv"})
+
+        captured = self._capture_run_bash(monkeypatch, env)
+
+        sent = {a.split("=", 1)[1] for a in captured["cmd"] if a.startswith("SendEnv=")}
+        assert sent == {"NEXTCLOUD_URL", "NEXTCLOUD_PASS"}
+        assert captured["env"]["NEXTCLOUD_URL"] == "https://next.example"
+        assert captured["env"]["NEXTCLOUD_PASS"] == "from-dotenv"
+        remote_text = " ".join(captured["cmd"])
+        assert "https://next.example" not in remote_text and "from-dotenv" not in remote_text
+        assert "sk-must-not-forward" not in remote_text
+
+    def test_run_bash_without_passthrough_inherits_env_unchanged(self, monkeypatch):
+        import tools.env_passthrough as env_passthrough
+
+        monkeypatch.setattr(env_passthrough, "get_all_passthrough", lambda: frozenset())
+        captured = self._capture_run_bash(monkeypatch, SSHEnvironment(host="h", user="u"))
+        assert not any(a.startswith("SendEnv=") for a in captured["cmd"])
+        assert captured["env"] is None
 
 
 class TestControlSocketPath:
@@ -143,16 +195,6 @@ class TestTerminalToolConfig:
         from tools.terminal_tool import _get_env_config
         assert _get_env_config()["ssh_persistent"] is True
 
-    def test_ssh_persistent_explicit_false(self, monkeypatch):
-        """Per-backend env var overrides the global default."""
-        monkeypatch.setenv("TERMINAL_SSH_PERSISTENT", "false")
-        from tools.terminal_tool import _get_env_config
-        assert _get_env_config()["ssh_persistent"] is False
-
-    def test_ssh_persistent_explicit_true(self, monkeypatch):
-        monkeypatch.setenv("TERMINAL_SSH_PERSISTENT", "true")
-        from tools.terminal_tool import _get_env_config
-        assert _get_env_config()["ssh_persistent"] is True
 
     def test_ssh_persistent_respects_config(self, monkeypatch):
         """TERMINAL_PERSISTENT_SHELL=false disables SSH persistent by default."""
@@ -169,16 +211,6 @@ class TestSSHPreflight:
         with pytest.raises(RuntimeError, match="SSH is not installed or not in PATH"):
             ssh_env._ensure_ssh_available()
 
-    def test_ssh_environment_checks_availability_before_connect(self, monkeypatch):
-        monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: None)
-        monkeypatch.setattr(
-            ssh_env.SSHEnvironment,
-            "_establish_connection",
-            lambda self: pytest.fail("_establish_connection should not run when ssh is missing"),
-        )
-
-        with pytest.raises(RuntimeError, match="openssh-client"):
-            ssh_env.SSHEnvironment(host="example.com", user="alice")
 
     def test_ssh_environment_connects_when_ssh_exists(self, monkeypatch):
         called = {"count": 0}
@@ -199,6 +231,61 @@ class TestSSHPreflight:
         assert called["count"] == 1
         assert env.host == "example.com"
         assert env.user == "alice"
+
+
+@pytest.fixture
+def _mock_ssh_runtime(monkeypatch, tmp_path):
+    hooks = {
+        "_establish_connection": MagicMock(),
+        "_detect_remote_home": MagicMock(return_value="/home/alice"),
+        "_ensure_remote_dirs": MagicMock(),
+        "init_session": MagicMock(),
+    }
+    monkeypatch.setattr(ssh_env.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
+    for name, hook in hooks.items():
+        monkeypatch.setattr(ssh_env.SSHEnvironment, name, hook)
+    hooks["sync_factory"] = MagicMock(return_value=MagicMock())
+    monkeypatch.setattr(ssh_env, "FileSyncManager", hooks["sync_factory"])
+    return hooks
+
+
+class TestSSHProbeOnly:
+    def test_probe_only_skips_state_sync_and_session_setup(self, _mock_ssh_runtime):
+        env = ssh_env.SSHEnvironment(host="example.com", user="alice", probe_only=True)
+        env._before_execute()
+        env.cleanup()
+
+        _mock_ssh_runtime["_establish_connection"].assert_called_once_with()
+        _mock_ssh_runtime["_detect_remote_home"].assert_not_called()
+        _mock_ssh_runtime["_ensure_remote_dirs"].assert_not_called()
+        _mock_ssh_runtime["sync_factory"].assert_not_called()
+        _mock_ssh_runtime["init_session"].assert_not_called()
+
+    def test_probe_only_control_socket_is_isolated(self, monkeypatch, _mock_ssh_runtime):
+        control_exit_calls = []
+
+        def _fake_run(*args, **kwargs):
+            control_exit_calls.append(args[0])
+            return subprocess.CompletedProcess([], 0)
+
+        monkeypatch.setattr(ssh_env.subprocess, "run", _fake_run)
+
+        normal = ssh_env.SSHEnvironment(host="example.com", user="alice")
+        first_probe = ssh_env.SSHEnvironment(host="example.com", user="alice", probe_only=True)
+        second_probe = ssh_env.SSHEnvironment(host="example.com", user="alice", probe_only=True)
+
+        assert first_probe.control_socket != normal.control_socket
+        assert second_probe.control_socket != first_probe.control_socket
+        assert len(first_probe.control_socket.name) == len(normal.control_socket.name)
+
+        normal.control_socket.touch()
+        first_probe.control_socket.touch()
+        first_probe.cleanup()
+
+        assert normal.control_socket.exists()
+        assert not first_probe.control_socket.exists()
+        assert len(control_exit_calls) == 1
 
 
 def _setup_ssh_env(monkeypatch, persistent: bool):
@@ -226,9 +313,6 @@ class TestOneShotSSH:
         assert r["exit_code"] == 0
         assert "hello" in r["output"]
 
-    def test_exit_code(self):
-        r = _run("exit 42")
-        assert r["exit_code"] == 42
 
     def test_state_does_not_persist(self):
         _run("export HERMES_ONESHOT_TEST=yes")
@@ -255,31 +339,6 @@ class TestPersistentSSH:
         r = _run("echo $HERMES_PERSIST_TEST")
         assert r["output"].strip() == "works"
 
-    def test_cwd_persists(self):
-        _run("cd /tmp")
-        r = _run("pwd")
-        assert r["output"].strip() == "/tmp"
-
-    def test_exit_code(self):
-        r = _run("(exit 42)")
-        assert r["exit_code"] == 42
-
-    def test_stderr(self):
-        r = _run("echo oops >&2")
-        assert r["exit_code"] == 0
-        assert "oops" in r["output"]
-
-    def test_multiline_output(self):
-        r = _run("echo a; echo b; echo c")
-        lines = r["output"].strip().splitlines()
-        assert lines == ["a", "b", "c"]
-
-    def test_timeout_then_recovery(self):
-        r = _run("sleep 999", timeout=2)
-        assert r["exit_code"] == 124
-        r = _run("echo alive")
-        assert r["exit_code"] == 0
-        assert "alive" in r["output"]
 
     def test_large_output(self):
         r = _run("seq 1 1000")

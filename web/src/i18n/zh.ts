@@ -128,8 +128,14 @@ export const zh: Translations = {
     title: "会话",
     history: "历史",
     overview: "概览",
+    filterChats: "聊天",
+    filterAutomation: "自动化",
+    filterAll: "全部",
+    sourceFilter: "会话来源",
+    anySource: "任意来源",
     searchPlaceholder: "搜索消息内容...",
     noSessions: "暂无会话",
+    noSessionsInFilter: "此筛选条件下暂无会话",
     noMatch: "没有匹配的会话",
     startConversation: "开始对话后将显示在此处",
     noMessages: "暂无消息",
@@ -457,6 +463,8 @@ export const zh: Translations = {
     copyCliCommand: "复制 CLI 命令（用于外部/备用方式）",
     connect: "连接",
     sessionExpires: "会话将在 {time} 后过期",
+    sessionExpiredNoError:
+      "登录已过期，且未能连接到提供方。这通常意味着登录页面在打开的标签页中卡住了（服务端问题）——请在该标签页完成登录，然后点击重试。如果仍然失败，请改用 API 密钥或 CLI。",
     initiatingLogin: "正在启动登录流程…",
     exchangingCode: "正在交换令牌…",
     connectedClosing: "已连接！正在关闭…",
@@ -607,6 +615,12 @@ export const zh: Translations = {
       "看板可以将不相关的工作流分开——每个项目、代码库或域一个看板。一个看板上的工作者不会看到另一个看板的任务。",
     slug: "标识",
     slugHint: "— 小写字母、连字符，例如 atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "显示名称",
     displayNameHint: "（可选）",
     description: "描述",

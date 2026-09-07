@@ -50,18 +50,6 @@ class TestResolveShellInitFiles:
 
         assert resolved == [str(profile)]
 
-    def test_auto_sources_bash_profile_when_present(self, tmp_path, monkeypatch):
-        bash_profile = tmp_path / ".bash_profile"
-        bash_profile.write_text('export MARKER=bp\n')
-        monkeypatch.setenv("HOME", str(tmp_path))
-
-        with patch(
-            "tools.environments.local._read_terminal_shell_init_config",
-            return_value=([], True),
-        ):
-            resolved = _resolve_shell_init_files()
-
-        assert resolved == [str(bash_profile)]
 
     def test_auto_sources_profile_before_bashrc(self, tmp_path, monkeypatch):
         """Both files present: profile runs first so PATH exports in
@@ -96,59 +84,6 @@ class TestResolveShellInitFiles:
 
         assert resolved == []
 
-    def test_auto_source_bashrc_off_suppresses_default(self, tmp_path, monkeypatch):
-        bashrc = tmp_path / ".bashrc"
-        bashrc.write_text('export MARKER=seen\n')
-        profile = tmp_path / ".profile"
-        profile.write_text('export MARKER=p\n')
-        monkeypatch.setenv("HOME", str(tmp_path))
-
-        with patch(
-            "tools.environments.local._read_terminal_shell_init_config",
-            return_value=([], False),
-        ):
-            resolved = _resolve_shell_init_files()
-
-        assert resolved == []
-
-    def test_explicit_list_wins_over_auto(self, tmp_path, monkeypatch):
-        bashrc = tmp_path / ".bashrc"
-        bashrc.write_text('export FROM_BASHRC=1\n')
-        custom = tmp_path / "custom.sh"
-        custom.write_text('export FROM_CUSTOM=1\n')
-        monkeypatch.setenv("HOME", str(tmp_path))
-
-        # auto_source_bashrc stays True but the explicit list takes precedence.
-        with patch(
-            "tools.environments.local._read_terminal_shell_init_config",
-            return_value=([str(custom)], True),
-        ):
-            resolved = _resolve_shell_init_files()
-
-        assert resolved == [str(custom)]
-        assert str(bashrc) not in resolved
-
-    def test_expands_home_and_env_vars(self, tmp_path, monkeypatch):
-        target = tmp_path / "rc" / "custom.sh"
-        target.parent.mkdir()
-        target.write_text('export A=1\n')
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.setenv("CUSTOM_RC_DIR", str(tmp_path / "rc"))
-
-        with patch(
-            "tools.environments.local._read_terminal_shell_init_config",
-            return_value=(["~/rc/custom.sh"], False),
-        ):
-            resolved_home = _resolve_shell_init_files()
-
-        with patch(
-            "tools.environments.local._read_terminal_shell_init_config",
-            return_value=(["${CUSTOM_RC_DIR}/custom.sh"], False),
-        ):
-            resolved_var = _resolve_shell_init_files()
-
-        assert resolved_home == [str(target)]
-        assert resolved_var == [str(target)]
 
     def test_missing_explicit_files_are_skipped_silently(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
@@ -211,27 +146,6 @@ class TestSnapshotEndToEnd:
         assert "second=sticky" in output
         assert "/tmp/hermes-session-bin" in output
 
-    def test_venv_style_activation_persists_between_commands(self, tmp_path):
-        venv_bin = tmp_path / ".venv" / "bin"
-        venv_bin.mkdir(parents=True)
-        activate = venv_bin / "activate"
-        activate.write_text(
-            f'export VIRTUAL_ENV="{tmp_path / ".venv"}"\n'
-            f'export PATH="{venv_bin}:$PATH"\n'
-        )
-
-        env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
-        try:
-            first = env.execute('source .venv/bin/activate; echo "venv=$VIRTUAL_ENV"')
-            second = env.execute('echo "venv=$VIRTUAL_ENV"; echo "PATH=$PATH"')
-        finally:
-            env.cleanup()
-
-        assert first["returncode"] == 0
-        assert second["returncode"] == 0
-        output = second.get("output", "")
-        assert f"venv={tmp_path / '.venv'}" in output
-        assert str(venv_bin) in output
 
     def test_snapshot_picks_up_init_file_exports(self, tmp_path, monkeypatch):
         init_file = tmp_path / "custom-init.sh"

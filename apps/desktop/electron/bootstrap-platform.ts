@@ -107,4 +107,44 @@ function detectRemoteDisplay(options: { env?: NodeJS.ProcessEnv; platform?: Node
   return null
 }
 
-export { bundledRuntimeImportCheck, detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment }
+const LINUX_PASSWORD_STORES = new Set(['gnome-libsecret', 'kwallet', 'kwallet5', 'kwallet6', 'basic'])
+
+/**
+ * Resolve the Chromium `--password-store` switch for Linux safeStorage.
+ *
+ * Without the switch Chromium often fails to pick a keychain backend when the
+ * app is launched outside a full desktop session, safeStorage reports
+ * encryption as unavailable, and hardening.ts refuses to persist remote
+ * gateway tokens. The `hermes desktop` launcher detects the session keychain
+ * (or reads `desktop.password_store` from config.yaml) and bridges the value
+ * in via HERMES_DESKTOP_PASSWORD_STORE.
+ *
+ * Returns `{ store, warning }`: `store` is the validated backend to apply (or
+ * null to leave Chromium's default), `warning` is a message to log for
+ * unrecognized values. Pure + dependency-free so it can be unit-tested and
+ * called before app ready.
+ */
+function resolveLinuxPasswordStore(options: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {}) {
+  const env = options.env ?? process.env
+  const platform = options.platform ?? process.platform
+
+  const requested = String(env.HERMES_DESKTOP_PASSWORD_STORE || '').trim()
+
+  if (platform !== 'linux' || !requested) {
+    return { store: null, warning: null }
+  }
+
+  if (!LINUX_PASSWORD_STORES.has(requested)) {
+    return { store: null, warning: `ignoring unknown HERMES_DESKTOP_PASSWORD_STORE value: ${requested}` }
+  }
+
+  return { store: requested, warning: null }
+}
+
+export {
+  bundledRuntimeImportCheck,
+  detectRemoteDisplay,
+  isWindowsBinaryPathInWsl,
+  isWslEnvironment,
+  resolveLinuxPasswordStore
+}

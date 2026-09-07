@@ -14,7 +14,10 @@ import { test } from 'vitest'
 
 import {
   canImportHermesCli,
+  DEFAULT_PROBE_TIMEOUT_MS,
   hermesRuntimeImportProbe,
+  PROBE_TIMEOUT_MS,
+  resolveProbeTimeoutMs,
   shouldTrustHermesOverride,
   verifyHermesCli
 } from './backend-probes'
@@ -100,9 +103,25 @@ test('verifyHermesCli returns true when --version exits 0', () => {
 })
 
 test('verifyHermesCli swallows timeouts (does not throw)', () => {
-  // We can't easily provoke a real 5s hang in CI without slowing the
+  // We can't easily provoke a real hang in CI without slowing the
   // suite, but we CAN confirm that an invocation that DOES throw
   // (because the binary is missing) returns false rather than
   // propagating. Same code path the timeout case takes.
   assert.equal(verifyHermesCli('/definitely/not/a/real/binary/anywhere'), false)
+})
+
+test('default probe timeout is 15s (not the old 5s death-loop value)', () => {
+  assert.equal(DEFAULT_PROBE_TIMEOUT_MS, 15_000)
+  // Module constant uses process.env at load time; with no override it
+  // matches the default (tests run without HERMES_PROBE_TIMEOUT_MS).
+  assert.equal(PROBE_TIMEOUT_MS, DEFAULT_PROBE_TIMEOUT_MS)
+})
+
+test('resolveProbeTimeoutMs honours HERMES_PROBE_TIMEOUT_MS', () => {
+  assert.equal(resolveProbeTimeoutMs({}), DEFAULT_PROBE_TIMEOUT_MS)
+  assert.equal(resolveProbeTimeoutMs({ HERMES_PROBE_TIMEOUT_MS: '30000' }), 30_000)
+  assert.equal(resolveProbeTimeoutMs({ HERMES_PROBE_TIMEOUT_MS: '0' }), DEFAULT_PROBE_TIMEOUT_MS)
+  assert.equal(resolveProbeTimeoutMs({ HERMES_PROBE_TIMEOUT_MS: 'nope' }), DEFAULT_PROBE_TIMEOUT_MS)
+  // Cap runaway values
+  assert.equal(resolveProbeTimeoutMs({ HERMES_PROBE_TIMEOUT_MS: '999999' }), 120_000)
 })

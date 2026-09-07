@@ -11,7 +11,7 @@ import hermes_cli.cli_output as cli_output_mod
 from plugins.platforms.discord.adapter import interactive_setup
 
 
-def _patch_setup_io(monkeypatch, prompts, saved, removed, existing):
+def _patch_setup_io(monkeypatch, prompts, saved, removed, existing, infos=None):
     prompt_iter = iter(prompts)
     monkeypatch.setattr(config_mod, "get_env_value", lambda key: existing.get(key, ""))
     monkeypatch.setattr(config_mod, "save_env_value", lambda k, v: saved.update({k: v}))
@@ -23,8 +23,14 @@ def _patch_setup_io(monkeypatch, prompts, saved, removed, existing):
     monkeypatch.setattr(config_mod, "remove_env_value", _remove)
     monkeypatch.setattr(cli_output_mod, "prompt", lambda *_a, **_kw: next(prompt_iter))
     monkeypatch.setattr(cli_output_mod, "prompt_yes_no", lambda *_a, **_kw: False)
-    for name in ("print_header", "print_info", "print_success", "print_warning"):
+    for name in ("print_header", "print_success", "print_warning"):
         monkeypatch.setattr(cli_output_mod, name, lambda *_a, **_kw: None)
+
+    def _info(*args, **_kw):
+        if infos is not None:
+            infos.append(" ".join(str(a) for a in args))
+
+    monkeypatch.setattr(cli_output_mod, "print_info", _info)
 
 
 # Discord prompts: bot_token (password), allowed_users, home_channel.
@@ -50,35 +56,25 @@ class TestDiscordHomeChannelClear:
         assert "DISCORD_HOME_CHANNEL" in removed
         assert "DISCORD_HOME_CHANNEL" not in saved
 
-    def test_blank_without_prior_home_still_attempts_remove(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        saved, removed = {}, []
-        _patch_setup_io(
-            monkeypatch, _PROMPTS_BLANK, saved, removed, existing={}
-        )
-        interactive_setup()
-        assert removed.count("DISCORD_HOME_CHANNEL") == 1
 
-    def test_nonempty_saves_home_channel(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        saved, removed = {}, []
-        _patch_setup_io(
-            monkeypatch, _PROMPTS_NONEMPTY, saved, removed, existing={}
-        )
-        interactive_setup()
-        assert saved["DISCORD_HOME_CHANNEL"] == "123456789012345678"
-        assert "DISCORD_HOME_CHANNEL" not in removed
+class TestDiscordSetupPrivilegedIntentsGuidance:
+    """Setup must name Privileged Gateway Intents before asking for the token (#79430)."""
 
-    def test_whitespace_only_clears_home_channel(self, monkeypatch, tmp_path):
+    def test_setup_mentions_message_content_intent(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        saved, removed = {}, []
+        saved, removed, infos = {}, [], []
         _patch_setup_io(
             monkeypatch,
-            _PROMPTS_WHITESPACE,
+            _PROMPTS_BLANK,
             saved,
             removed,
-            existing={"DISCORD_HOME_CHANNEL": "987654321098765432"},
+            existing={},
+            infos=infos,
         )
         interactive_setup()
-        assert "DISCORD_HOME_CHANNEL" in removed
-        assert "DISCORD_HOME_CHANNEL" not in saved
+        joined = "\n".join(infos)
+        assert "Message Content Intent" in joined
+        assert "Privileged Gateway Intents" in joined
+        assert "discord.com/developers/applications" in joined
+
+

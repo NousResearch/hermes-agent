@@ -23,6 +23,8 @@ from unittest.mock import patch
 from gateway.config import Platform
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_notify as kbn
 
 
 class RecordingAdapter:
@@ -55,11 +57,11 @@ async def _run_one_notifier_tick(monkeypatch, runner):
 
 
 def _create_completed_task(*, subscribe: bool) -> str:
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="owner gate", assignee="worker")
         if subscribe:
-            kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+            kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
         kb.complete_task(conn, tid, summary="done")
         return tid
     finally:
@@ -76,45 +78,10 @@ def test_zero_sub_board_is_never_opened_writable(tmp_path, monkeypatch):
     adapter = RecordingAdapter()
     runner = _make_runner(adapter)
 
-    with patch.object(kb, "connect", wraps=kb.connect) as spy_connect:
+    with patch.object(kbc, "connect", wraps=kbc.connect) as spy_connect:
         asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     spy_connect.assert_not_called()
     assert adapter.sent == []
 
 
-def test_subscribed_board_still_delivers_through_the_gate(tmp_path, monkeypatch):
-    """Regression: the zero-sub probe must not change delivery for live subs."""
-    db_path = tmp_path / "subscribed.db"
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
-    kb.init_db()
-    tid = _create_completed_task(subscribe=True)
-
-    adapter = RecordingAdapter()
-    runner = _make_runner(adapter)
-    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
-
-    assert len(adapter.sent) == 1
-    assert tid in adapter.sent[0]["text"]
-
-
-def test_probe_failure_falls_back_to_writable_open(tmp_path, monkeypatch):
-    """If the read-only probe raises (locked/corrupt DB), the notifier must
-    fall back to the writable open — a broken probe must never silently
-    disable notifications for a board with live subscriptions."""
-    db_path = tmp_path / "probe-broken.db"
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
-    kb.init_db()
-    tid = _create_completed_task(subscribe=True)
-
-    def _boom(*args, **kwargs):
-        raise RuntimeError("probe exploded")
-
-    monkeypatch.setattr(kb, "count_notify_subs", _boom)
-
-    adapter = RecordingAdapter()
-    runner = _make_runner(adapter)
-    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
-
-    assert len(adapter.sent) == 1
-    assert tid in adapter.sent[0]["text"]

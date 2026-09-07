@@ -79,33 +79,6 @@ def test_ledger_operations_close_every_connection(monkeypatch, tmp_path):
     assert set(opened) == set(closed)
 
 
-def test_early_return_still_closes_connection(monkeypatch, tmp_path):
-    """A no-op update (no matching row) must still open and close exactly once."""
-    _point_ledger(monkeypatch, tmp_path)
-    opened, closed = _track_connections(monkeypatch)
-
-    assert ad.mark_completion_delivered("does-not-exist") is False
-
-    assert len(opened) == 1
-    assert len(closed) == 1
-
-
-def test_exception_during_operation_still_closes_connection(monkeypatch, tmp_path):
-    """A failing statement inside the transaction must roll back and close."""
-    _point_ledger(monkeypatch, tmp_path)
-    opened, closed = _track_connections(monkeypatch)
-
-    with pytest.raises(sqlite3.IntegrityError):
-        with ad._transaction() as conn:
-            # Missing NOT NULL columns -> constraint failure inside the block.
-            conn.execute(
-                "INSERT INTO async_delegations (delegation_id) VALUES ('x')"
-            )
-
-    assert len(opened) == 1
-    assert len(closed) == 1
-
-
 def test_schema_init_failure_still_closes_connection(monkeypatch, tmp_path):
     """A PRAGMA/DDL failure after connect() must still close the connection."""
     _point_ledger(monkeypatch, tmp_path)

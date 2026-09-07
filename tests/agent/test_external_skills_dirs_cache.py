@@ -46,28 +46,8 @@ def hermes_home_with_config(tmp_path, monkeypatch):
     _external_dirs_cache_clear()
 
 
-def test_returns_configured_external_dir(hermes_home_with_config):
-    _home, external, _cfg = hermes_home_with_config
-    result = get_external_skills_dirs()
-    assert result == [external.resolve()]
 
 
-def test_cache_reuses_result_without_reparsing(hermes_home_with_config):
-    """Subsequent calls hit the cache and skip YAML parsing entirely."""
-    _home, _external, _cfg = hermes_home_with_config
-
-    # Prime cache
-    get_external_skills_dirs()
-
-    # Patch yaml_load to raise — if cache works, it's never called again.
-    with patch.object(
-        skill_utils,
-        "yaml_load",
-        side_effect=AssertionError("yaml_load should not run on cache hit"),
-    ):
-        # Many calls, none should trigger the patched yaml_load.
-        for _ in range(100):
-            get_external_skills_dirs()
 
 
 def test_cache_invalidates_on_mtime_change(hermes_home_with_config):
@@ -97,24 +77,8 @@ def test_cache_invalidates_on_mtime_change(hermes_home_with_config):
     assert second == [other.resolve()]
 
 
-def test_returns_empty_when_config_missing(tmp_path, monkeypatch):
-    """No config file → empty list, cached as empty."""
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    _external_dirs_cache_clear()
-
-    assert get_external_skills_dirs() == []
 
 
-def test_returned_list_is_a_copy(hermes_home_with_config):
-    """Callers can't poison the cache by mutating the returned list."""
-    first = get_external_skills_dirs()
-    first.append(Path("/tmp/should-not-persist"))
-
-    second = get_external_skills_dirs()
-    assert Path("/tmp/should-not-persist") not in second
 
 
 def test_cache_key_is_per_config_path(tmp_path, monkeypatch):

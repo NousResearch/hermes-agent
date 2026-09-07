@@ -1,0 +1,46 @@
+name: Installer tests
+
+# scripts/install.ps1's PowerShell tests. They exercise the installer as a real
+# subprocess, and every path contract they assert (8.3 short-name aliases,
+# Git Bash layouts, provider-cmdlet behavior) is Windows-specific — so they need
+# a Windows runner. Before this workflow existed the files were in the tree but
+# nothing ever ran them.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  powershell:
+    name: PowerShell installer tests
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Windows PowerShell 5.1 as well as pwsh 7: install.ps1 is delivered via
+      # `irm | iex` into whatever shell the user already has, and 5.1 is what
+      # ships with Windows. A construct that only parses under 7 is a broken
+      # installer for most of the people hitting it.
+      - name: 8.3 short-path normalization (pwsh 7)
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-longpath.ps1
+
+      - name: 8.3 short-path normalization (Windows PowerShell 5.1)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-longpath.ps1
+
+      - name: System Node and npm compatibility (pwsh 7)
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-node-compatibility.ps1
+
+      - name: System Node and npm compatibility (Windows PowerShell 5.1)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-node-compatibility.ps1

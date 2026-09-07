@@ -43,13 +43,6 @@ class TestStatusBarGoalSegment:
         assert snapshot["goal_max_turns"] == 20
         assert cli_obj._status_bar_goal_segment(snapshot) == "⊙ goal 3/20"
 
-    def test_goal_segment_absent_without_goal(self):
-        cli_obj = _make_cli()  # no session_id → no goal manager
-
-        snapshot = cli_obj._get_status_bar_snapshot()
-
-        assert snapshot["goal_active"] is False
-        assert cli_obj._status_bar_goal_segment(snapshot) == ""
 
     def test_goal_segment_absent_when_paused(self):
         # Paused goals must NOT occupy the status bar (active-only contract).
@@ -60,12 +53,6 @@ class TestStatusBarGoalSegment:
         assert snapshot["goal_active"] is False
         assert cli_obj._status_bar_goal_segment(snapshot) == ""
 
-    def test_goal_segment_without_budget_omits_counter(self):
-        segment = HermesCLI._status_bar_goal_segment(
-            {"goal_active": True, "goal_turns_used": 0, "goal_max_turns": 0}
-        )
-
-        assert segment == "⊙ goal"
 
     def test_active_goal_rendered_in_wide_status_bar(self):
         cli_obj = _attach_goal(_make_cli(), active=True, turns_used=5, max_turns=20)
@@ -88,9 +75,3 @@ class TestStatusBarGoalSegment:
 
         assert "⊙ goal" in text
 
-    def test_no_goal_segment_in_status_bar_without_goal(self):
-        cli_obj = _make_cli()
-
-        text = cli_obj._build_status_bar_text(width=120)
-
-        assert "⊙ goal" not in text

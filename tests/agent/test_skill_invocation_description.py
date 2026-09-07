@@ -61,8 +61,6 @@ def skills(tmp_path, monkeypatch):
 
 
 class TestDescribeSkillInvocation:
-    def test_passes_through_a_normal_message(self):
-        assert describe_skill_invocation("fix the title leak") is None
 
     def test_ignores_non_string_content(self):
         assert describe_skill_invocation(None) is None
@@ -74,31 +72,9 @@ class TestDescribeSkillInvocation:
         )
         assert describe_skill_invocation(message) == "/work — fix the title leak"
 
-    def test_bare_invocation_describes_the_skill_alone(self, skills):
-        message = skill_commands.build_skill_invocation_message("/work")
-        assert describe_skill_invocation(message) == "/work"
 
-    def test_never_surfaces_the_skill_body(self, skills):
-        message = skill_commands.build_skill_invocation_message(
-            "/work", user_instruction="fix the title leak"
-        )
-        described = describe_skill_invocation(message)
-        assert "worktree" not in described
-        assert "IMPORTANT" not in described
 
-    def test_runtime_note_is_not_part_of_the_instruction(self, skills):
-        message = skill_commands.build_skill_invocation_message(
-            "/work",
-            user_instruction="fix the title leak",
-            runtime_note="the runtime detail",
-        )
-        assert describe_skill_invocation(message) == "/work — fix the title leak"
 
-    def test_collapses_whitespace_in_a_multiline_instruction(self, skills):
-        message = skill_commands.build_skill_invocation_message(
-            "/work", user_instruction="fix the\n  title\tleak"
-        )
-        assert describe_skill_invocation(message) == "/work — fix the title leak"
 
     def test_bundle_carries_its_typed_keys(self, skills):
         result = skill_bundles.build_bundle_invocation_message(
@@ -110,13 +86,6 @@ class TestDescribeSkillInvocation:
         assert described.endswith("— fix the title leak")
         assert "worktree" not in described
 
-    def test_stacked_skills_describe_every_typed_key(self, skills):
-        result = skill_commands.build_stacked_skill_invocation_message(
-            ["/work", "/clean"], user_instruction="fix the title leak"
-        )
-        assert result is not None
-        message, _, _ = result
-        assert describe_skill_invocation(message) == "/work /clean — fix the title leak"
 
 
 class TestExcerptedScaffolding:

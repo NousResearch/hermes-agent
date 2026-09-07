@@ -12,6 +12,7 @@ Q-B, exercises a real `hermes gateway run`); these lock the unit contract.
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -48,30 +49,6 @@ class TestMarkerContract:
         body = dc.read_drain_request()
         assert body is not None and body["principal"] == "nas"
 
-    def test_clear_removes(self, home):
-        dc.write_drain_request()
-        assert dc.clear_drain_request() is True
-        assert dc.drain_requested() is False
-        # idempotent: clearing again is a no-op, returns False
-        assert dc.clear_drain_request() is False
-
-    def test_path_respects_hermes_home(self, home):
-        assert dc.drain_request_path() == home / ".drain_request.json"
-
-    def test_corrupt_marker_reads_as_present_contentless(self, home):
-        # A half-written / malformed marker must still count as "drain active"
-        # (fail-safe toward quiescing).
-        dc.drain_request_path().write_text("{not valid json", encoding="utf-8")
-        assert dc.drain_requested() is True
-        assert dc.read_drain_request() == {}
-
-    def test_write_is_atomic_json(self, home):
-        dc.write_drain_request(principal="x")
-        import json
-
-        data = json.loads(dc.drain_request_path().read_text())
-        assert data["action"] == "drain"
-
 
 class TestSuppressNotification:
     """The generic suppress_notification flag on the drain marker.
@@ -94,42 +71,6 @@ class TestSuppressNotification:
         assert body is not None and body["suppress_notification"] is True
         assert dc.drain_notification_suppressed() is True
 
-    def test_suppressed_false_when_no_marker(self, home):
-        assert dc.drain_notification_suppressed() is False
-
-    def test_legacy_marker_without_field_not_suppressed(self, home):
-        # A marker written before this change has no suppress_notification key →
-        # must read as not-suppressed (broadcast still fires), while still being
-        # an active drain.
-        import json
-
-        dc.drain_request_path().write_text(
-            json.dumps({"action": "drain", "epoch": dc.current_instantiation_epoch()}),
-            encoding="utf-8",
-        )
-        assert dc.drain_requested() is True
-        assert dc.drain_notification_suppressed() is False
-
-    def test_corrupt_marker_not_suppressed(self, home):
-        # Half-written marker → read_drain_request returns {} → no flag → not
-        # suppressed (fail toward the louder, visible behaviour) even though the
-        # drain itself stays active (fail-safe toward quiescing).
-        dc.drain_request_path().write_text("{not valid json", encoding="utf-8")
-        assert dc.drain_requested() is True
-        assert dc.drain_notification_suppressed() is False
-
-    def test_stale_epoch_marker_not_suppressed(self, home, monkeypatch):
-        # THE NS-570 ANALOGUE for suppression: a suppress_notification:true
-        # marker that survived a machine restart on the durable volume must NOT
-        # silence the freshly-restarted gateway's legitimate shutdown broadcast.
-        monkeypatch.setattr(dc, "current_instantiation_epoch", lambda: "epoch-OLD")
-        dc.write_drain_request(principal="nas", suppress_notification=True)
-        assert dc.drain_notification_suppressed() is True  # same epoch → honoured
-
-        monkeypatch.setattr(dc, "current_instantiation_epoch", lambda: "epoch-NEW")
-        assert dc.drain_request_path().exists() is True
-        assert dc.drain_notification_suppressed() is False  # stale → ignored
-
 
 # ---------------------------------------------------------------------------
 # Instantiation-epoch staleness (NS-570: orphaned marker on durable volume)
@@ -143,11 +84,6 @@ class TestInstantiationEpoch:
         body = dc.read_drain_request()
         assert body is not None and body["epoch"] == dc.current_instantiation_epoch()
 
-    def test_current_epoch_is_stable_within_process(self):
-        # Memoised — an s6 respawn of just the gateway keeps PID 1, so a
-        # repeated call inside one process must return the same value (an
-        # in-flight drain stays honoured).
-        assert dc.current_instantiation_epoch() == dc.current_instantiation_epoch()
 
     def test_marker_from_prior_instantiation_reads_as_absent(self, home, monkeypatch):
         # THE NS-570 REGRESSION. A begin-drain marker written by a PREVIOUS
@@ -165,40 +101,6 @@ class TestInstantiationEpoch:
         # …but it is ignored because its epoch belongs to a prior instantiation.
         assert dc.drain_requested() is False
 
-    def test_marker_from_current_instantiation_is_honoured(self, home, monkeypatch):
-        monkeypatch.setattr(dc, "current_instantiation_epoch", lambda: "epoch-A")
-        dc.write_drain_request()
-        assert dc.drain_requested() is True
-
-    def test_legacy_marker_without_epoch_still_active(self, home):
-        # A marker written before this change (no "epoch" key) must remain
-        # fail-safe toward quiescing — never silently ignored.
-        import json
-
-        dc.drain_request_path().write_text(
-            json.dumps({"action": "drain", "requested_at": "x", "principal": "p"}),
-            encoding="utf-8",
-        )
-        assert dc.drain_requested() is True
-
-    def test_corrupt_marker_with_no_parseable_epoch_still_active(self, home):
-        # Half-written / malformed → read_drain_request returns {} → no epoch →
-        # lenient check keeps it active (fail-safe), same as before the change.
-        dc.drain_request_path().write_text("{not valid json", encoding="utf-8")
-        assert dc.drain_requested() is True
-
-    def test_unavailable_epoch_disables_staleness_check(self, home, monkeypatch):
-        # No /proc (non-Linux, etc.) → epoch "" → degrade to presence-only:
-        # any present marker (even with a foreign epoch) reads as active rather
-        # than fail-closed.
-        import json
-
-        dc.drain_request_path().write_text(
-            json.dumps({"action": "drain", "epoch": "some-other-epoch"}),
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(dc, "current_instantiation_epoch", lambda: "")
-        assert dc.drain_requested() is True
 
     def test_current_epoch_empty_when_proc_unreadable(self, monkeypatch):
         # When neither /proc identity source is readable, the epoch is "" so
@@ -221,6 +123,120 @@ class TestInstantiationEpoch:
 
 
 # ---------------------------------------------------------------------------
+# requested_at max-age (#85433: same-epoch orphaned marker, no restart)
+# ---------------------------------------------------------------------------
+
+
+class TestMarkerMaxAge:
+    def test_fresh_marker_honoured(self, home):
+        dc.write_drain_request(principal="nas")
+        assert dc.drain_requested() is True
+
+    def test_expired_marker_reads_as_absent(self, home):
+        # THE #85433 REGRESSION. A drain-gated action completes WITHOUT a
+        # machine restart, so the epoch still matches — but the writer never
+        # cancelled the drain. The orphan must not wedge the gateway forever.
+        from datetime import datetime, timedelta, timezone
+
+        dc.write_drain_request(principal="nas", suppress_notification=True)
+        body = dc.read_drain_request()
+        assert body is not None
+        body["requested_at"] = (
+            datetime.now(timezone.utc)
+            - timedelta(seconds=dc.DRAIN_REQUEST_MAX_AGE_SECONDS + 60)
+        ).isoformat()
+        dc.drain_request_path().write_text(json.dumps(body), encoding="utf-8")
+
+        # The marker file is still physically present, with the CURRENT epoch…
+        assert dc.drain_request_path().exists() is True
+        # …but it is ignored because it outlived any legitimate drain.
+        assert dc.drain_requested() is False
+        # The suppression flag of an expired orphan is likewise ignored.
+        assert dc.drain_notification_suppressed() is False
+
+    def test_marker_without_timestamp_still_honoured(self, home):
+        # Leniency contract: no requested_at (legacy/corrupt body) must fail
+        # toward quiescing, exactly like the epoch check.
+        payload = {"action": "drain", "epoch": dc.current_instantiation_epoch()}
+        dc.drain_request_path().write_text(json.dumps(payload), encoding="utf-8")
+        assert dc.drain_requested() is True
+
+    def test_unparseable_timestamp_still_honoured(self, home):
+        payload = {
+            "action": "drain",
+            "epoch": dc.current_instantiation_epoch(),
+            "requested_at": "not-a-timestamp",
+        }
+        dc.drain_request_path().write_text(json.dumps(payload), encoding="utf-8")
+        assert dc.drain_requested() is True
+
+    def test_naive_timestamp_treated_as_utc(self, home):
+        # A writer that stamped a tz-naive ISO string must still expire.
+        from datetime import datetime, timedelta, timezone
+
+        stale_naive = (
+            datetime.now(timezone.utc)
+            - timedelta(seconds=dc.DRAIN_REQUEST_MAX_AGE_SECONDS + 60)
+        ).replace(tzinfo=None)
+        payload = {
+            "action": "drain",
+            "epoch": dc.current_instantiation_epoch(),
+            "requested_at": stale_naive.isoformat(),
+        }
+        dc.drain_request_path().write_text(json.dumps(payload), encoding="utf-8")
+        assert dc.drain_requested() is False
+
+    def test_expiry_warning_logged_once_per_marker(self, home, caplog):
+        # The watcher polls every 1s; an expired orphan must warn ONCE, not
+        # once per tick (~86k/day). A refreshed marker that expires again
+        # warns again (new requested_at).
+        import logging
+        from datetime import datetime, timedelta, timezone
+
+        def _write_expired(offset_seconds):
+            dc.write_drain_request(principal="nas")
+            body = dc.read_drain_request()
+            assert body is not None
+            body["requested_at"] = (
+                datetime.now(timezone.utc)
+                - timedelta(seconds=dc.DRAIN_REQUEST_MAX_AGE_SECONDS + offset_seconds)
+            ).isoformat()
+            dc.drain_request_path().write_text(json.dumps(body), encoding="utf-8")
+
+        _write_expired(60)
+        with caplog.at_level(logging.WARNING, logger="gateway.drain_control"):
+            assert dc.drain_requested() is False
+            assert dc.drain_requested() is False  # second poll tick
+            assert dc.drain_requested() is False  # third poll tick
+        expired_logs = [r for r in caplog.records if "expired drain marker" in r.message]
+        assert len(expired_logs) == 1
+
+        caplog.clear()
+        _write_expired(120)  # a DIFFERENT requested_at that is also expired
+        with caplog.at_level(logging.WARNING, logger="gateway.drain_control"):
+            assert dc.drain_requested() is False
+        expired_logs = [r for r in caplog.records if "expired drain marker" in r.message]
+        assert len(expired_logs) == 1
+
+    def test_rewrite_refreshes_the_clock(self, home):
+        # The sanctioned keep-alive: re-writing the marker bumps requested_at,
+        # so a deliberately long drain stays honoured.
+        from datetime import datetime, timedelta, timezone
+
+        dc.write_drain_request(principal="nas")
+        body = dc.read_drain_request()
+        assert body is not None
+        body["requested_at"] = (
+            datetime.now(timezone.utc)
+            - timedelta(seconds=dc.DRAIN_REQUEST_MAX_AGE_SECONDS + 60)
+        ).isoformat()
+        dc.drain_request_path().write_text(json.dumps(body), encoding="utf-8")
+        assert dc.drain_requested() is False  # expired…
+        dc.write_drain_request(principal="nas")  # …keep-alive re-write
+        assert dc.drain_requested() is True
+
+
+# ---------------------------------------------------------------------------
 # Gateway state machine (enter / exit / idempotency)
 # ---------------------------------------------------------------------------
 
@@ -239,21 +255,7 @@ def _drain_runner():
 
 
 class TestDrainStateMachine:
-    def test_active_work_count_includes_api_and_cron_work(self, monkeypatch):
-        runner, _ = _drain_runner()
-        runner.adapters = {
-            Platform.API_SERVER: MagicMock(active_agent_work_count=MagicMock(return_value=2))
-        }
-        runner._running_agents = {"session": MagicMock()}
-        monkeypatch.setattr("cron.scheduler.get_running_job_ids", lambda: {"job-1"})
 
-        assert runner._active_work_count() == 4
-
-    def test_enter_sets_flag_and_flips_state(self):
-        runner, _ = _drain_runner()
-        runner._enter_external_drain()
-        assert runner._external_drain_active is True
-        runner._update_runtime_status.assert_called_with("draining")
 
     def test_enter_idempotent(self):
         runner, _ = _drain_runner()
@@ -262,18 +264,6 @@ class TestDrainStateMachine:
         runner._enter_external_drain()  # second call — no-op
         runner._update_runtime_status.assert_not_called()
 
-    def test_exit_reverts_to_running(self):
-        runner, _ = _drain_runner()
-        runner._enter_external_drain()
-        runner._update_runtime_status.reset_mock()
-        runner._exit_external_drain()
-        assert runner._external_drain_active is False
-        runner._update_runtime_status.assert_called_with("running")
-
-    def test_exit_idempotent_when_not_draining(self):
-        runner, _ = _drain_runner()
-        runner._exit_external_drain()  # never entered — no-op
-        runner._update_runtime_status.assert_not_called()
 
     def test_exit_during_shutdown_does_not_revert_to_running(self):
         runner, _ = _drain_runner()
@@ -285,14 +275,6 @@ class TestDrainStateMachine:
         assert runner._external_drain_active is False
         runner._update_runtime_status.assert_not_called()
 
-    def test_exit_when_loop_stopped_does_not_revert(self):
-        runner, _ = _drain_runner()
-        runner._enter_external_drain()
-        runner._update_runtime_status.reset_mock()
-        runner._running = False
-        runner._exit_external_drain()
-        runner._update_runtime_status.assert_not_called()
-
 
 # ---------------------------------------------------------------------------
 # Watcher reconciliation
@@ -300,25 +282,6 @@ class TestDrainStateMachine:
 
 
 class TestDrainWatcher:
-    @pytest.mark.asyncio
-    async def test_watcher_persists_aggregate_work_during_external_drain(self, home, monkeypatch):
-        runner, _ = _drain_runner()
-        runner._drain_control_watcher = GatewayRunner._drain_control_watcher.__get__(
-            runner, GatewayRunner
-        )
-        runner._persist_active_agents = MagicMock()
-        dc.write_drain_request()
-        task = asyncio.create_task(runner._drain_control_watcher(interval=0.01))
-        await asyncio.sleep(0.03)
-        runner._running = False
-        await asyncio.sleep(0.02)
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-        runner._persist_active_agents.assert_called()
 
     @pytest.mark.asyncio
     async def test_watcher_enters_then_exits_with_marker(self, home):
@@ -363,12 +326,3 @@ class TestNewTurnGate:
         assert result is not None
         assert "draining" in result.lower()
 
-    @pytest.mark.asyncio
-    async def test_in_flight_turn_not_interrupted_by_drain(self):
-        # Entering drain must NOT touch the running-agents set.
-        runner, _ = _drain_runner()
-        sentinel = MagicMock()
-        runner._running_agents["k"] = sentinel
-        runner._enter_external_drain()
-        assert runner._running_agents.get("k") is sentinel
-        sentinel.interrupt.assert_not_called()

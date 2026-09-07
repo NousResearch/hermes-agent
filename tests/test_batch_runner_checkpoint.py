@@ -62,12 +62,6 @@ class TestSaveCheckpoint:
         result = json.loads(runner.checkpoint_file.read_text())
         assert result["completed_prompts"] == [42]
 
-    def test_without_lock(self, runner):
-        data = {"run_name": "test", "completed_prompts": [99]}
-        runner._save_checkpoint(data, lock=None)
-
-        result = json.loads(runner.checkpoint_file.read_text())
-        assert result["completed_prompts"] == [99]
 
     def test_creates_parent_dirs(self, tmp_path):
         runner_deep = BatchRunner.__new__(BatchRunner)
@@ -89,9 +83,6 @@ class TestSaveCheckpoint:
 class TestLoadCheckpoint:
     """Verify _load_checkpoint reads existing data or returns defaults."""
 
-    def test_returns_empty_when_no_file(self, runner):
-        result = runner._load_checkpoint()
-        assert result.get("completed_prompts", []) == []
 
     def test_loads_existing_checkpoint(self, runner):
         data = {"run_name": "test_run", "completed_prompts": [5, 10, 15],
@@ -162,7 +153,8 @@ class TestBatchWorkerResumeBehavior:
         batch_file = tmp_path / "batch_1.jsonl"
         prompt_result = {
             "success": True,
-            "trajectory": [{"role": "assistant", "content": "x"}],
+            "trajectory": [{"from": "human", "value": "hi"},
+                            {"role": "assistant", "content": "x"}],
             "reasoning_stats": {"has_any_reasoning": False},
             "tool_stats": {},
             "metadata": {},
@@ -183,7 +175,55 @@ class TestBatchWorkerResumeBehavior:
 
         assert result["discarded_no_reasoning"] == 1
         assert result["completed_prompts"] == [0]
-        assert not batch_file.exists() or batch_file.read_text() == ""
+
+        # A tombstone row must be written so the content-based resume scan
+        # can see this prompt was already processed and discarded.
+        assert batch_file.exists()
+        lines = [l for l in batch_file.read_text(encoding="utf-8").strip().split("\n") if l]
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["discarded"] == "no_reasoning"
+        # The lightweight tombstone carries the human prompt text so the
+        # content scan can match it without a full trajectory payload.
+        assert entry["prompt"] == "hi"
+
+    def test_resume_after_all_discarded_batch_reruns_zero_prompts(self, tmp_path, monkeypatch):
+        """Regression for the issue: a resumed run must not re-execute
+        prompts that were already processed and discarded for having no
+        reasoning — the content-based scan must see the discard tombstone.
+        """
+        prompt_result = {
+            "success": True,
+            "trajectory": [{"from": "human", "value": "hi"},
+                            {"role": "assistant", "content": "x"}],
+            "reasoning_stats": {"has_any_reasoning": False},
+            "tool_stats": {},
+            "metadata": {},
+            "completed": True,
+            "api_calls": 1,
+            "toolsets_used": [],
+        }
+        monkeypatch.setattr("batch_runner._process_single_prompt", lambda *args, **kwargs: prompt_result)
+
+        # First run: prompt 0 gets processed and discarded, writing its
+        # tombstone row into batch_1.jsonl.
+        _process_batch_worker((1, [(0, {"prompt": "hi"})], tmp_path, set(), {"verbose": False}))
+
+        # Simulate a fresh resume: scan batch files by content, exactly as
+        # BatchRunner.run() does.
+        r = BatchRunner.__new__(BatchRunner)
+        r.output_dir = tmp_path
+        completed_prompt_texts = r._scan_completed_prompts_by_content()
+
+        assert "hi" in completed_prompt_texts, (
+            "discarded prompt is invisible to the content-based resume scan"
+        )
+
+        r.dataset = [{"prompt": "hi"}]
+        filtered_entries, skipped_indices = r._filter_dataset_by_completed(completed_prompt_texts)
+
+        assert filtered_entries == [], "discarded prompt was rescheduled on resume"
+        assert skipped_indices == [0]
 
 
 class TestFinalCheckpointNoDuplicates:

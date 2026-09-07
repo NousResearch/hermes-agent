@@ -26,20 +26,21 @@ a UTF-8 BOM (Notepad does this). Re-save as UTF-8 without BOM;
 `AF_INET` socket. Root cause is usually Hermes's env scrubber dropping
 `SYSTEMROOT`/`WINDIR`/`COMSPEC` (Python's `socket` needs `SYSTEMROOT` to find
 `mswsock.dll`), not a broken Winsock LSP. The `_WINDOWS_ESSENTIAL_ENV_VARS`
-allowlist in `tools/code_execution_tool.py` covers it; if you still hit it,
+allowlist in `tools/code_execution_env.py` covers it; if you still hit it,
 echo `os.environ` inside an `execute_code` block to confirm `SYSTEMROOT` is set.
 
 ### Testing on Windows
 
 `scripts/run_tests.sh` is POSIX-only (expects `.venv/bin/activate`); the
 Hermes-installed `venv/Scripts/` has no pip/pytest (stripped for size).
-Install pytest into a system Python and run directly with `-n 0`
-(`pyproject.toml`'s `addopts` already sets `-n`):
+Install pytest into a system Python and run directly (the repo no longer
+uses pytest-xdist; the canonical runner does per-file subprocess isolation,
+which the POSIX-only wrapper handles):
 
 ```bash
-"/c/Program Files/Python311/python" -m pip install --user pytest pytest-xdist pyyaml
+"/c/Program Files/Python311/python" -m pip install --user pytest pyyaml
 export PYTHONPATH="$(pwd)"
-"/c/Program Files/Python311/python" -m pytest tests/foo/test_bar.py -v --tb=short -n 0
+"/c/Program Files/Python311/python" -m pytest tests/foo/test_bar.py -v --tb=short
 ```
 
 (POSIX-only tests need skip guards — see the cross-platform guard list in

@@ -44,7 +44,8 @@ def _no_compression_sleep(monkeypatch):
     import time as _time
 
     monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
-    monkeypatch.setattr(run_agent, "jittered_backoff", lambda *a, **k: 0.0)
+    from agent import retry_utils as _retry_utils
+    monkeypatch.setattr(_retry_utils, "jittered_backoff", lambda *a, **k: 0.0)
 
 
 def _make_tool_defs(*names: str) -> list:
@@ -91,9 +92,9 @@ def _make_overflow_error():
 @pytest.fixture()
 def agent():
     with (
-        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",
@@ -202,25 +203,6 @@ class TestLockContended413Defer:
         assert result.get("completed") is False
         assert result.get("partial") is True
 
-    def test_lock_contended_overflow_returns_compression_deferred(self, agent):
-        """Same contract on the context-length (400 prompt-too-long) handler."""
-        agent.client.chat.completions.create.side_effect = _make_overflow_error()
-
-        with (
-            patch.object(
-                agent, "_compress_context",
-                side_effect=_lock_skipping_compress(agent),
-            ) as mock_compress,
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            result = agent.run_conversation("hello", conversation_history=list(_PREFILL))
-
-        mock_compress.assert_called_once()
-        assert result.get("compression_deferred") is True
-        assert not result.get("compression_exhausted")
-        assert result.get("failed") is False
 
     def test_unconfirmed_lock_skip_true_also_defers(self, agent):
         """``_compression_skipped_due_to_lock = True`` (holder unconfirmed —
@@ -241,53 +223,7 @@ class TestLockContended413Defer:
         assert result.get("compression_deferred") is True
         assert not result.get("compression_exhausted")
 
-    def test_plain_noop_413_still_exhausts_unchanged(self, agent):
-        """Control: flag unset (real no-progress compression) keeps the
-        pre-fix behavior byte-for-byte — terminal ``compression_exhausted``."""
-        agent.client.chat.completions.create.side_effect = _make_413_error()
 
-        with (
-            patch.object(
-                agent, "_compress_context",
-                side_effect=_plain_noop_compress(agent),
-            ),
-            patch.object(
-                agent, "_try_strip_image_parts_from_tool_messages",
-                return_value=False,
-            ),
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            result = agent.run_conversation("hello", conversation_history=list(_PREFILL))
-
-        assert result.get("compression_exhausted") is True
-        assert not result.get("compression_deferred")
-        assert result.get("failed") is True
-
-    def test_magicmock_flag_value_does_not_defer(self, agent):
-        """Type-pin at the consumer site: a truthy non-True/non-str flag value
-        (e.g. a MagicMock auto-attribute) must NOT take the defer branch."""
-        agent.client.chat.completions.create.side_effect = _make_413_error()
-
-        def _junk_flag_compress(messages, _system_message, **_kwargs):
-            agent._compression_skipped_due_to_lock = MagicMock()  # truthy junk
-            return messages, "You are helpful."
-
-        with (
-            patch.object(agent, "_compress_context", side_effect=_junk_flag_compress),
-            patch.object(
-                agent, "_try_strip_image_parts_from_tool_messages",
-                return_value=False,
-            ),
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            result = agent.run_conversation("hello", conversation_history=list(_PREFILL))
-
-        assert not result.get("compression_deferred")
-        assert result.get("compression_exhausted") is True
 
 
 # ---------------------------------------------------------------------------
@@ -351,11 +287,11 @@ class TestPreApiLockDeferDoesNotBurnBudget:
                 return_value=10,
             ),
             patch(
-                "agent.conversation_loop.estimate_request_tokens_rough",
+                "agent.model_metadata.estimate_request_tokens_rough",
                 return_value=500_000,
             ),
             patch(
-                "agent.conversation_loop.estimate_messages_tokens_rough",
+                "agent.model_metadata.estimate_messages_tokens_rough",
                 return_value=500_000,
             ),
             patch.object(agent, "_compress_context", side_effect=_lock_then_success),

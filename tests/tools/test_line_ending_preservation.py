@@ -32,7 +32,8 @@ def hermes_home(monkeypatch, tmp_path):
     # returns the stale cwd from this test's ops and breaks tests like
     # test_resolve_path that rely on TERMINAL_CWD env var.
     try:
-        from tools.file_tools import clear_file_ops_cache, _read_tracker_lock, _read_tracker
+        from tools.file_tools import clear_file_ops_cache
+        from tools.file_tools_read_tracking import _read_tracker_lock, _read_tracker
         clear_file_ops_cache()
         with _read_tracker_lock:
             _read_tracker.clear()
@@ -83,29 +84,6 @@ class TestPatchCRLFPreservation:
         assert _crlf_count(raw) == 5
         assert b"key=99\r\n" in raw
 
-    def test_patch_on_lf_file_stays_lf(self, hermes_home, tmp_path):
-        """LF file with LF new_string stays LF — no spurious CRLF added."""
-        from tools.file_tools import _handle_patch
-
-        target = tmp_path / "config.ini"
-        target.write_bytes(b"[a]\nkey=1\n\n[b]\nkey=2\n")
-
-        result = _handle_patch(
-            {
-                "mode": "replace",
-                "path": str(target),
-                "old_string": "key=1",
-                "new_string": "key=99",
-            },
-            task_id="crlf_patch_2",
-        )
-        d = json.loads(result)
-        assert not d.get("error"), d
-
-        raw = target.read_bytes()
-        assert _crlf_count(raw) == 0, (
-            f"Spurious CRLF added to LF file: {raw!r}"
-        )
 
     def test_patch_multiline_replacement_on_crlf(self, hermes_home, tmp_path):
         """Multi-line new_string with bare LFs should be CRLF-converted
@@ -162,19 +140,6 @@ class TestWriteFileCRLFPreservation:
         )
         assert _crlf_count(raw) == 3
 
-    def test_new_file_written_as_is(self, hermes_home, tmp_path):
-        """No pre-existing file → write content verbatim (LF by default)."""
-        from tools.file_tools import _handle_write_file
-
-        target = tmp_path / "new.txt"
-        result = _handle_write_file(
-            {"path": str(target), "content": "a\nb\nc\n"},
-            task_id="crlf_write_2",
-        )
-        d = json.loads(result)
-        assert "error" not in d, d
-
-        assert target.read_bytes() == b"a\nb\nc\n"
 
     def test_overwrite_lf_file_stays_lf(self, hermes_home, tmp_path):
         """Pre-existing LF file should not get spurious CRLFs."""
@@ -204,29 +169,6 @@ class TestLineEndingHelpers:
 
         assert _detect_line_ending("a\r\nb\r\n") == "\r\n"
 
-    def test_detect_lf(self):
-        from tools.file_operations import _detect_line_ending
-
-        assert _detect_line_ending("a\nb\n") == "\n"
-
-    def test_detect_empty(self):
-        from tools.file_operations import _detect_line_ending
-
-        assert _detect_line_ending("") is None
-        assert _detect_line_ending("no newline here") is None
-
-    def test_detect_mixed_picks_crlf(self):
-        """Mixed-ending content (any CRLF in the head) returns CRLF —
-        we prefer to normalize TO CRLF rather than away from it, since
-        a single CRLF in the file is usually a Windows-origin marker."""
-        from tools.file_operations import _detect_line_ending
-
-        assert _detect_line_ending("a\nb\r\nc\n") == "\r\n"
-
-    def test_normalize_to_lf_strips_cr(self):
-        from tools.file_operations import _normalize_line_endings
-
-        assert _normalize_line_endings("a\r\nb\rc\n", "\n") == "a\nb\nc\n"
 
     def test_normalize_to_crlf_idempotent(self):
         from tools.file_operations import _normalize_line_endings

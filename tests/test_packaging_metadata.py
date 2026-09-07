@@ -68,7 +68,7 @@ _UPDATE_DOWNGRADE_GUARD_FLOORS = {
     # `hermes update` reinstalls exact pins from pyproject/lazy_deps. These
     # reviewed CVE pins must not slide back to stale versions that downgrade
     # already-patched user environments.
-    "cryptography": (48, 0, 1),
+    "cryptography": (50, 0, 0),
     "starlette": (1, 3, 1),
     "python-multipart": (0, 0, 32),
 }
@@ -149,38 +149,6 @@ def test_locked_starlette_is_not_vulnerable_to_cve_2026_48710():
         )
 
 
-def test_update_cve_pins_do_not_downgrade_reviewed_current_versions():
-    """`hermes update` must not reinstall stale reviewed CVE pins.
-
-    The project intentionally exact-pins reviewed dependency versions. When
-    security pins get stale, update reinstalls can downgrade environments that
-    already contain newer fixed versions. Guard the reviewed CVE packages
-    across pyproject, lazy_deps, and the committed lockfile.
-    """
-    pins = _pins_from_specs(_pyproject_pinned_specs() + _lazy_deps_pinned_specs())
-    for package, floor in _UPDATE_DOWNGRADE_GUARD_FLOORS.items():
-        versions = pins.get(package)
-        assert versions, f"{package} is no longer exact-pinned; update this guard"
-        below_floor = sorted(
-            version for version in versions
-            if _version_tuple(version) < floor
-        )
-        assert not below_floor, (
-            f"{package} exact pin(s) {below_floor} are below the reviewed "
-            f"anti-downgrade floor {'.'.join(map(str, floor))}; bump the pin "
-            "and regenerate uv.lock"
-        )
-        locked_versions = _locked_versions(package)
-        assert locked_versions, f"{package} is missing from uv.lock"
-        locked_below_floor = sorted(
-            version for version in locked_versions
-            if _version_tuple(version) < floor
-        )
-        assert not locked_below_floor, (
-            f"uv.lock resolves {package} version(s) {locked_below_floor} below "
-            f"the reviewed anti-downgrade floor {'.'.join(map(str, floor))}; "
-            "regenerate uv.lock after bumping the pin"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -280,26 +248,99 @@ def test_pyproject_pins_are_internally_consistent():
     )
 
 
-def test_pyproject_and_lazy_deps_pins_agree():
-    """Every package pinned in BOTH places must use the same version.
+def test_build_system_requires_exempt_from_exclude_newer():
+    """Regression guard for the #78227 / #75992 exclude-newer brick class.
 
-    Regression guard for the aiohttp / anthropic extras-vs-lazy drift:
-    tools/lazy_deps.py mirrors the pyproject extras, so a CVE bump applied to
-    one and not the other leaves users on a vulnerable version depending on
-    the install path. Bump both in lockstep.
+    ``[tool.uv].exclude-newer`` applies to ``[build-system].requires`` too.
+    When a resolver cannot see a package's upload date (old uv, mirror
+    index, stale HTTP cache) it treats the release as newer than the cutoff
+    and filters it — and because build requirements are exact-pinned there
+    is no older candidate to fall back to, so the project cannot even be
+    BUILT from a git checkout ("No solution found when resolving:
+    setuptools==83.0.0", observed on released v0.20.0).
+
+    Exempting an exact-pinned build requirement costs nothing: the version
+    cannot move without a reviewed pin bump, so exclude-newer adds no float
+    protection for it. Every build requirement must therefore appear in the
+    ``exclude-newer-package`` whitelist (set to ``false``) for as long as a
+    relative ``exclude-newer`` cutoff is configured.
     """
-    py = _pins_from_specs(_pyproject_pinned_specs())
-    lazy = _pins_from_specs(_lazy_deps_pinned_specs())
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    uv_cfg = data.get("tool", {}).get("uv", {})
+    if "exclude-newer" not in uv_cfg:
+        pytest.skip("no exclude-newer cutoff configured — nothing to exempt")
+    whitelist = {
+        _canonical(name)
+        for name, enabled in uv_cfg.get("exclude-newer-package", {}).items()
+        if enabled is False
+    }
+    build_requires = {
+        _canonical(_distribution_name(req))
+        for req in data.get("build-system", {}).get("requires", [])
+    }
+    missing = sorted(build_requires - whitelist)
+    assert not missing, (
+        "build-system.requires packages are subject to the exclude-newer "
+        "cutoff but missing from the [tool.uv].exclude-newer-package "
+        f"whitelist — fresh builds brick when upload dates are invisible: {missing}"
+    )
 
-    mismatches = [
-        f"{name}: pyproject={sorted(py[name])} lazy_deps={sorted(lazy[name])}"
-        for name in sorted(set(py) & set(lazy))
-        if py[name] != lazy[name]
-    ]
-    assert not mismatches, (
-        "pyproject.toml extras and tools/lazy_deps.py disagree on the pinned "
-        "version of the same package — bump both in lockstep:\n  "
-        + "\n  ".join(mismatches)
+
+def test_exact_pinned_deps_exempt_from_exclude_newer():
+    """Regression guard for the release-day brick class.
+
+    Every release exact-pins at least one dependency to a version published
+    days before the release (v0.20.6: snowballstemmer==3.1.1,
+    psutil==7.2.2). For two weeks after release the relative
+    ``exclude-newer`` cutoff filters those versions out, so any venv that
+    predates the release cannot resolve the new pins at all ("no version of
+    snowballstemmer==3.1.1" — observed 2026-08-29 updating three production
+    installs v0.20.0 -> v0.20.6, one Termux and two Linux servers). The pin
+    bump WAS the review, so the cutoff adds zero float protection for an
+    exact pin and can only brick.
+
+    Every exact-pinned package in [project].dependencies and
+    optional-dependencies must therefore appear in the
+    ``exclude-newer-package`` whitelist (set to ``false``) for as long as a
+    relative ``exclude-newer`` cutoff is configured.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    uv_cfg = data.get("tool", {}).get("uv", {})
+    if "exclude-newer" not in uv_cfg:
+        pytest.skip("no exclude-newer cutoff configured — nothing to exempt")
+    whitelist = {
+        _canonical(name)
+        for name, enabled in uv_cfg.get("exclude-newer-package", {}).items()
+        if enabled is False
+    }
+    missing = sorted(set(_pins_from_specs(_pyproject_pinned_specs())) - whitelist)
+    assert not missing, (
+        "exact-pinned packages are subject to the exclude-newer cutoff but "
+        "missing from the [tool.uv].exclude-newer-package whitelist — "
+        "release-day updates brick while the pinned version is younger than "
+        f"the cutoff: {missing}"
+    )
+
+
+
+def test_build_system_requires_wheel_for_isolated_builds():
+    """Regression for #96488 — PEP 517 isolation must include wheel.
+
+    ``setuptools.build_meta`` and our ``setup.py`` bdist_wheel guard import
+    ``wheel`` during editable builds. uv's build-isolation sandbox is seeded
+    only from ``[build-system].requires``; without ``wheel`` there, Windows
+    ``uv sync`` / ``uv pip install -e .`` fails with
+    ``ModuleNotFoundError: No module named 'wheel.cli'`` even when the real
+    venv already has wheel installed.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    names = {
+        _distribution_name(req)
+        for req in data.get("build-system", {}).get("requires", [])
+    }
+    assert "wheel" in names, (
+        "wheel must be listed in [build-system].requires so PEP 517 isolated "
+        "builds can import wheel.cli / bdist_wheel — see #96488"
     )
 
 

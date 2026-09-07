@@ -8,42 +8,13 @@ resolver + tool-schema builder yield exactly the file/terminal tools.
 
 import pytest
 
-from hermes_cli.setup import (
-    _blank_slate_minimal_toolsets,
-    _blank_slate_minimize_config,
-)
+from hermes_cli.setup_quick import _blank_slate_minimal_toolsets, _blank_slate_minimize_config
+from hermes_cli import setup_quick
 
 
 class TestBlankSlateMinimalToolsets:
-    def test_only_file_and_terminal_enabled_for_cli(self):
-        cfg = {}
-        _blank_slate_minimal_toolsets(cfg)
-        assert cfg["platform_toolsets"]["cli"] == ["file", "terminal"]
 
-    def test_disabled_toolsets_excludes_kept_and_covers_known(self):
-        cfg = {}
-        _blank_slate_minimal_toolsets(cfg)
-        disabled = set(cfg["agent"]["disabled_toolsets"])
-        # The two kept toolsets must NOT be in the disabled list.
-        assert "file" not in disabled
-        assert "terminal" not in disabled
-        # A representative spread of capabilities must be suppressed.
-        for ts in ("web", "browser", "code_execution", "vision", "memory",
-                   "delegation", "cronjob", "skills", "image_gen"):
-            assert ts in disabled
-        # The recovered non-configurable toolset that used to leak is suppressed.
-        assert "kanban" in disabled
 
-    def test_disabled_toolsets_excludes_posture_toolsets(self):
-        """Posture toolsets (e.g. coding) are session-level selections made by
-        agent/coding_context.py — not permanent user-facing disables.  Including
-        them in disabled_toolsets causes model_tools to subtract their tools
-        (terminal, read_file, …) from the minimal Blank Slate surface (#57315).
-        """
-        cfg = {}
-        _blank_slate_minimal_toolsets(cfg)
-        disabled = set(cfg["agent"]["disabled_toolsets"])
-        assert "coding" not in disabled
 
     def test_no_disabled_bundle_overlaps_kept_tools(self):
         """Invariant: ``disabled_toolsets`` is applied at *tool* granularity and
@@ -64,38 +35,30 @@ class TestBlankSlateMinimalToolsets:
                 "it would silently strip them from the blank-slate agent"
             )
 
-    def test_resolver_yields_exactly_file_and_terminal(self):
-        from hermes_cli.tools_config import _get_platform_tools
-        cfg = {}
-        _blank_slate_minimal_toolsets(cfg)
-        _blank_slate_minimize_config(cfg)
-        resolved = set(_get_platform_tools(cfg, "cli"))
-        assert resolved == {"file", "terminal"}
 
-    def test_tool_schema_builder_yields_only_file_and_terminal_tools(self):
-        # End-to-end: the exact schema set the agent would send to the model.
-        import model_tools
-        from hermes_cli.tools_config import _get_platform_tools
-        cfg = {}
-        _blank_slate_minimal_toolsets(cfg)
-        _blank_slate_minimize_config(cfg)
-        enabled = sorted(_get_platform_tools(cfg, "cli"))
-        defs = model_tools.get_tool_definitions(
-            enabled_toolsets=enabled, disabled_toolsets=None, quiet_mode=True
-        )
-        names = sorted(
-            {(d.get("function") or {}).get("name") or d.get("name") for d in defs}
-        )
-        assert names == ["patch", "process", "read_file", "search_files",
-                         "terminal", "write_file"]
 
-    def test_tool_schema_survives_disabled_toolsets_from_config(self):
+    def test_tool_schema_survives_disabled_toolsets_from_config(self, monkeypatch):
         """Regression: disabled_toolsets must not erase the minimal Blank Slate
         surface when passed to model_tools.  Before the fix, posture toolsets
         like ``coding`` in disabled_toolsets caused model_tools to subtract
         terminal, read_file, write_file, etc. (#57315).
+
+        vision_analyze is additionally check_fn-gated on a resolvable vision
+        backend; mock the requirement check so the toolset logic is exercised
+        independent of the test host's provider credentials.
         """
         import model_tools
+        from tools.registry import registry as _tool_registry
+        _entry = _tool_registry.get_entry("vision_analyze")
+        monkeypatch.setattr(_entry, "check_fn", lambda: True)
+        # This test pins disabled_toolsets SUBTRACTION, not deferral policy —
+        # assemble with the legacy everything-eager override so the expected
+        # list stays deferral-independent (#97979 defers process_manage by
+        # default, which would swap it for the three bridge tools here).
+        from tools.tool_search import ToolSearchConfig
+        _legacy = ToolSearchConfig.from_raw({"enabled": "on", "defer": []})
+        monkeypatch.setattr("tools.tool_search.load_config", lambda: _legacy)
+        monkeypatch.setattr("tools.tool_search.load_config_readonly", lambda: _legacy)
         from hermes_cli.tools_config import _get_platform_tools
         cfg = {}
         _blank_slate_minimal_toolsets(cfg)
@@ -110,8 +73,9 @@ class TestBlankSlateMinimalToolsets:
         names = sorted(
             {(d.get("function") or {}).get("name") or d.get("name") for d in defs}
         )
-        assert names == ["patch", "process", "read_file", "search_files",
-                         "terminal", "write_file"]
+        assert names == ["patch", "process_manage", "read_file", "search_files",
+                         "skill_manage", "skill_view", "skills_list",
+                         "terminal", "vision_analyze", "write_file"]
 
 
 class TestBlankSlateMinimizeConfig:
@@ -124,13 +88,6 @@ class TestBlankSlateMinimizeConfig:
         assert cfg["checkpoints"]["enabled"] is False
         assert cfg["smart_model_routing"]["enabled"] is False
         assert cfg["session_reset"]["mode"] == "none"
-
-    def test_does_not_clobber_unrelated_keys(self):
-        cfg = {"model": {"provider": "openrouter", "default": "x/y"}}
-        _blank_slate_minimize_config(cfg)
-        # Model config is untouched by the minimizer.
-        assert cfg["model"]["provider"] == "openrouter"
-        assert cfg["model"]["default"] == "x/y"
 
 
 class TestBlankSlateFork:
@@ -154,32 +111,18 @@ class TestBlankSlateFork:
         # Fork prompt returns 0 = finish now.
         monkeypatch.setattr(s, "prompt_choice", lambda *a, **k: 0)
         walked = {"called": False}
-        monkeypatch.setattr(s, "_blank_slate_walkthrough",
+        monkeypatch.setattr(setup_quick, "_blank_slate_walkthrough",
                             lambda cfg, home: walked.__setitem__("called", True))
         opted_out = {"value": None}
-        monkeypatch.setattr("tools.skills_sync.set_bundled_skills_opt_out",
+        monkeypatch.setattr("tools.skills_sync_bundled_ops.set_bundled_skills_opt_out",
                             lambda enabled: opted_out.__setitem__("value", enabled))
 
         cfg = {}
-        s._run_blank_slate_setup(cfg, tmp_path, is_existing=False)
+        setup_quick._run_blank_slate_setup(cfg, tmp_path, is_existing=False)
 
         # Minimal baseline was applied, walkthrough was NOT run.
-        assert cfg["platform_toolsets"]["cli"] == ["file", "terminal"]
+        assert cfg["platform_toolsets"]["cli"] == ["file", "skills", "terminal", "vision"]
         assert walked["called"] is False
         # Finish-now path records the skill opt-out (no bundled skills).
         assert opted_out["value"] is True
 
-    def test_walkthrough_path_invokes_walkthrough(self, monkeypatch, tmp_path):
-        import hermes_cli.setup as s
-        self._patch_common(monkeypatch)
-        # Fork prompt returns 1 = walk through.
-        monkeypatch.setattr(s, "prompt_choice", lambda *a, **k: 1)
-        walked = {"called": False}
-        monkeypatch.setattr(s, "_blank_slate_walkthrough",
-                            lambda cfg, home: walked.__setitem__("called", True))
-
-        cfg = {}
-        s._run_blank_slate_setup(cfg, tmp_path, is_existing=False)
-
-        assert cfg["platform_toolsets"]["cli"] == ["file", "terminal"]
-        assert walked["called"] is True

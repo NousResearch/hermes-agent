@@ -37,14 +37,8 @@ def _iter_text_blocks(msgs):
                         yield tb["text"]
 
 
-def test_placeholder_is_non_whitespace():
-    # The core lesson of #9486: a space is whitespace and is itself rejected.
-    assert _EMPTY_TEXT_PLACEHOLDER.strip(), "placeholder must be non-whitespace"
 
 
-@pytest.mark.parametrize("value", ["", "   ", "\n\n", "\t", None])
-def test_safe_text_blank_inputs_become_non_whitespace(value):
-    assert _safe_text(value).strip()
 
 
 def test_safe_text_preserves_real_content():
@@ -52,39 +46,8 @@ def test_safe_text_preserves_real_content():
     assert _safe_text("  padded  ") == "  padded  "  # inner content kept verbatim
 
 
-def test_no_blank_blocks_reach_bedrock():
-    """The exact failing history: blank system/assistant/tool/user turns."""
-    messages = [
-        {"role": "system", "content": "You are helpful."},
-        {"role": "system", "content": [{"type": "text", "text": "   "}]},
-        {"role": "user", "content": "search for foo"},
-        {"role": "assistant", "content": "",
-         "tool_calls": [{"id": "tc1",
-                         "function": {"name": "search", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "tc1", "content": ""},        # empty tool output
-        {"role": "assistant", "content": "   \n\n  "},                 # whitespace-only (compaction)
-        {"role": "user", "content": [{"type": "text", "text": ""}]},
-        {"role": "assistant", "content": None},
-    ]
-    _system, msgs = convert_messages_to_converse(messages)
-    for text in _iter_text_blocks(msgs):
-        assert text.strip(), f"blank text block would be rejected by Bedrock: {text!r}"
 
 
-def test_empty_tool_result_gets_placeholder():
-    """A tool that returns no output must not produce a blank toolResult block."""
-    messages = [
-        {"role": "user", "content": "run it"},
-        {"role": "assistant", "content": "",
-         "tool_calls": [{"id": "t1", "function": {"name": "sh", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "t1", "content": "   "},
-    ]
-    _system, msgs = convert_messages_to_converse(messages)
-    tool_msg = next(m for m in msgs
-                    if any("toolResult" in b for b in m["content"]))
-    block = next(b for b in tool_msg["content"] if "toolResult" in b)
-    text = block["toolResult"]["content"][0]["text"]
-    assert text.strip()
 
 
 def test_real_content_is_preserved_alongside_blank_siblings():

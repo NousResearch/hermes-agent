@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { DASHBOARD_TUI_MODE } from '../config/env.js'
-import { TYPING_IDLE_MS } from '../config/timing.js'
+import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
 import { applyCompletion } from '../domain/slash.js'
 import type {
   ApprovalRespondResponse,
@@ -35,6 +35,19 @@ const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
 
 export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
 
+export function handleInputSelectionClipboard(
+  selection: ReturnType<typeof getInputSelection>,
+  action: 'copy' | 'cut'
+): boolean {
+  if (!selection || selection.end <= selection.start) {
+    return false
+  }
+
+  selection[action]()
+
+  return true
+}
+
 export function handleIdleHotkeyExit(
   actions: Pick<InputHandlerActions, 'die' | 'sys'>,
   dashboardTuiMode = DASHBOARD_TUI_MODE,
@@ -47,6 +60,29 @@ export function handleIdleHotkeyExit(
   }
 
   return actions.die()
+}
+
+export type CtrlCComposerAction = 'clear' | 'interrupt' | 'exit'
+
+/**
+ * Ctrl+C (and terminals that rewrite Cmd+C to it) is clear / interrupt / exit
+ * in that order. A non-empty composer always wins — mid-stream, the chord
+ * used to interrupt the turn even when the user was trying to dump a draft.
+ */
+export function resolveCtrlCComposerAction(opts: {
+  busy: boolean
+  hasDraft: boolean
+  hasSession: boolean
+}): CtrlCComposerAction {
+  if (opts.hasDraft) {
+    return 'clear'
+  }
+
+  if (opts.busy && opts.hasSession) {
+    return 'interrupt'
+  }
+
+  return 'exit'
 }
 
 /**
@@ -130,6 +166,10 @@ export function dismissSensitivePrompt(
 }
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
+
+export function shouldDetachEditedHistoryInput(historyIdx: null | number, history: readonly string[], value: string) {
+  return historyIdx !== null && value !== history[historyIdx]
+}
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
@@ -239,7 +279,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     cActions.setQueueEdit(index)
     cActions.setHistoryIdx(null)
-    cActions.setInput(cRefs.queueRef.current[index] ?? '')
+    cActions.setInput(cRefs.queueRef.current[index]?.display ?? '')
 
     return true
   }
@@ -320,8 +360,31 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       })
   }
 
+  // Double-Esc discards the draft, matching Claude Code / Gemini CLI. It
+  // sits above the isBlocked early-return so a prompt overlay cannot swallow
+  // it. Ctrl+C now clears a non-empty composer even mid-stream; Esc Esc is
+  // still the dedicated discard (pushes the draft to history so Up recalls it).
+  const lastEscRef = useRef(0)
+
   useInput((ch, key) => {
     const live = getUiState()
+
+    if (key.escape) {
+      const now = Date.now()
+      const isDouble = now - lastEscRef.current <= DOUBLE_ESC_MS
+
+      lastEscRef.current = isDouble ? 0 : now
+
+      if (isDouble && (cState.input || cState.inputBuf.length)) {
+        if (cState.input.trim()) {
+          cActions.pushHistory(cState.input)
+        }
+
+        cActions.clearIn()
+
+        return
+      }
+    }
 
     if (isBlocked) {
       // When approval/clarify/confirm overlays are active, their own useInput
@@ -538,9 +601,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
       const inputSel = getInputSelection()
 
-      if (inputSel && inputSel.end > inputSel.start) {
-        inputSel.clear()
-
+      if (handleInputSelectionClipboard(inputSel, 'copy')) {
         return
       }
 
@@ -549,6 +610,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       if (isMac) {
         return
       }
+    }
+
+    if (isCtrl(key, ch, 'x') && handleInputSelectionClipboard(getInputSelection(), 'cut')) {
+      return
     }
 
     if (isCtrl(key, ch, 'x') && cState.queueEditIdx !== null) {
@@ -561,18 +626,33 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return patchOverlayState({ sessions: true })
     }
 
+    // Ctrl+O opens the model picker without disturbing a typed draft — the
+    // same overlay `/model` opens, but reachable without clearing what you've
+    // typed to run the command. Works mid-stream: picking a model writes the
+    // session model (config.set), which the next turn reads while the in-flight
+    // turn keeps streaming.
+    if (isCtrl(key, ch, 'o')) {
+      return patchOverlayState({ modelPicker: true })
+    }
+
     if (key.ctrl && ch.toLowerCase() === 'c') {
-      if (live.busy && live.sid) {
+      const ctrlC = resolveCtrlCComposerAction({
+        busy: live.busy,
+        hasDraft: Boolean(cState.input || cState.inputBuf.length),
+        hasSession: Boolean(live.sid)
+      })
+
+      if (ctrlC === 'clear') {
+        return cActions.clearIn()
+      }
+
+      if (ctrlC === 'interrupt' && live.sid) {
         return turnController.interruptTurn({
           appendMessage: actions.appendMessage,
           gw: gateway.gw,
           sid: live.sid,
           sys: actions.sys
         })
-      }
-
-      if (cState.input || cState.inputBuf.length) {
-        return cActions.clearIn()
       }
 
       return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {

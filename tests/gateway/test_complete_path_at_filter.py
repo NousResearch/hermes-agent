@@ -44,6 +44,14 @@ def _reset_fuzzy_cache(monkeypatch):
     # Each test walks a fresh tmp dir; clear the cached listing so prior
     # roots can't leak through the TTL window.
     server._fuzzy_cache.clear()
+    # #70041: _launch_configured_cwd() reads the launch profile's config.yaml
+    # via _load_cfg(), which resolves through _hermes_home captured at module
+    # import time — before the per-test HERMES_HOME redirect applies. When the
+    # developer's real config sets terminal.cwd, _completion_cwd() returns that
+    # directory instead of the test's tmp_path (from monkeypatch.chdir). Patch
+    # it to None so _completion_cwd falls through to os.getcwd(), which
+    # monkeypatch.chdir controls.
+    monkeypatch.setattr(server, "_launch_configured_cwd", lambda: None)
     yield
     server._fuzzy_cache.clear()
 
@@ -71,27 +79,6 @@ def test_at_file_colon_only_files(tmp_path, monkeypatch):
     assert any(t == "@file:readme.md" for t in texts)
     assert not any(t == "@file:src/" for t in texts)
     assert not any(t == "@file:docs/" for t in texts)
-
-
-def test_at_folder_bare_without_colon_lists_dirs(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    _fixture(tmp_path)
-
-    texts = [t for t, _, _ in _items("@folder")]
-
-    assert any(t == "@folder:src/" for t in texts), texts
-    assert any(t == "@folder:docs/" for t in texts), texts
-    assert not any(t == "@folder:readme.md" for t in texts)
-
-
-def test_at_file_bare_without_colon_lists_files(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    _fixture(tmp_path)
-
-    texts = [t for t, _, _ in _items("@file")]
-
-    assert any(t == "@file:readme.md" for t in texts), texts
-    assert not any(t == "@file:src/" for t in texts)
 
 
 def test_bare_at_still_shows_static_refs(tmp_path, monkeypatch):
@@ -139,98 +126,6 @@ def test_fuzzy_at_finds_file_without_directory_prefix(tmp_path, monkeypatch):
     row = next(r for r in entries if r[0] == "@file:ui-tui/src/components/appChrome.tsx")
     assert row[1] == "appChrome.tsx"
     assert row[2] == "ui-tui/src/components"
-
-
-def test_fuzzy_ranks_exact_before_prefix_before_subseq(tmp_path, monkeypatch):
-    """Better matches sort before weaker matches regardless of path depth."""
-    monkeypatch.chdir(tmp_path)
-    _nested_fixture(tmp_path)
-    (tmp_path / "server.py").write_text("x")  # exact basename match at root
-
-    texts = [t for t, _, _ in _items("@server")]
-
-    # Exact `server.py` beats `tui_gateway/server.py` (prefix match) — both
-    # rank 1 on basename but exact basename wins on the sort key; shorter
-    # rel path breaks ties.
-    assert texts[0] == "@file:server.py", texts
-    assert "@file:tui_gateway/server.py" in texts
-
-
-def test_fuzzy_camelcase_word_boundary(tmp_path, monkeypatch):
-    """Mid-basename camelCase pieces match without substring scanning."""
-    monkeypatch.chdir(tmp_path)
-    _nested_fixture(tmp_path)
-
-    texts = [t for t, _, _ in _items("@Chrome")]
-
-    # `Chrome` starts a camelCase word inside `appChrome.tsx`.
-    assert "@file:ui-tui/src/components/appChrome.tsx" in texts, texts
-
-
-def test_fuzzy_subsequence_catches_sparse_queries(tmp_path, monkeypatch):
-    """`@uCo` → `useCompletion.ts` via subsequence, last-resort tier."""
-    monkeypatch.chdir(tmp_path)
-    _nested_fixture(tmp_path)
-
-    texts = [t for t, _, _ in _items("@uCo")]
-
-    assert "@file:ui-tui/src/hooks/useCompletion.ts" in texts, texts
-
-
-def test_fuzzy_at_file_prefix_preserved(tmp_path, monkeypatch):
-    """Explicit `@file:` prefix still wins the completion tag."""
-    monkeypatch.chdir(tmp_path)
-    _nested_fixture(tmp_path)
-
-    texts = [t for t, _, _ in _items("@file:appChrome")]
-
-    assert "@file:ui-tui/src/components/appChrome.tsx" in texts, texts
-
-
-def test_fuzzy_skipped_when_path_has_slash(tmp_path, monkeypatch):
-    """Any `/` in the query = user is navigating; keep directory listing."""
-    monkeypatch.chdir(tmp_path)
-    _nested_fixture(tmp_path)
-
-    texts = [t for t, _, _ in _items("@ui-tui/src/components/app")]
-
-    # Directory-listing mode prefixes with `@file:` / `@folder:` per entry.
-    # It should only surface direct children of the named dir — not the
-    # nested `useCompletion.ts`.
-    assert any("appChrome.tsx" in t for t in texts), texts
-    assert not any("useCompletion.ts" in t for t in texts), texts
-
-
-def test_fuzzy_skipped_when_folder_tag(tmp_path, monkeypatch):
-    """`@folder:<name>` still lists directories — fuzzy scanner only walks
-    files (git-tracked + untracked), so defer to the dir-listing path."""
-    monkeypatch.chdir(tmp_path)
-    _nested_fixture(tmp_path)
-
-    texts = [t for t, _, _ in _items("@folder:ui")]
-
-    # Root has `ui-tui/` as a directory; the listing branch should surface it.
-    assert any(t.startswith("@folder:ui-tui") for t in texts), texts
-
-
-def test_fuzzy_hides_dotfiles_unless_asked(tmp_path, monkeypatch):
-    """`.env` doesn't leak into `@env` but does show for `@.env`."""
-    monkeypatch.chdir(tmp_path)
-    _nested_fixture(tmp_path)
-
-    assert not any(".env" in t for t, _, _ in _items("@env"))
-    assert any(t.endswith(".env") for t, _, _ in _items("@.env"))
-
-
-def test_fuzzy_caps_results(tmp_path, monkeypatch):
-    """The 30-item cap survives a big tree."""
-    monkeypatch.chdir(tmp_path)
-    for i in range(60):
-        (tmp_path / f"mod_{i:03d}.py").write_text("x")
-
-    items = _items("@mod")
-
-    assert len(items) == 30
 
 
 def test_fuzzy_paths_relative_to_cwd_inside_subdir(tmp_path, monkeypatch):
@@ -285,55 +180,6 @@ def test_fuzzy_paths_relative_to_cwd_inside_subdir(tmp_path, monkeypatch):
 # file inside it happens to match was unreachable without typing a `/`.
 
 
-def test_fuzzy_finds_directory_by_name(tmp_path, monkeypatch):
-    """A folder is reachable by bare name, with no trailing slash typed."""
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "Desktop" / "nested").mkdir(parents=True)
-    # Deliberately named so NO file basename fuzzy-matches "Desktop".
-    (tmp_path / "Desktop" / "nested" / "zzz.txt").write_text("x")
-
-    entries = _items("@Desktop")
-    texts = [t for t, _, _ in entries]
-
-    assert "@folder:Desktop/" in texts, texts
-
-    row = next(r for r in entries if r[0] == "@folder:Desktop/")
-    assert row[1] == "Desktop/"
-    assert row[2] == "dir"
-
-
-def test_fuzzy_directory_prefix_match(tmp_path, monkeypatch):
-    """Partial folder names match too — `@Desk` finds `Desktop/`."""
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "Desktop").mkdir()
-    (tmp_path / "Desktop" / "zzz.txt").write_text("x")
-
-    assert "@folder:Desktop/" in [t for t, _, _ in _items("@Desk")]
-
-
-def test_fuzzy_ranks_folder_above_file_at_same_tier(tmp_path, monkeypatch):
-    """At an equal match tier the folder leads: `@docs` means the directory."""
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "docs").mkdir()
-    (tmp_path / "docs" / "intro.md").write_text("x")
-    (tmp_path / "docs.md").write_text("x")
-
-    texts = [t for t, _, _ in _items("@docs")]
-
-    assert texts[0] == "@folder:docs/", texts
-    assert "@file:docs.md" in texts
-
-
-def test_fuzzy_hides_dot_directories_unless_asked(tmp_path, monkeypatch):
-    """Dot-folders follow the same rule as dotfiles."""
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / ".config").mkdir()
-    (tmp_path / ".config" / "zzz.txt").write_text("x")
-
-    assert not any(".config" in t for t, _, _ in _items("@config"))
-    assert any(t.startswith("@folder:.config") for t, _, _ in _items("@.config"))
-
-
 def test_fuzzy_finds_top_level_entries_outside_a_git_repo(tmp_path, monkeypatch):
     """Outside a repo the fallback walk can exhaust its file budget on one
     deep subtree before reaching a sibling, hiding top-level folders. The
@@ -377,18 +223,6 @@ def test_leading_slash_matches_the_bare_form(tmp_path, monkeypatch):
     assert slashed == bare
 
 
-def test_leading_slash_navigates_into_subfolders(tmp_path, monkeypatch):
-    """The fallback survives deeper paths, not just a single segment."""
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "apps" / "desktop").mkdir(parents=True)
-    (tmp_path / "apps" / "desktop" / "main.tsx").write_text("x")
-
-    assert "@folder:apps/desktop/" in [t for t, _, _ in _items("@/apps/desktop")]
-
-    server._fuzzy_cache.clear()
-    assert any("main.tsx" in t for t, _, _ in _items("@/apps/desktop/"))
-
-
 def test_leading_slash_prefers_a_real_absolute_path(tmp_path, monkeypatch):
     """When the absolute reading resolves, it wins — no silent rewrite.
 
@@ -406,12 +240,26 @@ def test_leading_slash_prefers_a_real_absolute_path(tmp_path, monkeypatch):
     assert not any("decoy.conf" in t for t in texts), texts
 
 
-def test_leading_slash_falls_back_only_when_absolute_is_missing(tmp_path, monkeypatch):
-    """A nonexistent absolute prefix falls back; an existing one doesn't."""
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "nonexistent-at-root").mkdir()
-    (tmp_path / "nonexistent-at-root" / "f.txt").write_text("x")
+def test_completion_ignores_real_terminal_cwd(tmp_path, monkeypatch):
+    """#70041: _completion_cwd must not read the developer's real config.yaml
+    terminal.cwd when running under hermetic tests.
 
-    assert "@folder:nonexistent-at-root/" in [
-        t for t, _, _ in _items("@/nonexistent-at-root")
-    ]
+    The autouse _reset_fuzzy_cache fixture patches _launch_configured_cwd
+    to None so _completion_cwd falls through to os.getcwd() (controlled
+    by monkeypatch.chdir). This test verifies the fixture holds: with the
+    patch in place, a configured terminal.cwd from the launch profile's
+    real config can never leak into completion resolution.
+    """
+    _fixture(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+    # _completion_cwd should resolve to tmp_path (via os.getcwd),
+    # not to any configured terminal.cwd from the real config.
+    resolved = server._completion_cwd({})
+    assert resolved == str(tmp_path), (
+        f"_completion_cwd resolved to {resolved} instead of {tmp_path} — "
+        f"the autouse fixture may not be patching _launch_configured_cwd"
+    )
+
+

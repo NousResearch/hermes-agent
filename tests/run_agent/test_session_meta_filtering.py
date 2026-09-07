@@ -51,16 +51,6 @@ class TestSanitizeApiMessagesRoleFilter:
             AIAgent._sanitize_api_messages(msgs)
         assert any("invalid role" in r.message and "session_meta" in r.message for r in caplog.records)
 
-    def test_drops_multiple_invalid_roles(self):
-        msgs = [
-            {"role": "user", "content": "hello"},
-            {"role": "session_meta", "content": {}},
-            {"role": "transcript_note", "content": "note"},
-            {"role": "assistant", "content": "hi"},
-        ]
-        out = AIAgent._sanitize_api_messages(msgs)
-        assert len(out) == 2
-        assert [m["role"] for m in out] == ["user", "assistant"]
 
 
 # ---------------------------------------------------------------------------

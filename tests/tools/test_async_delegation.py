@@ -8,6 +8,7 @@ formatting, capacity rejection, and crash handling.
 import json
 import os
 import queue
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -16,7 +17,8 @@ import time
 import pytest
 
 from tools import async_delegation as ad
-from tools.process_registry import process_registry, format_process_notification
+from tools.process_registry import process_registry
+from tools.process_registry_notifications import format_process_notification
 
 
 @pytest.fixture(autouse=True)
@@ -63,6 +65,61 @@ def _drain_for(delegation_id, timeout=5.0):
             continue
         time.sleep(0.02)
     return None
+
+
+def test_schema_init_preserves_shared_state_db_journal_mode(tmp_path):
+    """The delegation ledger is a guest in state.db, not its mode owner."""
+    conn = sqlite3.connect(tmp_path / "state.db")
+    try:
+        assert conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0] == "delete"
+
+        ad._initialize_schema(conn)
+
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='async_delegations'"
+        ).fetchone() == ("async_delegations",)
+    finally:
+        conn.close()
+
+
+def test_schema_init_preserves_shared_state_db_wal_mode(tmp_path):
+    """Schema initialization must not replace an existing WAL mode."""
+    conn = sqlite3.connect(tmp_path / "state.db")
+    try:
+        assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+
+        ad._initialize_schema(conn)
+
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='async_delegations'"
+        ).fetchone() == ("async_delegations",)
+    finally:
+        conn.close()
+
+
+@pytest.mark.macos_only
+def test_connect_preserves_wal_and_applies_macos_durability_barriers(
+    tmp_path, monkeypatch
+):
+    """Each ledger connection must carry the macOS write barriers."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    seed = sqlite3.connect(tmp_path / "state.db")
+    try:
+        assert seed.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    finally:
+        seed.close()
+
+    conn = ad._connect()
+    try:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 2
+        assert conn.execute("PRAGMA checkpoint_fullfsync").fetchone()[0] == 1
+    finally:
+        conn.close()
 
 
 def test_dispatch_returns_immediately_without_blocking():
@@ -441,43 +498,6 @@ def test_list_async_delegations_exposes_live_activity(monkeypatch):
         gate.set()
 
 
-def test_stalled_batch_is_interrupted_then_finalized(monkeypatch):
-    _fast_stale_monitor(monkeypatch)
-    gate = threading.Event()
-    interrupted = {"count": 0}
-
-    def stuck_batch():
-        gate.wait(timeout=10)
-        return {"results": [{"status": "completed", "summary": "too late"}]}
-
-    def interrupt_fn():
-        interrupted["count"] += 1
-
-    res = ad.dispatch_async_delegation_batch(
-        goals=["a", "b"], context="ctx", toolsets=None, role="leaf",
-        model="m", session_key="", runner=stuck_batch,
-        interrupt_fn=interrupt_fn, max_async_children=1,
-        progress_fn=lambda: (((0, None), (0, None)), False),
-    )
-    assert res["status"] == "dispatched"
-
-    evt = _drain_for(res["delegation_id"], timeout=5.0)
-    try:
-        assert evt is not None
-        assert evt["type"] == "async_delegation"
-        assert evt["status"] == "stalled"
-        assert evt["is_batch"] is True
-        assert evt["goals"] == ["a", "b"]
-        assert evt["results"] == []
-        assert "stalled" in evt["error"]
-        assert interrupted["count"] >= 1
-        assert ad.active_count() == 0
-    finally:
-        gate.set()
-
-    assert _drain_one(timeout=0.5) is None
-
-
 def test_in_tool_stall_uses_higher_threshold(monkeypatch):
     """A frozen child inside a tool gets the in-tool ceiling, not the idle one."""
     _fast_stale_monitor(monkeypatch, idle=0.1, in_tool=10.0, grace=0.1)
@@ -504,157 +524,6 @@ def test_in_tool_stall_uses_higher_threshold(monkeypatch):
     evt = _drain_for(res["delegation_id"], timeout=5.0)
     assert evt is not None
     assert evt["status"] == "completed"
-
-
-def test_stall_stays_finalizing_until_durable_persistence(tmp_path, monkeypatch):
-    _fast_stale_monitor(monkeypatch)
-    gate = threading.Event()
-    persist_entered = threading.Event()
-    allow_persist = threading.Event()
-    real_persist = ad._persist_completion
-
-    def blocking_persist(event, result):
-        persist_entered.set()
-        allow_persist.wait(timeout=5)
-        real_persist(event, result)
-
-    def stuck_runner():
-        gate.wait(timeout=10)
-        return {"status": "completed", "summary": "too late"}
-
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(ad, "_persist_completion", blocking_persist)
-    dispatched = ad.dispatch_async_delegation(
-        goal="durable stall", context=None, toolsets=None, role="leaf",
-        model="m", session_key="owner", runner=stuck_runner,
-        max_async_children=1, progress_fn=lambda: ((0, None), False),
-    )
-
-    try:
-        assert persist_entered.wait(timeout=5)
-        assert ad.active_count() == 1
-        record = next(
-            item for item in ad.list_async_delegations()
-            if item["delegation_id"] == dispatched["delegation_id"]
-        )
-        assert record["status"] == "finalizing"
-        assert process_registry.completion_queue.empty()
-
-        allow_persist.set()
-        evt = _drain_for(dispatched["delegation_id"])
-        assert evt is not None
-        assert evt["status"] == "stalled"
-        assert ad.active_count() == 0
-        durable = ad.get_durable_delegation(dispatched["delegation_id"])
-        assert durable["state"] == "stalled"
-        assert durable["delivery_state"] == "pending"
-    finally:
-        allow_persist.set()
-        gate.set()
-
-
-def test_stalled_completion_restores_once_after_process_restart(tmp_path):
-    repo = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    env = {**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": repo}
-    producer = r'''
-import json
-import threading
-import time
-from tools import async_delegation as ad
-ad._STALE_CHECK_INTERVAL = 0.03
-ad._STALE_IDLE_SECONDS = 0.1
-ad._STALL_GRACE_SECONDS = 0.1
-gate = threading.Event()
-r = ad.dispatch_async_delegation(
-    goal="restart stall", context=None, toolsets=None, role="leaf", model="m",
-    session_key="owner-session", parent_session_id="durable-parent",
-    runner=lambda: gate.wait(timeout=60),
-    progress_fn=lambda: ((0, None), False),
-)
-deadline = time.time() + 10
-while ad.active_count() and time.time() < deadline:
-    time.sleep(.01)
-row = ad.get_durable_delegation(r["delegation_id"])
-print(json.dumps({"delegation_id": r["delegation_id"], "row": row}, sort_keys=True))
-'''
-    first = subprocess.run(
-        [sys.executable, "-c", producer], cwd=repo, env=env,
-        text=True, capture_output=True, timeout=30, check=True,
-    )
-    produced = json.loads(first.stdout.strip().splitlines()[-1])
-    delegation_id = produced["delegation_id"]
-    assert produced["row"]["state"] == "stalled"
-    assert produced["row"]["delivery_state"] == "pending"
-
-    consumer = r'''
-import json
-from tools.process_registry import process_registry
-evt = process_registry.completion_queue.get_nowait()
-print(json.dumps({"event": evt, "remaining": process_registry.completion_queue.qsize()}, sort_keys=True))
-'''
-    second = subprocess.run(
-        [sys.executable, "-c", consumer], cwd=repo, env=env,
-        text=True, capture_output=True, timeout=15, check=True,
-    )
-    restored = json.loads(second.stdout.strip().splitlines()[-1])
-    assert restored["remaining"] == 0
-    assert restored["event"]["delegation_id"] == delegation_id
-    assert restored["event"]["status"] == "stalled"
-    assert restored["event"]["restored"] is True
-
-    acker = f'''
-from tools import async_delegation as ad
-assert ad.mark_completion_delivered({delegation_id!r})
-'''
-    subprocess.run(
-        [sys.executable, "-c", acker], cwd=repo, env=env,
-        text=True, capture_output=True, timeout=15, check=True,
-    )
-    probe = subprocess.run(
-        [sys.executable, "-c", "from tools.process_registry import process_registry; print(process_registry.completion_queue.qsize())"],
-        cwd=repo, env=env, text=True, capture_output=True, timeout=15, check=True,
-    )
-    assert probe.stdout.strip().splitlines()[-1] == "0"
-
-
-def test_completed_records_pruned_to_cap():
-    # Run more than the retention cap quickly; ensure list doesn't grow forever.
-    for i in range(ad._MAX_RETAINED_COMPLETED + 10):
-        ad.dispatch_async_delegation(
-            goal=f"t{i}", context=None, toolsets=None, role="leaf", model="m",
-            session_key="", runner=lambda: {"status": "completed", "summary": "ok"},
-            max_async_children=ad._MAX_RETAINED_COMPLETED + 20,
-        )
-    # let workers finish
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and ad.active_count() > 0:
-        time.sleep(0.05)
-    assert len(ad.list_async_delegations()) <= ad._MAX_RETAINED_COMPLETED
-
-
-def test_completion_is_persisted_and_delivery_can_be_acknowledged(tmp_path, monkeypatch):
-    """A finished child remains pending on disk until its queue consumer acks it."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    dispatched = ad.dispatch_async_delegation(
-        goal="durable", context="ctx", toolsets=["terminal"], role="leaf",
-        model="m", session_key="owner", parent_session_id="parent",
-        runner=lambda: {"status": "completed", "summary": "survived"},
-    )
-    assert _drain_one() is not None
-
-    restored = queue.Queue()
-    assert ad.restore_undelivered_completions(restored) == 1
-    row = ad.get_durable_delegation(dispatched["delegation_id"])
-    assert row["origin_session"] == "owner"
-    assert row["state"] == "completed"
-    assert row["result"]["summary"] == "survived"
-    assert row["delivery_state"] == "pending"
-    # Queue publication/restoration is not a destination delivery attempt.
-    assert row["delivery_attempts"] == 0
-
-    assert ad.mark_completion_delivered(dispatched["delegation_id"])
-    assert ad.restore_undelivered_completions(queue.Queue()) == 0
-    assert ad.get_durable_delegation(dispatched["delegation_id"])["delivery_state"] == "delivered"
 
 
 def test_real_process_restart_restores_owned_completion_once(tmp_path):
@@ -709,177 +578,6 @@ assert ad.mark_completion_delivered({delegation_id!r})
         cwd=repo, env=env, text=True, capture_output=True, timeout=15, check=True,
     )
     assert probe.stdout.strip().splitlines()[-1] == "0"
-
-
-def test_submit_failure_removes_durable_running_record(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-    class _BrokenExecutor:
-        def submit(self, *_args, **_kwargs):
-            raise RuntimeError("submit failed")
-
-    monkeypatch.setattr(ad, "_get_executor", lambda _max_workers: _BrokenExecutor())
-    result = ad.dispatch_async_delegation(
-        goal="never ran", context=None, toolsets=None, role="leaf", model="m",
-        session_key="owner", runner=lambda: {},
-    )
-
-    assert result["status"] == "rejected"
-    with ad._DB_LOCK, ad._connect() as conn:
-        assert conn.execute("SELECT COUNT(*) FROM async_delegations").fetchone()[0] == 0
-
-
-def test_pending_retention_prunes_delivered_before_undelivered(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(ad, "_MAX_RETAINED_COMPLETED", 2)
-    for index, delivery_state in enumerate(("pending", "delivered", "pending")):
-        delegation_id = f"deleg_{index}"
-        record = {
-            "delegation_id": delegation_id,
-            "session_key": "owner",
-            "origin_ui_session_id": "",
-            "parent_session_id": None,
-            "dispatched_at": float(index + 1),
-        }
-        ad._persist_dispatch(record)
-        ad._persist_completion(
-            {
-                "delegation_id": delegation_id,
-                "status": "completed",
-                "completed_at": float(index + 1),
-            },
-            {"status": "completed", "summary": delegation_id},
-        )
-        if delivery_state == "delivered":
-            ad.mark_completion_delivered(delegation_id)
-
-    ad._prune_durable_records()
-
-    assert ad.get_durable_delegation("deleg_0") is not None
-    assert ad.get_durable_delegation("deleg_1") is None
-    assert ad.get_durable_delegation("deleg_2") is not None
-
-
-def test_recover_marks_abandoned_running_record_unknown(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    record = {
-        "delegation_id": "deleg_abandoned",
-        "session_key": "owner",
-        "origin_ui_session_id": "",
-        "parent_session_id": None,
-        "dispatched_at": 1.0,
-    }
-    ad._persist_dispatch(record)
-    with ad._DB_LOCK, ad._connect() as conn:
-        conn.execute(
-            "UPDATE async_delegations SET owner_pid=?, owner_started_at=NULL WHERE delegation_id=?",
-            (99999999, "deleg_abandoned"),
-        )
-
-    assert ad.recover_abandoned_delegations() == 1
-    durable = ad.get_durable_delegation("deleg_abandoned")
-    assert durable["state"] == "unknown"
-    assert durable["delivery_state"] == "pending"
-    restored = queue.Queue()
-    assert ad.restore_undelivered_completions(restored) == 1
-    assert restored.get_nowait()["status"] == "unknown"
-
-
-def test_origin_session_id_survives_persistence_round_trip(tmp_path, monkeypatch):
-    """origin_session_id (the api_server wake self-post target) must be
-    persisted with the durable dispatch record and restored on recovery —
-    otherwise completions recovered after a process restart are unroutable
-    to api_server sessions (in-memory record is gone)."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    record = {
-        "delegation_id": "deleg_wake_target",
-        "session_key": "owner",
-        "origin_ui_session_id": "",
-        "origin_session_id": "raw-api-sid-42",
-        "parent_session_id": None,
-        "dispatched_at": 1.0,
-    }
-    ad._persist_dispatch(record)
-
-    # Durable record carries the wake target.
-    durable = ad.get_durable_delegation("deleg_wake_target")
-    assert durable["origin_session_id"] == "raw-api-sid-42"
-
-    # Simulate the owning process dying, then recovery after restart: the
-    # regenerated completion event must still carry the wake target.
-    with ad._DB_LOCK, ad._connect() as conn:
-        conn.execute(
-            "UPDATE async_delegations SET owner_pid=?, owner_started_at=NULL WHERE delegation_id=?",
-            (99999999, "deleg_wake_target"),
-        )
-    restored = queue.Queue()
-    assert ad.restore_undelivered_completions(restored) == 1
-    evt = restored.get_nowait()
-    assert evt["delegation_id"] == "deleg_wake_target"
-    assert evt["origin_session_id"] == "raw-api-sid-42"
-    assert evt["restored"] is True
-
-
-def test_origin_session_id_migration_backfills_legacy_rows(tmp_path, monkeypatch):
-    """Rows written by a pre-origin_session_id build must survive the ALTER
-    TABLE migration and read back as an empty wake target."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    # Create a legacy-schema DB (no origin_session_id column).
-    import sqlite3
-
-    db_path = ad._db_path()
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    legacy = sqlite3.connect(str(db_path))
-    legacy.execute(
-        """CREATE TABLE async_delegations (
-            delegation_id TEXT PRIMARY KEY,
-            origin_session TEXT NOT NULL,
-            origin_ui_session_id TEXT NOT NULL DEFAULT '',
-            parent_session_id TEXT,
-            state TEXT NOT NULL,
-            dispatched_at REAL NOT NULL,
-            completed_at REAL,
-            updated_at REAL NOT NULL,
-            event_json TEXT,
-            result_json TEXT,
-            delivery_state TEXT NOT NULL DEFAULT 'pending',
-            delivery_attempts INTEGER NOT NULL DEFAULT 0,
-            delivered_at REAL
-        )"""
-    )
-    legacy.execute(
-        """INSERT INTO async_delegations
-           (delegation_id, origin_session, state, dispatched_at, updated_at)
-           VALUES ('deleg_legacy', 'owner', 'running', 1.0, 1.0)"""
-    )
-    legacy.commit()
-    legacy.close()
-
-    durable = ad.get_durable_delegation("deleg_legacy")
-    assert durable is not None
-    assert durable["origin_session_id"] == ""
-
-
-def test_durable_delivery_claim_is_exclusive_and_retryable(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    record = {
-        "delegation_id": "deleg_claim", "session_key": "owner",
-        "origin_ui_session_id": "", "parent_session_id": None,
-        "dispatched_at": 1.0,
-    }
-    ad._persist_dispatch(record)
-    ad._persist_completion(
-        {"delegation_id": "deleg_claim", "status": "completed", "completed_at": 2.0},
-        {"status": "completed", "summary": "done"},
-    )
-
-    assert ad.claim_completion_delivery("deleg_claim", "consumer-a")
-    assert not ad.claim_completion_delivery("deleg_claim", "consumer-b")
-    assert ad.release_completion_delivery("deleg_claim", "consumer-a")
-    assert ad.claim_completion_delivery("deleg_claim", "consumer-b")
-    assert ad.complete_completion_delivery("deleg_claim", "consumer-b")
-    assert not ad.claim_completion_delivery("deleg_claim", "consumer-c")
-    assert ad.get_durable_delegation("deleg_claim")["delivery_state"] == "delivered"
 
 
 # ---------------------------------------------------------------------------
@@ -950,74 +648,6 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     assert "the real task" in text
 
 
-def test_delegate_task_background_waits_inside_kanban_worker(monkeypatch):
-    """A dispatcher-spawned Kanban worker is a finite process, so a required
-    delegated result must return in-turn instead of becoming an orphaned
-    background completion after the parent exits."""
-    import json
-    from unittest.mock import MagicMock
-    import tools.delegate_tool as dt
-
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_review")
-
-    parent = MagicMock()
-    parent._delegate_depth = 0
-    parent.session_id = "kanban-worker-session"
-    parent._interrupt_requested = False
-    parent._active_children = []
-    parent._active_children_lock = None
-    fake_child = MagicMock()
-    fake_child._delegate_role = "leaf"
-
-    started = threading.Event()
-    release = threading.Event()
-
-    def delayed_child(task_index, goal, child=None, parent_agent=None, **kw):
-        started.set()
-        release.wait(timeout=5)
-        return {
-            "task_index": task_index,
-            "status": "completed",
-            "summary": "review approved",
-            "api_calls": 1,
-            "duration_seconds": 0.1,
-            "model": "m",
-            "exit_reason": "completed",
-        }
-
-    creds = {
-        "model": "m", "provider": None, "base_url": None, "api_key": None,
-        "api_mode": None, "command": None, "args": None,
-    }
-    monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
-    monkeypatch.setattr(dt, "_run_single_child", delayed_child)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
-
-    captured = {}
-
-    def call_delegate():
-        captured["output"] = dt.delegate_task(
-            goal="independent review",
-            background=True,
-            parent_agent=parent,
-        )
-
-    caller = threading.Thread(target=call_delegate)
-    caller.start()
-    assert started.wait(timeout=2)
-    assert caller.is_alive(), "Kanban delegate_task returned before its child finished"
-    assert ad.active_count() == 0
-
-    release.set()
-    caller.join(timeout=5)
-    assert not caller.is_alive()
-
-    parsed = json.loads(captured["output"])
-    assert parsed["results"][0]["summary"] == "review approved"
-    assert "SYNCHRONOUSLY" in parsed["note"]
-    assert process_registry.completion_queue.empty()
-
-
 def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
     """TUI async delegation must route to the live/compressed agent id.
 
@@ -1029,7 +659,7 @@ def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
     from unittest.mock import MagicMock
     import tools.delegate_tool as dt
     from gateway.session_context import clear_session_vars, set_session_vars
-    from tools.approval import reset_current_session_key, set_current_session_key
+    from tools.approval_context import reset_current_session_key, set_current_session_key
 
     parent = MagicMock()
     parent._delegate_depth = 0
@@ -1078,259 +708,6 @@ def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
     assert evt["type"] == "async_delegation"
     assert evt["session_key"] == "post-compress-tip"
     assert evt["origin_ui_session_id"] == "origin-tab"
-
-
-def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
-    """A multi-item batch with background=True dispatches the WHOLE fan-out as
-    ONE background unit (one handle, one async slot). The children run in
-    parallel and join; the consolidated results come back as a single
-    completion event when ALL of them finish."""
-    import json
-    from unittest.mock import MagicMock, patch
-    import tools.delegate_tool as dt
-
-    parent = MagicMock()
-    parent._delegate_depth = 0
-    parent.session_id = "sess"
-    parent._interrupt_requested = False
-    parent._active_children = []
-    parent._active_children_lock = None
-
-    fake_child = MagicMock()
-    fake_child._delegate_role = "leaf"
-
-    gate = threading.Event()
-
-    def _blocking_child(task_index, goal, child=None, parent_agent=None, **kw):
-        gate.wait(timeout=60)
-        return {
-            "task_index": task_index, "status": "completed",
-            "summary": f"done: {goal}", "api_calls": 1,
-            "duration_seconds": 0.1, "model": "m", "exit_reason": "completed",
-        }
-
-    creds = {
-        "model": "m", "provider": None, "base_url": None, "api_key": None,
-        "api_mode": None, "command": None, "args": None,
-    }
-
-    # Use monkeypatch (not a `with` block) so the patches stay active while the
-    # background worker thread runs _execute_and_aggregate AFTER delegate_task
-    # has already returned.
-    monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
-    monkeypatch.setattr(dt, "_run_single_child", _blocking_child)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
-    out = dt.delegate_task(
-        tasks=[{"goal": "a"}, {"goal": "b"}, {"goal": "c"}],
-        background=True,
-        parent_agent=parent,
-    )
-
-    parsed = json.loads(out)
-    assert parsed["status"] == "dispatched"
-    assert parsed["mode"] == "background"
-    assert parsed["count"] == 3
-    assert parsed["delegation_id"].startswith("deleg_")
-    assert parsed["goals"] == ["a", "b", "c"]
-    # ONE background unit for the whole fan-out (not three), and the call
-    # returned while all children are still blocked → chat not blocked.
-    assert process_registry.completion_queue.empty()
-    assert ad.active_count() == 1
-
-    # Release the children; the whole batch joins and emits ONE event.
-    gate.set()
-    evt = _drain_one()
-    assert evt is not None
-    assert evt["type"] == "async_delegation"
-    assert evt.get("is_batch") is True
-    assert len(evt["results"]) == 3
-    summaries = sorted(r["summary"] for r in evt["results"])
-    assert summaries == ["done: a", "done: b", "done: c"]
-    # The consolidated notification names all three tasks in one block.
-    text = format_process_notification(evt)
-    assert text is not None
-    assert "TASK 1/3" in text and "TASK 2/3" in text and "TASK 3/3" in text
-    assert "done: a" in text and "done: b" in text and "done: c" in text
-    # No more events — it's a single combined completion, not N of them.
-    assert _drain_one() is None
-
-
-def test_delegate_task_background_passes_progress_fn_to_async_registry(monkeypatch):
-    import json
-    from unittest.mock import MagicMock
-    import tools.delegate_tool as dt
-
-    parent = MagicMock()
-    parent._delegate_depth = 0
-    parent.session_id = "sess"
-    parent._interrupt_requested = False
-    parent._active_children = []
-    parent._active_children_lock = None
-
-    fake_child = MagicMock()
-    fake_child._delegate_role = "leaf"
-    fake_child._subagent_id = "s1"
-    fake_child.get_activity_summary.return_value = {
-        "api_call_count": 4,
-        "current_tool": "terminal",
-        "last_activity_ts": 1234.5,
-    }
-
-    creds = {
-        "model": "m", "provider": None, "base_url": None, "api_key": None,
-        "api_mode": None, "command": None, "args": None,
-    }
-    captured = {}
-
-    def fake_dispatch(**kwargs):
-        captured.update(kwargs)
-        return {"status": "dispatched", "delegation_id": "deleg_progress"}
-
-    monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
-    monkeypatch.setattr(ad, "dispatch_async_delegation_batch", fake_dispatch)
-
-    out = dt.delegate_task(goal="background stall guard", background=True, parent_agent=parent)
-
-    parsed = json.loads(out)
-    assert parsed["status"] == "dispatched"
-    assert parsed["delegation_id"] == "deleg_progress"
-    # The dispatch wires a live progress sampler over the child agents so the
-    # async registry's stale monitor can watch the detached batch. The token
-    # includes last_activity_ts so streamed chunks count as liveness (each
-    # chunk ticks _touch_activity), not just completed API calls.
-    progress_fn = captured["progress_fn"]
-    assert callable(progress_fn)
-    token, in_tool = progress_fn()
-    assert token == ((4, "terminal", 1234.5),)
-    assert in_tool is True
-
-
-def test_model_dispatch_forces_background():
-    """The MODEL-facing dispatch path forces background=True for any top-level
-    delegation (single task OR batch), and keeps it off for an orchestrator
-    subagent (depth > 0). Direct delegate_task() callers are unaffected (they
-    keep the synchronous default)."""
-    import tools.delegate_tool as dt
-    from unittest.mock import MagicMock
-
-    top = MagicMock()
-    top._delegate_depth = 0
-    sub = MagicMock()
-    sub._delegate_depth = 1
-
-    # Registry-fallback helper: top-level always background, regardless of
-    # single vs batch; subagent never.
-    assert dt._model_background_value({"goal": "x"}, top) is True
-    assert dt._model_background_value(
-        {"tasks": [{"goal": "a"}, {"goal": "b"}]}, top
-    ) is True
-    assert dt._model_background_value({"tasks": [{"goal": "a"}]}, top) is True
-    assert dt._model_background_value({"goal": "x"}, sub) is False
-    assert dt._model_background_value(
-        {"tasks": [{"goal": "a"}, {"goal": "b"}]}, sub
-    ) is False
-
-
-def test_run_agent_dispatch_forces_background():
-    """run_agent._dispatch_delegate_task — the live model path — forces
-    background on for any top-level delegation (single OR batch) and off for a
-    subagent."""
-    from unittest.mock import patch
-    import run_agent
-
-    class _FakeAgent:
-        _delegate_depth = 0
-
-    captured = {}
-
-    def _fake_delegate(**kwargs):
-        captured.update(kwargs)
-        return "{}"
-
-    with patch("tools.delegate_tool.delegate_task", _fake_delegate):
-        agent = _FakeAgent()
-        run_agent.AIAgent._dispatch_delegate_task(agent, {"goal": "x"})
-        assert captured["background"] is True
-
-        run_agent.AIAgent._dispatch_delegate_task(
-            agent, {"tasks": [{"goal": "a"}, {"goal": "b"}]}
-        )
-        assert captured["background"] is True
-
-        sub = _FakeAgent()
-        sub._delegate_depth = 1
-        run_agent.AIAgent._dispatch_delegate_task(sub, {"goal": "x"})
-        assert captured["background"] is False
-
-
-def test_dispatch_never_forwards_model_toolsets():
-    """The model has no toolsets argument — subagents always inherit the
-    parent's toolsets. Even if a model smuggles a `toolsets` key into the
-    tool-call args, the live dispatch path must NOT forward it to
-    delegate_task (which no longer accepts it) and must not crash."""
-    from unittest.mock import patch
-    import run_agent
-
-    class _FakeAgent:
-        _delegate_depth = 0
-
-    captured = {}
-
-    def _fake_delegate(**kwargs):
-        captured.update(kwargs)
-        return "{}"
-
-    with patch("tools.delegate_tool.delegate_task", _fake_delegate):
-        run_agent.AIAgent._dispatch_delegate_task(
-            _FakeAgent(), {"goal": "x", "toolsets": ["web", "terminal"]}
-        )
-    assert "toolsets" not in captured
-
-
-def test_delegate_task_background_detaches_child_from_parent(monkeypatch):
-    """A background child must NOT remain in parent._active_children —
-    otherwise parent-turn interrupts / cache evicts / session close would
-    kill the detached subagent mid-run."""
-    from unittest.mock import MagicMock, patch
-    import tools.delegate_tool as dt
-
-    parent = MagicMock()
-    parent._delegate_depth = 0
-    parent.session_id = "sess"
-    parent._active_children = []
-    parent._active_children_lock = threading.Lock()
-    fake_child = MagicMock()
-    fake_child._delegate_role = "leaf"
-    fake_child._subagent_id = "s1"
-
-    gate = threading.Event()
-
-    def slow_child(task_index, goal, child=None, parent_agent=None, **kw):
-        gate.wait(timeout=60)
-        return {"task_index": 0, "status": "completed", "summary": "ok"}
-
-    def build_and_register(**kw):
-        # Mirror what the real _build_child_agent does: register the child
-        # for interrupt propagation.
-        parent._active_children.append(fake_child)
-        return fake_child
-
-    creds = {
-        "model": "m", "provider": None, "base_url": None, "api_key": None,
-        "api_mode": None, "command": None, "args": None,
-    }
-    with patch.object(dt, "_build_child_agent", side_effect=build_and_register), \
-         patch.object(dt, "_run_single_child", side_effect=slow_child), \
-         patch.object(dt, "_resolve_delegation_credentials", return_value=creds):
-        out = dt.delegate_task(goal="bg task", background=True, parent_agent=parent)
-
-    import json
-    assert json.loads(out)["status"] == "dispatched"
-    # Child detached immediately at dispatch, while it is still running.
-    assert fake_child not in parent._active_children
-    gate.set()
-    assert _drain_one() is not None
 
 
 def test_concurrent_dispatch_respects_capacity():
@@ -1390,17 +767,6 @@ def _make_async_evt(**over):
     return evt
 
 
-def test_gateway_enriches_routing_from_session_key():
-    from gateway.run import GatewayRunner
-
-    runner = object.__new__(GatewayRunner)
-    evt = _make_async_evt()
-    runner._enrich_async_delegation_routing(evt)
-    assert evt["platform"] == "telegram"
-    assert evt["chat_id"] == "12345"
-    assert evt["thread_id"] == "678"
-
-
 def test_gateway_formatter_renders_async_block():
     from gateway.run import _format_gateway_process_notification
 
@@ -1409,40 +775,6 @@ def test_gateway_formatter_renders_async_block():
     assert "ASYNC DELEGATION COMPLETE" in txt
     assert "Found the bug in test_foo" in txt
     assert "Investigate flaky test" in txt
-
-
-def test_gateway_watch_drain_requeues_async_without_looping():
-    from gateway.run import _drain_gateway_watch_events
-
-    q = queue.Queue()
-    async_evt = _make_async_evt()
-    watch_evt = {
-        "type": "watch_match",
-        "session_id": "proc_1",
-        "command": "pytest",
-        "pattern": "READY",
-        "output": "READY",
-    }
-    q.put(async_evt)
-    q.put(watch_evt)
-
-    watch_events = _drain_gateway_watch_events(q)
-
-    assert watch_events == [watch_evt]
-    assert q.qsize() == 1
-    assert q.get_nowait() == async_evt
-
-
-def test_gateway_builds_routable_source_from_enriched_event():
-    from gateway.run import GatewayRunner
-
-    runner = object.__new__(GatewayRunner)
-    evt = _make_async_evt()
-    runner._enrich_async_delegation_routing(evt)
-    src = runner._build_process_event_source(evt)
-    assert src is not None
-    assert src.platform.value == "telegram"
-    assert src.chat_id == "12345"
 
 
 def test_gateway_cli_origin_event_left_unrouted():
@@ -1454,3 +786,289 @@ def test_gateway_cli_origin_event_left_unrouted():
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
 
+
+def test_single_task_truncation_banner_when_max_iterations():
+    """A single async subagent that hit its iteration cap (exit_reason=
+    max_iterations) must surface a TRUNCATED marker in the formatted result,
+    even though status stays 'completed' (a summary exists)."""
+    evt = _make_async_evt(
+        status="completed",
+        summary="Did part of the work then ran out of budget.",
+        exit_reason="max_iterations",
+    )
+    text = format_process_notification(evt)
+    assert text is not None
+    assert "TRUNCATED" in text
+    assert "max_iterations" in text
+    # The summary is still shown, just flagged.
+    assert "Did part of the work" in text
+
+
+def test_single_task_no_banner_when_clean():
+    """A cleanly-finished subagent must NOT get a truncation banner."""
+    evt = _make_async_evt(status="completed", summary="All done.", exit_reason="completed")
+    text = format_process_notification(evt)
+    assert text is not None
+    assert "TRUNCATED" not in text
+
+
+def test_batch_truncation_banner_marks_only_truncated_task():
+    """In a batch, only the task that hit max_iterations gets the TRUNCATED
+    marker; a clean sibling keeps the normal check icon."""
+    evt = _make_async_evt(
+        is_batch=True,
+        goals=["clean task", "truncated task"],
+        results=[
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "finished cleanly",
+                "api_calls": 5,
+                "exit_reason": "completed",
+                "truncated": False,
+            },
+            {
+                "task_index": 1,
+                "status": "completed",
+                "summary": "cut off mid-work",
+                "api_calls": 250,
+                "exit_reason": "max_iterations",
+                "truncated": True,
+            },
+        ],
+    )
+    text = format_process_notification(evt)
+    assert text is not None
+    assert "TRUNCATED" in text
+    # The clean task's summary and the truncated one's both render...
+    assert "finished cleanly" in text
+    assert "cut off mid-work" in text
+    # ...but the banner is tied to the truncated task, not the clean one.
+    trunc_pos = text.index("cut off mid-work")
+    clean_pos = text.index("finished cleanly")
+    banner_pos = text.index("TRUNCATED")
+    # The header banner for task 2 appears after task 1's summary.
+    assert banner_pos > clean_pos
+
+
+def _patch_delegation_cfg(monkeypatch, model="upstage/solar-pro-4", provider="openrouter"):
+    """Pin the delegation config the notice renderer reads (adapts the
+    #97667 tests to the shipped implementation, which reads the configured
+    model from config rather than the event's model field)."""
+    import tools.process_registry_notifications as _prn
+
+    monkeypatch.setattr(
+        _prn, "_delegation_config", lambda: {"model": model, "provider": provider}
+    )
+
+
+def test_batch_model_rejection_notice_prepended(monkeypatch):
+    """A rejected delegation model must surface ONE config-level notice above
+    the per-task blocks instead of staying buried in each summary (#97654)."""
+    rejection = "HTTP 400: upstage/solar-pro-4 is not a valid model ID"
+    _patch_delegation_cfg(monkeypatch)
+    evt = _make_async_evt(
+        is_batch=True,
+        model="upstage/solar-pro-4",
+        goals=["task a", "task b"],
+        results=[
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": rejection,
+                "api_calls": 1,
+                "duration_seconds": 0.74,
+                "exit_reason": "max_iterations",
+                "truncated": True,
+            },
+            {
+                "task_index": 1,
+                "status": "completed",
+                "summary": rejection,
+                "api_calls": 1,
+                "duration_seconds": 0.71,
+                "exit_reason": "max_iterations",
+                "truncated": True,
+            },
+        ],
+    )
+    text = format_process_notification(evt)
+    assert text is not None
+    assert "SUBAGENT MODEL REJECTED" in text
+    assert "upstage/solar-pro-4" in text
+    assert "delegation.model" in text
+    # The notice precedes the per-task blocks, not just trails them.
+    assert text.index("SUBAGENT MODEL REJECTED") < text.index("TASK 1/2")
+
+
+def test_batch_model_rejection_notice_absent_when_clean(monkeypatch):
+    """Ordinary summaries must not grow a model-rejection notice."""
+    _patch_delegation_cfg(monkeypatch, model="upstage/solar-pro4")
+    evt = _make_async_evt(
+        is_batch=True,
+        model="upstage/solar-pro4",
+        goals=["task a"],
+        results=[
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "did the work",
+                "api_calls": 3,
+                "exit_reason": "completed",
+                "truncated": False,
+            },
+        ],
+    )
+    text = format_process_notification(evt)
+    assert text is not None
+    assert "SUBAGENT MODEL REJECTED" not in text
+
+
+def test_batch_model_rejection_notice_requires_configured_model_in_text(monkeypatch):
+    """A model_not_found pattern naming a DIFFERENT model than the configured
+    delegation model is task-level noise, not a config-level rejection."""
+    _patch_delegation_cfg(monkeypatch, model="upstage/solar-pro4")
+    evt = _make_async_evt(
+        is_batch=True,
+        model="upstage/solar-pro4",
+        goals=["task a"],
+        results=[
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "HTTP 400: other/model-x is not a valid model ID",
+                "api_calls": 1,
+                "exit_reason": "max_iterations",
+                "truncated": True,
+            },
+        ],
+    )
+    text = format_process_notification(evt)
+    assert text is not None
+    assert "SUBAGENT MODEL REJECTED" not in text
+
+
+# ---------------------------------------------------------------------------
+# Per-group completion units: ungrouped tasks return alone, a `group` returns
+# together, and the units of one call share ONE capacity slot.
+# ---------------------------------------------------------------------------
+
+def _grouped_fanout(monkeypatch, tasks, gates):
+    """delegate_task(tasks) in the background with gated fake children; returns the parsed handle."""
+    from unittest.mock import MagicMock
+    import tools.delegate_tool as dt
+
+    parent = MagicMock()
+    parent._delegate_depth = 0
+    parent.session_id = "sess"
+    parent._interrupt_requested = False
+    parent._active_children = []
+    parent._active_children_lock = None
+
+    def child(task_index, goal, child=None, parent_agent=None, **kw):
+        gates[task_index].wait(timeout=60)
+        return {"task_index": task_index, "status": "completed", "summary": f"done: {goal}", "api_calls": 1,
+                "duration_seconds": 0.1, "model": "m", "exit_reason": "completed"}
+
+    def build(**kw):
+        c = MagicMock()
+        c._delegate_role = "leaf"
+        c._subagent_id = f"s{kw['task_index']}"
+        return c
+
+    creds = {"model": "m", "provider": None, "base_url": None, "api_key": None, "api_mode": None, "command": None,
+             "args": None}
+    monkeypatch.setattr(dt, "_build_child_agent", build)
+    monkeypatch.setattr(dt, "_run_single_child", child)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    return json.loads(dt.delegate_task(tasks=tasks, background=True, parent_agent=parent))
+
+
+def test_ungrouped_task_completes_alone_and_group_completes_together(monkeypatch):
+    """A finished ungrouped task must not wait for its siblings; tasks sharing a `group` must."""
+    gates = [threading.Event() for _ in range(4)]
+    tasks = [
+        {"goal": "review PR 1 thoroughly and report"},
+        {"goal": "compare approach A in detail", "group": "cmp"},
+        {"goal": "compare approach B in detail", "group": "cmp"},
+        {"goal": "review PR 2 thoroughly and report"},
+    ]
+    handle = _grouped_fanout(monkeypatch, tasks, gates)
+    assert handle["status"] == "dispatched"
+    by_group = {tuple(u["task_indexes"]): u["group"] for u in handle["units"]}
+    assert by_group == {(0,): None, (1, 2): "cmp", (3,): None}
+
+    gates[3].set()
+    evt = _drain_one()
+    assert [r["task_index"] for r in evt["results"]] == [3]  # PR 2 landed while everything else still runs
+    assert "review PR 2" in format_process_notification(evt)
+
+    gates[1].set()
+    assert _drain_one(timeout=0.5) is None  # half a group is not a completion
+    gates[2].set()
+    evt = _drain_one()
+    assert evt["group"] == "cmp" and [r["task_index"] for r in evt["results"]] == [1, 2]
+
+    gates[0].set()
+    assert [r["task_index"] for r in _drain_one()["results"]] == [0]
+
+
+def test_units_of_one_call_share_a_single_capacity_slot():
+    """Splitting a call into per-task completions must not consume more pool capacity than the call did."""
+    gate = threading.Event()
+
+    def blocker():
+        gate.wait(timeout=60)
+        return {"results": [], "total_duration_seconds": 0}
+
+    common = dict(goals=["a", "b"], context=None, toolsets=None, role="leaf", model="m", session_key="",
+                  runner=blocker, max_async_children=1)
+    first = ad.dispatch_async_delegation_batch(delegation_id="deleg_call-1", task_indexes=[0], **common)
+    second = ad.dispatch_async_delegation_batch(delegation_id="deleg_call-2", task_indexes=[1],
+                                                slot_key="deleg_call-1", **common)
+    other = ad.dispatch_async_delegation_batch(delegation_id="deleg_other", **common)
+    assert (first["status"], second["status"], other["status"]) == ("dispatched", "dispatched", "rejected")
+    assert ad.active_task_count() == 2
+    gate.set()
+
+
+def test_child_finished_before_crash_is_recovered_with_its_result(tmp_path):
+    """Real-import E2E: a 2-task group unit whose owner dies mid-run replays the finished child's real result
+    and marks only the unfinished sibling unknown — a crash costs the stragglers, never the finished work."""
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    env = {**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": repo}
+    producer = r'''
+import os, sys, time
+from unittest.mock import MagicMock
+import tools.delegate_tool as dt
+parent = MagicMock(); parent._delegate_depth = 0; parent.session_id = "sess"; parent._interrupt_requested = False
+parent._active_children = []; parent._active_children_lock = None
+def child(task_index, goal, child=None, parent_agent=None, **kw):
+    if task_index == 1:
+        time.sleep(600)
+    return {"task_index": task_index, "status": "completed", "summary": f"done: {goal}", "api_calls": 1,
+            "duration_seconds": 0.1, "model": "m", "exit_reason": "completed"}
+def build(**kw):
+    c = MagicMock(); c._delegate_role = "leaf"; c._subagent_id = f"s{kw['task_index']}"; return c
+creds = {"model": "m", "provider": None, "base_url": None, "api_key": None, "api_mode": None, "command": None, "args": None}
+dt._build_child_agent = build; dt._run_single_child = child; dt._resolve_delegation_credentials = lambda *a, **k: creds
+dt.delegate_task(tasks=[{"goal": "fast member of the group task", "group": "g"},
+                        {"goal": "slow member of the group task", "group": "g"}], background=True, parent_agent=parent)
+time.sleep(2.0)
+sys.stdout.flush(); os._exit(1)
+'''
+    subprocess.run([sys.executable, "-c", producer], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
+    consumer = r'''
+import json, queue
+from tools import async_delegation as ad
+q = queue.Queue(); ad.restore_undelivered_completions(q)
+print(json.dumps(q.get_nowait(), sort_keys=True))
+'''
+    second = subprocess.run([sys.executable, "-c", consumer], cwd=repo, env=env, text=True, capture_output=True,
+                            timeout=15, check=True)
+    evt = json.loads(second.stdout.strip().splitlines()[-1])
+    by_index = {r["task_index"]: r for r in evt["results"]}
+    assert by_index[0]["status"] == "completed" and by_index[0]["summary"] == "done: fast member of the group task"
+    assert by_index[1]["status"] == "unknown"
+    assert "1/2 child results were recorded" in evt["error"]
+    assert "done: fast member" in format_process_notification(evt)

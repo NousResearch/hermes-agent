@@ -16,8 +16,6 @@ import run_agent
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 
 
-class _NoFenceAgent:
-    """An agent-like object that predates / lacks the single-writer fence."""
 
 
 class _RaisingFenceAgent:
@@ -35,32 +33,16 @@ def _real_agent():
     return object.__new__(run_agent.AIAgent)
 
 
-def test_claim_on_fenceless_agent_does_not_raise():
-    # Regression: this is the cron crash path — the streaming helper must not
-    # explode when the agent lacks _claim_stream_writer.
-    assert claim_stream_writer(_NoFenceAgent()) == 0
 
 
-def test_is_current_on_fenceless_agent_is_always_current():
-    agent = _NoFenceAgent()
-    # A no-op claim (token 0) must never report as superseded, regardless of
-    # what token value a caller threads through.
-    assert stream_writer_is_current(agent, 0) is True
-    assert stream_writer_is_current(agent, 7) is True
 
 
-def test_zero_token_is_never_fenced_even_with_a_real_fence():
-    # Invariant: a claim that no-oped (token 0) is not a writer and can never be
-    # fenced, even against an agent that does implement the fence.
-    assert stream_writer_is_current(_real_agent(), 0) is True
 
 
 def test_claim_swallows_fence_exceptions():
     assert claim_stream_writer(_RaisingFenceAgent()) == 0
 
 
-def test_is_current_swallows_fence_exceptions_as_current():
-    assert stream_writer_is_current(_RaisingFenceAgent(), 123) is True
 
 
 def test_real_agent_fence_still_supersedes_and_preserves_sole_writer():

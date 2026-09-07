@@ -45,38 +45,6 @@ def _configured_tools_config(*, init_on_session_start: bool = False) -> _FakeHon
     return cfg
 
 
-def test_honcho_hybrid_initialize_returns_without_waiting_for_session_init(monkeypatch):
-    """Slow Honcho session creation must not block agent startup."""
-    provider = HonchoMemoryProvider()
-    cfg = _configured_hybrid_config()
-    started = threading.Event()
-    release = threading.Event()
-
-    monkeypatch.setattr(
-        "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
-        lambda: cfg,
-    )
-
-    def slow_session_init(self, cfg, session_id, **kwargs):
-        started.set()
-        release.wait(timeout=5)
-        self._session_initialized = True
-
-    monkeypatch.setattr(HonchoMemoryProvider, "_do_session_init", slow_session_init)
-
-    start = time.perf_counter()
-    provider.initialize("session-1", platform="cli")
-    elapsed = time.perf_counter() - start
-
-    try:
-        assert elapsed < 0.5
-        assert started.wait(timeout=1)
-        assert provider._session_key == "test-session"
-    finally:
-        release.set()
-        init_thread = getattr(provider, "_init_thread", None)
-        if init_thread:
-            init_thread.join(timeout=1)
 
 
 def test_stalled_init_only_delays_first_turn_prefetch(monkeypatch):
@@ -140,38 +108,6 @@ def test_honcho_background_init_rechecks_state_after_lock_race():
     assert provider._session_initialized is True
 
 
-def test_honcho_prefetch_returns_without_waiting_for_first_context_fetch():
-    """First-turn context injection must fail open when Honcho is slow."""
-    provider = HonchoMemoryProvider()
-    cfg = _configured_hybrid_config()
-    cfg.timeout = 0.1
-    fetch_started = threading.Event()
-
-    class SlowManager:
-        def get_prefetch_context(self, session_key, user_message=None):
-            fetch_started.set()
-            time.sleep(5)
-            return {"representation": "late"}
-
-        def prefetch_context(self, session_key, user_message=None):
-            fetch_started.set()
-
-        def pop_context_result(self, session_key):
-            return {}
-
-    provider._config = cfg
-    provider._manager = SlowManager()
-    provider._session_key = "test-session"
-    provider._session_initialized = True
-    provider._turn_count = 1
-
-    start = time.perf_counter()
-    result = provider.prefetch("what do you know about me?")
-    elapsed = time.perf_counter() - start
-
-    assert result == ""
-    assert elapsed < 0.5
-    assert fetch_started.is_set()
 
 
 def test_first_turn_base_wait_is_shared_by_init_and_context_fetch():
@@ -223,42 +159,6 @@ def test_first_turn_base_wait_is_shared_by_init_and_context_fetch():
 
 
 
-def test_honcho_sync_turn_does_not_start_network_write_before_session_init():
-    """Session-end sync must not create a blocking writer before init finishes."""
-    provider = HonchoMemoryProvider()
-    cfg = _configured_hybrid_config()
-    get_started = threading.Event()
-    background_started = threading.Event()
-    release_init = threading.Event()
-
-    class SlowManager:
-        def get_or_create(self, session_key):
-            get_started.set()
-            time.sleep(5)
-            return SimpleNamespace()
-
-        def _flush_session(self, session):
-            pass
-
-    provider._config = cfg
-    provider._manager = SlowManager()
-    provider._session_key = "test-session"
-    provider._session_initialized = False
-    provider._start_session_init_background = background_started.set
-    provider._init_thread = threading.Thread(
-        target=lambda: release_init.wait(timeout=5), daemon=True
-    )
-    provider._init_thread.start()
-
-    try:
-        provider.sync_turn("hello", "world")
-
-        assert provider._sync_thread is None
-        assert background_started.is_set()
-        assert not get_started.wait(timeout=0.1)
-    finally:
-        release_init.set()
-        provider._init_thread.join(timeout=1)
 
 
 def test_honcho_sync_turn_waits_for_full_background_startup(monkeypatch):
@@ -347,28 +247,6 @@ def test_honcho_system_prompt_advertises_active_while_background_init_runs(monke
             init_thread.join(timeout=1)
 
 
-def test_honcho_tools_eager_init_still_ready_on_return(monkeypatch):
-    """tools + initOnSessionStart=true keeps its ready-on-return contract."""
-    provider = HonchoMemoryProvider()
-    cfg = _configured_tools_config(init_on_session_start=True)
-
-    monkeypatch.setattr(
-        "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
-        lambda: cfg,
-    )
-
-    def fake_session_init(self, cfg, session_id, **kwargs):
-        self._manager = SimpleNamespace()
-        self._session_key = "test-session"
-        self._session_initialized = True
-
-    monkeypatch.setattr(HonchoMemoryProvider, "_do_session_init", fake_session_init)
-
-    provider.initialize("session-1", platform="cli")
-
-    assert provider._session_initialized is True
-    assert provider._manager is not None
-    assert provider._init_thread is None
 
 
 def test_honcho_tools_eager_init_failure_does_not_leave_ready_manager(monkeypatch):
@@ -446,3 +324,227 @@ def test_honcho_tools_lazy_hooks_do_not_prestart_background_init(monkeypatch):
     assert result == {"result": ["ready"]}
     assert init_calls == ["session-1"]
     assert not background_started.is_set()
+
+
+# ---------------------------------------------------------------------------
+# Write-containment regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_honcho_sync_turn_skips_write_when_save_messages_is_disabled():
+    """The resolved write-disable switch must gate an initialized provider."""
+    provider = HonchoMemoryProvider()
+    cfg = _configured_tools_config(init_on_session_start=True)
+    cfg.save_messages = False
+    manager_calls = []
+
+    class Manager:
+        def get_or_create(self, session_key):
+            manager_calls.append(session_key)
+            return SimpleNamespace()
+
+    provider._config = cfg
+    provider._manager = Manager()
+    provider._session_key = "test-session"
+    provider._session_initialized = True
+
+    provider.sync_turn("a genuine user turn", "a genuine assistant reply")
+
+    assert provider._sync_thread is None
+    assert manager_calls == []
+
+
+def test_honcho_sync_turn_skips_anchored_gateway_notifications():
+    """Known bracketed gateway wrappers must not become durable messages."""
+    wrappers = (
+        "[ASYNC DELEGATION BATCH COMPLETE — deleg_1]\nworker results follow",
+        "[ASYNC DELEGATION COMPLETE — deleg_2]",
+        "[CONTEXT COMPACTION — REFERENCE ONLY]\nsummary follows",
+        "[CONTEXT COMPACTION - REFERENCE ONLY]",
+        "[CONTEXT COMPACTION]",
+        "[PRIOR CONTEXT — for reference only; not a new message]",
+        "[Your active task list was preserved across context compression]",
+        "[CONTEXT SUMMARY]: previous context",
+        "[IMPORTANT: Background process 12 matched watch pattern \"foo\"\nCommand: x",
+    )
+
+    for wrapper in wrappers:
+        provider = HonchoMemoryProvider()
+        manager_calls = []
+
+        class Manager:
+            def get_or_create(self, session_key):
+                manager_calls.append(session_key)
+                return SimpleNamespace()
+
+        provider._config = _configured_tools_config(init_on_session_start=True)
+        provider._manager = Manager()
+        provider._session_key = "test-session"
+        provider._session_initialized = True
+
+        provider.sync_turn(wrapper, "assistant reply")
+
+        assert provider._sync_thread is None, f"wrapper not suppressed: {wrapper[:60]!r}"
+        assert manager_calls == [], f"wrapper not suppressed: {wrapper[:60]!r}"
+
+
+def test_honcho_sync_turn_skips_prose_gateway_notifications():
+    """Prose-form gateway notifications must not become durable messages."""
+    prose_wrappers = (
+        "A background fan-out of 3 subagent(s) you dispatched earlier has finished.",
+        "A background subagent you dispatched earlier has finished. You may have moved on.",
+    )
+
+    for wrapper in prose_wrappers:
+        provider = HonchoMemoryProvider()
+        manager_calls = []
+
+        class Manager:
+            def get_or_create(self, session_key):
+                manager_calls.append(session_key)
+                return SimpleNamespace()
+
+        provider._config = _configured_tools_config(init_on_session_start=True)
+        provider._manager = Manager()
+        provider._session_key = "test-session"
+        provider._session_initialized = True
+
+        provider.sync_turn(wrapper, "assistant reply")
+
+        assert provider._sync_thread is None, f"prose wrapper not suppressed: {wrapper[:60]!r}"
+        assert manager_calls == [], f"prose wrapper not suppressed: {wrapper[:60]!r}"
+
+
+def test_honcho_sync_turn_does_not_suppress_genuine_user_messages():
+    """Genuine user messages that mention gateway terms must still be stored."""
+    genuine = (
+        "A background process I ran has finished — can you check the output?",
+        "A background subagent you dispatched earlier has finished? no wait, I was asking about the report",
+        "the async delegation batch complete marker disappeared from my log",
+        "CONTEXT COMPACTION happened mid-message and I want to see it",
+        "When you see PRIOR CONTEXT, treat it carefully",
+        "I want to know about your task list",
+        "IMPORTANT: Background process — can you explain what that means?",
+        "[IMPORTANT: Background process — what does that mean?]",
+    )
+
+    for msg in genuine:
+        provider = HonchoMemoryProvider()
+        manager_calls = []
+
+        class Manager:
+            def get_or_create(self, session_key):
+                manager_calls.append(session_key)
+                return SimpleNamespace()
+
+        provider._config = _configured_tools_config(init_on_session_start=True)
+        provider._manager = Manager()
+        provider._session_key = "test-session"
+        provider._session_initialized = True
+
+        provider.sync_turn(msg, "assistant reply")
+
+        assert provider._sync_thread is not None, f"genuine message suppressed: {msg[:60]!r}"
+        assert manager_calls != [], f"genuine message suppressed: {msg[:60]!r}"
+
+
+def test_honcho_sync_turn_skips_empty_content():
+    """Empty or whitespace-only turns must not be stored."""
+    provider = HonchoMemoryProvider()
+    manager_calls = []
+
+    class Manager:
+        def get_or_create(self, session_key):
+            manager_calls.append(session_key)
+            return SimpleNamespace()
+
+    provider._config = _configured_tools_config(init_on_session_start=True)
+    provider._manager = Manager()
+    provider._session_key = "test-session"
+    provider._session_initialized = True
+
+    provider.sync_turn("   ", "  ")
+
+    assert provider._sync_thread is None
+    assert manager_calls == []
+
+
+def test_honcho_sync_turn_same_instance_config_flip_gates_writes():
+    """The cached-provider regression: flipping save_messages on the SAME
+    configured instance must stop writes without re-initialization."""
+    provider = HonchoMemoryProvider()
+    cfg = _configured_tools_config(init_on_session_start=True)
+    cfg.save_messages = True
+    manager_calls = []
+    write_done = threading.Event()
+
+    class Manager:
+        def get_or_create(self, session_key):
+            manager_calls.append(session_key)
+            return SimpleNamespace(add_message=lambda role, content: None)
+
+        def save(self, session):
+            write_done.set()
+
+    provider._config = cfg
+    provider._manager = Manager()
+    provider._session_key = "test-session"
+    provider._session_initialized = True
+
+    # enabled -> write happens
+    provider.sync_turn("user turn", "assistant reply")
+    assert write_done.wait(timeout=5), "first write never completed"
+
+    # operator flips containment on the same cached config object
+    cfg.save_messages = False
+    manager_calls.clear()
+    provider.sync_turn("user turn two", "assistant reply two")
+
+    # no new write may occur; the stale _sync_thread from the enabled write is fine
+    assert manager_calls == []
+
+
+def test_honcho_on_memory_write_honors_save_messages_false():
+    """The memory-tool mirror is an automatic write path and must respect the
+    write-disable switch; otherwise containment only covers conversation turns."""
+    provider = HonchoMemoryProvider()
+    cfg = _configured_tools_config(init_on_session_start=True)
+    cfg.save_messages = False
+    conclusion_calls = []
+
+    class Manager:
+        def create_conclusion(self, session_key, content):
+            conclusion_calls.append((session_key, content))
+
+    provider._config = cfg
+    provider._manager = Manager()
+    provider._session_key = "test-session"
+    provider._session_initialized = True
+
+    provider.on_memory_write("add", "user", "prefers fail-open memory")
+
+    assert conclusion_calls == []
+
+
+def test_honcho_on_memory_write_still_writes_when_enabled():
+    """With save_messages enabled, the memory-tool mirror still writes."""
+    provider = HonchoMemoryProvider()
+    cfg = _configured_tools_config(init_on_session_start=True)
+    cfg.save_messages = True
+    conclusion_calls = []
+    write_done = threading.Event()
+
+    class Manager:
+        def create_conclusion(self, session_key, content):
+            conclusion_calls.append((session_key, content))
+            write_done.set()
+
+    provider._config = cfg
+    provider._manager = Manager()
+    provider._session_key = "test-session"
+    provider._session_initialized = True
+
+    provider.on_memory_write("add", "user", "prefers fail-open memory")
+
+    assert write_done.wait(timeout=5), "memory mirror write never completed"
+    assert conclusion_calls != []

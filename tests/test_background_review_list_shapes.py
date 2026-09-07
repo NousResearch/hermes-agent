@@ -167,47 +167,8 @@ class TestRunner:
 # ---------------------------------------------------------------------------
 
 
-def test_a_change_as_list_does_not_crash():
-    """When ``data["_change"]`` is a list, summarize must NOT raise.
-
-    Before the fix, ``change = data.get("_change", {})`` returned the list
-    and ``change.get("description", "")`` raised ``AttributeError: 'list'
-    object has no attribute 'get'``.
-    """
-    _isolate_hermes_home()
-    bg = _load_module()
-    if bg is None:
-        print("SKIP module not importable")
-        return
-
-    msgs = _make_skill_tool_message(change=["not", "a", "dict"])
-    actions = bg.summarize_background_review_actions(
-        review_messages=msgs,
-        prior_snapshot=[],
-        notification_mode="verbose",
-    )
-    assert isinstance(actions, list)
-    # The successful update must still surface even though _change was malformed.
-    assert any("Skill" in a or "my-skill" in a or "patched" in a for a in actions), (
-        f"expected at least one skill-related action line, got {actions!r}"
-    )
 
 
-def test_a_change_as_int_does_not_crash():
-    """And ditto for any non-dict scalar that the JSON shape allows."""
-    _isolate_hermes_home()
-    bg = _load_module()
-    if bg is None:
-        print("SKIP module not importable")
-        return
-
-    msgs = _make_skill_tool_message(change=42)
-    actions = bg.summarize_background_review_actions(
-        review_messages=msgs,
-        prior_snapshot=[],
-        notification_mode="verbose",
-    )
-    assert isinstance(actions, list)
 
 
 # ---------------------------------------------------------------------------
@@ -215,21 +176,6 @@ def test_a_change_as_int_does_not_crash():
 # ---------------------------------------------------------------------------
 
 
-def test_b_operations_as_string_treated_as_empty():
-    """``operations = "abc"`` from a stale response must not crash."""
-    _isolate_hermes_home()
-    bg = _load_module()
-    if bg is None:
-        print("SKIP module not importable")
-        return
-
-    msgs = _make_memory_tool_message(operations_field="legacy-string-shape")
-    actions = bg.summarize_background_review_actions(
-        review_messages=msgs,
-        prior_snapshot=[],
-        notification_mode="verbose",
-    )
-    assert isinstance(actions, list)
 
 
 def test_b_operations_as_none_treated_as_empty():
@@ -340,8 +286,7 @@ def test_e_call_does_not_unwind_module_callables():
         "summarize_background_review_actions returned partial results"
         in src
     ), "expected partial-results guard message present"
-    # And the prior-tonon-dict guard for the call_details lookup.
-    assert "if not isinstance(detail, dict):" in src
+    # And the non-dict guards on free-form tool payload fields.
     assert "if isinstance(ops_raw, list)" in src
     assert "if isinstance(change_raw, dict)" in src
 

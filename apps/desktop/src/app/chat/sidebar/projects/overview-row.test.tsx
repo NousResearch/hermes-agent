@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -17,7 +17,7 @@ vi.mock('@/i18n', () => ({
         projects: {
           enter: (label: string) => `Enter ${label}`,
           reorder: (label: string) => `Reorder ${label}`,
-          toggle: (label: string) => `Toggle ${label} sessions`
+          toggle: (label: string, open: boolean) => `${open ? 'Show' : 'Hide'} ${label} sessions`
         }
       }
     }
@@ -60,21 +60,36 @@ describe('ProjectOverviewRow', () => {
       />
     )
 
-    const button = screen.getByRole('button', { name: 'Toggle Test D sessions' })
+    // Collapsed by default, so the disclosure offers to show the sessions.
+    const button = screen.getByRole('button', { name: 'Show Test D sessions' })
     expect(tipTrigger(button)).toBeTruthy()
   })
 
   it('does not render the disclosure toggle when there is nothing to preview', () => {
     render(<ProjectOverviewRow project={project} />)
 
-    expect(screen.queryByRole('button', { name: 'Toggle Test D sessions' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Show Test D sessions' })).toBeNull()
   })
 
-  it('drops the "new session" add button on Home, which has no folder to start in', () => {
-    const home = { id: '__no_project__', isNoProject: true, label: 'Home' } as unknown as SidebarProjectTree
+  it('offers the "new session" add button on Home, which starts one with no folder', () => {
+    const home = {
+      id: '__no_project__',
+      isNoProject: true,
+      label: 'Home',
+      path: null
+    } as unknown as SidebarProjectTree
 
-    render(<ProjectOverviewRow onNewSession={vi.fn()} project={home} />)
+    const onNewSession = vi.fn()
 
-    expect(screen.queryByRole('button', { name: 'New session in Home' })).toBeNull()
+    render(<ProjectOverviewRow onNewSession={onNewSession} project={home} />)
+    fireEvent.click(screen.getByRole('button', { name: 'New session in Home' }))
+
+    expect(onNewSession).toHaveBeenCalledWith(null)
+  })
+
+  it('tags the row with data-sessions-project so a skin can target one project', () => {
+    const { container } = render(<ProjectOverviewRow project={project} />)
+
+    expect(container.querySelector('[data-sessions-project="p1"]')).toBeTruthy()
   })
 })

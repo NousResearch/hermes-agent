@@ -15,7 +15,7 @@ Unsloth: 2-5x faster LoRA/QLoRA fine-tuning, less VRAM.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/unsloth` |
-| Path | `optional-skills/mlops/training/unsloth` |
+| Path | `optional-skills/mlops\training\unsloth` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
 | License | MIT |
@@ -31,7 +31,7 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # Unsloth Skill
 
-Comprehensive assistance with unsloth development, generated from official documentation.
+Assistance with unsloth development, generated from official documentation.
 
 ## When to Use This Skill
 
@@ -50,7 +50,7 @@ This skill should be triggered when:
 
 ## Reference Files
 
-This skill includes comprehensive documentation in `references/`:
+This skill includes full documentation in `references/`:
 
 - **llms-txt.md** - Llms-Txt documentation
 

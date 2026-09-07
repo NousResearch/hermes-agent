@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import type { CompletionItem } from '../app/interfaces.js'
+import { rankSlashItems } from '../app/slash/fuzzyScore.js'
 import { inlineSlashTrigger, looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { CompletionResponse } from '../gatewayTypes.js'
@@ -9,15 +10,16 @@ import { listWidgetApps } from '../sdk/registry.js'
 
 /** Client-side widget apps live in the TUI's registry, not the gateway — so
  *  `/` completions merge their title/metadata here. Registry-driven: a new
- *  app surfaces automatically, no hardcoded lists on either side. */
+ *  app surfaces automatically, no hardcoded lists on either side. Matching is
+ *  description-aware (ported from grok-cli's slash menu): `/timer` surfaces a
+ *  widget whose help text mentions timers, not just id-prefix hits. */
 export function mergeWidgetAppItems(input: string, items: CompletionItem[]): CompletionItem[] {
   // Only complete the command NAME position (no args typed yet).
   if (input.includes(' ')) {
     return items
   }
 
-  const local = listWidgetApps()
-    .filter(app => `/${app.id}`.startsWith(input.toLowerCase()))
+  const local = rankSlashItems(listWidgetApps(), input, app => ({ description: app.help, id: app.id }))
     .filter(app => !items.some(item => item.text === `/${app.id}`))
     .map(app => ({ display: `/${app.id}`, meta: app.help, text: `/${app.id}` }))
 
@@ -41,15 +43,13 @@ export function completionRequestForInput(
     return null
   }
 
-  if (isSlashCommand) {
-    return { method: 'complete.slash', params: { text: input }, replaceFrom: 1 }
-  }
-
-  // A `/token` mid-message is a skill reference dropped into prose. It's only
-  // reachable here because the path branch below would otherwise claim it: a
-  // bare `/cle` matches TAB_PATH_RE as an absolute path. Skills win that tie —
-  // the moment a second `/` is typed the inline trigger stops matching and
-  // path completion takes back over.
+  // A `/token` mid-message is a skill reference dropped into prose. Detected
+  // BEFORE the leading-command shape because only the first slash can be an
+  // invocation — `/help /cle` is a command whose argument names a skill, and
+  // routing the whole line to the backend's completer offered nothing at all.
+  // It only matches a whitespace-preceded slash sitting at the caret, so
+  // ordinary argument completion (`/cron ad`, `/personality alic`) is
+  // untouched.
   const inline = inlineSlashTrigger(input)
 
   if (inline) {
@@ -59,6 +59,10 @@ export function completionRequestForInput(
       replaceFrom: inline.start + 1,
       skillsOnly: true
     }
+  }
+
+  if (isSlashCommand) {
+    return { method: 'complete.slash', params: { text: input }, replaceFrom: 1 }
   }
 
   if (!pathWord) {

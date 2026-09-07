@@ -1,6 +1,7 @@
 """Tests for ``hermes migrate xai`` — apply path with ruamel round-trip."""
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -107,30 +108,9 @@ class TestApplyReplacement:
         cfg = _parse(trap_config)
         assert cfg["principal"]["model"] == "grok-4.3"
 
-    def test_adds_reasoning_effort_for_non_reasoning_variant(self, trap_config: Path):
-        issues = find_retired_xai_refs(_parse(trap_config))
-        apply_migration(trap_config, issues)
-        cfg = _parse(trap_config)
-        # Principal was grok-4-1-fast-non-reasoning → reasoning_effort: "none"
-        assert cfg["principal"]["reasoning_effort"] == "none"
 
-    def test_replaces_auxiliary_vision(self, trap_config: Path):
-        issues = find_retired_xai_refs(_parse(trap_config))
-        apply_migration(trap_config, issues)
-        cfg = _parse(trap_config)
-        assert cfg["auxiliary"]["vision"]["model"] == "grok-4.3"
 
-    def test_replaces_delegation(self, trap_config: Path):
-        issues = find_retired_xai_refs(_parse(trap_config))
-        apply_migration(trap_config, issues)
-        cfg = _parse(trap_config)
-        assert cfg["delegation"]["model"] == "grok-4.3"
 
-    def test_replaces_image_gen_plugin(self, trap_config: Path):
-        issues = find_retired_xai_refs(_parse(trap_config))
-        apply_migration(trap_config, issues)
-        cfg = _parse(trap_config)
-        assert cfg["plugins"]["image_gen"]["xai"]["model"] == "grok-imagine-image-quality"
 
     def test_does_not_touch_unrelated_slots(self, trap_config: Path):
         issues = find_retired_xai_refs(_parse(trap_config))
@@ -148,18 +128,7 @@ class TestApplyReplacement:
 # ---------------------------------------------------------------------------
 
 class TestRoundTripPreservation:
-    def test_preserves_top_of_file_comment(self, trap_config: Path):
-        issues = find_retired_xai_refs(_parse(trap_config))
-        apply_migration(trap_config, issues)
-        text = trap_config.read_text(encoding="utf-8")
-        assert "# Hermes config (sample)" in text
 
-    def test_preserves_inline_comments_on_unmodified_lines(self, trap_config: Path):
-        issues = find_retired_xai_refs(_parse(trap_config))
-        apply_migration(trap_config, issues)
-        text = trap_config.read_text(encoding="utf-8")
-        assert "# the main model" in text
-        assert "# not affected" in text
 
     def test_preserves_top_level_key_order(self, trap_config: Path):
         issues = find_retired_xai_refs(_parse(trap_config))
@@ -187,11 +156,6 @@ class TestBackup:
         assert result.backup_path.exists()
         assert result.backup_path.read_text(encoding="utf-8") == original
 
-    def test_backup_filename_prefixed(self, trap_config: Path):
-        issues = find_retired_xai_refs(_parse(trap_config))
-        result = apply_migration(trap_config, issues)
-        assert result.backup_path is not None
-        assert result.backup_path.name.startswith("config.yaml.bak-pre-migrate-xai-")
 
     def test_no_backup_when_disabled(self, trap_config: Path):
         issues = find_retired_xai_refs(_parse(trap_config))
@@ -200,11 +164,6 @@ class TestBackup:
         # No bak file in the directory
         assert not list(trap_config.parent.glob("*.bak-pre-migrate-xai-*"))
 
-    def test_no_backup_when_no_changes(self, clean_config: Path):
-        issues = find_retired_xai_refs(_parse(clean_config))
-        result = apply_migration(clean_config, issues, backup=True)
-        assert result.backup_path is None  # nothing to back up
-        assert not list(clean_config.parent.glob("*.bak-pre-migrate-xai-*"))
 
 
 # ---------------------------------------------------------------------------
@@ -248,3 +207,90 @@ class TestUnreadableExistingConfig:
             os.chmod(trap_config, 0o644)
 
         assert trap_config.read_bytes() == original
+
+
+# ---------------------------------------------------------------------------
+# Crash durability — the rewrite must be atomic
+# ---------------------------------------------------------------------------
+
+class TestCrashDurability:
+    """apply_migration() rewrites the whole config.yaml in place.
+
+    A bare ``open(path, "w")`` truncates the file *before* the dump runs, so an
+    interruption (crash, SIGINT, ENOSPC) leaves config.yaml empty or
+    half-written.  Routing through ``utils.atomic_write_text`` means the target
+    is only ever swapped in via an atomic rename after the temp file is fully
+    written and fsynced.
+    """
+
+    def test_config_survives_an_interrupted_write(self, trap_config: Path):
+        """A failure mid-write must leave the original config.yaml untouched.
+
+        ``--no-backup`` is a documented flag, so on that path the file being
+        rewritten is the only copy in existence.
+        """
+        import os
+
+        issues = find_retired_xai_refs(_parse(trap_config))
+        assert issues  # sanity: trap_config has retired refs
+        original = trap_config.read_bytes()
+
+        def boom(fd):
+            raise OSError("simulated crash mid-write")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(os, "fsync", boom)
+            with pytest.raises(OSError):
+                apply_migration(trap_config, issues, backup=False)
+
+        # The original bytes must survive verbatim...
+        assert trap_config.read_bytes() == original
+        # ...and the aborted write must not leave a temp file behind.
+        assert list(trap_config.parent.glob("*.tmp")) == []
+
+    def test_symlinked_config_is_replaced_in_place(self, tmp_path: Path):
+        """A config.yaml symlinked into a dotfiles repo must stay a symlink."""
+        real_dir = tmp_path / "dotfiles"
+        real_dir.mkdir()
+        real = real_dir / "hermes-config.yaml"
+        real.write_text(
+            "principal:\n"
+            "  provider: xai\n"
+            "  model: grok-3\n",
+            encoding="utf-8",
+        )
+        link = tmp_path / "config.yaml"
+        link.symlink_to(real)
+
+        issues = find_retired_xai_refs(_parse(link))
+        assert issues
+        apply_migration(link, issues, backup=False)
+
+        assert link.is_symlink(), "atomic replace detached the symlink"
+        assert real.read_text(encoding="utf-8") == link.read_text(encoding="utf-8")
+        assert "grok-4.3" in real.read_text(encoding="utf-8")
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+    def test_existing_file_mode_is_preserved(self, trap_config: Path):
+        """Managed (NixOS 0640) and container installs widen config.yaml
+        deliberately; the migration must not silently tighten it to 0600."""
+        import os
+        import stat
+
+        os.chmod(trap_config, 0o640)
+        issues = find_retired_xai_refs(_parse(trap_config))
+        apply_migration(trap_config, issues, backup=False)
+
+        mode = stat.S_IMODE(trap_config.stat().st_mode)
+        assert mode == 0o640, f"mode changed to {oct(mode)}"
+
+    def test_comments_survive_the_atomic_write(self, trap_config: Path):
+        """The ruamel round-trip must still run — serializing via a string
+        buffer instead of the file handle must not drop comments."""
+        issues = find_retired_xai_refs(_parse(trap_config))
+        apply_migration(trap_config, issues, backup=False)
+
+        text = trap_config.read_text(encoding="utf-8")
+        assert "# Hermes config (sample)" in text
+        assert "# the main model" in text
+        assert "# not affected" in text

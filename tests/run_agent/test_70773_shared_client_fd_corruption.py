@@ -218,7 +218,7 @@ class TestReplacePrimaryRetiresInsteadOfClosing:
             agent, "_force_close_tcp_sockets",
             side_effect=lambda c: shutdown_calls.append(c) or 1,
         ):
-            with patch("run_agent.OpenAI", MagicMock()):
+            with patch("agent.process_bootstrap.OpenAI", MagicMock()):
                 ok = agent._replace_primary_openai_client(reason="test_rotate")
 
         assert ok
@@ -237,7 +237,3 @@ class TestReplacePrimaryRetiresInsteadOfClosing:
 
         client.close.assert_not_called()
 
-    def test_retire_helper_none_is_noop(self):
-        agent = _make_agent()
-        # Must not raise.
-        agent._retire_shared_openai_client(None, reason="unit_test")

@@ -325,6 +325,11 @@ def test_assessment_uses_session_runtime_and_no_tools(monkeypatch):
         assert "private-runtime" not in json.dumps(kwargs["messages"])
         schema = kwargs["extra_body"]["response_format"]["json_schema"]["schema"]
         assert json.dumps(schema, ensure_ascii=True) in kwargs["messages"][0]["content"]
+        guidance = kwargs["messages"][0]["content"]
+        assert "ongoing workflows" in guidance
+        assert "must not veto a supported longer-term benefit" in guidance
+        assert "Novelty alone is insufficient" in guidance
+        assert "Immediate need in the current conversation is not required" in guidance
         payload = json.dumps({
             "advice": [
                 {

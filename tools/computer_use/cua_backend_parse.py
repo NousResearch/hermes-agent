@@ -52,6 +52,8 @@ def _action_result_from(name: str, ok: bool, message: str, meta: Dict[str, Any],
     def _typed(value: Any, typ) -> Any:
         return value if isinstance(value, typ) else None
 
+    refusal = _raw("refusal")
+    nested_code = refusal.get("code") if isinstance(refusal, dict) else None
     return ActionResult(
         ok=ok, action=name, message=message, meta=meta,
         verified=_typed(_raw("verified"), bool), effect=_typed(_raw("effect"), str),
@@ -59,8 +61,8 @@ def _action_result_from(name: str, ok: bool, message: str, meta: Dict[str, Any],
         degraded=_typed(_raw("degraded"), bool),
         # What we asked for; the driver's `path` records the rung that ran.
         delivery_mode=_typed(requested_delivery, str),
-        # Refusal/limitation code — drivers spell it "code" or "reason_code".
-        code=_typed(_raw("code") or _raw("reason_code"), str),
+        # Preserve top-level precedence; newer drivers nest the code under refusal.
+        code=_typed(_raw("code") or _raw("reason_code") or nested_code, str),
     )
 
 def _z_index_uninformative(windows: List[Dict[str, Any]]) -> bool:

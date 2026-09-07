@@ -148,6 +148,48 @@ def test_old_driver_without_structured_content_is_clean():
     assert res.path is None
 
 
+@pytest.mark.parametrize("data, structured, expected", [
+    ({}, {"refusal": {"code": "foreground_required"}}, "foreground_required"),
+    ({"refusal": {"code": "foreground_required"}}, None, "foreground_required"),
+    ({"refusal": {"code": "legacy"}}, {"refusal": {"code": "canonical"}}, "canonical"),
+    ({}, {"code": "top", "refusal": {"code": "nested"}}, "top"),
+    ({}, {"reason_code": "reason", "refusal": {"code": "nested"}}, "reason"),
+    ({"code": "legacy"}, {"refusal": {"code": "nested"}}, "legacy"),
+    ({}, {"code": "top", "reason_code": "reason"}, "top"),
+    ({}, {"code": 42, "refusal": {"code": "nested"}}, None),
+    ({}, {"refusal": {"code": 42}}, None),
+    ({}, {"refusal": {}}, None),
+    ({}, {"refusal": "invalid"}, None),
+    ({}, {"refusal": ["invalid"]}, None),
+    ({}, {"refusal": None}, None),
+    ({}, None, None),
+    ({}, "invalid", None),
+])
+def test_refusal_code_reaches_model_response(data, structured, expected, monkeypatch):
+    """The driver refusal survives real input dispatch and JSON serialization.
+
+    Nested shape: trycua/cua libs/cua-driver/contract/fixtures/tool-refusal.json.
+    Only the transport is canned; no live desktop actions are performed.
+    """
+    from tools import computer_use_tool  # noqa: F401 — register the production handler
+    from tools.computer_use import tool as cu
+    from tools.registry import registry
+
+    session = _FakeSession({"isError": True, "data": data, "structuredContent": structured})
+    backend = _make_backend(session)
+    monkeypatch.setattr(cu, "_get_backend", lambda **kwargs: backend)
+    response = registry.dispatch("computer_use", {"action": "click", "element": 3})
+    assert isinstance(response, str)
+    payload = json.loads(response)
+
+    assert payload["ok"] is False
+    if expected is None:
+        assert "code" not in payload
+    else:
+        assert payload["code"] == expected
+    assert [name for name, _ in session.calls] == ["click"]  # no automatic retry
+
+
 def test_text_response_surfaces_fields_additively():
     from tools.computer_use.backend import ActionResult
     from tools.computer_use.tool import _text_response

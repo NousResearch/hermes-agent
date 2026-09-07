@@ -113,6 +113,7 @@ import {
   SETTINGS_ROUTE,
   syncWorkspaceRoute
 } from '../routes'
+import { SessionImportView } from '../session-import'
 import { SessionPickerOverlay } from '../session-picker-overlay'
 import { SessionSwitcher } from '../session-switcher'
 import { useBackgroundQueueDrain } from '../session/hooks/use-background-queue-drain'
@@ -1244,6 +1245,18 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             }}
           />
         </Suspense>
+      )}
+
+      {currentView === 'session-import' && (
+        <SessionImportView
+          key={`${activeConnectionId}:${activeGatewayProfile}`}
+          onClose={closeOverlayToPreviousRoute}
+          onOpenSession={sessionId => {
+            closeOverlayToPreviousRoute()
+            openSession(sessionId, navigate, 'stack')
+          }}
+          owner={{ connectionId: activeConnectionId || 'local', profile: activeGatewayProfile }}
+        />
       )}
 
       {commandCenterOpen && (

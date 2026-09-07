@@ -709,7 +709,9 @@ def _cmd_goal(rid, params, session, name, arg):
         f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"
         "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
         "Controls: /goal status · /goal pause · /goal resume · /goal clear")
-    return _ok(rid, {"type": "send", "notice": notice, "message": state.goal})
+    from hermes_cli.goals import goal_kick_prompt, last_user_message_from_db
+    kick = goal_kick_prompt(state.goal, last_user_message_from_db(getattr(mgr, "session_id", None)))
+    return _ok(rid, {"type": "send", "notice": notice, "message": kick})
 
 
 def _cmd_loop(rid, params, session, name, arg):
@@ -810,7 +812,6 @@ _SLASH_BUILTINS = {
     "loop": _cmd_loop, "undo": _cmd_undo, "snapshot": _cmd_snapshot, "snap": _cmd_snapshot,
     "compress": _cmd_compress, "compact": _cmd_compress}
 
-
 @method("command.dispatch")
 def _(rid, params: dict) -> dict:
     name, arg = _resolve_name(params.get("name", "").lstrip("/")), params.get("arg", "")
@@ -821,6 +822,8 @@ def _(rid, params: dict) -> dict:
     for stage in filter(None, stages):
         res = stage(rid, params, session, name, arg)
         if res is not None:
+            if name in _SESSION_CONTROL_SLASHES and "error" not in res:
+                _publish_session_control_snapshot(params.get("session_id", ""), session)
             return res
     return _err(rid, 4018, f"not a quick/plugin/bundle/skill command: {name}")
 
@@ -876,6 +879,8 @@ def _(rid, params: dict) -> dict:
         payload = {"output": worker.run(cmd) or "(no output)"}
         if warning := _mirror_slash_side_effects(sid, session, cmd):
             payload["warning"] = warning
+        if base in _SESSION_CONTROL_SLASHES:
+            _publish_session_control_snapshot(sid, session)
         return _ok(rid, payload)
     except Exception as e:
         with contextlib.suppress(Exception):
@@ -1164,6 +1169,22 @@ def _(rid, params: dict) -> dict:
     enabled, tools}]}``"""
     servers = _tools_mod("hermes_cli.mcp_config")._get_mcp_servers()
     return _ok(rid, {"servers": [_mcp_summarize_server(name, cfg) for name, cfg in sorted(servers.items())]})
+
+
+@_mcp_rpc("status", required=())
+def _(rid, params: dict) -> dict:
+    """``{servers: [{name, transport, tools, connected, disabled, status}], checked_at}`` from cached
+    runtime state; never connects, probes, or starts auth. Under a multiplexer the runtime view is the
+    scoped profile's; otherwise it is shown only when ``profile`` is the launch profile."""
+    import time
+    hc = _tools_mod("hermes_constants")
+    configured = _tools_mod("hermes_cli.mcp_config")._get_mcp_servers()
+    include_runtime = (_tools_mod("agent.secret_scope").is_multiplex_active()
+                       or hc.hermes_home_key() == hc.hermes_home_key(hc.get_process_hermes_home()))
+    safe = ("name", "transport", "tools", "connected", "disabled", "status")
+    servers = _tools_mod("tools.mcp_tool_discovery").get_mcp_status(configured, include_runtime=include_runtime)
+    return _ok(rid, {"servers": [{k: e[k] for k in safe if k in e} for e in servers],
+                     "checked_at": int(time.time() * 1000)})
 
 
 @_mcp_rpc("add")

@@ -146,8 +146,10 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
         return thinking_config
     if effort not in {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}:
         effort = "medium"
-    # Gemini 3 Flash documents low/medium/high; Gemini 3 Pro only low/high.
-    if normalized_model.startswith(("gemini-3", "gemini-3.1")):
+    # Gemini 3 Flash documents low/medium/high thinking levels; Gemini 3 Pro
+    # is stricter (low/high). Clamp Hermes' wider effort set to what each
+    # family accepts so we never forward an undocumented level verbatim.
+    if normalized_model.startswith("gemini-3"):
         if "flash" in normalized_model:
             thinking_config["thinkingLevel"] = (
                 "low" if effort in {"minimal", "low"} else "high" if effort in _HIGH_EFFORTS else "medium"
@@ -296,12 +298,19 @@ def _sanitize_message(msg: Any, strip_extra_content: bool) -> dict | None:
     """Sanitized copy of ``msg``, or None when nothing needs stripping.
 
     Drops persistence sidecars, ``_``-prefixed scaffolding markers, tool-call ``call_id`` /
-    ``response_item_id`` (and ``extra_content`` unless Gemini), and an assistant
-    ``tool_calls: []`` / ``null`` (strict providers reject both).
+    ``response_item_id`` (and ``extra_content`` unless Gemini), an assistant
+    ``tool_calls: []`` / ``null`` (strict providers reject both), and ``name``
+    on tool results (schema-valid only on user/assistant messages; strict
+    providers reject it with ``contains item with unknown key name``).
     """
     if not isinstance(msg, dict):
         return None
     strip_keys = [k for k in msg if k in _STRIP_MSG_KEYS or (isinstance(k, str) and k.startswith("_"))]
+    # ``name`` is schema-valid on user/assistant messages, so the removal is
+    # role-qualified: only tool results carry it illegally (strict providers
+    # reject with "contains item with unknown key name").
+    if msg.get("role") == "tool" and "name" in msg:
+        strip_keys.append("name")
     out_msg = {k: v for k, v in msg.items() if k not in strip_keys}
     tool_calls = msg.get("tool_calls")
     copied_tool_calls = None

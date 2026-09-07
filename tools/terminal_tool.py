@@ -21,6 +21,7 @@ import/patch target): ``terminal_tool_config`` (TERMINAL_* reads, ``_quiet``),
 import json
 import logging
 import os
+import sys
 import time
 import threading
 import atexit
@@ -43,7 +44,7 @@ from tools.terminal_tool_lifecycle import (
     _evict_environment_for_task, cleanup_all_environments, ensure_task_env,
 )
 from tools.terminal_tool_config import (
-    _HOST_CWD_PREFIXES, _is_container_backend, _is_unusable_container_cwd, _parse_env_var,
+    _is_container_backend, _is_host_cwd, _is_unusable_container_cwd, _parse_env_var,
     _plugin_env_flag, _quiet, _safe_getcwd, _tenv, _tenv_bool,
 )
 from tools.terminal_tool_backends import (
@@ -580,7 +581,7 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
     if env_type == "docker" and mount_docker_cwd:
         candidate = os.path.abspath(os.path.expanduser(_tenv("TERMINAL_CWD") or _safe_getcwd()))
         if (
-            any(candidate.startswith(p) for p in _HOST_CWD_PREFIXES)
+            _is_host_cwd(candidate)
             or (os.path.isabs(candidate) and os.path.isdir(candidate) and not candidate.startswith(("/workspace", "/root")))
         ):
             host_cwd = candidate
@@ -654,6 +655,7 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_volumes": docker_volumes,
         "docker_env": docker_env,
         "docker_run_as_host_user": _tenv_bool("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false"),
+        "docker_snap_compat": _tenv_bool("TERMINAL_DOCKER_SNAP_COMPAT", "false"),
         "docker_network": _tenv_bool("TERMINAL_DOCKER_NETWORK", "true"),
         "docker_extra_args": docker_extra_args,
         "docker_shm_size": docker_shm_size,
@@ -714,6 +716,10 @@ def _atexit_cleanup():
             if wait_fn is not None:
                 with _quiet("wait_for_cleanup raised on exit"):  # never block shutdown on a bad backend
                     wait_fn(timeout=15.0)
+    # Workers of envs the idle reaper already detached are not in the registry (#86317).
+    if "tools.environments.docker" in sys.modules:
+        with _quiet("teardown drain raised on exit"):
+            sys.modules["tools.environments.docker"].DockerEnvironment.wait_for_all_teardowns(timeout=15.0)
 
 atexit.register(_atexit_cleanup)
 
@@ -730,7 +736,7 @@ from tools.terminal_tool_guards import (
     _foreground_background_guidance, _safe_command_preview, _validate_workdir,
     gateway_lifecycle_block, self_repo_block,
 )
-from tools.terminal_tool_background import spawn_background_process
+from tools.terminal_tool_background import _YIELDED_NOTE, spawn_background_process, yield_to_background_handler
 from tools.terminal_tool_result import finalize_foreground_result
 
 
@@ -873,6 +879,17 @@ class _ExecPlan:
     cwd: str
     host_cwd: Optional[str]
     effective_timeout: int
+    # Set when a foreground call asked for more than FOREGROUND_MAX_TIMEOUT and was promoted to a
+    # tracked background process instead of being refused (the requested seconds, for the note).
+    promoted_from_foreground_timeout: Optional[int] = None
+
+
+_PROMOTED_NOTE = (
+    "Requested foreground timeout {requested}s exceeds the {cap}s cap, so this command was started as a "
+    "tracked background process with notify_on_complete=true instead of being refused. Do NOT re-run it. "
+    "Its completion (exit code + output tail) arrives as a notification; poll with "
+    "process(action=\"poll\", session_id=...) if you need it sooner."
+)
 
 
 def _plan_execution(
@@ -936,21 +953,48 @@ def _plan_execution(
     # value is truthy and would fire an immediate "-Ns" timeout.
     if timeout is not None and timeout <= 0:
         raise _Rejected(tool_error(f"timeout must be a positive number of seconds (got {timeout})."))
+    promoted = None
     if not background:
-        if timeout and timeout > FOREGROUND_MAX_TIMEOUT:
-            raise _Rejected(tool_error(
-                f"Foreground timeout {timeout}s exceeds the maximum of "
-                f"{FOREGROUND_MAX_TIMEOUT}s. Use background=true with "
-                f"notify_on_complete=true for long-running commands."
-            ))
+        # An over-cap foreground timeout is a bounded job the caller wants to wait for (test suites,
+        # builds). Refusing it only bought a mechanical retry: 454 refusals in one run, every one
+        # re-sent lower/split/background. Promote to a tracked background process instead; the
+        # caller is told in the result. The `&`/nohup/server guidance below stays a refusal: those
+        # need the command itself rewritten, which the tool cannot do safely.
+        # The detachment guidance applies whether or not the call is promoted: a promoted `cmd &`
+        # would start a tracked shell that exits at once while its payload runs untracked.
         guidance = _foreground_background_guidance(command)
         if guidance:
             raise _Rejected(_error_json(guidance, status="error"))
+        if timeout and timeout > FOREGROUND_MAX_TIMEOUT:
+            promoted = timeout
 
     return _ExecPlan(
         config=config, env_type=env_type, effective_task_id=effective_task_id,
         image=image, cwd=cwd, host_cwd=host_cwd, effective_timeout=timeout or config["timeout"],
+        promoted_from_foreground_timeout=promoted,
     )
+
+
+_PROMOTED_NOTE_POLL_ONLY = (
+    "Requested foreground timeout {requested}s exceeds the {cap}s cap, so this command was started as a "
+    "tracked background process instead of being refused. Do NOT re-run it. This session cannot receive "
+    "completion notifications, so poll it with process(action=\"poll\", session_id=...) until it exits."
+)
+
+
+def _with_promoted_note(result_json: str, requested_timeout: int) -> str:
+    """Attach the foreground->background promotion note to a spawn result (unchanged on error). The
+    note only promises a notification when the spawn actually kept notify_on_complete (finite sessions
+    such as one-shot runners cannot route one back; the spawn already said so and cleared the flag)."""
+    try:
+        data = json.loads(result_json)
+    except (TypeError, ValueError):
+        return result_json
+    if not isinstance(data, dict) or data.get("error"):
+        return result_json
+    template = _PROMOTED_NOTE if data.get("notify_on_complete") else _PROMOTED_NOTE_POLL_ONLY
+    data["promoted_from_foreground"] = template.format(requested=requested_timeout, cap=FOREGROUND_MAX_TIMEOUT)
+    return json.dumps(data, ensure_ascii=False)
 
 
 def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
@@ -1003,6 +1047,12 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
         return new_env
 
 
+def _yield_kwargs(command: str, **ctx) -> dict:
+    """``env.execute`` kwargs enabling yield-to-background (local backend only)."""
+    handler = yield_to_background_handler(command=command, **ctx)
+    return {"yield_handler": handler} if handler is not None else {}
+
+
 def _run_foreground(
     command: str, env: Any, plan: _ExecPlan, *,
     task_id: Optional[str], session_id: Optional[str], session_key: str,
@@ -1029,7 +1079,11 @@ def _run_foreground(
             # bounded_capture: model-facing output keeps a head/tail window
             # while streaming so a verbose command can't OOM the gateway;
             # internal env.execute() consumers stay unbounded.
-            result = env.execute(command, timeout=effective_timeout, cwd=command_cwd, bounded_capture=True)
+            result = env.execute(
+                command, timeout=effective_timeout, cwd=command_cwd, bounded_capture=True,
+                **_yield_kwargs(command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
+                                task_id=task_id, session_key=session_key),
+            )
             break
         except Exception as e:
             if "timeout" in str(e).lower():
@@ -1045,6 +1099,12 @@ def _run_foreground(
                          max_retries, _safe_command_preview(command), type(e).__name__, e, eff, env_type)
             return _error_json(_redact_terminal_error_text(f"Command execution failed: {type(e).__name__}: {e}"))
 
+    if result.get("yielded_session_id"):
+        return json.dumps({
+            "output": result.get("output", ""), "exit_code": None, "error": None,
+            "status": "yielded_to_background", "session_id": result["yielded_session_id"],
+            "pid": result.get("pid"), "notify_on_complete": True, "note": _YIELDED_NOTE,
+        }, ensure_ascii=False)
     return finalize_foreground_result(
         command=command, result=result, env=env, env_type=env_type, effective_task_id=eff,
         task_id=task_id, session_id=session_id, session_key=session_key, workdir=workdir,
@@ -1153,14 +1213,21 @@ def terminal_tool(
         verdict = _run_approval_guards(command, env_type, plan.config, force=force)
 
         pty_disabled = pty and _command_requires_pipe_stdin(command)
+        if plan.promoted_from_foreground_timeout is not None:
+            # Promotion implies notify_on_complete; watch_patterns is a background-only flag the
+            # caller could not have meant for a foreground call, and the two are exclusive anyway.
+            background, notify_on_complete, watch_patterns = True, True, None
         if background:
-            return spawn_background_process(
+            result = spawn_background_process(
                 command=command, env=env, env_type=env_type, effective_task_id=effective_task_id,
                 task_id=task_id, session_key=session_key, workdir=workdir, cwd=cwd,
                 effective_pty=pty and not pty_disabled, notify_on_complete=notify_on_complete,
                 watch_patterns=watch_patterns, approval_note=verdict.note,
                 pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,
             )
+            if plan.promoted_from_foreground_timeout is not None:
+                result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)
+            return result
         return _run_foreground(
             command, env, plan,
             task_id=task_id, session_id=session_id, session_key=session_key,
@@ -1204,7 +1271,7 @@ TERMINAL_SCHEMA = {
             },
             "timeout": {
                 "type": "integer",
-                "description": f"Max seconds to wait (default: 180, foreground max: {FOREGROUND_MAX_TIMEOUT}). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily. Foreground timeout above {FOREGROUND_MAX_TIMEOUT}s is rejected; use background=true for longer commands.",
+                "description": f"Max seconds to wait (default: 180, foreground max: {FOREGROUND_MAX_TIMEOUT}). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily. A foreground timeout above {FOREGROUND_MAX_TIMEOUT}s runs the command as a tracked background process with notify_on_complete=true instead (the result says so; do not re-run it).",
                 "minimum": 1
             },
             "workdir": {

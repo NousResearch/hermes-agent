@@ -2,8 +2,12 @@
 
 import http.server
 import json
+import subprocess
 import threading
 import time
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from agent.verify.environment import (
     load_manifest,
@@ -109,6 +113,75 @@ class TestRunner:
         recipe = Recipe(name="x", test=["cat marker.txt"])
         result = run_verify(tmp_path, recipe, skip_start=True)
         assert result.ok
+
+
+class TestComposeGuard:
+    """#103567: a compose recipe must not build/up over a live deployment."""
+
+    def _compose_recipe(self):
+        return Recipe(
+            name="docker-compose project", kind="compose",
+            build=["docker compose build"], start="docker compose up",
+            evidence=["Detected docker-compose.yml"],
+        )
+
+    @pytest.mark.parametrize(
+        "probe",
+        [
+            pytest.param(MagicMock(returncode=0, stdout="myproject-db-1\nmyproject-web-1\n"), id="containers-running"),
+            pytest.param(subprocess.TimeoutExpired(cmd="docker", timeout=15), id="probe-timed-out"),
+            pytest.param(MagicMock(returncode=1, stdout="", stderr="permission denied on docker.sock"), id="probe-failed"),
+        ],
+    )
+    def test_refuses_and_spawns_nothing_mutating_when_live_state_cannot_be_ruled_out(
+        self, tmp_path, monkeypatch, probe
+    ):
+        calls: list[list[str] | str] = []
+
+        def tracking_run(cmd, *args, **kwargs):
+            calls.append(cmd)
+            if isinstance(probe, BaseException):
+                raise probe
+            return probe
+
+        monkeypatch.setattr("subprocess.run", tracking_run)
+
+        result = run_verify(tmp_path, self._compose_recipe(), skip_start=False)
+
+        assert not result.ok
+        assert result.phases[0].exit_code == 1
+        # Only the read-only probe ran -- never build or up.
+        assert len(calls) == 1
+        assert calls[0][:3] == ["docker", "compose", "ps"]
+
+    @pytest.mark.parametrize(
+        "probe",
+        [
+            pytest.param(MagicMock(returncode=0, stdout=""), id="none-running"),
+            pytest.param(FileNotFoundError("docker not found"), id="docker-absent"),
+        ],
+    )
+    def test_proceeds_when_no_live_containers_or_docker_is_absent(self, tmp_path, monkeypatch, probe):
+        monkeypatch.setattr(
+            "subprocess.run",
+            MagicMock(side_effect=probe) if isinstance(probe, BaseException) else MagicMock(return_value=probe),
+        )
+
+        with patch("agent.verify.runner._run_phase_command") as mock_phase:
+            mock_phase.return_value = MagicMock(ok=True, phase="build")
+            run_verify(tmp_path, self._compose_recipe(), phases=("build",))
+
+        assert mock_phase.called
+
+    def test_guard_skipped_when_no_mutating_phase_selected(self, tmp_path, monkeypatch):
+        probe = MagicMock()
+        monkeypatch.setattr("agent.verify.runner._compose_live_state_reason", probe)
+
+        with patch("agent.verify.runner._run_phase_command") as mock_phase:
+            mock_phase.return_value = MagicMock(ok=True, phase="test")
+            run_verify(tmp_path, Recipe(name="x", kind="compose", test=["true"]), phases=("test",))
+
+        probe.assert_not_called()
 
     def test_result_to_dict(self, tmp_path):
         recipe = Recipe(name="x", test=["true"])

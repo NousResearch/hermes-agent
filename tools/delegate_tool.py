@@ -102,6 +102,54 @@ def _open_child_session_db(parent_agent) -> Any:
         return acquire(_parent_db_path) if _parent_db_path is not None else acquire()
     return None
 
+def _apply_child_cache_ttl(child) -> None:
+    """A delegated child never uses the 1h cache tier. The tier is priced for a person who steps
+    away between turns (2x write vs 1.25x for 5m, #14971); a subagent calls every few seconds for
+    minutes and is gone, so it pays the 2x on every tool result and never collects the retention.
+    Caching itself stays exactly as configured (disabled stays disabled)."""
+    if getattr(child, "_cache_ttl", None) == "1h":
+        child._cache_ttl = "5m"
+
+_CHILD_CAP_MIN = 16_000  # below this a child compresses on every call; treat as a config error
+
+
+def _child_compression_cap_tokens(raw) -> "int | None":
+    """Validated ``delegation.compression_threshold_tokens``: an int >= 16000, or None for "no cap".
+
+    Unset / ``0`` / ``false`` / ``null`` mean no subagent-specific cap: the child compacts at the
+    same ratio trigger as everyone else (0.50 x window). A bool ``true`` (YAML) would coerce to 1
+    and make every call compress; a string like ``"200k"`` would silently read as no cap. Both are
+    config errors: warn and treat as unset so a typo never changes compaction behaviour."""
+    if raw is None or raw is False or raw == 0:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or int(raw) < _CHILD_CAP_MIN:
+        logger.warning(
+            "delegation.compression_threshold_tokens=%r is not a token count >= %d; ignoring it "
+            "(children keep the ratio trigger).", raw, _CHILD_CAP_MIN,
+        )
+        return None
+    return int(raw)
+
+
+def _apply_child_compression_cap(child, delegation_cfg: dict) -> None:
+    """Optional absolute cap on the child's compaction trigger, ``delegation.compression_threshold_tokens``
+    (lower of it and any global ``compression.threshold_tokens``). Off by default: a 1M-window child
+    compacts at 500K like its parent. The compressor applies the cap on first window resolution, which
+    happens after construction, so setting it here is exactly equivalent to config."""
+    from agent.context_compressor import ContextCompressor
+
+    cc = getattr(child, "context_compressor", None)
+    if not isinstance(cc, ContextCompressor):
+        return
+    cap = _child_compression_cap_tokens((delegation_cfg or {}).get("compression_threshold_tokens"))
+    if cap is None:
+        return
+    existing = cc.threshold_tokens_cap
+    cc.threshold_tokens_cap = min(cap, existing) if isinstance(existing, int) and existing > 0 else cap
+    if cc._threshold_tokens is not None:  # already resolved: re-clamp now
+        cc._apply_threshold_tokens_cap()
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -195,6 +243,7 @@ def _build_child_agent(
                     release_or_close(child_session_db)
             raise
     child._print_fn = getattr(parent_agent, "_print_fn", None)
+    _apply_child_cache_ttl(child)
     if child_session_db is not None:
         child._owns_session_db = True  # released by the child's close(), never by the parent
     # Ownership transfer for the dedicated handle: the child's close() must release it (nothing else holds a
@@ -203,6 +252,7 @@ def _build_child_agent(
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
+    _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.
     try:
@@ -457,8 +507,9 @@ _DESCRIPTION_HEAD = (
     "Spawn subagents in isolated contexts; each gets its own conversation, terminal session, and toolset, and only its "
     "final summary returns to you. Pass every task in `tasks` — one entry spawns one subagent, several run in parallel "
     "(limit in the tasks description).\n\n"
-    "Runs in the background: dispatch returns immediately with live transcript paths, and the completed result (one "
-    "consolidated message, results in task order) re-enters the conversation on its own. Do NOT wait or poll; continue "
+    "Runs in the background: dispatch returns immediately with live transcript paths, and each completed unit "
+    "re-enters the conversation on its own — an ungrouped task as soon as IT finishes, tasks sharing a `group` "
+    "together once all of them finish. Handle each result as it lands. Do NOT wait or poll; continue "
     "other work. While children run, `action` (list/steer/stop) controls them live — steer when a transcript shows a "
     "child drifting.\n\n"
     "USE FOR: reasoning-heavy subtasks, work that would flood your context with intermediate data, or independent "
@@ -545,6 +596,13 @@ DELEGATE_TASK_SCHEMA = {
                             "child up front; parent validates with one bounded correction retry; result gains "
                             "schema_valid, plus schema_errors on failure). Keep it forgiving — require only "
                             "fields you will read.",
+                        ),
+                        "group": _p(
+                            "string",
+                            "Optional completion group. Tasks sharing a group wait for each other and return as ONE "
+                            "message (use when you must compare or merge their results); a task without a group "
+                            "returns on its own the moment it finishes. Independent work (separate PR reviews, "
+                            "unrelated fixes) should stay ungrouped so nothing waits for the slowest sibling.",
                         ),
                     },
                     "required": ["goal"],

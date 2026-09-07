@@ -108,13 +108,22 @@ def message_agent_tool_schema() -> dict:
     }
 
 
+def message_agent_authorized(agent: Any) -> bool:
+    """Shared session-stable schema gate, including tool-snapshot rebuilds."""
+    try:
+        from tools.bot_mode_probe import bot_mode_session_state
+
+        return bot_mode_session_state(agent)["session_kind"] is not None
+    except Exception:  # pragma: no cover — must never break a turn
+        logger.debug("message_agent_authorized failed", exc_info=True)
+        return False
+
+
 def ensure_message_agent_tool(agent: Any) -> bool:
     """Inject the ``message_agent`` schema into a routed Bot Mode session.
     The shared frozen gate keeps the tool list byte-identical across turns."""
     try:
-        from tools.bot_mode_probe import bot_mode_session_state
-
-        if not bot_mode_session_state(agent)["session_kind"]:
+        if not message_agent_authorized(agent):
             if isinstance(getattr(agent, "tools", None), list):
                 agent.tools[:] = [t for t in agent.tools if t.get("function", {}).get("name") != MESSAGE_AGENT_TOOL_NAME]
             if isinstance(getattr(agent, "valid_tool_names", None), set):

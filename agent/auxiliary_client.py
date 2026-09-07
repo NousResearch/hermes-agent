@@ -30,6 +30,7 @@ from agent.codex_headers import (
     codex_cloudflare_headers as _codex_cloudflare_headers,
     is_official_codex_base_url as _is_official_codex_base_url,
 )
+from agent.codex_runtime import _codex_event_has_content
 
 # `openai.OpenAI` is imported lazily (~240 ms cold); `OpenAI` below is a proxy
 # so in-module calls, `auxiliary_client.OpenAI` reads and
@@ -377,26 +378,9 @@ def _anthropic_aux_stream_event_hook() -> Callable[[Any], None]:
     return _on_event
 
 
-_CODEX_PROGRESS_DELTA_TYPES = frozenset({
-    "response.output_text.delta", "response.reasoning_summary_text.delta", "response.text.delta",
-    "response.audio.delta", "response.function_call_arguments.delta", "response.reasoning_text.delta",
-})
-
 # A dead stream fails at the no-progress window (first token AND between tokens); a live
 # stream re-arms per event, bounded by _aux_stream_total_ceiling().
 _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS = 60.0
-
-
-def _codex_event_has_content(event: Any) -> bool:
-    """Whether a Codex Responses event carries a non-empty payload."""
-    event_type = _field(event, "type")
-    if event_type in _CODEX_PROGRESS_DELTA_TYPES:
-        return bool(_field(event, "delta"))
-    if event_type == "response.output_item.added":
-        item = _field(event, "item")
-        return "function_call" in str(_field(item, "type") or "") and any(
-            bool(_field(item, f)) for f in ("id", "call_id", "name", "arguments"))
-    return False
 
 
 @contextlib.contextmanager
@@ -2957,7 +2941,8 @@ def _contains_any(text: str, needles: Tuple[str, ...]) -> bool:
 
 
 # Billing-body markers (credit exhaustion wrapped in 402/403/404/429 bodies), plus daily/weekly quota
-# exhaustion (functionally credit exhaustion; "resource exhausted" is the Vertex/gRPC quota phrasing).
+# exhaustion (functionally credit exhaustion; "resource exhausted" is the Vertex/gRPC quota phrasing —
+# also serialized by SDK wrappers and NIM as RESOURCE_EXHAUSTED / ResourceExhausted / resource-exhausted).
 _PAYMENT_KEYWORDS = (
     "credits", "insufficient funds", "can only afford", "billing", "payment required",
     "out of funds", "run out of funds", "balance_depleted", "no usable credits",
@@ -2965,6 +2950,7 @@ _PAYMENT_KEYWORDS = (
     "requires a subscription", "upgrade for access", "upgrade for higher limits",
     "reached your session usage limit", "quota exceeded", "quota_exceeded",
     "too many tokens per day", "daily limit", "tokens per day", "daily quota", "resource exhausted",
+    "resource_exhausted", "resource-exhausted", "resourceexhausted",
     "weekly usage limit", "weekly limit",
 )
 

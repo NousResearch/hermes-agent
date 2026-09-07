@@ -4157,6 +4157,39 @@ describe('selectSidebarItem', () => {
     expect(noteActiveTreeGroup).toHaveBeenCalledWith(null)
     expect(revealTreePane).toHaveBeenCalledWith('workspace')
   })
+
+  it('opens contributed plugin pages as closable tiles instead of replacing chat (#101593)', async () => {
+    const { registry } = await import('@/contrib/registry')
+    const { $routeTiles } = await import('@/store/route-tiles')
+    const dispose = registry.register({
+      id: 'page',
+      area: 'routes',
+      source: 'plugin:kanban',
+      data: { path: '/kanban' },
+      render: () => null
+    })
+
+    const navigate = vi.fn()
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    render(<Harness navigate={navigate} onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    $routeTiles.set([])
+    act(() => {
+      handle!.selectSidebarItem({
+        icon: (() => null) as never,
+        id: 'kanban',
+        label: 'Kanban',
+        route: '/kanban'
+      })
+    })
+
+    expect(navigate).not.toHaveBeenCalled()
+    expect($routeTiles.get().some(tile => tile.path === '/kanban')).toBe(true)
+    dispose()
+  })
 })
 
 const mockDeleteSession = vi.mocked(deleteSession)

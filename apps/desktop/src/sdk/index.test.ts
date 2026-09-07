@@ -174,6 +174,60 @@ describe('host.connections', () => {
   })
 })
 
+describe('host.navigate contributed plugin pages (#101593)', () => {
+  afterEach(async () => {
+    const { $routeTiles } = await import('@/store/route-tiles')
+    $routeTiles.set([])
+    window.location.hash = ''
+  })
+
+  it('opens a contributed route as a tile instead of replacing the workspace hash', async () => {
+    const { registry } = await import('@/contrib/registry')
+    const { $routeTiles } = await import('@/store/route-tiles')
+    const dispose = registry.register({
+      id: 'page',
+      area: 'routes',
+      source: 'plugin:kanban',
+      data: { path: '/kanban' },
+      render: () => null
+    })
+
+    $routeTiles.set([])
+    window.location.hash = '#/'
+    host.navigate('/kanban')
+
+    expect($routeTiles.get().some(tile => tile.path === '/kanban')).toBe(true)
+    expect(window.location.hash).toBe('#/')
+    dispose()
+  })
+
+  it('strips query and hash before matching a contributed path', async () => {
+    const { registry } = await import('@/contrib/registry')
+    const { $routeTiles } = await import('@/store/route-tiles')
+    const dispose = registry.register({
+      id: 'page',
+      area: 'routes',
+      source: 'plugin:kanban',
+      data: { path: '/kanban' },
+      render: () => null
+    })
+
+    $routeTiles.set([])
+    window.location.hash = '#/'
+    host.navigate('/kanban?board=ops#top')
+
+    expect($routeTiles.get().some(tile => tile.path === '/kanban')).toBe(true)
+    expect(window.location.hash).toBe('#/')
+    dispose()
+  })
+
+  it('still hash-navigates built-in workspace pages', () => {
+    window.location.hash = '#/'
+    host.navigate('/skills')
+    expect(window.location.hash).toBe('#/skills')
+  })
+})
+
 describe('host workspace scope', () => {
   afterEach(async () => {
     host.setWorkspaceScope('sessions')

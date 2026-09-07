@@ -67,6 +67,12 @@ class TestProviderSupportsVisionToolMessages:
         agent = _make_agent("xiaomi", "mimo-v2.5")
         assert agent._provider_supports_vision_tool_messages() is False
 
+    def test_opencode_go_returns_false(self):
+        """Console Go validates tool content as a strict string (#104731) —
+        the profile veto must downgrade multimodal tool results to text."""
+        agent = _make_agent("opencode-go", "deepseek-v4-flash-vision-exp")
+        assert agent._provider_supports_vision_tool_messages() is False
+
 
 
 
@@ -89,6 +95,18 @@ class TestToolResultContentProactiveDowngrade:
 
         assert isinstance(content, str)
         assert "screenshot captured" in content
+
+    def test_opencode_go_downgrades_to_text_summary(self):
+        """opencode-go: vision model via Console Go, but list-type tool content
+        422s (messages.N.tool.content.str, #104731) → downgrade to text."""
+        agent = _make_agent("opencode-go", "deepseek-v4-flash-vision-exp")
+        result = _multimodal_result(text="image analyzed natively")
+
+        with patch.object(agent, "_model_supports_vision", return_value=True):
+            content = agent._tool_result_content_for_active_model("vision_analyze", result)
+
+        assert isinstance(content, str)
+        assert "image analyzed natively" in content
 
     def test_xiaomi_non_multimodal_passes_through(self):
         """Non-multimodal results should pass through unchanged."""

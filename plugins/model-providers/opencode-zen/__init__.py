@@ -115,6 +115,10 @@ opencode_go = OpenCodeGoProfile(
     name="opencode-go", aliases=("opencode_go", "go", "opencode-go-sub"), env_vars=("OPENCODE_GO_API_KEY",),
     base_url="https://opencode.ai/zen/go/v1", default_headers=dict(_ATTRIBUTION_HEADERS),
     default_aux_model="glm-5",
+    # The Go relay's upstream (Console Go) validates tool content as a strict string;
+    # the multimodal tool-result envelope 422s with messages.N.tool.content.str
+    # "Input should be a valid string" on the call after a native vision embed (#104731).
+    supports_vision_tool_messages=False,
 )
 
 register_provider(opencode_zen)

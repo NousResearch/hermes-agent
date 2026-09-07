@@ -96,6 +96,26 @@ class TestSupportsMediaInToolResults:
         tool-result content, #89981)."""
         assert _supports_media_in_tool_results("xiaomi", "mimo-v2.5") is False
 
+    def test_opencode_go_veto(self):
+        """Console Go (opencode-go upstream) validates tool content as a strict
+        string — a vision-capable model must not re-open the multimodal
+        tool-result envelope, which 422s the call after a native vision
+        embed (messages.N.tool.content.str, #104731)."""
+        from tools.vision_tools import _should_use_native_vision_fast_path
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        from agent import image_routing
+
+        set_runtime_main("opencode-go", "deepseek-v4-flash-vision-exp")
+        try:
+            with patch.object(
+                image_routing, "decide_image_input_mode", return_value="native"
+            ), patch.object(
+                image_routing, "_lookup_supports_vision", return_value=True
+            ):
+                assert _should_use_native_vision_fast_path() is False
+        finally:
+            clear_runtime_main()
+
     def test_profile_veto_applies_even_when_vision_capable_lookup_agrees(self):
         """A capability source marking the model vision-capable must not
         re-open the native fast path for a provider that rejects it."""

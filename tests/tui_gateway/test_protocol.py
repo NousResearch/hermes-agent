@@ -1066,7 +1066,8 @@ def test_enforce_session_cap_evicts_oldest_detached_only(server, monkeypatch):
     assert evicted == ["old_detached", "new_detached"]
 
 
-def test_idle_reaper_rearms_missing_ws_orphan_timer(server, monkeypatch, tmp_path):
+@pytest.mark.parametrize("closed_transport", [False, True])
+def test_idle_reaper_rearms_missing_ws_orphan_timer(server, monkeypatch, tmp_path, closed_transport):
     """A detached lane cannot keep its lease forever if initial timer setup was lost."""
     from hermes_cli.active_sessions import (
         active_session_registry_snapshot,
@@ -1107,8 +1108,12 @@ def test_idle_reaper_rearms_missing_ws_orphan_timer(server, monkeypatch, tmp_pat
         }
 
     server._sessions.clear()
+    class ClosedTransport:
+        _closed = True
+
+    dead_transport = ClosedTransport() if closed_transport else server._detached_ws_transport
     server._sessions.update({
-        sid: _session(sid, orphan_lease, server._detached_ws_transport),
+        sid: _session(sid, orphan_lease, dead_transport),
         sibling_sid: _session(sibling_sid, sibling_lease, object()),
     })
     server._pending_ws_reaps.clear()

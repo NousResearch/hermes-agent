@@ -1,7 +1,9 @@
 """Real WS/backend-process lease recovery probe; deterministic HTTP inference.
 
 Run: .venv/bin/python evals/desktop_bug_campaign/leases_live.py --output DIR
-Fault injection only cancels an actual disconnected session's orphan timer.
+Fault injection cancels an actual disconnected session's orphan timer and,
+optionally, restores its real closed transport to model missed detachment.
+Delegation uses the real registry/executor with an Event-blocked fixture runner.
 No ownership predicate, lease registry, agent, or lifecycle function is replaced.
 """
 import argparse

@@ -192,6 +192,15 @@ def _repair_missing_ws_orphan_reaps() -> None:
     """
     if _WS_ORPHAN_REAP_GRACE_S <= 0:
         return
+    # A socket can be closed before its disconnect cleanup reaches the sentinel.
+    # Reuse that cleanup (including surviving viewers), never revoke a fence from
+    # a stale liveness snapshot.
+    with _sessions_lock:
+        closed_transports = [session.get("transport") for session in _sessions.values()
+                             if session.get("transport") is not _detached_ws_transport
+                             and _transport_is_dead(session.get("transport"))]
+    for transport in closed_transports:
+        _close_sessions_for_transport(transport)
     with _sessions_lock:
         missing = [
             sid for sid, session in _sessions.items()

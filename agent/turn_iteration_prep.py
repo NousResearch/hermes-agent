@@ -33,6 +33,10 @@ def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
     import os
     from agent.delegation_context import is_dispatcher_owned_worker_context
 
+    # Cancellation results still need persistence, but must not urge more work.
+    if getattr(agent, "_interrupt_requested", False):
+        return False
+
     ratio = getattr(agent, "budget_warning_ratio", None)
     kanban_worker = (
         bool(os.environ.get("HERMES_KANBAN_TASK"))
@@ -347,11 +351,8 @@ def begin_iteration(
     # Grace call: budget exhausted but the model gets one more call. Consume the
     # flag so the loop exits after this iteration regardless of outcome.
     if agent._budget_grace_call:
-        # Iteration budget: the LLM is only notified when it actually exhausts the iteration budget
-        # (api_call_count >= max_iterations). At that point we inject ONE message, allow one final API call,
-        # and if the model doesn't produce a text response, force a user-message asking it to summarise. No
-        # intermediate pressure warnings — they caused models to "give up" prematurely on complex tasks
-        # (#7915).
+        # Exhaustion retains one toolless grace call regardless of whether an opt-in
+        # checkpoint was emitted; the warning never extends the hard budget.
         agent._budget_grace_call = False
     elif not agent.iteration_budget.consume():
         _turn_exit_reason = "budget_exhausted"

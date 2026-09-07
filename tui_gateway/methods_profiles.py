@@ -76,8 +76,17 @@ def _(rid, params: dict) -> dict:
             db_path = Path(profile_path) / "state.db"
             if not db_path.exists():
                 return None
+            from hermes_cli.db_ownership import DbOpenDecision, decide_direct_db_open
             from hermes_state import SessionDB
 
+            decision = decide_direct_db_open(
+                role="web",
+                operation="read",
+                db_path=db_path,
+                gateway_pid=None,
+            )
+            if decision not in {DbOpenDecision.ALLOW, DbOpenDecision.SAFE_READ}:
+                return None
             return SessionDB(db_path=db_path, read_only=True)
         except Exception:
             return None

@@ -346,8 +346,24 @@ def _create_session_db_for_oneshot():
     advertised but every call returns "Session database not available.".
     """
     try:
+        from hermes_cli.config import get_hermes_home
+        from hermes_cli.db_ownership import decide_direct_db_open, DbOpenDecision
+        from gateway.status import get_running_pid
         from hermes_state import SessionDB
 
+        gateway_pid = get_running_pid(cleanup_stale=False)
+        decision = decide_direct_db_open(
+            role="cli",
+            operation="write",
+            db_path=Path(get_hermes_home()) / "state.db",
+            gateway_pid=gateway_pid,
+        )
+        if decision is not DbOpenDecision.ALLOW:
+            logging.warning(
+                "Skipping direct oneshot SessionDB open: gateway is active; "
+                "session persistence will be unavailable for this run"
+            )
+            return None
         return SessionDB()
     except Exception as exc:
         logging.debug("SQLite session store not available for oneshot mode: %s", exc)

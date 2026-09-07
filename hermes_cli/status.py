@@ -23,6 +23,7 @@ from hermes_cli.nous_account import (
 )
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from hermes_cli.runtime_provider import resolve_requested_provider
+from hermes_cli.db_ownership import decide_direct_db_open, DbOpenDecision
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
 from tools.tool_backend_helpers import managed_nous_tools_enabled
@@ -625,7 +626,15 @@ def show_status(args):
     _gateway_rows = []
     try:
         from hermes_state import SessionDB
-        _db = SessionDB()
+        _decision = decide_direct_db_open(
+            role="cli",
+            operation="read",
+            db_path=get_hermes_home() / "state.db",
+            gateway_pid=None,
+        )
+        if _decision not in {DbOpenDecision.ALLOW, DbOpenDecision.SAFE_READ}:
+            raise RuntimeError(f"unsafe direct DB policy for status: {_decision.name}")
+        _db = SessionDB(read_only=True)
         try:
             _lister = getattr(_db, "list_gateway_sessions", None)
             if callable(_lister):

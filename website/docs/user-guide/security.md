@@ -262,6 +262,12 @@ command_allowlist:
 
 These patterns are loaded at startup and silently approved in all future sessions.
 
+The setting must be a list of strings. Legacy installs that stored a list as a
+quoted YAML/JSON string recover that list at load time and log a warning to
+re-save it with `hermes config edit`. Other malformed values are ignored with
+a warning; they never become per-character approvals. Loading does not rewrite
+your configuration file.
+
 :::tip
 Use `hermes config edit` to review or remove patterns from your permanent allowlist.
 :::

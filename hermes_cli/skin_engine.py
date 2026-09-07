@@ -512,6 +512,7 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     palette: Dict[str, str] = {}
     for name, key, fallback in _STYLE_PALETTE:
         palette[name] = skin.get_color(key, palette[fallback[1:]] if fallback.startswith("@") else fallback)
+    # This badge paints both sides; foreground-only light remapping destroys its contrast.
     palette["badge_bg"] = skin.colors.get(
         "status_bar_strong", skin.colors.get("banner_title", "#FFD700"))
     palette["badge_fg"] = skin.colors.get("status_bar_bg", "#1a1a2e")

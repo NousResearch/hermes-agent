@@ -8119,6 +8119,24 @@ class SlackAdapter(BasePlatformAdapter):
         )
 
         try:
+            if value.startswith("wa:"):
+                def current_controls():
+                    from gateway.wisdom_command import WisdomCommandContext
+                    from hermes_wisdom.agent_led.actions import current_action_view
+                    from hermes_wisdom.service import WisdomService
+
+                    service = WisdomService()
+                    context = WisdomCommandContext(
+                        user_id=user_id, chat_id=channel_id, profile=profile,
+                        organization_id=service.store.active_org_id(),
+                        is_group=self._wisdom_is_group_channel(channel_id),
+                    )
+                    return current_action_view(value, service, context), context
+
+                view, context = await self._run_wisdom_profile_operation(current_controls, profile=profile)
+                await self._prepare_wisdom_view(view, context, team_id=team_id, channel_id=channel_id)
+                await self._update_wisdom_interaction(body, view)
+                return
             if value.startswith("wi:agent:"):
                 def resolve():
                     from hermes_wisdom.mediation_view import resolve_surface_action

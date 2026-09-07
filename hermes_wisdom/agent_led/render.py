@@ -1,10 +1,7 @@
-"""Platform renderers for agent-authored recommendation events.
+"""Legacy recommendation preview renderers, not the runtime delivery path.
 
-Each renderer takes a :class:`RecommendationEvent` and returns the native
-payload shape for one surface. Buttons carry the event's opaque action
-targets (``wa:<action>:<dedup>``); the adapter resolves them through the
-delivery ledger so stale or duplicate presses get a clear message instead of
-a silent no-op.
+Old ``wa:`` targets only open current review/settings; they carry no consent.
+New runtime cards use mediation_view with actor-bound native interactions.
 """
 
 from __future__ import annotations

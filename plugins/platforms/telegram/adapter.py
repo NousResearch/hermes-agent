@@ -7881,12 +7881,7 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.error("Failed to write update response from callback: %s", exc)
 
     async def _handle_wisdom_agent_callback(self, query, data: str) -> None:
-        """Resolve an agent-led recommendation button through the delivery ledger.
-
-        Stale, expired, or already-handled targets answer with a clear message
-        and leave nothing half-applied. Legacy mute buttons open the current
-        account-scoped settings; old duration callbacks never apply directly.
-        """
+        """Replace legacy controls with current authenticated review/settings."""
         caller_id = str(getattr(query.from_user, "id", ""))
         message = getattr(query, "message", None)
         chat_id = getattr(message, "chat_id", None)
@@ -7898,99 +7893,31 @@ class TelegramAdapter(BasePlatformAdapter):
         ):
             await query.answer(text="You are not authorized to manage skills.")
             return
-        parts = data.split(":")
-        mute_choice = parts[3] if len(parts) == 4 and parts[1] == "mute" else None
-        target = ":".join(parts[:3])
-
         def run():
-            from hermes_wisdom.agent_led.actions import handle_action
+            from gateway.wisdom_command import WisdomCommandContext
+            from hermes_wisdom.agent_led.actions import current_action_view
             from hermes_wisdom.service import WisdomService
 
-            return handle_action(target, service=WisdomService(), mute_choice=mute_choice)
+            service = WisdomService()
+            context = WisdomCommandContext(
+                user_id=caller_id, chat_id=str(chat_id or caller_id),
+                profile=getattr(self, "_owner_profile", None),
+                organization_id=service.store.active_org_id(),
+                is_group=chat_type.lower() != "private",
+            )
+            return current_action_view(data, service, context), context
 
         try:
-            result = await self._run_wisdom_profile_operation(run)
-        except Exception as exc:
-            logger.warning(
-                "[%s] Collective Wisdom agent-led action failed: %s",
-                self.name,
-                _redact_telegram_error_text(exc),
-            )
-            await query.answer(text="Something went wrong; the buttons are still valid.")
-            return
-        if result.get("open_mute_settings"):
-            try:
-                def open_settings():
-                    from gateway.wisdom_command import WisdomCommandContext, WisdomCommandController
-                    from hermes_wisdom.service import WisdomService
-
-                    service = WisdomService()
-                    context = WisdomCommandContext(
-                        user_id=caller_id, chat_id=str(chat_id or caller_id),
-                        profile=getattr(self, "_owner_profile", None),
-                        organization_id=service.store.active_org_id(),
-                        is_group=chat_type.lower() != "private",
-                    )
-                    return WisdomCommandController().execute("mute", service, context), context
-
-                view, context = await self._run_wisdom_profile_operation(open_settings)
-                await self._prepare_wisdom_command_view(view, context)
-                await self._edit_wisdom_command_view(query, view)
-                await query.answer(text="Notification settings")
-            except Exception:
-                await query.answer(text="Settings are unavailable. Open /wisdom mute to try again.")
-            return
-        message = str(result.get("message") or ("Done." if result.get("ok") else "Unavailable."))
-        await query.answer(text=message[:200])
-        if result.get("ok") or result.get("stale"):
-            try:
-                await query.edit_message_reply_markup(reply_markup=None)
-            except Exception:
-                pass
-            if result.get("url"):
-                await query.message.reply_text(str(result["url"]))
-            elif result.get("flow") is not None:
-                await query.message.reply_text(
-                    "Share review started. Run /wisdom share status to continue; nothing is uploaded until you approve."
-                )
+            await query.answer(text="Opening current controls; nothing was changed.")
+            view, context = await self._run_wisdom_profile_operation(run)
+            await self._prepare_wisdom_command_view(view, context)
+            await self._edit_wisdom_command_view(query, view)
+        except Exception:
+            await query.answer(text="Current controls are unavailable. Open /wisdom inbox or /wisdom mute to try again.", show_alert=True)
 
     async def send_wisdom_agent_recommendation(self, chat_id: str, event, *, metadata=None) -> None:
-        """Deliver one agent-authored recommendation with native buttons."""
-        from hermes_wisdom.agent_led.render import render_plain, render_telegram_html
-
-        raw_request = getattr(getattr(self, "_bot", None), "do_api_request", None)
-        if callable(raw_request):
-            try:
-                await raw_request(
-                    "sendRichMessage",
-                    api_kwargs={
-                        "chat_id": normalize_telegram_chat_id(chat_id),
-                        "rich_message": {"html": render_telegram_html(event)},
-                        "link_preview_options": {"is_disabled": True},
-                    },
-                )
-                return
-            except Exception as exc:
-                logger.debug(
-                    "[%s] agent-led rich-card send failed: %s",
-                    self.name,
-                    _redact_telegram_error_text(exc),
-                )
-        if self._bot is None:
-            raise RuntimeError("telegram bot unavailable")
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(a.label, callback_data=a.target)
-                    for a in event.allowed_actions
-                ]
-            ]
-        )
-        await self._bot.send_message(
-            chat_id=normalize_telegram_chat_id(chat_id),
-            text=render_plain(event),
-            reply_markup=keyboard,
-        )
+        """Legacy sender cannot bypass mediation ownership and receipt recovery."""
+        raise RuntimeError("Legacy Wisdom delivery is retired; use the profile-owned mediation scheduler")
 
     async def _handle_wisdom_callback(
         self,

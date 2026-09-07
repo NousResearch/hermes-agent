@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from hermes_wisdom.agent_led import render
 from hermes_wisdom.agent_led.actions import handle_action
 from hermes_wisdom.agent_led.history import SuggestionHistory
-from hermes_wisdom.agent_led.notify import STALE_ACTION_MESSAGE, DeliveryLedger, deliver, share_candidate_event, teammate_event
+from hermes_wisdom.agent_led.notify import DeliveryLedger, share_candidate_event, teammate_event
 from hermes_wisdom.agent_led.schemas import CandidateRecommendation, RecipientRecommendation
 
 NOW = datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc)
@@ -58,26 +58,24 @@ def test_renderers_use_editorial_name_not_product_name():
     assert render.render_plain(event).startswith("Hermes Collective Wisdom\n\nNew skill from your team")
 
 
-def test_handle_action_not_now_records_dismissal_and_is_idempotent(tmp_path, monkeypatch):
-    monkeypatch.setattr("hermes_wisdom.agent_led.actions.load_policy", lambda client=None: __import__("hermes_wisdom.agent_led.policy", fromlist=["AgentLedPolicy"]).AgentLedPolicy())
+def test_legacy_not_now_opens_current_review_without_dismissal(tmp_path):
     event = _share_event()
     ledger = DeliveryLedger(tmp_path / "l.json")
     history = SuggestionHistory(tmp_path / "h.json")
-    deliver(event, sender=lambda _e: None, ledger=ledger, now=NOW)
+    ledger.record(event, state="delivered")
     target = next(a.target for a in event.allowed_actions if a.id == "not_now")
     first = handle_action(target, ledger=ledger, history=history, now=NOW)
-    assert first["ok"] and first["gateway"] == "pending_gateway"
-    assert history.is_suppressed("notes", "abcdef1234", at=NOW + timedelta(days=29))
+    assert first["ok"] and first["command"] == "inbox" and first["requires_fresh_consent"]
+    assert not history.is_suppressed("notes", "abcdef1234", at=NOW)
     second = handle_action(target, ledger=ledger, history=history, now=NOW)
-    assert second["stale"] and second["message"] == STALE_ACTION_MESSAGE
+    assert second == first and ledger.resolve_action(target, at=NOW)["ok"]
 
 
-def test_legacy_mute_only_opens_current_native_settings(tmp_path, monkeypatch):
-    monkeypatch.setattr("hermes_wisdom.agent_led.actions.load_policy", lambda client=None: __import__("hermes_wisdom.agent_led.policy", fromlist=["AgentLedPolicy"]).AgentLedPolicy())
+def test_legacy_mute_only_opens_current_native_settings(tmp_path):
     event = _teammate_event()
     ledger = DeliveryLedger(tmp_path / "l.json")
     history = SuggestionHistory(tmp_path / "h.json")
-    deliver(event, sender=lambda _e: None, ledger=ledger, now=NOW)
+    ledger.record(event, state="delivered")
     target = next(a.target for a in event.allowed_actions if a.id == "mute")
     ask = handle_action(target, ledger=ledger, history=history, now=NOW)
     assert ask["open_mute_settings"]
@@ -87,15 +85,15 @@ def test_legacy_mute_only_opens_current_native_settings(tmp_path, monkeypatch):
     assert ledger.resolve_action(target, at=NOW)["ok"]
 
 
-def test_handle_action_install_never_claims_installed(tmp_path, monkeypatch):
-    monkeypatch.setattr("hermes_wisdom.agent_led.actions.load_policy", lambda client=None: __import__("hermes_wisdom.agent_led.policy", fromlist=["AgentLedPolicy"]).AgentLedPolicy())
+def test_legacy_install_requires_current_native_consent(tmp_path):
     event = _teammate_event()
     ledger = DeliveryLedger(tmp_path / "l.json")
-    deliver(event, sender=lambda _e: None, ledger=ledger, now=NOW)
+    ledger.record(event, state="delivered")
     target = next(a.target for a in event.allowed_actions if a.id == "install")
     result = handle_action(target, ledger=ledger, history=SuggestionHistory(tmp_path / "h.json"), now=NOW)
-    assert result["ok"] and result["installed"] is False
-    assert result["next"] == "hermes wisdom install 'sk-9@v2' --plan --json"
+    assert result["ok"] and result["requires_fresh_consent"]
+    assert result["next"] == "hermes wisdom inbox"
+    assert ledger.resolve_action(target, at=NOW)["ok"]
 
 
 def test_cli_parser_has_agent_led_verbs_with_json():

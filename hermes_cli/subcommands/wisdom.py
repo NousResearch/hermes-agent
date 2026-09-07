@@ -388,7 +388,7 @@ def build_wisdom_parser(subparsers) -> None:
     review_week.add_argument(
         "--dry-run", action="store_true", help="Preview local evidence without queueing or calling a model"
     )
-    act = add("act", "Resolve an agent-led recommendation button target")
+    act = add("act", "Open current review for an old recommendation control (does not apply)")
     act.add_argument("target")
     act.add_argument("--mute", choices=["1d", "1w", "30d", "forever"], help="Mute duration")
     share = add("share", "Agent-guided share flow (package, review, approve)")

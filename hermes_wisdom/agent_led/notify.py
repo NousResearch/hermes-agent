@@ -1,12 +1,8 @@
-"""Structured agent-authored recommendation events and idempotent delivery.
+"""Legacy recommendation fixtures and local JSON snapshots.
 
-A :class:`RecommendationEvent` is the platform-neutral input the adapters
-render (Telegram inline keyboard, Slack blocks, Desktop actions). Delivery is
-keyed by a stable ``dedup_key`` so retries never produce duplicate messages
-or duplicate actions; stale action targets resolve to a clear message rather
-than silently doing nothing. Authorization, policy and idempotency of the
-*actions themselves* remain server/CLI-side: this module only carries opaque
-action targets.
+Runtime delivery uses WisdomMediation and its transactional receipt outbox.
+These old event targets are not consent authority; compatibility handlers only
+open fresh controls. The legacy sender is disabled to prevent duplicate paths.
 """
 
 from __future__ import annotations
@@ -346,24 +342,5 @@ def deliver(
     sleep: Callable[[float], None] = time.sleep,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Deliver once. Retries with exponential backoff; never double-sends."""
-    if ledger.delivered(event.dedup_key):
-        return {"delivered": True, "duplicate": True, "attempts": 0, "dedup_key": event.dedup_key}
-    if event.is_expired(now):
-        ledger.record(event, state="expired")
-        return {"delivered": False, "duplicate": False, "attempts": 0, "reason": "expired"}
-    last_error: str | None = None
-    attempts = 0
-    for attempt in range(retries + 1):
-        attempts = attempt + 1
-        try:
-            sender(event)
-        except Exception as exc:  # noqa: BLE001 - adapter failures are opaque here
-            last_error = f"{type(exc).__name__}: {exc}"
-            ledger.record(event, state="failed", detail=last_error)
-            if attempt < retries:
-                sleep(backoff_seconds * (2**attempt))
-            continue
-        ledger.record(event, state="delivered")
-        return {"delivered": True, "duplicate": False, "attempts": attempts, "dedup_key": event.dedup_key}
-    return {"delivered": False, "duplicate": False, "attempts": attempts, "reason": last_error}
+    """Compatibility failure, never a second send path around native ownership."""
+    raise DeliveryError("Legacy Wisdom delivery is retired; use the profile-owned mediation scheduler")

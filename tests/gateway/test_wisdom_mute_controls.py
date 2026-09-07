@@ -166,10 +166,6 @@ async def test_legacy_mute_duration_opens_fresh_menu_without_applying(
         "hermes_wisdom.preferences.WisdomPreferences", lambda service: p
     )
     monkeypatch.setattr("hermes_wisdom.service.WisdomService", lambda: service)
-    monkeypatch.setattr(
-        "hermes_wisdom.agent_led.actions.handle_action",
-        lambda *a, **kw: {"open_mute_settings": True},
-    )
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
     adapter._is_callback_user_authorized = Mock(return_value=True)
     adapter._run_wisdom_profile_operation = AsyncMock(side_effect=lambda fn: fn())

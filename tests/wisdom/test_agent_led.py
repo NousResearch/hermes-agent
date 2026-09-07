@@ -421,44 +421,40 @@ def test_templates_reject_forbidden_words_in_prose():
 # idempotent delivery + stale buttons
 # ---------------------------------------------------------------------------
 
-def test_delivery_is_idempotent_and_retries(tmp_path):
+def test_legacy_delivery_cannot_bypass_native_ownership(tmp_path):
+    from unittest.mock import Mock
+    from hermes_wisdom.agent_led.notify import DeliveryError
     from hermes_wisdom.agent_led.schemas import CandidateRecommendation
 
     rec = CandidateRecommendation.model_validate(_rec("s", "abcdef1234"))
     event = share_candidate_event(rec, organization_id="org-1", recipient_id="u1", at=NOW)
-    sent: list[str] = []
-    calls = {"n": 0}
-
-    def flaky(evt):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise RuntimeError("network")
-        sent.append(evt.dedup_key)
-
+    sender = Mock()
     ledger = DeliveryLedger(tmp_path / "ledger.json")
-    first = deliver(event, sender=flaky, ledger=ledger, retries=2, sleep=lambda _s: None, now=NOW)
-    assert first["delivered"] and first["attempts"] == 2
-    second = deliver(event, sender=flaky, ledger=ledger, retries=2, sleep=lambda _s: None, now=NOW)
-    assert second["delivered"] and second["duplicate"] is True
-    assert sent == [event.dedup_key]
+    with pytest.raises(DeliveryError, match="profile-owned mediation"):
+        deliver(event, sender=sender, ledger=ledger, retries=2, sleep=lambda _s: None, now=NOW)
+    sender.assert_not_called()
+    assert ledger.get(event.dedup_key) is None
     # Same inputs -> same dedup key across processes.
     again = share_candidate_event(rec, organization_id="org-1", recipient_id="u1", at=NOW)
     assert again.dedup_key == event.dedup_key
 
 
-def test_delivery_failure_reports_and_does_not_mark_delivered(tmp_path):
+def test_legacy_delivery_does_not_modify_existing_snapshots(tmp_path):
+    from unittest.mock import Mock
+    from hermes_wisdom.agent_led.notify import DeliveryError
     from hermes_wisdom.agent_led.schemas import CandidateRecommendation
 
     rec = CandidateRecommendation.model_validate(_rec("s", "abcdef1234"))
     event = share_candidate_event(rec, organization_id="org-1", recipient_id="u1", at=NOW)
     ledger = DeliveryLedger(tmp_path / "ledger.json")
 
-    def broken(_evt):
-        raise RuntimeError("down")
-
-    result = deliver(event, sender=broken, ledger=ledger, retries=1, sleep=lambda _s: None, now=NOW)
-    assert result["delivered"] is False and result["attempts"] == 2
-    assert not ledger.delivered(event.dedup_key)
+    ledger.record(event, state="delivered")
+    before = ledger.path.read_bytes()
+    sender = Mock()
+    with pytest.raises(DeliveryError):
+        deliver(event, sender=sender, ledger=ledger, now=NOW)
+    sender.assert_not_called()
+    assert ledger.path.read_bytes() == before
 
 
 def test_stale_and_duplicate_actions(tmp_path):
@@ -467,7 +463,7 @@ def test_stale_and_duplicate_actions(tmp_path):
     rec = CandidateRecommendation.model_validate(_rec("s", "abcdef1234"))
     event = share_candidate_event(rec, organization_id="org-1", recipient_id="u1", at=NOW, ttl_hours=1)
     ledger = DeliveryLedger(tmp_path / "ledger.json")
-    deliver(event, sender=lambda _e: None, ledger=ledger, now=NOW)
+    ledger.record(event, state="delivered")
     share_target = next(a.target for a in event.allowed_actions if a.id == "share")
     resolved = ledger.resolve_action(share_target, at=NOW)
     assert resolved["ok"] and resolved["action"] == "share"
@@ -475,7 +471,7 @@ def test_stale_and_duplicate_actions(tmp_path):
     assert ledger.mark_acted(event.dedup_key, "share") is False  # no duplicate action
     assert ledger.resolve_action(share_target, at=NOW)["message"] == STALE_ACTION_MESSAGE
     fresh = share_candidate_event(rec, organization_id="org-2", recipient_id="u1", at=NOW, ttl_hours=1)
-    deliver(fresh, sender=lambda _e: None, ledger=ledger, now=NOW)
+    ledger.record(fresh, state="delivered")
     expired = ledger.resolve_action(fresh.allowed_actions[0].target, at=NOW + timedelta(hours=2))
     assert expired["stale"] and expired["message"] == STALE_ACTION_MESSAGE
     assert ledger.resolve_action("garbage", at=NOW)["stale"]

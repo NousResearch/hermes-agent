@@ -42,8 +42,16 @@ passively; opening them does not run another assessment.
   requires an interactive confirmation before applying.
 - A conversational "yes" asks Hermes to present the control; it does not
   apply the operation.
-- **Not Now** defers only the current surface. It does not reject the skill
-  for your profile or organization.
+- **Not Now** suppresses further recommendations for this unchanged skill
+  across your clients in the organization. It does not delete the skill or
+  prevent you from reviewing it manually. Offline changes remain pending until
+  they sync to the Gateway.
+
+Older recommendation buttons open current review or notification settings.
+They cannot start packaging, install a skill, or change preferences themselves.
+Review and confirm with the new controls; a prior button does not carry consent
+forward. The `hermes wisdom act` compatibility command likewise returns current
+navigation without applying an operation.
 
 Changed packages, local edits, additional requirements, and expired consent
 require fresh review. Existing opted-in automatic updates continue unchanged.
@@ -62,5 +70,8 @@ is reconciled against its exact operation journal; ambiguous results remain
 visible for review rather than being applied again. Use the ordinary Wisdom
 setup/recovery and review commands for operations that still need attention.
 
-This mode does not coordinate between separate devices. It does not create a
-general-purpose mailbox or run a periodic skill qualification scan.
+Assessment ownership remains local to the profile. Delivery reservations and
+notification preferences are coordinated through the Gateway, without syncing
+private candidate names, usage, or advice. This is not a general-purpose mailbox.
+The opt-in weekly review uses existing real skill usage; it does not change the
+deterministic qualification thresholds.

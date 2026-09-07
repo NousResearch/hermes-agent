@@ -137,6 +137,67 @@ def test_new_review_after_expiry_gets_new_id_old_button_stays_expired(consent):
     instance.service.install_apply.assert_not_called()
 
 
+def test_replacement_legacy_review_uses_native_actor_bound_controls(
+    consent, monkeypatch
+):
+    from gateway.wisdom_command import WisdomCommandContext
+    from hermes_wisdom.agent_led.actions import current_action_view
+    from hermes_wisdom.mediation_view import resolve_surface_action
+
+    monkeypatch.setattr("hermes_wisdom.mediation.delivery_mode", lambda: "agent")
+    instance, actor, identity, _ = consent
+    with instance.service.store.transaction() as db:
+        db.execute(
+            "UPDATE wisdom_assessment SET advice_json=? WHERE id=?",
+            (
+                json.dumps({
+                    "title": "Useful",
+                    "explanation": "Fits this setup",
+                    "relevance": "recommend",
+                }),
+                identity,
+            ),
+        )
+    shown = instance.present("org", identity, actor)
+    context = WisdomCommandContext(
+        user_id=actor.actor_id,
+        chat_id=actor.chat_id,
+        profile="demo",
+        organization_id="org",
+        is_group=False,
+    )
+    view = current_action_view("wa:install:untrusted-old-id", instance.service, context)
+    controls = [action for item in view.items for action in item.actions]
+    assert [action.callback_data for action in controls] == [
+        f"wi:agent:defer:{shown['id']}",
+        f"wi:agent:inspect:{shown['id']}",
+        f"wi:agent:confirm:{shown['id']}",
+    ]
+    instance.service.install_apply.assert_not_called()
+    confirm = controls[-1].callback_data
+    with pytest.raises(WisdomNotFound):
+        resolve_surface_action(
+            instance.service,
+            confirm,
+            platform="telegram",
+            actor_id="other",
+            chat_id=actor.chat_id,
+            thread_id=actor.thread_id,
+        )
+    instance.service.install_apply.assert_not_called()
+    # Use the fixture clock for the execution tests; the actual callback has
+    # already demonstrated that it cannot trust the old payload's identity.
+    instance.resolve("org", shown["id"], actor, "inspect")
+    instance.service.install_apply.assert_not_called()
+    assert (
+        instance.resolve("org", shown["id"], actor, "confirm")["state"] == "completed"
+    )
+    assert (
+        instance.resolve("org", shown["id"], actor, "confirm")["state"] == "completed"
+    )
+    instance.service.install_apply.assert_called_once()
+
+
 def test_mediation_web_input_cannot_supply_receipts_or_override_actor():
     from pydantic import ValidationError
     from hermes_cli.web_models import WisdomConsentRequest

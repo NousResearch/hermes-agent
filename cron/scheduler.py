@@ -1858,6 +1858,8 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     # Raise so the except handler below builds the proper failure tuple. (issue #17855)
     turn_exit_reason = str(result.get("turn_exit_reason") or "")
     final_response_text = (result.get("final_response") or "").strip()
+    if turn_exit_reason == "guardrail_halt":
+        raise RuntimeError(final_response_text or "agent stopped at a tool-call guardrail")
     max_iteration_summary = (
         result.get("failed") is not True
         and result.get("completed") is False

@@ -151,3 +151,14 @@ def test_classification_probe_failure_keeps_historical_reason(monkeypatch, tmp_p
 
     reasons = [reason for _sid, reason in instances[0].ended]
     assert reasons == ["cron_complete"]
+
+
+@pytest.mark.parametrize("reason,failed", [("guardrail_halt", True), ("text_response", False)])
+def test_guardrail_halt_is_not_a_successful_briefing(reason, failed):
+    result = {"turn_exit_reason": reason, "completed": True, "failed": False,
+              "final_response": "Stopped web_search after repeated failures" if failed else "A real briefing"}
+    if failed:
+        with pytest.raises(RuntimeError, match="Stopped web_search"):
+            cron_scheduler._final_response_from_result(result, "briefing", "Briefing", _FakeCronAgent)
+    else:
+        assert cron_scheduler._final_response_from_result(result, "briefing", "Briefing", _FakeCronAgent) == "A real briefing"

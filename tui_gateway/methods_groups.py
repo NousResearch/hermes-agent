@@ -381,7 +381,8 @@ def _(rid, params: dict, service) -> dict:
     """Register and probe one scoped target route on the room home."""
     from gateway.hosted_room_peer import (
         GatewayRoomCatalog, PROTOCOL_VERSION as ROOM_LINK_PROTOCOL_VERSION, validate_room_link_url)
-    from gateway.hosted_rooms import local_authority_gateway_id, room_state
+    from gateway.hosted_rooms import room_state
+    from gateway.hosted_room_authority_history import origin_gateway_id
     from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
     from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
     target_url, transport_security = validate_room_link_url(params.get("target_url"))
@@ -405,8 +406,8 @@ def _(rid, params: dict, service) -> dict:
         raise ValueError("target capability catalog changed during setup")
     room_id = str(params.get("room_id") or "")
     member_id = str(params.get("member_id") or "")
-    home_install_id = local_authority_gateway_id()
     home_room = room_state(service.db_path, room_id=room_id)
+    home_install_id = origin_gateway_id(home_room)
     expected_scope = {
         "room_id": room_id, "home_install_id": home_install_id,
         "authority_gateway_id": home_room.get("authority_gateway_id"),

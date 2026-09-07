@@ -121,14 +121,16 @@ def test_observer_adopts_only_same_scope_and_preserves_exact_cleanup(renewal, mo
             r.peer.revoke_grant_exact(grant=stored.grant)
             hosted_room_link_records.complete_room_link_retirement(r.service.db_path, **scope)
             hosted_room_link_records.delete_room_link_records(r.service.db_path, room_id=key[0])
+    elif change == "epoch":
+        hosted_rooms.claim_authority(r.service.db_path, room_id=key[0],
+            expected_gateway_id=binding.gateway_id, expected_epoch=binding.authority_epoch,
+            new_gateway_id=binding.gateway_id, event_id="new-authority-term")
     elif change != "same_scope":
         with sqlite3.connect(r.service.db_path) as conn:
             if change == "membership":
                 members = r.service._room(key[0])["members"]
                 members[1]["target"]["profile"] = "other"
                 conn.execute("UPDATE hosted_rooms SET members_json=? WHERE room_id=?", (json.dumps(members), key[0]))
-            elif change == "epoch":
-                conn.execute("UPDATE hosted_rooms SET authority_epoch=2 WHERE room_id=?", (key[0],))
             else:
                 conn.execute("UPDATE hosted_rooms SET authority_gateway_id='another-home' WHERE room_id=?", (key[0],))
     if retiring and change not in {"retired", "removed"}:

@@ -64,6 +64,13 @@ def at_sequence(history: tuple[AuthoritySpan, ...], seq: int) -> AuthoritySpan:
     raise AuthorityHistoryError("event precedes the known authority history")
 
 
+def origin_gateway_id(room: dict[str, Any]) -> str:
+    """Keep the group/session namespace stable when its coordinator changes."""
+    history = validate_history(room.get("authority_history"), gateway_id=room["authority_gateway_id"],
+                               epoch=room["authority_epoch"])
+    return history[0].gateway_id
+
+
 def read_history_locked(conn, room_id: str, *, gateway_id: str, epoch: int) -> list[dict[str, Any]] | None:
     """Read committed claims within the caller's room-state transaction.
 

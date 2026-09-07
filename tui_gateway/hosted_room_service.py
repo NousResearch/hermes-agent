@@ -20,6 +20,7 @@ from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from gateway import hosted_room_links, hosted_room_link_records
 from gateway import hosted_rooms
+from gateway.hosted_room_authority_history import origin_gateway_id
 from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint, PolicySnapshot
 from gateway.hosted_room_peer import (
     GatewayRoomCatalog, PROTOCOL_VERSION, room_grant_needs_dispatch_refresh)
@@ -125,8 +126,13 @@ class HostedRoomService:
             if PROTOCOL_VERSION not in catalog.protocol_versions:
                 errors.append(f"{stored.room_id}:{stored.member_id}:protocol-upgrade-required")
                 continue
+            try:
+                home_install_id = self._link_home_install_id(stored.room_id)
+            except hosted_rooms.HostedRoomError:
+                errors.append(f"{stored.room_id}:{stored.member_id}:room-state-unavailable")
+                continue
             self.peer_routes[key] = PeerMemberRoute(
-                home_install_id=hosted_rooms.local_authority_gateway_id(),
+                home_install_id=home_install_id,
                 member_id=stored.member_id, target_install_id=catalog.installation_id,
                 target_profile=stored.target_profile, capability_digest=catalog.catalog_digest,
                 execution_policy_digest=catalog.execution_policy.policy_digest,
@@ -148,6 +154,36 @@ class HostedRoomService:
         if profiles_dir.is_dir():
             profiles.update(path.name for path in profiles_dir.iterdir() if path.is_dir())
         return tuple(sorted(profiles))
+
+    def _discussion_profiles(self, room: Mapping[str, Any]) -> tuple[str, ...]:
+        """Validate the original roster without treating remote profiles as runnable locally."""
+        history = room.get("authority_history")
+        if not history or history[0]["gateway_id"] == hosted_rooms.local_authority_gateway_id():
+            return self.local_profiles()
+        return tuple(str(member.get("profile") or "") for member in room.get("members") or [])
+
+    def _recovered_member_target(self, room_id: str, member_id: str) -> tuple[str, str, str] | None:
+        try:
+            room = self._room(room_id)
+        except hosted_rooms.RoomNotFoundError:
+            return None  # Route setup may precede initial room creation.
+        if not room.get("authority_history"):
+            return None
+        checked = discussion.validate_room(room, local_profiles=self._discussion_profiles(room))
+        home = checked.authority_history[0].gateway_id
+        member = next((item for item in checked.members if item.member_id == member_id), None)
+        if member is None:
+            raise RuntimeError("Group Chat Bot is not in the recorded membership")
+        target = member.target or {}
+        installation = str(target["installation_id"]) if target.get("kind") == "peer" else home
+        return home, installation, member.profile
+
+    def _link_home_install_id(self, room_id: str) -> str:
+        try:
+            room = self._room(room_id)
+        except hosted_rooms.RoomNotFoundError:
+            return hosted_rooms.local_authority_gateway_id()
+        return origin_gateway_id(room)
 
     def bindings(self) -> tuple[HostedRoomBinding, ...]:
         local_gateway_id = hosted_rooms.local_authority_gateway_id()
@@ -207,6 +243,11 @@ class HostedRoomService:
         """Persist and publish one verified route with its scoped grant."""
         if target_url is None or catalog is None:
             raise ValueError("peer route persistence identity is required")
+        recovered_target = self._recovered_member_target(room_id, member_id)
+        if recovered_target is not None and (
+            route.home_install_id, route.target_install_id, route.target_profile
+        ) != recovered_target:
+            raise ValueError("Group Chat route does not match the Bot's original host")
         bind_store = getattr(client, "bind_receipt_store", None)
         if callable(bind_store):
             bind_store(self.db_path)
@@ -371,12 +412,24 @@ class HostedRoomService:
         )
         key = (binding.room_id, member_id)
         route = self.peer_routes.get(key)
-        if route is None and not self._member_is_peer(binding.room_id, member_id):
+        recovered_target = self._recovered_member_target(binding.room_id, member_id)
+        if recovered_target is not None:
+            home, installation, profile = recovered_target
+            if payload.get("target_profile") != profile:
+                raise RuntimeError("Group Chat task does not match its recorded Bot profile")
+            local = (installation == home == hosted_rooms.local_authority_gateway_id())
+        else:
+            local = not self._member_is_peer(binding.room_id, member_id)
+        if route is None and local:
             return self.rpc
         hydrated = self._hydrate_persisted_peer_route(binding.room_id, member_id)
         route = hydrated[0] if hydrated is not None else self.peer_routes.get(key)
         if route is None:
             raise RuntimeError("peer room route is unavailable")
+        if recovered_target is not None and (
+            route.home_install_id, route.target_install_id, route.target_profile
+        ) != recovered_target:
+            raise RuntimeError("Group Chat route does not match the Bot's original host")
         client = hydrated[1] if hydrated is not None else self.peer_clients.get(key)
         if client is None:
             raise RuntimeError("peer room client is unavailable")
@@ -569,7 +622,7 @@ class HostedRoomService:
             room_id=str(room["room_id"]), latest_seq=int(room["latest_seq"]))
 
     def _publish_terminal_tasks(self, room: Mapping[str, Any]) -> bool:
-        changed, room_id, local_profiles = False, str(room["room_id"]), self.local_profiles()
+        changed, room_id, local_profiles = False, str(room["room_id"]), self._discussion_profiles(room)
         for task in self._list_tasks(room_id, _TERMINAL_STATUSES):
             status, execution_generation = task["status"], int(task["execution_generation"])
             if self.policy_checkpoint.publication_exists(
@@ -619,7 +672,7 @@ class HostedRoomService:
             if next(iter(self._list_tasks(binding.room_id, _LIVE_STATUSES)), None) is not None:
                 return
             decision = discussion.plan_next_task(
-                room, list(snapshot.events), local_profiles=self.local_profiles(),
+                room, list(snapshot.events), local_profiles=self._discussion_profiles(room),
                 initial_watermarks=snapshot.watermarks)
             if decision.status == "task" and decision.task is not None:
                 driver.admit_task(
@@ -859,9 +912,11 @@ class HostedRoomService:
                 )
             if PROTOCOL_VERSION not in stored.catalog.protocol_versions:
                 raise RuntimeError("persisted peer room route needs a protocol update")
+            home_install_id = self._link_home_install_id(room_id)
             if (
                 route is not None
                 and isinstance(client, PeerRunsHTTPClient)
+                and route.home_install_id == home_install_id
                 and route.grant == stored.grant
                 and route.target_install_id == stored.catalog.installation_id
                 and route.target_profile == stored.target_profile
@@ -881,7 +936,7 @@ class HostedRoomService:
                 receipt_db_path=self.db_path,
             )
             route = PeerMemberRoute(
-                home_install_id=hosted_rooms.local_authority_gateway_id(),
+                home_install_id=home_install_id,
                 member_id=stored.member_id,
                 target_install_id=stored.catalog.installation_id,
                 target_profile=stored.target_profile,

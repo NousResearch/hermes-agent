@@ -153,17 +153,7 @@ export function resolveCssPx(container: HTMLElement, css: number | string, horiz
 export interface TrackContext {
   paneFor: (id: string) => Contribution | undefined
   paneGone: (id: string) => boolean
-  overrides: Record<
-    string,
-    {
-      widthOverride?: number
-      heightOverride?: number
-      lockWidth?: boolean
-      lockHeight?: boolean
-      lockedWidth?: number
-      lockedHeight?: number
-    }
-  >
+  overrides: Record<string, { heightLocked?: boolean; heightOverride?: number; widthLocked?: boolean; widthOverride?: number }>
 }
 
 /** A group's panes that are actually on screen (not hidden / narrow-collapsed
@@ -239,7 +229,13 @@ export function allFixedAbsorberIndex(
  * children own separate tracks, so a locked left pane must not constrain the
  * entire row's width (or a locked bottom pane the entire column's height).
  */
-function lockedSharedTrackSize(node: LayoutNode, axis: 'row' | 'column', ctx: TrackContext): string | null {
+interface LockedSharedTrackOwner {
+  size: number
+  zone: GroupNode
+}
+
+/** The largest locked descendant that owns a boundary shared ACROSS `axis`. */
+function lockedSharedTrackOwner(node: LayoutNode, axis: 'row' | 'column', ctx: TrackContext): LockedSharedTrackOwner | null {
   if (node.type === 'group') {
     if (node.minimized) {
       return null
@@ -252,19 +248,27 @@ function lockedSharedTrackSize(node: LayoutNode, axis: 'row' | 'column', ctx: Tr
       const state = ctx.overrides[id]
       const override = state?.[overrideKey]
 
-      return state?.[lockKey] && override !== undefined ? [`${override}px`] : []
+      return state?.[lockKey] && override !== undefined ? [override] : []
     })
 
-    return cssMax(sizes) ?? null
+    return sizes.length === 0 ? null : { size: Math.max(...sizes), zone: node }
   }
 
   if (node.orientation === axis) {
     return null
   }
 
-  return cssMax(
-    node.children.filter(child => !subtreeGone(child, ctx)).map(child => lockedSharedTrackSize(child, axis, ctx))
-  ) ?? null
+  return node.children
+    .filter(child => !subtreeGone(child, ctx))
+    .map(child => lockedSharedTrackOwner(child, axis, ctx))
+    .filter((owner): owner is LockedSharedTrackOwner => owner !== null)
+    .reduce<LockedSharedTrackOwner | null>((largest, owner) => (!largest || owner.size > largest.size ? owner : largest), null)
+}
+
+export function lockedSharedTrackSize(node: LayoutNode, axis: 'row' | 'column', ctx: TrackContext): string | null {
+  const owner = lockedSharedTrackOwner(node, axis, ctx)
+
+  return owner ? `${owner.size}px` : null
 }
 
 export function fixedTrackSize(node: LayoutNode, axis: 'row' | 'column', ctx: TrackContext): string | null {
@@ -277,35 +281,19 @@ export function fixedTrackSize(node: LayoutNode, axis: 'row' | 'column', ctx: Tr
     }
 
     const overrideKey = axis === 'row' ? 'widthOverride' : 'heightOverride'
-    const lockKey = axis === 'row' ? 'lockWidth' : 'lockHeight'
-    const lockedKey = axis === 'row' ? 'lockedWidth' : 'lockedHeight'
+    const lockKey = axis === 'row' ? 'widthLocked' : 'heightLocked'
 
     const declared = (id: string) => {
       const sizing = (ctx.paneFor(id)?.data ?? {}) as PaneSizing
       const css = (axis === 'row' ? sizing.width : sizing.height) ?? null
-      const override = ctx.overrides[id]?.[overrideKey]
-      const locked = ctx.overrides[id]?.[lockKey]
+      const state = ctx.overrides[id]
+      const override = state?.[overrideKey]
+      const locked = Boolean(state?.[lockKey])
 
-      // A locked pane uses its captured or override dimension as a fixed px
-      // basis, bypassing the declared CSS length. This makes the zone hold
-      // its size regardless of sash drags on neighbors.
-      if (locked) {
-        const lockedPx = ctx.overrides[id]?.[lockedKey]
-        const px = lockedPx ?? override
-
-        if (px !== undefined) {
-          return `${px}px`
-        }
-
-        // Locked but no captured px — fall through to declared CSS.
-      }
-
-      // An override only refines a pane that DECLARES a size along this axis
-      // (sash drags write overrides to fixed zones only). One without a
-      // declaration is stale data from another surface — honoring it would
-      // turn a flex-at-heart zone (main!) into a fixed track and hand the
-      // whole leftover to the run's absorber.
-      if (css !== null && override !== undefined) {
+      // A locked user size promotes even a flex-at-heart zone to a fixed track.
+      // An ordinary stale override still cannot do that: those are written only
+      // for declared fixed panes and must never pin the main workspace.
+      if (override !== undefined && (css !== null || locked)) {
         return `${override}px`
       }
 
@@ -415,6 +403,16 @@ export function edgeFixedZone(
 ): GroupNode | null {
   if (node.type === 'group') {
     return fixedTrackSize(node, axis, ctx) !== null ? node : null
+  }
+
+  // A cross-axis descendant lock owns the whole shared boundary. Resolve it
+  // before ordinary fixed/default panes so a sash cannot move the boundary by
+  // writing an unlocked sibling's override (for example Review above a locked
+  // Terminal in the Default right rail).
+  const lockedOwner = lockedSharedTrackOwner(node, axis, ctx)
+
+  if (lockedOwner) {
+    return lockedOwner.zone
   }
 
   const visible = node.children.filter(child => !subtreeGone(child, ctx))

@@ -9,7 +9,7 @@ import { $layoutEditMode } from '../../edit-mode'
 import { group, split } from '../model'
 import { $hiddenTreePanes, $layoutTree } from '../store'
 
-import { fixedTrackSize } from './track-model'
+import { edgeFixedZone, fixedTrackSize } from './track-model'
 import { TreeGroup } from './tree-group'
 
 const disposers: (() => void)[] = []
@@ -127,6 +127,28 @@ describe('zone size locks', () => {
         paneGone: () => false
       })
     ).toBe('420px')
+  })
+
+  it('uses the largest cross-axis lock as the shared sash owner', () => {
+    const sharedColumn = split(
+      'column',
+      [group(['terminal'], { id: 'terminal-zone' }), group(['logs'], { id: 'logs-zone' })],
+      [1, 1],
+      'right-column'
+    )
+
+    const ctx = {
+      overrides: {
+        logs: { widthLocked: true, widthOverride: 480 },
+        terminal: { widthLocked: true, widthOverride: 420 }
+      },
+      paneFor: (id: string) => ({ data: {}, id }) as never,
+      paneGone: () => false
+    }
+
+    expect(fixedTrackSize(sharedColumn, 'row', ctx)).toBe('480px')
+    expect(edgeFixedZone(sharedColumn, 'start', 'row', ctx)?.id).toBe('logs-zone')
+    expect(edgeFixedZone(sharedColumn, 'end', 'row', ctx)?.id).toBe('logs-zone')
   })
 
   it('keeps a shared row within the height locked by one child', () => {

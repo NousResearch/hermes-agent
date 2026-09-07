@@ -37,6 +37,7 @@ import {
   cssMax,
   edgeFixedZone,
   fixedTrackSize,
+  lockedSharedTrackSize,
   MIN_PANE_PX,
   MINIMIZED_TRACK,
   paneChrome,
@@ -48,21 +49,6 @@ import {
   type TrackContext
 } from './track-model'
 import { TreeNode } from './tree-node'
-
-/** True when any group descendant of `node` contains a pane locked along
- *  `lockKey`.  Used by the sash drag to skip subtrees that hold a locked
- *  pane — the sash neither donates nor receives from a locked subtree. */
-function subtreeHasLockedPane(
-  node: LayoutNode,
-  lockKey: 'lockHeight' | 'lockWidth',
-  overrides: TrackContext['overrides']
-): boolean {
-  if (node.type === 'group') {
-    return node.panes.some(id => overrides[id]?.[lockKey])
-  }
-
-  return node.children.some(child => subtreeHasLockedPane(child, lockKey, overrides))
-}
 
 /** The single group id a subtree resolves to, or null when it holds several
  *  zones — the sash can only collapse a boundary that IS exactly one zone. */
@@ -90,11 +76,10 @@ function useSubtreeOverrides(paneIds: readonly string[]): TrackContext['override
     const all = $paneStates.get()
 
     const sig = paneIds
-      .map(id => {
-        const s = all[id]
-
-        return `${id}:${s?.widthOverride ?? ''}:${s?.heightOverride ?? ''}:${s?.lockWidth ? 1 : 0}:${s?.lockHeight ? 1 : 0}:${s?.lockedWidth ?? ''}:${s?.lockedHeight ?? ''}`
-      })
+      .map(
+        id =>
+          `${id}:${all[id]?.widthOverride ?? ''}:${all[id]?.widthLocked ? 'locked' : ''}:${all[id]?.heightOverride ?? ''}:${all[id]?.heightLocked ? 'locked' : ''}`
+      )
       .join('|')
 
     if (cache.current.sig !== sig) {
@@ -108,15 +93,18 @@ function useSubtreeOverrides(paneIds: readonly string[]): TrackContext['override
   return useSyncExternalStore(cb => $paneStates.listen(cb), snapshot, snapshot)
 }
 
+export interface LockedBoundaryAxes {
+  column?: boolean
+  row?: boolean
+}
+
 export function TreeSplit({
-  lockAxisColumn,
-  lockAxisRow,
+  lockedBoundaries,
   node,
   root,
   rootRow
 }: {
-  lockAxisColumn?: boolean
-  lockAxisRow?: boolean
+  lockedBoundaries?: LockedBoundaryAxes
   node: SplitNode
   root?: boolean
   rootRow?: boolean
@@ -162,6 +150,11 @@ export function TreeSplit({
     !paneFor(id) || (!editMode && hiddenPanes.has(id)) || (narrow && Boolean(paneChrome(paneFor(id)).collapsible))
 
   const trackCtx: TrackContext = { paneFor, paneGone, overrides }
+
+  const sharedLockedBoundaries: LockedBoundaryAxes = {
+    column: Boolean(lockedBoundaries?.column) || lockedSharedTrackSize(node, 'column', trackCtx) !== null,
+    row: Boolean(lockedBoundaries?.row) || lockedSharedTrackSize(node, 'row', trackCtx) !== null
+  }
 
   // Chrome-toggle collapse: a subtree whose every pane is gone renders
   // display:none (content stays MOUNTED — toggling back is instant), and its
@@ -256,14 +249,17 @@ export function TreeSplit({
         // release minimizes the zone instead of leaving a useless sliver.
         const toolZone = allPaneIds(child).length > 0 && allPaneIds(child).every(isCollapsePane)
         const floor = toolZone ? COLLAPSED_ZONE_PX : MIN_PANE_PX
+        const paneIds = zone ? shownPaneIds(zone, trackCtx) : allPaneIds(child).filter(id => !paneGone(id))
+        const lockKey = horizontal ? 'widthLocked' : 'heightLocked'
 
         return {
           // EVERY shown pane of the zone: the zone's track is the max() of its
           // panes' sizes, so the sash writes the same px to all of them —
           // writing only the active pane would leave the zone pinned at a
           // larger sibling's width.
-          paneIds: zone ? shownPaneIds(zone, trackCtx) : [],
+          paneIds,
           fixed: Boolean(zone),
+          locked: paneIds.some(id => Boolean(overrides[id]?.[lockKey])),
           size: sizeOf(zoneEl ?? wrapper),
           min: toolZone ? floor : Math.max(floor, computedPx(horizontal ? cs.minWidth : cs.minHeight, 0)),
           max: computedPx(horizontal ? cs.maxWidth : cs.maxHeight, Number.POSITIVE_INFINITY),
@@ -288,13 +284,6 @@ export function TreeSplit({
 
         const side = sideFor(child, element, index <= aIndex ? 'end' : 'start')
 
-        // A locked pane (axis lock from the zone menu) neither donates nor
-        // receives during a sash drag — it holds its captured size.
-        // Check recursively: a split child may contain a locked group in its
-        // subtree (e.g. a column-split holding a locked pane inside a row).
-        const lockKey = horizontal ? 'lockWidth' : 'lockHeight'
-        const locked = subtreeHasLockedPane(child, lockKey, overrides)
-
         return {
           ...side,
           element,
@@ -304,7 +293,6 @@ export function TreeSplit({
           // and its remembered weight must survive the gesture so restoring
           // it brings back the size it had before it was folded.
           minimized: child.type === 'group' && Boolean(child.minimized),
-          locked,
           visible: !isCollapsed(child)
         }
       })
@@ -391,7 +379,7 @@ export function TreeSplit({
           const px = Math.round(plan.sizes[index])
 
           if (track.fixed) {
-            if (px !== Math.round(track.initial)) {
+            if (!track.locked && px !== Math.round(track.initial)) {
               track.paneIds.forEach(id => setOverride(id, px))
             }
           } else {
@@ -577,14 +565,27 @@ export function TreeSplit({
       }
 
       const setOverride = horizontal ? setPaneWidthOverride : setPaneHeightOverride
-
-      for (const [child, edge] of [
-        [node.children[aIndex], 'end'],
-        [node.children[bIndex], 'start']
-      ] as const) {
+      const lockKey = horizontal ? 'widthLocked' : 'heightLocked'
+      const boundarySides = (
+        [
+          [node.children[aIndex], 'end'],
+          [node.children[bIndex], 'start']
+        ] as const
+      ).map(([child, edge]) => {
         const zone = edgeFixedZone(child, edge, axis, trackCtx)
 
-        for (const paneId of zone ? shownPaneIds(zone, trackCtx) : []) {
+        return { paneIds: zone ? shownPaneIds(zone, trackCtx) : [], zone }
+      })
+
+      // Resetting either side would move this seam. A locked owner makes the
+      // whole boundary immutable, so preserve its captured override and leave
+      // the unlocked neighbor alone as well.
+      if (boundarySides.some(side => side.paneIds.some(id => Boolean(overrides[id]?.[lockKey])))) {
+        return
+      }
+
+      for (const { paneIds } of boundarySides) {
+        for (const paneId of paneIds) {
           setOverride(paneId, undefined)
         }
       }
@@ -668,24 +669,48 @@ export function TreeSplit({
   const tracks = node.children.map((child, i) => {
     const minimized = isMinimized(child)
     const collapsed = isCollapsed(child) || sideGone(i)
+    const toolZone = allPaneIds(child).length > 0 && allPaneIds(child).every(isCollapsePane)
     const track = minimized || collapsed ? null : fixedTrackSize(child, axis, trackCtx)
     const sizing = minimized || collapsed ? null : sizingFor(child, track)
+
+    // A locked boundary is consumed when a split runs ALONG that axis. Until
+    // then it propagates through cross-axis descendants, so the inner row above
+    // a width-locked Terminal knows it must fill the same hard rail width.
+    const childLockedBoundaries: LockedBoundaryAxes | undefined =
+      child.type === 'split'
+        ? {
+            column:
+              (axis !== 'column' && Boolean(sharedLockedBoundaries.column)) ||
+              lockedSharedTrackSize(child, 'column', trackCtx) !== null,
+            row:
+              (axis !== 'row' && Boolean(sharedLockedBoundaries.row)) || lockedSharedTrackSize(child, 'row', trackCtx) !== null
+          }
+        : undefined
+
     // Narrow-collapse UNMOUNTS (the edge overlay owns the live instance) — but
     // only for panes the breakpoint collapsed, not ones a chrome toggle hid.
     const narrowCollapsed = narrow && collapsed && allPaneIds(child).some(id => !hiddenPanes.has(id))
 
-    return { child, collapsed, minimized, narrowCollapsed, sizing, track }
+    return { child, childLockedBoundaries, collapsed, minimized, narrowCollapsed, sizing, toolZone, track }
   })
 
   const growable = tracks.map((_, i) => i).filter(i => !tracks[i].collapsed && !tracks[i].minimized)
   const allFixed = growable.length > 0 && growable.every(i => tracks[i].track !== null)
 
-  // Only an uncapped fixed track may absorb leftover. A maxWidth/maxHeight
-  // sidebar (review, files, sessions) must keep that clamp — otherwise ⌘G
-  // balloons the rail and sash-remembered sizes become a flex-basis that
-  // grow still expands past.
+  // Ordinary all-fixed runs preserve capped sidebar sizes. Inside a hard
+  // boundary inherited from a lock, however, leaving every capped track at
+  // grow-0 creates a visible dead strip. Let the last unlocked track absorb
+  // that bounded slack; never stretch an explicitly locked track to do it.
+  const fillsLockedBoundary = Boolean(lockedBoundaries?.[axis])
+
+  const boundedAbsorberIndex = fillsLockedBoundary
+    ? [...growable].reverse().find(i => lockedSharedTrackSize(tracks[i].child, axis, trackCtx) === null) ?? -1
+    : -1
+
   const absorberIndex = allFixed
-    ? allFixedAbsorberIndex(growable, i => (horizontal ? tracks[i].sizing?.maxWidth : tracks[i].sizing?.maxHeight))
+    ? fillsLockedBoundary
+      ? boundedAbsorberIndex
+      : allFixedAbsorberIndex(growable, i => (horizontal ? tracks[i].sizing?.maxWidth : tracks[i].sizing?.maxHeight))
     : -1
 
   // Weights are RATIOS, but CSS flex-grow is absolute: a run whose grows sum
@@ -726,7 +751,7 @@ export function TreeSplit({
       data-tree-split={node.id}
       ref={containerRef}
     >
-      {tracks.map(({ child, collapsed, minimized, narrowCollapsed, sizing, track }, i) => {
+      {tracks.map(({ child, childLockedBoundaries, collapsed, minimized, narrowCollapsed, sizing, toolZone, track }, i) => {
         const partner = collapsed ? -1 : seamPartner(i)
         const absorbs = i === absorberIndex
 
@@ -751,9 +776,13 @@ export function TreeSplit({
                       // (a rail's width clamp shouldn't constrain its height).
                       // The absorber is uncapped by selection, so dropping its
                       // max is a no-op; capped tracks always keep theirs.
-                      minWidth: (horizontal && sizing?.minWidth) || 0,
+                      // A restored tool can remain a flex track, so its CSS
+                      // floor must match the 80px floor used by the sash.
+                      // Otherwise a tiny remembered weight redraws Terminal as
+                      // a 0px edge sliver before the user can grab its divider.
+                      minWidth: horizontal ? (sizing?.minWidth ?? (toolZone ? `${MIN_PANE_PX}px` : 0)) : 0,
                       maxWidth: horizontal && !absorbs ? sizing?.maxWidth : undefined,
-                      minHeight: (!horizontal && sizing?.minHeight) || 0,
+                      minHeight: !horizontal ? (sizing?.minHeight ?? (toolZone ? `${MIN_PANE_PX}px` : 0)) : 0,
                       maxHeight: horizontal || absorbs ? undefined : sizing?.maxHeight
                     }
             }
@@ -769,8 +798,7 @@ export function TreeSplit({
             )}
             {!narrowCollapsed && (
               <TreeNode
-                lockAxisColumn={lockAxisColumn}
-                lockAxisRow={lockAxisRow}
+                lockedBoundaries={childLockedBoundaries}
                 node={child}
                 parentAxis={axis}
                 railSide={horizontal ? railSideFor(i) : undefined}

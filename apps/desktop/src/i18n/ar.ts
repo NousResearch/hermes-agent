@@ -2583,14 +2583,7 @@ export const ar = defineLocale({
     toggleStripTab: title => `تبديل تبويب ${title}`,
     minimize: 'تصغير',
     restore: 'استعادة',
-    lockWidth: 'Lock width',
-    unlockWidth: 'Unlock width',
-    lockHeight: 'Lock height',
-    unlockHeight: 'Unlock height',
-    lockColumnWidth: 'Lock column width',
-    unlockColumnWidth: 'Unlock column width',
-    lockPane: 'Lock pane',
-    unlockPane: 'Unlock pane',
+
     closeRunningTitle: 'إغلاق تبويب يعمل؟',
     closeRunningBody:
       'هذه المحادثة ما زالت تعمل (أو تنتظر إدخالك). إغلاق التبويب يخفيها فقط — ستحتفظ الجلسة بتقدمها ويمكن إعادة فتحها من الشريط الجانبي.',

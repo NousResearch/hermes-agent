@@ -403,7 +403,17 @@ _SPECS = [
          help="Flesh out a triage-column task into a concrete spec (title + "
               "body) and promote it to todo. Uses the auxiliary LLM "
               "configured under auxiliary.triage_specifier."),
-    _cmd("decompose", _triage_sweep_args("decompose", "Decompose", "decomposer"),
+    _cmd("decompose", _triage_sweep_args("decompose", "Decompose", "decomposer") + (
+        # dest != the global --board (kanban_parser.add_argument above): a
+        # subparser default would otherwise clobber the parent's parsed value
+        # in the shared namespace and silently drop a global `--board <slug>`
+        # root-board override on every decompose call.
+        _arg("--board", dest="target_board", metavar="<slug>",
+             help="Create the decomposed children on this board instead of the task's "
+                  "own (e.g. target a watched board so cover children are visible). "
+                  "The task itself stays on its current board. Use `hermes kanban "
+                  "boards list` to see slugs."),
+    ),
          help="Decompose a triage-column task into a graph of child tasks "
               "routed to specialist profiles by description. Falls back "
               "to specify-style single-task promotion when the task "

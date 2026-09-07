@@ -1176,10 +1176,24 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
     if len(argv) != 3 or argv[0] != "rm" or argv[1] != "-f":
         return False
     operand = argv[2]
-    temp_dir = os.path.realpath(tempfile.gettempdir())
+    if not os.path.isabs(operand):
+        # tempfile.gettempdir() degrades to os.curdir when no candidate temp
+        # dir is writable; a relative operand resolves against the terminal's
+        # cwd, not ours, so it can never be the artifact this exemption covers.
+        return False
+    raw_temp_dir = tempfile.gettempdir()
+    temp_dir = os.path.realpath(raw_temp_dir)
     basename = os.path.basename(operand)
+    # Accept exactly two spellings of the artifact's directory: the one
+    # tempfile hands out and its canonical form. On macOS gettempdir() is
+    # /var/folders/.../T and /tmp is a symlink as well, both resolving under
+    # /private, so a cleanup written with a `tempfile` path never equalled the
+    # realpath spelling the verify nudge prints and was gated on macOS while
+    # the same file spelled canonically was not. Both spellings name the same
+    # directory; literal equality (no ".", "..", "//", globs) and the realpath
+    # check on the target below still hold.
     return (
-        operand == os.path.join(temp_dir, basename)
+        operand in (os.path.join(raw_temp_dir, basename), os.path.join(temp_dir, basename))
         and os.path.dirname(os.path.realpath(operand)) == temp_dir
         and re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
     )

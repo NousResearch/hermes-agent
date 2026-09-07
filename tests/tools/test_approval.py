@@ -16,6 +16,7 @@ from hermes_constants import get_hermes_home
 from tools.approval import approve_session, detect_dangerous_command, detect_hardline_command, is_approved, load_permanent, prompt_dangerous_approval
 from tools.approval_context import _get_approval_mode
 from tools.approval_context import _normalize_approval_mode
+from tools.approval_detection import _is_verification_artifact_cleanup
 from tools.approval_smart import _smart_approve
 
 
@@ -102,20 +103,92 @@ class TestDetectDangerousRm:
                     None,
                 )
 
-    def test_symlinked_temp_dir_only_exempts_canonical_target(self, tmp_path):
-        real_temp = tmp_path / "real-temp"
+    @staticmethod
+    def _symlinked_temp_root(tmp_path):
+        # The temp directory is data here, not the host: on macOS
+        # tempfile.gettempdir() returns /var/folders/.../T (and /tmp is a
+        # common hand-written choice) while realpath() gives the /private/...
+        # spelling. tmp_path/"link" -> tmp_path/"real" reproduces that on any
+        # host without faking sys.platform.
+        real_temp = tmp_path / "real"
         real_temp.mkdir()
-        linked_temp = tmp_path / "linked-temp"
+        linked_temp = tmp_path / "link"
         linked_temp.symlink_to(real_temp, target_is_directory=True)
+        return real_temp, linked_temp
+
+    def test_symlinked_temp_dir_exempts_both_trusted_spellings(self, tmp_path):
+        real_temp, linked_temp = self._symlinked_temp_root(tmp_path)
         basename = "hermes-verify-example.py"
 
+        # gettempdir() is the link (macOS): the `tempfile`-derived spelling
+        # and the realpath spelling the verify nudge prints name the same
+        # directory, so the single-file cleanup is exempt either way.
         with mock_patch("tempfile.gettempdir", return_value=str(linked_temp)):
-            assert detect_dangerous_command(f"rm -f {linked_temp / basename}")[0] is True
+            assert detect_dangerous_command(f"rm -f {linked_temp / basename}") == (
+                False,
+                None,
+                None,
+            )
             assert detect_dangerous_command(f"rm -f {real_temp / basename}") == (
                 False,
                 None,
                 None,
             )
+
+        # gettempdir() already canonical (Linux): unchanged behaviour.
+        with mock_patch("tempfile.gettempdir", return_value=str(real_temp)):
+            assert detect_dangerous_command(f"rm -f {real_temp / basename}") == (
+                False,
+                None,
+                None,
+            )
+
+    def test_symlinked_temp_dir_rejects_foreign_symlink_spelling(self, tmp_path):
+        # Only the two spellings the process itself trusts are exempt:
+        # tempfile.gettempdir() as returned and its realpath. Any other
+        # symlink that happens to resolve into the temp dir stays gated.
+        real_temp, linked_temp = self._symlinked_temp_root(tmp_path)
+        other_link = tmp_path / "other"
+        other_link.symlink_to(real_temp, target_is_directory=True)
+        basename = "hermes-verify-example.py"
+
+        with mock_patch("tempfile.gettempdir", return_value=str(real_temp)):
+            is_dangerous, key, _ = detect_dangerous_command(f"rm -f {linked_temp / basename}")
+            assert is_dangerous is True
+            assert key is not None
+
+        with mock_patch("tempfile.gettempdir", return_value=str(linked_temp)):
+            is_dangerous, key, _ = detect_dangerous_command(f"rm -f {other_link / basename}")
+            assert is_dangerous is True
+            assert key is not None
+
+    def test_symlinked_temp_dir_rejects_artifact_escaping_temp_dir(self, tmp_path):
+        # The realpath check on the operand still applies to the link
+        # spelling: an artifact-named symlink pointing outside the temp dir
+        # is not exempt.
+        real_temp, linked_temp = self._symlinked_temp_root(tmp_path)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        victim = outside / "victim.py"
+        victim.write_text("", encoding="utf-8")
+        (real_temp / "hermes-verify-escape.py").symlink_to(victim)
+
+        with mock_patch("tempfile.gettempdir", return_value=str(linked_temp)):
+            is_dangerous, key, _ = detect_dangerous_command(
+                f"rm -f {linked_temp / 'hermes-verify-escape.py'}"
+            )
+            assert is_dangerous is True
+            assert key is not None
+
+    def test_relative_temp_dir_spelling_never_exempts(self):
+        # tempfile.gettempdir() can degrade to os.curdir when no candidate
+        # temp dir is writable. A relative operand resolves against the
+        # terminal's cwd, not ours, so the exemption predicate must reject it
+        # even though the spelling equals gettempdir()/basename. (A bare
+        # `rm -f ./x` is not gated by the generic patterns, so this pins the
+        # predicate itself rather than detect_dangerous_command.)
+        with mock_patch("tempfile.gettempdir", return_value="."):
+            assert _is_verification_artifact_cleanup("rm -f ./hermes-verify-example.py") is False
 
     def test_verification_cleanup_exemption_rejects_broader_deletions(self):
         commands = (

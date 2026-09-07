@@ -364,6 +364,8 @@ def test_detects_trailing_japanese_action_intent():
         "ブラウザハーネスデーモンを正しく起動して、Chrome(9222)に接続し、Grokにアクセスする。",
         "次に、ログを確認します。",
         "それでは設定を更新します。",
+        "The server is up. 次に、ログを確認します。",
+        "The server is up.\n次に、ログを確認します。",
     )
     assert all(trailing_continue_intent(reply) for reply in replies)
 

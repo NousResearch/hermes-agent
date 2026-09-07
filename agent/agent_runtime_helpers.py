@@ -2880,7 +2880,7 @@ _TRAILING_CONTINUE_INTENT_RE = re.compile(
 # vocabulary. The topic-particle exclusion keeps short descriptions such as "this function does X"
 # from looking like bare execution plans.
 _TRAILING_JAPANESE_CONTINUE_INTENT_RE = re.compile(
-    r"(?:^|[。！？…]\s*)"
+    r"(?:^|[.!?。！？…\r\n]\s*)"
     r"(?:"
     r"(?:これから|今から|次に|続いて|まず|では|それでは|このあと|その後)[、,:：]?\s*"
     r"|(?![^。！？\n]{0,100}(?:は|とは))[^。！？\n]{0,60}(?:て[、,]?|し[、,])\s*"

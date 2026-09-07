@@ -327,32 +327,35 @@ def _sanitize_message(msg: Any, strip_extra_content: bool) -> dict | None:
         # "Function call is missing a thought_signature in functionCall parts."
         # Inject the skip-validation sentinel — same approach as
         # gemini_native_adapter._translate_tool_call_to_gemini().
+        # convert_messages sets this flag to False only for Gemini-family
+        # targets accepted by _model_consumes_thought_signature.
         if not strip_extra_content:
             for tc_idx, tc in enumerate(tool_calls):
                 if not isinstance(tc, dict):
                     continue
-                extra = tc.get("extra_content")
+                extra = tc.get("extra_content", {})
+                # Unknown provider payloads must survive replay unchanged.
+                if not isinstance(extra, dict):
+                    continue
                 sig = None
-                if isinstance(extra, dict):
-                    google = extra.get("google") or extra.get("thought_signature")
-                    if isinstance(google, dict):
-                        sig = google.get("thought_signature") or google.get("thoughtSignature")
-                    elif isinstance(google, str) and google:
-                        sig = google
+                google = extra.get("google") or extra.get("thought_signature")
+                if isinstance(google, dict):
+                    sig = google.get("thought_signature") or google.get("thoughtSignature")
+                elif isinstance(google, str) and google:
+                    sig = google
                 if sig:
+                    continue
+                google = extra.get("google", {})
+                if not isinstance(google, dict):
                     continue
                 if copied_tool_calls is None:
                     copied_tool_calls = list(tool_calls)
                 if copied_tool_calls[tc_idx] is tc:
                     copied_tool_calls[tc_idx] = dict(tc)
-                copied_tc = copied_tool_calls[tc_idx]
-                existing_extra = copied_tc.get("extra_content")
-                if not isinstance(existing_extra, dict):
-                    existing_extra = {}
-                existing_extra.setdefault("google", {})
-                if isinstance(existing_extra["google"], dict):
-                    existing_extra["google"]["thought_signature"] = "skip_thought_signature_validator"
-                copied_tc["extra_content"] = existing_extra
+                copied_tool_calls[tc_idx]["extra_content"] = {
+                    **extra,
+                    "google": {**google, "thought_signature": "skip_thought_signature_validator"},
+                }
         if copied_tool_calls is not None:
             out_msg["tool_calls"] = copied_tool_calls
     return out_msg if strip_keys or copied_tool_calls is not None else None

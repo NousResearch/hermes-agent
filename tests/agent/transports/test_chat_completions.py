@@ -1,6 +1,7 @@
 """Tests for the ChatCompletionsTransport."""
 
 import json
+from copy import deepcopy
 from types import SimpleNamespace
 
 import httpx
@@ -257,6 +258,75 @@ class TestChatCompletionsBasic:
 
 
 class TestChatCompletionsBuildKwargs:
+
+    @pytest.mark.parametrize("metadata", [
+        {},
+        {"extra_content": {}},
+        {"extra_content": {"google": {}, "vendor": {"keep": "metadata"}}},
+        {"extra_content": {"google": {"keep": "metadata"}}},
+        {"extra_content": {"google": {"thought_signature": "signed-call"}}},
+        {"extra_content": {"google": {"thoughtSignature": "signed-call"}}},
+        {"extra_content": {"thought_signature": "signed-call"}},
+        {"extra_content": {"google": "signed-call"}},
+    ])
+    def test_gemini_signature_replay_preserves_history(self, transport, metadata):
+        from agent.gemini_native_adapter import (
+            _tool_call_extra_signature,
+            _translate_tool_call_to_gemini,
+        )
+
+        messages = [
+            {"role": "user", "content": "Look this up"},
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "call_1", "type": "function",
+                "call_id": "call_1", "response_item_id": "item_1",
+                "function": {"name": "lookup", "arguments": "{}"},
+                **metadata,
+            }]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "found"},
+        ]
+        original = deepcopy(messages)
+        original_call = original[1]["tool_calls"][0]
+        expected_signature = _translate_tool_call_to_gemini(original_call)["thoughtSignature"]
+
+        # Replay the same history before, during, and after a Gemini fallback.
+        for model in ("mistralai/mistral-large", "google/gemini-3-pro-preview", "mistralai/mistral-large"):
+            kwargs = transport.build_kwargs(model=model, messages=messages)
+            wire_call = kwargs["messages"][1]["tool_calls"][0]
+            assert "call_id" not in wire_call
+            assert "response_item_id" not in wire_call
+            if model == "google/gemini-3-pro-preview":
+                assert _tool_call_extra_signature(wire_call) == expected_signature
+                for key, value in original_call.get("extra_content", {}).items():
+                    if key == "google" and isinstance(value, dict):
+                        assert wire_call["extra_content"][key].items() >= value.items()
+                    else:
+                        assert wire_call["extra_content"][key] == value
+            else:
+                assert "extra_content" not in wire_call
+            assert messages == original
+
+    @pytest.mark.parametrize("extra_content", [
+        None,
+        "opaque-provider-payload",
+        ["opaque-provider-payload"],
+        {"google": None},
+        {"google": ["opaque-provider-payload"], "vendor": "keep"},
+    ])
+    def test_gemini_signature_replay_preserves_unknown_payloads(self, transport, extra_content):
+        messages = [{"role": "assistant", "content": None, "tool_calls": [{
+            "id": "call_1", "type": "function", "call_id": "call_1",
+            "function": {"name": "lookup", "arguments": "{}"},
+            "extra_content": extra_content,
+        }]}]
+        original = deepcopy(messages)
+
+        kwargs = transport.build_kwargs(model="google/gemini-3-pro-preview", messages=messages)
+
+        wire_call = kwargs["messages"][0]["tool_calls"][0]
+        assert wire_call["extra_content"] == original[0]["tool_calls"][0]["extra_content"]
+        assert "call_id" not in wire_call
+        assert messages == original
 
     def test_basic_kwargs(self, transport):
         msgs = [{"role": "user", "content": "Hello"}]

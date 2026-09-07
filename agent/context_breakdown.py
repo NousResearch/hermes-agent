@@ -1,9 +1,8 @@
 """Live session context-window breakdown for UI surfaces.
 
-Estimates how the next provider request is composed: system prompt tiers,
-tool schemas, and conversation history. Uses the same rough char/4 heuristic
-as ``agent.model_metadata.estimate_request_tokens_rough`` so numbers align
-with compression thresholds — not exact tokenizer counts.
+Estimates system prompt tiers, tool schemas, and conversation history for the
+category breakdown. Overall occupancy retains its provider-usage or estimate
+provenance; category estimates are not exact tokenizer counts or gate authority.
 """
 
 from __future__ import annotations

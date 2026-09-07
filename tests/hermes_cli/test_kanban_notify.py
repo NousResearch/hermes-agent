@@ -841,13 +841,15 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
 
     conn = kbc.connect()
     try:
-        tid = kb.create_task(conn, title="t", assignee="worker1")
+        tid = kb.create_task(conn, title="t", assignee="worker1",
+                             skills=["using-superpowers"])
         kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
     finally:
         conn.close()
 
     import os
     os.environ["HERMES_KANBAN_TASK"] = tid
+    os.environ["HERMES_KANBAN_PRELOADED_SKILLS"] = "using-superpowers"
     try:
         kt._handle_complete({
             "summary": "one real, one ghost",

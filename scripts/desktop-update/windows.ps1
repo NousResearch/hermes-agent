@@ -62,6 +62,18 @@
 # the handoff nonce, our pid and our creation time. Only a process that was
 # given the nonce in its private env block can produce it, which is what binds
 # the claim to the updater the Desktop actually spawned.
+#
+# A caller that sends NO nonce is a Desktop older than this protocol, and that
+# skew is reachable in the direction that matters: `git pull` lands, the
+# desktop rebuild fails, and the next Update click runs THIS checkout's script
+# from the stale asar. Refusing there would strand that bundle with no route
+# back through the UI, so a missing nonce logs one line and proceeds without an
+# ack -- the old Desktop authenticates the old way. A nonce that IS present
+# means a Desktop is waiting for the ack and will refuse the hand-off without
+# it, so failing to write one then is fatal (exit 8). The Desktop side is
+# always strict: the current authenticate requires the ack, so an old script
+# that writes none is refused while the Desktop stays alive -- the safe way to
+# be wrong.
 
 param(
     [string]$InstallRoot,
@@ -712,6 +724,8 @@ function Write-HandoffAck([int]$OwnerPid, [int64]$OwnerCreatedAt) {
     # process writing a plausible <pid>\n<createdAt> body inside its wait
     # window. Only a process handed the nonce in its private env block can
     # write this file, so it is what actually authenticates the hand-off.
+    # Callers check for a legacy (nonce-less) launch first; this guard only
+    # keeps the function honest if that ever stops being true.
     if ([string]::IsNullOrWhiteSpace($HandoffNonce)) { return $false }
     try {
         $body = "$HandoffNonce`n$OwnerPid`n$OwnerCreatedAt`n"
@@ -1950,12 +1964,18 @@ try {
         }
         $script:MarkerBody = $markerBody
         Write-HandoffLog "claimed update marker (pid $PID, created $startedAt; desktop hand-off started at $desktopStartedAt)"
-        if (Write-HandoffAck $PID $startedAt) {
+        if ([string]::IsNullOrWhiteSpace($HandoffNonce)) {
+            # Legacy caller (a Desktop predating the ack protocol). Reachable
+            # after a pull that lands but a rebuild that does not: the stale
+            # asar then drives this newer script. Aborting would leave that
+            # bundle unrecoverable through the UI, so proceed as before.
+            Write-HandoffLog "hand-off is unacknowledged: the caller sent no nonce (desktop predates the ack protocol); proceeding without $AckPath"
+        } elseif (Write-HandoffAck $PID $startedAt) {
             Write-HandoffLog "wrote hand-off ack $AckPath"
         } else {
-            # Fail closed: without the ack the Desktop cannot attribute this
-            # claim to us, will refuse the hand-off, and would otherwise exit
-            # while we mutate the install underneath it.
+            # A caller that DID send a nonce is waiting for this ack and will
+            # refuse the hand-off without it. Exiting while it stays alive and
+            # we mutate the install underneath it is the whole hazard.
             throw "could not acknowledge the hand-off to the desktop"
         }
     } catch {

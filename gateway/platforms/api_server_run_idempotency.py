@@ -3,6 +3,7 @@
 import hmac
 import json
 import logging
+import re
 import sqlite3
 import threading
 import time
@@ -10,11 +11,71 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict
 
+from gateway.hosted_rooms_common import identifier
+from gateway.platforms.api_server_run_scope import room_run_scope_key, validate_room_run_scope
+
 
 # Keep the extracted store's log records on the API server logger.
 logger = logging.getLogger("gateway.platforms.api_server")
 
 TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "interrupted"})
+_FREEZES = "group_run_freezes"
+_COMMANDS = "group_run_stop_commands"
+_TERMINAL_SQL = "'completed','failed','cancelled','interrupted'"
+_KNOWN_SQL = _TERMINAL_SQL + ",'queued','running','waiting_for_approval','stopping'"
+_STATUS_SQL = f"""CASE WHEN length(CAST(status_json AS BLOB)) <= 1048576 AND json_valid(status_json)
+    THEN CASE WHEN json_extract(status_json,'$.status') IN ({_KNOWN_SQL})
+         THEN json_extract(status_json,'$.status') ELSE 'unknown' END ELSE 'unknown' END"""
+
+
+class GroupRunFreezeError(RuntimeError):
+    code = "group_stop_storage_unavailable"
+    status = 503
+    message = "Durable group Stop storage is unavailable."
+
+    def __init__(self):
+        super().__init__(self.message)
+
+
+class GroupRunFrozen(GroupRunFreezeError):
+    code = "group_work_frozen"
+    status = 409
+    message = "This participant's group work is permanently frozen."
+
+
+class GroupStopScopeNotFound(GroupRunFreezeError):
+    code = "group_stop_scope_not_found"
+    status = 404
+    message = "The known participant scope or Stop command was not found."
+
+
+class GroupStopCommandConflict(GroupRunFreezeError):
+    code = "group_stop_command_conflict"
+    status = 409
+    message = "The Stop command belongs to a different participant scope."
+
+
+class GroupStopCapacity(GroupRunFreezeError):
+    code = "group_stop_capacity"
+    status = 507
+    message = "Durable group Stop capacity is full."
+
+
+class GroupStopStorageUnavailable(GroupRunFreezeError):
+    pass
+
+
+def _scope_key(scope: Any) -> str:
+    if type(scope) is not str or re.fullmatch(r"[0-9a-f]{64}", scope) is None:
+        raise ValueError("invalid internal Runs scope key")
+    return scope
+
+
+def _command_id(value: Any) -> str:
+    checked = identifier(value, label="command_id", error=ValueError)
+    if checked != value:
+        raise ValueError("command_id must be an exact identifier string")
+    return checked
 
 _SELECT_BY_KEY = (
     "SELECT fingerprint, run_id, status_json, owner_pid, owner_started, updated_at "
@@ -55,11 +116,20 @@ class RunIdempotencyStore:
 
     RETENTION_SECONDS = 24 * 60 * 60
     ACKNOWLEDGED_RETENTION_SECONDS = 24 * 60 * 60
+    MAX_GROUP_FREEZES = 512
+    MAX_GROUP_STOP_COMMANDS = 4096
+    GROUP_STOP_RUN_LIMIT = 128
 
     @property
     def durable(self) -> bool:
         """Whether reservations survive this process."""
         return self._db_path is not None
+
+    @property
+    def path(self) -> Path | None:
+        """Actual main SQLite file captured at open, not a caller's path hint."""
+        return Path(self._db_path) if self._db_path else None
+
     def __init__(self, db_path: str = None):
         if db_path is None:
             try:
@@ -80,6 +150,8 @@ class RunIdempotencyStore:
                 "process memory, so replay will not survive a restart: %s", exc)
             self._conn = sqlite3.connect(":memory:", check_same_thread=False)
             self._db_path = None
+        main_file = next(row[2] for row in self._conn.execute("PRAGMA database_list") if row[1] == "main")
+        self._db_path = str(Path(main_file).resolve()) if main_file else None
         from hermes_state_wal import apply_wal_with_fallback
         apply_wal_with_fallback(self._conn, db_label="runs_idempotency.db")
         self._conn.execute(
@@ -106,6 +178,13 @@ class RunIdempotencyStore:
             "CREATE UNIQUE INDEX IF NOT EXISTS run_idempotency_run_id ON run_idempotency(run_id)")
         self._conn.commit()
         self._lock = threading.Lock()
+        try:
+            with self._immediate_txn():
+                self._initialize_group_stop_locked()
+                self._conn.commit()
+        except sqlite3.Error:
+            self._conn.close()
+            raise GroupStopStorageUnavailable() from None
         self._tighten_permissions()
 
     def _tighten_permissions(self) -> None:
@@ -128,6 +207,160 @@ class RunIdempotencyStore:
                 self._conn.rollback()
                 raise
 
+    def _initialize_group_stop_locked(self) -> None:
+        self._conn.execute(f"""CREATE TABLE IF NOT EXISTS {_FREEZES} (
+            scope TEXT PRIMARY KEY, identity_json TEXT NOT NULL, frozen_at REAL NOT NULL,
+            retired_terminal INTEGER NOT NULL DEFAULT 0,
+            missing_runs INTEGER NOT NULL DEFAULT 0)""")
+        self._conn.execute(f"""CREATE TABLE IF NOT EXISTS {_COMMANDS} (
+            command_id TEXT PRIMARY KEY, scope TEXT NOT NULL, created_at REAL NOT NULL)""")
+        self._conn.execute(f"""CREATE TRIGGER IF NOT EXISTS group_run_frozen_insert_v1
+            BEFORE INSERT ON run_idempotency
+            WHEN EXISTS (SELECT 1 FROM {_FREEZES} WHERE scope=NEW.scope)
+            BEGIN SELECT RAISE(ABORT, 'group run scope frozen'); END""")
+        self._conn.execute(f"""CREATE TRIGGER IF NOT EXISTS group_run_frozen_identity_v1
+            BEFORE UPDATE ON run_idempotency
+            WHEN EXISTS (SELECT 1 FROM {_FREEZES} WHERE scope IN (OLD.scope,NEW.scope))
+              AND (NEW.scope IS NOT OLD.scope OR NEW.idempotency_key IS NOT OLD.idempotency_key
+                OR NEW.fingerprint IS NOT OLD.fingerprint OR NEW.run_id IS NOT OLD.run_id
+                OR NEW.owner_pid IS NOT OLD.owner_pid OR NEW.owner_started IS NOT OLD.owner_started)
+            BEGIN SELECT RAISE(ABORT, 'group run scope frozen'); END""")
+        terminal = f"({_STATUS_SQL.replace('status_json', 'OLD.status_json')}) IN ({_TERMINAL_SQL})"
+        # Keep global/legacy pruning usable. A removed nonterminal receipt becomes
+        # unresolved evidence, never an empty successful Stop after restart.
+        self._conn.execute(f"""CREATE TRIGGER IF NOT EXISTS group_run_frozen_delete_v1
+            AFTER DELETE ON run_idempotency
+            WHEN EXISTS (SELECT 1 FROM {_FREEZES} WHERE scope=OLD.scope)
+            BEGIN UPDATE {_FREEZES}
+                SET retired_terminal=retired_terminal + CASE WHEN {terminal} THEN 1 ELSE 0 END,
+                    missing_runs=missing_runs + CASE WHEN {terminal} THEN 0 ELSE 1 END
+                WHERE scope=OLD.scope; END""")
+
+    @contextmanager
+    def _group_stop_txn(self):
+        if not self.durable:
+            raise GroupStopStorageUnavailable()
+        try:
+            with self._immediate_txn():
+                yield
+                self._conn.commit()
+        except sqlite3.Error:
+            raise GroupStopStorageUnavailable() from None
+
+    def _scope_frozen_locked(self, scope: str) -> bool:
+        return self._conn.execute(f"SELECT 1 FROM {_FREEZES} WHERE scope=?", (scope,)).fetchone() is not None
+
+    def is_scope_frozen(self, scope: str) -> bool:
+        """Check an internally derived Runs scope, without reconstructing its identity."""
+        scope = _scope_key(scope)
+        if not self.durable:
+            raise GroupStopStorageUnavailable()
+        try:
+            with self._lock:
+                return self._scope_frozen_locked(scope)
+        except sqlite3.Error:
+            raise GroupStopStorageUnavailable() from None
+
+    @contextmanager
+    def group_control_open(self, scope: str):
+        """Serialize only a short in-memory decision with freeze; no store re-entry or I/O."""
+        scope = _scope_key(scope)
+        with self._group_stop_txn():
+            yield not self._scope_frozen_locked(scope)
+
+    def freeze_room_scope(self, identity: dict, command_id: str) -> dict[str, Any]:
+        """Permanently fence one known participant scope in this durable Runs store."""
+        identity = validate_room_run_scope(identity)
+        scope, command_id = room_run_scope_key(identity), _command_id(command_id)
+        with self._group_stop_txn():
+            command = self._conn.execute(
+                f"SELECT scope FROM {_COMMANDS} WHERE command_id=?", (command_id,),
+            ).fetchone()
+            if command is not None and command[0] != scope:
+                raise GroupStopCommandConflict()
+            frozen = self._scope_frozen_locked(scope)
+            if command is not None and not frozen:
+                raise GroupStopStorageUnavailable()
+            if not frozen:
+                if self._conn.execute(
+                    "SELECT 1 FROM run_idempotency WHERE scope=? LIMIT 1", (scope,),
+                ).fetchone() is None:
+                    raise GroupStopScopeNotFound()
+                if self._conn.execute(f"SELECT COUNT(*) FROM {_FREEZES}").fetchone()[0] >= self.MAX_GROUP_FREEZES:
+                    raise GroupStopCapacity()
+            if command is None:
+                if self._conn.execute(f"SELECT COUNT(*) FROM {_COMMANDS}").fetchone()[0] >= self.MAX_GROUP_STOP_COMMANDS:
+                    raise GroupStopCapacity()
+                now = time.time()
+                if not frozen:
+                    self._conn.execute(
+                        f"INSERT INTO {_FREEZES}(scope,identity_json,frozen_at) VALUES (?,?,?)",
+                        (scope, json.dumps(identity, sort_keys=True, separators=(",", ":")), now),
+                    )
+                self._conn.execute(
+                    f"INSERT INTO {_COMMANDS}(command_id,scope,created_at) VALUES (?,?,?)",
+                    (command_id, scope, now),
+                )
+            return self._room_stop_snapshot_locked(command_id)
+
+    def room_stop_snapshot(self, command_id: str) -> dict[str, Any]:
+        """Return live minimal records, not execution-completion or absence proof.
+
+        Counts separate recognized nonterminal, terminal and unknown work. Deleted
+        nonterminal records remain unknown/missing and make the summary truncated;
+        retained terminal counts survive lawful pruning. Only bounded pending rows
+        are returned, without status bodies. Foreign/zero owner IDs need caller review.
+        """
+        command_id = _command_id(command_id)
+        with self._group_stop_txn():
+            return self._room_stop_snapshot_locked(command_id)
+
+    def _room_stop_snapshot_locked(self, command_id: str) -> dict[str, Any]:
+        row = self._conn.execute(f"""SELECT f.scope,f.identity_json,f.frozen_at,f.retired_terminal,f.missing_runs
+            FROM {_COMMANDS} c JOIN {_FREEZES} f ON f.scope=c.scope WHERE c.command_id=?""", (command_id,)).fetchone()
+        if row is None:
+            raise GroupStopScopeNotFound()
+        scope, encoded_identity, frozen_at, retired_terminal, missing = row
+        try:
+            identity = validate_room_run_scope(json.loads(encoded_identity))
+            if room_run_scope_key(identity) != scope:
+                raise ValueError("stored scope differs")
+        except (TypeError, ValueError):
+            raise GroupStopStorageUnavailable() from None
+        classified = f"""(SELECT CASE WHEN length(CAST(run_id AS BLOB))<=128 THEN run_id END AS run_id,
+            {_STATUS_SQL} AS run_status,
+            CASE WHEN typeof(owner_pid)='integer' AND owner_pid>=0 THEN owner_pid ELSE 0 END AS owner_pid,
+            CASE WHEN typeof(owner_started)='integer' AND owner_started>=0 THEN owner_started ELSE 0 END AS owner_started,
+            created_at
+            FROM run_idempotency WHERE scope=?)"""
+        total, terminal, unknown = self._conn.execute(f"""SELECT COUNT(*),
+            COALESCE(SUM(run_status IN ({_TERMINAL_SQL})),0),COALESCE(SUM(run_status='unknown'),0)
+            FROM {classified}""", (scope,)).fetchone()
+        pending = self._conn.execute(f"""SELECT run_id,run_status,owner_pid,owner_started FROM {classified}
+            WHERE run_status NOT IN ({_TERMINAL_SQL}) ORDER BY created_at,run_id LIMIT ?""",
+            (scope, self.GROUP_STOP_RUN_LIMIT)).fetchall()
+        nonterminal, runs = total - terminal - unknown, []
+        for run_id, status, owner_pid, owner_started in pending:
+            try:
+                checked_id = identifier(run_id, label="run_id", error=ValueError)
+                if checked_id != run_id:
+                    raise ValueError("noncanonical run identity")
+            except ValueError:
+                if status != "unknown":
+                    nonterminal, unknown = nonterminal - 1, unknown + 1
+                continue
+            runs.append({
+                "run_id": run_id, "status": status,
+                "owner_pid": owner_pid if type(owner_pid) is int and owner_pid >= 0 else 0,
+                "owner_started": owner_started if type(owner_started) is int and owner_started >= 0 else 0,
+            })
+        return {
+            "command_id": command_id, "identity": identity, "scope": scope, "frozen_at": frozen_at,
+            "runs": runs, "counts": {"total": total + retired_terminal + missing,
+                "terminal": terminal + retired_terminal, "nonterminal": nonterminal, "unknown": unknown + missing},
+            "truncated": len(runs) < total - terminal + missing, "missing_runs": missing,
+        }
+
     def reserve(self, scope: str, key: str, fingerprint: str, run_id: str, status: Dict[str, Any], *,
                 owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0):
         """Atomically reserve a key; return ``(outcome, stored_record)``."""
@@ -142,6 +375,8 @@ class RunIdempotencyStore:
                     self._conn.execute(_EXTEND_RETENTION_BY_KEY, (retention_until, scope, key, fingerprint))
                 self._conn.commit()
                 return _outcome(row, fingerprint)
+            if self._scope_frozen_locked(scope):
+                raise GroupRunFrozen()
             self._conn.execute(
                 "INSERT INTO run_idempotency("
                 "scope,idempotency_key,fingerprint,run_id,status_json,"

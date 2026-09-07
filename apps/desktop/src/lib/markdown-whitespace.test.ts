@@ -24,6 +24,7 @@ describe('Markdown whitespace semantics', () => {
 
   it('preserves text outside removed media and preview spans', () => {
     const image = 'data:image/png;base64,' + 'A'.repeat(64)
+
     for (const input of samples) {
       expect(assistantTextPart(input)).toMatchObject({ type: 'text', text: input })
       expect(renderMediaTags(input)).toBe(input)
@@ -33,7 +34,9 @@ describe('Markdown whitespace semantics', () => {
       expect(stripGeneratedImageEchoes('![result](/tmp/image.png)\n' + input, ['/tmp/image.png'])).toBe('\n' + input)
       expect(extractImageRefs('@image:/tmp/image.png\n' + input).cleanedText).toBe(input)
       expect(extractEmbeddedImages(input + '\n\n' + image).cleanedText).toBe(input + '\n\n')
-      expect(stripGeneratedImageEchoes(input + '\n\n![result](/tmp/image.png)', ['/tmp/image.png'])).toBe(input + '\n\n')
+      expect(stripGeneratedImageEchoes(input + '\n\n![result](/tmp/image.png)', ['/tmp/image.png'])).toBe(
+        input + '\n\n'
+      )
     }
   })
 })

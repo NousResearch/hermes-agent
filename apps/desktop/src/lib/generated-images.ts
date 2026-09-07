@@ -83,9 +83,7 @@ export function stripGeneratedImageEchoes(text: string, sources: readonly string
   }
 
   // Remove only attachment spans; surrounding whitespace may be Markdown syntax.
-  let next = text
-    .replace(/!\[[^\]\n]*\]\([^)\n]*\)/g, '')
-    .replace(/\[[^\]\n]*\]\(\s*#media:[^)\n]*\)/g, '')
+  let next = text.replace(/!\[[^\]\n]*\]\([^)\n]*\)/g, '').replace(/\[[^\]\n]*\]\(\s*#media:[^)\n]*\)/g, '')
 
   for (const source of unique([...sources])) {
     next = next.replace(new RegExp(String.raw`(^|[\s([{])<?${regexEscape(source)}>?(?=$|[\s)\]},.!?])`, 'g'), '$1')

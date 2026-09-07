@@ -80,9 +80,11 @@ describe('toTranscriptMessages', () => {
   it('uses the display-only completion title without exposing the model payload', () => {
     const text = '[ASYNC DELEGATION BATCH COMPLETE — private]\nFull result evidence'
     const title = 'Subagent Task Failed: Review changes'
+
     const [message] = toTranscriptMessages([
       { role: 'user', text, display_kind: 'async_delegation_complete', display_metadata: { display_text: title } }
     ])
+
     expect(message).toMatchObject({ kind: 'event', role: 'system', text: title })
     expect(toTranscriptMessages([{ role: 'user', text }])[0]?.text).toBe(text)
   })

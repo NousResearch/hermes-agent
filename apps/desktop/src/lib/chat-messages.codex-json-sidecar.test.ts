@@ -3,15 +3,21 @@ import { expect, it } from 'vitest'
 import { chatMessageText, toChatMessages } from './chat-messages'
 
 it('hydrates the SQLite JSON-text sidecar returned by REST like the decoded RPC sidecar', () => {
-  const items = [{
-    type: 'message',
-    role: 'assistant',
-    phase: 'final_answer',
-    content: [{ type: 'output_text', text: 'Durable reply' }]
-  }]
+  const items = [
+    {
+      type: 'message',
+      role: 'assistant',
+      phase: 'final_answer',
+      content: [{ type: 'output_text', text: 'Durable reply' }]
+    }
+  ]
 
   const row = {
-    id: 1, role: 'assistant' as const, content: '', timestamp: 1, reasoning: 'Thinking before tool',
+    id: 1,
+    role: 'assistant' as const,
+    content: '',
+    timestamp: 1,
+    reasoning: 'Thinking before tool',
     tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'terminal', arguments: '{}' } }]
   }
 
@@ -28,5 +34,9 @@ it('hydrates the SQLite JSON-text sidecar returned by REST like the decoded RPC 
     expect(toChatMessages([{ ...empty, codex_message_items: JSON.stringify([{ ...items[0], phase }]) }])).toEqual([])
   }
 
-  expect(chatMessageText(toChatMessages([{ ...row, content: 'Canonical reply', codex_message_items: JSON.stringify(items) }])[0])).toBe('Canonical reply')
+  expect(
+    chatMessageText(
+      toChatMessages([{ ...row, content: 'Canonical reply', codex_message_items: JSON.stringify(items) }])[0]
+    )
+  ).toBe('Canonical reply')
 })

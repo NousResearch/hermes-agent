@@ -143,12 +143,23 @@ async def _lifespan(app: "FastAPI"):
     # (#79531/#80037): a store left behind by `hermes update` otherwise 500s
     # every poll while the read-probe heal loses to sibling lock contention.
     # Daemon thread so a locked store never delays the socket (Desktop
-    # ready-probe times out at 10s, GH-73083).
-    threading.Thread(
-        target=_eager_reconcile_own_session_db,
+    # ready-probe times out at 10s, GH-73083). ``statedb_ready`` is set once
+    # the open has finished or failed so later startup steps can open
+    # state.db without racing this first opener.
+    statedb_ready = threading.Event()
+
+    def _reconcile_then_signal() -> None:
+        try:
+            _eager_reconcile_own_session_db()
+        finally:
+            statedb_ready.set()
+
+    statedb_reconcile_thread = threading.Thread(
+        target=_reconcile_then_signal,
         daemon=True,
         name="statedb-eager-reconcile",
-    ).start()
+    )
+    statedb_reconcile_thread.start()
 
     # Import hermes_cli.gateway *before* the yield: on Windows + 3.11 the
     # import holds the GIL, so run_in_executor still froze the loop 15-22s and
@@ -171,6 +182,21 @@ async def _lifespan(app: "FastAPI"):
     hosted_room_start_cancel = threading.Event()
 
     def _start_hosted_rooms() -> None:
+        # Open state.db only after the eager reconcile has initialised it. On
+        # a home with no state.db yet, a first open from here creates the
+        # 0-byte file, the reconcile quarantines it as zeroed and opens a
+        # fresh inode, and both inodes share the -wal/-shm sidecars: the
+        # second WAL opener truncates the -shm the first has mapped (SIGBUS).
+        # The bound outlasts SessionDB's open-time lock patience (20 s) plus
+        # its 5 s quarantine lock; past it the store is unusable anyway and
+        # Group Chat startup degrades on its own as before.
+        if not statedb_ready.wait(timeout=30.0):
+            _log.warning(
+                "state.db startup reconcile still running after 30s; "
+                "starting hosted rooms anyway"
+            )
+        if hosted_room_start_cancel.is_set():
+            return
         try:
             _hosted_groups.start_hosted_room_service()
         except Exception:
@@ -233,14 +259,21 @@ async def _lifespan(app: "FastAPI"):
         except Exception as exc:  # noqa: BLE001
             logging.getLogger(__name__).warning("local runtime boot failed: %s", exc)
 
-    threading.Thread(target=_boot_local_runtime, daemon=True, name="local-runtime-boot").start()
+    local_runtime_thread = threading.Thread(
+        target=_boot_local_runtime, daemon=True, name="local-runtime-boot"
+    )
+    local_runtime_thread.start()
 
     try:
         yield
     finally:
         hosted_room_start_cancel.set()
         _hosted_groups.stop_hosted_room_service(timeout=5.0)
-        hosted_room_start_thread.join(timeout=1.0)
+        # Join the startup threads (bounded) so none keeps opening this
+        # home's state.db after the lifespan has ended; the reconcile first,
+        # since hosted-room startup waits on it.
+        statedb_reconcile_thread.join(timeout=5.0)
+        hosted_room_start_thread.join(timeout=5.0)
         if cron_stop is not None:
             cron_stop.set()
         pty_reaper_task.cancel()
@@ -248,6 +281,8 @@ async def _lifespan(app: "FastAPI"):
         auto_archive_task.cancel()
         await PTY_REGISTRY.close_all()
         # Stop the managed llama-server with its parent (an orphan pins VRAM).
+        # Let a boot still in flight finish first so the stop cannot race the spawn.
+        local_runtime_thread.join(timeout=5.0)
         try:
             from hermes_cli.local_runtime.bootstrap import shutdown_local_runtime
 

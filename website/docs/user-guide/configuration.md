@@ -622,7 +622,7 @@ terminal:
             - name: workspace
               mountPath: /workspace
             - name: tmp
-              mountPath: /tmp
+              mountPath: /tmp # no-tmp: ok — required in-container Kubernetes mount
           resources:
             requests:
               cpu: 500m

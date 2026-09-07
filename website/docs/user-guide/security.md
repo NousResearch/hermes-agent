@@ -18,7 +18,7 @@ The security model has eight layers:
 4. **Container isolation** — Docker/Singularity/Modal sandboxing with hardened settings
 5. **MCP credential filtering** — environment variable isolation for MCP subprocesses
 6. **Context file scanning** — prompt injection detection in project files
-7. **Cross-session isolation** — sessions cannot access each other's *conversation* data or state; cron job storage paths are hardened against path traversal attacks. This does **not** extend to the terminal: on shared-environment backends (docker, kubernetes) every session of one Hermes process executes in the same container/pod and shares its filesystem — see [Session scope](/user-guide/kubernetes#session-scope)
+7. **Cross-session isolation** — sessions cannot access each other's *conversation* data or state; cron job storage paths are hardened against path traversal attacks. This does **not** extend to the terminal: on shared-environment backends (docker, kubernetes) every session of one Hermes process executes in the same container/pod and shares its filesystem — see [Session scope](kubernetes.md#session-scope)
 8. **Input sanitization** — working directory parameters in terminal tool backends are validated against an allowlist to prevent shell injection
 
 ## Dangerous Command Approval

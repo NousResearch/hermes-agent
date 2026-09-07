@@ -475,20 +475,22 @@ Local transcription works out of the box when `faster-whisper` is installed. If 
 # In ~/.hermes/config.yaml
 stt:
   provider: "local"           # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra"
-  language: "en"              # Global language hint applied to every provider unless a per-provider language overrides it; set "" to restore auto-detect
+  language: "en"              # Global hint; blank falls back to HERMES_LOCAL_STT_LANGUAGE
   local:
     model: "base"             # tiny, base, small, medium, large-v3
-    language: ""              # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
+    language: ""              # Blank inherits stt.language, then HERMES_LOCAL_STT_LANGUAGE
   groq:
-    language: ""              # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
+    language: ""              # Blank inherits stt.language, then HERMES_LOCAL_STT_LANGUAGE
   openai:
     model: "whisper-1"        # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe, gpt-transcribe
   mistral:
     model: "voxtral-mini-latest"  # voxtral-mini-latest, voxtral-mini-2602
   xai:
     model: "grok-stt"         # xAI Grok STT
-    language: ""              # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else "en"
+    language: ""              # Blank inherits stt.language, then HERMES_LOCAL_STT_LANGUAGE
 ```
+
+Blank provider language settings in this example inherit the global `"en"`; they do not select auto-detection. See [STT language resolution](../configuration.md#speech-to-text-stt) for precedence, an auto-detection example, and command-backend limits.
 
 ### Provider Details
 

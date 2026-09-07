@@ -1460,6 +1460,171 @@ class TestRunIdempotency:
         assert response.status == 202
         history.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_declared_session_key_loads_selected_session_history(
+        self, auth_adapter, tmp_path
+    ):
+        """#98619: a header-only X-Hermes-Session-Key run must load the declared
+        conversation's SessionDB history — a persisted async-delegation delivery
+        row has to reach the next same-key run's context for the /v1/runs wake
+        opt-in to mean anything."""
+        adapter = auth_adapter
+        _use_idempotency_db(adapter, tmp_path / "idem.db")
+        delivered = [
+            {"role": "user", "content": "run the batch"},
+            {
+                "role": "assistant",
+                "content": "[delegated task complete] background result payload",
+            },
+        ]
+        mock_db = MagicMock()
+        mock_db.find_latest_gateway_session_for_peer.return_value = {
+            "id": "declared-session"
+        }
+        mock_db.get_messages_as_conversation.return_value = delivered
+        adapter._session_db = mock_db
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as create:
+                agent = MagicMock()
+                agent.run_conversation.return_value = {"final_response": "done"}
+                agent.session_prompt_tokens = agent.session_completion_tokens = (
+                    agent.session_total_tokens
+                ) = 0
+                create.return_value = agent
+                response = await cli.post(
+                    "/v1/runs",
+                    json={"input": "follow up"},
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "X-Hermes-Session-Key": "conv-key",
+                    },
+                )
+                assert response.status == 202
+                for _ in range(40):
+                    if agent.run_conversation.called:
+                        break
+                    await asyncio.sleep(0.05)
+        mock_db.find_latest_gateway_session_for_peer.assert_called_with(
+            source="api_server", session_key="conv-key"
+        )
+        mock_db.get_messages_as_conversation.assert_called_with("declared-session")
+        assert (
+            agent.run_conversation.call_args.kwargs["conversation_history"] == delivered
+        )
+
+    @pytest.mark.asyncio
+    async def test_declared_key_without_live_session_row_loads_nothing(
+        self, auth_adapter, tmp_path
+    ):
+        """A declared key with no live session row keeps the fresh run_id
+        session — nothing is persisted under it yet, so no history load."""
+        adapter = auth_adapter
+        _use_idempotency_db(adapter, tmp_path / "idem.db")
+        mock_db = MagicMock()
+        mock_db.find_latest_gateway_session_for_peer.return_value = None
+        adapter._session_db = mock_db
+        history = AsyncMock(return_value=[])
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_conversation_history_for_session", new=history),
+                patch.object(adapter, "_create_agent") as create,
+            ):
+                agent = MagicMock()
+                agent.run_conversation.return_value = {"final_response": "done"}
+                agent.session_prompt_tokens = agent.session_completion_tokens = (
+                    agent.session_total_tokens
+                ) = 0
+                create.return_value = agent
+                response = await cli.post(
+                    "/v1/runs",
+                    json={"input": "fresh conversation"},
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "X-Hermes-Session-Key": "conv-key",
+                    },
+                )
+        assert response.status == 202
+        history.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_previous_response_id_continuation_is_not_wake_capable(
+        self, adapter, tmp_path
+    ):
+        """#98619: a previous_response_id continuation consumes its ResponseStore
+        snapshot as history and can never see a SessionDB delivery row (async
+        completion persists to SessionDB only), so it must NOT be granted wake
+        authority — delegate_task keeps its synchronous fallback on that branch."""
+        _use_idempotency_db(adapter, tmp_path / "idem.db")
+        chain_history = [
+            {"role": "user", "content": "seed turn"},
+            {"role": "assistant", "content": "seed reply"},
+        ]
+        adapter._response_store.put(
+            "resp-seed",
+            {"conversation_history": chain_history, "session_id": "chain-session"},
+        )
+        bind = MagicMock(return_value=[])
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_bind_api_server_session", new=bind),
+                patch.object(adapter, "_create_agent") as create,
+            ):
+                agent = MagicMock()
+                agent.run_conversation.return_value = {"final_response": "done"}
+                agent.session_prompt_tokens = agent.session_completion_tokens = (
+                    agent.session_total_tokens
+                ) = 0
+                create.return_value = agent
+                response = await cli.post(
+                    "/v1/runs",
+                    json={"input": "continue", "previous_response_id": "resp-seed"},
+                )
+                assert response.status == 202
+                for _ in range(40):
+                    if bind.called:
+                        break
+                    await asyncio.sleep(0.05)
+        assert bind.call_args.kwargs["wake_capable"] == ""
+        assert (
+            agent.run_conversation.call_args.kwargs["conversation_history"]
+            == chain_history
+        )
+
+    @pytest.mark.asyncio
+    async def test_plain_run_grants_wake_capability(self, adapter, tmp_path):
+        """Control: a /v1/runs request whose session the client addresses again
+        (explicit body session_id, loaded from SessionDB) stays wake-capable."""
+        _use_idempotency_db(adapter, tmp_path / "idem.db")
+        mock_db = MagicMock()
+        mock_db.get_messages_as_conversation.return_value = []
+        adapter._session_db = mock_db
+        bind = MagicMock(return_value=[])
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_bind_api_server_session", new=bind),
+                patch.object(adapter, "_create_agent") as create,
+            ):
+                agent = MagicMock()
+                agent.run_conversation.return_value = {"final_response": "done"}
+                agent.session_prompt_tokens = agent.session_completion_tokens = (
+                    agent.session_total_tokens
+                ) = 0
+                create.return_value = agent
+                response = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": "client-held-session"},
+                )
+                assert response.status == 202
+                for _ in range(40):
+                    if bind.called:
+                        break
+                    await asyncio.sleep(0.05)
+        assert bind.call_args.kwargs["wake_capable"] == "1"
+
 
 class TestHostedRoomRuns:
     @pytest.mark.asyncio

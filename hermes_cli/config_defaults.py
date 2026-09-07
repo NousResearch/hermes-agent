@@ -327,6 +327,12 @@ DEFAULT_CONFIG = {
         # Chromium/Playwright and PyTorch DataLoader workers; tmpfs is lazily allocated so the
         # higher ceiling is free until used. "" or "0" = omit the flag (Docker default).
         "docker_shm_size": "1g",
+        # tmpfs ceilings for non-persistent sandboxes (container_persistent: false). Lazily
+        # allocated, but they are the only per-container disk cap where --storage-opt is
+        # unavailable, and usage counts against container_memory. Lower them for small or
+        # multi-tenant sandboxes. home applies to both /home and /root.
+        "docker_workspace_tmpfs_size": "10g",
+        "docker_home_tmpfs_size": "1g",
         # Run the container as the host uid:gid (`--user`) so files written to bind mounts
         # (docker_volumes, persistent workspace, mounted cwd) are owned by you, not root. Off by
         # default for images whose entrypoints must start as root (e.g. the bundled Hermes image,

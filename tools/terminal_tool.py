@@ -617,8 +617,11 @@ def _get_env_config() -> Dict[str, Any]:
         docker_env = _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON")
         docker_extra_args = _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON")
         docker_shm_size = _tenv("TERMINAL_DOCKER_SHM_SIZE", "1g")
+        docker_workspace_tmpfs_size = _tenv("TERMINAL_DOCKER_WORKSPACE_TMPFS_SIZE", "10g")
+        docker_home_tmpfs_size = _tenv("TERMINAL_DOCKER_HOME_TMPFS_SIZE", "1g")
     else:
         docker_forward_env, docker_volumes, docker_env, docker_extra_args, docker_shm_size = [], [], {}, [], "1g"
+        docker_workspace_tmpfs_size, docker_home_tmpfs_size = "10g", "1g"
 
     cwd, host_cwd = _resolve_config_cwd(env_type, mount_docker_cwd)
 
@@ -659,6 +662,8 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_network": _tenv_bool("TERMINAL_DOCKER_NETWORK", "true"),
         "docker_extra_args": docker_extra_args,
         "docker_shm_size": docker_shm_size,
+        "docker_workspace_tmpfs_size": docker_workspace_tmpfs_size,
+        "docker_home_tmpfs_size": docker_home_tmpfs_size,
         # Cross-process reuse: attach to a labeled container at startup
         # instead of starting fresh; false = per-process isolation.
         "docker_persist_across_processes": _tenv_bool("TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", "true"),

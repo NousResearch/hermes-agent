@@ -94,6 +94,15 @@ _LINUX_BROWSER_GROUPS = (
             "/opt/microsoft/msedge/msedge",
         ),
     ),
+    (
+        ("vivaldi", "vivaldi-stable"),
+        (
+            "/usr/bin/vivaldi",
+            "/usr/bin/vivaldi-stable",
+            "/opt/vivaldi/vivaldi",
+            "/opt/vivaldi/vivaldi-stable",
+        ),
+    ),
 )
 
 _LINUX_BIN_NAMES = tuple(name for names, _ in _LINUX_BROWSER_GROUPS for name in names)
@@ -117,7 +126,7 @@ _LINUX_INSTALL_PATHS = tuple(path for _, paths in _LINUX_BROWSER_GROUPS for path
 # ``BraveOHTML`` ProgId, ``com.brave.Browser.origin`` bundle id) so it
 # side-by-side installs with regular Brave — its profile is NOT under
 # Brave-Browser and must never be conflated with the ``brave`` key.
-_CHROMIUM_BROWSERS = ("chrome", "edge", "brave", "chromium", "brave-origin")
+_CHROMIUM_BROWSERS = ("chrome", "edge", "brave", "chromium", "brave-origin", "vivaldi")
 
 # Windows UserChoice ProgId prefixes → canonical browser key. Matched
 # case-insensitively by prefix so version suffixes (e.g. ``ChromeHTML.X``)
@@ -167,6 +176,13 @@ _LINUX_DESKTOP_MAP = (
     ("microsoft-edge", "edge"),
     ("com.microsoft.edge", "edge"),
     ("msedge", "edge"),
+    # Vivaldi: same Chromium core, but a fully distinct install identity
+    # (Vivaldi Technologies product path, ``com.vivaldi.Vivaldi`` bundle id)
+    # so it side-by-side installs with any other Chromium browser — its
+    # profile is under ~/.config/vivaldi/ and must never be conflated with
+    # Chromium's ``~/.config/chromium/`` profile (wrong-principal).
+    ("vivaldi", "vivaldi"),
+    ("com.vivaldi.vivaldi", "vivaldi"),
 )
 
 # Non-stable Linux channel .desktop fragments — recognized, unsupported.
@@ -202,6 +218,7 @@ _DARWIN_BUNDLE_MAP = (
     # ever being read as plain ``com.brave.browser``.
     ("com.brave.browser.origin", "brave-origin"),
     ("org.chromium.chromium", "chromium"),
+    ("com.vivaldi.vivaldi", "vivaldi"),
 )
 
 # Non-stable macOS channel bundle ids — recognized, unsupported. Checked first.
@@ -247,6 +264,11 @@ def _real_profile_relparts(browser: str) -> tuple:
             ("BraveSoftware", "Brave-Origin"),
             ("BraveSoftware", "Brave-Origin", "User Data"),
             "BraveSoftware/Brave-Origin",
+        ),
+        "vivaldi": (
+            ("Vivaldi",),
+            ("Vivaldi", "User Data"),
+            "vivaldi",
         ),
     }[browser]
 
@@ -334,6 +356,7 @@ def chromium_executable(browser: str, system: str | None = None) -> str | None:
         "brave": ("brave-browser", "brave-browser-stable", "brave"),
         "brave-origin": ("brave-origin",),
         "edge": ("microsoft-edge", "microsoft-edge-stable"),
+        "vivaldi": ("vivaldi", "vivaldi-stable"),
     }[browser]
     for name in linux:
         found = shutil.which(name)

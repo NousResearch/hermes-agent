@@ -6,6 +6,8 @@ caught here rather than in a user's browser session.
 """
 from unittest.mock import patch
 
+import os
+
 import pytest
 
 import hermes_cli.browser_connect as bc
@@ -152,6 +154,30 @@ class TestLinuxProfileDir:
     def test_native_path_when_nothing_exists(self, tmp_path, monkeypatch):
         self._env(monkeypatch, tmp_path)
         assert bc.real_profile_data_dir("chromium", "Linux") == str(tmp_path / ".config" / "chromium")
+
+    def test_vivaldi_native_path_when_nothing_exists(self, tmp_path, monkeypatch):
+        self._env(monkeypatch, tmp_path)
+        assert bc.real_profile_data_dir("vivaldi", "Linux") == str(tmp_path / ".config" / "vivaldi")
+
+    def test_vivaldi_darwin_path(self):
+        assert bc.real_profile_data_dir("vivaldi", "Darwin") == os.path.join(
+            os.path.expanduser("~"), "Library", "Application Support", "Vivaldi"
+        )
+
+    def test_vivaldi_windows_path(self, monkeypatch):
+        monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\j7\AppData\Local")
+        assert bc.real_profile_data_dir("vivaldi", "Windows") == r"C:\Users\j7\AppData\Local\Vivaldi\User Data"
+
+    def test_vivaldi_desktop_file_resolves(self):
+        # Both the .desktop filename and the Flatpak bundle id should resolve
+        # to the vivaldi key (not chromium, not brave).
+        for desktop in ("vivaldi-stable.desktop", "com.vivaldi.vivaldi.desktop"):
+            result = None
+            for fragment, key in bc._LINUX_DESKTOP_MAP:
+                if fragment in desktop:
+                    result = key
+                    break
+            assert result == "vivaldi", f"{desktop!r} resolved to {result!r}"
 
     def test_snap_chromium_profile_is_found(self, tmp_path, monkeypatch):
         self._env(monkeypatch, tmp_path)

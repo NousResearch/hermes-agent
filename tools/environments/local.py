@@ -652,7 +652,9 @@ def _group_teardown_complete(proc, descendants: list) -> bool:
     """Leader reaped + every snapshotted descendant exited — the state XNU can
     only report as ``killpg`` EPERM, because its ``killpg1`` skips SZOMB members
     and an all-zombie group has no eligible target. Any live member means a
-    genuine signal denial callers must still see. POSIX-only."""
+    genuine signal denial callers must still see; only NoSuchProcess counts as
+    reaped — an unreadable descendant (e.g. psutil.AccessDenied) leaves the
+    teardown unproven rather than silently tolerating the denial. POSIX-only."""
     if proc.poll() is None:
         return False
     if not descendants:
@@ -663,7 +665,7 @@ def _group_teardown_complete(proc, descendants: list) -> bool:
         try:
             if child.status() not in exited:
                 return False
-        except Exception:  # psutil.NoSuchProcess — already reaped
+        except psutil.NoSuchProcess:  # already reaped — nothing left to signal
             continue
     return True
 

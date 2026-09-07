@@ -211,6 +211,22 @@ def test_killpg_eperm_reraised_while_descendant_alive(monkeypatch):
         _kill_process_group_posix(_fake_proc(poll_result=0))
 
 
+def test_group_teardown_incomplete_when_descendant_status_unreadable(monkeypatch):
+    """A descendant whose status() raises psutil.AccessDenied (live but
+    unreadable) is not proof of exit — the gate lets it propagate instead of
+    counting the descendant as reaped and tolerating a genuine denial."""
+    psutil = pytest.importorskip("psutil")
+
+    def _unreadable():
+        raise psutil.AccessDenied()
+
+    _patch_snapshot(monkeypatch, [SimpleNamespace(status=_unreadable)])
+    monkeypatch.setattr(os, "killpg", _eperm_killpg)
+
+    with pytest.raises(psutil.AccessDenied):
+        _kill_process_group_posix(_fake_proc(poll_result=0))
+
+
 @pytest.mark.live_system_guard_bypass
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups only")
 def test_group_kill_survives_a_real_exited_unreaped_group():
@@ -225,15 +241,16 @@ def test_group_kill_survives_a_real_exited_unreaped_group():
     )
     try:
         # Real callers cache the pgid at spawn time (LocalEnvironment does); the
-        # helper's getpgid falls back to it once the child is reaped — the 3.14
-        # Popen watchdog can reap an exited child before we ever signal.
+        # helper's getpgid falls back to it once the child is reaped — CPython
+        # has no background reaper, but subprocess._cleanup() (run at the next
+        # Popen creation in this process) can reap the exited child first.
         proc._hermes_pgid = os.getpgid(proc.pid)
         proc.stdin.write(b"x")
         proc.stdin.close()
         proc.stdout.read()  # the child has now exited...
-        time.sleep(0.1)  # ...unreaped (zombie) on 3.11-3.13
+        time.sleep(0.1)  # ...unreaped (zombie) until someone reaps it
         # Must not raise on either teardown path: killpg EPERM for the
-        # all-zombie group (macOS XNU), or ESRCH once reaped (3.14 watchdog).
+        # all-zombie group (macOS XNU), or ESRCH once the child is reaped.
         _kill_process_group_posix(proc)
         assert proc.wait(timeout=5) == 0
     finally:

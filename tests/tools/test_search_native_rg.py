@@ -115,9 +115,12 @@ def test_kill_switch_routes_search_back_to_the_shell(tree, ops_factory, monkeypa
 
 
 def test_bounded_native_file_search_keeps_results_at_the_kill_bound(tmp_path, ops_factory, monkeypatch):
-    """#104696: hitting the read bound kills rg mid-walk; the collected lines
-    must survive teardown (on macOS killpg then reports EPERM for the
-    exited-but-unreaped group — tolerated in test_local_setsid_descendant_sweep)."""
+    """#104696 (smoke-only): hitting the read bound kills rg mid-walk; the
+    collected lines must survive teardown. Not an EPERM mutation guard: the
+    caller's poll() gate skips the group-kill once rg is reaped, and a live rg
+    makes the EPERM completion gate re-raise — so an injected PermissionError
+    cannot reach the tolerant branch deterministically. The EPERM semantics are
+    pinned by the unit tests in test_local_setsid_descendant_sweep.py."""
     monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "1")
     for i in range(30):  # enough entries that rg is still walking at the bound
         (tmp_path / f"file_{i:02d}.txt").write_text("x\n")

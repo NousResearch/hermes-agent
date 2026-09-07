@@ -345,8 +345,9 @@ class SearchMixin:
         except OSError as exc:
             return ExecuteResult(stdout=f"rg: {exc}", exit_code=2)
         # Cache the pgid while the child is guaranteed alive: the group must stay
-        # signalable across the poll→killpg window even when rg (or the 3.14
-        # Popen watchdog) exits inside it (#104696).
+        # signalable across the poll→killpg window even when rg exits inside it —
+        # CPython has no background reaper, but a later Popen creation in this
+        # process runs subprocess._cleanup(), which can reap rg first (#104696).
         with contextlib.suppress(OSError):
             proc._hermes_pgid = os.getpgid(proc.pid)
 

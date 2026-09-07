@@ -24,7 +24,10 @@ def test_rendered_request_maps_defaults_and_preserves_false_zero() -> None:
     assert timeout == 300
     assert params["html"] == "false"
     assert params["markdown"] == "false"
-    assert params["blockResources"] == "true"
+    assert params["super"] == "true"
+    assert "waitUntil" not in params
+    assert "returnCookie" not in params
+    assert "blockResources" not in params
     assert "screenshot" not in params
     assert "waitForSelector" not in params
     assert body == {
@@ -33,6 +36,34 @@ def test_rendered_request_maps_defaults_and_preserves_false_zero() -> None:
         "tokenCap": 30,
         "homePage": False,
     }
+
+
+def test_rendered_request_serializes_explicit_optional_controls() -> None:
+    params, _body, _timeout = bp.build_rendered_request({
+        "url": "https://example.com",
+        "wait_until": "networkidle",
+        "return_cookie": True,
+        "block_resources": True,
+    })
+    assert params["waitUntil"] == "networkidle"
+    assert params["returnCookie"] == "true"
+    assert params["blockResources"] == "true"
+
+
+def test_rendered_request_omits_explicitly_disabled_super_mode() -> None:
+    params, _body, _timeout = bp.build_rendered_request({
+        "url": "https://example.com",
+        "super_mode": False,
+    })
+    assert "super" not in params
+
+
+def test_rendered_schema_matches_omission_sensitive_defaults() -> None:
+    properties = bp.MRSCRAPER_FETCH_RENDERED_HTML_SCHEMA["parameters"]["properties"]
+    assert "default" not in properties["wait_until"]
+    assert properties["return_cookie"]["default"] is False
+    assert properties["block_resources"]["default"] is False
+    assert properties["super_mode"]["default"] is True
 
 
 def test_screenshot_mode_is_conditional() -> None:

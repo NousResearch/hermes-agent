@@ -1,5 +1,5 @@
 name: browser-mrscraper
-version: 1.0.0
+version: 1.0.1
 description: "MrScraper rendered-page integration. Registers a native rendered HTML tool; it is not a CDP cloud-browser provider."
 author: MrScraper
 kind: backend

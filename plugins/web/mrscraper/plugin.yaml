@@ -1,5 +1,5 @@
 name: web-mrscraper
-version: 1.0.0
+version: 1.0.1
 description: "MrScraper web search, extraction, scraper management, and result tools. Requires MRSCRAPER_API_TOKEN."
 author: MrScraper
 kind: backend

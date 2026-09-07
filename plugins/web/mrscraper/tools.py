@@ -231,41 +231,6 @@ def create_website_crawl_scraper(args: Mapping[str, Any]) -> Any:
     return crawl_website_urls(args)
 
 
-_AI_ONLY = {
-    "agent_type",
-    "max_depth",
-    "max_pages",
-    "limit",
-    "include_patterns",
-    "exclude_patterns",
-    "render_javascript",
-    "return_cookies",
-    "use_home_page",
-    "wait_for_selector",
-}
-_MANUAL_ONLY = {
-    "cookie_jar",
-    "cookies",
-    "home_page",
-    "home_page_timeout",
-    "paginator",
-    "proxy",
-    "record",
-    "return_cookie",
-    "token_cap",
-}
-
-
-def _reject_present(
-    args: Mapping[str, Any], names: Iterable[str], context: str
-) -> None:
-    present = sorted(name for name in names if name in args)
-    if present:
-        raise MrScraperError(
-            f"Parameters incompatible with {context}: {', '.join(present)}"
-        )
-
-
 def _normalize_urls(raw: Any) -> List[str]:
     if isinstance(raw, list):
         values = raw
@@ -293,7 +258,7 @@ def _normalize_urls(raw: Any) -> List[str]:
 
 
 def run_existing_scraper(args: Mapping[str, Any]) -> Any:
-    scraper_type = _enum(args, "scraper_type", "", ("ai", "manual"))
+    scraper_type = _enum(args, "scraper_type", "ai", ("ai", "manual"))
     common = {
         "scraperId": _required_string(args, "scraper_id"),
         "url": _required_string(args, "url"),
@@ -301,13 +266,11 @@ def run_existing_scraper(args: Mapping[str, Any]) -> Any:
         "proxyCountry": _optional_string(args, "proxy_country"),
     }
     if scraper_type == "manual":
-        _reject_present(args, _AI_ONLY, "scraper_type='manual'")
         body = {
             **common,
             "bypassProxy": _boolean(args, "bypass_proxy", True),
             "cookieJar": _optional_string(args, "cookie_jar"),
             "cookies": args.get("cookies", []),
-            "homePage": _boolean(args, "home_page", False),
             "homePageTimeout": _integer(args, "home_page_timeout", 10, 1),
             "html": _boolean(args, "html", False),
             "markdown": _boolean(args, "markdown", False),
@@ -320,6 +283,8 @@ def run_existing_scraper(args: Mapping[str, Any]) -> Any:
             "timeout": _integer(args, "timeout", 600, 1),
             "tokenCap": _integer(args, "token_cap", 0, 0),
         }
+        if _boolean(args, "home_page", False):
+            body["homePage"] = True
         if not isinstance(body["cookies"], list) or any(
             not isinstance(cookie, dict) for cookie in body["cookies"]
         ):
@@ -328,26 +293,9 @@ def run_existing_scraper(args: Mapping[str, Any]) -> Any:
             "/api/v1/scrapers-manual-rerun", compact_optional(body)
         )
 
-    _reject_present(args, _MANUAL_ONLY, "scraper_type='ai'")
     agent_type = _enum(args, "agent_type", "general", ("general", "listing", "map"))
     body: Dict[str, Any] = dict(common)
     if agent_type == "map":
-        _reject_present(
-            args,
-            {
-                "bypass_proxy",
-                "html",
-                "markdown",
-                "render_javascript",
-                "return_cookies",
-                "screenshot",
-                "stream",
-                "timeout",
-                "use_home_page",
-                "wait_for_selector",
-            },
-            "agent_type='map'",
-        )
         body.update(
             compact_optional({
                 "maxDepth": _integer(args, "max_depth", 2, 0),
@@ -358,17 +306,8 @@ def run_existing_scraper(args: Mapping[str, Any]) -> Any:
             })
         )
     else:
-        _reject_present(
-            args,
-            {"max_depth", "limit", "include_patterns", "exclude_patterns"},
-            f"agent_type='{agent_type}'",
-        )
-        if agent_type == "general":
-            _reject_present(
-                args, {"max_pages", "timeout", "stream"}, "agent_type='general'"
-            )
-        else:
-            body["maxPages"] = _integer(args, "max_pages", 5, 1)
+        if agent_type == "listing":
+            body["maxPages"] = _integer(args, "max_pages", 1, 1)
             body["timeout"] = _integer(args, "timeout", 300, 1)
             body["stream"] = _boolean(args, "stream", False)
         body.update(
@@ -379,10 +318,11 @@ def run_existing_scraper(args: Mapping[str, Any]) -> Any:
                 "renderJavascript": _boolean(args, "render_javascript", False),
                 "returnCookies": _boolean(args, "return_cookies", False),
                 "screenshot": _boolean(args, "screenshot", False),
-                "useHomePage": _boolean(args, "use_home_page", False),
                 "waitForSelector": _optional_string(args, "wait_for_selector"),
             })
         )
+        if _boolean(args, "use_home_page", False):
+            body["useHomePage"] = True
     return MrScraperClient().primary_post(
         "/api/v1/scrapers-ai-rerun", compact_optional(body)
     )
@@ -461,52 +401,101 @@ LISTING_PROPERTIES = {
 }
 
 RUN_PROPERTIES = {
-    "scraper_type": {**S, "enum": ["ai", "manual"]},
-    "scraper_id": S,
-    "url": S,
-    "max_retry": {**I, "minimum": 0, "default": 3},
-    "proxy_country": S,
+    "scraper_type": {
+        **S,
+        "enum": ["ai", "manual"],
+        "default": "ai",
+        "description": "Selects the AI or Manual endpoint and valid parameter set.",
+    },
+    "scraper_id": {**S, "description": "ID of the existing scraper."},
+    "url": {
+        **S,
+        "description": "One URL to run. Use the batch tool for multiple URLs without mode-specific overrides.",
+    },
+    "max_retry": {
+        **I,
+        "minimum": 0,
+        "default": 3,
+        "description": "Common to AI and Manual scrapers.",
+    },
+    "proxy_country": {**S, "description": "Common to AI and Manual scrapers."},
     "agent_type": {
         **S,
         "enum": ["general", "listing", "map"],
         "default": "general",
-        "description": "AI scrapers only; defaults to general.",
+        "description": "AI only. Selects the General, Listing, or Map parameter set; defaults to General.",
     },
     "bypass_proxy": {
         **B,
-        "description": "Defaults to false for AI scrapers and true for manual scrapers.",
+        "description": "AI General/Listing or Manual. Defaults to false for AI and true for Manual.",
     },
-    "html": {**B, "default": False},
-    "markdown": {**B, "default": False},
-    "render_javascript": {**B, "default": False},
-    "return_cookies": {**B, "default": False},
-    "screenshot": {**B, "default": False},
-    "use_home_page": {**B, "default": False},
-    "wait_for_selector": S,
+    "html": {**B, "default": False, "description": "AI General/Listing or Manual."},
+    "markdown": {**B, "default": False, "description": "AI General/Listing or Manual."},
+    "render_javascript": {
+        **B,
+        "default": False,
+        "description": "AI General/Listing only.",
+    },
+    "return_cookies": {
+        **B,
+        "default": False,
+        "description": "AI General/Listing only.",
+    },
+    "screenshot": {
+        **B,
+        "default": False,
+        "description": "AI General/Listing or Manual.",
+    },
+    "use_home_page": {
+        **B,
+        "default": False,
+        "description": "AI General/Listing only; sent as useHomePage only when enabled.",
+    },
+    "wait_for_selector": {**S, "description": "AI General/Listing only."},
     "max_pages": {
         **I,
         "minimum": 1,
-        "description": "Defaults to 5 for AI listing and 50 for AI map scrapers.",
+        "description": "AI Listing or Map only. Defaults to 1 for Listing and 50 for Map.",
     },
     "timeout": {
         **I,
         "minimum": 1,
-        "description": "Defaults to 300 seconds for AI listing and 600 for manual scrapers.",
+        "description": "AI Listing or Manual only. Defaults to 300 seconds for Listing and 600 for Manual.",
     },
-    "stream": {**B, "default": False},
-    "max_depth": {**I, "minimum": 0},
-    "limit": {**I, "minimum": 1},
-    "include_patterns": S,
-    "exclude_patterns": S,
-    "cookie_jar": S,
-    "cookies": {"type": "array", "items": O, "default": []},
-    "home_page": {**B, "default": False},
-    "home_page_timeout": {**I, "minimum": 1, "default": 10},
-    "paginator": {**O, "default": {}},
-    "proxy": S,
-    "record": {**B, "default": False},
-    "return_cookie": {**B, "default": False},
-    "token_cap": {**I, "minimum": 0, "default": 0},
+    "stream": {**B, "default": False, "description": "AI Listing or Manual only."},
+    "max_depth": {**I, "minimum": 0, "default": 2, "description": "AI Map only."},
+    "limit": {**I, "minimum": 1, "default": 50, "description": "AI Map only."},
+    "include_patterns": {
+        **S,
+        "description": "AI Map only. Pipe-separated regex patterns; blank values are omitted.",
+    },
+    "exclude_patterns": {
+        **S,
+        "description": "AI Map only. Pipe-separated regex patterns; blank values are omitted.",
+    },
+    "cookie_jar": {**S, "description": "Manual only."},
+    "cookies": {
+        "type": "array",
+        "items": O,
+        "default": [],
+        "description": "Manual only.",
+    },
+    "home_page": {
+        **B,
+        "default": False,
+        "description": "Manual only; sent as homePage only when enabled.",
+    },
+    "home_page_timeout": {
+        **I,
+        "minimum": 1,
+        "default": 10,
+        "description": "Manual only.",
+    },
+    "paginator": {**O, "default": {}, "description": "Manual only."},
+    "proxy": {**S, "description": "Manual only."},
+    "record": {**B, "default": False, "description": "Manual only."},
+    "return_cookie": {**B, "default": False, "description": "Manual only."},
+    "token_cap": {**I, "minimum": 0, "default": 0, "description": "Manual only."},
 }
 
 MRSCRAPER_TOOLS = (
@@ -652,9 +641,9 @@ MRSCRAPER_TOOLS = (
         "mrscraper_run_existing_scraper",
         _tool_schema(
             "mrscraper_run_existing_scraper",
-            "Run an existing AI or manual scraper on one URL. Conditional parameters are validated for the selected scraper and agent type.",
+            "Run one URL with an existing scraper. scraper_type selects AI or Manual parameters; for AI, agent_type selects General, Listing, or Map parameters. Inapplicable saved values are ignored. Use this action whenever mode-specific configuration is needed.",
             RUN_PROPERTIES,
-            ["scraper_type", "scraper_id", "url"],
+            ["scraper_id", "url"],
         ),
         _handler(run_existing_scraper),
     ),
@@ -662,7 +651,7 @@ MRSCRAPER_TOOLS = (
         "mrscraper_run_existing_scraper_batch",
         _tool_schema(
             "mrscraper_run_existing_scraper_batch",
-            "Run an existing AI or manual scraper over a URL batch.",
+            "Run multiple URLs only when no mode-specific parameters are needed. Sends only scraperId and urls to the endpoint selected by scraper_type. For Listing, Map, or Manual overrides, call the single-run tool once per URL.",
             {
                 "scraper_type": {**S, "enum": ["ai", "manual"]},
                 "scraper_id": S,

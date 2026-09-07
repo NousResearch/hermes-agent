@@ -44,11 +44,13 @@ def build_rendered_request(args: dict) -> tuple[Dict[str, Any], Dict[str, Any], 
     screenshot_mode = str(args.get("screenshot_mode", "full"))
     if screenshot_mode not in {"full", "top"}:
         raise MrScraperError("screenshot_mode must be one of: full, top")
-    wait_until = str(args.get("wait_until", "domcontentloaded"))
-    if wait_until not in {"domcontentloaded", "load", "networkidle"}:
-        raise MrScraperError(
-            "wait_until must be one of: domcontentloaded, load, networkidle"
-        )
+    wait_until = args.get("wait_until")
+    if wait_until is not None:
+        wait_until = str(wait_until)
+        if wait_until not in {"domcontentloaded", "load", "networkidle"}:
+            raise MrScraperError(
+                "wait_until must be one of: domcontentloaded, load, networkidle"
+            )
 
     wait_for_selector = args.get("wait_for_selector")
     if wait_for_selector is not None:
@@ -60,11 +62,15 @@ def build_rendered_request(args: dict) -> tuple[Dict[str, Any], Dict[str, Any], 
         "html": str(_boolean(args, "html", True)).lower(),
         "markdown": str(_boolean(args, "markdown", False)).lower(),
         "proxyCountry": str(args.get("proxy_country", "us")),
-        "waitUntil": wait_until,
-        "blockResources": str(_boolean(args, "block_resources", True)).lower(),
-        "returnCookie": str(_boolean(args, "return_cookie", True)).lower(),
-        "super": str(_boolean(args, "super_mode", True)).lower(),
     }
+    if wait_until is not None:
+        params["waitUntil"] = wait_until
+    if _boolean(args, "block_resources", False):
+        params["blockResources"] = "true"
+    if _boolean(args, "return_cookie", False):
+        params["returnCookie"] = "true"
+    if _boolean(args, "super_mode", True):
+        params["super"] = "true"
     if screenshot:
         params["screenshot"] = screenshot_mode
     if wait_for_selector is not None:
@@ -130,12 +136,24 @@ MRSCRAPER_FETCH_RENDERED_HTML_SCHEMA = {
             "wait_until": {
                 "type": "string",
                 "enum": ["domcontentloaded", "load", "networkidle"],
-                "default": "domcontentloaded",
+                "description": "Wait condition; omitted from the request unless provided.",
             },
-            "block_resources": {"type": "boolean", "default": True},
+            "block_resources": {
+                "type": "boolean",
+                "default": False,
+                "description": "Send resource blocking only when enabled.",
+            },
             "home_page": {"type": "boolean", "default": False},
-            "return_cookie": {"type": "boolean", "default": True},
-            "super_mode": {"type": "boolean", "default": True},
+            "return_cookie": {
+                "type": "boolean",
+                "default": False,
+                "description": "Request returned cookies only when enabled.",
+            },
+            "super_mode": {
+                "type": "boolean",
+                "default": True,
+                "description": "Use Super mode by default; disabling omits the parameter.",
+            },
         },
         "required": ["url"],
         "additionalProperties": False,

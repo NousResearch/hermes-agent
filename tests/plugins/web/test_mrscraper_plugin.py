@@ -62,6 +62,29 @@ def test_all_fourteen_web_tools_have_typed_schemas() -> None:
         assert callable(handler)
 
 
+def test_existing_scraper_schemas_explain_mode_selection() -> None:
+    schemas = {name: schema for name, schema, _handler in mt.MRSCRAPER_TOOLS}
+    single = schemas["mrscraper_run_existing_scraper"]
+    properties = single["parameters"]["properties"]
+    assert "scraper_type" in single["description"]
+    assert "agent_type" in single["description"]
+    assert properties["scraper_type"]["default"] == "ai"
+    assert properties["agent_type"]["default"] == "general"
+    assert "scraper_type" not in single["parameters"]["required"]
+    assert "General" in properties["render_javascript"]["description"]
+    assert "Listing" in properties["max_pages"]["description"]
+    assert "Map" in properties["include_patterns"]["description"]
+    assert "Manual" in properties["home_page"]["description"]
+
+    batch = schemas["mrscraper_run_existing_scraper_batch"]
+    assert set(batch["parameters"]["properties"]) == {
+        "scraper_type",
+        "scraper_id",
+        "urls",
+    }
+    assert "single-run" in batch["description"]
+
+
 def test_crawl_maps_defaults_and_omits_blank_patterns() -> None:
     mt.crawl_website_urls({"url": "https://example.com", "include_patterns": ""})
     assert CaptureClient.calls == [
@@ -173,20 +196,38 @@ def test_latest_results_invalid_count_raises() -> None:
         mt.get_latest_results({"scraper_id": "abc", "count": 0})
 
 
-def test_ai_map_run_preserves_zero_and_false_defaults() -> None:
+def test_ai_map_run_uses_defaults_and_omits_blank_patterns() -> None:
     mt.run_existing_scraper({
         "scraper_type": "ai",
         "scraper_id": "s1",
         "url": "https://example.com",
         "agent_type": "map",
-        "max_depth": 0,
-        "limit": 1,
+        "include_patterns": "",
+        "exclude_patterns": "  ",
     })
     body = CaptureClient.calls[0][3]
-    assert body["maxDepth"] == 0
-    assert body["maxPages"] == 50
-    assert body["limit"] == 1
-    assert "agent_type" not in body
+    assert body == {
+        "scraperId": "s1",
+        "url": "https://example.com",
+        "maxRetry": 3,
+        "maxDepth": 2,
+        "maxPages": 50,
+        "limit": 50,
+    }
+
+
+def test_ai_map_run_serializes_user_patterns() -> None:
+    mt.run_existing_scraper({
+        "scraper_type": "ai",
+        "scraper_id": "s1",
+        "url": "https://example.com",
+        "agent_type": "map",
+        "include_patterns": "^/products/|^/offers/",
+        "exclude_patterns": "^/account/",
+    })
+    body = CaptureClient.calls[0][3]
+    assert body["includePatterns"] == "^/products/|^/offers/"
+    assert body["excludePatterns"] == "^/account/"
 
 
 def test_ai_general_maps_boolean_defaults_and_omits_blank_selector() -> None:
@@ -206,7 +247,6 @@ def test_ai_general_maps_boolean_defaults_and_omits_blank_selector() -> None:
         "renderJavascript": False,
         "returnCookies": False,
         "screenshot": False,
-        "useHomePage": False,
     }
 
 
@@ -218,20 +258,129 @@ def test_ai_listing_maps_conditional_defaults() -> None:
         "agent_type": "listing",
     })
     body = CaptureClient.calls[0][3]
-    assert body["maxPages"] == 5
+    assert body["maxPages"] == 1
     assert body["timeout"] == 300
     assert body["stream"] is False
 
 
-def test_ai_general_rejects_listing_only_parameter() -> None:
-    with pytest.raises(mt.MrScraperError, match="max_pages"):
-        mt.run_existing_scraper({
-            "scraper_type": "ai",
-            "scraper_id": "s1",
-            "url": "https://example.com",
-            "agent_type": "general",
-            "max_pages": 2,
-        })
+def test_ai_listing_accepts_max_pages_override() -> None:
+    mt.run_existing_scraper({
+        "scraper_type": "ai",
+        "scraper_id": "s1",
+        "url": "https://example.com/list",
+        "agent_type": "listing",
+        "max_pages": 7,
+    })
+    assert CaptureClient.calls[0][3]["maxPages"] == 7
+
+
+def test_ai_listing_serializes_enabled_home_page_only() -> None:
+    mt.run_existing_scraper({
+        "scraper_id": "s1",
+        "url": "https://example.com/list",
+        "agent_type": "listing",
+        "use_home_page": True,
+    })
+    assert CaptureClient.calls[0][3]["useHomePage"] is True
+
+
+def test_ai_general_ignores_listing_map_and_manual_fields() -> None:
+    mt.run_existing_scraper({
+        "scraper_id": "s1",
+        "url": "https://example.com",
+        "max_pages": 2,
+        "timeout": 5,
+        "stream": True,
+        "max_depth": 9,
+        "limit": 2,
+        "include_patterns": "include",
+        "exclude_patterns": "exclude",
+        "cookie_jar": "jar",
+        "cookies": [{"name": "session"}],
+        "home_page": True,
+        "home_page_timeout": 20,
+        "paginator": {"next": ".next"},
+        "proxy": "proxy",
+        "record": True,
+        "return_cookie": True,
+        "token_cap": 10,
+    })
+    body = CaptureClient.calls[0][3]
+    assert "maxPages" not in body
+    assert "timeout" not in body
+    assert "stream" not in body
+    assert "maxDepth" not in body
+    assert "limit" not in body
+    assert "includePatterns" not in body
+    assert "excludePatterns" not in body
+    assert "cookieJar" not in body
+    assert "cookies" not in body
+    assert "homePage" not in body
+    assert "homePageTimeout" not in body
+    assert "paginator" not in body
+    assert "proxy" not in body
+    assert "record" not in body
+    assert "returnCookie" not in body
+    assert "tokenCap" not in body
+
+
+def test_ai_listing_ignores_map_and_manual_fields() -> None:
+    mt.run_existing_scraper({
+        "scraper_id": "s1",
+        "url": "https://example.com/list",
+        "agent_type": "listing",
+        "max_depth": 9,
+        "limit": 2,
+        "include_patterns": "include",
+        "exclude_patterns": "exclude",
+        "home_page": True,
+        "return_cookie": True,
+        "token_cap": 10,
+    })
+    body = CaptureClient.calls[0][3]
+    assert "maxDepth" not in body
+    assert "limit" not in body
+    assert "includePatterns" not in body
+    assert "excludePatterns" not in body
+    assert "homePage" not in body
+    assert "returnCookie" not in body
+    assert "tokenCap" not in body
+
+
+def test_ai_map_ignores_general_listing_home_page_and_manual_fields() -> None:
+    mt.run_existing_scraper({
+        "scraper_id": "s1",
+        "url": "https://example.com/map",
+        "agent_type": "map",
+        "bypass_proxy": True,
+        "html": True,
+        "markdown": True,
+        "render_javascript": True,
+        "return_cookies": True,
+        "screenshot": True,
+        "use_home_page": True,
+        "wait_for_selector": ".ready",
+        "timeout": 5,
+        "stream": True,
+        "home_page": True,
+        "return_cookie": True,
+    })
+    body = CaptureClient.calls[0][3]
+    for field in (
+        "bypassProxy",
+        "html",
+        "markdown",
+        "renderJavascript",
+        "returnCookies",
+        "screenshot",
+        "useHomePage",
+        "waitForSelector",
+        "timeout",
+        "stream",
+        "homePage",
+        "returnCookie",
+    ):
+        assert field not in body
 
 
 def test_manual_run_preserves_empty_collections_and_stringifies_screenshot() -> None:
@@ -251,18 +400,51 @@ def test_manual_run_preserves_empty_collections_and_stringifies_screenshot() -> 
     assert body["tokenCap"] == 0
     assert body["screenshot"] == "false"
     assert body["bypassProxy"] is True
+    assert "homePage" not in body
     assert body["homePageTimeout"] == 10
     assert body["timeout"] == 600
 
 
-def test_manual_run_rejects_ai_parameters() -> None:
-    with pytest.raises(mt.MrScraperError, match="agent_type"):
-        mt.run_existing_scraper({
-            "scraper_type": "manual",
-            "scraper_id": "m1",
-            "url": "https://example.com",
-            "agent_type": "general",
-        })
+def test_manual_run_serializes_enabled_home_page_only() -> None:
+    mt.run_existing_scraper({
+        "scraper_type": "manual",
+        "scraper_id": "m1",
+        "url": "https://example.com",
+        "home_page": True,
+    })
+    assert CaptureClient.calls[0][3]["homePage"] is True
+
+
+def test_manual_run_ignores_all_ai_only_parameters() -> None:
+    mt.run_existing_scraper({
+        "scraper_type": "manual",
+        "scraper_id": "m1",
+        "url": "https://example.com",
+        "agent_type": "listing",
+        "render_javascript": True,
+        "return_cookies": True,
+        "use_home_page": True,
+        "wait_for_selector": ".ready",
+        "max_pages": 5,
+        "max_depth": 3,
+        "limit": 4,
+        "include_patterns": "include",
+        "exclude_patterns": "exclude",
+    })
+    body = CaptureClient.calls[0][3]
+    for field in (
+        "agentType",
+        "renderJavascript",
+        "returnCookies",
+        "useHomePage",
+        "waitForSelector",
+        "maxPages",
+        "maxDepth",
+        "limit",
+        "includePatterns",
+        "excludePatterns",
+    ):
+        assert field not in body
 
 
 def test_manual_run_rejects_non_object_cookie() -> None:
@@ -288,11 +470,15 @@ def test_batch_endpoint_and_text_normalization(scraper_type, expected_path) -> N
         "scraper_id": "s1",
         "urls": "https://a.example,\nhttps://b.example\n",
     })
-    assert CaptureClient.calls[0][1] == expected_path
-    assert CaptureClient.calls[0][3]["urls"] == [
-        "https://a.example",
-        "https://b.example",
-    ]
+    assert CaptureClient.calls[0] == (
+        "POST",
+        expected_path,
+        None,
+        {
+            "scraperId": "s1",
+            "urls": ["https://a.example", "https://b.example"],
+        },
+    )
 
 
 def test_batch_rejects_non_string_array_entries() -> None:

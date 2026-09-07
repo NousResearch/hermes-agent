@@ -2076,6 +2076,8 @@ In the CLI, cycle through these modes with `/verbose`. To use `/verbose` in mess
 
 Tool progress requires a gateway adapter that can display progress updates safely. Platforms without message editing support, including Signal, suppress tool-progress bubbles even if `/verbose` saves a non-`off` mode.
 
+`off` hides tool-call *chrome* only. Application state that has its own surface in the Desktop app and TUI — the task list (`todo_list`), subagent progress, clarify questions, and MCP consent cards — keeps flowing regardless of this setting.
+
 ### Focus view (`/focus`, CLI + TUI)
 
 `display.focus_view: true` enables **focus view** — a reduced-output display mode for when you want the answer, not the play-by-play. It is a thin layer over the same `tool_progress` machinery rather than a second suppression path:

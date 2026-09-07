@@ -127,6 +127,38 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             assert generate_title("question", "answer") == "Investigate the title resolver bug"
 
+    @pytest.mark.parametrize(
+        "degenerate",
+        [
+            "{",
+            "```",
+            "--",
+            "!!!",
+            "***",
+            "…",
+        ],
+    )
+    def test_rejects_degenerate_punctuation_only_title(self, degenerate):
+        """A model that emits a lone symbol / code fence (e.g. on a degraded fallback
+        after a 429) must not become the session title — it slips past the length and
+        word-count guards and, once persisted, corrupts Discord auto-thread names.
+        Regression for the degenerate-title bug class."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = degenerate
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("question", "answer") is None
+
+    def test_accepts_non_ascii_alphanumeric_title(self):
+        """Unicode-aware guard: CJK/Vietnamese titles (letters, not ASCII-only word chars) still pass."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Xử lý high load sg3"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("question", "answer") == "Xử lý high load sg3"
+
 
 
     def test_invokes_failure_callback_on_exception(self):

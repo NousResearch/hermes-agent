@@ -718,6 +718,22 @@ Everything below follows this same pattern — just change the URL, key, and mod
 
 ---
 
+### Standard Compute — Hosted Routing
+
+[Standard Compute](https://standardcompute.com/) provides a hosted, OpenAI-compatible endpoint. Its `standardcompute` model name is a routing alias, not a request for a particular underlying model. You can connect it through Hermes' existing custom-provider setup:
+
+```bash
+hermes model
+# Select "Custom endpoint (self-hosted / VLLM / etc.)"
+# Enter URL: https://api.stdcmpt.com/v1
+# Enter your Standard Compute API key when prompted
+# Enter model name: standardcompute
+```
+
+The wizard stores the endpoint and model in your active Hermes configuration. Enter the key at the prompt rather than putting it in a shell command or a shared configuration example.
+
+Start a new session after setup. If Hermes cannot infer the context length of the routing alias, set `model.context_length` explicitly using the current limit in the [provider's model information](https://models.dev/?search=standardcompute). Check the [current plans](https://standardcompute.com/pricing) for usage allowances; the monthly subscription does not make every request unlimited.
+
 ### Ollama — Local Models, Zero Config
 
 [Ollama](https://ollama.com/) runs open-weight models locally with one command. Best for: quick local experimentation, privacy-sensitive work, offline use. Supports tool calling via the OpenAI-compatible API.

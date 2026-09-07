@@ -100,7 +100,7 @@ def test_handoff_verifies_runtime_before_reporting_success() -> None:
     )
 
     block = verify.group(0)
-    assert 'import hermes_cli.main' in block, (
+    assert "import hermes_cli.main" in block, (
         "The post-update verification must exercise the managed runtime "
         "(python -c 'import hermes_cli.main'), not just an existence check: "
         "a quarantined-but-present file would pass Test-Path."

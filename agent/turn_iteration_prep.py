@@ -20,6 +20,48 @@ from agent.turn_context import reanchor_current_turn_user_idx
 
 logger = logging.getLogger("agent.conversation_loop")
 
+ITERATION_BUDGET_WARNING_TEMPLATE = (
+    "[SYSTEM NOTICE — iteration budget checkpoint] You have used {used} of {maximum} "
+    "iterations. Checkpoint durable progress now, then continue the task; do not stop "
+    "solely because of this warning."
+)
+
+
+def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
+    """Append the opt-in one-shot warning to the newest tool result."""
+    ratio = getattr(agent, "budget_warning_ratio", None)
+    budget = getattr(agent, "iteration_budget", None)
+    if (
+        ratio is None
+        or budget is None
+        or getattr(agent, "_iteration_budget_warning_injected", False)
+        or budget.used < ratio * budget.max_total
+    ):
+        return False
+    notice = ITERATION_BUDGET_WARNING_TEMPLATE.format(
+        used=budget.used, maximum=budget.max_total
+    )
+    for message in reversed(messages):
+        if isinstance(message, dict) and message.get("role") == "tool":
+            content = message.get("content", "")
+            if isinstance(content, str):
+                message["content"] = content + f"\n\n{notice}"
+            else:
+                try:
+                    message["content"] = [
+                        *(content or []), {"type": "text", "text": notice}
+                    ]
+                except Exception:
+                    return False
+            agent._iteration_budget_warning_injected = True
+            logger.info(
+                "Iteration budget warning injected (%s/%s)",
+                budget.used,
+                budget.max_total,
+            )
+            return True
+    return False
+
 
 @dataclass
 class IterationPrep:
@@ -60,6 +102,10 @@ def prepare_iteration(agent: Any,*, messages: Any, api_call_count: Any) -> Itera
     # same cache-safe channel as /steer (newest tool result); off with no budget.
     if getattr(agent, "run_budget_seconds", None):
         _maybe_inject_run_budget_wrapup(agent, messages)
+
+    # Use the same cache-safe channel as /steer; never add a synthetic user/system row.
+    if getattr(agent, "budget_warning_ratio", None) is not None:
+        _maybe_inject_iteration_budget_warning(agent, messages)
 
     request_logger = getattr(agent, "logger", None) or logger  # same name as the origin module
     # Per-agent validation cursor skips re-parsing tool_call args already validated.

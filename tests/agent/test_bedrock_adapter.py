@@ -378,7 +378,7 @@ class TestNormalizeConverseResponse:
                 }],
             },
             {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
-        ], model_id="global.anthropic.claude-sonnet-4-6")  # redacted blocks only valid for thinking-capable models
+        ])
         assistant = next(m for m in messages if m["role"] == "assistant")
         assert assistant["content"][0] == {
             "reasoningContent": {"redactedContent": b"opaque-bedrock-bytes"}
@@ -407,7 +407,7 @@ class TestNormalizeConverseResponse:
             } for tc in msg.tool_calls],
             "reasoning_details": msg.reasoning_details,
             "bedrock_content_blocks": msg.bedrock_content_blocks,
-        }], model_id="global.anthropic.claude-sonnet-4-6")  # redacted blocks only valid for thinking-capable models
+        }])
         blocks = replay[1]["content"]
         assert [next(iter(block)) for block in blocks] == [
             "reasoningContent", "toolUse", "reasoningContent", "toolUse"
@@ -427,55 +427,36 @@ class TestReasoningNonThinkingModels:
     """
 
     def test_llama_strips_reasoning_content_blocks(self):
-        """Llama models must not receive reasoningContent blocks — ValidationException otherwise."""
-        from agent.bedrock_adapter import convert_messages_to_converse
+        """_strip_reasoning_blocks removes reasoningContent from assistant turns for Llama."""
+        from agent.bedrock_adapter import _strip_reasoning_blocks
 
-        # Simulate a session where Claude Sonnet 4.6 produced a reasoning block,
-        # then the user switched to Llama in the same session.
-        messages = [
-            {"role": "user", "content": "think about this"},
-            {
-                "role": "assistant",
-                "content": "The answer is 42.",
-                "bedrock_content_blocks": [
-                    {"reasoningContent": {"text": "Let me reason through this carefully."}},
-                    {"text": "The answer is 42."},
-                ],
-            },
-            {"role": "user", "content": "now explain"},
+        converse_messages = [
+            {"role": "user", "content": [{"text": "think about this"}]},
+            {"role": "assistant", "content": [
+                {"reasoningContent": {"reasoningText": "Let me reason through this."}},
+                {"text": "The answer is 42."},
+            ]},
+            {"role": "user", "content": [{"text": "now explain"}]},
         ]
-        _sys, converse = convert_messages_to_converse(
-            messages, model_id="meta.llama4-maverick-17b-instruct-v1:0"
-        )
-        assistant_turn = next(m for m in converse if m["role"] == "assistant")
-        # No reasoningContent blocks must survive for Llama
+        stripped = _strip_reasoning_blocks(converse_messages)
+        assistant_turn = next(m for m in stripped if m["role"] == "assistant")
         assert not any("reasoningContent" in b for b in assistant_turn["content"]), (
             "reasoningContent blocks must be stripped for non-thinking models"
         )
-        # The text block must be preserved
         assert any(b.get("text") == "The answer is 42." for b in assistant_turn["content"])
 
-    def test_gpt_oss_strips_reasoning_content_blocks(self):
-        """GPT-OSS models must not receive reasoningContent blocks."""
-        from agent.bedrock_adapter import convert_messages_to_converse
+    def test_strip_reasoning_blocks_placeholder_when_only_reasoning(self):
+        """If stripping leaves an empty content list, a placeholder is inserted."""
+        from agent.bedrock_adapter import _strip_reasoning_blocks
 
-        messages = [
-            {"role": "user", "content": "hello"},
-            {
-                "role": "assistant",
-                "content": "Hi there.",
-                "bedrock_content_blocks": [
-                    {"reasoningContent": {"text": "Thinking…"}},
-                    {"text": "Hi there."},
-                ],
-            },
-            {"role": "user", "content": "continue"},
+        converse_messages = [
+            {"role": "assistant", "content": [
+                {"reasoningContent": {"reasoningText": "only reasoning, no text"}},
+            ]},
         ]
-        _sys, converse = convert_messages_to_converse(
-            messages, model_id="openai.gpt-oss-120b-1:0"
-        )
-        assistant_turn = next(m for m in converse if m["role"] == "assistant")
-        assert not any("reasoningContent" in b for b in assistant_turn["content"])
+        stripped = _strip_reasoning_blocks(converse_messages)
+        assert stripped[0]["content"], "content must not be empty after stripping"
+        assert "reasoningContent" not in stripped[0]["content"][0]
 
     def test_replay_ordered_blocks_uses_reasoningText_key(self):
         """_replay_ordered_blocks must emit reasoningContent.reasoningText (not .text)."""
@@ -511,28 +492,15 @@ class TestReasoningNonThinkingModels:
         text_blocks = [b for b in blocks if "text" in b]
         assert any(b["text"] == "visible response" for b in text_blocks)
 
-    def test_sonnet_46_preserves_reasoning_blocks(self):
-        """Claude Sonnet 4.6 must still receive its own reasoningContent blocks unchanged."""
-        from agent.bedrock_adapter import convert_messages_to_converse
+    def test_sonnet_46_preserves_reasoning_blocks_in_build_converse_kwargs(self):
+        """build_converse_kwargs must not strip reasoningContent for Sonnet 4.6."""
+        from agent.bedrock_adapter import convert_messages_to_converse, _model_supports_extended_thinking
 
-        messages = [
-            {"role": "user", "content": "think"},
-            {
-                "role": "assistant",
-                "content": "Done.",
-                "bedrock_content_blocks": [
-                    {"reasoningContent": {"text": "my reasoning"}},
-                    {"text": "Done."},
-                ],
-            },
-            {"role": "user", "content": "ok"},
-        ]
-        _sys, converse = convert_messages_to_converse(
-            messages, model_id="global.anthropic.claude-sonnet-4-6"
-        )
-        assistant_turn = next(m for m in converse if m["role"] == "assistant")
-        reasoning_blocks = [b for b in assistant_turn["content"] if "reasoningContent" in b]
-        assert reasoning_blocks, "Sonnet 4.6 must preserve its own reasoningContent blocks"
+        assert _model_supports_extended_thinking("global.anthropic.claude-sonnet-4-6")
+        assert _model_supports_extended_thinking("anthropic.claude-sonnet-4-6")
+        assert not _model_supports_extended_thinking("meta.llama4-maverick-17b-instruct-v1:0")
+        assert not _model_supports_extended_thinking("openai.gpt-oss-120b-1:0")
+        assert not _model_supports_extended_thinking("")
 
 
 # ---------------------------------------------------------------------------

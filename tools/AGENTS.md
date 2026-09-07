@@ -93,7 +93,7 @@ subagent_auto_approve, inherit_mcp_toolsets, max_iterations`. **Child processes:
 processes are killed at its teardown and their notices are suppressed in the parent; `process_manage(action="handoff")`
 (children only) flips `ProcessSession.owner_task_id` to the parent under the registry lock
 (`process_registry.transfer_ownership`) so the completion routes and reaps by the new owner; un-handed leftovers land on
-the result as `orphaned_processes` (`_ChildRun.account_background_processes`, before `cleanup` kills them). **Durability:** background
+the result as `orphaned_processes`, exited-but-never-read notify processes as `unread_completions` (`_ChildRun.account_background_processes`, before `cleanup` kills them). **Durability:** background
 delegation is process-local; work that must survive restart uses `cronjob` or
 `terminal(background=True, notify_on_complete=True)`. API: `website/docs/developer-guide/subagent-lifecycle-api.md`.
 

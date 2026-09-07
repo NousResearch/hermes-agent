@@ -1864,6 +1864,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
         with self._lock:
             return [s for s in self._running.values() if s.owner_task_id == owner_task_id and not s.exited]
 
+    def unread_completions_owned_by(self, owner_task_id: str) -> List[ProcessSession]:
+        """Exited ``notify_on_complete`` processes of ``owner_task_id`` whose result nobody read (no wait/log/poll).
+        A child's completion notice is suppressed in the parent, so an unread exit is otherwise lost silently."""
+        with self._lock:
+            return [s for s in self._finished.values()
+                    if s.owner_task_id == owner_task_id and s.notify_on_complete
+                    and s.id not in self._completion_consumed and s.id not in self._poll_observed]
+
     def transfer_ownership(self, session_id: str, *, from_owner: str, to_owner: str, to_task_id: str,
                            to_session_key: str, note: str = "") -> Optional[ProcessSession]:
         """Move a RUNNING process from one owner to another under the registry lock. Ownership is the ``owner_task_id``

@@ -229,6 +229,9 @@ def _process_accounting_lines(r: dict) -> list:
                      "(subagent process notices never reach you): "
                      + "; ".join(f"{o.get('session_id')} `{o.get('command', '')[:100]}` ({o.get('runtime_seconds')}s)" for o in orphans)
                      + ". Re-launch in this session anything you still need.")
+    for u in r.get("unread_completions") or []:
+        lines.append(f"Child's process {u.get('session_id')} `{u.get('command', '')[:100]}` finished (exit code "
+                     f"{u.get('exit_code')}) but the child never read its result; output tail:\n{u.get('output_tail', '')}")
     return lines
 
 

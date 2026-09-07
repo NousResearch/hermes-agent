@@ -3561,6 +3561,170 @@ class DiscordAdapter(BasePlatformAdapter):
         mixers = getattr(self, "_voice_mixers", None)
         return bool(mixers) and mixers.get(guild_id) is not None
 
+    # ------------------------------------------------------------------
+    # Streaming TTS (#60671) — play clauses as the LLM generates them.
+    #
+    # The gateway's StreamingTTSConsumer chunks the reply into clauses,
+    # synthesises each via a StreamingTTSProvider (e.g. Breeze), and calls
+    # these methods to push PCM onto the voice channel while the model is
+    # still writing.  We back the stream with the continuous VoiceMixer: one
+    # StreamingMixerChild per turn, fed resampled PCM, ducking the ambient bed
+    # for the life of the turn and swelling it back on completion.  Requires an
+    # installed mixer (voice-fx enabled); otherwise we decline and the gateway
+    # keeps the whole-file auto-TTS path.
+    # ------------------------------------------------------------------
+
+    def _voice_guild_for_chat(self, chat_id: str) -> Optional[int]:
+        """Return the guild whose voice channel is bound to *chat_id*, or None.
+
+        Only returns a guild that is both connected and running the continuous
+        mixer — the streaming path has no legacy fallback of its own.
+        """
+        bindings = getattr(self, "_voice_text_channels", None) or {}
+        for gid, text_ch_id in bindings.items():
+            if str(text_ch_id) == str(chat_id) and self.is_in_voice_channel(gid) \
+                    and self.voice_mixer_active(gid):
+                return gid
+        return None
+
+    def supports_streaming_tts(self, chat_id: str, audio_format: "AudioFormat") -> bool:
+        return self._voice_guild_for_chat(chat_id) is not None
+
+    def _guild_bound_to_chat(self, chat_id: str) -> Optional[int]:
+        """Guild whose voice channel is bound to *chat_id* (binding only).
+
+        Unlike :meth:`_voice_guild_for_chat` this does not require the mixer to
+        be active — used by stop paths that must find the stream to cancel even
+        as things are being torn down.
+        """
+        bindings = getattr(self, "_voice_text_channels", None) or {}
+        for gid, text_ch_id in bindings.items():
+            if str(text_ch_id) == str(chat_id):
+                return gid
+        return None
+
+    def _supersede_stream_handle(self, guild_id: int, *, hard: bool) -> None:
+        """Stop the guild's current streaming reply, if any.
+
+        A reply's audio plays out (its mixer child) after the consumer that fed
+        it has finished, so a new reply — or a barge-in — must stop the old one
+        or two replies overlap. ``hard`` cuts immediately (barge-in / new
+        reply); it also flags the old handle aborted so a still-running
+        background consumer for it stops synthesising.
+        """
+        handles = getattr(self, "_voice_stream_handles", None)
+        if not handles:
+            return
+        prior = handles.get(guild_id)
+        if prior is None:
+            return
+        prior.aborted = True
+        child = getattr(prior, "child", None)
+        if child is not None and not child.finished:
+            if hard:
+                child.clear_and_close()
+            else:
+                child.close()
+        handles.pop(guild_id, None)
+
+    def stop_streaming_speech(self, chat_id: str) -> None:
+        """Immediately stop any streaming reply playing for *chat_id* (barge-in)."""
+        guild_id = self._guild_bound_to_chat(chat_id)
+        if guild_id is not None:
+            self._supersede_stream_handle(guild_id, hard=True)
+
+    async def begin_streaming_tts(
+        self,
+        chat_id: str,
+        audio_format: "AudioFormat",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "Optional[StreamingTTSHandle]":
+        guild_id = self._voice_guild_for_chat(chat_id)
+        if guild_id is None:
+            return None
+        try:
+            from .voice_mixer import PcmResamplerTo48Stereo
+        except ImportError:
+            from voice_mixer import PcmResamplerTo48Stereo
+        from gateway.platforms.base import StreamingTTSHandle
+
+        # A new reply supersedes any prior one still playing/synthesising for
+        # this guild, so replies never overlap.
+        self._supersede_stream_handle(guild_id, hard=True)
+
+        handle = StreamingTTSHandle(chat_id=chat_id, audio_format=audio_format)
+        # Extra per-turn state on the handle (dataclass, not slotted).
+        handle.guild_id = guild_id
+        handle.child = None  # created lazily on the first audible chunk
+        handle.resampler = PcmResamplerTo48Stereo(
+            audio_format.sample_rate, audio_format.channels
+        )
+        stream_handles = getattr(self, "_voice_stream_handles", None)
+        if stream_handles is None:
+            stream_handles = {}
+            self._voice_stream_handles = stream_handles
+        stream_handles[guild_id] = handle
+        # Playback is activity — don't let the idle timer disconnect mid-reply.
+        self._cancel_voice_timeout(guild_id)
+        return handle
+
+    async def write_streaming_tts(self, handle: "StreamingTTSHandle", chunk: bytes) -> None:
+        if handle is None or getattr(handle, "aborted", False) or not chunk:
+            return
+        mixer = getattr(self, "_voice_mixers", {}).get(getattr(handle, "guild_id", None))
+        if mixer is None:
+            return
+        pcm48 = handle.resampler.feed(chunk)
+        if not pcm48:
+            return
+        if handle.child is None:
+            # First audible PCM: install the streaming child now (not at begin)
+            # so the ambient bed keeps playing normally until the reply actually
+            # has audio — the duck coincides with speech, not the wait for it.
+            speech_gain = float(self._voice_fx_cfg.get("speech_gain", 1.0))
+            handle.child = mixer.play_stream(gain=speech_gain)
+            lead = self._lead_silence_bytes()
+            if lead:
+                handle.child.feed(lead)
+        handle.child.feed(pcm48)
+
+    async def finish_streaming_tts(
+        self, handle: "StreamingTTSHandle", *, interrupted: bool = False
+    ) -> None:
+        if handle is None:
+            return
+        # Close so the child drains its buffer and the ambient swells back once
+        # the last clause finishes playing. The resampler's tail (one carried
+        # source sample) is dropped — well under a millisecond, inaudible.
+        child = getattr(handle, "child", None)
+        if child is not None:
+            child.close()
+        gid = getattr(handle, "guild_id", None)
+        if gid is not None:
+            self._reset_voice_timeout(gid)
+
+    async def abort_streaming_tts(
+        self, handle: "StreamingTTSHandle", error: Optional[str] = None
+    ) -> None:
+        if handle is None:
+            return
+        handle.aborted = True
+        child = getattr(handle, "child", None)
+        if child is not None:
+            # Graceful by default: an end-of-turn finalisation timeout or a
+            # cleanup abort lets already-synthesised audio in the buffer play
+            # out rather than clipping the reply mid-word (the mixer child drains
+            # independently of the now-stopped consumer task). The live barge-in
+            # path is stop_streaming_speech() (a hard cut); the "barge" check
+            # here is a defensive fallback for an abort reason that names one.
+            if "barge" in (error or "").lower():
+                child.clear_and_close()
+            else:
+                child.close()
+        gid = getattr(handle, "guild_id", None)
+        if gid is not None:
+            self._reset_voice_timeout(gid)
+
     async def join_voice_channel(self, channel, *, text_channel_id: int = None, source: dict = None) -> bool:
         """Join a voice channel; returns True on success. ``text_channel_id`` stores the
         transcription-routing binding so programmatic joins work without ``/voice join``."""

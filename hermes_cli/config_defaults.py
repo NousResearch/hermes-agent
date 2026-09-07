@@ -1054,6 +1054,16 @@ DEFAULT_CONFIG = {
             "voice": "default",
             # optional "base_url" key overrides DEEPINFRA_BASE_URL for TTS only
         },
+        "breeze": {
+            # Local streaming server (breeze-tts); streaming only, pin via streaming.provider: breeze
+            "base_url": "http://127.0.0.1:7860",  # or $BREEZE_TTS_URL
+            "ref_audio": "",  # optional voice-clone reference clip (needs ref_text too)
+            "ref_text": "",   # transcript of ref_audio (Breeze needs both or neither)
+            "instruction": "Speak clearly and naturally.",
+            "cfg_scale": 1.0,
+            "seed": 42,
+            "busy_timeout": 20.0,  # seconds to wait out a 409 (server synthesises one request at a time)
+        },
     },
 
     "stt": {

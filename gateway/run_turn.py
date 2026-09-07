@@ -3272,19 +3272,40 @@ class GatewayTurnMixin:
         if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
             self._evict_cached_agent(session_key)
 
+    @staticmethod
+    def _streaming_tts_should_abort_on_turn_end(stts: Any) -> bool:
+        """Abort a still-running consumer only when it never produced audio.
+
+        Audible streams must keep synthesising after the text send — aborting them
+        (the #60671 leak-hardening) clips Discord playback the moment the turn
+        ends. Silent streams still abort so whole-file TTS can fall back.
+        """
+        return bool(
+            stts is not None
+            and not getattr(stts, "done", True)
+            and not getattr(stts, "suppress_whole_file", False)
+        )
+
     async def _run_agent_finalize_streaming_tts(self, turn_ctx: TurnContext, adapter: Any) -> None:
         """Finalize the streaming-TTS consumer on the outer event-loop thread (covers early returns
-        from run_sync). On drain timeout abort to free the task — audible streams keep whole-file
-        suppression, silent streams stay eligible for the whole-file fallback."""
+        from run_sync). ``finish()`` ends the text feed; remaining PCM keeps playing after this
+        turn returns. Abort on drain timeout only if nothing was audible (whole-file fallback)."""
         _stts = turn_ctx.streaming_tts_consumer_holder[0]
         if _stts is None:
             return
         _stts.finish()
+        # Already speaking: don't block the Discord text send, and don't abort remaining clauses.
+        if _stts.suppress_whole_file:
+            if adapter is not None:
+                _mark_turn = getattr(adapter, "_mark_streaming_tts_completed_turn", None)
+                if callable(_mark_turn):
+                    _mark_turn(turn_ctx.session_key, turn_ctx.run_generation)
+            return
         try:
             await _stts.wait_complete(timeout=10.0)
         except Exception as _stts_done_err:
             logger.debug("streaming TTS wait_complete error: %s", _stts_done_err)
-        if not _stts.done:
+        if self._streaming_tts_should_abort_on_turn_end(_stts):
             _stts.abort("streaming TTS finalisation timeout")
             await _stts.wait_complete(timeout=2.0)
         if _stts.suppress_whole_file and adapter is not None:
@@ -3531,10 +3552,11 @@ class GatewayTurnMixin:
             else:
                 await self._await_stream_task(stream_task)
 
-        # Abort + bounded wait for streaming TTS: covers paths where normal finalisation was skipped.
+        # Abort only silent in-flight streaming TTS (never-audible → whole-file fallback).
+        # An audible stream is detached: finish() already ended the text feed, and remaining
+        # PCM must play out after the Discord message posts. See local Breeze Discord cut-out.
         _stts_finally = turn_ctx.streaming_tts_consumer_holder[0]
-        # See #60671.
-        if _stts_finally is not None and not _stts_finally.done:
+        if self._streaming_tts_should_abort_on_turn_end(_stts_finally):
             _stts_finally.abort("cleanup")
             with suppress(Exception):
                 await _stts_finally.wait_complete(timeout=2.0)

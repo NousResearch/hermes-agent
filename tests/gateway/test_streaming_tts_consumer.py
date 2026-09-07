@@ -289,15 +289,16 @@ class TestConsumerLifecycle:
         _run_test(run)
 
 
-    def test_post_audio_timeout_keeps_suppression_then_aborts(self):
-        """After audible audio, a finalisation timeout aborts the consumer.
+    def test_post_audio_timeout_keeps_suppression_without_abort(self):
+        """After audible audio, a short wait_complete timeout must not abort.
 
-        The outer gateway loop calls abort() on timeout so no unowned
-        consumer task lingers.  Suppression is preserved so the gateway
-        does not replay from the beginning.  Updated for #60671
-        hardening: the outer loop now aborts instead of leaving the
-        consumer to complete later in the background.
+        Discord posts the text reply as soon as the LLM turn ends, while Breeze
+        may still be synthesising remaining clauses. Aborting here clips the
+        in-progress mixer child. Suppression stays set so whole-file TTS does
+        not replay from the start; the consumer finishes in the background.
         """
+        from gateway.run_turn import GatewayTurnMixin
+
         async def run(loop):
             adapter = FakeVoiceAdapter()
             streamer = BlockingSecondChunkStreamer()
@@ -318,15 +319,15 @@ class TestConsumerLifecycle:
             assert consumer.suppress_whole_file is True
             assert adapter.written_chunks == [b"chunk-1-0"]
 
-            # The outer loop now aborts on timeout after audible audio
-            # instead of leaving the consumer running in the background.
-            consumer.abort("streaming TTS finalisation timeout")
-            await consumer.wait_complete(timeout=2.0)
-
-            # The consumer is aborted, not completed.
-            assert consumer.completed is False
-            assert consumer._aborted is True
+            assert GatewayTurnMixin._streaming_tts_should_abort_on_turn_end(consumer) is False
+            assert consumer._aborted is False
+            assert consumer.done is False
             assert consumer.suppress_whole_file is True
+
+            streamer.allow_remaining_chunks.set()
+            await consumer.wait_complete(timeout=5.0)
+            assert consumer._aborted is False
+            assert consumer.completed is True
 
         _run_test(run)
 
@@ -600,14 +601,16 @@ class TestAdapterFinishFailure:
 
 
 # ---------------------------------------------------------------------------
-# Post-audio timeout: clean abort, no later background completion (#60671)
+# Post-audio timeout: detach audible streams so remaining PCM plays out after the text send. Silent streams still abort (#60671 leak path).
 # ---------------------------------------------------------------------------
 
 
-class TestPostAudioTimeoutAbort:
-    """On finalisation timeout after audible audio, abort the consumer."""
+class TestPostAudioTimeoutDetach:
+    """On finalisation timeout after audible audio, detach — do not abort."""
 
-    def test_timeout_after_audible_aborts_and_preserves_suppression(self):
+    def test_timeout_after_audible_does_not_abort(self):
+        from gateway.run_turn import GatewayTurnMixin
+
         async def run(loop):
             adapter = FakeVoiceAdapter()
             streamer = BlockingSecondChunkStreamer()
@@ -624,20 +627,30 @@ class TestPostAudioTimeoutAbort:
             assert consumer.audible is True
             assert consumer.suppress_whole_file is True
 
-            # Timeout: the consumer should be aborted, not left running.
             completed = await consumer.wait_complete(timeout=0.01)
             assert completed is False
             assert consumer.suppress_whole_file is True
+            assert GatewayTurnMixin._streaming_tts_should_abort_on_turn_end(consumer) is False
+            assert consumer._aborted is False
 
-            # Simulate the outer loop's abort-on-timeout behaviour.
-            consumer.abort("streaming TTS finalisation timeout")
-            await asyncio.sleep(0.05)
-
-            # The consumer must not complete later in the background.
-            assert consumer.completed is False
-            assert consumer._aborted is True
+            streamer.allow_remaining_chunks.set()
+            await consumer.wait_complete(timeout=5.0)
+            assert consumer.completed is True
+            assert consumer._aborted is False
 
         _run_test(run)
+
+    def test_silent_unfinished_consumer_is_aborted(self):
+        from types import SimpleNamespace
+        from gateway.run_turn import GatewayTurnMixin
+
+        silent = SimpleNamespace(done=False, suppress_whole_file=False)
+        audible = SimpleNamespace(done=False, suppress_whole_file=True)
+        finished = SimpleNamespace(done=True, suppress_whole_file=True)
+        assert GatewayTurnMixin._streaming_tts_should_abort_on_turn_end(silent) is True
+        assert GatewayTurnMixin._streaming_tts_should_abort_on_turn_end(audible) is False
+        assert GatewayTurnMixin._streaming_tts_should_abort_on_turn_end(finished) is False
+        assert GatewayTurnMixin._streaming_tts_should_abort_on_turn_end(None) is False
 
 
 # ---------------------------------------------------------------------------

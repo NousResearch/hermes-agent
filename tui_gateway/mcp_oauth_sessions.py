@@ -207,14 +207,19 @@ def start_flow(
     return {"session_id": session_id, "auth_url": auth_url, "flow": "pkce"}
 
 
-def _lookup(session_id: str, server_name: str) -> "tuple[Dict[str, Any] | None, str | None]":
-    """Find a session record; returns ``(rec, None)`` or ``(None, error_message)``."""
+def _lookup(
+    session_id: str, server_name: str, hermes_home: Optional[str] = None,
+) -> "tuple[Dict[str, Any] | None, str | None]":
+    """Find a session belonging to the caller's resolved profile."""
+    from hermes_constants import hermes_home_key
     with _sessions_lock:
         rec = _sessions.get(session_id)
     if rec is None:
         return None, "OAuth session not found or expired"
     if rec["server_name"] != server_name:
         return None, "server name mismatch for session"
+    if hermes_home_key(rec["hermes_home"]) != hermes_home_key(hermes_home):
+        return None, "profile mismatch for session"
     return rec, None
 
 
@@ -239,11 +244,9 @@ def poll_flow(session_id: str, server_name: str) -> Dict[str, Any]:
 
 def cancel_flow(session_id: str, server_name: str, hermes_home: str) -> Dict[str, Any]:
     """Cancel only the owning profile's flow and release its callback waiter."""
-    rec, err = _lookup(session_id, server_name)
+    rec, err = _lookup(session_id, server_name, hermes_home)
     if rec is None:
         return {"ok": False, "error_message": err}
-    if rec["hermes_home"] != hermes_home:
-        return {"ok": False, "error_message": "profile mismatch for session"}
     flow = rec["flow"]
     flow.mark_error("OAuth cancelled by user")
     _shutdown_listener(rec)

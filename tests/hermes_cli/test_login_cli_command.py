@@ -32,7 +32,7 @@ def _cli(monkeypatch):
         return thread
 
     cli._side_worker = side_worker
-    cli._handle_signin_command = commands.CLICommandsMixin._handle_signin_command.__get__(cli)
+    cli._handle_login_command = commands.CLICommandsMixin._handle_login_command.__get__(cli)
     output = []
     monkeypatch.setattr(commands, "_cp", lambda *lines: output.extend(lines))
     return cli, workers, output
@@ -49,7 +49,7 @@ def test_the_cli_handler_prints_the_code_then_drains_off_thread(monkeypatch):
         anon_auth, "render_sign_in_cli_code",
         lambda state, **kwargs: kwargs["printer"](state.link, state.code, f"  {state.copy_with_wait}"))
 
-    cli._handle_signin_command("/signin")
+    cli._handle_login_command("/login")
 
     assert output == [
         "  Starting sign-in...",
@@ -81,7 +81,7 @@ def test_the_drain_only_moves_the_free_tier_model_on_completion(
     ]))
     monkeypatch.setattr(anon_auth, "render_sign_in_cli_code", lambda *_args, **_kwargs: None)
 
-    cli._handle_signin_command("/signin")
+    cli._handle_login_command("/login")
     workers[0][0].join()
 
     assert cli.model == expected_model
@@ -91,7 +91,7 @@ def test_a_precondition_prints_without_starting_a_thread(monkeypatch):
     cli, workers, output = _cli(monkeypatch)
     monkeypatch.setattr(anon_auth, "run_sign_in", lambda **_kwargs: iter([anon_auth.AlreadySignedIn()]))
 
-    cli._handle_signin_command("/signin")
+    cli._handle_login_command("/login")
 
     assert output == ["  Starting sign-in...", "  Already signed in."]
     assert workers == []
@@ -110,7 +110,7 @@ def test_ctrl_c_during_the_first_advance_prints_the_cancelled_copy(monkeypatch):
 
     monkeypatch.setattr(anon_auth, "run_sign_in", lambda **_kwargs: flow())
 
-    cli._handle_signin_command("/signin")
+    cli._handle_login_command("/login")
 
     assert output[-1] == anon_auth.UPGRADE_CANCELLED
     assert closed.is_set()
@@ -127,7 +127,7 @@ def test_the_handler_never_calls_input_and_uses_the_short_timeout(monkeypatch):
         return iter([anon_auth.AlreadySignedIn()])
 
     monkeypatch.setattr(anon_auth, "run_sign_in", flow)
-    cli._handle_signin_command("/signin")
+    cli._handle_login_command("/login")
 
     assert seen == [{"timeout_seconds": 8.0}]
 
@@ -140,7 +140,7 @@ def test_the_in_chat_and_terminal_completion_use_their_own_copy():
 
 def test_the_command_resolves_through_the_cli_fallback():
     from cli import HermesCLI
-    assert HermesCLI._slash_handler("signin") == ("_handle_signin_command", True)
+    assert HermesCLI._slash_handler("login") == ("_handle_login_command", True)
 
 
 def test_the_drain_writes_to_the_console_captured_at_start(monkeypatch):
@@ -163,7 +163,7 @@ def test_the_drain_writes_to_the_console_captured_at_start(monkeypatch):
         return thread
 
     cli._side_worker = side_worker
-    cli._handle_signin_command = commands.CLICommandsMixin._handle_signin_command.__get__(cli)
+    cli._handle_login_command = commands.CLICommandsMixin._handle_login_command.__get__(cli)
     monkeypatch.setattr(commands, "_cp", lambda *_lines: None)
     monkeypatch.setattr(anon_auth, "render_sign_in_cli_code", lambda *_args, **_kwargs: None)
 
@@ -173,7 +173,7 @@ def test_the_drain_writes_to_the_console_captured_at_start(monkeypatch):
         yield anon_auth.Completed(email="person@example.test")
 
     monkeypatch.setattr(anon_auth, "run_sign_in", flow)
-    cli._handle_signin_command("/signin")
+    cli._handle_login_command("/login")
     cli.console = Console(file=new_buf, force_terminal=False, width=100)
     gate.set()
     threads[0].join(timeout=2)
@@ -205,7 +205,7 @@ def test_the_live_tui_drain_prints_through_cprint_instead_of_the_captured_consol
         return thread
 
     cli._side_worker = side_worker
-    cli._handle_signin_command = commands.CLICommandsMixin._handle_signin_command.__get__(cli)
+    cli._handle_login_command = commands.CLICommandsMixin._handle_login_command.__get__(cli)
     monkeypatch.setattr(commands, "_cp", lambda *lines: output.extend(lines))
     monkeypatch.setattr(cli_module, "_cprint", lambda *lines, **_kwargs: output.extend(lines))
     monkeypatch.setattr(anon_auth, "render_sign_in_cli_code", lambda *_args, **_kwargs: None)
@@ -216,7 +216,7 @@ def test_the_live_tui_drain_prints_through_cprint_instead_of_the_captured_consol
         yield anon_auth.Completed(email="person@example.test")
 
     monkeypatch.setattr(anon_auth, "run_sign_in", flow)
-    cli._handle_signin_command("/signin")
+    cli._handle_login_command("/login")
     cli.console = Console(file=new_buf, force_terminal=False, width=100)
     gate.set()
     threads[0].join(timeout=2)

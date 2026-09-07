@@ -2336,7 +2336,7 @@ DEFAULT_CONFIG = {
         # NousResearch/api#227), so chat is the default until that is fixed.
         "anthropic_wire": "chat",
         # Nous free tier: with no other provider configured, Hermes sets up a free Nous identity on
-        # first use (inference on nous/welcome + connectors) and offers `/signin` (terminal:
+        # first use (inference on nous/welcome + connectors) and offers `/login` (terminal:
         # `hermes auth upgrade`) to sign in. false turns the free tier off entirely: nothing is set
         # up and nothing is used.
         "guest": True,

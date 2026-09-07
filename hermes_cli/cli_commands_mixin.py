@@ -360,7 +360,7 @@ def _db_unavailable_line() -> str:
 
 
 def _print_side_result_panel(cli, *, header_lines, body, title_suffix, empty_note, console=None) -> None:
-    """Print a worker-thread result (/bg, /btw, /signin) into the scrollback: accent rules around
+    """Print a worker-thread result (/bg, /btw, /login) into the scrollback: accent rules around
     ``header_lines``, then ``body`` in a skinned Rich panel (or ``empty_note``).
     Forces a TUI refresh first so the spinner/status bar don't overlap the output."""
     from cli import ChatConsole, _accent_hex, _maybe_remap_for_light_mode, _render_final_assistant_content
@@ -1988,7 +1988,7 @@ class CLICommandsMixin:
 
     def _side_worker(self, produce, *, name, fail_label, header_lines, title_suffix, empty_note,
                      bell=False, on_done=None, console=None) -> threading.Thread:
-        """Daemon thread for /bg, /btw and /signin: ``produce()`` returns the body to print in a side-result
+        """Daemon thread for /bg, /btw and /login: ``produce()`` returns the body to print in a side-result
         panel; failures print ``fail_label`` failed; the TUI is always re-invalidated afterwards."""
         def run():
             try:
@@ -2015,14 +2015,14 @@ class CLICommandsMixin:
 
         return threading.Thread(target=run, daemon=True, name=name)
 
-    def _handle_signin_command(self, cmd_original: str) -> None:
+    def _handle_login_command(self, cmd_original: str) -> None:
         """Start an in-chat sign-in without blocking the input loop while approval is pending."""
         from hermes_cli import anon_auth
         # Pin the output target now. Under the live TUI ``self.console`` writes straight to
         # patch_stdout's StdoutProxy, which mangles Rich's escapes — there ``None`` keeps the
         # panel on the ``_cprint`` path. Only the slash worker (``_app`` is None) swaps the console.
         console = None if getattr(self, "_app", None) else getattr(self, "console", None)
-        _cp(f"  {anon_auth.SIGNIN_STARTING}")
+        _cp(f"  {anon_auth.LOGIN_STARTING}")
         gen = anon_auth.run_sign_in(timeout_seconds=8.0)
         try:
             first = next(gen, None)
@@ -2054,7 +2054,7 @@ class CLICommandsMixin:
 
         thread = self._side_worker(
             lambda: anon_auth.drain_sign_in_copy(gen, chat=True, on_terminal=_settle_session_model),
-            name="signin", fail_label="Sign-in", header_lines=["  Sign-in"],
+            name="login", fail_label="Sign-in", header_lines=["  Sign-in"],
             title_suffix="(sign-in)", empty_note="  (No result)", console=console)
         thread.start()
 

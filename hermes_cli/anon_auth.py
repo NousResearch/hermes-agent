@@ -14,7 +14,7 @@ token acquisition (re-exchange the ``anon_`` credential; there is no refresh tok
 
 Users are never shown the words guest / anonymous / account for this state: surfaces say
 "Nous · free tier". Two user-facing verbs reach the same flow, both keeping the identity's
-connectors: ``hermes auth upgrade`` in a terminal and ``/signin`` inside a chat.
+connectors: ``hermes auth upgrade`` in a terminal and ``/login`` inside a chat.
 
 Lifecycle lives in ONE primitive, :func:`ensure_portal_identity`: adopt what the shared store already
 holds, else mint under the shared-store lock. It is the only minter; nothing else calls
@@ -52,7 +52,7 @@ FORCE_GUEST_ENV = "HERMES_FORCE_GUEST"
 GUEST_MINT_TIMEOUT_SECONDS = 5.0
 # Copy shared by every surface that names the free tier (R-USR-1): never guest / anonymous / account.
 FREE_TIER_LABEL = "Nous · free tier"
-UPGRADE_HINT = "Run `hermes auth upgrade` to sign in with a Nous account, or /signin inside a chat."
+UPGRADE_HINT = "Run `hermes auth upgrade` to sign in with a Nous account, or /login inside a chat."
 FREE_TIER_NOT_SIGNED_IN = (
     "You're not signed in. Free inference and connectors are always on. "
     "Run `hermes auth` to sign in with a Nous account.")
@@ -434,7 +434,7 @@ def clear_dead_guest(reason: str, *, dead_token: Optional[str] = None) -> None:
 GUEST_NOTICE_FLAG = "guest_notice_shown"
 FREE_TIER_AVAILABLE_NOTICE = (
     "Free Nous inference and connectors are now available. "
-    "/model to try them, /signin to sign in.")
+    "/model to try them, /login to sign in.")
 
 
 def guest_notice_pending() -> bool:
@@ -498,16 +498,16 @@ UPGRADE_NO_DEFAULT_CHAT = "No default model is set yet; run /model to pick one."
 UPGRADE_WAITING = "Waiting for sign-in..."
 UPGRADE_WAITING_UP_TO = "Waiting for sign-in, up to {minutes}."
 UPGRADE_CANCELLED = "\nSign-in cancelled."
-UPGRADE_UNAVAILABLE_CHAT = "The free tier is not available right now. Try /signin again in a moment."
-SIGNIN_COMMAND = "/signin"
-SIGNIN_STARTING = "Starting sign-in..."
-SIGNIN_DM_ONLY = "Sign in from a direct message with Hermes."
-SIGNIN_BUSY_ELSEWHERE = "Another sign-in is already running on this Hermes. Try again in a few minutes."
-SIGNIN_NOT_ALLOWED = "Only an operator of this Hermes can sign it in."
-FREE_TIER_STATUS_LINE = f"{FREE_TIER_LABEL} \u00b7 {GUEST_MODEL} \u00b7 {SIGNIN_COMMAND} to sign in"
+UPGRADE_UNAVAILABLE_CHAT = "The free tier is not available right now. Try /login again in a moment."
+LOGIN_COMMAND = "/login"
+LOGIN_STARTING = "Starting sign-in..."
+LOGIN_DM_ONLY = "Sign in from a direct message with Hermes."
+LOGIN_BUSY_ELSEWHERE = "Another sign-in is already running on this Hermes. Try again in a few minutes."
+LOGIN_NOT_ALLOWED = "Only an operator of this Hermes can sign it in."
+FREE_TIER_STATUS_LINE = f"{FREE_TIER_LABEL} \u00b7 {GUEST_MODEL} \u00b7 {LOGIN_COMMAND} to sign in"
 FREE_TIER_RATE_LIMIT_CHAT = (
     "Nous free tier rate limit active \u2014 resets in {reset}. "
-    "Sign in with a Nous account for higher limits: /signin.")
+    "Sign in with a Nous account for higher limits: /login.")
 
 
 def format_wait_line(expires_in: int) -> str:

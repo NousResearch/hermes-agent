@@ -1227,7 +1227,7 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
         if route_is_welcome_host(st.current_base_url) and st.new_model != GUEST_MODEL:
             return st.fail(
                 f"{st.new_model} needs a Nous account or an API key. "
-                "Use /signin to sign in, or /model to pick another provider.")
+                "Use /login to sign in, or /model to pick another provider.")
     config_routed = _route_configured_provider(st)  # d.5 — deliberately NOT gated on ``not is_custom``
     if isinstance(config_routed, ModelSwitchResult):
         return config_routed

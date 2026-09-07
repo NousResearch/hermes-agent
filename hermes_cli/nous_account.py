@@ -70,7 +70,7 @@ class NousToolAccessInfo:
 _ANON_ACCOUNT_TIER = "anonymous"
 # Every billing / top-up / entitlement surface says exactly this for the free tier (R-USR-1).
 FREE_TIER_NEEDS_ACCOUNT = "This needs a Nous account. Run `hermes auth upgrade`."
-FREE_TIER_NEEDS_ACCOUNT_CHAT = "This needs a Nous account. Use /signin to sign in."
+FREE_TIER_NEEDS_ACCOUNT_CHAT = "This needs a Nous account. Use /login to sign in."
 
 
 def _is_anonymous_tier(account_info: Optional["NousPortalAccountInfo"]) -> bool:

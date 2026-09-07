@@ -121,4 +121,4 @@ def test_the_line_comes_from_the_catalog_in_every_language():
     for lang in ("ja", "de"):
         line = t("gateway.status.free_tier", lang=lang)
         assert line != anon_auth.FREE_TIER_STATUS_LINE
-        assert line.startswith("Nous · ") and " · nous/welcome · " in line and "/signin" in line
+        assert line.startswith("Nous · ") and " · nous/welcome · " in line and "/login" in line

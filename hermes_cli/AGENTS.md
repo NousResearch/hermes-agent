@@ -150,7 +150,7 @@ what happens when the server had already completed the transfer — the desktop 
 DELETE means "not on this machine"), the gateway passes `False` (a supersede must not discard a
 transfer the user actually approved). `scope` is entered only around the precondition and persist
 blocks, never across a `yield` or a network wait, because `run_in_executor` does not carry
-contextvars. `upgrade_guest` (`hermes auth upgrade`), the CLI `/signin` handler and the desktop
+contextvars. `upgrade_guest` (`hermes auth upgrade`), the CLI `/login` handler and the desktop
 promotion poller are renderers over it; a surface that needs the cancel check and the save to be
 atomic passes `persist_guard`. The desktop's plain "connect another Nous account" device-code login
 is a separate path (`_nous_plain_poller`) and must stay one.

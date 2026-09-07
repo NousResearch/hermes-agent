@@ -170,11 +170,11 @@ def test_every_in_chat_free_tier_string_names_the_slash_command(monkeypatch):
         startup,
     )
     refusal_copy = (
-        anon_auth.SIGNIN_DM_ONLY,
-        anon_auth.SIGNIN_BUSY_ELSEWHERE,
-        anon_auth.SIGNIN_NOT_ALLOWED,
+        anon_auth.LOGIN_DM_ONLY,
+        anon_auth.LOGIN_BUSY_ELSEWHERE,
+        anon_auth.LOGIN_NOT_ALLOWED,
     )
-    assert all("/signin" in text for text in command_copy)
+    assert all("/login" in text for text in command_copy)
     for text in (*command_copy, *refusal_copy):
         # The ruled refusal uses Hermes as the grammatical subject; only that exact product-name
         # phrase is exempt from the broad top-level-command gate.
@@ -229,7 +229,7 @@ def test_the_paid_tool_notice_switches_wording_inside_a_chat():
 
 @pytest.mark.asyncio
 async def test_the_wait_line_is_only_composed_on_the_state(monkeypatch):
-    from gateway.slash_commands_signin import GatewaySignInCommandsMixin
+    from gateway.slash_commands_login import GatewayLoginCommandsMixin
 
     state = anon_auth.Code(
         link="https://example.test/sign-in", code="code-1", expires_in=900, interval=1
@@ -244,12 +244,12 @@ async def test_the_wait_line_is_only_composed_on_the_state(monkeypatch):
     )
     cli_copy = []
     anon_auth.render_sign_in_cli_code(state, printer=cli_copy.append)
-    runner = SimpleNamespace(_push_signin=AsyncMock())
+    runner = SimpleNamespace(_push_login=AsyncMock())
     attempt = object()
-    await GatewaySignInCommandsMixin._render_signin_state(runner, attempt, state)
+    await GatewayLoginCommandsMixin._render_login_state(runner, attempt, state)
 
     assert cli_copy == [f"  {state.copy_with_wait}"]
-    assert runner._push_signin.await_args_list == [
+    assert runner._push_login.await_args_list == [
         call(attempt, state.link),
         call(attempt, state.code),
         call(attempt, state.copy_with_wait),
@@ -259,7 +259,7 @@ async def test_the_wait_line_is_only_composed_on_the_state(monkeypatch):
     # format_wait_line itself would emit the same text and pass the assertions
     # above, so the renderers are checked by source instead.
     repo = Path(anon_auth.__file__).resolve().parents[1]
-    for rel in ("gateway/slash_commands_signin.py", "hermes_cli/cli_commands_mixin.py"):
+    for rel in ("gateway/slash_commands_login.py", "hermes_cli/cli_commands_mixin.py"):
         assert "format_wait_line" not in (repo / rel).read_text(encoding="utf-8"), rel
 
 

@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from hermes_cli.timeouts import get_provider_request_timeout
+from agent.message_content import flatten_message_text
 from agent.message_sanitization import (
     _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, tool_call_id_variants, tool_result_id_variants
 )
@@ -1211,6 +1212,10 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
     parts: List[str] = []
 
     def _add(text) -> None:
+        if not text:
+            return
+        if not isinstance(text, str):
+            text = flatten_message_text(text, sep="")
         if text and text not in parts:
             parts.append(text)
     _add(getattr(assistant_message, "reasoning", None))

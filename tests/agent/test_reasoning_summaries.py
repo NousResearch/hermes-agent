@@ -71,3 +71,31 @@ def test_boundary_needs_a_bold_opener():
 def test_empty_operands_pass_through():
     assert separate_glued_reasoning_blocks("", "**first**") == "**first**"
     assert separate_glued_reasoning_blocks("**first**", "") == ""
+
+
+def test_list_shaped_reasoning_deltas_do_not_crash():
+    """Grok / custom OpenAI-compat relays emit reasoning_content as a list."""
+    text = _stream(
+        [
+            [{"type": "text", "text": "**Investigating likely culprit PRs**"}],
+            [{"type": "text", "text": "**Inspecting message schema**"}],
+        ]
+    )
+
+    assert "****" not in text
+    assert text.splitlines() == [
+        "**Investigating likely culprit PRs**",
+        "",
+        "**Inspecting message schema**",
+    ]
+
+
+def test_list_delta_against_string_previous_is_flattened():
+    assert (
+        separate_glued_reasoning_blocks(
+            "**One**",
+            [{"type": "text", "text": "**Two**"}],
+        )
+        == "\n\n**Two**"
+    )
+

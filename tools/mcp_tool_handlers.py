@@ -548,7 +548,8 @@ def _render_call_tool_result(result, server_name: str, redaction_values=(),
     (structuredContent-only servers); ``_meta`` minus reserved keys is always surfaced."""
 
     if mcp_field(result, "is_error", "isError", False):
-        return tool_error(_sanitize_error(_truncate_mcp_text_result(_error_result_text(result) or "MCP tool returned an error"), redaction_values))
+        error_text = _sanitize_error(_error_result_text(result) or "MCP tool returned an error", redaction_values)
+        return tool_error(_truncate_mcp_text_result(error_text))
     text_result, usable_parts, cached_images = _render_content_blocks(result, server_name)
     if image_paths is not None:
         image_paths.extend(cached_images)

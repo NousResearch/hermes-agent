@@ -51,7 +51,9 @@ separate identical pre-agent inputs, and a healthy follow-up.
 Two invariant tests are retained. The second uses real SQLite compaction archives
 and durable compression lineage with keyed/keyless input. It proves both parent
 and successor-only ownership; disabling successor lookup makes it RED (3 rows
-instead of 2). It does not run provider-driven compaction. Independent review
+instead of 2). A new ambient observed row must not masquerade as the accepted
+input; that negative control was also RED/GREEN verified. It does not run
+provider-driven compaction. Independent review
 identified baseline-read, content-projection, archive, and successor-only edge
 cases; ownership now avoids content comparison and includes durable lineage.
 

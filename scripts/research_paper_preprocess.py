@@ -733,7 +733,7 @@ def quarantine_untrusted_candidates(candidates: list[dict]) -> tuple[list[dict],
     repo_text = str(REPO_ROOT)
     if repo_text not in sys.path:
         sys.path.insert(0, repo_text)
-    from tools.cronjob_tools import _scan_cron_skill_assembled
+    from tools.cronjob_prompt_scan import _scan_cron_skill_assembled
 
     kept: list[dict] = []
     quarantined_ids: list[str] = []

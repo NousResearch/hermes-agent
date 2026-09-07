@@ -2136,6 +2136,18 @@ class CLITuiMixin:
             Window(FormattedTextControl(self._get_stash_panel_display_fragments), wrap_lines=False),
             filter=Condition(lambda: cli_ref._prompt_stash.panel_open and bool(len(cli_ref._prompt_stash))),
         )
+        # ── KENSEI CUSTOM (restored): session task progress panel ──
+        # Inline above the composer. Compact mode is a single current-task row;
+        # Ctrl+T expands the same canonical list.
+        self._todo_panel_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(lambda: cli_ref._render_todo_panel()),
+                height=lambda: cli_ref._todo_panel_height(),
+                wrap_lines=False,
+            ),
+            filter=Condition(lambda: cli_ref._todo_panel_visible()),
+        )
+        # ── END KENSEI CUSTOM ──
         self._register_extra_tui_keybindings(kb, input_area=input_area)
         layout = Layout(HSplit(self._build_tui_layout_children(
             sudo_widget=sudo_widget,

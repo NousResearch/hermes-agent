@@ -354,6 +354,23 @@ def _drop_run_transport(self, run_id: str) -> None:
     _forget_run(self, run_id, self._run_streams, self._run_streams_created)
 
 
+async def _resolve_live_session_id(self, session_id: str) -> str:
+    """Adopt the live compression-continuation tip for a client-addressed session (#98619):
+    a /v1/runs run bound to a pre-rotation id would otherwise load a stale history slice and
+    write its turn into the closed parent (CompressionSessionClosedError). Same canonical
+    resolution ``/api/sessions/{id}/messages`` reads use; fails open to the original id."""
+    db = await self._ensure_session_db_async()
+    resolver = getattr(db, "resolve_resume_session_id", None) if db is not None else None
+    if not callable(resolver):
+        return session_id
+    try:
+        resolved = await asyncio.to_thread(resolver, session_id)
+        return str(resolved) if resolved else session_id
+    except Exception:
+        logger.debug("/v1/runs live-session resolve failed for %s", session_id, exc_info=True)
+        return session_id
+
+
 async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Response":
     """POST /v1/runs — start an agent run, return run_id immediately."""
     _openai_error = _api_server._openai_error
@@ -427,6 +444,11 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     _declared_selected = not session_id and bool(gateway_session_key)
     selected_session_id = session_id or (
         self._declared_conversation_session(gateway_session_key) if _declared_selected else None)
+    # A client-addressed id from before a compression rotation must adopt the live tip (#98619):
+    # history loads from it, the turn writes to it, and a detached delivery row persisted to it
+    # is what the next same-id run consumes below.
+    if selected_session_id:
+        selected_session_id = await _resolve_live_session_id(self, str(selected_session_id))
     session_id = selected_session_id or run_id
     # History loads for the session the request actually selected — including one resolved from
     # a declared X-Hermes-Session-Key, whose persisted delivery rows must reach the next

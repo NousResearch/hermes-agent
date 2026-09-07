@@ -1481,6 +1481,7 @@ class TestRunIdempotency:
         mock_db.find_latest_gateway_session_for_peer.return_value = {
             "id": "declared-session"
         }
+        mock_db.resolve_resume_session_id.side_effect = lambda sid: sid
         mock_db.get_messages_as_conversation.return_value = delivered
         adapter._session_db = mock_db
         app = _create_runs_app(adapter)
@@ -1599,6 +1600,7 @@ class TestRunIdempotency:
         (explicit body session_id, loaded from SessionDB) stays wake-capable."""
         _use_idempotency_db(adapter, tmp_path / "idem.db")
         mock_db = MagicMock()
+        mock_db.resolve_resume_session_id.side_effect = lambda sid: sid
         mock_db.get_messages_as_conversation.return_value = []
         adapter._session_db = mock_db
         bind = MagicMock(return_value=[])
@@ -1624,6 +1626,66 @@ class TestRunIdempotency:
                         break
                     await asyncio.sleep(0.05)
         assert bind.call_args.kwargs["wake_capable"] == "1"
+
+    @pytest.mark.asyncio
+    async def test_compressed_parent_delivery_row_lands_on_live_tip(
+        self, adapter, tmp_path
+    ):
+        """#98619 e2e: the parent run compresses before the detached delegate
+        completes — the persisted delivery row must land on the live
+        continuation tip (not be rejected on the closed parent forever), and the
+        next run addressing the original id must load it and bind the tip."""
+        from hermes_state import SessionDB
+        from gateway.wake import persist_delegation_delivery
+
+        _use_idempotency_db(adapter, tmp_path / "idem.db")
+        db = SessionDB(db_path=tmp_path / "state.db")
+        # Rotation: parent closed by compression, live continuation child holds the messages.
+        db.create_session("parent-session", source="api_server")
+        db.append_message("parent-session", "user", "run the batch")
+        db.end_session("parent-session", "compression")
+        db.create_session(
+            "child-session", source="api_server", parent_session_id="parent-session"
+        )
+        adapter._session_db = db
+        bind = MagicMock(return_value=[])
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            # The detached completion arrives after the rotation, addressed to the
+            # captured (now-stale) origin id — exactly what the watcher persists.
+            await persist_delegation_delivery(
+                adapter,
+                text="[delegated task complete] rotated result",
+                session_id="parent-session",
+                evt={"type": "async_delegation"},
+            )
+            with (
+                patch.object(adapter, "_bind_api_server_session", new=bind),
+                patch.object(adapter, "_create_agent") as create,
+            ):
+                agent = MagicMock()
+                agent.run_conversation.return_value = {"final_response": "done"}
+                agent.session_prompt_tokens = agent.session_completion_tokens = (
+                    agent.session_total_tokens
+                ) = 0
+                create.return_value = agent
+                response = await cli.post(
+                    "/v1/runs",
+                    json={"input": "follow up", "session_id": "parent-session"},
+                )
+                assert response.status == 202
+                for _ in range(40):
+                    if agent.run_conversation.called:
+                        break
+                    await asyncio.sleep(0.05)
+        # The run adopted the live tip: the delivery row (persisted to the tip)
+        # loaded as the run's history, and the turn/wake binding targeted the tip.
+        history = agent.run_conversation.call_args.kwargs["conversation_history"]
+        assert any("rotated result" in m.get("content", "") for m in history)
+        assert bind.call_args.kwargs["session_id"] == "child-session"
+        # The delivery row itself landed on the live tip, never on the closed parent.
+        child_rows = db.get_messages_as_conversation("child-session")
+        assert any("rotated result" in m.get("content", "") for m in child_rows)
 
 
 class TestHostedRoomRuns:

@@ -92,6 +92,20 @@ async def persist_delegation_delivery(adapter: Any, *, text: str, session_id: st
     if db is None:
         raise RuntimeError("persist_delegation_delivery: api_server SessionDB unavailable — "
                            f"cannot persist completion for session {session_id}")
+    # #98619: the parent run may have compressed/rotated between dispatch and this detached
+    # completion — the captured origin id is then a closed parent and the append below is
+    # rejected with CompressionSessionClosedError forever (the watcher retries the same stale
+    # id). Adopt the live continuation tip first, the same canonical resolution
+    # /api/sessions/{id}/messages reads use, so the delivery row lands where the next run and
+    # the messages endpoint both resolve. Fails open to the original id.
+    resolver = getattr(db, "resolve_resume_session_id", None)
+    if callable(resolver):
+        try:
+            resolved = await asyncio.to_thread(resolver, session_id)
+            if resolved:
+                session_id = str(resolved)
+        except Exception:
+            logger.debug("delegation delivery continuation resolve failed for %s", session_id, exc_info=True)
     await asyncio.to_thread(
         db.append_message, session_id, "user", content=text,
         display_kind="async_delegation_complete", display_metadata=_delegation_display_metadata(evt or {}),

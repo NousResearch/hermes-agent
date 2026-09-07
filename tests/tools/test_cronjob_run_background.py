@@ -331,7 +331,10 @@ class TestCronjobRunToolIntegration:
                 out = json.loads(cronjob(action="run", job_id="job-bg-12"))
 
         assert out["success"] is True
-        assert out["job"]["executed"] is True
+        assert out["job"]["claimed"] is True
+        assert out["job"]["executed"] is False
+        assert out["job"]["execution_success"] is None
+        assert out["job"]["execution_pending"] is True
         assert out["job"]["execution_mode"] == "background"
         assert out["job"]["delegation_id"]
         assert "background" in out["note"]

@@ -447,6 +447,7 @@ class TestCronRunPausedJob:
         assert paused is not None
         assert paused["state"] == "paused"
         paused_at = paused["paused_at"]
+        paused_next_run_at = paused["next_run_at"]
 
         calls = []
 
@@ -467,6 +468,7 @@ class TestCronRunPausedJob:
         assert current["enabled"] is False
         assert current["state"] == "paused"
         assert current["paused_at"] == paused_at
+        assert current["next_run_at"] == paused_next_run_at
         assert current["fire_claim"] is None
         assert current["repeat"]["completed"] == 1
         assert "Ran now: succeeded." in capsys.readouterr().out

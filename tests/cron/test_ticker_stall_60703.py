@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 import cron.jobs as jobs_mod
+import cron.scheduler as scheduler_mod
 from cron.jobs import (
     _jobs_lock,
     claim_job_for_fire,
@@ -154,3 +155,148 @@ class TestHonestRunSkipMessages:
         res = _execute_job_now({"id": "does-not-exist-123"})
         assert res["claimed"] is False
         assert "no longer exists" in (res["error"] or "").lower()
+
+
+class TestManualRunLocalOwnership:
+    def test_live_fire_owner_blocks_replacement_local_reservation(self):
+        """A swept pre-execution guard must not admit a replacement while its body is live."""
+        job_id = "manual-owner-still-live"
+        execution_token = object()
+        with scheduler_mod._running_lock:
+            scheduler_mod._running_job_ids.discard(job_id)
+            scheduler_mod._running_fire_owners[job_id] = {
+                execution_token: ("store-owner-a", Path.cwd())
+            }
+        try:
+            assert scheduler_mod.try_register_running_job(job_id) is False
+        finally:
+            with scheduler_mod._running_lock:
+                scheduler_mod._running_fire_owners.pop(job_id, None)
+            scheduler_mod.release_running_job(job_id)
+
+    def test_old_owner_cannot_release_replacement_reservation(self):
+        """A delayed finally from owner A must not remove owner B's local dedupe guard."""
+        job_id = "manual-owner-replaced"
+        owner_a = "reservation-a"
+        owner_b = "reservation-b"
+        try:
+            assert scheduler_mod.try_register_running_job(
+                job_id, reservation_token=owner_a
+            )
+            assert scheduler_mod.release_running_job(
+                job_id, expected_reservation_token=owner_a
+            )
+            assert scheduler_mod.try_register_running_job(
+                job_id, reservation_token=owner_b
+            )
+
+            assert scheduler_mod.release_running_job(
+                job_id, expected_reservation_token=owner_a
+            ) is False
+            assert job_id in scheduler_mod.get_running_job_ids()
+        finally:
+            scheduler_mod.release_running_job(
+                job_id, expected_reservation_token=owner_b
+            )
+
+    def test_stale_ticker_finally_cannot_release_replacement_manual_reservation(
+        self, monkeypatch
+    ):
+        """A swept ticker worker must not remove a newer manual owner when it starts late."""
+
+        class FakeFuture:
+            def done(self):
+                return False
+
+        class DeferredPool:
+            submitted = None
+
+            def submit(self, fn):
+                self.submitted = fn
+                return FakeFuture()
+
+        job_id = "ticker-owner-replaced"
+        manual_owner = "manual-owner-b"
+        pool = DeferredPool()
+        ran = []
+        monkeypatch.setattr(
+            scheduler_mod,
+            "create_execution",
+            lambda *_args, **_kwargs: {"id": "execution-a"},
+        )
+        try:
+            assert scheduler_mod._submit_with_guard(
+                {"id": job_id, "name": job_id, "schedule": {"kind": "interval", "minutes": 5}},
+                pool,
+                lambda _job: ran.append("ticker-a"),
+            ) is not None
+            with scheduler_mod._running_lock:
+                ticker_owner = scheduler_mod._running_reservation_tokens.get(job_id)
+            assert scheduler_mod.release_running_job(
+                job_id, expected_reservation_token=ticker_owner
+            )
+            assert scheduler_mod.try_register_running_job(
+                job_id, reservation_token=manual_owner
+            )
+            assert scheduler_mod.release_running_job(job_id) is False
+            assert job_id in scheduler_mod.get_running_job_ids()
+
+            assert pool.submitted is not None
+            pool.submitted()
+            assert ran == ["ticker-a"]
+            assert job_id in scheduler_mod.get_running_job_ids()
+        finally:
+            scheduler_mod.release_running_job(
+                job_id, expected_reservation_token=manual_owner
+            )
+
+    def test_late_stale_ticker_record_cannot_clear_manual_store_claim(
+        self, monkeypatch
+    ):
+        """Stale telemetry is store-fenced after local sweep admits manual owner B."""
+        from tools.cronjob_tools import (
+            _claim_for_manual_run,
+            _release_manual_run_reservation,
+        )
+
+        class DoneFuture:
+            def done(self):
+                return True
+
+        job = create_job(name="durable aba", schedule="every 5m", prompt="x")
+        job_id = job["id"]
+        ticker_owner = object()
+        delayed = []
+        original_record = scheduler_mod._record_stale_release
+        assert scheduler_mod.try_register_running_job(
+            job_id, reservation_token=ticker_owner
+        )
+        with scheduler_mod._running_lock:
+            scheduler_mod._running_since[job_id] = time.time() - 7200
+            scheduler_mod._running_futures[job_id] = DoneFuture()
+        monkeypatch.setattr(
+            scheduler_mod,
+            "_record_stale_release",
+            lambda *args: delayed.append(args),
+        )
+        claimed_job = None
+        try:
+            assert scheduler_mod.sweep_stale_inflight([get_job(job_id)]) == [job_id]
+            assert len(delayed) == 1
+            claimed_job, err = _claim_for_manual_run(job_id, "durable ABA test")
+            assert err is None
+            assert claimed_job is not None
+            fire_owner = claimed_job["fire_claim"]["by"]
+
+            original_record(*delayed[0])
+
+            after = get_job(job_id)
+            assert after is not None
+            assert after["fire_claim"]["by"] == fire_owner
+            assert after["repeat"]["completed"] == 0
+        finally:
+            if claimed_job is not None:
+                _release_manual_run_reservation(claimed_job)
+            scheduler_mod.release_running_job(
+                job_id, expected_reservation_token=ticker_owner
+            )

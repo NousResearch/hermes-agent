@@ -509,6 +509,7 @@ def _is_cron_silence_response(text: str) -> bool:
 _parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _parallel_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
+_running_reservation_tokens: dict[str, object] = {}
 _running_fire_owners: dict[str, dict[object, tuple[Optional[str], Path]]] = {}
 # Parent gateway threads synchronously waiting on restart-safe scope workers.
 # Shutdown must not misclassify these as ownerless in-process runs: the tool
@@ -582,7 +583,7 @@ def get_running_job_ids() -> "frozenset[str]":
         return frozenset(_running_job_ids | _running_fire_owners.keys())
 
 
-def try_register_running_job(job_id: str) -> bool:
+def try_register_running_job(job_id: str, *, reservation_token: Optional[object] = None) -> bool:
     """Atomically add ``job_id`` to the in-flight set; False (caller must skip) if already mid-run.
     Single dedupe owner for ticker + manual runs (the fire claim's 300s TTL is outlived by real
     jobs). Callers MUST pair success with ``release_running_job`` in a ``finally``.
@@ -595,9 +596,13 @@ def try_register_running_job(job_id: str) -> bool:
     and ``mark_running_jobs_interrupted``.
     """
     with _running_lock:
-        if job_id in _running_job_ids:
+        if job_id in _running_job_ids or job_id in _running_fire_owners:
             return False
         _running_job_ids.add(job_id)
+        if reservation_token is None:
+            _running_reservation_tokens.pop(job_id, None)
+        else:
+            _running_reservation_tokens[job_id] = reservation_token
         # Same critical section as the add: no window where an in-flight id lacks an age the sweep
         # can bound. Sentinel is replaced by the real future once ``pool.submit`` returns.
         _running_since[job_id] = time.time()
@@ -605,12 +610,22 @@ def try_register_running_job(job_id: str) -> bool:
         return True
 
 
-def release_running_job(job_id: str) -> None:
-    """Remove ``job_id`` from the in-flight running set (idempotent)."""
+def release_running_job(
+    job_id: str, *, expected_reservation_token: Optional[object] = None,
+) -> bool:
+    """Remove ``job_id`` from the in-flight set unless a newer reservation owns it."""
     with _running_lock:
+        current_token = _running_reservation_tokens.get(job_id)
+        if expected_reservation_token is None:
+            if current_token is not None:
+                return False
+        elif current_token != expected_reservation_token:
+            return False
         _running_job_ids.discard(job_id)
         _running_since.pop(job_id, None)
         _running_futures.pop(job_id, None)
+        _running_reservation_tokens.pop(job_id, None)
+        return True
 
 
 def _inflight_min_allowance_minutes() -> float:
@@ -777,11 +792,36 @@ def _record_stale_release(job: dict, job_id: str, age: float, allowance: float, 
             name, job_id)
         return
     try:
-        mark_job_run(
-            job_id, False,
+        fire_claim = job.get("fire_claim")
+        expected_owner = (
+            fire_claim.get("by") if isinstance(fire_claim, dict) else None
+        )
+        stale_error = (
             f"Stale in-flight claim force-released after {age / 60:.1f}m "
             f"(allowance {allowance / 60:.1f}m); previous run never released "
-            f"the scheduler in-flight guard")
+            f"the scheduler in-flight guard"
+        )
+        if expected_owner:
+            updated = mark_job_run(
+                job_id,
+                False,
+                stale_error,
+                expected_fire_owner=expected_owner,
+            )
+        else:
+            updated = mark_job_run(
+                job_id,
+                False,
+                stale_error,
+                require_unclaimed=True,
+            )
+        if not updated:
+            logger.info(
+                "cron.inflight.forced_release.status_skipped job='%s' id=%s — "
+                "a newer durable fire owner now holds the job",
+                name,
+                job_id,
+            )
     except Exception as e:
         logger.warning("Could not record forced release for job %s: %s", job_id, e)
 
@@ -841,6 +881,7 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
             _running_job_ids.discard(job_id)
             _running_since.pop(job_id, None)
             _running_futures.pop(job_id, None)
+            _running_reservation_tokens.pop(job_id, None)
             _forced_release_count += 1
             stale.append((job_id, age, allowance, fut, reason))
 
@@ -3639,6 +3680,7 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
     Running-set membership is released in the worker's finally."""
     job_id = job["id"]
     job_label = job.get("name", job_id)
+    reservation_token = object()
 
     def _clear_run_claim_best_effort() -> None:
         """Best-effort claim cleanup on dispatch-failure paths. Only one-shots carry a run_claim;
@@ -3679,7 +3721,7 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         _not_dispatched_shutdown()
         _clear_run_claim_best_effort()
         return None
-    if not try_register_running_job(job_id):
+    if not try_register_running_job(job_id, reservation_token=reservation_token):
         logger.info("Job '%s' already running — skipping", job_label)
         return None
     # Record the attempt before dispatch; recovery marks abandoned rows unknown (no retry).
@@ -3690,7 +3732,7 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         _ctx = contextvars.copy_context()
     except Exception as execution_err:
         # Release the claim so the next tick retries instead of wedging "already running".
-        release_running_job(job_id)
+        release_running_job(job_id, expected_reservation_token=reservation_token)
         _clear_run_claim_best_effort()
         logger.exception(
             "Job '%s' not dispatched: execution creation failed: %s", job_label, execution_err)
@@ -3700,12 +3742,14 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         try:
             return ctx.run(process_job, j)
         finally:
-            release_running_job(j["id"])
+            release_running_job(
+                j["id"], expected_reservation_token=reservation_token
+            )
 
     try:
         fut = pool.submit(_run_and_release)
     except Exception as submit_err:
-        release_running_job(job_id)
+        release_running_job(job_id, expected_reservation_token=reservation_token)
         _clear_run_claim_best_effort()
         finish_execution(
             execution["id"], success=False, error=f"Executor dispatch failed: {submit_err}")
@@ -3716,7 +3760,7 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         return None
 
     with _running_lock:
-        if job_id in _running_job_ids:
+        if _running_reservation_tokens.get(job_id) is reservation_token:
             _running_futures[job_id] = fut
     return fut
 

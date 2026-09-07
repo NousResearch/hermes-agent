@@ -12,6 +12,7 @@ Covers:
 
 import asyncio
 import logging
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -322,9 +323,96 @@ class TestResumeJob:
 
 class TestRunJob:
     @pytest.mark.asyncio
+    async def test_run_job_honors_concurrency_cap_before_claim(self, adapter):
+        app = _create_app(adapter)
+        adapter._max_concurrent_runs = 1
+        adapter._inflight_agent_runs = 1
+
+        with patch("tools.cronjob_tools._claim_for_manual_run") as claim:
+            async with TestClient(TestServer(app)) as cli:
+                with patch(f"{_MOD}._CRON_AVAILABLE", True):
+                    resp = await cli.post(f"/api/jobs/{VALID_JOB_ID}/run")
+
+        assert resp.status == 429
+        claim.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_run_job_is_tracked_while_request_body_is_read(self, adapter):
+        body_read_started = asyncio.Event()
+        release_body_read = asyncio.Event()
+
+        async def request_json():
+            body_read_started.set()
+            await release_body_read.wait()
+            return {}
+
+        request = SimpleNamespace(
+            match_info={"job_id": VALID_JOB_ID},
+            json=request_json,
+        )
+        claim_error = {"claimed": False, "success": False, "error": "stop"}
+        task = None
+        try:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                "tools.cronjob_tools._claim_for_manual_run",
+                return_value=(None, claim_error),
+            ):
+                task = asyncio.create_task(adapter._handle_run_job(request))
+                await body_read_started.wait()
+                assert adapter._pending_agent_requests == 1
+                assert adapter.active_agent_work_count() == 1
+                release_body_read.set()
+                response = await task
+
+            assert response.status == 409
+            assert adapter._pending_agent_requests == 0
+            assert adapter.active_agent_work_count() == 0
+        finally:
+            release_body_read.set()
+            if task is not None and not task.done():
+                task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_run_requests_atomically_share_the_cap(self, adapter):
+        import threading
+
+        app = _create_app(adapter)
+        adapter._max_concurrent_runs = 1
+        first_claim_started = threading.Event()
+        release_first_claim = threading.Event()
+        claimed_job = {**SAMPLE_JOB, "fire_claim": {"by": "manual-owner"}}
+
+        def blocking_claim(job_id, source):
+            first_claim_started.set()
+            assert release_first_claim.wait(2.0)
+            return claimed_job, None
+
+        with (
+            patch(
+                "tools.cronjob_tools._claim_for_manual_run",
+                side_effect=blocking_claim,
+            ) as claim,
+            patch("tools.cronjob_tools._run_claimed_job", return_value=True),
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                with patch(f"{_MOD}._CRON_AVAILABLE", True):
+                    first = asyncio.create_task(
+                        cli.post(f"/api/jobs/{VALID_JOB_ID}/run")
+                    )
+                    assert await asyncio.to_thread(first_claim_started.wait, 2.0)
+                    second = await cli.post("/api/jobs/112233445566/run")
+                    release_first_claim.set()
+                    first_response = await first
+
+        assert first_response.status == 202
+        assert second.status == 429
+        assert claim.call_count == 1
+
+    @pytest.mark.asyncio
     async def test_run_job(self, adapter):
         """POST /api/jobs/{id}/run reserves the manual run before returning 202."""
         app = _create_app(adapter)
+        adapter._max_concurrent_runs = 1
         claimed_job = {**SAMPLE_JOB, "fire_claim": {"by": "manual-owner"}}
 
         async def immediate_to_thread(fn, *args, **kwargs):
@@ -343,6 +431,292 @@ class TestRunJob:
 
         claim.assert_called_once_with(VALID_JOB_ID, "relay manual run")
         run.assert_called_once_with(claimed_job, extra_prompt=None)
+
+    @pytest.mark.asyncio
+    async def test_relay_run_reconciles_provider_after_terminal_persistence(self, adapter):
+        app = _create_app(adapter)
+        claimed_job = {**SAMPLE_JOB, "fire_claim": {"by": "manual-owner"}}
+        order = []
+
+        with patch(
+            "tools.cronjob_tools._claim_for_manual_run", return_value=(claimed_job, None)
+        ), patch(
+            "cron.scheduler.run_one_job", side_effect=lambda *_a, **_kw: order.append("run") or True
+        ), patch(
+            "tools.cronjob_tools.get_job", return_value={"last_status": "ok", "last_error": None}
+        ), patch(
+            "tools.cronjob_tools._notify_provider_jobs_changed_safe",
+            side_effect=lambda: order.append("notify"),
+        ) as notify:
+            async with TestClient(TestServer(app)) as cli:
+                with patch(f"{_MOD}._CRON_AVAILABLE", True):
+                    resp = await cli.post(f"/api/jobs/{VALID_JOB_ID}/run")
+                    assert resp.status == 202
+                    for _ in range(100):
+                        if not adapter._background_tasks:
+                            break
+                        await asyncio.sleep(0.01)
+
+        assert order == ["run", "notify"]
+        notify.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_cancel_while_claim_thread_runs_releases_returned_reservation(self, adapter):
+        """Request cancellation must clean a claim that its shielded thread wins later."""
+        claimed_job = {
+            **SAMPLE_JOB,
+            "fire_claim": {"by": "manual-owner"},
+            "_manual_reservation_token": "local-owner",
+        }
+        claim_started = threading.Event()
+        allow_claim_return = threading.Event()
+        abort_finished = threading.Event()
+
+        async def request_json():
+            return {}
+
+        request = SimpleNamespace(
+            match_info={"job_id": VALID_JOB_ID},
+            json=request_json,
+        )
+
+        def delayed_claim(*_args, **_kwargs):
+            claim_started.set()
+            assert allow_claim_return.wait(timeout=2.0)
+            return claimed_job, None
+
+        def record_abort(_job):
+            abort_finished.set()
+
+        handler_task = None
+        try:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                "tools.cronjob_tools._claim_for_manual_run", side_effect=delayed_claim
+            ), patch(
+                "tools.cronjob_tools._release_manual_run_reservation", side_effect=record_abort
+            ) as abort, patch("tools.cronjob_tools._run_claimed_job") as run:
+                handler_task = asyncio.create_task(adapter._handle_run_job(request))
+                assert await asyncio.to_thread(claim_started.wait, 1.0)
+                handler_task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await handler_task
+
+                assert not abort_finished.is_set()
+                allow_claim_return.set()
+                assert await asyncio.to_thread(abort_finished.wait, 1.0)
+
+            abort.assert_called_once_with(claimed_job)
+            run.assert_not_called()
+        finally:
+            allow_claim_return.set()
+            if handler_task is not None and not handler_task.done():
+                handler_task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_cancel_before_reserved_coroutine_starts_releases_claim(self, adapter):
+        """A task cancelled before its first step never submitted a worker and must abort."""
+        claimed_job = {
+            **SAMPLE_JOB,
+            "fire_claim": {"by": "manual-owner"},
+            "_manual_reservation_token": "local-owner",
+        }
+
+        async def request_json():
+            return {}
+
+        request = SimpleNamespace(
+            match_info={"job_id": VALID_JOB_ID},
+            json=request_json,
+        )
+        loop = asyncio.get_running_loop()
+        real_create_task = loop.create_task
+        created = []
+
+        def create_then_cancel(coro, *, name=None, context=None):
+            kwargs = {"name": name}
+            if context is not None:
+                kwargs["context"] = context
+            task = real_create_task(coro, **kwargs)
+            created.append(task)
+            if len(created) == 2:
+                task.cancel()
+            return task
+
+        with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+            "tools.cronjob_tools._claim_for_manual_run", return_value=(claimed_job, None)
+        ), patch("tools.cronjob_tools._release_manual_run_reservation") as abort, patch.object(
+            loop, "create_task", side_effect=create_then_cancel
+        ):
+            response = await adapter._handle_run_job(request)
+            assert response.status == 202
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        assert len(created) == 2
+        assert created[0].done() and not created[0].cancelled()
+        assert created[1].cancelled()
+        abort.assert_called_once_with(claimed_job)
+
+    @pytest.mark.asyncio
+    async def test_cancel_after_executor_submission_before_worker_start_releases_claim(
+        self, adapter
+    ):
+        """A queued executor item cancelled before worker entry must abort its claim."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        claimed_job = {
+            **SAMPLE_JOB,
+            "fire_claim": {"by": "manual-owner"},
+            "_manual_reservation_token": "local-owner",
+        }
+        executor_queued = asyncio.Event()
+        release_blocker = threading.Event()
+        to_thread_calls = 0
+        executor = ThreadPoolExecutor(max_workers=1)
+        blocker = executor.submit(release_blocker.wait)
+
+        async def request_json():
+            return {}
+
+        request = SimpleNamespace(
+            match_info={"job_id": VALID_JOB_ID},
+            json=request_json,
+        )
+
+        async def saturate_second_to_thread(fn, *args, **kwargs):
+            nonlocal to_thread_calls
+            to_thread_calls += 1
+            if to_thread_calls == 1:
+                return fn(*args, **kwargs)
+            queued = executor.submit(fn, *args, **kwargs)
+            executor_queued.set()
+            return await asyncio.wrap_future(queued)
+
+        task = None
+        try:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                "tools.cronjob_tools._claim_for_manual_run", return_value=(claimed_job, None)
+            ), patch("tools.cronjob_tools._release_manual_run_reservation") as abort, patch(
+                "tools.cronjob_tools._run_claimed_job"
+            ) as run, patch("asyncio.to_thread", side_effect=saturate_second_to_thread):
+                response = await adapter._handle_run_job(request)
+                assert response.status == 202
+                await executor_queued.wait()
+                task = next(iter(adapter._background_tasks))
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                await asyncio.sleep(0)
+
+            assert to_thread_calls == 2
+            abort.assert_called_once_with(claimed_job)
+            run.assert_not_called()
+        finally:
+            release_blocker.set()
+            blocker.result(timeout=1.0)
+            executor.shutdown(wait=True)
+
+    @pytest.mark.asyncio
+    async def test_task_creation_failure_releases_claim_and_returns_503(self, adapter):
+        claimed_job = {
+            **SAMPLE_JOB,
+            "fire_claim": {"by": "manual-owner"},
+            "_manual_reservation_token": "local-owner",
+        }
+
+        async def request_json():
+            return {}
+
+        request = SimpleNamespace(
+            match_info={"job_id": VALID_JOB_ID},
+            json=request_json,
+        )
+        real_create_task = asyncio.create_task
+        create_count = 0
+
+        def fail_executor_task(coro):
+            nonlocal create_count
+            create_count += 1
+            if create_count == 1:
+                return real_create_task(coro)
+            raise RuntimeError("task registry unavailable")
+
+        with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+            "tools.cronjob_tools._claim_for_manual_run", return_value=(claimed_job, None)
+        ), patch("tools.cronjob_tools._release_manual_run_reservation") as abort, patch(
+            "asyncio.create_task", side_effect=fail_executor_task
+        ):
+            response = await adapter._handle_run_job(request)
+
+        assert response.status == 503
+        assert "task registry unavailable" in response.text
+        abort.assert_called_once_with(claimed_job)
+
+    @pytest.mark.asyncio
+    async def test_cancelled_api_waiter_keeps_guard_until_worker_finishes(self, adapter):
+        """Cancelling the asyncio waiter must not unlock a still-running to_thread worker."""
+        from cron.scheduler import (
+            get_running_job_ids,
+            release_running_job,
+            try_register_running_job,
+        )
+
+        app = _create_app(adapter)
+        adapter._max_concurrent_runs = 1
+        token = "api-cancel-owner"
+        claimed_job = {
+            **SAMPLE_JOB,
+            "fire_claim": {"by": "manual-owner"},
+            "_manual_reservation_token": token,
+        }
+        worker_started = threading.Event()
+        allow_worker_finish = threading.Event()
+        worker_finished = threading.Event()
+
+        def claim(*_args, **_kwargs):
+            assert try_register_running_job(VALID_JOB_ID, reservation_token=token)
+            return claimed_job, None
+
+        def run(*_args, **_kwargs):
+            worker_started.set()
+            assert allow_worker_finish.wait(timeout=2.0)
+            release_running_job(VALID_JOB_ID, expected_reservation_token=token)
+            worker_finished.set()
+            return {"claimed": True, "executed": True, "success": True, "error": None}
+
+        task = None
+        try:
+            with patch("tools.cronjob_tools._claim_for_manual_run", side_effect=claim) as claim_mock, patch(
+                "tools.cronjob_tools._run_claimed_job", side_effect=run
+            ):
+                async with TestClient(TestServer(app)) as cli:
+                    with patch(f"{_MOD}._CRON_AVAILABLE", True):
+                        resp = await cli.post(f"/api/jobs/{VALID_JOB_ID}/run")
+                        assert resp.status == 202
+                        assert await asyncio.to_thread(worker_started.wait, 1.0)
+                        task = next(iter(adapter._background_tasks))
+                        task.cancel()
+                        with pytest.raises(asyncio.CancelledError):
+                            await task
+
+                        assert VALID_JOB_ID in get_running_job_ids()
+                        assert adapter.active_agent_work_count() == 1
+                        second = await cli.post("/api/jobs/112233445566/run")
+                        assert second.status == 429
+                        assert claim_mock.call_count == 1
+                        allow_worker_finish.set()
+                        assert await asyncio.to_thread(worker_finished.wait, 1.0)
+                        for _ in range(100):
+                            if adapter.active_agent_work_count() == 0:
+                                break
+                            await asyncio.sleep(0.01)
+                        assert adapter.active_agent_work_count() == 0
+                        assert VALID_JOB_ID not in get_running_job_ids()
+        finally:
+            allow_worker_finish.set()
+            if task is not None and not task.done():
+                task.cancel()
+            release_running_job(VALID_JOB_ID, expected_reservation_token=token)
 
     @pytest.mark.asyncio
     async def test_run_job_releases_reservation_if_executor_cannot_start(self, adapter):

@@ -7,6 +7,7 @@ import logging
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -135,9 +136,18 @@ def _forward_relay_fronted_run(job: Dict[str, Any], extra_prompt: Optional[str] 
     except Exception:
         resp = None
     if resp is not None and resp.status_code < 300:
+        pending_job = _refreshed_job_view(job["id"])
+        pending_job.update({
+            "claimed": True,
+            "executed": False,
+            "execution_pending": True,
+            "execution_success": None,
+            "execution_mode": "background",
+        })
         return _dumps({
             "success": True,
             "forwarded_to_gateway": True,
+            "job": pending_job,
             "note": (
                 "This job targets a relay-fronted platform; it was dispatched "
                 "to the running gateway, whose live relay adapter owns that "
@@ -174,6 +184,7 @@ def _manual_run_delivery_note(deliver: str, refreshed: Dict[str, Any]) -> str:
 _ALREADY_RUNNING_ERROR = (
     "Job is already running (a scheduler tick or another "
     "manual run is executing it); not started again.")
+_MANUAL_RESERVATION_TOKEN_KEY = "_manual_reservation_token"
 
 
 def _claim_for_manual_run(job_id: str, log_label: str):
@@ -185,15 +196,18 @@ def _claim_for_manual_run(job_id: str, log_label: str):
     """
     from cron.scheduler import release_running_job, try_register_running_job
 
-    if not try_register_running_job(job_id):
+    reservation_token = uuid.uuid4().hex
+    if not try_register_running_job(job_id, reservation_token=reservation_token):
         return None, {"claimed": False, "success": False, "error": _ALREADY_RUNNING_ERROR}
     try:
         claimed_job = claim_job_for_fire(
             job_id, force=True, preserve_paused=True, return_job=True
         )
         if isinstance(claimed_job, dict):
+            claimed_job = dict(claimed_job)
+            claimed_job[_MANUAL_RESERVATION_TOKEN_KEY] = reservation_token
             return claimed_job, None
-        release_running_job(job_id)
+        release_running_job(job_id, expected_reservation_token=reservation_token)
         refreshed = get_job(job_id)
         if refreshed is None:
             reason = "Job no longer exists; nothing to run."
@@ -203,7 +217,7 @@ def _claim_for_manual_run(job_id: str, log_label: str):
             reason = "Job could not be claimed for this manual run."
         return None, {"claimed": False, "success": False, "error": reason}
     except Exception as e:
-        release_running_job(job_id)
+        release_running_job(job_id, expected_reservation_token=reservation_token)
         logger.error("Failed to claim cron job %s for %s: %s", job_id, log_label, e)
         return None, {"claimed": False, "success": False, "error": str(e)}
 
@@ -270,11 +284,14 @@ def _run_heartbeat(job_name: str):
             thread.join(timeout=_CRON_RUN_HEARTBEAT_INTERVAL + 1)
 
 
-def _release_manual_run_reservation(job: Dict[str, Any]) -> None:
+def _release_manual_run_reservation(
+    job: Dict[str, Any], *, notify_provider: bool = True
+) -> None:
     """Best-effort abort for a claimed manual run whose executor never started."""
     job_id = str(job.get("id") or "")
     claim = job.get("fire_claim")
     owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+    reservation_token = job.get(_MANUAL_RESERVATION_TOKEN_KEY)
     if owner:
         try:
             from cron.jobs import release_fire_claim
@@ -285,9 +302,17 @@ def _release_manual_run_reservation(job: Dict[str, Any]) -> None:
     try:
         from cron.scheduler import release_running_job
 
-        release_running_job(job_id)
+        if reservation_token is None:
+            release_running_job(job_id)
+        else:
+            release_running_job(
+                job_id, expected_reservation_token=reservation_token
+            )
     except Exception:
         logger.debug("Could not release local manual-run reservation for %s", job_id, exc_info=True)
+    finally:
+        if notify_provider:
+            _notify_provider_jobs_changed_safe()
 
 
 def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) -> Dict[str, Any]:
@@ -297,6 +322,9 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
     body entry.
     """
     job_id = job["id"]
+    reservation_token = job.get(_MANUAL_RESERVATION_TOKEN_KEY)
+    execution_job = dict(job)
+    execution_job.pop(_MANUAL_RESERVATION_TOKEN_KEY, None)
     _registered = True
     execution_started = False
     claim = job.get("fire_claim")
@@ -318,17 +346,25 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         adapters = getattr(runner, "adapters", None) if runner is not None else None
         gateway_loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
         try:
-            # run_one_job records last_run_at/last_status via mark_job_run; `job` is the
-            # owner-bearing claimed snapshot, so terminal writes stay fenced by that owner.
+            # run_one_job records last_run_at/last_status via mark_job_run; ``execution_job`` is the
+            # owner-bearing claimed snapshot with the local-only reservation token removed, so
+            # terminal writes stay fenced without leaking that token into worker payloads.
             with _run_heartbeat(str(job.get("name") or job_id)):
                 execution_started = True
-                processed = run_one_job(job, adapters=adapters, loop=gateway_loop, extra_prompt=extra_prompt)
+                processed = run_one_job(
+                    execution_job, adapters=adapters, loop=gateway_loop, extra_prompt=extra_prompt
+                )
         finally:
             _registered = False
-            release_running_job(job_id)
+            if reservation_token is None:
+                release_running_job(job_id)
+            else:
+                release_running_job(
+                    job_id, expected_reservation_token=reservation_token
+                )
         refreshed = get_job(job_id) or {}
         execution = None
-        execution_id = job.get("execution_id")
+        execution_id = execution_job.get("execution_id")
         if execution_id:
             from cron.executions import get_execution
 
@@ -355,7 +391,7 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
     except Exception as e:
         logger.error("Failed to execute cron job %s immediately: %s", job_id, e)
         if not execution_started:
-            _release_manual_run_reservation(job)
+            _release_manual_run_reservation(job, notify_provider=False)
             _registered = False
         else:
             if _registered:
@@ -363,7 +399,12 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
                 with contextlib.suppress(Exception):
                     from cron.scheduler import release_running_job
 
-                    release_running_job(job_id)
+                    if reservation_token is None:
+                        release_running_job(job_id)
+                    else:
+                        release_running_job(
+                            job_id, expected_reservation_token=reservation_token
+                        )
             with contextlib.suppress(Exception):
                 mark_job_run(job_id, False, str(e), expected_fire_owner=fire_owner)
         return {
@@ -372,6 +413,8 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
             "success": False,
             "error": str(e),
         }
+    finally:
+        _notify_provider_jobs_changed_safe()
 
 
 def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[str]:
@@ -686,7 +729,10 @@ def _action_run(job: Dict[str, Any], a: Dict[str, Any]) -> str:
     if bg is not None and bg.get("dispatched"):
         _notify_provider_jobs_changed_safe()
         result = _refreshed_job_view(job_id)
-        result["executed"] = True
+        result["claimed"] = True
+        result["executed"] = False
+        result["execution_success"] = None
+        result["execution_pending"] = True
         result["execution_mode"] = "background"
         result["delegation_id"] = bg.get("delegation_id")
         return _dumps({
@@ -706,14 +752,10 @@ def _action_run(job: Dict[str, Any], a: Dict[str, Any]) -> str:
         if forwarded is not None:
             return forwarded
         exec_result = _execute_job_now(job, extra_prompt=extra_prompt)
-    # A claimed direct run advances next_run_at and may race an external provider's
-    # one-shot for the same occurrence; a lost consumed fire cannot re-arm itself, so
-    # reconcile after the run has persisted its final state.
     claimed = exec_result.get("claimed", False)
     executed = bool(exec_result.get("executed", False))
-    if claimed:
-        _notify_provider_jobs_changed_safe()
     result = _refreshed_job_view(job_id)
+    result["claimed"] = claimed
     result["executed"] = executed
     result["execution_success"] = exec_result.get("success", False)
     if not executed:

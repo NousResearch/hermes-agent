@@ -54,6 +54,13 @@ class TestForwardRelayFrontedRun:
             out = json.loads(cronjob_tools._forward_relay_fronted_run({"id": "j1"}))
         assert out["success"] is True
         assert out["forwarded_to_gateway"] is True
+        assert out["job"]["claimed"] is True
+        assert out["job"]["executed"] is False
+        assert out["job"]["execution_pending"] is True
+        assert out["job"]["execution_success"] is None
+        assert out["job"]["execution_mode"] == "background"
+        from hermes_cli.cron import _run_outcome
+        assert _run_outcome(out["job"]) == "Running in background."
 
     def test_errors_when_gateway_unreachable(self):
         with patch.object(

@@ -909,6 +909,19 @@ def _admit_api_agent_request(handler):
     return _wrapped
 
 
+def _track_pending_api_work(handler):
+    """Reserve API work before the handler's first await without duplicating auth policy."""
+    @wraps(handler)
+    async def _wrapped(self, request, *args, **kwargs):
+        with _reserve_pending_api_work(self) as reservation:
+            token = _api_agent_request_reservation.set(reservation)
+            try:
+                return await handler(self, request, *args, **kwargs)
+            finally:
+                _api_agent_request_reservation.reset(token)
+    return _wrapped
+
+
 def _release_pending_api_work(adapter, reservation: dict[str, bool]) -> None:
     """Release a pending-work reservation exactly once."""
     if reservation["active"]:
@@ -3403,11 +3416,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """POST /api/jobs/{job_id}/resume — resume a paused cron job."""
         return await self._job_lookup_or_mutate(request, _cron_resume, notify=True)
 
+    @_track_pending_api_work
     async def _handle_run_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/run — trigger immediate execution."""
         job_id, err = self._cron_request_guard(request, need_job_id=True, check_draining=True)
         if err:
             return err
+        assert web is not None
         # Optional transient per-run context (standalone `hermes cron run` /
         # cronjob(action='run', prompt=...)) — same cap + scan as a stored prompt.
         extra_prompt = body = None
@@ -3427,29 +3442,116 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             _run_claimed_job,
         )
 
-        with _reserve_pending_api_work(self) as reservation:
-            claimed_job, claim_error = await asyncio.to_thread(
+        with nullcontext(_api_agent_request_reservation.get()) as reservation:
+            assert reservation is not None
+            limited = self._concurrency_limited_response()
+            if limited is not None:
+                return limited
+            claim_coroutine = asyncio.to_thread(
                 _claim_for_manual_run, job_id, "relay manual run"
             )
+            try:
+                claim_task = asyncio.create_task(claim_coroutine)
+            except Exception as exc:
+                claim_coroutine.close()
+                logger.error("Manual cron claim task creation failed for job %s: %s", job_id, exc)
+                return web.json_response(
+                    {"error": f"Manual run claim unavailable: {exc}"}, status=503
+                )
+            try:
+                claimed_job, claim_error = await asyncio.shield(claim_task)
+            except asyncio.CancelledError:
+                reservation["detached"] = True
+
+                def _finish_cancelled_claim(done_task):
+                    try:
+                        detached_job, detached_error = done_task.result()
+                        if detached_error is None and isinstance(detached_job, dict):
+                            _release_manual_run_reservation(detached_job)
+                    except BaseException:
+                        logger.debug(
+                            "Cancelled manual cron claim cleanup failed for %s",
+                            job_id,
+                            exc_info=True,
+                        )
+                    finally:
+                        _release_pending_api_work(self, reservation)
+
+                claim_task.add_done_callback(_finish_cancelled_claim)
+                self._track_background_task(claim_task, tolerate_missing=True)
+                raise
             if claim_error is not None:
                 reason = str(claim_error.get("error") or "Manual run was not accepted.")
                 status = 404 if "no longer exists" in reason else 409
                 return web.json_response({"error": reason}, status=status)
             assert claimed_job is not None
 
+            worker_state = {"phase": "queued"}
+            worker_state_lock = threading.Lock()
+            event_loop = asyncio.get_running_loop()
+
+            def _release_pending_from_worker() -> None:
+                try:
+                    event_loop.call_soon_threadsafe(
+                        _release_pending_api_work, self, reservation
+                    )
+                except RuntimeError:
+                    # The loop is already closed, so no event-loop callback can race this fallback.
+                    _release_pending_api_work(self, reservation)
+
+            def _cancel_unstarted_worker() -> bool:
+                """Atomically win the handoff only if no executor worker owns it yet."""
+                with worker_state_lock:
+                    if worker_state["phase"] != "queued":
+                        return False
+                    worker_state["phase"] = "cancelled_before_start"
+                    return True
+
+            def _run_reserved_worker():
+                try:
+                    with worker_state_lock:
+                        if worker_state["phase"] != "queued":
+                            return {
+                                "claimed": True,
+                                "executed": False,
+                                "success": False,
+                                "error": "Manual run was cancelled before execution started.",
+                            }
+                        worker_state["phase"] = "started"
+                    return _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
+                finally:
+                    _release_pending_from_worker()
+
             async def _run_reserved_job():
                 try:
-                    return await asyncio.to_thread(
-                        _run_claimed_job, claimed_job, extra_prompt=extra_prompt
-                    )
+                    return await asyncio.to_thread(_run_reserved_worker)
                 except Exception as exc:
-                    _release_manual_run_reservation(claimed_job)
+                    if _cancel_unstarted_worker():
+                        _release_manual_run_reservation(claimed_job)
                     logger.error("Manual cron run executor failed for job %s: %s", job_id, exc)
                     return {"claimed": True, "executed": False, "success": False, "error": str(exc)}
 
-            task = asyncio.create_task(_run_reserved_job())
+            coroutine = _run_reserved_job()
+            try:
+                task = asyncio.create_task(coroutine)
+            except Exception as exc:
+                coroutine.close()
+                _release_manual_run_reservation(claimed_job)
+                logger.error("Manual cron run task creation failed for job %s: %s", job_id, exc)
+                return web.json_response(
+                    {"error": f"Manual run executor unavailable: {exc}"}, status=503
+                )
             reservation["detached"] = True
-            task.add_done_callback(lambda _task: _release_pending_api_work(self, reservation))
+
+            def _finish_manual_run_task(done_task):
+                if done_task.cancelled():
+                    if _cancel_unstarted_worker():
+                        _release_manual_run_reservation(claimed_job)
+                        _release_pending_api_work(self, reservation)
+                    return
+                _release_pending_api_work(self, reservation)
+
+            task.add_done_callback(_finish_manual_run_task)
             self._track_background_task(task, tolerate_missing=True)
             return web.json_response({"status": "accepted", "job_id": job_id}, status=202)
 

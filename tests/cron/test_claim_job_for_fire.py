@@ -76,6 +76,105 @@ def test_forced_claim_atomically_resumes_paused_job(temp_home):
     assert claimed["fire_claim"] is not None
 
 
+@pytest.mark.parametrize("null_next_run", [False, True], ids=["non-null", "null"])
+@pytest.mark.parametrize("success", [True, False], ids=["success", "failure"])
+def test_preserve_paused_claim_and_terminal_mark_keep_exact_next_run(
+    temp_home, null_next_run, success
+):
+    """A one-off paused recurring run must not re-arm or perturb its paused schedule."""
+    import cron.jobs as jobs
+
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="paused-preserve")
+    jobs.pause_job(job["id"])
+    if null_next_run:
+        records = jobs.load_jobs()
+        records[0]["next_run_at"] = None
+        jobs.save_jobs(records)
+    before = jobs.get_job(job["id"])
+    assert before is not None
+    expected_next_run = before.get("next_run_at")
+
+    claimed = jobs.claim_job_for_fire(
+        job["id"], force=True, preserve_paused=True, return_job=True
+    )
+    assert isinstance(claimed, dict)
+    owner = claimed["fire_claim"]["by"]
+    persisted_claim = jobs.get_job(job["id"])
+    assert persisted_claim is not None
+    assert persisted_claim["next_run_at"] == expected_next_run
+
+    assert jobs.mark_job_run(
+        job["id"], success=success, expected_fire_owner=owner
+    ) is True
+    after = jobs.get_job(job["id"])
+    assert after is not None
+    assert after["next_run_at"] == expected_next_run
+    assert after["state"] == "paused"
+    assert after["enabled"] is False
+    assert after["last_status"] == ("ok" if success else "error")
+    assert after["repeat"]["completed"] == 1
+
+
+def test_preserve_paused_one_shot_still_terminalizes_after_manual_run(temp_home):
+    """Pause preservation must not keep a consumed finite one-shot runnable."""
+    import cron.jobs as jobs
+
+    job = jobs.create_job(
+        prompt="x",
+        schedule="in 30m",
+        name="paused-once",
+        repeat=1,
+    )
+    jobs.pause_job(job["id"])
+
+    claimed = jobs.claim_job_for_fire(
+        job["id"], force=True, preserve_paused=True, return_job=True
+    )
+    assert isinstance(claimed, dict)
+    owner = claimed["fire_claim"]["by"]
+    assert jobs.mark_job_run(
+        job["id"], success=True, expected_fire_owner=owner
+    ) is True
+
+    after = jobs.get_job(job["id"])
+    assert after is not None
+    assert after["state"] == "completed"
+    assert after["enabled"] is False
+    assert after["next_run_at"] is None
+    assert after["fire_claim"] is None
+    assert after["repeat"]["completed"] == 1
+
+
+def test_finite_paused_recurring_manual_run_preserves_pause_at_repeat_limit(temp_home):
+    """A manual occurrence must not retire a paused recurring schedule."""
+    import cron.jobs as jobs
+
+    job = jobs.create_job(
+        prompt="x", schedule="every 5m", name="paused-finite", repeat=1
+    )
+    jobs.pause_job(job["id"])
+    before = jobs.get_job(job["id"])
+    assert before is not None
+
+    claimed = jobs.claim_job_for_fire(
+        job["id"], force=True, preserve_paused=True, return_job=True
+    )
+    assert isinstance(claimed, dict)
+    owner = claimed["fire_claim"]["by"]
+    assert jobs.mark_job_run(
+        job["id"], success=True, expected_fire_owner=owner
+    ) is True
+
+    after = jobs.get_job(job["id"])
+    assert after is not None
+    for key in ("enabled", "state", "paused_at", "next_run_at"):
+        assert after[key] == before[key]
+    assert after["repeat"] == {"times": 1, "completed": 1}
+    assert jobs.claim_job_for_fire(
+        job["id"], force=True, preserve_paused=True, return_job=True
+    ) is False
+
+
 def test_release_fire_claim_is_owner_fenced_and_state_neutral(temp_home):
     """Abort may clear only its own fire claim without recording an occurrence."""
     import cron.jobs as jobs

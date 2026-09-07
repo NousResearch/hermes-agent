@@ -26,6 +26,7 @@ def _worker_board(tmp_path, monkeypatch):
         "HERMES_KANBAN_DB": str(db), "HERMES_KANBAN_BOARD": "default",
         "HERMES_KANBAN_TASK": own, "HERMES_KANBAN_RUN_ID": str(task.current_run_id),
         "HERMES_KANBAN_CLAIM_LOCK": task.claim_lock, "HOME": str(tmp_path),
+        "HERMES_KANBAN_PRELOADED_SKILLS": "using-superpowers",
     }.items():
         monkeypatch.setenv(key, value)
     monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)

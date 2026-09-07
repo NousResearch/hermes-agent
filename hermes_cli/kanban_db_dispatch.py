@@ -2203,6 +2203,11 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    # Expose the card's force-loaded skills to the worker tooling: the kanban
+    # mutation gate accepts these as proof the worker-contract skill is in context.
+    preloaded_skills = [sk for sk in (task.skills or ()) if sk]
+    if preloaded_skills:
+        env["HERMES_KANBAN_PRELOADED_SKILLS"] = ",".join(preloaded_skills)
     # Tag the session `kanban` so session-browsing surfaces filter it out by
     # source instead of rendering one sidebar row per attempt.
     env["HERMES_SESSION_SOURCE"] = "kanban"

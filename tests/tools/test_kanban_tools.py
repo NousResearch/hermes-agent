@@ -47,7 +47,8 @@ def test_kanban_tools_hidden_without_env_var(monkeypatch, tmp_path):
 @pytest.fixture
 def worker_env(monkeypatch, tmp_path):
     """Simulate being a worker: HERMES_HOME isolated, HERMES_KANBAN_TASK set
-    after we've created the task."""
+    after we've created the task. The card force-loads the worker-contract
+    skill, matching a dispatcher spawn with --skill using-superpowers."""
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -67,6 +68,7 @@ def worker_env(monkeypatch, tmp_path):
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_PRELOADED_SKILLS", "using-superpowers")
     return tid
 
 
@@ -192,6 +194,7 @@ def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+    monkeypatch.setenv("HERMES_KANBAN_PRELOADED_SKILLS", "using-superpowers")
 
     # Mock the judge to reject the completion. The gate only runs when a
     # judge is reachable, so force the availability probe True as well.
@@ -260,6 +263,7 @@ def _make_goal_mode_worker_env(monkeypatch, tmp_path):
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+    monkeypatch.setenv("HERMES_KANBAN_PRELOADED_SKILLS", "using-superpowers")
     return goal_task_id
 
 

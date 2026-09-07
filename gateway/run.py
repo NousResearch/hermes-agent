@@ -3249,6 +3249,11 @@ def _instantiate_builtin_adapter(platform: Platform, config: Any) -> Optional[Ba
     return adapter_cls(config)
 
 
+# Visible-notice deadline for inject_internal_message (HGF-002): the notice
+# is soft-fail observability, so it must never hold the main event hostage.
+NOTICE_SEND_TIMEOUT_S = 10.0
+
+
 class InjectInternalMessageError(ValueError):
     """Structured error raised when inject_internal_message cannot deliver."""
 
@@ -4461,18 +4466,29 @@ class GatewayRunner(
             )
 
         # Optional visible notice (observability, not a duplicate message).
+        # Bounded deadline (HGF-002): the notice is soft-fail by contract, so
+        # a hung adapter must never prevent the main event from routing.
         if notice_text:
             try:
-                notice_result = await adapter.send(
-                    chat_id,
-                    notice_text,
-                    metadata={"notify": True},
+                notice_result = await asyncio.wait_for(
+                    adapter.send(
+                        chat_id,
+                        notice_text,
+                        metadata={"notify": True},
+                    ),
+                    timeout=NOTICE_SEND_TIMEOUT_S,
                 )
                 if not getattr(notice_result, "success", False):
                     logger.warning(
                         "inject_internal_message: visible notice was not delivered: %s",
                         getattr(notice_result, "error", "unknown adapter failure"),
                     )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "inject_internal_message: visible notice timed out after %.1fs; "
+                    "routing the main event anyway (notice is soft-fail)",
+                    NOTICE_SEND_TIMEOUT_S,
+                )
             except Exception as exc:
                 logger.warning(
                     "inject_internal_message: visible notice send raised: %s",
@@ -4500,12 +4516,21 @@ class GatewayRunner(
 
             if session_key:
                 running_state = self._running_agents.get(session_key)
-                if running_state is not None:
-                    running_agent = running_state[0] if isinstance(running_state, tuple) else None
-                    if (
-                        running_agent is not None
-                        and hasattr(running_agent, "steer")
-                    ):
+                # Production stores the agent object directly
+                # (SessionState.turn.agent); accept that shape first. The
+                # legacy 1-tuple shape is kept for compatibility. The
+                # pending sentinel means "turn claimed, agent not built
+                # yet" — steer is impossible, fall through to queue (same
+                # rule as /steer in run_busy._busy_steer_command).
+                running_agent = None
+                if isinstance(running_state, tuple):
+                    running_agent = running_state[0] if running_state else None
+                elif running_state is not None:
+                    running_agent = running_state
+                if running_agent is _AGENT_PENDING_SENTINEL:
+                    running_agent = None
+                if running_agent is not None:
+                    if hasattr(running_agent, "steer"):
                         try:
                             steered = running_agent.steer(text)
                             if steered:

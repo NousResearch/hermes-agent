@@ -28,14 +28,14 @@ def github(tmp_path, monkeypatch):
                 value = [[]]
             elif "/check-runs" in self.path:
                 run = {"id": 42, "name": "required", "head_sha": sha,
-                       "app": {"id": 1}, "status": "completed", "conclusion": state["conclusion"],
+                       "app": {"id": 1}, "status": "in_progress" if state["conclusion"] == "pending" else "completed", "conclusion": state["conclusion"],
                        "html_url": "https://github.com/acme/repo/actions/runs/42"}
                 if state.get("stale"):
                     run["head_sha"] = "b" * 40
                 runs = [] if state.get("missing") else [run]
-                value = [{"total_count": 101, "check_runs": [
+                value = [{"total_count": 100 + len(runs), "check_runs": [
                     {**run, "id": 1000 + i, "name": "optional", "conclusion": "skipped"}
-                    for i in range(100)]}, {"total_count": 101, "check_runs": runs}]
+                    for i in range(100)]}, {"total_count": 100 + len(runs), "check_runs": runs}]
                 if state.get("race"):
                     state["race"]()
                 if state.get("head_change"):
@@ -78,7 +78,7 @@ def github(tmp_path, monkeypatch):
 @pytest.mark.linux_only
 def test_pr_completion_requires_current_required_evidence(github):
     with connect() as conn:
-        for conclusion in ("failure", "cancelled", "timed_out", "action_required", "neutral", "skipped", None, "success"):
+        for conclusion in ("failure", "pending", "cancelled", "timed_out", "action_required", "neutral", "skipped", None, "success"):
             github.update(conclusion=conclusion, head="a" * 40)
             tid = kb.create_task(conn, title="Publish", completion_contract="acme/repo")
             ok = kb.complete_task(conn, tid, metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
@@ -114,16 +114,18 @@ def test_acceptance_receipts_and_terminal_write_share_run_ownership(github):
     with connect() as conn:
         for conclusion in ("success", "failure"):
             tid = kb.create_task(conn, title="race", completion_contract="acme/repo")
-            conn.execute("UPDATE tasks SET current_run_id=101 WHERE id=?", (tid,))
-            conn.commit()
+            owner = kb.claim_task(conn, tid)
+            run_id = owner.current_run_id
             def reclaim():
                 with connect() as rival:
-                    rival.execute("UPDATE tasks SET current_run_id=102 WHERE id=?", (tid,))
-                    rival.commit()
+                    assert kb.block_task(rival, tid, reason="Reassigned during acceptance")
+                    assert kb.unblock_task(rival, tid)
+                    github["replacement"] = kb.claim_task(rival, tid).current_run_id
             github.update(conclusion=conclusion, race=reclaim)
-            assert not kb.complete_task(conn, tid, expected_run_id=101,
+            assert not kb.complete_task(conn, tid, expected_run_id=run_id,
                 metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
-            assert kb.get_task(conn, tid).current_run_id == 102
+            assert kb.get_task(conn, tid).current_run_id == github["replacement"]
+            assert github["replacement"] != run_id
             assert kb.get_task(conn, tid).status != "done"
             assert conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0] == 0
             github.pop("race")

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   $paneOpen,
@@ -115,6 +115,62 @@ describe('panes store', () => {
 
       expect(persisted).not.toBeNull()
       expect(JSON.parse(persisted ?? '{}')).toEqual({ files: { open: true } })
+    })
+
+    it('rehydrates pane locks and their captured dimensions after a reload', async () => {
+      window.localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          terminal: {
+            open: true,
+            widthLocked: true,
+            widthOverride: 657,
+            heightLocked: true,
+            heightOverride: 223
+          }
+        })
+      )
+      vi.resetModules()
+
+      const reloaded = await import('./panes')
+
+      expect(reloaded.getPaneStateSnapshot('terminal')).toEqual({
+        open: true,
+        widthLocked: true,
+        widthOverride: 657,
+        heightLocked: true,
+        heightOverride: 223
+      })
+      reloaded.$paneStates.set({})
+    })
+
+    it('keeps finite legacy zero overrides when rehydrating persisted panes', async () => {
+      window.localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          files: { open: true, widthOverride: 0 },
+          terminal: { open: true, heightOverride: 0 }
+        })
+      )
+      vi.resetModules()
+
+      const reloaded = await import('./panes')
+
+      expect(reloaded.getPaneStateSnapshot('files')).toEqual({
+        open: true,
+        widthLocked: undefined,
+        widthOverride: 0,
+        heightLocked: undefined,
+        heightOverride: undefined
+      })
+      expect(reloaded.getPaneStateSnapshot('terminal')).toEqual({
+        open: true,
+        widthLocked: undefined,
+        widthOverride: undefined,
+        heightLocked: undefined,
+        heightOverride: 0
+      })
+      reloaded.$paneStates.set({})
     })
   })
 

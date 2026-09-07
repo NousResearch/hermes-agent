@@ -20,7 +20,6 @@ from gateway.config import (
     GatewayConfig,
     Platform,
     PlatformConfig,
-    SessionResetPolicy,
 )
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner
@@ -93,7 +92,7 @@ def _source(chat_id="555001") -> SessionSource:
 
 def _store(tmp_path) -> SessionStore:
     config = GatewayConfig(
-        default_reset_policy=SessionResetPolicy(mode="none")
+
     )
     return SessionStore(sessions_dir=tmp_path, config=config)
 

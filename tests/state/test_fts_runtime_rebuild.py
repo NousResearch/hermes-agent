@@ -22,17 +22,9 @@ import pytest
 import hermes_state
 import hermes_state_holders
 import hermes_state_schema
-from hermes_state import (
-    FTS_REBUILD_DEFERRAL_KEY,
-    FTS_STALE_KEY,
-    LEGACY_FTS_SQL,
-    LEGACY_FTS_TRIGRAM_SQL,
-    SCHEMA_SQL,
-    SessionDB,
-    _FTS_TRIGGERS,
-    _concrete_state_db_holder_pids,
-    _is_inactive_orphan_desktop_holder,
-)
+from hermes_state import SessionDB
+from hermes_state_common import FTS_REBUILD_DEFERRAL_KEY, FTS_STALE_KEY, LEGACY_FTS_SQL, LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL, _FTS_TRIGGERS
+from hermes_state_dbfile import _concrete_state_db_holder_pids, _is_inactive_orphan_desktop_holder
 
 
 @pytest.fixture

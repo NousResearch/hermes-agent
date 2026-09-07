@@ -12,13 +12,12 @@ import time
 import pytest
 from unittest.mock import MagicMock, patch
 
-from tools.environments.local import _HERMES_PROVIDER_ENV_FORCE_PREFIX
+from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_FORCE_PREFIX
 from tools.process_registry import (
     ProcessRegistry,
     ProcessSession,
     FINISHED_TTL_SECONDS,
     MAX_PROCESSES,
-    MAX_ACTIVE_PROCESS_AGE,
 )
 
 
@@ -1285,7 +1284,7 @@ class TestProcessToolHandler:
 # format_process_notification + drain_notifications (shared helpers)
 # =========================================================================
 
-from tools.process_registry import format_process_notification
+from tools.process_registry_notifications import format_process_notification
 
 
 def test_drain_notifications_completion_callback_exception_fails_closed(registry):
@@ -1957,7 +1956,10 @@ class TestSystemdCgroupIsolation:
             if value == "--property"
         ]
         assert "MemoryAccounting=yes" in properties
-        assert "OOMPolicy=kill" in properties
+        # systemd rejects OOMPolicy= on transient --scope units across the versions
+        # users run (239/245/249, #102486); emitting it fails the probe and every
+        # cron worker dispatch. MemoryMax + MemoryAccounting carry the isolation.
+        assert not any(p.startswith("OOMPolicy=") for p in properties), properties
         memory_max = next(
             value for value in properties if value.startswith("MemoryMax=")
         )
@@ -2366,6 +2368,12 @@ class TestSystemdCgroupIsolation:
         assert first is True
         assert second is True
         assert len(probe_calls) == 1, "probe must run only once (cached)"
+        # The probe must not carry OOMPolicy= either: that is the argv systemd
+        # rejected on scope units and cached as "unavailable" (#102486).
+        probe_argv = probe_calls[0][0]
+        assert not any(
+            value.startswith("OOMPolicy=") for value in probe_argv if isinstance(value, str)
+        ), probe_argv
 
     def test_systemd_scope_first_probe_is_serialized(self, monkeypatch):
         """Concurrent first-use callers must wait for one definitive probe.
@@ -2679,16 +2687,16 @@ def _make_delegation_batch_evt(results):
 def _patch_delegation_config(
     monkeypatch, model="upstage/solar-pro-4", provider="openrouter", **over
 ):
-    import tools.process_registry as _pr
+    import tools.process_registry_notifications as _prn
 
     cfg = {"model": model, "provider": provider}
     cfg.update(over)
-    monkeypatch.setattr(_pr, "_delegation_config", lambda: cfg)
+    monkeypatch.setattr(_prn, "_delegation_config", lambda: cfg)
     return cfg
 
 
 def _format_async(evt) -> str:
-    from tools.process_registry import format_process_notification
+    from tools.process_registry_notifications import format_process_notification
 
     text = format_process_notification(evt)
     assert text is not None, "format_process_notification returned None"

@@ -153,6 +153,12 @@ CASES = {
         ["scripts/desktop-update/windows.ps1"],
         _lanes(python=True, desktop_updater=True),
     ),
+    # The shipped updater page is exercised by the desktop Electron suite;
+    # a page-only change must run that suite as well as the server tests.
+    "updater ui.html → frontend + desktop_updater": (
+        ["scripts/desktop-update/ui.html"],
+        _lanes(python=True, frontend=True, desktop_updater=True),
+    ),
     "desktop-update test → desktop_updater": (
         ["tests/test_desktop_update_windows_progress.py"],
         _lanes(python=True, python_prod=False, scan=True, desktop_updater=True),

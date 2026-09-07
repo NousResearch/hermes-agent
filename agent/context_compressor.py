@@ -4690,6 +4690,9 @@ Write only the summary body. Do not include any preamble or prefix."""
             messages = self._demote_stale_tail_tools(messages, compress_end)
         current_assignment_summary = self._current_assignment_summary(messages, compress_start, compress_end)
         scan = self._scan_window_handoffs(messages, compress_start, compress_end, turns_to_summarize)
+        if current_assignment_summary is None:
+            # A prior handoff beyond the initial window is consumed by the scan; carry its assignment forward.
+            current_assignment_summary = self._current_assignment_summary(messages, 0, len(messages))
         turns_to_summarize = scan.turns_to_summarize
         self._record_compression_regions(
             head_messages=messages[:compress_start], middle_messages=turns_to_summarize, tail_messages=messages[compress_end:],

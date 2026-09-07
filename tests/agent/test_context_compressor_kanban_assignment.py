@@ -190,6 +190,41 @@ def test_second_compress_repins_assignment_from_prior_handoff(monkeypatch):
     assert receipt in json.dumps(result)
 
 
+def test_compress_keeps_assignment_from_handoff_beyond_initial_window(monkeypatch):
+    task_id = "t_12345678"
+    receipt = "--feedback-id 3944768120 --receipt-head-sha " + "a" * 40
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    assignment = json.dumps({
+        "task": {"id": task_id, "title": "Current card", "body": f"Finish repair: {receipt}"},
+    })
+    prior_handoff = {
+        "role": "assistant",
+        "content": (
+            "summary from the first compression\n\n[CURRENT KANBAN ASSIGNMENT]\n"
+            f"{assignment}\n\n--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---"
+        ),
+        "_compressed_summary": True,
+    }
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "old request"},
+        {"role": "assistant", "content": "old response"},
+        {"role": "user", "content": "new request"},
+        {"role": "assistant", "content": "new response"},
+        prior_handoff,
+        {"role": "user", "content": "latest request"},
+        {"role": "assistant", "content": "latest response"},
+        {"role": "user", "content": "final request"},
+    ]
+    compressor = ContextCompressor("test-model", quiet_mode=True)
+    monkeypatch.setattr(compressor, "_compress_window", lambda _messages: (1, 4))
+    monkeypatch.setattr(compressor, "_generate_summary", lambda _messages, **_kwargs: "summary without receipt")
+
+    result = compressor.compress(messages, current_tokens=999_999, force=True)
+
+    assert receipt in json.dumps(result)
+
+
 @pytest.mark.parametrize("task_id_argument", [None, ""])
 def test_assignment_summary_defaults_null_or_empty_task_id_to_worker_task(monkeypatch, task_id_argument):
     task_id = "t_12345678"

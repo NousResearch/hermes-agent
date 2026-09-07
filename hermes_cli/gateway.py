@@ -2064,6 +2064,26 @@ def _ensure_user_systemd_env() -> None:
             os.environ["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
 
 
+def _adopt_user_bus_when_started_by_systemd() -> None:
+    """Point a systemd-launched gateway at its own user bus before it boots (#104893).
+
+    A *system*-level unit (``/etc/systemd/system``, ``User=<someone>``) is exec'd with
+    neither ``XDG_RUNTIME_DIR`` nor ``DBUS_SESSION_BUS_ADDRESS``, and a process environment
+    is fixed at exec time — so ``systemd-run --user`` fails for the whole lifetime of that
+    gateway even once ``/run/user/<uid>/bus`` is up.  Every restart-safe worker crosses that
+    seam (``tools.process_registry.restart_safe_gateway_child_argv``) and it fails closed by
+    design, so cron and Kanban dispatch died at every fire on headless service installs.
+    ``_ensure_user_systemd_env`` derives both values from our own uid and adopts them only
+    when the runtime dir is really ours and the socket really exists, so a host with no user
+    manager keeps its honest "unavailable" verdict instead of a fabricated bus address.
+    Doing it here rather than at the dispatch seam matters: worker environments are snapshots
+    of ``os.environ`` taken at different points, so the adoption has to precede all of them.
+    """
+    if os.name != "posix" or not os.environ.get("INVOCATION_ID"):
+        return
+    _ensure_user_systemd_env()
+
+
 def _wait_for_user_dbus_socket(timeout: float = 3.0) -> bool:
     """Poll up to ``timeout`` s for a user systemd control socket (user@.service takes a moment after enable-linger)."""
     deadline = time.monotonic() + timeout
@@ -4529,6 +4549,8 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     _absorb = _windows_gateway_should_absorb_console_controls()
     if _absorb:
         _absorb_windows_console_controls()
+
+    _adopt_user_bus_when_started_by_systemd()
 
     # Refresh the systemd unit on every boot so restart settings stay current even after an
     # exit-code-75 respawn (stale-code or /restart), which bypasses `hermes gateway restart`.

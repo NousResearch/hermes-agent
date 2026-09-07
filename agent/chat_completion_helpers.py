@@ -32,7 +32,7 @@ from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.errors import EmptyStreamError
 from agent.turn_context import substitute_api_content
-from agent.gemini_native_adapter import is_native_gemini_base_url
+from agent.gemini_native_adapter import is_gemini_model
 from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
 from agent.message_sanitization import (
@@ -3042,7 +3042,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 ),
             }
             # Native Gemini rejects OpenAI's usage-streaming extension.
-            if not is_native_gemini_base_url(agent.base_url):
+            # Check by model identity (not base URL) so relayed Gemini
+            # models behind aggregators are also covered.
+            if not is_gemini_model(agent.model):
                 stream_kwargs["stream_options"] = {"include_usage": True}
             request_client = _set_request_client(
                 agent._create_request_openai_client(

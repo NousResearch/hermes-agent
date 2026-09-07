@@ -309,7 +309,7 @@ def _run_quiet(cmd: list[str], cwd: Path, timeout: int, env: dict | None = None)
 def _expand_git_reference(ref: ContextReference, cwd: Path, args: list[str], label: str) -> Expansion:
     try:
         # Repo-supplied config/attributes must never execute code (GHSA-7x36-8jrh-v4pw).
-        result = _run_quiet(["git", *harden_git_argv(args)], cwd, 30, env=noninteractive_git_env())
+        result = _run_quiet(["git", *harden_git_argv(args, cwd=cwd)], cwd, 30, env=noninteractive_git_env())
     except subprocess.TimeoutExpired:
         return f"{ref.raw}: git command timed out (30s)", None
     if result.returncode != 0:

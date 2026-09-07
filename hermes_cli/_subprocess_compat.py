@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import Mapping, Sequence
 
 __all__ = [
@@ -49,17 +50,24 @@ _DIFF_RENDERING_SUBCOMMANDS = frozenset({"diff", "show", "log", "blame"})
 _GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
 
 
-def harden_git_argv(args: Sequence[str]) -> list[str]:
+def harden_git_argv(
+    args: Sequence[str], *, cwd: str | Path | None = None
+) -> list[str]:
     """Copy of subcommand-first git *args* (no leading ``"git"``) with :data:`NO_DRIVER_DIFF_FLAGS`
-    inserted right after a diff-rendering subcommand; other subcommands are returned unchanged.
+    inserted right after a diff-rendering subcommand and filter overrides injected before it.
 
     Pair with :func:`noninteractive_git_env`: the env layer disables fsmonitor/hooks/pager/editor/
-    credential sinks, this closes the one class (attacker-named attribute drivers) env cannot reach.
+    credential sinks, this closes attribute-scoped diff drivers and clean/smudge filters.
     """
     out = list(args)
     i = 0
+    extracted_cwd = cwd
     while i < len(out):
         tok = out[i]
+        if tok == "-C" and i + 1 < len(out):
+            extracted_cwd = out[i + 1]
+            i += 2
+            continue
         if tok in _GIT_VALUE_OPTS:
             i += 2
             continue
@@ -67,7 +75,8 @@ def harden_git_argv(args: Sequence[str]) -> list[str]:
             i += 1
             continue
         if tok in _DIFF_RENDERING_SUBCOMMANDS:
-            return out[: i + 1] + list(NO_DRIVER_DIFF_FLAGS) + out[i + 1 :]
+            overrides = _repo_filter_overrides(extracted_cwd)
+            return out[:i] + overrides + [tok] + list(NO_DRIVER_DIFF_FLAGS) + out[i + 1 :]
         return out  # first non-option token is a non-diff subcommand
     return out
 
@@ -456,8 +465,63 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
     openai/codex#36793). ``process_group`` only changes which group the child belongs to; it does not detach
     the terminal or alter the fast path.
     """
+    if len(argv) > 1 and argv[0].endswith(("git", "git.exe")):
+        argv = [argv[0], *harden_git_argv(argv[1:])]
     result = bounded_probe_run(argv, timeout=timeout, env=noninteractive_git_env())
     if result is None or result.returncode != 0:
         return ""
     return (result.stdout or "").strip()
+
+
+_FILTER_OVERRIDE_CACHE: dict[tuple[str, float], list[str]] = {}
+
+
+def _repo_filter_overrides(cwd: str | Path | None = None) -> list[str]:
+    """Enumerate repo-level filter.<driver>.clean/smudge/process overrides.
+
+    Attribute-scoped filters execute during `git diff` against dirty working-tree files.
+    Because the driver name is chosen by the repository author in .gitattributes, static
+    GIT_CONFIG_KEY overrides cannot predict it in advance. Querying the repository's
+    configuration and injecting `-c filter.<name>.clean=` neutralizes the execution sink
+    during diff generation.
+    """
+    rev_cmd = ["git", "-c", "core.fsmonitor=false", "-c", f"core.hooksPath={os.devnull}"]
+    if cwd:
+        rev_cmd.extend(["-C", str(cwd)])
+    rev_cmd.extend(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+    rev_res = bounded_probe_run(rev_cmd, timeout=1.5, env=noninteractive_git_env())
+    if not rev_res or rev_res.returncode != 0:
+        return []
+    common_dir = (rev_res.stdout or "").strip()
+    if not common_dir or not os.path.isdir(common_dir):
+        return []
+    config_file = os.path.join(common_dir, "config")
+    if not os.path.isfile(config_file):
+        return []
+
+    try:
+        mtime = os.path.getmtime(config_file)
+        cache_key = (config_file, mtime)
+        if cache_key in _FILTER_OVERRIDE_CACHE:
+            return _FILTER_OVERRIDE_CACHE[cache_key]
+    except OSError:
+        cache_key = None
+
+    cmd = ["git", "config", "--file", config_file, "--includes", "--list", "--name-only", "-z"]
+    res = bounded_probe_run(cmd, timeout=1.5, env=noninteractive_git_env())
+    if not res or res.returncode not in (0, 1):
+        return []
+
+    overrides = []
+    for key in (res.stdout or "").split("\0"):
+        k = key.strip().lower()
+        if not k:
+            continue
+        if k.startswith("filter.") and k.rsplit(".", 1)[-1] in ("clean", "smudge", "process"):
+            overrides.extend(["-c", f"{key}="])
+
+    if cache_key:
+        _FILTER_OVERRIDE_CACHE[cache_key] = overrides
+    return overrides
+
 

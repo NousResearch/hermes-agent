@@ -22,7 +22,7 @@ import type { GatewayEventContext } from './types'
  *  each of these must be parked per-session and surfaced. */
 export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, occurredAt } = ctx
-  const { activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall } = deps
+  const { activeSessionIdRef, updateSessionState, upsertToolCall } = deps
 
   if (event.type === 'clarify.request') {
     // Surface the clarify tool's overlay. The Python side is blocked on
@@ -35,9 +35,15 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     // indefinitely and re-focusing it could never recover (the event is
     // gone). Parking it per-session lets the user answer once they switch
     // over; the inline ClarifyTool reads the active session's entry.
-    if (sessionId && sessionInterrupted(sessionId)) {
-      return true
-    }
+    //
+    // Deliberately NOT gated on the session's interrupted flag (#104764): a
+    // session can be flagged interrupted (the user stopped the previous turn)
+    // while an auto-continued turn is genuinely blocked on clarify.respond on
+    // the backend. Dropping the one-shot request then strands that turn
+    // forever — the card mounts with no content, the user can only Stop, and
+    // the answer is lost. The other blocking inputs (approval / sudo /
+    // secret / mcp.setup) below have no interrupted guard either; clarify
+    // must behave the same way.
 
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
     const question = typeof payload?.question === 'string' ? payload.question : ''

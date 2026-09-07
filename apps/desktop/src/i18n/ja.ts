@@ -2117,6 +2117,7 @@ export const ja = defineLocale({
       finishedUnread: '完了 — 未読',
       backgroundRunning: 'バックグラウンドタスク実行中',
       draftSession: '下書き — 未送信',
+      largeChat: 'このチャットが大きくなってきました — 新しいチャットを始めると、応答が速く安いままになります。',
       handoffOrigin: platform => `${platform} から引き継ぎ`,
       ownedByProfile: profile => `プロファイル: ${profile}`,
       renamed: '名前を変更しました',

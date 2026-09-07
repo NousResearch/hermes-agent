@@ -8,27 +8,18 @@ from unittest.mock import patch, MagicMock
 import httpx
 import pytest
 
-from tools.skills_hub import (
-    GitHubAuth,
-    GitHubSource,
-    LobeHubSource,
-    SkillsShSource,
-    UrlSource,
-    WellKnownSkillSource,
-    OptionalSkillSource,
-    SkillSource,
-    SkillBundle,
-    SkillMeta,
-    HubLockFile,
-    TapsManager,
-    bundle_content_hash,
-    check_for_skill_updates,
-    create_source_router,
-    parallel_search_sources,
-    unified_search,
-    append_audit_log,
-    quarantine_bundle,
+from tools.skills_hub import HubLockFile, TapsManager, append_audit_log
+from tools.skills_hub_github import GitHubAuth, GitHubSource
+from tools.skills_hub_install import (
+    bundle_content_hash, check_for_skill_updates, install_from_quarantine, quarantine_bundle,
 )
+from tools.skills_hub_models import SkillBundle, SkillMeta, SkillSource, _referenced_support_paths
+from tools.skills_hub_official import OptionalSkillSource
+from tools.skills_hub_search import (
+    HERMES_INDEX_TTL, _load_hermes_index, create_source_router, parallel_search_sources, unified_search,
+)
+from tools.skills_hub_skillssh import SkillsShSource
+from tools.skills_hub_sources import LobeHubSource, UrlSource, WellKnownSkillSource
 
 
 # ---------------------------------------------------------------------------
@@ -102,8 +93,8 @@ class TestSkillsShGroupings:
         resp.status_code = 200
         resp.json.return_value = contents
 
-        with patch.object(src, "_read_cache", return_value=None), \
-             patch.object(src, "_write_cache"), \
+        with patch("tools.skills_hub._read_index_cache", return_value=None), \
+             patch("tools.skills_hub._write_index_cache"), \
              patch.object(src, "_get_skillsh_groupings", return_value=groupings), \
              patch.object(src, "inspect", return_value=meta), \
              patch("tools.skills_hub.httpx.get", return_value=resp):
@@ -145,6 +136,19 @@ class TestTrustLevelFor:
                 "from GitHubSource.DEFAULT_TAPS — its skills will not be "
                 "browsable via `hermes skills browse`."
             )
+
+
+class TestGitHubSourceFileFetch:
+    def test_quotes_decoded_support_path_before_contents_api_fetch(self):
+        src = GitHubSource(auth=MagicMock(spec=GitHubAuth))
+        src._github_get = MagicMock(return_value=None)
+
+        src._fetch_file_bytes("owner/repo", "skill/references/foo#bar.md")
+
+        assert src._github_get.call_args.args[0] == (
+            "https://api.github.com/repos/owner/repo/contents/"
+            "skill/references/foo%23bar.md"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +358,58 @@ class TestUrlSource:
     def _source(self):
         return UrlSource()
 
+    @pytest.mark.parametrize(
+        "glob_reference",
+        [
+            "references/*.md",
+            "references/file?",
+            "references/file?.md",
+            "references/agent.v?.md",
+            "references/data.file?.md",
+            "references/backup.2026?.md",
+            "references/file?x.md",
+            "references/agent.v?x.md",
+            "references/file?[ab].md",
+            "references/file??.md",
+            "references/[ab].md",
+            "references/%2A.md",
+            "references/file%3F.md",
+            "references/%5Bab%5D.md",
+        ],
+    )
+    def test_support_path_extraction_ignores_glob_shaped_prose(
+        self, glob_reference
+    ):
+        skill_md = f"""
+See [the web reference](references/web.md) for details.
+Complex cases are documented under `{glob_reference}`.
+"""
+
+        assert _referenced_support_paths(skill_md) == {"references/web.md"}
+
+    @pytest.mark.parametrize(
+        ("reference", "expected"),
+        [
+            ("templates/report.md?raw=1", "templates/report.md"),
+            ("references/LICENSE?download", "references/LICENSE"),
+            ("references/LICENSE?raw", "references/LICENSE"),
+            ("references/guide.md?view", "references/guide.md"),
+            ("references/guide.md?inline", "references/guide.md"),
+            ("references/guide.md?plain", "references/guide.md"),
+            ("references/guide.md?preview-mode", "references/guide.md"),
+            ("references/guide.md?view&inline&theme=dark", "references/guide.md"),
+            ("references/LICENSE?plain&download=1", "references/LICENSE"),
+            ("references/LICENSE?.well-known=1", "references/LICENSE"),
+            ("references/guide.md#usage", "references/guide.md"),
+            ("references/my%20guide.md", "references/my guide.md"),
+            ("references/foo%23bar.md", "references/foo#bar.md"),
+        ],
+    )
+    def test_support_path_extraction_preserves_concrete_url_suffixes(
+        self, reference, expected
+    ):
+        assert _referenced_support_paths(f"Use `{reference}`.") == {expected}
+
     # ── _matches ────────────────────────────────────────────────────────
     def test_matches_bare_md_url(self):
         assert self._source()._matches("https://example.com/path/SKILL.md") is True
@@ -378,6 +434,38 @@ class TestUrlSource:
 
     # ── fetch ───────────────────────────────────────────────────────────
 
+
+    @patch("tools.skills_hub._ssrf_safe_http_get")
+    def test_fetch_skips_missing_support_file_instead_of_aborting(self, mock_get):
+        # One referenced support file 404s; the other is reachable. The
+        # install should still succeed with the file that could be fetched,
+        # rather than aborting the whole fetch (regression for a bug where
+        # any single missing companion file failed the entire URL install).
+        skill_md = (
+            "---\n"
+            "name: my-skill\n"
+            "description: Has support files.\n"
+            "---\n\n"
+            "See `references/good.md` and `references/missing.md`.\n"
+        )
+
+        def _side_effect(url, **kwargs):
+            if url.endswith("SKILL.md"):
+                return MagicMock(status_code=200, text=skill_md)
+            if url.endswith("references/good.md"):
+                return MagicMock(status_code=200, content=b"good content")
+            if url.endswith("references/missing.md"):
+                return MagicMock(status_code=404)
+            raise AssertionError(f"unexpected URL: {url}")
+
+        mock_get.side_effect = _side_effect
+
+        bundle = self._source().fetch("https://example.com/my-skill/SKILL.md")
+        assert bundle is not None
+        assert bundle.name == "my-skill"
+        assert bundle.files["SKILL.md"] == skill_md
+        assert bundle.files["references/good.md"] == b"good content"
+        assert "references/missing.md" not in bundle.files
 
     @patch("tools.skills_hub._ssrf_safe_http_get")
     @patch("tools.skills_hub.check_website_access", return_value=None)
@@ -622,7 +710,7 @@ class TestGithubProviderLabeling:
 
 def _make_index_source(skills):
     """Build a HermesIndexSource pre-loaded with a fixed skill list."""
-    from tools.skills_hub import HermesIndexSource
+    from tools.skills_hub_official import HermesIndexSource
     src = HermesIndexSource(auth=GitHubAuth())
     src._index = {"skills": skills}
     src._loaded = True
@@ -659,7 +747,7 @@ class TestHermesIndexSearch:
 
 class TestProviderFilter:
     def test_filter_results_by_provider_narrows_exactly(self):
-        from tools.skills_hub import _filter_results_by_provider
+        from tools.skills_hub_github import _filter_results_by_provider
         results = [
             SkillMeta(name="a", description="", source="github", identifier="NVIDIA/skills/a",
                       trust_level="trusted", extra={"provider": "NVIDIA"}),
@@ -797,6 +885,129 @@ class TestOptionalSkillSourceBinaryAssets:
         assert bundle is None
 
 
+class TestOptionalSkillSourceLiveRepoFallback:
+    """Skills merged to main after the local install was cut must still be
+    searchable and installable without `hermes update` (live-repo fallback)."""
+
+    def _make_source(self, tmp_path, remote_dirs):
+        optional_root = tmp_path / "optional-skills"
+        optional_root.mkdir(exist_ok=True)
+        src = OptionalSkillSource()
+        src._optional_dir = optional_root
+        src._remote_dirs = dict.fromkeys(remote_dirs, True)
+        return src
+
+    @staticmethod
+    def _fake_github_with_tree(remote_dirs, extra_files=()):
+        """MagicMock GitHubSource whose repo tree contains each skill dir's
+        SKILL.md plus any extra files, served byte-exact by _fetch_file_bytes."""
+        entries = []
+        contents = {}
+        for rel_dir in remote_dirs:
+            p = f"optional-skills/{rel_dir}/SKILL.md"
+            entries.append({"type": "blob", "path": p, "mode": "100644"})
+            contents[p] = b"---\nname: " + rel_dir.rsplit("/", 1)[-1].encode() + b"\n---\nBody"
+        for rel_path, data in extra_files:
+            entries.append({"type": "blob", "path": rel_path, "mode": "100644"})
+            contents[rel_path] = data
+        fake = MagicMock()
+        fake._get_repo_tree.return_value = ("main", entries)
+        fake._fetch_file_bytes.side_effect = lambda repo, path: contents.get(path)
+        return fake
+
+    def test_fetch_falls_back_to_live_repo_when_missing_locally(self, tmp_path):
+        src = self._make_source(tmp_path, ["software-development/ast-grep"])
+        src._github = self._fake_github_with_tree(
+            ["software-development/ast-grep"],
+            extra_files=[
+                ("optional-skills/software-development/ast-grep/install.sh", b"#!/bin/sh\n"),
+                ("optional-skills/software-development/ast-grep/LICENSE", b"MIT"),
+            ],
+        )
+
+        bundle = src.fetch("official/software-development/ast-grep")
+
+        assert bundle is not None
+        # Provenance is rewritten to official/builtin
+        assert bundle.source == "official"
+        assert bundle.identifier == "official/software-development/ast-grep"
+        assert bundle.trust_level == "builtin"
+        # FULL directory arrives — including root-level files GitHubSource.fetch drops
+        assert bundle.files["install.sh"] == b"#!/bin/sh\n"
+        assert bundle.files["LICENSE"] == b"MIT"
+
+    def test_fetch_bare_name_resolves_via_remote_tree(self, tmp_path):
+        src = self._make_source(tmp_path, ["software-development/ast-grep"])
+        src._github = self._fake_github_with_tree(["software-development/ast-grep"])
+
+        bundle = src.fetch("official/ast-grep")
+
+        assert bundle is not None
+        assert bundle.identifier == "official/software-development/ast-grep"
+
+    def test_fetch_ambiguous_bare_name_refuses(self, tmp_path):
+        src = self._make_source(
+            tmp_path, ["security/scanner", "devops/scanner"]
+        )
+        fake_github = MagicMock()
+        src._github = fake_github
+
+        assert src.fetch("official/scanner") is None
+        fake_github.fetch.assert_not_called()
+
+    def test_local_checkout_wins_over_remote(self, tmp_path):
+        src = self._make_source(tmp_path, ["research/local-skill"])
+        skill_dir = src._optional_dir / "research" / "local-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: local-skill\ndescription: local\n---\nBody",
+            encoding="utf-8",
+        )
+        fake_github = MagicMock()
+        src._github = fake_github
+
+        bundle = src.fetch("official/research/local-skill")
+
+        assert bundle is not None
+        fake_github.fetch.assert_not_called()
+
+    def test_fallback_rejects_traversal_rel(self, tmp_path):
+        src = self._make_source(tmp_path, ["security/whatever"])
+        fake_github = MagicMock()
+        src._github = fake_github
+
+        assert src._fetch_from_live_repo("../../etc/passwd") is None
+        fake_github.fetch.assert_not_called()
+
+    def test_search_surfaces_remote_only_skills(self, tmp_path):
+        src = self._make_source(tmp_path, ["software-development/ast-grep"])
+
+        results = src.search("ast-grep")
+
+        assert any(
+            r.identifier == "official/software-development/ast-grep"
+            and r.trust_level == "builtin"
+            for r in results
+        )
+
+    def test_inspect_surfaces_remote_only_skill(self, tmp_path):
+        src = self._make_source(tmp_path, ["software-development/ast-grep"])
+
+        meta = src.inspect("official/software-development/ast-grep")
+
+        assert meta is not None
+        assert meta.repo == "NousResearch/hermes-agent"
+        assert meta.path == "optional-skills/software-development/ast-grep"
+
+    def test_offline_degrades_to_local_only(self, tmp_path):
+        src = self._make_source(tmp_path, [])
+        fake_github = MagicMock()
+        src._github = fake_github
+
+        assert src.fetch("official/never-heard-of-it") is None
+        assert src.search("never-heard-of-it") == []
+
+
 class TestQuarantineBundleBinaryAssets:
     def test_quarantine_bundle_writes_binary_files(self, tmp_path):
         import tools.skills_hub as hub
@@ -880,88 +1091,63 @@ class TestQuarantineBundleBinaryAssets:
 
         assert not absolute_target.exists()
 
+    def test_quarantine_bundle_rejects_ads_colon_file_paths(self, tmp_path):
+        """F-02: a bundle member with a colon in a component (``file.py:payload``)
+        is an NTFS Alternate Data Stream marker — the visible file passes
+        ``rglob``-based review while hidden, scanner-invisible bytes are written
+        into it. Reject it before it reaches disk, on any OS."""
+        import tools.skills_hub as hub
 
-# ---------------------------------------------------------------------------
-# GitHubSource._download_directory — tree API + fallback (#2940)
-# ---------------------------------------------------------------------------
+        hub_dir = tmp_path / "skills" / ".hub"
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            bundle = SkillBundle(
+                name="demo",
+                files={
+                    "SKILL.md": "---\nname: demo\n---\n",
+                    "scripts/helper.py:payload": "print(24680)",
+                },
+                source="well-known",
+                identifier="well-known:https://example.com/.well-known/skills/demo",
+                trust_level="community",
+            )
 
+            with pytest.raises(ValueError, match="Unsafe bundle file path"):
+                quarantine_bundle(bundle)
 
-class TestDownloadDirectoryViaTree:
-    """Tests for the Git Trees API path in _download_directory."""
+        assert not (tmp_path / "skills" / "scripts").exists()
 
-    def _source(self):
-        auth = MagicMock(spec=GitHubAuth)
-        auth.get_headers.return_value = {}
-        return GitHubSource(auth=auth)
+    def test_normalize_bundle_path_rejects_colon_anywhere(self):
+        """The colon guard covers the whole class, not just ``helper.py:payload``:
+        a colon in any component (leading drive letter, mid-path, or bare) is
+        rejected, while ordinary portable paths still normalize."""
+        from tools.skills_hub_models import _normalize_bundle_path
 
-    @patch.object(GitHubSource, "_fetch_file_content")
-    @patch("tools.skills_hub.httpx.get")
-    def test_tree_api_downloads_subdirectories(self, mock_get, mock_fetch):
-        """Tree API returns files from nested subdirectories."""
-        repo_resp = MagicMock(status_code=200, json=lambda: {"default_branch": "main"})
-        tree_resp = MagicMock(status_code=200, json=lambda: {
-            "truncated": False,
-            "tree": [
-                {"type": "blob", "path": "skills/my-skill/SKILL.md"},
-                {"type": "blob", "path": "skills/my-skill/scripts/run.py"},
-                {"type": "blob", "path": "skills/my-skill/references/api.md"},
-                {"type": "tree", "path": "skills/my-skill/scripts"},
-                {"type": "blob", "path": "other/file.txt"},
-            ],
-        })
-        mock_get.side_effect = [repo_resp, tree_resp]
-        mock_fetch.side_effect = lambda repo, path: f"content-of-{path}"
+        rejected = (
+            "scripts/helper.py:payload",   # trailing-component ADS marker
+            "scripts/a:b.py",              # mid-component colon
+            "a:b/scripts/helper.py",       # leading-component colon
+            "scripts/helper.py:",          # empty stream name
+            "C:",                          # bare Windows drive letter
+            "C:/Windows/System32",         # drive-qualified absolute-ish path
+        )
+        for bad in rejected:
+            with pytest.raises(ValueError, match="Unsafe bundle file path"):
+                _normalize_bundle_path(bad, field_name="bundle file path", allow_nested=True)
 
-        src = self._source()
-        files = src._download_directory("owner/repo", "skills/my-skill")
+        # Legitimate portable paths are unaffected.
+        assert _normalize_bundle_path(
+            "scripts/helper.py", field_name="bundle file path", allow_nested=True
+        ) == "scripts/helper.py"
+        assert _normalize_bundle_path(
+            "assets/data/sample.wav", field_name="bundle file path", allow_nested=True
+        ) == "assets/data/sample.wav"
 
-        assert "SKILL.md" in files
-        assert "scripts/run.py" in files
-        assert "references/api.md" in files
-        assert "other/file.txt" not in files  # outside target path
-        assert len(files) == 3
-
-    @patch.object(GitHubSource, "_download_directory_recursive", return_value={"SKILL.md": "# ok"})
-    @patch("tools.skills_hub.httpx.get")
-    def test_falls_back_on_truncated_tree(self, mock_get, mock_fallback):
-        """When tree is truncated, fall back to recursive Contents API."""
-        repo_resp = MagicMock(status_code=200, json=lambda: {"default_branch": "main"})
-        tree_resp = MagicMock(status_code=200, json=lambda: {"truncated": True, "tree": []})
-        mock_get.side_effect = [repo_resp, tree_resp]
-
-        src = self._source()
-        files = src._download_directory("owner/repo", "skills/my-skill")
-
-        assert files == {"SKILL.md": "# ok"}
-        mock_fallback.assert_called_once_with("owner/repo", "skills/my-skill")
-
-class TestDownloadDirectoryRecursive:
-    """Tests for the Contents API fallback path."""
-
-    def _source(self):
-        auth = MagicMock(spec=GitHubAuth)
-        auth.get_headers.return_value = {}
-        return GitHubSource(auth=auth)
-
-    @patch.object(GitHubSource, "_fetch_file_content")
-    @patch("tools.skills_hub.httpx.get")
-    def test_recursive_downloads_subdirectories(self, mock_get, mock_fetch):
-        """Contents API recursion includes subdirectories."""
-        root_resp = MagicMock(status_code=200, json=lambda: [
-            {"name": "SKILL.md", "type": "file", "path": "skill/SKILL.md"},
-            {"name": "scripts", "type": "dir", "path": "skill/scripts"},
-        ])
-        sub_resp = MagicMock(status_code=200, json=lambda: [
-            {"name": "run.py", "type": "file", "path": "skill/scripts/run.py"},
-        ])
-        mock_get.side_effect = [root_resp, sub_resp]
-        mock_fetch.side_effect = lambda repo, path: f"content-of-{path}"
-
-        src = self._source()
-        files = src._download_directory_recursive("owner/repo", "skill")
-
-        assert "SKILL.md" in files
-        assert "scripts/run.py" in files
 
 # ---------------------------------------------------------------------------
 # Install-path safety (lock-file → uninstall rmtree boundary)
@@ -978,11 +1164,27 @@ class TestInstallPathSafety:
     """
 
     @pytest.fixture
-    def isolated_skills_dir(self, tmp_path, monkeypatch):
+    def isolated_skills_dir(self, tmp_path):
+        import tools.skills_hub as hub
+
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        monkeypatch.setattr("tools.skills_hub.SKILLS_DIR", skills_dir)
-        return skills_dir
+        # SKILLS_DIR is a PEP 562 dynamic attribute (resolved per-access via
+        # module __getattr__). monkeypatch.setattr must NOT be used here: it
+        # captures __getattr__'s live-resolved Path as the "original" value
+        # and re-installs it as a REAL module attribute on teardown, which
+        # permanently shadows dynamic resolution — every later test in the
+        # process then sees this test's tmp dir as the skills root. Set the
+        # override attribute directly and delete it on teardown so the
+        # module returns to dynamic resolution.
+        setattr(hub, "SKILLS_DIR", skills_dir)
+        try:
+            yield skills_dir
+        finally:
+            try:
+                delattr(hub, "SKILLS_DIR")
+            except AttributeError:
+                pass
 
     @pytest.fixture
     def patch_lock_file(self, monkeypatch):
@@ -1023,7 +1225,7 @@ class TestInstallPathSafety:
 
     def test_uninstall_rejects_poisoned_absolute_path(self, tmp_path, isolated_skills_dir, patch_lock_file):
         """Hand-edited lock.json with absolute install_path must not delete anything."""
-        from tools.skills_hub import uninstall_skill
+        from tools.skills_hub_install import uninstall_skill
 
         lock_path = tmp_path / "lock.json"
         target = tmp_path / "victim"
@@ -1056,7 +1258,7 @@ class TestInstallPathSafety:
         assert (target / "file.txt").read_text() == "important"
 
     def test_uninstall_rejects_traversal(self, tmp_path, isolated_skills_dir, patch_lock_file):
-        from tools.skills_hub import uninstall_skill
+        from tools.skills_hub_install import uninstall_skill
 
         lock_path = tmp_path / "lock.json"
         sibling = tmp_path / "sibling"
@@ -1084,7 +1286,7 @@ class TestInstallPathSafety:
 
     def test_uninstall_rejects_empty_install_path(self, tmp_path, isolated_skills_dir, patch_lock_file):
         """Empty install_path resolves to SKILLS_DIR itself — must be refused."""
-        from tools.skills_hub import uninstall_skill
+        from tools.skills_hub_install import uninstall_skill
 
         # Put a sibling skill alongside to prove rmtree doesn't fire.
         (isolated_skills_dir / "bystander").mkdir()
@@ -1133,7 +1335,7 @@ class TestInstallPathSafety:
         except (OSError, NotImplementedError):
             pytest.skip("symlink creation unsupported on this platform")
 
-        bundle = hub.SkillBundle(
+        bundle = SkillBundle(
             name="bad-skill",
             files={"SKILL.md": "---\nname: bad-skill\n---\n"},
             source="community",
@@ -1148,12 +1350,14 @@ class TestInstallPathSafety:
         )
 
         with patch.object(hub, "SKILLS_DIR", skills_dir), \
-             patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root), \
+             patch("tools.skill_usage.record_installed") as record_installed:
             with pytest.raises(ValueError, match="symlink"):
-                hub.install_from_quarantine(
+                install_from_quarantine(
                     q_dir, "bad-skill", "", bundle, scan_result,
                 )
 
+        record_installed.assert_not_called()
         assert not (skills_dir / "bad-skill" / "leak.txt").exists()
         assert secret.read_text() == "data exfiltration payload\n"
 
@@ -1185,7 +1389,7 @@ class TestInstallPathSafety:
         q_dir.mkdir()
         (q_dir / "SKILL.md").write_text("---\nname: research\n---\n")
 
-        bundle = hub.SkillBundle(
+        bundle = SkillBundle(
             name="research",
             files={"SKILL.md": "---\nname: research\n---\n"},
             source="community",
@@ -1202,7 +1406,7 @@ class TestInstallPathSafety:
         with patch.object(hub, "SKILLS_DIR", skills_dir), \
              patch.object(hub, "QUARANTINE_DIR", quarantine_root):
             with pytest.raises(ValueError, match="Refusing to overwrite category directory"):
-                hub.install_from_quarantine(
+                install_from_quarantine(
                     q_dir, "research", "", bundle, scan_result,
                 )
 
@@ -1237,7 +1441,7 @@ class TestInstallPathSafety:
         (q_dir / "refs").mkdir()
         (q_dir / "refs" / "guide.md").write_text("new guide")
 
-        bundle = hub.SkillBundle(
+        bundle = SkillBundle(
             name="my-skill",
             files={"SKILL.md": "---\nname: my-skill\n---\nnew"},
             source="community",
@@ -1253,7 +1457,7 @@ class TestInstallPathSafety:
 
         with patch.object(hub, "SKILLS_DIR", skills_dir), \
              patch.object(hub, "QUARANTINE_DIR", quarantine_root):
-            installed = hub.install_from_quarantine(
+            installed = install_from_quarantine(
                 q_dir, "my-skill", "", bundle, scan_result,
             )
 
@@ -1281,7 +1485,7 @@ class TestInstallPathSafety:
         q_dir.mkdir()
         (q_dir / "SKILL.md").write_text("---\nname: research\n---\n")
 
-        bundle = hub.SkillBundle(
+        bundle = SkillBundle(
             name="research",
             files={"SKILL.md": "---\nname: research\n---\n"},
             source="community",
@@ -1297,7 +1501,7 @@ class TestInstallPathSafety:
 
         with patch.object(hub, "SKILLS_DIR", skills_dir), \
              patch.object(hub, "QUARANTINE_DIR", quarantine_root):
-            installed = hub.install_from_quarantine(
+            installed = install_from_quarantine(
                 q_dir, "research", "", bundle, scan_result,
             )
 
@@ -1325,7 +1529,7 @@ class TestInstallPathSafety:
         q_dir.mkdir()
         (q_dir / "SKILL.md").write_text("---\nname: mlops\n---\n")
 
-        bundle = hub.SkillBundle(
+        bundle = SkillBundle(
             name="mlops",
             files={"SKILL.md": "---\nname: mlops\n---\n"},
             source="community",
@@ -1342,7 +1546,7 @@ class TestInstallPathSafety:
         with patch.object(hub, "SKILLS_DIR", skills_dir), \
              patch.object(hub, "QUARANTINE_DIR", quarantine_root):
             with pytest.raises(ValueError, match="category directory"):
-                hub.install_from_quarantine(
+                install_from_quarantine(
                     q_dir, "mlops", "", bundle, scan_result,
                 )
 
@@ -1370,7 +1574,7 @@ class TestInstallPathSafety:
         q_dir.mkdir()
         (q_dir / "SKILL.md").write_text("---\nname: docker\n---\n")
 
-        bundle = hub.SkillBundle(
+        bundle = SkillBundle(
             name="docker",
             files={"SKILL.md": "---\nname: docker\n---\n"},
             source="community",
@@ -1387,7 +1591,7 @@ class TestInstallPathSafety:
         with patch.object(hub, "SKILLS_DIR", skills_dir), \
              patch.object(hub, "QUARANTINE_DIR", quarantine_root):
             with pytest.raises(ValueError, match="existing skill directory"):
-                hub.install_from_quarantine(
+                install_from_quarantine(
                     q_dir, "docker", "devops", bundle, scan_result,
                 )
 
@@ -1411,7 +1615,7 @@ class TestInstallPathSafety:
         q_dir.mkdir()
         (q_dir / "SKILL.md").write_text("---\nname: notes\n---\n")
 
-        bundle = hub.SkillBundle(
+        bundle = SkillBundle(
             name="notes",
             files={"SKILL.md": "---\nname: notes\n---\n"},
             source="community",
@@ -1428,11 +1632,50 @@ class TestInstallPathSafety:
         with patch.object(hub, "SKILLS_DIR", skills_dir), \
              patch.object(hub, "QUARANTINE_DIR", quarantine_root):
             with pytest.raises(ValueError, match="not a directory"):
-                hub.install_from_quarantine(
+                install_from_quarantine(
                     q_dir, "notes", "", bundle, scan_result,
                 )
 
         assert (skills_dir / "notes").read_text() == "not a directory"
+
+    def test_install_from_quarantine_records_successful_install(self, tmp_path):
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        skills_dir = tmp_path / "skills"
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir(parents=True)
+        skill_md = "---\nname: good-skill\n---\n\n# Good skill\n"
+        (q_dir / "SKILL.md").write_text(skill_md, encoding="utf-8")
+        bundle = SkillBundle(
+            name="good-skill",
+            files={"SKILL.md": skill_md},
+            source="community",
+            identifier="good/source",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="good-skill",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root), \
+             patch("tools.skill_usage.record_installed") as record_installed:
+            installed = install_from_quarantine(
+                q_dir,
+                "good-skill",
+                "",
+                bundle,
+                scan_result,
+            )
+
+        assert installed == skills_dir / "good-skill"
+        assert installed.is_dir()
+        record_installed.assert_called_once_with("good-skill")
 
 
 # ---------------------------------------------------------------------------
@@ -1531,15 +1774,13 @@ class TestLoadHermesIndex:
     @staticmethod
     def _isolate_cache(monkeypatch, tmp_path):
         """Point the on-disk cache at an empty tmp dir so no real cache leaks in."""
-        import tools.skills_hub as hub
-
         cache_file = tmp_path / "hermes-index.json"
-        monkeypatch.setattr(hub, "_hermes_index_cache_file", lambda: cache_file)
+        monkeypatch.setattr("tools.skills_hub_search._hermes_index_cache_file", lambda: cache_file)
         return cache_file
 
     def test_fetch_does_not_request_brotli(self, monkeypatch, tmp_path):
         """The index fetch must not negotiate Brotli (the broken decoder path)."""
-        import tools.skills_hub as hub
+        import tools.skills_hub_search as hub_search
 
         self._isolate_cache(monkeypatch, tmp_path)
 
@@ -1552,9 +1793,9 @@ class TestLoadHermesIndex:
             resp.json.return_value = {"skills": [{"name": "x"}]}
             return resp
 
-        monkeypatch.setattr(hub.httpx, "get", fake_get)
+        monkeypatch.setattr(hub_search.httpx, "get", fake_get)
 
-        data = hub._load_hermes_index()
+        data = _load_hermes_index()
         assert data == {"skills": [{"name": "x"}]}
 
         accept = captured["headers"].get("Accept-Encoding", "")
@@ -1566,12 +1807,12 @@ class TestLoadHermesIndex:
         self, monkeypatch, tmp_path
     ):
         """If every attempt fails to decode, serve the stale cache rather than None."""
-        import tools.skills_hub as hub
+        import tools.skills_hub_search as hub_search
 
         cache_file = self._isolate_cache(monkeypatch, tmp_path)
         cache_file.write_text(json.dumps({"skills": [{"name": "stale"}]}))
         # Force the cache to look expired so the network path runs.
-        old = time.time() - (hub.HERMES_INDEX_TTL + 100)
+        old = time.time() - (HERMES_INDEX_TTL + 100)
         import os
 
         os.utime(cache_file, (old, old))
@@ -1579,7 +1820,74 @@ class TestLoadHermesIndex:
         def fake_get(url, *args, **kwargs):
             raise httpx.DecodingError("brotli boom")
 
-        monkeypatch.setattr(hub.httpx, "get", fake_get)
+        monkeypatch.setattr(hub_search.httpx, "get", fake_get)
 
-        data = hub._load_hermes_index()
+        data = _load_hermes_index()
         assert data == {"skills": [{"name": "stale"}]}
+
+
+# ---------------------------------------------------------------------------
+# Referenced-path extraction & missing support files (regression: a prose
+# glob or a repo-only dev tool referenced in SKILL.md must not abort install)
+# ---------------------------------------------------------------------------
+
+
+class TestReferencedSupportPaths:
+    def test_ignores_globs_placeholders_and_truncated_tokens(self):
+        md = (
+            "Load `references/type-*.md` before drawing, and "
+            "`references/type-<name>.md` for the matching type.\n"
+            "Real files: [flowchart](references/type-flowchart.md) and "
+            "`references/type-architecture.md`.\n"
+        )
+        assert _referenced_support_paths(md) == {
+            "references/type-flowchart.md",
+            "references/type-architecture.md",
+        }
+
+    def test_keeps_real_backtick_references(self):
+        md = "Run `python3 scripts/self_check.py <file>` and see `references/guide.md`.\n"
+        assert _referenced_support_paths(md) == {
+            "scripts/self_check.py",
+            "references/guide.md",
+        }
+
+
+class TestGitHubSourceFetchMissingReferencedFile:
+    def _source(self):
+        auth = MagicMock(spec=GitHubAuth)
+        return GitHubSource(auth=auth)
+
+    def test_fetch_skips_missing_referenced_file_and_keeps_the_rest(self):
+        md = (
+            "---\nname: demo\ndescription: demo\n---\n\n"
+            "See [guide](references/guide.md) and `references/missing.md`.\n"
+        )
+        tree_entries = [
+            {"path": "skills/demo/references/guide.md", "type": "blob", "mode": "100644"},
+        ]
+        source = self._source()
+        with patch.object(source, "_fetch_file_content", return_value=md), \
+             patch.object(source, "_get_repo_tree", return_value=("main", tree_entries)), \
+             patch.object(source, "_fetch_file_bytes", return_value=b"# guide"):
+            bundle = source.fetch("owner/repo/skills/demo")
+
+        assert bundle is not None
+        assert bundle.name == "demo"
+        # The present referenced file is bundled…
+        assert bundle.files["references/guide.md"] == b"# guide"
+        # …and the missing one is warned about and skipped, not fatal.
+        assert "references/missing.md" not in bundle.files
+
+
+class TestUrlSourceFetchMissingReferencedFile:
+    def test_fetch_skips_missing_referenced_file(self):
+        md = "---\nname: demo\ndescription: demo\n---\n\nSee `references/missing.md`.\n"
+        source = UrlSource()
+        with patch.object(source, "_fetch_text", return_value=md), \
+             patch.object(source, "_fetch_bytes", return_value=None):
+            bundle = source.fetch("https://example.com/skills/demo/SKILL.md")
+
+        assert bundle is not None
+        assert bundle.name == "demo"
+        assert "references/missing.md" not in bundle.files

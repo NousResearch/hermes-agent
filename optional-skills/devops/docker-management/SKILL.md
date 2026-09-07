@@ -178,7 +178,8 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - DATABASE_URL=postgres://user:pass@db:5432/mydb
+      # Password comes from the POSTGRES_PASSWORD secret, not the URL
+      - DATABASE_URL=postgres://mydb_user@db:5432/mydb
     depends_on:
       db:
         condition: service_healthy

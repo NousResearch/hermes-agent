@@ -91,11 +91,10 @@ def test_non_expired_lock_is_held(db: SessionDB) -> None:
 def test_non_expired_lock_from_dead_pid_is_reclaimed(
     db: SessionDB, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # PID probing is POSIX-only by design (see
-    # test_windows_uses_ttl_only_without_pid_probe). Pin the platform so this
-    # exercises the probe branch on Windows dev machines too, instead of
-    # silently asserting the nt early-return.
-    monkeypatch.setattr(hermes_state.os, "name", "posix")
+    # No ``os.name`` pin: the probe below injects a fake ``psutil``, and
+    # ``_process_is_gone`` consults psutil *before* its POSIX/nt split — the
+    # nt early-return is unreachable here on any host, so faking the platform
+    # bought nothing.
     dead_holder = "pid=424242:tid=1:agent=abc:nonce=deadbeef"
     assert db.try_acquire_compression_lock(
         "sess1", dead_holder, ttl_seconds=300

@@ -194,7 +194,7 @@ def run_one(scenario, mode, scale, rep, out_dir: Path):
             skip_context_files=True, skip_memory=True,
             platform="cli", max_iterations=15,
         )
-        import agent.conversation_loop as _cl
+        import agent.turn_usage as _cl
         _orig_norm = _cl.normalize_usage
         def _norm_spy(raw, **kw):
             cu = _orig_norm(raw, **kw)
@@ -224,7 +224,7 @@ def run_one(scenario, mode, scale, rep, out_dir: Path):
         registry.dispatch = original_dispatch
         if _orig_norm is not None:
             try:
-                import agent.conversation_loop as _cl2
+                import agent.turn_usage as _cl2
                 _cl2.normalize_usage = _orig_norm
             except Exception:
                 pass

@@ -40,9 +40,22 @@ class TestFireworksIdentity:
 
 
 class TestFireworksHeaders:
-    def test_no_partner_attribution_headers(self, fireworks_profile):
-        assert "HTTP-Referer" not in fireworks_profile.default_headers
-        assert "X-Title" not in fireworks_profile.default_headers
+    def test_attribution_matches_canonical_hermes_values(self, fireworks_profile):
+        """Fireworks requests carry the same attribution identity Hermes sends
+        everywhere else.
+
+        Asserted against the shared constant rather than the literals so a
+        rebrand can't leave one provider on a stale referer/title.
+        """
+        from agent.auxiliary_client import _OR_HEADERS_BASE
+
+        headers = fireworks_profile.default_headers
+        assert headers["HTTP-Referer"] == _OR_HEADERS_BASE["HTTP-Referer"]
+        assert headers["X-Title"] == _OR_HEADERS_BASE["X-Title"]
+
+    def test_user_agent_identifies_hermes(self, fireworks_profile):
+        # Prefix, not the full string — the version moves every release.
+        assert fireworks_profile.default_headers["User-Agent"].startswith("HermesAgent/")
 
 
 class TestFireworksAliases:

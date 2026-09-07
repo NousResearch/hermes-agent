@@ -279,6 +279,89 @@ class TestResolveAliasEdgeCases:
 
 
 # ---------------------------------------------------------------------------
+# resolve_alias: sort-key date-stamp handling
+# ---------------------------------------------------------------------------
+
+class TestResolveAliasSorting:
+    """Aliases matching multiple catalog models must NOT silently pick one —
+    resolve_alias raises AmbiguousAliasError with candidates sorted
+    best-guess-first (dated snapshots demoted below real point versions)."""
+
+    def test_anthropic_opus_ambiguous_lists_candidates(self, monkeypatch):
+        """Multiple family matches surface a choice instead of auto-picking;
+        the display ordering demotes date-stamped snapshots."""
+        import pytest
+
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.setattr("hermes_cli.models._PROVIDER_MODELS", {})
+        monkeypatch.setattr(ms, "_ensure_direct_aliases", lambda: None)
+        monkeypatch.setattr(ms, "DIRECT_ALIASES", {})
+        monkeypatch.setattr(ms, "list_provider_models",
+                            lambda p: ["claude-opus-4-1", "claude-opus-4-7",
+                                       "claude-opus-4-8",
+                                       "claude-opus-4-20250514"])
+        with pytest.raises(ms.AmbiguousAliasError) as exc:
+            ms.resolve_alias("opus", "anthropic")
+        assert exc.value.candidates[0] == "claude-opus-4-8"
+        assert set(exc.value.candidates) == {
+            "claude-opus-4-1", "claude-opus-4-7",
+            "claude-opus-4-8", "claude-opus-4-20250514",
+        }
+
+    def test_unsynced_new_model_sorts_first(self, monkeypatch):
+        """A just-released model missing from models.dev still ranks above
+        older, dated siblings in the candidate ordering."""
+        import pytest
+
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.setattr("hermes_cli.models._PROVIDER_MODELS", {})
+        monkeypatch.setattr(ms, "_ensure_direct_aliases", lambda: None)
+        monkeypatch.setattr(ms, "DIRECT_ALIASES", {})
+        monkeypatch.setattr(ms, "list_provider_models",
+                            lambda p: ["claude-opus-4-7", "claude-opus-4-8",
+                                       "claude-opus-4-20250514",
+                                       "claude-opus-4-9"])
+        with pytest.raises(ms.AmbiguousAliasError) as exc:
+            ms.resolve_alias("opus", "anthropic")
+        assert exc.value.candidates[0] == "claude-opus-4-9"
+
+    def test_single_match_resolves_without_error(self, monkeypatch):
+        """Exactly one family match still resolves automatically."""
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.setattr("hermes_cli.models._PROVIDER_MODELS", {})
+        monkeypatch.setattr(ms, "_ensure_direct_aliases", lambda: None)
+        monkeypatch.setattr(ms, "DIRECT_ALIASES", {})
+        monkeypatch.setattr(ms, "list_provider_models",
+                            lambda p: ["claude-opus-4-8", "claude-sonnet-4-6"])
+        result = ms.resolve_alias("opus", "anthropic")
+        assert result is not None and result[1] == "claude-opus-4-8"
+
+    def test_switch_model_surfaces_ambiguity_message(self, monkeypatch):
+        """switch_model returns a failure result listing the candidates
+        instead of switching to a heuristic guess."""
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.setattr("hermes_cli.models._PROVIDER_MODELS", {})
+        monkeypatch.setattr(ms, "_ensure_direct_aliases", lambda: None)
+        monkeypatch.setattr(ms, "DIRECT_ALIASES", {})
+        monkeypatch.setattr(ms, "list_provider_models",
+                            lambda p: ["claude-opus-4-8",
+                                       "claude-opus-4-20250514"])
+        result = ms.switch_model(
+            "opus",
+            current_provider="anthropic",
+            current_model="claude-sonnet-4-6",
+        )
+        assert result.success is False
+        assert "claude-opus-4-8" in result.error_message
+        assert "claude-opus-4-20250514" in result.error_message
+        assert "not switching automatically" in result.error_message
+
+
+# ---------------------------------------------------------------------------
 # switch_model: direct alias base_url override
 # ---------------------------------------------------------------------------
 
@@ -303,7 +386,7 @@ class TestSwitchModelDirectAliasOverride:
             lambda **kwargs: {"api_key": "", "base_url": "", "api_mode": "openai_compat", "provider": "custom"},
         )
 
-        monkeypatch.setattr("hermes_cli.models.validate_requested_model",
+        monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model",
             lambda *a, **kw: {"accepted": True, "persist": True, "recognized": True, "message": None})
         monkeypatch.setattr("hermes_cli.models.opencode_model_api_mode",
             lambda *a, **kw: "openai_compat")
@@ -328,7 +411,7 @@ class TestSwitchModelDirectAliasOverride:
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             lambda **kwargs: {"api_key": "", "base_url": "", "api_mode": "openai_compat", "provider": "custom"},
         )
-        monkeypatch.setattr("hermes_cli.models.validate_requested_model",
+        monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model",
             lambda *a, **kw: {"accepted": True, "persist": True, "recognized": True, "message": None})
         monkeypatch.setattr("hermes_cli.models.opencode_model_api_mode",
             lambda *a, **kw: "openai_compat")

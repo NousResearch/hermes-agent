@@ -9,7 +9,7 @@ import time
 import unittest
 from unittest.mock import MagicMock
 
-from tools.interrupt import set_interrupt, is_interrupted
+from tools.interrupt import get_interrupt_reason, set_interrupt, is_interrupted
 
 
 class TestInterruptPropagationToChild(unittest.TestCase):
@@ -27,6 +27,7 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         agent = AIAgent.__new__(AIAgent)
         agent._interrupt_requested = False
         agent._interrupt_message = None
+        agent._hard_interrupt_requested = threading.Event()
         agent._execution_thread_id = None
         agent._interrupt_thread_signal_pending = False
         agent._active_children = []
@@ -53,6 +54,67 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         assert child._interrupt_message == "new user message"
         assert is_interrupted() is False
         assert parent._interrupt_thread_signal_pending is True
+
+    def test_hard_cancel_is_explicit_atomic_and_propagated(self):
+        parent = self._make_bare_agent()
+        child = self._make_bare_agent()
+        parent._active_children.append(child)
+
+        parent.interrupt("Stop requested", hard_cancel=True)
+
+        assert parent._hard_interrupt_requested.is_set()
+        assert child._hard_interrupt_requested.is_set()
+        parent.clear_interrupt()
+        assert not parent._hard_interrupt_requested.is_set()
+
+    def test_message_interrupt_does_not_set_hard_cancel(self):
+        agent = self._make_bare_agent()
+
+        agent.interrupt("new user message")
+
+        assert agent._interrupt_requested is True
+        assert not agent._hard_interrupt_requested.is_set()
+
+    def test_message_interrupt_records_source_without_user_text(self):
+        agent = self._make_bare_agent()
+        agent._execution_thread_id = threading.current_thread().ident
+
+        agent.interrupt("private follow-up text")
+
+        assert get_interrupt_reason() == "user sent a new message"
+        assert "private follow-up text" not in get_interrupt_reason()
+
+    def test_hard_interrupt_does_not_expose_diagnostic_message(self):
+        agent = self._make_bare_agent()
+        agent._execution_thread_id = threading.current_thread().ident
+
+        agent.hard_interrupt("PRIVATE_CALLER_DETAIL")
+
+        assert get_interrupt_reason() == "explicit stop requested"
+        assert "PRIVATE_CALLER_DETAIL" not in get_interrupt_reason()
+
+    def test_hard_interrupt_records_explicit_safe_tool_reason(self):
+        agent = self._make_bare_agent()
+        agent._execution_thread_id = threading.current_thread().ident
+
+        agent.hard_interrupt(
+            "PRIVATE_CALLER_DETAIL",
+            tool_reason="background review superseded",
+        )
+
+        assert get_interrupt_reason() == "background review superseded"
+
+    def test_active_turn_redirect_does_not_set_hard_cancel(self):
+        agent = self._make_bare_agent()
+        agent._model_request_active = threading.Event()
+        agent._model_request_active.set()
+        agent._pending_redirect = None
+
+        assert agent.redirect("new correction") is True
+
+        assert agent._interrupt_requested is True
+        assert agent._interrupt_message is None
+        assert not agent._hard_interrupt_requested.is_set()
 
     def test_child_clear_interrupt_at_start_clears_thread(self):
         """child.clear_interrupt() at start of run_conversation clears the

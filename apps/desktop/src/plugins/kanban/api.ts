@@ -9,9 +9,20 @@
  * desktop's selection never flips the server-wide current-board pointer.
  */
 
-import { atom, type PluginRestOptions, type PluginStorage, queryClient } from '@hermes/plugin-sdk'
+import {
+  atom,
+  type PluginOs,
+  type PluginRestOptions,
+  type PluginStorage,
+  type PluginTranslate,
+  queryClient
+} from '@hermes/plugin-sdk'
 
+// Native completion notification.
+import { bindCompletionNotify, type CompletionEvent, onKanbanEventsFrame } from './completion-notify'
 import type {
+  BoardExportResult,
+  BoardImportResult,
   BoardMeta,
   BoardsResponse,
   KanbanBoard,
@@ -28,6 +39,7 @@ type Rest = <T>(path: string, opts?: PluginRestOptions) => Promise<T>
 type Socket = (path: string, onMessage: (data: unknown) => void) => () => void
 
 let rest: null | Rest = null
+let os: null | PluginOs = null
 
 /** Selected board slug ('' = the server's current board). Persisted. */
 export const $boardSlug = atom<string>('')
@@ -52,7 +64,7 @@ const COLLAPSED_KEY = 'collapsedLanes'
  *  each touched task's detail. The polls (8s board / 4s drawer) stay as the
  *  fallback — the socket just makes the board feel instant. */
 function onEventsFrame(slug: string, data: unknown): void {
-  const events = (data as { events?: Array<{ task_id?: string }> })?.events
+  const events = (data as { events?: CompletionEvent[] })?.events
 
   if (!events?.length) {
     return
@@ -65,6 +77,10 @@ function onEventsFrame(slug: string, data: unknown): void {
   for (const taskId of new Set(events.map(event => event.task_id).filter(Boolean))) {
     void queryClient.invalidateQueries({ queryKey: taskKey(slug, taskId!) })
   }
+
+  // Completion notification (after invalidation so notify failure
+  // never interferes with cache invalidation).
+  void onKanbanEventsFrame(slug, events).catch(() => undefined)
 }
 
 // A persisted, subscribable atom (the structural slice we need — avoids
@@ -79,8 +95,15 @@ interface Persisted<T> {
  *  runs on unload/disable — so nothing (store sync, socket) survives a toggle
  *  or duplicates on re-enable. The events socket is pinned to a board at
  *  handshake, so a board switch closes + reopens it. */
-export function bindApi(r: Rest, storage: PluginStorage, socket: Socket): () => void {
+export function bindApi(
+  r: Rest,
+  storage: PluginStorage,
+  socket: Socket,
+  notifyDoors?: { os?: PluginOs; t?: PluginTranslate }
+): () => void {
   rest = r
+  os = notifyDoors?.os ?? null
+  bindCompletionNotify(r, notifyDoors?.t, notifyDoors?.os)
   const unsubs: Array<() => void> = []
 
   // Hydrate an atom from storage and keep storage in sync with it.
@@ -108,8 +131,13 @@ export function bindApi(r: Rest, storage: PluginStorage, socket: Socket): () => 
     unsubs.forEach(unsub => unsub())
     close?.()
     rest = null
+    os = null
   }
 }
+
+/** The plugin's OS door, for components too deep to be handed `ctx`. Null
+ *  before `bindApi` and after unload. */
+export const pluginOs = (): null | PluginOs => os
 
 function call<T>(path: string, opts?: PluginRestOptions): Promise<T> {
   return rest ? rest<T>(path, opts) : Promise.reject(new Error('kanban api not ready'))
@@ -237,6 +265,22 @@ export const estimateNew = (title: string, body: string) =>
  *  `default_workdir: ''` to clear it. Slug is immutable. */
 export const updateBoard = (slug: string, patch: Record<string, unknown>) =>
   call<{ board: BoardMeta }>(`/boards/${encodeURIComponent(slug)}`, { method: 'PATCH', body: patch })
+
+/** Archive a board to `boards/_archived/` — recoverable, and the backend
+ *  refuses to touch `default`. (`?delete=true` hard-deletes; no caller yet.) */
+export const deleteBoard = (slug: string) =>
+  call<{ result: { action: string; new_path: string }; current: string }>(`/boards/${encodeURIComponent(slug)}`, {
+    method: 'DELETE'
+  })
+
+// Board transfer exchanges filesystem paths, not bytes — the picker runs on
+// the machine hosting the backend, so the backend reads and writes the file.
+
+export const exportBoard = (slug: string, output: string) =>
+  call<BoardExportResult>(`/boards/${encodeURIComponent(slug)}/export`, { method: 'POST', body: { output } })
+
+export const importBoard = (archive: string) =>
+  call<BoardImportResult>('/boards/import', { method: 'POST', body: { archive } })
 
 export const nudgeDispatcher = () => call<{ spawned?: unknown[] }>(withBoard('/dispatch'), { method: 'POST', body: {} })
 

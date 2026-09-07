@@ -81,7 +81,7 @@ def test_second_create_does_not_wrap_closed_transport_from_first():
         "base_url": "https://api.example.com/v1",
     }
 
-    with patch("run_agent.OpenAI", fake_openai):
+    with patch("agent.process_bootstrap.OpenAI", fake_openai):
         # Call 1 — what _replace_primary_openai_client does at init/rebuild.
         client_a = agent._create_openai_client(
             agent._client_kwargs, reason="initial", shared=True
@@ -156,7 +156,7 @@ def test_replace_primary_openai_client_survives_repeated_rebuilds():
         "base_url": "https://api.example.com/v1",
     }
 
-    with patch("run_agent.OpenAI", fake_openai):
+    with patch("agent.process_bootstrap.OpenAI", fake_openai):
         # Seed the initial client so _replace has something to tear down.
         agent.client = agent._create_openai_client(
             agent._client_kwargs, reason="seed", shared=True
@@ -265,5 +265,83 @@ def test_force_close_tcp_sockets_finds_sockets_on_httpx_mounts():
     assert force_close_tcp_sockets(openai_client) == 1
     assert sock.shutdown_calls == 1
     assert sock.close_calls == 0
+
+
+def test_force_close_tcp_sockets_finds_in_flight_pool_request_sockets():
+    """httpcore keeps the live connection on PoolRequest.connection.
+
+    #85252: walking only ``_connections`` (and treating an empty list as
+    falsy) returned tcp_force_closed=0 while the hung recv was still on
+    the in-flight request. Must shut that socket down without close().
+    """
+    from agent.agent_runtime_helpers import force_close_tcp_sockets
+
+    class FakeSocket:
+        def __init__(self):
+            self.shutdown_calls = 0
+            self.close_calls = 0
+            self.timeouts = []
+
+        def settimeout(self, value):
+            self.timeouts.append(value)
+
+        def shutdown(self, _how):
+            self.shutdown_calls += 1
+
+        def close(self):
+            self.close_calls += 1
+
+    sock = FakeSocket()
+    stream = SimpleNamespace(_sock=sock)
+    http11 = SimpleNamespace(_network_stream=stream)
+    in_flight = SimpleNamespace(_connection=http11)
+    pool_req = SimpleNamespace(connection=in_flight)
+    # Empty _connections is the failing layout: the live socket lives
+    # only on the in-flight PoolRequest.
+    pool = SimpleNamespace(_connections=[], _requests=[pool_req])
+    transport = SimpleNamespace(_pool=pool)
+    http_client = SimpleNamespace(_transport=transport)
+    openai_client = SimpleNamespace(_client=http_client)
+
+    assert force_close_tcp_sockets(openai_client) == 1
+    assert sock.shutdown_calls == 1
+    assert sock.close_calls == 0
+    assert sock.timeouts == [0]
+
+
+def test_force_close_tcp_sockets_clears_timeout_before_shutdown():
+    """Hung SSL recv with timeout=None can ignore SHUT_RDWR until the
+    socket timeout is cleared (#85252). Still no close() (#29507)."""
+    from agent.agent_runtime_helpers import force_close_tcp_sockets
+
+    class FakeSocket:
+        def __init__(self):
+            self.order = []
+
+        def settimeout(self, value):
+            self.order.append(("settimeout", value))
+
+        def shutdown(self, _how):
+            self.order.append(("shutdown", _how))
+
+        def close(self):
+            self.order.append(("close", None))
+
+    sock = FakeSocket()
+    stream = SimpleNamespace(_sock=sock)
+    http11 = SimpleNamespace(_network_stream=stream)
+    pool_entry = SimpleNamespace(_connection=http11)
+    pool = SimpleNamespace(_connections=[pool_entry])
+    transport = SimpleNamespace(_pool=pool)
+    http_client = SimpleNamespace(_transport=transport)
+    openai_client = SimpleNamespace(_client=http_client)
+
+    import socket as _socket
+
+    assert force_close_tcp_sockets(openai_client) == 1
+    assert sock.order == [
+        ("settimeout", 0),
+        ("shutdown", _socket.SHUT_RDWR),
+    ]
 
 

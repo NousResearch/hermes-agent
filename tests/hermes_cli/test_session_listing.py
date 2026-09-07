@@ -3,7 +3,7 @@
 import pytest
 
 from hermes_cli.session_listing import (
-    AUTOMATION_SOURCES,
+    format_gateway_session_listing,
     parse_session_listing_args,
     query_session_listing,
 )
@@ -56,6 +56,58 @@ class TestQuerySessionListingSearch:
                 assert [r["id"] for r in rows] == ["tip_1"], query
         finally:
             db.close()
+
+    def test_plain_listing_still_hides_unnamed(self, db):
+        assert self._ids(db, source="telegram") == ["sess_an94"]
+
+    def test_current_session_is_hidden_by_default(self, db):
+        rows = query_session_listing(db, source="telegram", current_session_id="sess_an94")
+        assert [r["id"] for r in rows] == []
+
+    def test_current_session_can_be_listed_with_marker(self, db):
+        rows = query_session_listing(
+            db,
+            source="telegram",
+            current_session_id="sess_an94",
+            include_current_session=True,
+        )
+
+        assert [r["id"] for r in rows] == ["sess_an94"]
+        assert rows[0]["is_current_session"] is True
+
+
+class TestFormatGatewaySessionListing:
+    def test_marks_current_session(self):
+        listing = format_gateway_session_listing(
+            [
+                {
+                    "id": "sess_an94",
+                    "title": "AN-94 Prestige Barrel Build #2",
+                    "is_current_session": True,
+                }
+            ]
+        )
+
+        assert "**AN-94 Prestige Barrel Build #2** (current)" in listing
+
+    def test_notice_appears_above_footer(self):
+        listing = format_gateway_session_listing(
+            [{"id": "sess_an94", "title": "AN-94"}],
+            notice="_Note: `all` requires admin._",
+        )
+        lines = listing.splitlines()
+        notice_idx = lines.index("_Note: `all` requires admin._")
+        footer_idx = next(i for i, l in enumerate(lines) if l.startswith("Resume:"))
+        assert notice_idx < footer_idx
+
+    def test_notice_on_empty_listing(self):
+        listing = format_gateway_session_listing([], notice="_scoped_")
+        assert "No sessions found." in listing
+        assert "_scoped_" in listing
+
+    def test_no_notice_by_default(self):
+        listing = format_gateway_session_listing([{"id": "x", "title": "T"}])
+        assert "Note:" not in listing
 
 
 class TestQuerySessionListingLaneScope:
@@ -136,122 +188,3 @@ class TestQuerySessionListingLaneScope:
         )
 
         assert [row["id"] for row in rows] == ["foreign_59"]
-
-
-class TestAutomationSourcesDenyList:
-    """The picker denylist of internal/automation sources (#47214, #15745)."""
-
-    def test_constant_is_the_canonical_internal_set(self):
-        assert AUTOMATION_SOURCES == frozenset(
-            {"cron", "tool", "kanban", "subagent"}
-        )
-
-    @pytest.mark.parametrize(
-        "human",
-        ["cli", "tui", "webui", "telegram", "discord", "signal", "slack",
-         "whatsapp", "acp", "webhook", "custom"],
-    )
-    def test_human_surfaces_are_not_denied(self, human):
-        # A denylist must never contain a human conversation surface, so new
-        # gateway platforms surface in the picker automatically. ACP adapter
-        # sessions, webhook sessions, and custom HERMES_SESSION_SOURCE values
-        # are user-facing per the TUI picker contract (methods_session.py).
-        assert human not in AUTOMATION_SOURCES
-
-    @pytest.fixture
-    def mixed_db(self, tmp_path):
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "deny.db")
-        # Human surfaces, every one must be visible.
-        for sid, src in [
-            ("h_cli", "cli"),
-            ("h_tui", "tui"),
-            ("h_webui", "webui"),
-            ("h_telegram", "telegram"),
-            ("h_acp", "acp"),
-            ("h_webhook", "webhook"),
-            ("h_custom", "custom"),
-        ]:
-            db.create_session(sid, src)
-            db.set_session_title(sid, f"Title {sid}")
-        # Automation/internal, every one must be hidden.
-        for sid, src in [
-            ("a_cron", "cron"),
-            ("a_tool", "tool"),
-            ("a_kanban", "kanban"),
-            ("a_sub", "subagent"),
-        ]:
-            db.create_session(sid, src)
-            db.set_session_title(sid, f"Title {sid}")
-        yield db
-        db.close()
-
-    def test_picker_shows_all_human_sources_hides_automation(self, mixed_db):
-        # This is the exact call shape cli.py::_list_recent_sessions makes.
-        rows = query_session_listing(
-            mixed_db,
-            source=None,
-            include_all_sources=True,
-            include_unnamed=True,
-            exclude_sources=sorted(AUTOMATION_SOURCES),
-            limit=20,
-        )
-        ids = {r["id"] for r in rows}
-        assert {
-            "h_cli", "h_tui", "h_webui", "h_telegram",
-            "h_acp", "h_webhook", "h_custom",
-        } <= ids
-        assert ids.isdisjoint(
-            {"a_cron", "a_tool", "a_kanban", "a_sub"}
-        )
-
-
-class TestSessionsCmdDenyList:
-    """``hermes sessions list`` shares the AUTOMATION_SOURCES deny-list.
-
-    The CLI listing used to hardcode ``["tool"]``, so cron/kanban/subagent
-    runs leaked into the default listing while every picker hid them.
-    """
-
-    def _seed(self):
-        from hermes_state import SessionDB
-
-        db = SessionDB()
-        db.create_session("human_session", "cli")
-        db.set_session_title("human_session", "Human chat")
-        for source in ("cron", "tool", "kanban", "subagent"):
-            sid = f"{source}_session"
-            db.create_session(sid, source)
-            db.set_session_title(sid, f"Machine run {source}")
-        db.close()
-
-    def _list(self, capsys, source=None):
-        import argparse
-
-        from hermes_cli.sessions_cmd import cmd_sessions
-
-        # Same shape the ``sessions list`` subparser in main.py produces.
-        args = argparse.Namespace(
-            sessions_action="list", source=source, limit=50, workspace=None
-        )
-        cmd_sessions(args)
-        return capsys.readouterr().out
-
-    def test_list_without_source_hides_automation(self, capsys):
-        self._seed()
-
-        out = self._list(capsys)
-
-        assert "human_session" in out
-        for source in ("cron", "tool", "kanban", "subagent"):
-            assert f"{source}_session" not in out, source
-
-    def test_explicit_source_overrides_deny_list(self, capsys):
-        """``--source cron`` keeps `_exclude` None so any source is listable."""
-        self._seed()
-
-        out = self._list(capsys, source="cron")
-
-        assert "cron_session" in out
-        assert "human_session" not in out

@@ -412,7 +412,7 @@ class TestRunConversationCodexPath:
         profile remains the filesystem boundary."""
         captured = self._capture_routing_agent(monkeypatch)
         with patch(
-            "hermes_cli.config.load_config",
+            "hermes_cli.config.load_config_readonly",
             return_value={"approvals": {"mode": "off"}},
         ):
             agent = _make_codex_agent()
@@ -431,7 +431,7 @@ class TestRunConversationCodexPath:
         subsystem's compatibility behavior for codex app-server routing too."""
         captured = self._capture_routing_agent(monkeypatch)
         with patch(
-            "hermes_cli.config.load_config",
+            "hermes_cli.config.load_config_readonly",
             return_value={"approvals": {"mode": False}},
         ):
             agent = _make_codex_agent()

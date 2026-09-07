@@ -179,6 +179,32 @@ def test_publish_marks_evidence_upload_failure_in_pr_comment(tmp_path, monkeypat
     ]
 
 
+def test_publish_skips_when_no_review_comment_exists(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        _mod,
+        "load_evidence",
+        lambda evidence_dir: (
+            [_mod.EvidenceFile("shot.png", "new screenshot: shot.png")],
+            {},
+        ),
+    )
+    monkeypatch.setattr(_mod, "_wait_for_review_comment", lambda *args: None)
+    monkeypatch.setattr(
+        _mod,
+        "upload_evidence",
+        lambda *args: (_ for _ in ()).throw(AssertionError("must not upload")),
+    )
+
+    assert _mod.publish(
+        "github-token",
+        "NousResearch/hermes-agent",
+        tmp_path,
+        "83202",
+        "image-token",
+    ) is False
+    assert "no CI review comment" in capsys.readouterr().out
+
+
 def test_find_review_comment_requires_the_evidence_marker():
     pending = "<!-- hermes-ci-review-bot -->\n<!-- hermes-e2e-evidence:start -->\npending\n<!-- hermes-e2e-evidence:end -->"
 

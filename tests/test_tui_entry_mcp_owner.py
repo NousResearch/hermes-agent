@@ -14,6 +14,12 @@ from hermes_cli import mcp_startup
 from tui_gateway import entry
 
 
+def test_tui_uses_shared_portable_mcp_gate(monkeypatch):
+    monkeypatch.setattr(mcp_startup, "_has_configured_mcp_servers", lambda: True)
+
+    assert entry._has_configured_mcp_servers() is True
+
+
 def test_wait_falls_through_to_shared_owner(monkeypatch):
     monkeypatch.setattr(entry, "_mcp_discovery_thread", None)
     # The fall-through to the shared owner only exists for the stdio TUI,

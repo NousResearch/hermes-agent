@@ -85,6 +85,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `filters` | No | Declarative payload filters evaluated after auth/body/event filtering and before agent or direct delivery work. Non-matches return `{"status":"ignored","reason":"filter"}` with HTTP 200. |
 | `script` | No | Filter/transform script under `~/.hermes/scripts/`. The webhook payload is passed as JSON on stdin. JSON object stdout replaces the payload before templating; text stdout is exposed as `script_output`; empty stdout, `[SILENT]`, or a nonzero exit code ignores the webhook. |
 | `skills` | No | List of skill names to load for the agent run. |
+| `toolsets` | No | List of toolset keys (e.g. `["terminal", "file", "web"]`) that **replaces** the platform-level webhook toolset for runs triggered by this route only. Manual config edit only — not settable via `hermes webhook subscribe`, so agent-created subscriptions cannot self-grant elevated tools. Names are validated the same way as `platform_toolsets` entries (unknown or platform-restricted names are dropped). See [Per-route toolsets](#per-route-toolsets). |
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant`, `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
 | `deliver_extra` | No | Additional delivery config — keys depend on `deliver` type (e.g. `repo`, `pr_number`, `chat_id`). Values support the same `{dot.notation}` templates as `prompt`. |
 | `deliver_only` | No | If `true`, skip the agent entirely — the rendered `prompt` template becomes the literal message that gets delivered. Zero LLM cost, sub-second delivery. See [Direct Delivery Mode](#direct-delivery-mode) for use cases. Requires `deliver` to be a real target (not `log`). |
@@ -446,6 +447,47 @@ The agent can create subscriptions via the terminal tool when guided by the `web
 
 ---
 
+## Per-route toolsets {#per-route-toolsets}
+
+Webhook agent runs default to a deliberately constrained toolset (`web_search`, `web_extract`, `vision_analyze`, `clarify`) because webhook payloads can carry untrusted third-party content — a public PR title or issue comment should never be able to prompt-inject its way into your terminal.
+
+For **trusted** routes — a localhost monitoring daemon pushing system alerts, an internal CI system — you can grant a wider toolset to that route only, without widening every other webhook route:
+
+```yaml
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      routes:
+        oom-emergency:
+          secret: "monitor-secret"
+          prompt: "Memory emergency: {detail}. Diagnose with ps/free/py-spy and report."
+          toolsets: ["terminal", "file", "code_execution", "web"]
+          deliver: "telegram"
+```
+
+For dynamic subscriptions, add the `toolsets` key by editing `~/.hermes/webhook_subscriptions.json` directly:
+
+```json
+{
+  "oom-emergency": {
+    "secret": "...",
+    "prompt": "...",
+    "toolsets": ["terminal", "file", "web"],
+    "deliver": "telegram"
+  }
+}
+```
+
+Behavior and safety properties:
+
+- The route list **replaces** the platform-level webhook toolset resolution for that route's runs (it is not merged).
+- Names are validated through the same path as `platform_toolsets` config — unknown names and platform-restricted toolsets are dropped.
+- `hermes webhook subscribe` deliberately does **not** accept a toolsets flag. Granting elevated tools is a manual config-file edit, so an agent creating its own subscription at runtime cannot self-grant `terminal`.
+- Only grant elevated toolsets to routes whose senders you fully control, with a real HMAC secret. Anyone who can POST a validly-signed payload to that route is effectively running an agent with those tools.
+
+---
+
 ## Security {#security}
 
 The webhook adapter includes multiple layers of security:
@@ -456,6 +498,7 @@ The adapter validates incoming webhook signatures using the appropriate method f
 
 - **GitHub**: `X-Hub-Signature-256` header — HMAC-SHA256 hex digest prefixed with `sha256=`
 - **GitLab**: `X-Gitlab-Token` header — plain secret string match
+- **Standard Webhooks**: `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers — signed content is `{id}.{timestamp}.{raw_body}` with a `v1,<base64-hmac-sha256>` signature
 - **Generic (V2, recommended)**: `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` headers — HMAC-SHA256 hex digest of `<timestamp>.<body>`. The timestamp (Unix seconds) must be within ±300 seconds of the server clock, which prevents captured requests from being replayed later.
 - **Generic (V1, legacy)**: `X-Webhook-Signature` header — raw HMAC-SHA256 hex digest of the body only. Still accepted for backward compatibility, but it has no replay protection (a captured request replays indefinitely); the gateway logs a deprecation warning once per route. Switch senders to V2.
 
@@ -487,7 +530,7 @@ Requests exceeding the limit receive a `429 Too Many Requests` response.
 
 ### Idempotency
 
-Delivery IDs (from `X-GitHub-Delivery`, `X-Request-ID`, or a timestamp fallback) are cached for **1 hour**. Duplicate deliveries (e.g. webhook retries) are silently skipped with a `200` response, preventing duplicate agent runs.
+Delivery IDs (from `X-GitHub-Delivery`, `svix-id`, `webhook-id`, `X-Request-ID`, or a timestamp fallback) are cached for **1 hour**. Duplicate deliveries (e.g. webhook retries) are silently skipped with a `200` response, preventing duplicate agent runs.
 
 ### Body size limits
 
@@ -546,7 +589,7 @@ This is the same trust model that applies to everything the agent reads: web pag
 
 ### Duplicate responses
 
-- The idempotency cache should prevent this — check that the webhook source is sending a delivery ID header (`X-GitHub-Delivery` or `X-Request-ID`)
+- The idempotency cache should prevent this — check that the webhook source is sending a delivery ID header (`X-GitHub-Delivery`, `svix-id`, `webhook-id`, or `X-Request-ID`)
 - Delivery IDs are cached for 1 hour
 
 ### `gh` CLI errors (GitHub comment delivery)

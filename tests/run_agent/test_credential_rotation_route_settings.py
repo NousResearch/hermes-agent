@@ -22,6 +22,10 @@ def test_credential_rotation_replaces_route_scoped_tls_settings():
         _apply_client_headers_for_base_url=MagicMock(),
         _replace_primary_openai_client=MagicMock(),
     )
+    agent._reapply_route_client_config = MethodType(
+        AIAgent._reapply_route_client_config,
+        agent,
+    )
     entry = SimpleNamespace(
         runtime_api_key="new",
         access_token="",
@@ -70,6 +74,10 @@ def test_credential_rotation_does_not_carry_global_headers_across_routes():
         AIAgent._apply_user_default_headers,
         agent,
     )
+    agent._reapply_route_client_config = MethodType(
+        AIAgent._reapply_route_client_config,
+        agent,
+    )
     entry = SimpleNamespace(
         runtime_api_key="new",
         access_token="",
@@ -101,5 +109,3 @@ def test_credential_rotation_does_not_carry_global_headers_across_routes():
     headers = agent._client_kwargs["default_headers"]
     assert "Authorization" not in headers
     assert headers["X-Route"] == "b"
-
-

@@ -1,5 +1,6 @@
 """Tests for tools/vision_tools.py — URL validation, type hints, error logging."""
 
+import asyncio
 import base64
 import json
 import logging
@@ -12,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from tools.vision_tools import (
-    _validate_image_url,
+    _validate_image_url_async,
     _handle_vision_analyze,
     _determine_mime_type,
     _image_to_base64_data_url,
@@ -26,44 +27,59 @@ from tools.vision_tools import (
     check_vision_requirements,
 )
 
+# A minimal but STRUCTURALLY VALID 1x1 RGB PNG (passes PIL verify/decode).
+# The proactive corrupt-image gates (salvaged #53307/#76896) now reject
+# magic-bytes-only fakes, so fixtures must be real images. Trailing padding
+# after IEND is ignored by decoders, letting size-sensitive tests keep
+# inflating fixtures with zero bytes.
+VALID_PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc```\x00\x00"
+    b"\x00\x04\x00\x01\xf6\x178U\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
 
 _RESOLVES = [(2, 1, 6, "", ("93.184.216.34", 0))]
 
 
 # ---------------------------------------------------------------------------
-# _validate_image_url — urlparse-based validation
+# _validate_image_url_async — shape check + SSRF gate on the live download path
 # ---------------------------------------------------------------------------
 
 
+def _validate(url) -> bool:
+    return asyncio.run(_validate_image_url_async(url))
+
+
 class TestValidateImageUrl:
-    """Tests for URL validation, including urlparse-based netloc check."""
+    """URL validation on the live (async) download path: urlparse-based netloc check + SSRF."""
 
     def test_accepts_valid_http_and_https_urls(self):
         with patch("tools.url_safety.socket.getaddrinfo", return_value=_RESOLVES):
-            assert _validate_image_url("https://example.com/image.jpg") is True
-            assert _validate_image_url("http://cdn.example.org/photo.png") is True
+            assert _validate("https://example.com/image.jpg") is True
+            assert _validate("http://cdn.example.org/photo.png") is True
             # CDN endpoints that redirect to images should still pass.
-            assert _validate_image_url("https://cdn.example.com/abcdef123") is True
-            assert _validate_image_url("https://img.example.com/pic?w=200&h=200") is True
-            assert _validate_image_url("http://example.com:8080/image.png") is True
-            assert _validate_image_url("https://example.com/") is True
+            assert _validate("https://cdn.example.com/abcdef123") is True
+            assert _validate("https://img.example.com/pic?w=200&h=200") is True
+            assert _validate("http://example.com:8080/image.png") is True
+            assert _validate("https://example.com/") is True
 
     def test_localhost_url_blocked_by_ssrf(self):
-        """localhost URLs are blocked by SSRF protection."""
-        assert _validate_image_url("http://localhost:8080/image.png") is False
-
+        """localhost / loopback URLs are blocked by SSRF protection."""
+        assert _validate("http://localhost:8080/image.png") is False
+        assert _validate("http://127.0.0.1/image.png") is False
 
     def test_rejects_malformed_and_non_string_inputs(self):
         # http:// alone has no network location — urlparse catches this.
-        assert _validate_image_url("http://") is False
-        assert _validate_image_url("https://") is False
-        assert _validate_image_url("http:") is False
-        assert _validate_image_url("") is False
-        assert _validate_image_url("   ") is False
-        assert _validate_image_url(None) is False
-        assert _validate_image_url(12345) is False
-        assert _validate_image_url(True) is False
-        assert _validate_image_url(["https://example.com"]) is False
+        assert _validate("http://") is False
+        assert _validate("https://") is False
+        assert _validate("http:") is False
+        assert _validate("") is False
+        assert _validate("   ") is False
+        assert _validate(None) is False
+        assert _validate(12345) is False
+        assert _validate(True) is False
+        assert _validate(["https://example.com"]) is False
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +106,7 @@ class TestDetermineMimeType:
 class TestImageToBase64DataUrl:
     def test_returns_data_url_with_detected_or_given_mime(self, tmp_path):
         img = tmp_path / "test.png"
-        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+        img.write_bytes(VALID_PNG + b"\x00" * 8)
         assert _image_to_base64_data_url(img).startswith("data:image/png;base64,")
 
         other = tmp_path / "test.bin"
@@ -179,10 +195,10 @@ class TestErrorLoggingExcInfo:
         from tools.vision_tools import _download_image
 
         with patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
+            mock_client = MagicMock()
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client.get = AsyncMock(side_effect=ConnectionError("network down"))
+            mock_client.stream.side_effect = ConnectionError("network down")
             mock_client_cls.return_value = mock_client
 
             dest = tmp_path / "image.jpg"
@@ -245,7 +261,7 @@ class TestVisionConfig:
     @pytest.mark.asyncio
     async def test_temperature_and_timeout_come_from_config_with_defaults(self, tmp_path):
         img = tmp_path / "test.png"
-        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+        img.write_bytes(VALID_PNG + b"\x00" * 8)
 
         async def call_with(config):
             mock_response = MagicMock()
@@ -276,9 +292,20 @@ class TestVisionConfig:
         )
         assert kwargs["temperature"] == 1.0
         assert kwargs["timeout"] == 77.0
+        # No hardcoded output cap — the aux client omits max_tokens so the
+        # provider uses its full output budget (max-tokens-knob policy).
+        assert "max_tokens" not in kwargs
 
         # Omitted values fall back to the built-in defaults.
         kwargs = await call_with({"auxiliary": {"vision": {}}})
+        assert kwargs["temperature"] == 0.1
+        assert kwargs["timeout"] == 120.0
+        assert "max_tokens" not in kwargs
+
+        # Even an explicit auxiliary.vision.max_tokens config entry must NOT
+        # be forwarded: user-facing max_tokens knobs are policy-prohibited.
+        kwargs = await call_with({"auxiliary": {"vision": {"max_tokens": 8000}}})
+        assert "max_tokens" not in kwargs
         assert kwargs["temperature"] == 0.1
         assert kwargs["timeout"] == 120.0
 
@@ -365,28 +392,130 @@ class TestVisionSafetyGuards:
                 }
             raise AssertionError(f"unexpected URL checked: {url}")
 
-        class FakeResponse:
+        class _FakeStreamResponse:
             url = "https://blocked.test/final.png"
             headers = {"content-length": "24"}
-            content = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 
             def raise_for_status(self):
                 return None
+
+            async def aiter_bytes(self):
+                yield VALID_PNG + b"\x00" * 16
+
+        class _FakeAsyncStream:
+            def __init__(self, response):
+                self.response = response
+
+            async def __aenter__(self):
+                return self.response
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
 
         with (
             patch("tools.vision_tools.check_website_access", side_effect=fake_check),
             patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
             pytest.raises(PermissionError, match="Blocked by website policy"),
         ):
-            mock_client = AsyncMock()
+            mock_client = MagicMock()
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client.get = AsyncMock(return_value=FakeResponse())
+            mock_client.stream.return_value = _FakeAsyncStream(_FakeStreamResponse())
             mock_client_cls.return_value = mock_client
 
-            await _download_image("https://allowed.test/cat.png", tmp_path / "cat.png", max_retries=1)
+            await _download_image(
+                "https://allowed.test/cat.png", tmp_path / "cat.png", max_retries=1
+            )
 
         assert not (tmp_path / "cat.png").exists()
+
+    @pytest.mark.asyncio
+    async def test_download_enforces_size_cap_while_streaming(self, tmp_path):
+        """Streaming download rejects oversize payloads chunk-by-chunk and cleans up."""
+        from tools.vision_tools import _download_image
+
+        class _FakeStreamResponse:
+            url = "https://example.com/big.png"
+            headers = {}
+
+            def raise_for_status(self):
+                return None
+
+            async def aiter_bytes(self):
+                yield b"12345"
+                yield b"678901"
+
+        class _FakeAsyncStream:
+            def __init__(self, response):
+                self.response = response
+
+            async def __aenter__(self):
+                return self.response
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        with (
+            patch("tools.vision_tools._VISION_MAX_DOWNLOAD_BYTES", 10),
+            patch("tools.vision_tools.check_website_access", return_value=None),
+            patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
+            pytest.raises(ValueError, match="Image too large"),
+        ):
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.stream.return_value = _FakeAsyncStream(_FakeStreamResponse())
+            mock_client_cls.return_value = mock_client
+
+            await _download_image(
+                "https://example.com/big.png", tmp_path / "big.png", max_retries=1
+            )
+
+        assert not (tmp_path / "big.png").exists()
+        assert not list(tmp_path.glob(".big.png.*.tmp"))
+
+    @pytest.mark.asyncio
+    async def test_download_ignores_malformed_content_length(self, tmp_path):
+        """Malformed Content-Length is ignored; streaming size cap still works."""
+        from tools.vision_tools import _download_image
+
+        body = VALID_PNG + b"\x00" * 16
+        dest = tmp_path / "cat.png"
+
+        class _FakeStreamResponse:
+            url = "https://example.com/cat.png"
+            headers = {"content-length": "not-a-number"}
+
+            def raise_for_status(self):
+                return None
+
+            async def aiter_bytes(self):
+                yield body[:4]
+                yield body[4:]
+
+        class _FakeAsyncStream:
+            def __init__(self, response):
+                self.response = response
+
+            async def __aenter__(self):
+                return self.response
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        with (
+            patch("tools.vision_tools.check_website_access", return_value=None),
+            patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.stream.return_value = _FakeAsyncStream(_FakeStreamResponse())
+            mock_client_cls.return_value = mock_client
+
+            await _download_image("https://example.com/cat.png", dest, max_retries=1)
+
+        assert dest.read_bytes() == body
 
 
 # ---------------------------------------------------------------------------
@@ -426,7 +555,7 @@ class TestLocalPathForms:
         fake_home = tmp_path / "fakehome"
         fake_home.mkdir()
         img = fake_home / "test_image.png"
-        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+        img.write_bytes(VALID_PNG + b"\x00" * 8)
 
         # Windows expanduser() prefers USERPROFILE over HOME; POSIX uses HOME.
         monkeypatch.setenv("HOME", str(fake_home))
@@ -463,7 +592,7 @@ class TestLocalPathForms:
     @pytest.mark.asyncio
     async def test_file_uri_resolved_as_local_path(self, tmp_path):
         img = tmp_path / "photo.png"
-        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+        img.write_bytes(VALID_PNG + b"\x00" * 8)
 
         mock_response = MagicMock()
         mock_choice = MagicMock()
@@ -504,10 +633,16 @@ class TestBase64SizeLimit:
     @pytest.mark.asyncio
     async def test_oversized_rejected_before_api_call_small_passes(self, tmp_path):
         img = tmp_path / "huge.png"
-        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * (4 * 1024 * 1024))
+        img.write_bytes(VALID_PNG + b"\x00" * (4 * 1024 * 1024))
 
-        # Patch the hard limit to a small value so the test runs fast.
+        # Patch the hard limit to a small value so the test runs fast, and pin
+        # the resize target above it so the auto-resize can't legitimately
+        # shrink the (now decodable) fixture under the limit — this test
+        # isolates the pre-flight size REJECTION, not the resize recovery.
         with patch("tools.vision_tools._MAX_BASE64_BYTES", 1000), \
+             patch("tools.vision_tools._resize_image_for_vision",
+                   side_effect=lambda p, *a, **k: "data:image/png;base64," +
+                   base64.b64encode(Path(p).read_bytes()).decode("ascii")), \
              patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm:
             result = json.loads(await vision_analyze_tool(str(img), "describe this"))
 
@@ -517,7 +652,7 @@ class TestBase64SizeLimit:
 
         # An image well under the limit passes the size check.
         small = tmp_path / "small.png"
-        small.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+        small.write_bytes(VALID_PNG + b"\x00" * 64)
 
         mock_response = MagicMock()
         mock_choice = MagicMock()
@@ -548,7 +683,7 @@ class TestErrorClassification:
     async def test_invalid_request_error_gives_image_guidance(self, tmp_path):
         """An invalid_request_error from the API should mention image size/format."""
         img = tmp_path / "test.png"
-        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+        img.write_bytes(VALID_PNG + b"\x00" * 8)
 
         api_error = Exception(
             "Error code: 400 - {'type': 'error', 'error': "
@@ -617,7 +752,7 @@ class TestResizeImageForVision:
         # Create a dummy file
         path = tmp_path / "test.png"
         # Write enough bytes to exceed a tiny limit
-        path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 1000)
+        path.write_bytes(VALID_PNG + b"\x00" * 1000)
 
         with patch("tools.vision_tools._image_to_base64_data_url") as mock_b64:
             # Simulate a large base64 result
@@ -626,6 +761,106 @@ class TestResizeImageForVision:
                 result = _resize_image_for_vision(path, max_base64_bytes=100)
                 # Should return the original (oversized) data url
                 assert len(result) > 100
+
+    def test_force_jpeg_keeps_resolution_of_dense_png(self, tmp_path):
+        """A dense PNG over the byte cap shrinks via JPEG quality, not halving.
+
+        PNG has no quality ladder — before force_jpeg, the only shrink lever
+        for a text-dense screenshot was halving dimensions (1568px → ~784px),
+        destroying text legibility (#92699 follow-up). With force_jpeg the
+        quality ladder absorbs the byte pressure and resolution survives.
+        """
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        import base64 as _b64
+        import random
+        from io import BytesIO
+
+        # Photo-like PNG at exactly the long-edge cap: a gradient with
+        # low-amplitude noise defeats PNG's lossless filters (no exact
+        # repeats → >256KB) but JPEG's DCT quantization absorbs it easily —
+        # the realistic screenshot shape, unlike pure noise which no codec
+        # can fit in-budget at full resolution.
+        rng = random.Random(42)
+        img = Image.new("RGB", (1568, 900))
+        img.putdata([
+            (
+                min(255, (x * 255) // 1568 + rng.randrange(12)),
+                min(255, (y * 255) // 900 + rng.randrange(12)),
+                min(255, ((x + y) * 255) // 2468 + rng.randrange(12)),
+            )
+            for y in range(900)
+            for x in range(1568)
+        ])
+        path = tmp_path / "dense.png"
+        img.save(path, "PNG")
+
+        budget = 256 * 1024
+        result = _resize_image_for_vision(
+            path, mime_type="image/png",
+            max_base64_bytes=budget, max_dimension=1568,
+            force_jpeg=True,
+        )
+        assert result.startswith("data:image/jpeg;base64,")
+        assert len(result) <= budget
+        with Image.open(BytesIO(_b64.b64decode(result.partition(",")[2]))) as out:
+            # Resolution preserved (the PNG path would have halved to 784px).
+            assert max(out.size) == 1568
+
+    def test_force_jpeg_leaves_small_png_untouched(self, tmp_path):
+        """Under-cap images skip the resize entirely — still PNG."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        img = Image.new("RGB", (10, 10), (0, 255, 0))
+        path = tmp_path / "tiny.png"
+        img.save(path, "PNG")
+
+        result = _resize_image_for_vision(
+            path, mime_type="image/png",
+            max_base64_bytes=256 * 1024, max_dimension=1568,
+            force_jpeg=True,
+        )
+        assert result.startswith("data:image/png;base64,")
+
+    def test_force_jpeg_handles_alpha_and_exotic_modes(self, tmp_path):
+        """RGBA/LA/P PNGs must convert cleanly — JPEG can't encode alpha.
+
+        force_jpeg newly routes PNG inputs to the JPEG encoder, so modes
+        JPEG can't save (LA grayscale+alpha especially) must be normalized
+        to RGB instead of crashing img.save().
+        """
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        import random
+
+        rng = random.Random(7)
+        for mode, size in (("RGBA", (600, 400)), ("LA", (600, 400)), ("P", (600, 400))):
+            img = Image.new(mode, size)
+            # Noise so the PNG exceeds a tiny budget and the resize fires.
+            if mode == "P":
+                img.putpalette([i % 256 for i in range(768)])
+                img.putdata([rng.randrange(256) for _ in range(size[0] * size[1])])
+            else:
+                bands = len(img.getbands())
+                img.putdata([
+                    tuple(rng.randrange(256) for _ in range(bands))
+                    for _ in range(size[0] * size[1])
+                ])
+            path = tmp_path / f"img_{mode}.png"
+            img.save(path, "PNG")
+
+            result = _resize_image_for_vision(
+                path, mime_type="image/png",
+                max_base64_bytes=16 * 1024, max_dimension=1568,
+                force_jpeg=True,
+            )
+            assert result.startswith("data:image/jpeg;base64,"), mode
 
 
 # ---------------------------------------------------------------------------
@@ -660,7 +895,7 @@ class TestImageExceedsDimension:
         # dimensions, so return False: the byte-based checks still apply and a
         # missing soft dep never breaks the embed path.
         path = tmp_path / "x.png"
-        path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+        path.write_bytes(VALID_PNG + b"\x00" * 100)
         with patch.dict("sys.modules", {"PIL": None, "PIL.Image": None}):
             assert _image_exceeds_dimension(path, _EMBED_MAX_DIMENSION) is False
 
@@ -702,15 +937,18 @@ class TestDownloadRetryClassification:
         )
 
     def _make_client_raising_status(self, status_code):
-        """AsyncClient whose response.raise_for_status() raises HTTPStatusError."""
+        """AsyncClient whose stream response.raise_for_status() raises HTTPStatusError."""
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock(
             side_effect=self._status_error(status_code)
         )
-        mock_client = AsyncMock()
+        mock_stream = MagicMock()
+        mock_stream.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_stream.__aexit__ = AsyncMock(return_value=False)
+        mock_client = MagicMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.stream = MagicMock(return_value=mock_stream)
         return mock_client
 
     def test_is_retryable_classification(self):
@@ -746,7 +984,7 @@ class TestDownloadRetryClassification:
                 "https://example.com/flaky.jpg", tmp_path / "y.jpg", max_retries=3
             )
         # All three attempts used, two backoff sleeps between them.
-        assert mock_client.get.await_count == 3
+        assert mock_client.stream.call_count == 3
         assert mock_sleep.await_count == 2
 
 
@@ -852,7 +1090,7 @@ class TestVisionCpuBurstCap:
                     enc_inflight -= 1
             return "data:image/jpeg;base64,AAAA"
 
-        async def fake_native(image_url, question, task_id=None):
+        async def fake_native(image_url, question, task_id=None, **_kw):
             nonlocal calls_inflight, calls_peak
             calls_inflight += 1
             calls_peak = max(calls_peak, calls_inflight)

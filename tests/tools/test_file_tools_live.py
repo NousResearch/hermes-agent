@@ -179,6 +179,19 @@ class TestPatchReplace:
         assert Path(path).read_text() == "hello earth\n"
 
 
+    def test_identical_replacement_explains_no_change(self, ops, tmp_path):
+        path = str(tmp_path / "unchanged.txt")
+        Path(path).write_text("hello world\n")
+
+        result = ops.patch_replace(path, "world", "world")
+
+        assert result.success is False
+        assert result.error is not None
+        assert "No edit was applied" in result.error
+        assert "existing text to replace in old_string" in result.error
+        assert "replacement text in new_string" in result.error
+        assert Path(path).read_text() == "hello world\n"
+
     def test_multiline_patch(self, ops, tmp_path):
         path = str(tmp_path / "multi.txt")
         Path(path).write_text("line1\nline2\nline3\n")

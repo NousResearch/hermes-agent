@@ -1,11 +1,24 @@
 from types import SimpleNamespace
 
 from hermes_cli.status import show_status
+import subprocess
+
+
+def test_show_status_all_does_not_print_keenable_key_value(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    sentinel = "NONSECRET_SENTINEL_VALUE_DO_NOT_PRINT_123456"
+    monkeypatch.setenv("KEENABLE_API_KEY", sentinel)
+
+    show_status(SimpleNamespace(all=True, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Keenable" in output
+    assert sentinel not in output
 
 
 def test_show_status_all_does_not_print_tavily_key_value(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    sentinel = "NONSECRET_SENTINEL_VALUE_DO_NOT_PRINT_123456"
+    sentinel = "NONSECRET_SENTINEL_VALUE_DO_NOT_PRINT_TAVILY_123456"
     monkeypatch.setenv("TAVILY_API_KEY", sentinel)
 
     show_status(SimpleNamespace(all=True, deep=False))
@@ -36,7 +49,7 @@ def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys,
     def _unexpected_systemctl(*args, **kwargs):
         raise AssertionError("systemctl should not be called in the Termux status view")
 
-    monkeypatch.setattr(status_mod.subprocess, "run", _unexpected_systemctl)
+    monkeypatch.setattr(subprocess, "run", _unexpected_systemctl)
 
     status_mod.show_status(SimpleNamespace(all=False, deep=False))
 
@@ -197,3 +210,43 @@ class TestShowStatusXaiOAuth:
 
         assert "xAI OAuth" in out
         assert "not logged in (run: hermes auth add xai-oauth)" in out
+
+
+def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, tmp_path):
+    """hermes status should surface freshest gateway last_active (#72016)."""
+    from hermes_cli import status as status_mod
+    import hermes_cli.auth as auth_mod
+    import hermes_cli.gateway as gateway_mod
+    import hermes_state
+    import time
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(status_mod, "get_env_path", lambda: tmp_path / ".env", raising=False)
+    monkeypatch.setattr(status_mod, "get_hermes_home", lambda: tmp_path, raising=False)
+    monkeypatch.setattr(status_mod, "load_config", lambda: {"model": "gpt-5.4"}, raising=False)
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "OpenAI Codex", raising=False)
+    monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_qwen_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
+
+    class _FakeDB:
+        def list_gateway_sessions(self, active_only=True):
+            return [
+                {"id": "gw-old", "last_active": time.time() - 7200},
+                {"id": "gw-new", "last_active": time.time() - 90},
+            ]
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(hermes_state, "SessionDB", _FakeDB)
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+    output = capsys.readouterr().out
+    assert "Active:       2 session(s)" in output
+    assert "Last activity:" in output
+    assert "1m ago" in output

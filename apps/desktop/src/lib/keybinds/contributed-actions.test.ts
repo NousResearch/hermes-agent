@@ -54,7 +54,9 @@ describe('contributed keybind actions', () => {
 
     // The built-in keeps its own combo and its own (i18n) label — the
     // contribution is filtered out rather than overriding core.
-    expect(bindingsFor('session.new')).toEqual(['mod+n', 'shift+n'])
+    // (bare shift+n was removed from session.new defaults — it hijacked
+    // typing a capital N into focused inputs, #76185)
+    expect(bindingsFor('session.new')).toEqual(['mod+n'])
     expect(allKeybindActions().filter(a => a.id === 'session.new')).toHaveLength(1)
 
     dispose()

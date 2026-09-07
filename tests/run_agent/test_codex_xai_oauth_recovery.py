@@ -232,7 +232,7 @@ def test_summarize_api_error_does_not_accuse_subscribers():
 # ---------------------------------------------------------------------------
 # Fix D: _StreamErrorEvent xAI entitlement classified as auth, not retryable
 #
-# run_codex_create_stream_fallback raises _StreamErrorEvent (status_code=None)
+# run_codex_stream raises _StreamErrorEvent (status_code=None)
 # when the Responses stream emits a ``type=error`` SSE frame.  Before this
 # fix, classify_api_error had no match for "grok subscription" in its pattern
 # lists, so it returned FailoverReason.unknown (retryable=True) — burning
@@ -456,9 +456,14 @@ def test_recover_with_credential_pool_rotates_on_xai_spending_limit_403():
             status_code,
             error_context=None,
             api_key_hint=None,
+            failure_reason=None,
         ):
             assert status_code == 403
             assert api_key_hint == "test-key"
+            # An xAI spending-limit 403 classifies as billing, and the pool
+            # must be told so — otherwise a sole-credential pool gives a spent
+            # account the transient 60s cooldown instead of the full bench.
+            assert failure_reason == "billing"
             assert error_context == {
                 "reason": "personal-team-blocked:spending-limit",
                 "message": (

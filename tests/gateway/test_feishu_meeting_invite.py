@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from plugins.platforms.feishu.feishu_meeting_invite import (
     build_meeting_invite_prompt,
     handle_meeting_invited_event,

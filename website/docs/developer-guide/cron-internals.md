@@ -231,6 +231,16 @@ The script timeout defaults to 3600 seconds (1 hour). `_get_script_timeout()` re
 
 This timeout bounds the **pre-run script only**, not the agent. Skill-based / LLM-driven jobs run on a separate *inactivity*-based budget (`HERMES_CRON_TIMEOUT`, default 600s of idle time, `0` = unlimited) — they can run for hours as long as they keep calling tools or streaming tokens, and are only killed after the configured idle period with no activity. Scripts are dispatched to a persistent thread pool (not held under the tick lock), so a long-running script does not block other due jobs from firing.
 
+On timeout or ownership cancellation, `cron.scheduler_script` uses the shared
+`agent.deadline.kill_process_tree` hard-kill path. On POSIX it briefly stops and
+rescans the live tree before signalling descendants and their parent, including
+children in separate sessions with no inherited output pipes. This closes the
+fork-after-snapshot race. The stop wait is bounded; discovery or permission
+failures still use best-effort group cleanup, not a sandbox guarantee. Any target
+stopped by cleanup is resumed if termination fails; already-stopped targets keep
+their original state. Explicit graceful signals do not suspend their recipients.
+Windows continues to use `taskkill /F /T`.
+
 ### Provider Recovery
 
 `run_job()` passes the user's configured fallback providers and credential pool into the `AIAgent` instance:

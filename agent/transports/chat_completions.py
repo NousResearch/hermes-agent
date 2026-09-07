@@ -250,7 +250,7 @@ def _swap_developer_role(sanitized: list, model_lower: str) -> list:
 
 
 def _apply_max_tokens(api_kwargs: dict, model: str, reasoning_config: Any, params: dict, profile_max: Any = None) -> None:
-    """Resolve max_tokens — priority: ephemeral > user > profile default > anthropic_max_output."""
+    """Preserve internal task/recovery budgets and provider protocol exceptions."""
     max_tokens_fn = params.get("max_tokens_param_fn")
     for candidate in (params.get("ephemeral_max_output_tokens"), params.get("max_tokens")):
         if candidate is not None and max_tokens_fn:
@@ -258,8 +258,7 @@ def _apply_max_tokens(api_kwargs: dict, model: str, reasoning_config: Any, param
             return
     if profile_max and max_tokens_fn:
         api_kwargs.update(max_tokens_fn(_raise_gemini_thinking_max_tokens(model, reasoning_config, profile_max)))
-    elif params.get("anthropic_max_output") is not None:
-        api_kwargs["max_tokens"] = params["anthropic_max_output"]
+
 
 
 def _base_kwargs(model: str, sanitized: list, tools: Any, params: dict, profile: Any = None) -> dict[str, Any]:

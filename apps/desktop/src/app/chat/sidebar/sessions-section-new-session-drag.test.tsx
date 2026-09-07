@@ -3,7 +3,8 @@ import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
-import { switchBranchInRepo } from '@/store/projects'
+import { $dismissedWorktreeIds, dismissWorktree, restoreWorktree } from '@/store/layout'
+import { removeWorktreePath, switchBranchInRepo } from '@/store/projects'
 
 import {
   EnteredProjectContent,
@@ -148,9 +149,21 @@ function commitLatestDrag() {
   commit({ anchor: 'workspace', before: 'session-tile:next', dir: 'right' })
 }
 
+function renderEnteredProjectWithLiveWorktree() {
+  return render(
+    <EnteredProjectContent
+      project={project({ repos: [{ groups: [group()], id: '/repo', label: 'Repo', path: '/repo', sessionCount: 0 }] })}
+      renderRows={() => null}
+      repoWorktrees={{ '/repo': [{ branch: 'feature', detached: false, isMain: false, locked: false, path: '/repo/.worktrees/feature' }] }}
+    />
+  )
+}
+
 afterEach(cleanup)
 
 beforeEach(() => {
+  $dismissedWorktreeIds.set([])
+  vi.mocked(removeWorktreePath).mockReset()
   noop.mockClear()
   startNewSessionDrag.mockReset()
   vi.mocked(switchBranchInRepo).mockReset()
@@ -430,5 +443,27 @@ describe('flat-list date-divider new-session drag source', () => {
     fireEvent.pointerDown(screen.getByRole('button', { name: 'New session' }), { button: 0 })
 
     expect(startNewSessionDrag).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('explicit worktree dismissal', () => {
+  it('resurfaces removed worktrees on discovery but not a subsequent explicit hide', async () => {
+    dismissWorktree('/repo/.worktrees/feature', { removed: true })
+    renderEnteredProjectWithLiveWorktree()
+    expect(screen.getByTitle(/feature/)).toBeTruthy()
+    dismissWorktree('/repo/.worktrees/feature')
+    await waitFor(() => expect(screen.queryByTitle(/feature/)).toBeNull())
+  })
+
+  it('hides a live lane without removing the worktree and permits explicit restore', async () => {
+    renderEnteredProjectWithLiveWorktree()
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Actions' }), { button: 0, ctrlKey: false })
+    fireEvent.click(await screen.findByText('Remove worktree…'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove from sidebar' }))
+    await waitFor(() => expect(screen.queryByTitle(/feature/)).toBeNull())
+    expect(removeWorktreePath).not.toHaveBeenCalled()
+    restoreWorktree('/repo/.worktrees/feature')
+    await waitFor(() => expect(screen.getByTitle(/feature/)).toBeTruthy())
   })
 })

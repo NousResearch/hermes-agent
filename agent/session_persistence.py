@@ -1,12 +1,12 @@
 """Durable transcript persistence for ``AIAgent`` (mixin; MRO-resolved from ``run_agent``): SQLite flush
-with intrinsic ``_DB_PERSISTED_MARKER`` dedup, ephemeral-scaffolding filtering, optional JSON session log,
+with intrinsic ``_DB_PERSISTED_MARKER`` dedup, ephemeral-scaffolding filtering, explicit
 trajectory export."""
 import hashlib
-import json
+
 import logging
 import re
 from contextlib import nullcontext
-from datetime import datetime
+
 from typing import Any, Dict, List, Optional
 
 from agent.context_compressor import (
@@ -17,11 +17,11 @@ from agent.context_compressor import (
 )
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
 from agent.memory_manager import sanitize_context
-from agent.redact import redact_sensitive_text
+
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
-from agent.trajectory import convert_scratchpad_to_think, save_trajectory as _save_trajectory_to_file
+from agent.trajectory import save_trajectory as _save_trajectory_to_file
 from agent.transcript_repair import sync_flushed_message_markers
-from utils import atomic_json_write
+
 
 logger = logging.getLogger("run_agent")  # origin module's name: log records / caplog filters unchanged
 
@@ -262,34 +262,8 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
     return False
 
 
-def _session_log_entry(agent, msg: Dict[str, Any]) -> Dict[str, Any]:
-    """Copy of ``msg`` with scratchpad tags normalised and credentials redacted (honours HERMES_REDACT_SECRETS)."""
-    if "content" not in msg:
-        return msg
-    content = msg["content"]
-    if msg.get("role") == "assistant" and content:
-        content = agent._clean_session_content(content)
-    return {**msg, "content": agent._redact_message_content(content)}
-
-
-def _existing_log_is_larger(log_file, count: int) -> bool:
-    """Never overwrite a larger log with fewer messages (resumed agent with partial history); a corrupted
-    existing file allows the overwrite."""
-    if not log_file.exists():
-        return False
-    try:
-        existing = json.loads(log_file.read_text(encoding="utf-8"))
-        existing_count = existing.get("message_count", len(existing.get("messages", [])))
-    except Exception:
-        return False
-    if existing_count > count:
-        logging.debug("Skipping session log overwrite: existing has %d messages, current has %d", existing_count, count)
-        return True
-    return False
-
-
 class SessionPersistenceMixin:
-    """Session DB flush, session log and trajectory persistence (see module docstring)."""
+    """Session DB flush and trajectory persistence (see module docstring)."""
 
     def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
         """Rewrite the current-turn user message in place: some paths send an API-only variant that must not
@@ -311,7 +285,7 @@ class SessionPersistenceMixin:
             msg["platform_message_id"] = platform_id
 
     def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
-        """Save to JSON log and SQLite on any exit path. Trailing empty-response scaffolding is dropped from
+        """Save to SQLite on any exit path. Trailing empty-response scaffolding is dropped from
         the live list; the persist override is applied to the DB row only.
 
         The persist user-message *override* is NOT applied here — it is resolved inside
@@ -322,7 +296,6 @@ class SessionPersistenceMixin:
         with _persist_lock(self):
             self._drop_trailing_empty_response_scaffolding(messages)
             self._session_messages = messages
-            self._save_session_log(messages)
             self._flush_messages_to_session_db(messages, conversation_history)
             # Drain async token-accounting deltas at every persist point; cheap no-op when nothing queued.
             if self._session_db is not None:
@@ -413,49 +386,3 @@ class SessionPersistenceMixin:
 
     _extract_api_error_context = _forward_static("agent.agent_runtime_helpers", "extract_api_error_context")
     _dump_api_request_debug = _forward("agent.agent_runtime_helpers", "dump_api_request_debug")
-
-    @staticmethod
-    def _clean_session_content(content: str) -> str:
-        """Convert REASONING_SCRATCHPAD to think tags and clean up whitespace."""
-        if not content:
-            return content
-        content = re.sub(r'\n+(<think>)', r'\n\1', convert_scratchpad_to_think(content))
-        return re.sub(r'(</think>)\n+', r'\1\n', content).strip()
-
-    @staticmethod
-    def _redact_message_content(content):
-        """Redact secrets in str or list-of-parts content (text fields only; honours HERMES_REDACT_SECRETS)."""
-        if isinstance(content, str):
-            return redact_sensitive_text(content)
-        if not isinstance(content, list):
-            return content
-        return [{**p, **{k: redact_sensitive_text(p[k]) for k in ("text", "content") if isinstance(p.get(k), str)}}
-                if isinstance(p, dict) else p for p in content]
-
-    def _save_session_log(self, messages: List[Dict[str, Any]] = None):
-        """Optional per-session JSON snapshot (``sessions.write_json_snapshots``, default False) for external
-        tooling; state.db is canonical. Rewrites the full list after every persistence point."""
-        if not getattr(self, "_session_json_enabled", False):
-            return
-        messages = messages or self._session_messages
-        if not messages:
-            return
-        try:  # re-derive the path each call so /branch and /compress land in the right file
-            log_file = self.logs_dir / f"session_{_safe_session_filename_component(self.session_id)}.json"
-        except Exception:
-            return
-        try:
-            # Mirror the SQLite flush: scaffolding is never durable transcript content.
-            cleaned = [_session_log_entry(self, msg) for msg in messages if not _is_ephemeral_scaffolding(msg)]
-            if _existing_log_is_larger(log_file, len(cleaned)):
-                return
-            entry = {
-                "session_id": self.session_id, "model": self.model, "base_url": self.base_url, "platform": self.platform,
-                "session_start": self.session_start.isoformat(), "last_updated": datetime.now().isoformat(),
-                "system_prompt": redact_sensitive_text(self._cached_system_prompt or ""), "tools": self.tools or [],
-                "message_count": len(cleaned), "messages": cleaned,
-            }
-            atomic_json_write(log_file, entry, indent=2, default=str)
-        except Exception as e:
-            if self.verbose_logging:
-                logging.warning(f"Failed to save session log: {e}")

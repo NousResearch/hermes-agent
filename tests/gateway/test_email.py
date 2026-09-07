@@ -238,7 +238,7 @@ class TestDispatchMessage(unittest.TestCase):
     def test_image_attachment_sets_photo_type(self):
         """Email with image attachment should set message type to PHOTO."""
         import asyncio
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
         adapter = self._make_adapter()
         captured_events = []
 

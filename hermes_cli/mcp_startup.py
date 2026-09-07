@@ -9,6 +9,38 @@ from typing import Optional
 _mcp_discovery_lock = threading.Lock()
 _mcp_discovery_started = False
 _mcp_discovery_thread: Optional[threading.Thread] = None
+_mcp_discovery_deferred: Optional[threading.Timer] = None
+# Process-wide MCP server-name allowlist derived from ``-t/--toolsets``.
+# ``None`` = no filter (spawn every configured server). Set once at CLI
+# startup by ``set_mcp_server_filter`` and honored by every discovery path
+# in this module (inline, background, deferred), so a ``-t terminal``
+# oneshot never cold-starts MCP subprocesses it cannot use.
+_mcp_server_filter: Optional[list[str]] = None
+
+
+def set_mcp_server_filter(toolsets: object) -> Optional[list[str]]:
+    """Derive the MCP spawn allowlist from a ``-t/--toolsets`` value.
+
+    Built-in toolset names in the list are harmless (they never match a
+    configured ``mcp_servers`` key). ``all``/``*`` or an empty/absent value
+    clears the filter. Returns the stored list for logging/tests.
+    """
+    global _mcp_server_filter
+    names: list[str] = []
+    if isinstance(toolsets, str):
+        names = [t.strip() for t in toolsets.split(",") if t.strip()]
+    elif isinstance(toolsets, (list, tuple, set)):
+        for item in toolsets:
+            names.extend(t.strip() for t in str(item).split(",") if t.strip())
+    if not names or "all" in names or "*" in names:
+        _mcp_server_filter = None
+    else:
+        _mcp_server_filter = names
+    return _mcp_server_filter
+
+
+def get_mcp_server_filter() -> Optional[list[str]]:
+    return _mcp_server_filter
 
 
 def _has_configured_mcp_servers() -> bool:
@@ -169,7 +201,52 @@ def _discover_mcp_tools_without_interactive_oauth() -> None:
     with suppress_interactive_oauth():
         from tools.mcp_tool import discover_mcp_tools
 
-        discover_mcp_tools()
+        # Only pass the kwarg when a filter is set: many tests (and any
+        # out-of-tree caller) stub discover_mcp_tools with a zero-arg
+        # callable, and the unfiltered call shape is unchanged.
+        if _mcp_server_filter is None:
+            discover_mcp_tools()
+        else:
+            discover_mcp_tools(allowed_mcp_names=_mcp_server_filter)
+
+
+def defer_background_mcp_discovery(*, logger, thread_name: str, delay: float) -> None:
+    """Arm ``start_background_mcp_discovery`` to run ``delay`` seconds from now.
+
+    Used by the Desktop ``serve`` backend after its socket is announced: the
+    discovery thread's first act is the ~350ms ``mcp`` SDK import, which holds
+    the GIL against the renderer's connect + first hydration reads if it starts
+    at bind time, and against the web_server import if it starts before. Any
+    consumer that needs discovery sooner (``wait_for_mcp_discovery`` from an
+    agent build) fires the deferred start immediately, so the bounded join and
+    the late-binding refresh behave exactly as if it had been started eagerly.
+    """
+    global _mcp_discovery_deferred
+    with _mcp_discovery_lock:
+        if _mcp_discovery_started or _mcp_discovery_deferred is not None:
+            return
+
+        def _fire() -> None:
+            global _mcp_discovery_deferred
+            with _mcp_discovery_lock:
+                _mcp_discovery_deferred = None
+            start_background_mcp_discovery(logger=logger, thread_name=thread_name)
+
+        timer = threading.Timer(delay, _fire)
+        timer.daemon = True
+        timer.name = f"{thread_name}-deferred"
+        _mcp_discovery_deferred = timer
+        timer.start()
+
+
+def _start_deferred_mcp_discovery_now() -> None:
+    """Run an armed deferred start immediately (idempotent, thread-safe)."""
+    with _mcp_discovery_lock:
+        timer = _mcp_discovery_deferred
+    if timer is None:
+        return
+    timer.cancel()
+    timer.function()
 
 
 def wait_for_mcp_discovery(
@@ -188,6 +265,7 @@ def wait_for_mcp_discovery(
     ``mcp_single_query_discovery_timeout`` instead (default 15s vs 1.5s
     interactive) because one-shot sessions have no second turn to recover.
     """
+    _start_deferred_mcp_discovery_now()
     thread = _mcp_discovery_thread
     if thread is None or not thread.is_alive():
         return

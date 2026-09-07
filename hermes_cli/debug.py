@@ -607,6 +607,26 @@ def collect_debug_report(
     if log_snapshots is None:
         log_snapshots = _capture_default_log_snapshots(log_lines)
 
+    # ── Sanitiser heal counters (#96870) ─────────────────────────────────
+    # In-process, in-memory counters: populated when this report is built
+    # inside a process that ran agent turns (gateway /debug share); empty
+    # from a fresh CLI process, where the errors.log tail below carries the
+    # same escalation lines instead.
+    try:
+        from agent.agent_runtime_helpers import get_sanitizer_heal_stats
+
+        heal_stats = get_sanitizer_heal_stats()
+        if heal_stats:
+            buf.write("\n\n--- transcript sanitiser heal counters ---\n")
+            for sess, st in sorted(heal_stats.items()):
+                buf.write(
+                    f"session {sess}: {st['heal_events']} heal events, "
+                    f"{st['messages_healed']} messages healed, "
+                    f"escalated={st['escalated']}\n"
+                )
+    except Exception:
+        pass
+
     # ── Recent log tails (summary only) ──────────────────────────────────
     buf.write("\n\n")
     buf.write(f"--- agent.log (last {log_lines} lines) ---\n")

@@ -422,7 +422,7 @@ class GatewayKanbanWatchersMixin:
                             if _gc_due:
                                 # Hourly (plus once at startup) stale-sub GC:
                                 # drop subscriptions for tasks that have been
-                                # ``done`` untouched past the retention
+                                # ``done``/``blocked`` untouched past the retention
                                 # window. Best-effort — a failed sweep never
                                 # blocks delivery; the next hourly gate
                                 # retries it.
@@ -433,7 +433,7 @@ class GatewayKanbanWatchersMixin:
                                     )
                                     if _purged:
                                         logger.info(
-                                            "kanban notifier: purged %d stale done-task subscription(s) on board %s (retention %dd)",
+                                            "kanban notifier: purged %d stale done/blocked-task subscription(s) on board %s (retention %dd)",
                                             _purged, slug, _gc_retention_days,
                                         )
                                 except Exception as _gc_exc:

@@ -237,7 +237,7 @@ def test_legacy_sessions_table_reconciles_generation_column(tmp_path):
         assert "git_metadata_generation" in columns
         assert reopened._conn.execute(
             "SELECT version FROM schema_version"
-        ).fetchone()[0] == SCHEMA_VERSION == 26
+        ).fetchone()[0] == SCHEMA_VERSION
         reopened.create_session("session", "desktop", cwd="/repo")
         assert reopened.update_session_cwd("session", "/repo") == 1
     finally:

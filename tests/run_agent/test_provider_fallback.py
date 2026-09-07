@@ -414,3 +414,91 @@ class TestFallbackChainDedup:
         assert called == [("xai", "grok-4.5")]
         assert agent.provider == "xai"
         assert agent.model == "grok-4.5"
+
+
+# ── extra_body re-resolution on fallback activation (#75091) ─────────────
+
+
+class TestFallbackExtraBodyReResolution:
+    """Fallback activation must re-resolve extra_body key-scoped.
+
+    The old provider's custom_providers-contributed extra_body keys are
+    stale on the new backend and must be dropped; caller-provided
+    request_overrides keys must survive; the fallback provider's own
+    extra_body must be merged in (salvage of #75139).
+    """
+
+    OLD_URL = "https://old-llm.example.com/v1"
+    FB_URL = "https://fb-llm.example.com/v1"
+
+    def _agent_with_custom_providers(self, caller_extra_body=None):
+        agent = _make_agent(
+            fallback_model={
+                "provider": "custom:fbprov",
+                "model": "fb-model",
+                "base_url": self.FB_URL,
+            },
+        )
+        agent.provider = "custom"
+        agent.model = "old-model"
+        agent.base_url = self.OLD_URL
+        agent._custom_providers = [
+            {
+                "name": "oldprov",
+                "base_url": self.OLD_URL,
+                "extra_body": {"enable_thinking": True, "old_only": 1},
+            },
+            {
+                "provider_key": "fbprov",
+                "base_url": self.FB_URL,
+                "extra_body": {"top_k": 20},
+            },
+        ]
+        # Simulate the init-time merge: provider extra_body + caller keys
+        # (caller wins on conflict — agent_init._merge_custom_provider_extra_body).
+        merged = {"enable_thinking": True, "old_only": 1}
+        merged.update(caller_extra_body or {})
+        agent.request_overrides = {"extra_body": merged}
+        return agent
+
+    def _activate(self, agent):
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(base_url=self.FB_URL), "fb-model"),
+        ), patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=128_000,
+        ):
+            assert agent._try_activate_fallback() is True
+
+    def test_stale_provider_keys_removed_and_new_provider_merged(self):
+        agent = self._agent_with_custom_providers()
+        self._activate(agent)
+        eb = agent.request_overrides.get("extra_body") or {}
+        # Old provider's contributed keys are gone.
+        assert "enable_thinking" not in eb
+        assert "old_only" not in eb
+        # Fallback provider's own extra_body is applied.
+        assert eb.get("top_k") == 20
+
+    def test_caller_override_keys_survive_fallback(self):
+        agent = self._agent_with_custom_providers(
+            caller_extra_body={"reasoning": {"effort": "high"}, "enable_thinking": False},
+        )
+        self._activate(agent)
+        eb = agent.request_overrides.get("extra_body") or {}
+        # Pure caller key survives untouched.
+        assert eb.get("reasoning") == {"effort": "high"}
+        # Caller redefined a key the old provider also set (caller won at
+        # init: False != True) — the caller's value must survive key-scoped
+        # removal.
+        assert eb.get("enable_thinking") is False
+        # But the key the old provider alone contributed is dropped.
+        assert "old_only" not in eb
+        assert eb.get("top_k") == 20
+
+    def test_non_extra_body_overrides_untouched(self):
+        agent = self._agent_with_custom_providers()
+        agent.request_overrides["temperature"] = 0.2
+        self._activate(agent)
+        assert agent.request_overrides.get("temperature") == 0.2

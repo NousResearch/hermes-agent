@@ -8,6 +8,7 @@ formatting, capacity rejection, and crash handling.
 import json
 import os
 import queue
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -63,6 +64,61 @@ def _drain_for(delegation_id, timeout=5.0):
             continue
         time.sleep(0.02)
     return None
+
+
+def test_schema_init_preserves_shared_state_db_journal_mode(tmp_path):
+    """The delegation ledger is a guest in state.db, not its mode owner."""
+    conn = sqlite3.connect(tmp_path / "state.db")
+    try:
+        assert conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0] == "delete"
+
+        ad._initialize_schema(conn)
+
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='async_delegations'"
+        ).fetchone() == ("async_delegations",)
+    finally:
+        conn.close()
+
+
+def test_schema_init_preserves_shared_state_db_wal_mode(tmp_path):
+    """Schema initialization must not replace an existing WAL mode."""
+    conn = sqlite3.connect(tmp_path / "state.db")
+    try:
+        assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+
+        ad._initialize_schema(conn)
+
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='async_delegations'"
+        ).fetchone() == ("async_delegations",)
+    finally:
+        conn.close()
+
+
+@pytest.mark.macos_only
+def test_connect_preserves_wal_and_applies_macos_durability_barriers(
+    tmp_path, monkeypatch
+):
+    """Each ledger connection must carry the macOS write barriers."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    seed = sqlite3.connect(tmp_path / "state.db")
+    try:
+        assert seed.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    finally:
+        seed.close()
+
+    conn = ad._connect()
+    try:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 2
+        assert conn.execute("PRAGMA checkpoint_fullfsync").fetchone()[0] == 1
+    finally:
+        conn.close()
 
 
 def test_active_for_session_counts_every_live_delegation_state():
@@ -825,3 +881,99 @@ def test_batch_truncation_banner_marks_only_truncated_task():
     # The header banner for task 2 appears after task 1's summary.
     assert banner_pos > clean_pos
 
+
+def _patch_delegation_cfg(monkeypatch, model="upstage/solar-pro-4", provider="openrouter"):
+    """Pin the delegation config the notice renderer reads (adapts the
+    #97667 tests to the shipped implementation, which reads the configured
+    model from config rather than the event's model field)."""
+    import tools.process_registry as _pr
+
+    monkeypatch.setattr(
+        _pr, "_delegation_config", lambda: {"model": model, "provider": provider}
+    )
+
+
+def test_batch_model_rejection_notice_prepended(monkeypatch):
+    """A rejected delegation model must surface ONE config-level notice above
+    the per-task blocks instead of staying buried in each summary (#97654)."""
+    rejection = "HTTP 400: upstage/solar-pro-4 is not a valid model ID"
+    _patch_delegation_cfg(monkeypatch)
+    evt = _make_async_evt(
+        is_batch=True,
+        model="upstage/solar-pro-4",
+        goals=["task a", "task b"],
+        results=[
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": rejection,
+                "api_calls": 1,
+                "duration_seconds": 0.74,
+                "exit_reason": "max_iterations",
+                "truncated": True,
+            },
+            {
+                "task_index": 1,
+                "status": "completed",
+                "summary": rejection,
+                "api_calls": 1,
+                "duration_seconds": 0.71,
+                "exit_reason": "max_iterations",
+                "truncated": True,
+            },
+        ],
+    )
+    text = format_process_notification(evt)
+    assert text is not None
+    assert "SUBAGENT MODEL REJECTED" in text
+    assert "upstage/solar-pro-4" in text
+    assert "delegation.model" in text
+    # The notice precedes the per-task blocks, not just trails them.
+    assert text.index("SUBAGENT MODEL REJECTED") < text.index("TASK 1/2")
+
+
+def test_batch_model_rejection_notice_absent_when_clean(monkeypatch):
+    """Ordinary summaries must not grow a model-rejection notice."""
+    _patch_delegation_cfg(monkeypatch, model="upstage/solar-pro4")
+    evt = _make_async_evt(
+        is_batch=True,
+        model="upstage/solar-pro4",
+        goals=["task a"],
+        results=[
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "did the work",
+                "api_calls": 3,
+                "exit_reason": "completed",
+                "truncated": False,
+            },
+        ],
+    )
+    text = format_process_notification(evt)
+    assert text is not None
+    assert "SUBAGENT MODEL REJECTED" not in text
+
+
+def test_batch_model_rejection_notice_requires_configured_model_in_text(monkeypatch):
+    """A model_not_found pattern naming a DIFFERENT model than the configured
+    delegation model is task-level noise, not a config-level rejection."""
+    _patch_delegation_cfg(monkeypatch, model="upstage/solar-pro4")
+    evt = _make_async_evt(
+        is_batch=True,
+        model="upstage/solar-pro4",
+        goals=["task a"],
+        results=[
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "HTTP 400: other/model-x is not a valid model ID",
+                "api_calls": 1,
+                "exit_reason": "max_iterations",
+                "truncated": True,
+            },
+        ],
+    )
+    text = format_process_notification(evt)
+    assert text is not None
+    assert "SUBAGENT MODEL REJECTED" not in text

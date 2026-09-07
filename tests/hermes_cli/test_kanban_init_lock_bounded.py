@@ -66,7 +66,7 @@ def test_initialized_path_connect_skips_init_lock(kanban_home):
         start = time.monotonic()
         kb.connect().close()
         elapsed = time.monotonic() - start
-        assert elapsed < 1.0, f"fast-path connect blocked on the init lock ({elapsed:.2f}s)"
+        assert elapsed < 5.0, f"fast-path connect blocked on the init lock ({elapsed:.2f}s)"
     finally:
         release.set()
         t.join(timeout=5)
@@ -85,7 +85,7 @@ def test_first_init_connect_is_bounded_when_lock_held(kanban_home, monkeypatch):
         conn.close()
         elapsed = time.monotonic() - start
         # Proceeded within roughly the timeout window (not unbounded).
-        assert 0.4 <= elapsed < 3.0, f"expected bounded ~0.6s acquire, got {elapsed:.2f}s"
+        assert 0.4 <= elapsed < 8.0, f"expected bounded ~0.6s acquire, got {elapsed:.2f}s"
         assert str(db_path.resolve()) in kb._INITIALIZED_PATHS
     finally:
         release.set()

@@ -9,7 +9,9 @@ same key. The fix prefixes keys with platform value: 'telegram:123' vs
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 from gateway.config import Platform
@@ -113,6 +115,88 @@ class TestSyncVoiceModeStateToAdapter:
 
         # Only telegram:123 should be in disabled_chats (mode="off" for telegram)
         assert mock_adapter._auto_tts_disabled_chats == {"123"}
+
+
+class TestVoiceModeProfileIsolation:
+    """Two multiplexed bots in one Discord channel keep independent /voice
+    state and voice transcripts dispatch through the bot that heard them
+    (#75198 voice half)."""
+
+    @staticmethod
+    def _discord_adapter(owner=None):
+        from unittest.mock import AsyncMock
+
+        a = MagicMock()
+        a.platform = Platform.DISCORD
+        a._owner_profile = owner
+        a._voice_text_channels = {111: 123}
+        a._voice_sources = {}
+        a._voice_input_callback = None
+        a._on_voice_disconnect = None
+        a._voice_mode_getter = None
+        a._auto_tts_enabled_chats = set()
+        a._auto_tts_disabled_chats = set()
+        a._client = MagicMock()
+        a._client.get_channel = MagicMock(return_value=None)
+        a.handle_message = AsyncMock()
+        return a
+
+    @pytest.mark.asyncio
+    async def test_voice_state_and_transcripts_stay_with_the_owning_bot(self, tmp_path):
+        from types import SimpleNamespace
+
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+
+        runner = _make_runner()
+        runner._VOICE_MODE_PATH = tmp_path / "voice.json"
+        runner._is_user_authorized = lambda source: True
+        default_ad = self._discord_adapter()
+        bot2_ad = self._discord_adapter(owner="bot2")
+        runner.adapters = {Platform.DISCORD: default_ad}
+        runner._profile_adapters = {"bot2": {Platform.DISCORD: bot2_ad}}
+        # Inbound event from bot2's transport in channel 123 (same id the
+        # default bot also sees).
+        src = SessionSource(platform=Platform.DISCORD, chat_id="123", user_id="u1",
+                            chat_type="channel", profile="bot2")
+        src._transport_adapter_ref = lambda: bot2_ad
+
+        await runner._handle_voice_command(
+            MessageEvent(text="/voice tts", message_type=MessageType.TEXT, source=src)
+        )
+        assert runner._voice_mode == {"bot2:discord:123": "all"}
+        assert "123" in bot2_ad._auto_tts_enabled_chats
+        assert "123" not in default_ad._auto_tts_enabled_chats
+
+        # A transcript captured by bot2's adapter runs through bot2, not default.
+        runner._bind_voice_input_callback(bot2_ad)
+        await bot2_ad._voice_input_callback(guild_id=111, user_id=42, transcript="hi")
+        bot2_ad.handle_message.assert_awaited_once()
+        default_ad.handle_message.assert_not_awaited()
+        assert bot2_ad.handle_message.call_args[0][0].source.profile == "bot2"
+
+        # Timeout cleanup from bot2's channel disables bot2's auto-TTS only.
+        join = MessageEvent(text="/voice channel", message_type=MessageType.TEXT, source=src)
+        join.raw_message = SimpleNamespace(guild_id=111, guild=None)
+        bot2_ad.join_voice_channel = AsyncMock(return_value=True)
+        ch = MagicMock(); ch.name = "General"
+        bot2_ad.get_user_voice_channel = AsyncMock(return_value=ch)
+        await runner._handle_voice_channel_join(join)
+        bot2_ad._on_voice_disconnect("123")
+        assert runner._voice_mode["bot2:discord:123"] == "off"
+        assert "123" in bot2_ad._auto_tts_disabled_chats
+        assert "123" not in default_ad._auto_tts_disabled_chats
+
+    def test_sync_restores_only_the_owning_profiles_chats(self):
+        runner = _make_runner()
+        runner._voice_mode = {"discord:1": "all", "bot2:discord:2": "all"}
+        default_ad = MagicMock(); default_ad.platform = Platform.DISCORD
+        default_ad._owner_profile = None; default_ad._auto_tts_enabled_chats = set()
+        bot2_ad = MagicMock(); bot2_ad.platform = Platform.DISCORD
+        bot2_ad._owner_profile = "bot2"; bot2_ad._auto_tts_enabled_chats = set()
+        runner._sync_voice_mode_state_to_adapter(default_ad)
+        runner._sync_voice_mode_state_to_adapter(bot2_ad)
+        assert default_ad._auto_tts_enabled_chats == {"1"}
+        assert bot2_ad._auto_tts_enabled_chats == {"2"}
 
 
 # ---------------------------------------------------------------------------

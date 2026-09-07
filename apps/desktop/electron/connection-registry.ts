@@ -493,7 +493,17 @@ export function resolveRegistryLocalRoute(
 ): RegistryLocalRoute {
   const profileKey = String(profile ?? '').trim() || 'default'
 
-  if (opts.globalRemote || opts.profileRemoteOverride) {
+  // A per-profile SSH/remote override is an explicit per-profile routing
+  // decision: the override owns this profile's backend, so the 'local' entry
+  // must delegate to the legacy profile route (which resolves the override),
+  // not spawn a forced-local child. Forcing local here is the #90477 split:
+  // the roster lists the profile via its override, but opening the thread
+  // spawned a local backend that fails when the profile doesn't exist locally.
+  if (opts.profileRemoteOverride) {
+    return { delegate: true, poolKey: profileKey }
+  }
+
+  if (opts.globalRemote) {
     return { delegate: false, poolKey: `${backendScopePrefix(LOCAL_CONNECTION_ID)}${profileKey}` }
   }
 
@@ -1496,6 +1506,13 @@ export function reconcileAppliedGlobalConnection(
  * registry entry at all. That is the drift state and nothing else. If the
  * route is already registered but `primary` names another source, the user
  * chose that in the Connections panel and we leave it alone.
+ *
+ * SSH drifts the same way remote does: a v1 global `mode:'ssh'` route (host,
+ * no url) written by Settings after the one-shot migration has no registry
+ * identity, so `resolvedConnectionId` returns null, `primary` stays `local`,
+ * and every launch re-homes the window onto a local backend — and because the
+ * heal used to skip SSH entirely, the two files re-drifted after every update
+ * relaunch instead of converging once.
  */
 export function reconcileRegistryDrift(
   registry: ConnectionRegistry,
@@ -1503,6 +1520,60 @@ export function reconcileRegistryDrift(
 ): { changed: boolean; registry: ConnectionRegistry } {
   const config = v1 && typeof v1 === 'object' ? (v1 as Record<string, any>) : {}
   const unchanged = { changed: false, registry }
+
+  if (config.mode === 'ssh') {
+    const ssh = normalizeSshConfig({
+      ...(config.remote && typeof config.remote === 'object' ? config.remote : {}),
+      mode: 'ssh'
+    })
+
+    if (!ssh) {
+      // A v1 SSH route without a usable host is not a route we can register.
+      return unchanged
+    }
+
+    const target = normalizedSshTarget(ssh)
+
+    const alreadyRegistered = registry.connections.some(
+      connection =>
+        connection.kind === 'ssh' &&
+        normalizedSshTarget(connection) === target &&
+        (connection.port ?? 22) === (ssh.port ?? 22)
+    )
+
+    if (alreadyRegistered) {
+      // Route is known; if primary names another source, that is the user's
+      // Connections-panel choice, not drift.
+      return unchanged
+    }
+
+    const { mode: _mode, ...sshFields } = ssh
+
+    let entry: RegistryConnection
+
+    try {
+      entry = normalizeConnectionInput(
+        {
+          kind: 'ssh',
+          label: uniqueLabel(
+            ssh.host,
+            registry.connections.map(connection => connection.label)
+          ),
+          ...sshFields
+        },
+        registry
+      )
+    } catch {
+      // Validation failure (e.g. a crafted collision) must not corrupt the
+      // registry; the v1 path keeps failing the way it already does.
+      return unchanged
+    }
+
+    return {
+      changed: true,
+      registry: { ...upsertConnection(registry, entry), primary: entry.id, lastUsed: entry.id }
+    }
+  }
 
   if (!modeIsRemoteLike(config.mode)) {
     return unchanged

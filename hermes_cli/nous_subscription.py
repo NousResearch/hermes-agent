@@ -1034,7 +1034,7 @@ def _get_gateway_direct_credentials() -> Dict[str, bool]:
 
 
 _GATEWAY_DIRECT_LABELS = {
-    "web": "Firecrawl/Exa/Parallel/Tavily key or SearXNG",
+    "web": "Firecrawl/Exa/Parallel/Keenable key or SearXNG",
     "image_gen": "FAL key",
     "video_gen": "FAL key",
     "tts": "OpenAI/ElevenLabs key",

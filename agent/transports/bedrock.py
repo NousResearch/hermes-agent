@@ -107,12 +107,19 @@ class BedrockTransport(ProviderTransport):
 
         reasoning = getattr(msg, "reasoning", None) or getattr(msg, "reasoning_content", None)
 
+        provider_data = {}
+        if getattr(msg, "reasoning_details", None):
+            provider_data["reasoning_details"] = msg.reasoning_details
+        if getattr(msg, "bedrock_content_blocks", None):
+            provider_data["bedrock_content_blocks"] = msg.bedrock_content_blocks
+
         return NormalizedResponse(
             content=msg.content,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             reasoning=reasoning,
             usage=usage,
+            provider_data=provider_data or None,
         )
 
     def validate_response(self, response: Any) -> bool:

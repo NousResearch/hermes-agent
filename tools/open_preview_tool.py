@@ -84,10 +84,5 @@ OPEN_PREVIEW_SCHEMA = {
 }
 
 
-registry.register(
-    name="open_preview",
-    toolset="desktop_ui",
-    schema=OPEN_PREVIEW_SCHEMA,
-    handler=lambda args, **kw: open_preview_tool(url=args.get("url", ""), label=args.get("label", "")),
-    emoji="🖼️",
-)
+# Registration removed: consolidated into the `preview` tool (#95681);
+# this module keeps its functions for the preview_tool.

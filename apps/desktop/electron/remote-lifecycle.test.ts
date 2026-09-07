@@ -1467,6 +1467,45 @@ test('buildSpawnCommand raises the SSH child file limit before execing Hermes', 
   assert.ok(cmd.indexOf('ulimit -n 65536') < cmd.indexOf('serve --isolated'))
 })
 
+test('buildSpawnCommand payload variables keep $HOME expandable (no double quoting)', () => {
+  const cmd = buildSpawnCommand('/x/hermes', 'work', {
+    hermesHome: '~/.hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+    ownershipId: OWNERSHIP_ID,
+    reservationNonce: SPAWN_NONCE,
+    spawnNonce: SPAWN_NONCE,
+    tokenFilePath: spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE),
+    lockMetadata: { ownershipId: OWNERSHIP_ID, spawnNonce: SPAWN_NONCE }
+  })
+
+  // expandRemotePath() emits "$HOME"'/…' — a fragment the shell expands at
+  // assignment. Wrapping it in shq() again stores the quote characters in
+  // the variable, so mkdir "$reservation" creates (or fails on) a literal
+  // "$HOME" path and the reservation loop spins forever holding the mutex.
+  for (const name of ['reservation', 'lock', 'owner_file']) {
+    assert.match(cmd, new RegExp(`${name}="\\$HOME"`), `${name}= must start with an expandable "$HOME"`)
+    assert.doesNotMatch(cmd, new RegExp(`${name}='`), `${name}= must not be re-quoted`)
+  }
+})
+
+test('buildSpawnCommand lockfile publication is POSIX sh (no bash substitution)', () => {
+  const cmd = buildSpawnCommand('/x/hermes', 'work', {
+    hermesHome: '~/.hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+    ownershipId: OWNERSHIP_ID,
+    reservationNonce: SPAWN_NONCE,
+    spawnNonce: SPAWN_NONCE,
+    tokenFilePath: spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE),
+    lockMetadata: { ownershipId: OWNERSHIP_ID, pid: '__PID__' }
+  })
+
+  // ${var//pat/rep} is bash-only; dash aborts the payload on it AFTER the
+  // serve was spawned, so the client sees an unknown failure, deletes the
+  // token file, and orphans the backend.
+  assert.doesNotMatch(cmd, /\$\{lock_json\/\//, 'must not use ${var//} substitution under sh')
+  assert.ok(cmd.includes('sed "s/__PID__/${child}/"'), 'pid substitution must use sed')
+})
+
 test('spawnRemoteDashboard removes a token file when upload reporting fails', async () => {
   const failure = new Error('channel closed')
 

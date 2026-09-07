@@ -1217,3 +1217,46 @@ class TestDeepInfraProviderProfile:
         # of truth. Pin the shape only, not contents.
         assert isinstance(profile.fallback_models, tuple)
 
+
+
+class TestRuntimeAlibabaRegionalAndTokenPlan:
+    """#73265: the catalog-advertised Alibaba China/Token Plan variants must
+    resolve on the shared execution path (resolve_runtime_provider), not just
+    in the profile registry — provider, key, api mode, and base URL."""
+
+    def test_runtime_alibaba_cn(self, monkeypatch):
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "ds-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="alibaba-cn")
+        assert result["provider"] == "alibaba-cn"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "ds-key"
+        assert result["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+    def test_runtime_alibaba_coding_plan_cn(self, monkeypatch):
+        monkeypatch.setenv("ALIBABA_CODING_PLAN_API_KEY", "acp-key")
+        monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="alibaba-coding-plan-cn")
+        assert result["provider"] == "alibaba-coding-plan-cn"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "acp-key"
+        assert result["base_url"] == "https://coding.dashscope.aliyuncs.com/v1"
+
+    def test_runtime_alibaba_token_plan(self, monkeypatch):
+        monkeypatch.setenv("ALIBABA_TOKEN_PLAN_API_KEY", "atp-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="alibaba-token-plan")
+        assert result["provider"] == "alibaba-token-plan"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "atp-key"
+        assert result["base_url"] == "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+
+    def test_runtime_alibaba_token_plan_cn(self, monkeypatch):
+        monkeypatch.setenv("ALIBABA_TOKEN_PLAN_API_KEY", "atp-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="alibaba-token-plan-cn")
+        assert result["provider"] == "alibaba-token-plan-cn"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "atp-key"
+        assert result["base_url"] == "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"

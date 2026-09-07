@@ -306,6 +306,17 @@ class TTSSpeakRequest(BaseModel):
     text: str
 
 
+class TTSLeaseRequest(BaseModel):
+    """Body for ``POST /api/audio/tts-lease``.
+
+    ``lease`` names the toggle/surface holding the lease (``desktop:read-aloud``,
+    ``desktop:conversation``); ``active`` True acquires + warms, False releases.
+    """
+
+    lease: str
+    active: bool = True
+
+
 # --- from web_server.py (originally lines 11549-11551) ---
 
 class OAuthSubmitBody(BaseModel):
@@ -342,6 +353,17 @@ class SessionRename(BaseModel):
     unread: Optional[bool] = None
     # Mutate a session belonging to another profile (opens its state.db). Omit
     # for the current/default profile.
+    profile: Optional[str] = None
+
+
+class SessionOwnerBackfill(BaseModel):
+    """Body for POST /api/sessions/owner-backfill (#94724 legacy migration).
+
+    ``profile`` scopes WHICH profile's state.db is stamped (same semantics as
+    every other session route); the stamped value is always that store's own
+    serving-profile identity — the caller cannot inject an arbitrary owner.
+    """
+
     profile: Optional[str] = None
 
 

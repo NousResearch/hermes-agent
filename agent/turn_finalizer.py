@@ -32,18 +32,26 @@ from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
 
 
-def _is_pure_tool_call_tail(msg: dict) -> bool:
-    """An assistant row with ``tool_calls`` but no visible text content of its own.
-
-    Such a row satisfies the role check (``tail role == "assistant"``) while
-    carrying none of the delivered answer — see the #43849/#44100 invariant
-    block in :func:`finalize_turn`. Uses :func:`flatten_message_text` so that
-    multimodal (list-type) content is evaluated by its text parts, not just
-    its type.
-    """
-    if not msg.get("tool_calls"):
+def _assistant_row_missing_visible_text(msg: dict) -> bool:
+    """True when an assistant row has no visible text (blank final or tool-only)."""
+    if not isinstance(msg, dict) or msg.get("role") != "assistant":
         return False
     return not flatten_message_text(msg.get("content")).strip()
+
+
+def _is_pure_tool_call_tail(msg: dict) -> bool:
+    """Assistant row with ``tool_calls`` but no visible text of its own."""
+    if not isinstance(msg, dict) or not msg.get("tool_calls"):
+        return False
+    return _assistant_row_missing_visible_text(msg)
+
+
+def _fill_assistant_tail_content(agent, tail: dict, final_response) -> None:
+    """Write delivered text onto an already-persisted blank assistant row."""
+    tail["content"] = final_response
+    stamp_message_timestamp(tail)
+    tail.pop(_DB_PERSISTED_MARKER, None)
+    agent._db_flush_scan_prefix = None
 
 
 # Verification continuation scaffolding flags: verify-on-stop / pre_verify
@@ -116,6 +124,15 @@ def _drop_verification_continuation_scaffolding(messages) -> None:
         m for m in messages
         if not (isinstance(m, dict) and any(m.get(f) for f in _VERIFICATION_CONTINUATION_FLAGS))
     ]
+
+
+def _clone_background_review_messages(messages):
+    """Copy the review input without aliasing the live transcript."""
+    # Import lazily: conversation_loop imports this module during turn
+    # finalization, so a module-level import would create a cycle.
+    from agent.conversation_loop import _clone_message_for_send
+
+    return [_clone_message_for_send(message) for message in messages]
 
 
 def finalize_turn(
@@ -305,6 +322,21 @@ def finalize_turn(
         # state.db. (#65919 §7)
         _drop_verification_continuation_scaffolding(messages)
 
+        # #95514: an empty terminal completion is not authoritative when the
+        # stream already delivered text. Recover before persist so a blank
+        # assistant tail is filled instead of frozen as content=''.
+        _recovered_from_stream = False
+        if not interrupted and not failed:
+            _streamed = getattr(agent, "_current_streamed_assistant_text", "") or ""
+            if isinstance(_streamed, str):
+                _streamed = _streamed.strip()
+            else:
+                _streamed = ""
+            _final_visible = flatten_message_text(final_response).strip() if final_response else ""
+            if not _final_visible and _streamed:
+                final_response = _streamed
+                _recovered_from_stream = True
+
         # When the turn was interrupted and the last message is a tool
         # result, append a synthetic assistant message to close the
         # tool-call sequence. Without this, the session persists a
@@ -351,40 +383,23 @@ def finalize_turn(
                     messages,
                     {"role": "assistant", "content": final_response},
                 )
-            elif isinstance(_tail, dict) and _tail.get("content") != final_response and _is_pure_tool_call_tail(_tail):
-                # The tail IS an assistant row, but a *pure tool-call turn*:
-                # tool_calls with no text of its own. The role check alone
-                # leaves the #43849/#44100 invariant unmet — the user saw a
-                # response that never reached the transcript, and the next turn
-                # replays the user backlog and re-answers it (the very symptom
-                # this block was added for). Fill that row's empty content
-                # instead of appending, so the durable turn ends with the answer
-                # without disturbing the tool-call structure or creating an
-                # assistant→assistant pair.
-                #
-                # The ``content != final_response`` guard prevents filling when
-                # the tail already carries the final response text (verification
-                # candidate collapse — the provisional answer was persisted and
-                # reused as the terminal response, #65919 §7).
-                _tail["content"] = final_response
-                # The normal assistant builder already stamps this row. Cover
-                # legacy/exceptional pure-tool tails before they become a
-                # delivered final response.
-                stamp_message_timestamp(_tail)
-                # The row may have already been flushed to SQLite by the
-                # incremental tool-call persist (conversation_loop.py:4990),
-                # which stamps ``_DB_PERSISTED_MARKER`` so subsequent flushes
-                # skip it. Pop the marker so the next ``_persist_session``
-                # re-writes the filled content to the durable store —
-                # otherwise ``/resume`` reloads ``content=""`` and the bug
-                # resurfaces cross-session.
-                _tail.pop(_DB_PERSISTED_MARKER, None)
-                # The bounded flush-scan cursor (run_agent.py) skips the
-                # identity-matched prefix of its previous snapshot on the
-                # assumption that no live dict loses the marker in place —
-                # this pop is the one place that does. Invalidate it so the
-                # filled row is re-examined instead of skipped.
-                agent._db_flush_scan_prefix = None
+            elif (
+                isinstance(_tail, dict)
+                and _tail.get("content") != final_response
+                and (
+                    _is_pure_tool_call_tail(_tail)
+                    or (
+                        _recovered_from_stream
+                        and _assistant_row_missing_visible_text(_tail)
+                    )
+                )
+            ):
+                # The tail IS an assistant row, but a *pure tool-call turn* or
+                # a blank assistant tail whose content was recovered from the
+                # stream buffer (#95514). Fill that row's content instead of
+                # appending, so the durable turn ends with the answer without
+                # creating an assistant→assistant pair.
+                _fill_assistant_tail_content(agent, _tail, final_response)
 
         # The model has completed its request, so replace API-local
         # voice/model/skill guidance with the clean user input before writing the
@@ -746,7 +761,7 @@ def finalize_turn(
             "health (`hermes doctor`), then send your message again"
         )
         # Machine-readable cause for the gateway/desktop: exactly
-        # 'session_persistence_failed:<locked|compression|turn_lease|corrupt|disk|unknown>'.
+        # 'session_persistence_failed:<locked|compression|turn_lease|corrupt|replaced|disk|unknown>'.
         # Never clobber a failure_reason another path already stamped.
         if "failure_reason" not in result:
             _cause = getattr(agent, "_last_persistence_error_cause", None)
@@ -804,6 +819,8 @@ def finalize_turn(
         and (_should_review_memory or _should_review_skills)
     ):
         try:
+            # _spawn_background_review clones the snapshot structurally so
+            # the fork's in-place sanitizers can't reach the live transcript.
             agent._spawn_background_review(
                 messages_snapshot=list(messages),
                 review_memory=_should_review_memory,

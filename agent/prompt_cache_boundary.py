@@ -67,10 +67,11 @@ def register_stable_prefix(prefix: str) -> None:
 
 
 def find_stable_prefix(content: str) -> Optional[str]:
-    """Longest registered prefix that is a *proper* prefix of ``content``.
+    """Longest registered prefix that is a *proper* prefix of ``content`` with non-whitespace tail.
 
-    Proper (``len(content) > len(prefix)``) so the split never produces an
-    empty volatile text block, which Anthropic rejects on the wire.
+    Proper with non-whitespace tail (``bool(content[len(prefix):].strip())``) so the
+    split never produces an empty or whitespace-only volatile text block, which
+    Anthropic rejects on the wire (HTTP 400).
 
     A hit refreshes the entry's LRU position: a scaffold fired every minute
     by cron must not be evicted by a burst of one-off skill invocations,
@@ -79,7 +80,7 @@ def find_stable_prefix(content: str) -> Optional[str]:
     with _lock:
         best: Optional[str] = None
         for prefix in _prefixes:
-            if len(content) > len(prefix) and content.startswith(prefix):
+            if content.startswith(prefix) and bool(content[len(prefix):].strip()):
                 if best is None or len(prefix) > len(best):
                     best = prefix
         if best is not None:

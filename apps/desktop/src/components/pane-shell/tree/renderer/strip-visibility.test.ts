@@ -9,6 +9,7 @@ const tile = (): StripPane => ({ collapsePane: false, placement: 'main' })
 const workspace = (): StripPane => ({ collapsePane: false, placement: 'main', uncloseable: true })
 const toolPanel = (): StripPane => ({ collapsePane: true, placement: 'bottom' })
 const sideChrome = (): StripPane => ({ collapsePane: false, placement: 'right' })
+const hideOnlyChrome = (): StripPane => ({ collapsePane: false, hideOnly: true, placement: 'left' })
 
 describe('auto (no stored choice)', () => {
   it('gives a lone workspace no strip and a stack of two a strip', () => {
@@ -42,6 +43,13 @@ describe('no dead zone', () => {
 
   it('keeps the strip for a lone tool panel even when the zone says never', () => {
     expect(resolveTabStripVisible({ mode: 'never', shown: [toolPanel()] })).toBe(true)
+  })
+
+  it('keeps the strip for hide-only chrome even when the zone says never', () => {
+    // Sessions / Bots: the Show/Hide rows and the chips themselves live on
+    // the strip. Hiding it is the #91223 trap — nothing left to click.
+    expect(resolveTabStripVisible({ mode: 'never', shown: [hideOnlyChrome()] })).toBe(true)
+    expect(resolveTabStripVisible({ mode: 'never', shown: [hideOnlyChrome(), hideOnlyChrome()] })).toBe(true)
   })
 
   it('still hides a zone that cannot strand anything', () => {

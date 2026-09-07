@@ -186,6 +186,33 @@ class TestExecuteCodeIntegration:
 
         assert "SERVICE_TOKEN" not in child_env
 
+    def test_execute_code_strips_buzz_vars(self):
+        """BUZZ_* credentials must stay out of the execute_code child even
+        though they pass through to terminal children (issue #78026): the
+        carve-out is terminal-only.
+
+        - BUZZ_PRIVATE_KEY matches the KEY secret substring.
+        - BUZZ_AUTH_TAG matches the AUTH secret substring.
+        - BUZZ_RELAY_URL matches no secret substring but is not on the safe
+          prefix allowlist, so it is dropped too.
+        """
+        from tools.code_execution_tool import _scrub_child_env
+
+        buzz_vars = {
+            "BUZZ_PRIVATE_KEY": "nsec1fake",
+            "BUZZ_AUTH_TAG": '["tag","data","kind","sig"]',
+            "BUZZ_RELAY_URL": "https://mycommunity.communities.buzz.xyz",
+            "PATH": "/usr/bin",
+            "HOME": "/home/user",
+        }
+        child_env = _scrub_child_env(buzz_vars)
+
+        assert "BUZZ_PRIVATE_KEY" not in child_env
+        assert "BUZZ_AUTH_TAG" not in child_env
+        assert "BUZZ_RELAY_URL" not in child_env
+        assert child_env["PATH"] == "/usr/bin"
+        assert child_env["HOME"] == "/home/user"
+
 
 class TestTerminalIntegration:
     """Verify that the passthrough is checked in terminal's env sanitizers."""
@@ -316,6 +343,35 @@ class TestTerminalIntegration:
             result = _sanitize_subprocess_env({var: "secret", "PATH": "/usr/bin"})
             assert var not in result
             assert "PATH" in result
+
+    def test_passthrough_cannot_register_buzz_vars(self, monkeypatch):
+        """GHSA-rhgp-j443-p4rf seal stays intact for the BUZZ_* first-party
+        platform credentials: even though they pass through to terminal
+        children in a Buzz agent context (issue #78026), env_passthrough
+        registration must still refuse them — the carve-out opens NO
+        registration path, so a skill cannot expand BUZZ_* exposure to
+        execute_code."""
+        from tools.environments.local import _sanitize_subprocess_env
+
+        monkeypatch.setenv("BUZZ_MANAGED_AGENT", "1")
+        for var in (
+            "BUZZ_PRIVATE_KEY",
+            "BUZZ_AUTH_TAG",
+            "BUZZ_RELAY_URL",
+        ):
+            register_env_passthrough([var])
+            assert not is_env_passthrough(var), (
+                f"{var} should be refused passthrough registration"
+            )
+            # Terminal sanitizer still passes BUZZ_* through to terminal
+            # children by the first-party carve-out...
+            result = _sanitize_subprocess_env({var: "value", "PATH": "/usr/bin"})
+            assert result.get(var) == "value"
+            # ...but the execute_code child never sees them.
+            from tools.code_execution_tool import _scrub_child_env
+
+            child_env = _scrub_child_env({var: "value", "PATH": "/usr/bin"})
+            assert var not in child_env
 
     def test_passthrough_allows_auxiliary_non_secret_routing(self):
         """AUXILIARY_*_PROVIDER / _MODEL and GATEWAY_RELAY routing hints are not

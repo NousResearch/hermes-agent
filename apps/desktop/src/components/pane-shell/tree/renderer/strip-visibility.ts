@@ -19,6 +19,9 @@ import { paneChrome } from './track-model'
 export interface StripPane {
   /** A tool panel (terminal / logs) that collapses rather than closes. */
   collapsePane: boolean
+  /** Standing chrome (sessions / Bots) whose only handle is the strip:
+   *  show/hide replaces Close, and the Show/Hide rows live on the strip. */
+  hideOnly?: boolean
   /** Contribution placement — `'main'` marks a docked tile (session, page,
    *  preview) as opposed to standing side chrome. */
   placement?: string
@@ -39,7 +42,8 @@ export interface StripZone {
 /**
  * A pane is STRANDED without a strip when the strip is the only thing carrying
  * its handle: a closeable tile needs its ✕, a lone tool panel needs a chip to
- * grab. The uncloseable workspace is not strandable — it cannot be closed or
+ * grab, hide-only chrome (sessions / Bots) needs the chip that show/hide lives
+ * on. The uncloseable workspace is not strandable — it cannot be closed or
  * lost, so a lone chat is free to be chromeless.
  *
  * This outranks an explicit `never` on purpose. "Hide the strip" is a request
@@ -49,6 +53,10 @@ export interface StripZone {
  */
 function stranded(shown: readonly StripPane[]): boolean {
   if (shown.some(pane => !pane.uncloseable && pane.placement === 'main')) {
+    return true
+  }
+
+  if (shown.some(pane => pane.hideOnly)) {
     return true
   }
 
@@ -99,10 +107,15 @@ export function tabStripVisibleForZone(zone: {
   return resolveTabStripVisible({
     headerVeto: paneChrome(zone.paneFor(zone.active)).headerVeto,
     mode: effectiveTabStripMode(zone.mode),
-    shown: zone.shown.map(id => ({
-      collapsePane: zone.isCollapsePane(id),
-      placement: paneChrome(zone.paneFor(id)).placement,
-      uncloseable: paneChrome(zone.paneFor(id)).uncloseable
-    }))
+    shown: zone.shown.map(id => {
+      const chrome = paneChrome(zone.paneFor(id))
+
+      return {
+        collapsePane: zone.isCollapsePane(id),
+        hideOnly: chrome.hideOnly,
+        placement: chrome.placement,
+        uncloseable: chrome.uncloseable
+      }
+    })
   })
 }

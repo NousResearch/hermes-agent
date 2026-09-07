@@ -56,6 +56,28 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
+from agent.secret_scope import get_secret as _scoped_get_secret
+
+
+def _get_scoped_secret(name, default=None):
+    """Scope-aware env read with the default-profile startup fallback.
+
+    Secondary profiles construct their adapters under a profile secret
+    scope -- the scope is authoritative and a scoped miss returns ``default``
+    (no cross-profile borrow from ``os.environ``, which holds the DEFAULT
+    profile's YAML-to-env bridge output under multiplexing). The default
+    profile's adapter constructs *unscoped*, where a bare ``get_secret``
+    would raise ``UnscopedSecretError``; there ``os.environ`` is that
+    profile's own value, so fall back to it. Same helper as the IRC/ntfy/
+    Mattermost plugins.
+    """
+    try:
+        val = _scoped_get_secret(name, default)
+    except _UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
+
 # Lazy import: BasePlatformAdapter and friends live in the main repo.
 # Imported at module top because they're stdlib-only inside Hermes — no
 # external dependency that would block the plugin from loading.
@@ -153,7 +175,7 @@ class SimplexAdapter(BasePlatformAdapter):
         # Contact-request auto-accept (on by default — matches the way most
         # bot deployments expect to behave). Read from env first, then fall
         # back to the value seeded by ``_env_enablement``.
-        env_auto = os.getenv("SIMPLEX_AUTO_ACCEPT")
+        env_auto = _get_scoped_secret("SIMPLEX_AUTO_ACCEPT")
         if env_auto is not None:
             self.auto_accept = env_auto.strip().lower() not in {"0", "false", "no", ""}
         else:
@@ -162,7 +184,7 @@ class SimplexAdapter(BasePlatformAdapter):
         # Group allowlist. Without ``SIMPLEX_GROUP_ALLOWED``, group messages
         # are ignored entirely (safer default — a bot in a group otherwise
         # processes every member's traffic). Use ``*`` to accept any group.
-        group_allowed_str = os.getenv("SIMPLEX_GROUP_ALLOWED", "") or extra.get(
+        group_allowed_str = _get_scoped_secret("SIMPLEX_GROUP_ALLOWED", "") or extra.get(
             "group_allowed", ""
         )
         self.group_allow_from = set(_parse_comma_list(group_allowed_str))
@@ -240,6 +262,8 @@ class SimplexAdapter(BasePlatformAdapter):
         if hasattr(self, "_mark_connected"):
             self._mark_connected()
         logger.info("SimpleX: connected to %s", self.ws_url)
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:
@@ -1170,7 +1194,7 @@ def check_requirements() -> bool:
     so the gateway never instantiates the adapter when the dependency is
     missing or no daemon URL is configured.
     """
-    if not os.getenv("SIMPLEX_WS_URL"):
+    if not _get_scoped_secret("SIMPLEX_WS_URL"):
         return False
     try:
         import websockets  # noqa: F401
@@ -1182,14 +1206,14 @@ def check_requirements() -> bool:
 def validate_config(config) -> bool:
     """Validate that the platform config has enough info to connect."""
     extra = getattr(config, "extra", {}) or {}
-    ws_url = os.getenv("SIMPLEX_WS_URL") or extra.get("ws_url", "")
+    ws_url = _get_scoped_secret("SIMPLEX_WS_URL") or extra.get("ws_url", "")
     return bool(ws_url)
 
 
 def is_connected(config) -> bool:
     """Check whether SimpleX is configured (env or config.yaml)."""
     extra = getattr(config, "extra", {}) or {}
-    ws_url = os.getenv("SIMPLEX_WS_URL") or extra.get("ws_url", "")
+    ws_url = _get_scoped_secret("SIMPLEX_WS_URL") or extra.get("ws_url", "")
     return bool(ws_url)
 
 
@@ -1205,24 +1229,24 @@ def _env_enablement() -> Optional[dict]:
     becomes a proper ``HomeChannel`` dataclass on the ``PlatformConfig``
     rather than being merged into ``extra``.
     """
-    ws_url = os.getenv("SIMPLEX_WS_URL", "").strip()
+    ws_url = _get_scoped_secret("SIMPLEX_WS_URL", "").strip()
     if not ws_url:
         return None
     seed: dict = {"ws_url": ws_url}
 
-    auto_accept = os.getenv("SIMPLEX_AUTO_ACCEPT", "").strip().lower()
+    auto_accept = _get_scoped_secret("SIMPLEX_AUTO_ACCEPT", "").strip().lower()
     if auto_accept:
         seed["auto_accept"] = auto_accept not in {"0", "false", "no"}
 
-    group_allowed = os.getenv("SIMPLEX_GROUP_ALLOWED", "").strip()
+    group_allowed = _get_scoped_secret("SIMPLEX_GROUP_ALLOWED", "").strip()
     if group_allowed:
         seed["group_allowed"] = group_allowed
 
-    home = os.getenv("SIMPLEX_HOME_CHANNEL", "").strip()
+    home = _get_scoped_secret("SIMPLEX_HOME_CHANNEL", "").strip()
     if home:
         seed["home_channel"] = {
             "chat_id": home,
-            "name": os.getenv("SIMPLEX_HOME_CHANNEL_NAME", "").strip() or home,
+            "name": _get_scoped_secret("SIMPLEX_HOME_CHANNEL_NAME", "").strip() or home,
         }
     return seed
 
@@ -1255,7 +1279,7 @@ async def _standalone_send(
         return {"error": "websockets not installed. Run: pip install websockets"}
 
     extra = getattr(pconfig, "extra", {}) or {}
-    ws_url = os.getenv("SIMPLEX_WS_URL") or extra.get(
+    ws_url = _get_scoped_secret("SIMPLEX_WS_URL") or extra.get(
         "ws_url", "ws://127.0.0.1:5225"
     )
     if not ws_url:

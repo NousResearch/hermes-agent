@@ -3,6 +3,9 @@
 Phase 0 — establish a baseline pin on the current (pre-OAuth) behavior so
 later phases can prove they didn't break loopback mode.
 """
+import asyncio
+import logging
+
 import pytest
 
 # Phase 5 / Phase 6: these tests mutate ``web_server.app.state.auth_required``
@@ -229,8 +232,100 @@ def test_start_server_gate_with_provider_proceeds_and_sets_proxy_headers(monkeyp
         assert web_server.app.state.auth_required is True
         assert captured["kwargs"].get("host") == "0.0.0.0"
         assert captured["kwargs"].get("proxy_headers") is True
+        assert captured["kwargs"].get("forwarded_allow_ips") == [
+            "127.0.0.1",
+            "::1",
+        ]
     finally:
         clear_providers()
+
+
+def test_start_server_passes_bounded_trusted_proxy_networks(monkeypatch, caplog):
+    """A configured proxy network reaches uvicorn without broadening to all peers."""
+    from hermes_cli.dashboard_auth import clear_providers, register_provider
+    from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+    clear_providers()
+    register_provider(StubAuthProvider())
+    captured = _stub_uvicorn_run(monkeypatch)
+    monkeypatch.setattr(
+        web_server,
+        "load_config",
+        lambda: {"dashboard": {"trusted_proxies": ["172.18.0.23/16"]}},
+    )
+    try:
+        with caplog.at_level(logging.INFO, logger=web_server._log.name):
+            web_server.start_server(
+                host="0.0.0.0", port=9119,
+                open_browser=False, allow_public=False,
+            )
+        assert captured["kwargs"]["forwarded_allow_ips"] == [
+            "127.0.0.1",
+            "::1",
+            "172.18.0.0/16",
+        ]
+        assert (
+            "Dashboard trusted proxies: 127.0.0.1, ::1, 172.18.0.0/16"
+            in caplog.text
+        )
+    finally:
+        clear_providers()
+
+
+def test_trusted_proxy_allowlist_rejects_unbounded_entries(caplog):
+    """Wildcard and whole-address-space trust must fail closed."""
+    trusted = web_server._dashboard_forwarded_allow_ips({
+        "trusted_proxies": ["*", "0.0.0.0/0", "::/0", "172.18.0.7"],
+    })
+
+    assert trusted == ["127.0.0.1", "::1", "172.18.0.7"]
+    assert "never '*' or a /0 network" in caplog.text
+
+
+def test_trusted_container_proxy_controls_https_detection():
+    """Only a configured bridge peer may turn X-Forwarded-Proto into HTTPS."""
+    from hermes_cli.dashboard_auth.cookies import detect_https
+    from starlette.requests import Request
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    trusted = web_server._dashboard_forwarded_allow_ips({
+        "trusted_proxies": ["172.18.0.0/16"],
+    })
+
+    async def detected_scheme(peer: str) -> bool:
+        observed: dict[str, bool] = {}
+
+        async def downstream(scope, receive, send):
+            observed["https"] = detect_https(Request(scope))
+
+        middleware = ProxyHeadersMiddleware(downstream, trusted_hosts=trusted)
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/auth/login",
+            "raw_path": b"/auth/login",
+            "query_string": b"",
+            "root_path": "",
+            "headers": [(b"x-forwarded-proto", b"https")],
+            "client": (peer, 43120),
+            "server": ("hermes", 9119),
+        }
+
+        async def receive():
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            return None
+
+        await middleware(scope, receive, send)
+        return observed["https"]
+
+    assert asyncio.run(detected_scheme("172.18.0.9")) is True
+    assert asyncio.run(detected_scheme("::1")) is True
+    assert asyncio.run(detected_scheme("198.51.100.9")) is False
 
 
 def test_public_url_aware_gate_requires_auth_for_loopback_proxy(monkeypatch):

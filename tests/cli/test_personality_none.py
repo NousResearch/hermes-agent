@@ -87,7 +87,6 @@ class TestGatewayPersonalityNone:
     def _make_runner(self, personalities=None):
         from gateway.run import GatewayRunner
         runner = GatewayRunner.__new__(GatewayRunner)
-        runner._ephemeral_system_prompt = "You are kawaii~"
         runner.config = {
             "agent": {
                 "personalities": personalities or {"helpful": "You are helpful."}
@@ -125,7 +124,9 @@ class TestGatewayPersonalityNone:
         saved = yaml.safe_load(config_file.read_text())
         assert saved["agent"]["system_prompt"] == "manual forever"
         assert saved.get("display", {}).get("personality", None) == ""
-        assert runner._ephemeral_system_prompt == "manual forever"
+        # The next turn re-resolves from config (no in-memory snapshot).
+        with p1, p2:
+            assert runner._get_system_prompt_for_channel(None, "c") == "manual forever"
 
     @pytest.mark.asyncio
     async def test_set_persists_display_personality_not_system_prompt(self, tmp_path):
@@ -147,7 +148,8 @@ class TestGatewayPersonalityNone:
         saved = yaml.safe_load(config_file.read_text())
         assert saved["agent"]["system_prompt"] == "manual forever"
         assert saved["display"]["personality"] == "helpful"
-        assert runner._ephemeral_system_prompt == "You are helpful."
+        with p1, p2:
+            assert runner._get_system_prompt_for_channel(None, "c") == "You are helpful."
         assert "helpful" in result.lower()
 
     @pytest.mark.asyncio

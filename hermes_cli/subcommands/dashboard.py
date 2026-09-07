@@ -84,6 +84,60 @@ def _add_server_runtime_args(parser) -> None:
     )
 
 
+def _configure_serve_parser(parser, *, cmd_dashboard: Callable) -> None:
+    """Attach the canonical ``serve`` arguments to *parser*.
+
+    Kept separate from the full subcommand tree so Desktop's hot path can parse
+    only the command it launches. Both callers use this exact function, keeping
+    the lean parser and normal CLI semantics in lockstep.
+    """
+    _add_server_runtime_args(parser)
+    # Accepted but redundant: ``serve`` is always headless. Kept so callers
+    # using the legacy flag do not trip an argparse error.
+    parser.add_argument("--no-open", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--ssh-session-token-file",
+        dest="ssh_session_token_file",
+        metavar="PATH",
+        default=None,
+        help="Read a one-shot Desktop SSH session token from PATH",
+    )
+    parser.add_argument(
+        "--ssh-owner-nonce",
+        dest="ssh_owner_nonce",
+        metavar="NONCE",
+        default=None,
+        help="Identify a Desktop-owned SSH backend process",
+    )
+    parser.set_defaults(
+        func=cmd_dashboard,
+        no_open=True,
+        headless_backend=True,
+        command="serve",
+    )
+
+
+def build_serve_parser(
+    *,
+    cmd_dashboard: Callable,
+    add_help: bool = True,
+    exit_on_error: bool = True,
+) -> argparse.ArgumentParser:
+    """Build the standalone parser used by the lean ``serve`` dispatch path."""
+    parser = argparse.ArgumentParser(
+        prog="hermes serve",
+        description=(
+            "Run the Hermes backend server - the JSON-RPC/WebSocket gateway the "
+            "desktop app and remote clients connect to. Headless: it never opens "
+            "a browser UI."
+        ),
+        add_help=add_help,
+        exit_on_error=exit_on_error,
+    )
+    _configure_serve_parser(parser, cmd_dashboard=cmd_dashboard)
+    return parser
+
+
 def build_dashboard_parser(
     subparsers, *, cmd_dashboard: Callable, cmd_dashboard_register: Callable
 ) -> None:
@@ -142,32 +196,7 @@ def build_dashboard_parser(
             "a browser UI."
         ),
     )
-    _add_server_runtime_args(serve_parser)
-    # Accepted but redundant: `serve` is always headless (see set_defaults
-    # below). Kept so callers that pass the legacy `--no-open` flag (e.g. the
-    # desktop backend spawn) don't trip "unrecognized arguments".
-    serve_parser.add_argument(
-        "--no-open", action="store_true", help=argparse.SUPPRESS
-    )
-    serve_parser.add_argument(
-        "--ssh-session-token-file",
-        dest="ssh_session_token_file",
-        metavar="PATH",
-        default=None,
-        help="Read a one-shot Desktop SSH session token from PATH",
-    )
-    serve_parser.add_argument(
-        "--ssh-owner-nonce",
-        dest="ssh_owner_nonce",
-        metavar="NONCE",
-        default=None,
-        help="Identify a Desktop-owned SSH backend process",
-    )
-    # `headless_backend` marks the lean path: desktop/remote clients speak pure
-    # JSON-RPC/WS, so `serve` skips the web UI build AND never serves the SPA
-    # (cmd_dashboard exports HERMES_SERVE_HEADLESS=1). `dashboard` leaves it
-    # unset and serves the browser UI as before.
-    serve_parser.set_defaults(func=cmd_dashboard, no_open=True, headless_backend=True)
+    _configure_serve_parser(serve_parser, cmd_dashboard=cmd_dashboard)
 
     # `hermes dashboard register` — register a self-hosted dashboard OAuth
     # client with Nous Portal and write the client_id into ~/.hermes/.env.

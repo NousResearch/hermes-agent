@@ -20,7 +20,7 @@ import { setAppearance } from '@/store/translucency'
 
 import { $accentOverride } from './accent-override'
 import { $backendThemes, $pendingSkinApply } from './backend-sync'
-import { harmonize, hexToRgb, mix, readableOn } from './color'
+import { ensureContrast, harmonize, hexToRgb, mix, readableOn } from './color'
 import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
 import { retintTheme } from './retint'
 import type { DesktopTheme, DesktopThemeColors } from './types'
@@ -178,6 +178,11 @@ function renderedModeFor(colors: DesktopThemeColors, mode: 'light' | 'dark'): 'l
 // styles.css --theme-neutral-chrome — keep in sync.
 const NEUTRAL_CHROME = { light: '#f3f3f3', dark: '#0d0d0e' } as const
 
+// The one foreground --dt-primary-solid is built to carry. Fixed rather than
+// measured: the surface is derived to suit IT, not the other way round.
+// styles.css --dt-primary-solid-foreground fallback — keep in sync.
+const PRIMARY_SOLID_FOREGROUND = '#fcfcfc'
+
 const chromeBackground = (background: string, isDark: boolean) =>
   mix(background, NEUTRAL_CHROME[isDark ? 'dark' : 'light'], isDark ? 0.26 : 0.08)
 
@@ -238,6 +243,16 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     '--dt-ring': c.ring,
     '--dt-muted': c.muted,
     '--dt-midground-foreground': c.midgroundForeground ?? readableOn(midground),
+    // A LOUD fill of the brand colour, for the rare surface that has to read as
+    // the app speaking rather than as chrome. `primary` alone can't do that job:
+    // a pale accent (imported VS Code themes love a pastel pink) is a perfectly
+    // valid primary, and the honest `primaryForeground` for it is near-black —
+    // so the "loud" surface comes out a pastel card with dark text on it,
+    // whispering. Deepening the hue until the LIGHT foreground clears AA keeps
+    // one look across every theme: no-ops on an accent that is already deep,
+    // and only ever darkens, so the hue survives.
+    '--dt-primary-solid': ensureContrast(c.primary, PRIMARY_SOLID_FOREGROUND, 4.5),
+    '--dt-primary-solid-foreground': PRIMARY_SOLID_FOREGROUND,
     '--dt-composer-ring': c.composerRing ?? midground,
     '--dt-destructive': c.destructive,
     '--dt-destructive-foreground': c.destructiveForeground,

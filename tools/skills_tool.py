@@ -1542,7 +1542,11 @@ def skill_view(
                     },
                     ensure_ascii=False,
                 )
-            if not target_file.exists():
+            # Gate on is_file(), not exists(): a directory (e.g. requesting
+            # 'references' bare) must take the not-found listing branch, not
+            # fall through to read_text() and surface a raw [Errno 21]
+            # "Is a directory" OS error. Matches the plugin-skill branch above.
+            if not target_file.is_file():
                 # List available files in the skill directory, organized by type
                 available_files = {
                     "references": [],

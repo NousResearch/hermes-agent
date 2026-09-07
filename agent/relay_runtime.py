@@ -343,8 +343,8 @@ class _ProcessRelayPluginConfiguration:
 
                 if self._activation is None:
                     # Hermes only enters Relay's initialization path after an
-                    # explicit opt-in. Relay currently owns any subsequent ambient
-                    # layering; a future discovery=False API can make this exact.
+                    # explicit opt-in. Relay 0.8 no longer layers repository-local
+                    # configuration onto this explicitly selected payload.
                     _resolve_plugin_awaitable(relay.plugin.initialize(plugin_config))
             except Exception as exc:
                 self._activation = None

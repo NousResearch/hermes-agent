@@ -121,6 +121,37 @@ class TestNotifyInterruptedCronJobs:
         assert adapter.sent == []
 
     @pytest.mark.asyncio
+    async def test_failure_deliver_local_suppresses_interrupt_notice(self):
+        """Interrupted notices are failure-category engine status (NS-788):
+        a job with failure_deliver='local' opted out of failure pings, and
+        the shutdown notice must honor that. Real target resolution — no
+        _resolve_delivery_targets patch — so the failure_deliver override is
+        actually exercised."""
+        runner, adapter = make_restart_runner()
+        _bind_notifier(runner)
+        job = dict(_telegram_job(), failure_deliver="local")
+
+        with patch("cron.jobs.get_job", return_value=job):
+            sent = await runner._notify_interrupted_cron_jobs([job["id"]])
+
+        assert sent == 0
+        assert adapter.sent == []
+
+    @pytest.mark.asyncio
+    async def test_failure_deliver_unset_notice_reaches_deliver_target(self):
+        """Control for the suppress test: same job without failure_deliver,
+        same real resolution path — the notice goes to the deliver target."""
+        runner, adapter = make_restart_runner()
+        _bind_notifier(runner)
+        job = _telegram_job()
+
+        with patch("cron.jobs.get_job", return_value=job):
+            sent = await runner._notify_interrupted_cron_jobs([job["id"]])
+
+        assert sent == 1
+        assert adapter.sent_calls[0][0] == "123456"
+
+    @pytest.mark.asyncio
     async def test_empty_job_list_is_a_noop(self):
         runner, adapter = make_restart_runner()
         _bind_notifier(runner)

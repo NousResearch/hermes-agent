@@ -16,7 +16,7 @@ import sys
 import tempfile
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePath
 from types import SimpleNamespace
 from typing import Any, Literal
 from unittest.mock import patch
@@ -40,34 +40,44 @@ def _doctor_runtime(plugin_path: Path):
     test framework. Registration code executes under a temporary HERMES_HOME
     with outbound socket connects blocked.
     """
-    temporary_home = tempfile.TemporaryDirectory(prefix="hermes-plugin-doctor-")
     stack = ExitStack()
-    home = Path(temporary_home.name)
-    bundled = home / "bundled-plugins"
-    plugins_root = home / "plugins"
-    bundled.mkdir(parents=True)
-    plugins_root.mkdir(parents=True)
-    copied = plugins_root / plugin_path.name
-    shutil.copytree(
-        plugin_path,
-        copied,
-        ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache", "*.pyc"),
-    )
-
-    stack.enter_context(
-        patch.dict(
-            os.environ,
-            {
-                "HERMES_HOME": str(home),
-                "HERMES_BUNDLED_PLUGINS": str(bundled),
-                "HERMES_ENABLE_PROJECT_PLUGINS": "0",
-            },
-            clear=False,
+    try:
+        # The temp dir enters the stack FIRST so any failure below — including
+        # ENOSPC or KeyboardInterrupt inside copytree — deterministically
+        # removes it instead of stranding a hermes-plugin-doctor-* directory
+        # until interpreter GC (or never, on a hard exit).
+        temporary_home = stack.enter_context(
+            tempfile.TemporaryDirectory(prefix="hermes-plugin-doctor-")
         )
-    )
-    stack.enter_context(patch.object(socket, "create_connection", _deny_network))
-    stack.enter_context(patch.object(socket.socket, "connect", _deny_network))
-    stack.enter_context(patch.object(socket.socket, "connect_ex", _deny_network))
+        home = Path(temporary_home)
+        bundled = home / "bundled-plugins"
+        plugins_root = home / "plugins"
+        bundled.mkdir(parents=True)
+        plugins_root.mkdir(parents=True)
+        copied = plugins_root / plugin_path.name
+        shutil.copytree(
+            plugin_path,
+            copied,
+            ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache", "*.pyc"),
+        )
+
+        stack.enter_context(
+            patch.dict(
+                os.environ,
+                {
+                    "HERMES_HOME": str(home),
+                    "HERMES_BUNDLED_PLUGINS": str(bundled),
+                    "HERMES_ENABLE_PROJECT_PLUGINS": "0",
+                },
+                clear=False,
+            )
+        )
+        stack.enter_context(patch.object(socket, "create_connection", _deny_network))
+        stack.enter_context(patch.object(socket.socket, "connect", _deny_network))
+        stack.enter_context(patch.object(socket.socket, "connect_ex", _deny_network))
+    except BaseException:
+        stack.close()
+        raise
 
     from hermes_cli.plugins import PluginManager
     from tools.registry import registry
@@ -130,7 +140,6 @@ def _doctor_runtime(plugin_path: Path):
             ):
                 sys.modules.pop(name, None)
         stack.close()
-        temporary_home.cleanup()
 
 
 @dataclass(frozen=True)
@@ -178,33 +187,88 @@ class DoctorReport:
         return "\n".join(lines)
 
 
+_MANIFEST_NAMES = ("plugin.yaml", "plugin.yml", "plugin.json")
+
+
+def _has_manifest(path: Path) -> bool:
+    return any(
+        (path / name).exists() or (path / name).is_symlink()
+        for name in _MANIFEST_NAMES
+    )
+
+
+def _holds_plugin(path: Path) -> bool:
+    """True when plugin discovery would find a manifest under *path*.
+
+    Mirrors ``PluginManager._scan_directory``: a manifest in *path* itself
+    (flat layout) or in one immediate subdirectory (category layout, where
+    the category directory carries no manifest of its own).
+
+    Doctor copies the resolved directory wholesale before the runtime gets
+    to reject it, so an unvalidated resolve is a disk-usage bug, not just a
+    confusing error: ``hermes plugins doctor`` with no argument defaults to
+    ``.``, and any directory used to satisfy that.
+    """
+    if not path.is_dir():
+        return False
+    if _has_manifest(path):
+        return True
+    try:
+        children = sorted(path.iterdir())
+    except OSError:
+        return False
+    return any(child.is_dir() and _has_manifest(child) for child in children)
+
+
+def _is_plugin_id(raw: str) -> bool:
+    """True when *raw* can name an installed plugin rather than a path.
+
+    Ids are relative and may carry one category segment
+    (``image_gen/openai``). Dot components are excluded: joining ``.``
+    onto a plugins root yields the root itself, which would hand Doctor
+    every installed plugin at once instead of one.
+    """
+    if not raw or PurePath(raw).is_absolute():
+        return False
+    parts = PurePath(raw).parts
+    return bool(parts) and all(part not in {os.curdir, os.pardir} for part in parts)
+
+
 def resolve_plugin_path(target: str | os.PathLike[str] | None = None) -> Path:
     """Resolve an explicit path or an installed/bundled plugin id."""
     raw = os.fspath(target or ".")
     direct = Path(raw).expanduser()
-    if direct.is_dir():
+    direct_is_dir = direct.is_dir()
+    if direct_is_dir and _holds_plugin(direct):
         return direct.resolve()
 
     candidates: list[Path] = []
-    user_root = get_hermes_home() / "plugins"
-    candidates.append(user_root / raw)
-    try:
-        from hermes_cli.plugins import get_bundled_plugins_dir
+    if _is_plugin_id(raw):
+        user_root = get_hermes_home() / "plugins"
+        candidates.append(user_root / raw)
+        try:
+            from hermes_cli.plugins import get_bundled_plugins_dir
 
-        bundled = get_bundled_plugins_dir()
-        candidates.extend(
-            [
-                bundled / raw,
-                bundled / "platforms" / raw,
-                bundled / "model-providers" / raw,
-            ]
-        )
-    except Exception:
-        pass
-    candidates.append(Path.cwd() / ".hermes" / "plugins" / raw)
+            bundled = get_bundled_plugins_dir()
+            candidates.extend(
+                [
+                    bundled / raw,
+                    bundled / "platforms" / raw,
+                    bundled / "model-providers" / raw,
+                ]
+            )
+        except Exception:
+            pass
+        candidates.append(Path.cwd() / ".hermes" / "plugins" / raw)
     for candidate in candidates:
-        if candidate.is_dir():
+        if _holds_plugin(candidate):
             return candidate.resolve()
+    if direct_is_dir:
+        raise FileNotFoundError(
+            f"{direct.resolve()} holds no plugin manifest "
+            f"({', '.join(_MANIFEST_NAMES)}), and {raw!r} is not an installed "
+            "plugin id. Point Doctor at a plugin directory."
+        )
     raise FileNotFoundError(
         f"Plugin {raw!r} was not found as a path or installed plugin id"
     )

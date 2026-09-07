@@ -299,10 +299,10 @@ class TestCheckNousFreeTierCache:
     """Tests for the TTL cache on check_nous_free_tier()."""
 
     def setup_method(self):
-        _models_mod._free_tier_cache = None
+        _models_mod._free_tier_cache.clear()
 
     def teardown_method(self):
-        _models_mod._free_tier_cache = None
+        _models_mod._free_tier_cache.clear()
 
     @patch("hermes_cli.nous_account.get_nous_portal_account_info")
     def test_result_is_cached(self, mock_account):
@@ -319,6 +319,42 @@ class TestCheckNousFreeTierCache:
         assert result1 is True
         assert result2 is True
         assert mock_account.call_count == 1
+
+    @patch("hermes_cli.nous_account.get_nous_portal_account_info")
+    def test_cache_only_cold_lookup_does_not_call_portal(self, mock_account):
+        assert check_nous_free_tier(cached_only=True) is False
+        mock_account.assert_not_called()
+
+    @patch("hermes_cli.nous_account.get_nous_portal_account_info")
+    def test_entitlement_cache_is_profile_scoped(self, mock_account, tmp_path):
+        from hermes_constants import (
+            hermes_home_key,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        def account_for_active_profile(*, force_fresh=False):
+            is_free = hermes_home_key() == hermes_home_key(tmp_path / "free")
+            return NousPortalAccountInfo(
+                logged_in=True,
+                source="jwt",
+                fresh=force_fresh,
+                paid_service_access=not is_free,
+            )
+
+        mock_account.side_effect = account_for_active_profile
+
+        def check_in(home):
+            token = set_hermes_home_override(str(home))
+            try:
+                return check_nous_free_tier()
+            finally:
+                reset_hermes_home_override(token)
+
+        assert check_in(tmp_path / "free") is True
+        assert check_in(tmp_path / "paid") is False
+        assert check_in(tmp_path / "free") is True
+        assert mock_account.call_count == 2
 
 
     @patch("hermes_cli.nous_account.get_nous_portal_account_info")

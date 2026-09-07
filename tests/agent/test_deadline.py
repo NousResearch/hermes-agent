@@ -224,10 +224,53 @@ class TestRunBoundedSync:
         assert result.timed_out is True
         release.set()
 
+    def test_keyboard_interrupt_lands_before_full_deadline(self):
+        """Sliced Event.wait must observe SetAsyncExc within one poll slice."""
+        release = threading.Event()
+        holder: dict = {}
+
+        def _run():
+            try:
+                holder["result"] = run_bounded_sync(
+                    lambda: release.wait(30),
+                    10.0,
+                    label="ki",
+                )
+            except KeyboardInterrupt:
+                holder["exc"] = "KeyboardInterrupt"
+
+        t = threading.Thread(target=_run)
+        t.start()
+        time.sleep(0.15)
+        import ctypes
+
+        assert t.ident is not None
+        ret = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+            ctypes.c_ulong(t.ident), ctypes.py_object(KeyboardInterrupt),
+        )
+        assert ret == 1
+        t.join(timeout=2.0)
+        release.set()
+        assert not t.is_alive()
+        assert holder.get("exc") == "KeyboardInterrupt"
+
     def test_deadline_expired_is_a_timeout_error(self):
         # Error-classification contract: our deadline must be catchable as
         # TimeoutError but distinguishable by type from transport timeouts.
         assert issubclass(DeadlineExpired, TimeoutError)
+
+    def test_worker_inherits_caller_contextvars(self):
+        """Profile secret scope / session id must survive the thread hop."""
+        import contextvars
+
+        var = contextvars.ContextVar("deadline_sync_ctx")
+        token = var.set("from-caller")
+        try:
+            result = run_bounded_sync(lambda: var.get(None), 5.0, label="ctx")
+        finally:
+            var.reset(token)
+        assert result.timed_out is False
+        assert result.value == "from-caller"
 
 
 # ---------------------------------------------------------------------------
@@ -543,6 +586,26 @@ class TestSequentialToolTimeoutResolver:
 # ---------------------------------------------------------------------------
 # Phase 3a (#85125): SuspectableBackend — poisoned-state contract.
 # ---------------------------------------------------------------------------
+
+
+def test_suspectable_backend_name_is_not_shadowed():
+    """`agent.deadline.SuspectableBackend` must resolve to the Phase 3a
+    Protocol (sync `ensure_healthy(self) -> bool`), not a second, unrelated
+    `class SuspectableBackend` defined later in the module. A later Phase 3b
+    adopter independently redefined the same name as a concrete async class
+    (`ensure_healthy(self, timeout=5.0)`), which silently shadowed the
+    Protocol at module scope — nothing subclasses or imports either by name
+    today, so the collision caused no runtime breakage yet, but it would
+    hand the wrong (and differently-shaped) type to the next `from
+    agent.deadline import SuspectableBackend` consumer.
+    """
+    import inspect
+
+    from agent.deadline import SuspectableBackend
+
+    assert getattr(SuspectableBackend, "_is_protocol", False) is True
+    assert not inspect.iscoroutinefunction(SuspectableBackend.ensure_healthy)
+    assert "timeout" not in inspect.signature(SuspectableBackend.ensure_healthy).parameters
 
 
 class _RecordingBackend:

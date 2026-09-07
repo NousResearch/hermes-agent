@@ -34,7 +34,32 @@ class PromptCachePlan:
         return _count_cache_markers(self.messages, self.tools)
 
 
-def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = False) -> None:
+def envelope_tool_part_cache_markers_supported(
+    provider: str | None, base_url: str | None
+) -> bool:
+    """Whether the envelope-layout route honors part-level markers on role:tool.
+
+    OpenRouter (and Nous Portal, which proxies to it) relocate a
+    ``cache_control`` sitting on a tool message's content part onto the
+    ``tool_result`` block during their OpenAI→Anthropic translation, so the
+    marker is honored there. LiteLLM-style OpenAI-wire proxies instead map
+    content parts verbatim: the part-level marker lands at
+    ``tool_result.content[0]``, which the Anthropic Messages schema forbids —
+    a non-retryable HTTP 400 that kills the whole turn (#89886). On those
+    routes tool messages must not carry part-level markers at all; the
+    breakpoint budget reallocates to the nearest eligible message instead.
+    """
+    from agent.agent_runtime_helpers import _is_litellm_route
+
+    return not _is_litellm_route((provider or "").strip().lower(), base_url or "")
+
+
+def _apply_cache_marker(
+    msg: dict,
+    cache_marker: dict,
+    native_anthropic: bool = False,
+    tool_part_markers: bool = True,
+) -> None:
     """Add cache_control to a single message, handling all format variations."""
     role = msg.get("role", "")
     content = msg.get("content")
@@ -43,6 +68,12 @@ def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = 
         # Native Anthropic layout: top-level marker; the adapter moves it
         # inside the tool_result block.
         msg["cache_control"] = cache_marker
+        return
+
+    if role == "tool" and not tool_part_markers:
+        # Envelope route whose OpenAI→Anthropic translation copies content
+        # parts verbatim (LiteLLM et al.): a part-level marker becomes
+        # tool_result.content[0].cache_control → non-retryable 400 (#89886).
         return
 
     if content is None or content == "":
@@ -63,20 +94,22 @@ def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = 
         if role == "user":
             stable_prefix = find_stable_prefix(content)
             if stable_prefix is not None:
-                # Builder-declared boundary (#81867): the scaffold carries the
-                # breakpoint, the volatile invocation tail rides unmarked so a
-                # changed ticket ID or timestamp no longer invalidates the
-                # whole skill body. Request-local only — the canonical session
-                # message stays a plain string.
-                msg["content"] = [
-                    {
-                        "type": "text",
-                        "text": stable_prefix,
-                        "cache_control": cache_marker,
-                    },
-                    {"type": "text", "text": content[len(stable_prefix):]},
-                ]
-                return
+                suffix = content[len(stable_prefix):]
+                if suffix.strip():
+                    # Builder-declared boundary (#81867): the scaffold carries the
+                    # breakpoint, the volatile invocation tail rides unmarked so a
+                    # changed ticket ID or timestamp no longer invalidates the
+                    # whole skill body. Request-local only — the canonical session
+                    # message stays a plain string.
+                    msg["content"] = [
+                        {
+                            "type": "text",
+                            "text": stable_prefix,
+                            "cache_control": cache_marker,
+                        },
+                        {"type": "text", "text": suffix},
+                    ]
+                    return
         msg["content"] = [
             {"type": "text", "text": content, "cache_control": cache_marker}
         ]
@@ -88,7 +121,9 @@ def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = 
             last["cache_control"] = cache_marker
 
 
-def _can_carry_marker(msg: dict, native_anthropic: bool) -> bool:
+def _can_carry_marker(
+    msg: dict, native_anthropic: bool, tool_part_markers: bool = True
+) -> bool:
     """True if a marker on this message is actually honored by the provider.
 
     On the native Anthropic layout every message works (top-level markers are
@@ -97,9 +132,16 @@ def _can_carry_marker(msg: dict, native_anthropic: bool) -> bool:
     assistant turns that are pure tool_calls) and empty tool messages would
     receive a top-level marker the provider ignores — wasting one of the four
     breakpoints. Skip those so the breakpoints land on messages that count.
+
+    ``tool_part_markers=False`` (LiteLLM-style envelope routes, #89886)
+    additionally excludes ALL role:tool messages: their part-level marker
+    would be forwarded verbatim into ``tool_result.content[]`` and rejected
+    with a non-retryable 400, so the breakpoint must reallocate instead.
     """
     if native_anthropic:
         return True
+    if msg.get("role") == "tool" and not tool_part_markers:
+        return False
     content = msg.get("content")
     if content is None or content == "":
         return False
@@ -132,6 +174,64 @@ ALIBABA_FAMILY_PROVIDERS = frozenset({
 })
 
 
+# --- 1h-tier membership: an ALLOW-list, deliberately minimal ----------------
+#
+# #84733 clamped 1h -> 5m for the whole alibaba/opencode family, reasoning from
+# Alibaba's PUBLISHED Qwen docs. Wire measurement on the opencode-go route
+# contradicts the docs. Controlled run: identical request, only the ttl flag
+# varying, read back after 11 minutes with no intervening call (a read renews
+# the window and would mask expiry):
+#
+#   qwen3.8-max   ttl=1h -> cache_read 2122  SURVIVED
+#   qwen3.8-max   ttl=-  -> cache_read    0  EXPIRED    <- control
+#   glm-5.2       ttl=1h -> cache_read 2092  SURVIVED
+#   minimax-m2.5  ttl=1h -> cache_read    0  EXPIRED
+#
+# Read the two non-qwen rows for what they are: evidence about the ROUTE, not
+# about traffic Hermes sends today. anthropic_prompt_cache_policy currently
+# opts opencode-go in only for qwen models, so glm-5.2 and minimax-m2.5 on
+# that route receive no cache_control marker at all and never reach this
+# clamp in production. They constrain the route-level rule; they are not
+# live paths.
+#
+# Only opencode-go is listed: it is the only route measured. Other opencode
+# routes stay clamped because they were NOT measured, not because they are
+# known bad. opencode-zen returns cache_creation.ephemeral_1h_input_tokens for
+# Claude models, so it is a candidate -- but qwen on zen is unmeasured, so
+# adding the provider wholesale would outrun the evidence.
+#
+# WARNING: opencode-go labels EVERY write `ephemeral_5m_input_tokens` whatever
+# ttl was requested. That label is NOT evidence of the retention window -- it
+# is what made the original docs-based reasoning look confirmed. Verify only
+# with a delayed read past 5 minutes and no intervening call.
+#
+# NOTE: kept separate from ALIBABA_FAMILY_PROVIDERS on purpose. That set also
+# drives the cache-marker-layout OPT-IN in
+# agent_runtime_helpers.anthropic_prompt_cache_policy; narrowing it would
+# silently DISABLE caching for qwen on opencode-go rather than extend its TTL.
+MEASURED_1H_PROVIDERS = frozenset({
+    "opencode-go",
+})
+
+# Models measured to ignore the 1h tier even on a 1h-capable route.
+#
+# SCOPE: consulted only for providers already in MEASURED_1H_PROVIDERS. The
+# measurement was taken on the opencode-go route, so it says nothing about the
+# same model reached some other way -- and MiniMax on its own
+# Anthropic-compatible endpoint IS a separate, cache-eligible route
+# (anthropic_prompt_cache_policy opts it in by provider id / host match).
+# Checking this set globally would have silently regressed that unrelated
+# route's configured 1h to 5m off the back of an opencode-go observation.
+NO_1H_TIER_MODELS = frozenset({
+    "minimax-m2.5",
+})
+
+
+def _flat_model(model: str) -> str:
+    """Bare model id, tolerating aggregator prefixes (``vendor/model``)."""
+    return (model or "").strip().rsplit("/", 1)[-1].lower()
+
+
 def is_qwen_model(model: str) -> bool:
     """True when ``model`` names a Qwen-family model (case-insensitive).
 
@@ -154,12 +254,23 @@ def effective_cache_ttl(
     (renewed on hit); the Anthropic ``1h`` tier is ignored/rejected there,
     so a configured ``1h`` regresses to ``5m`` instead of shipping a marker
     the provider drops and creating a false 1h-cache expectation (#84733).
+    Exception: routes in ``MEASURED_1H_PROVIDERS`` were wire-measured to
+    honour the tier (delayed read past 5 minutes) and keep ``1h`` — minus
+    any model in ``NO_1H_TIER_MODELS`` measured to ignore it on that route.
     All other caching routes keep the requested TTL.
 
     ``None`` (caching active with no explicit tier) resolves to ``5m``.
     """
     if ttl != "1h":
         return ttl or "5m"
+    if (provider or "").lower() in MEASURED_1H_PROVIDERS:
+        # Route measured to honour the tier -- checked BEFORE the generic
+        # is_qwen_model clamp below, which would otherwise swallow every Qwen
+        # model on it. Within the route, a model measured to ignore the tier
+        # still wins; the denial stays nested here so an opencode-go
+        # observation cannot leak out and reclamp the same model on an
+        # unrelated route.
+        return "5m" if _flat_model(model) in NO_1H_TIER_MODELS else "1h"
     if is_qwen_model(model):
         return "5m"
     if (provider or "").lower() in ALIBABA_FAMILY_PROVIDERS:
@@ -204,7 +315,7 @@ def _apply_system_cache_markers(
         and content.startswith(static_system_prefix)
     ):
         suffix = content[len(static_system_prefix):]
-        if suffix:
+        if suffix.strip():
             suffix_part: dict = {"type": "text", "text": suffix}
             if mark_suffix:
                 suffix_part["cache_control"] = cache_marker
@@ -217,7 +328,7 @@ def _apply_system_cache_markers(
                 suffix_part,
             ]
             return 2 if mark_suffix else 1
-        # Empty suffix: the stored prompt IS the static prefix. Mark it as
+        # Empty/whitespace-only suffix: the stored prompt IS the static prefix. Mark it as
         # one whole block — a [marked-prefix, ""] split would put an empty
         # text block on the wire (HTTP 400 on native Anthropic).
         _apply_cache_marker(message, cache_marker, native_anthropic=native_anthropic)
@@ -390,8 +501,14 @@ def build_prompt_cache_plan(
     native_anthropic: bool = False,
     static_system_prefix: str | None = None,
     direct_native_tool_cache: bool = False,
+    tool_part_markers: bool = True,
 ) -> PromptCachePlan:
-    """Build isolated cache sections for one resolved request destination."""
+    """Build isolated cache sections for one resolved request destination.
+
+    ``tool_part_markers=False`` (LiteLLM-style envelope routes, #89886)
+    keeps ``cache_control`` off role:tool content parts; breakpoints
+    reallocate to the nearest eligible non-tool message.
+    """
     messages = copy.deepcopy(api_messages or [])
     strip_anthropic_cache_control(messages)
     planned_tools = strip_anthropic_tool_cache_control(tools)
@@ -402,6 +519,7 @@ def build_prompt_cache_plan(
             cache_ttl=cache_ttl,
             native_anthropic=native_anthropic,
             static_system_prefix=static_system_prefix,
+            tool_part_markers=tool_part_markers,
         )
         return PromptCachePlan(messages=planned_messages, tools=planned_tools)
 
@@ -436,6 +554,7 @@ def apply_anthropic_cache_control(
     cache_ttl: str = "5m",
     native_anthropic: bool = False,
     static_system_prefix: str | None = None,
+    tool_part_markers: bool = True,
 ) -> List[Dict[str, Any]]:
     """Apply Anthropic cache-control markers to API messages.
 
@@ -452,6 +571,10 @@ def apply_anthropic_cache_control(
     cost — a shallow top-level copy suffices because
     :func:`strip_anthropic_cache_control` is copy-on-write on content parts —
     and the rest of the copy-on-write contract is unchanged (#90971).
+
+    ``tool_part_markers=False`` (LiteLLM-style envelope routes, #89886)
+    keeps markers off role:tool messages entirely; the breakpoint budget
+    reallocates to the nearest eligible non-tool message.
 
     Returns:
         Shallow copy of message list with selective deep copies of modified messages.
@@ -492,10 +615,19 @@ def apply_anthropic_cache_control(
         i
         for i in range(len(messages))
         if messages[i].get("role") != "system"
-        and _can_carry_marker(messages[i], native_anthropic=native_anthropic)
+        and _can_carry_marker(
+            messages[i],
+            native_anthropic=native_anthropic,
+            tool_part_markers=tool_part_markers,
+        )
     ]
     for idx in non_sys[-remaining:]:
         messages[idx] = copy.deepcopy(messages[idx])
-        _apply_cache_marker(messages[idx], marker, native_anthropic=native_anthropic)
+        _apply_cache_marker(
+            messages[idx],
+            marker,
+            native_anthropic=native_anthropic,
+            tool_part_markers=tool_part_markers,
+        )
 
     return messages

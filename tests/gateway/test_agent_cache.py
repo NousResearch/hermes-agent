@@ -69,6 +69,42 @@ class TestAgentConfigSignature:
         sig2 = GatewayRunner._agent_config_signature("claude-sonnet-4", rt2, ["hermes-telegram"], "")
         assert sig1 != sig2
 
+    def test_capability_change_different_signature(self):
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "sk-test12345678", "base_url": "https://proxy.example/v1", "provider": "custom"}
+        native = {**runtime, "capabilities": {"openai_native_compaction": True}}
+        plain = {**runtime, "capabilities": {"openai_native_compaction": False}}
+        assert GatewayRunner._agent_config_signature("gpt-5.6", native, [], "") != (
+            GatewayRunner._agent_config_signature("gpt-5.6", plain, [], "")
+        )
+
+
+    def test_default_gateway_runtime_forwards_filtered_capabilities(self, monkeypatch):
+        """Configured provider capabilities must reach a newly created gateway agent."""
+        from gateway.run import _resolve_runtime_agent_kwargs
+        from hermes_cli import runtime_provider
+
+        monkeypatch.setattr(
+            runtime_provider,
+            "resolve_runtime_provider",
+            lambda: {
+                "api_key": "test-key",
+                "base_url": "https://trusted-proxy.example/v1",
+                "provider": "custom",
+                "requested_provider": "custom:trusted-proxy",
+                "api_mode": "responses",
+                "capabilities": {
+                    "openai_native_compaction": True,
+                    "ignore-me": "not-a-bool",
+                },
+            },
+        )
+        monkeypatch.setattr(runtime_provider, "_get_model_config", lambda: {})
+
+        runtime = _resolve_runtime_agent_kwargs()
+
+        assert runtime["capabilities"] == {"openai_native_compaction": True}
 
     # ---------------------------------------------------------------
     # cache_keys (compression/context config cache-busting)
@@ -120,6 +156,13 @@ class TestExtractCacheBustingConfig:
                     "enabled": False,
                     "threshold": 0.6,
                     "codex_gpt55_autoraise": False,
+                    "codex_responses_native": True,
+                    "codex_responses_compact_threshold": 120_000,
+                    "in_place": False,
+                    "checkpoint_required": True,
+                    "micro_compact": True,
+                    "micro_compact_every_n_turns": 2,
+                    "micro_compact_defrag_threshold_tokens": 4000,
                     "target_ratio": 0.3,
                     "protect_last_n": 25,
                     "codex_app_server_auto": "hermes",
@@ -130,6 +173,13 @@ class TestExtractCacheBustingConfig:
         assert out["compression.enabled"] is False
         assert out["compression.threshold"] == 0.6
         assert out["compression.codex_gpt55_autoraise"] is False
+        assert out["compression.codex_responses_native"] is True
+        assert out["compression.codex_responses_compact_threshold"] == 120_000
+        assert out["compression.in_place"] is False
+        assert out["compression.checkpoint_required"] is True
+        assert out["compression.micro_compact"] is True
+        assert out["compression.micro_compact_every_n_turns"] == 2
+        assert out["compression.micro_compact_defrag_threshold_tokens"] == 4000
         assert out["compression.target_ratio"] == 0.3
         assert out["compression.protect_last_n"] == 25
         assert out["compression.codex_app_server_auto"] == "hermes"

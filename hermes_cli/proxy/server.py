@@ -3,10 +3,18 @@
 Listens on ``http://<host>:<port>/v1/<path>`` and forwards each request to
 ``<upstream-base-url>/<path>`` with the client's ``Authorization`` header
 replaced by a freshly-resolved bearer from the configured adapter. The
-response is streamed back unmodified, preserving SSE.
+response body is streamed through unchanged (SSE deltas preserved).
 
-The server is intentionally minimal: it does NOT mediate, log, transform,
-or rewrite request/response bodies. It's a credential-attaching forwarder.
+One narrow SSE compatibility shim applies after a *clean* upstream EOF:
+when a ``text/event-stream`` response carries a terminal ``finish_reason``
+or ``lastOne: true`` but omits the OpenAI ``data: [DONE]`` sentinel, the
+proxy appends a single ``[DONE]`` frame. It never rewrites earlier frames,
+never duplicates an upstream ``[DONE]``, and never synthesizes ``[DONE]``
+after an error event or a mid-stream interrupt (see
+:mod:`hermes_cli.proxy.sse_done`, issue #90848).
+
+Otherwise the server does not mediate, log, or rewrite request/response
+bodies — it is a credential-attaching forwarder.
 """
 
 from __future__ import annotations
@@ -26,6 +34,11 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
 
 from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
+from hermes_cli.proxy.sse_done import (
+    DONE_SSE_FRAME,
+    SseDoneTracker,
+    content_type_is_sse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,11 +112,17 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
     app[_adapter_key] = adapter
 
     async def handle_health(request: "web.Request") -> "web.Response":
+        # ``is_authenticated`` is documented as cheap (see UpstreamAdapter),
+        # but both shipped adapters read auth state off disk, and the Nous one
+        # does it under ``_auth_store_lock()`` — 15s cross-process. Offload it
+        # so a healthcheck poll can never freeze the loop behind a lock held by
+        # a concurrent ``hermes auth`` command.
+        authenticated = await asyncio.to_thread(adapter.is_authenticated)
         return web.json_response(
             {
                 "status": "ok",
                 "upstream": adapter.display_name,
-                "authenticated": adapter.is_authenticated(),
+                "authenticated": authenticated,
             }
         )
 
@@ -121,8 +140,14 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
                 code="path_not_allowed",
             )
 
+        # ``UpstreamAdapter.get_credential`` is synchronous and hard-blocking:
+        # the Nous adapter takes ``_auth_store_lock()`` (a cross-process lock
+        # with a 15s timeout), reads auth.json, and may perform a token-refresh
+        # POST, taking the lock a second time to persist a terminal error. Run
+        # it on a worker thread so a refresh or a contended lock cannot freeze
+        # every other in-flight streaming completion on this single loop.
         try:
-            cred = adapter.get_credential()
+            cred = await asyncio.to_thread(adapter.get_credential)
         except Exception as exc:
             logger.warning("proxy: credential resolution failed: %s", exc)
             return _json_error(401, str(exc), code="upstream_auth_failed")
@@ -198,8 +223,16 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         session = session_or_response
 
         if upstream_resp.status in {401, 429}:
+            # Third and last blocking method on the adapter contract, and the
+            # most expensive: the Nous adapter routes this straight into
+            # ``_get_credential(force_refresh=True)``, so the refresh POST that
+            # ``get_credential`` only performs near expiry is unconditional
+            # here — under the same 15s cross-process ``_auth_store_lock()``.
+            # The xAI adapter loads its key pool off disk and rotates it under
+            # ``self._lock``. Offload it for the same reason as the two above.
             try:
-                retry_cred = adapter.get_retry_credential(
+                retry_cred = await asyncio.to_thread(
+                    adapter.get_retry_credential,
                     failed_credential=cred,
                     status_code=upstream_resp.status,
                 )
@@ -222,11 +255,26 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         )
         await resp.prepare(request)
 
+        # Track SSE terminal markers so we can append a missing [DONE]
+        # after clean EOF without rewriting any earlier frames.
+        done_tracker: Optional[SseDoneTracker] = None
+        if content_type_is_sse(upstream_resp.headers):
+            done_tracker = SseDoneTracker()
+
         try:
             async for chunk in upstream_resp.content.iter_any():
                 if chunk:
+                    if done_tracker is not None:
+                        done_tracker.feed(chunk)
                     await resp.write(chunk)
-        except (aiohttp.ClientError, asyncio.CancelledError) as exc:
+            if done_tracker is not None and done_tracker.should_append_done():
+                try:
+                    await resp.write(DONE_SSE_FRAME)
+                except Exception as exc:  # client hung up at EOF — harmless
+                    logger.debug("proxy: DONE append skipped: %s", exc)
+        except (aiohttp.ClientError, asyncio.CancelledError, OSError) as exc:
+            if done_tracker is not None:
+                done_tracker.mark_interrupted()
             logger.warning("proxy: streaming interrupted: %s", exc)
         finally:
             upstream_resp.release()

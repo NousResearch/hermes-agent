@@ -23,6 +23,7 @@ data, and derived FTS indexes are rebuilt from scratch.
 
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 import sqlite3
@@ -30,6 +31,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 # Hermes session ids are timestamps: 20260812_135332_ab12cd. This is the
 # strongest sentinel available for classifying schema-less rows.
@@ -55,6 +58,11 @@ SESSION_MODEL_USAGE_NFIELD = 18
 _EPOCH_LOW = 1_000_000_000.0   # 2001
 _EPOCH_HIGH = 4_000_000_000.0  # 2096
 
+# Title prefix of every session row this lane synthesises (legacy-layout rows
+# and stubbed parents). The recovery verifier keys on it to tell synthesised
+# rows from positionally mapped ones.
+STUB_TITLE_PREFIX = "[best-effort recovered"
+
 SQLITE3_CLI_GUIDANCE = (
     "A last-resort page-level salvage is available when a `.recover`-capable "
     "`sqlite3` command-line shell is installed: its `.recover` command can "
@@ -67,25 +75,122 @@ SQLITE3_CLI_GUIDANCE = (
     "with --allow-partial."
 )
 
+# SQLite's WAL-reset bug (https://sqlite.org/wal.html#walresetbug) lets a
+# fresh opener unlink a live WAL/SHM sidecar pair and split the database into
+# two concurrent generations whose acknowledged writes can silently vanish.
+# It is real in CLI builds up to 3.51.2; fixed in 3.51.3+ with backports
+# 3.50.7 and 3.44.6 — the same version gate hermes_state applies to the
+# embedded library (#69784). The system `sqlite3` CLI on Debian/Ubuntu is
+# routinely in the vulnerable band (e.g. 3.45.1), and #100368's forensics
+# caught exactly this shell converting a live Hermes state.db into two
+# generations. A salvage shell must therefore be version-gated, not just
+# capability-gated, before it is pointed at (a copy of) a Hermes database.
+#
+# The predicate lives in hermes_cli.sqlite_runtime (stdlib-only, shared with
+# the installer/update gates) so the embedded runtime and the salvage shell
+# can never disagree about which versions are safe.
+from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable as _wal_reset_vulnerable  # noqa: E502
+
+_WAL_RESET_VULNERABLE_GUIDANCE = (
+    "salvage against a Hermes database with the WAL-reset bug "
+    "(https://sqlite.org/wal.html#walresetbug, fixed in 3.51.3+ / backports "
+    "3.50.7 / 3.44.6; the vulnerable fresh-opener can unlink a live WAL/SHM "
+    "pair and split the database into two generations, losing acknowledged "
+    "writes — #100368). Install a fixed sqlite3 CLI (3.51.3+, e.g. `brew "
+    "install sqlite` or the precompiled sqlite-tools from sqlite.org)"
+)
+
 
 class LostAndFoundError(RuntimeError):
     """Raised when the CLI .recover pass cannot produce a usable database."""
 
 
-def find_sqlite3_cli() -> Optional[str]:
-    """Return a ``.recover``-capable sqlite3 CLI path, or None.
+def _parse_sqlite3_cli_version(binary: str) -> Optional[tuple[int, int, int]]:
+    """Parse the reporting version of the sqlite3 CLI at *binary*.
 
-    PATH presence is not enough: distro builds (e.g. Ubuntu's) can ship a
-    sqlite3 shell compiled without the ``sqlite_dbpage`` virtual table that
-    ``.recover`` requires — those fail every recovery with
-    ``no such table: sqlite_dbpage``. Probe capability on a scratch DB once
-    instead of discovering it mid-recovery.
+    Returns ``None`` when the CLI cannot be executed or its version line
+    cannot be understood (older shells print the version only in
+    interactive mode; the modern ``--version`` flag covers every build in
+    the supported range).
     """
+    try:
+        probe = subprocess.run(
+            [binary, "--version"],
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if probe.returncode != 0:
+        return None
+    match = re.search(rb"(\d+)\.(\d+)\.(\d+)", probe.stdout)
+    if match is None:
+        return None
+    return tuple(int(part) for part in match.groups())
 
+
+_last_cli_refusal: dict[str, Any] = {}
+
+
+def find_sqlite3_cli_refusal() -> dict[str, Any]:
+    """Why the last :func:`find_sqlite3_cli` call in this process refused.
+
+    ``{"reason": ...}`` with ``reason`` in ``missing``, ``no_dbpage`` (the
+    shell cannot run ``.recover``), or ``wal_reset_vulnerable``; empty when
+    the last probe found a usable shell or never ran.
+    """
+    return dict(_last_cli_refusal)
+
+
+def find_sqlite3_cli() -> Optional[str]:
+    """Return a salvage-safe ``.recover``-capable sqlite3 CLI path, or None.
+
+    PATH presence is not enough, and neither is `.recover` support alone:
+
+    1. Distro builds (e.g. Ubuntu's) can ship a sqlite3 shell compiled
+       without the ``sqlite_dbpage`` virtual table that ``.recover``
+       requires — those fail every recovery with ``no such table:
+       sqlite_dbpage``. Capability is probed on a scratch DB once.
+    2. A `.recover`-capable CLI can still carry the WAL-reset opener bug
+       (fixed 3.51.3+ / backports 3.50.7 / 3.44.6). The salvage lane runs
+       the CLI against a *snapshot copy* of the source, so it cannot hit
+       the live sidecars itself; but the same binary is what operators
+       reach for when following the old guidance, and refusing it here
+       keeps the vulnerable shells out of the documented workflow
+       entirely. Probe the version once.
+
+    Refusals are recorded for :func:`find_sqlite3_cli_refusal` so callers
+    can explain exactly what to install instead of a generic "not found".
+    """
+    global _last_cli_refusal
+    _last_cli_refusal = {}
     binary = shutil.which("sqlite3")
     if binary is None:
+        _last_cli_refusal = {"reason": "missing"}
         return None
-    return binary if _cli_supports_recover(binary) else None
+    if not _cli_supports_recover(binary):
+        _last_cli_refusal = {"reason": "no_dbpage", "binary": binary}
+        return None
+    version = _parse_sqlite3_cli_version(binary)
+    if version is not None and _wal_reset_vulnerable(version):
+        version_str = ".".join(str(part) for part in version)
+        logger.warning(
+            "sqlite3 CLI %s reports version %s, which still carries the "
+            "WAL-reset opener bug; refusing to use it for salvage",
+            binary,
+            version_str,
+        )
+        _last_cli_refusal = {
+            "reason": "wal_reset_vulnerable",
+            "binary": binary,
+            "version": version_str,
+            "detail": (
+                f"reports version {version_str}, which has "
+                + _WAL_RESET_VULNERABLE_GUIDANCE
+            ),
+        }
+        return None
+    return binary
 
 
 def _cli_supports_recover(binary: str) -> bool:
@@ -325,20 +430,25 @@ def _copy_direct_tables(
 ) -> dict[str, int]:
     """Copy rows .recover managed to attribute to real canonical tables."""
 
+    # Lazy import: session_recovery imports this module inside a function, so
+    # a module-level import here would be circular.
+    from hermes_cli.session_recovery import (
+        _AUXILIARY_TABLE_SCHEMAS,
+        _AUXILIARY_TABLES,
+        _CANONICAL_TABLES,
+    )
+
     copied: dict[str, int] = {}
-    for table in (
-        "system_prompts",
-        "sessions",
-        "messages",
-        "session_model_usage",
-        "compression_locks",
-        "gateway_routing",
-        "async_delegations",
-    ):
+    for table in (*_CANONICAL_TABLES, *_AUXILIARY_TABLES):
         source_columns = _table_columns(lf_conn, table)
         if not source_columns:
             continue
         dest_columns = _table_columns(dest, table)
+        if not dest_columns and table in _AUXILIARY_TABLE_SCHEMAS:
+            # Lazily-created gateway table: base SessionDB never made it on
+            # the fresh destination, so create it before copying.
+            _AUXILIARY_TABLE_SCHEMAS[table](dest)
+            dest_columns = _table_columns(dest, table)
         columns = [c for c in dest_columns if c in source_columns]
         if not columns:
             continue
@@ -451,7 +561,7 @@ def map_lost_and_found_rows(
                                     cells[1] if _looks_like_source(cells[1])
                                     else "recovered",
                                     _heuristic_started_at(cells),
-                                    "[best-effort recovered] legacy session "
+                                    f"{STUB_TITLE_PREFIX}] legacy session "
                                     "row (layout unknown)",
                                 ),
                             ).rowcount
@@ -520,7 +630,7 @@ def stub_missing_parent_sessions(dest: sqlite3.Connection) -> dict[str, Any]:
         for session_id, info in sorted(orphan_ids.items()):
             while True:
                 title = (
-                    f"[best-effort recovered {sequence}] session metadata "
+                    f"{STUB_TITLE_PREFIX} {sequence}] session metadata "
                     "was unreadable"
                 )
                 sequence += 1

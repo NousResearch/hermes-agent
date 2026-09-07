@@ -277,8 +277,12 @@ def _ns(**kw):
 @pytest.mark.windows_only
 def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, capsys):
     """The updater chain's contract: a rebuild whose Hermes.exe cannot launch
-    must exit nonzero (so hermes-setup's retry-once kicks in) and must restore
-    the previous working build instead of leaving the corrupt one.
+    must exit nonzero (so hermes-setup's retry-once kicks in) and must leave
+    the previous working build in place instead of installing the corrupt one.
+
+    Stage-and-swap (#86443): the pack lands in a staging dir; the integrity
+    gate runs on the STAGED exe and a failure discards staging without ever
+    touching the live ``win-unpacked`` tree.
 
     ``windows_only``: the whole chain is Windows-gated — ``win-unpacked``
     candidate discovery in ``_desktop_packaged_executable`` and the integrity
@@ -290,12 +294,20 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
     (desktop_dir / "package.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
 
-    exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
-    make_pe(exe, PE_AMD64, truncate_to=0x300)  # what the failed pack produced
-    make_pe(desktop_dir / "release" / "win-unpacked.bak" / "Hermes.exe", PE_AMD64)
+    live_exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
+    make_pe(live_exe, PE_AMD64)  # the previous, working app
+    live_bytes = live_exe.read_bytes()
 
     install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
-    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
+
+    def pack_into_staging(cmd, *args, **kwargs):
+        # electron-builder honours -c.directories.output=<staging>; emulate a
+        # pack that "succeeds" but writes a truncated exe there.
+        out_flag = next((a for a in cmd if str(a).startswith("-c.directories.output=")), None)
+        assert out_flag is not None, "pack must be redirected into a staging dir"
+        staging = Path(str(out_flag).split("=", 1)[1])
+        make_pe(staging / "win-unpacked" / "Hermes.exe", PE_AMD64, truncate_to=0x300)
+        return subprocess.CompletedProcess(list(cmd), 0)
 
     with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main._resolve_node_runtime_npm", return_value="npm.cmd"), \
@@ -306,16 +318,17 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
          patch("hermes_cli.main._desktop_stamp_path", return_value=tmp_path / "stamp.json"), \
          patch("hermes_cli.main._write_desktop_build_stamp") as mock_stamp, \
          patch("hermes_cli.main._windows_native_machine", return_value="AMD64"), \
-         patch("hermes_cli.main.subprocess.run", return_value=pack_ok), \
+         patch("hermes_cli.main.subprocess.run", side_effect=pack_into_staging), \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())
 
     assert exc.value.code == 1
-    # The previous working exe was restored...
-    assert cli_main._parse_pe_machine(exe) == PE_AMD64
+    # The previous working exe was never touched...
+    assert live_exe.read_bytes() == live_bytes
+    assert cli_main._parse_pe_machine(live_exe) == PE_AMD64
+    # ...the staged corrupt tree was discarded...
+    assert not list((desktop_dir / "release").glob(".staging-*"))
     # ...and the poisoned build was never stamped as good.
     mock_stamp.assert_not_called()
     out = capsys.readouterr().out
     assert "integrity check" in out
-
-

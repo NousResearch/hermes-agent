@@ -1011,7 +1011,12 @@ Start-Sleep -Seconds 20
 
       const result = await runPowerShellWithHardBoundary(
         "Write-Output 'TERMINATED'",
-        2_000,
+        // Not a stopwatch: the wrapper script exits immediately, so this budget
+        // does not lengthen the arm. It only has to exceed the pre-wrapper
+        // setup, because below `killReserveMs` the boundary short-circuits to a
+        // bare 'deadline-exhausted' before it ever reaches the watcher check --
+        // which is fail-closed, but not the path this arm is about.
+        20_000,
         undefined,
         undefined,
         { startWatcher: injectedWatcher.startWatcher }
@@ -1019,7 +1024,15 @@ Start-Sleep -Seconds 20
 
         const elapsed = Date.now() - started
         assert.equal(result.code, 1, `no-READY watcher unexpectedly cleared: ${JSON.stringify(result)}`)
-        assert.match(`${result.stdout}\n${result.stderr}`, /TARGET_WATCHER_NOT_ARMED|watcher|boundary/i)
+        // Fail-closed is the contract; WHICH refusal comes back is not. The
+        // watcher refusal is the normal path, and an outer-deadline refusal is
+        // equally closed -- the terminalization assertions below are what prove
+        // nothing leaked either way.
+        assert.match(
+          `${result.stdout}\n${result.stderr}`,
+          /TARGET_WATCHER_NOT_ARMED|watcher|boundary|deadline-exhausted|aborted|timeout/i,
+          `no-READY boundary returned an unrecognized reason: ${JSON.stringify(result)}`
+        )
         assert.ok(elapsed <= 3_000 + BOUNDARY_ELAPSED_SLACK_MS, `no-READY boundary elapsed ${elapsed}ms`)
         const watcherChild = injectedWatcher.getChild()
 

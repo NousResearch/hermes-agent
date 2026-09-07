@@ -10,6 +10,7 @@ Symbols that tests patch on ``run_agent.*`` (``OpenAI``, ``get_tool_definitions`
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import sys
@@ -317,6 +318,17 @@ def _normalize_run_budget_seconds(value) -> Optional[float]:
     return seconds if seconds > 0 else None  # NaN compares False → None
 
 
+def _normalize_budget_warning_ratio(value) -> Optional[float]:
+    """A finite ratio strictly between zero and one, or None (feature off)."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        ratio = float(value)
+    except (TypeError, ValueError):
+        return None
+    return ratio if math.isfinite(ratio) and 0 < ratio < 1 else None
+
+
 def _refuse_checkpoint_required_on_codex_app_server(
     checkpoint_required: bool, api_mode: Optional[str]
 ) -> None:
@@ -536,8 +548,9 @@ _CONTROL_STATE: Dict[str, Any] = {
 
 # Per-turn bookkeeping: budgets, activity tracking, rate-limit/credits telemetry.
 _TURN_STATE: Dict[str, Any] = {
-    # Iteration budget: notify the LLM only on exhaustion (one message, one grace call, then
-    # a forced summary) — intermediate pressure warnings made models give up early.
+    # Intermediate pressure warnings made models give up early; ordinary conversations
+    # remain opt-in. Dispatcher workers receive a bounded completion checkpoint.
+    "_iteration_budget_warning_injected": False,
     "_budget_exhausted_injected": False,
     "_budget_grace_call": False,
     "_run_budget_started_at": None,  # set by turn_context.prepare_turn when a budget is active
@@ -1307,6 +1320,9 @@ def _apply_agent_section(agent, _agent_cfg):
         agent._skill_nudge_interval = int(_agent_cfg.get("skills", {}).get("creation_nudge_interval", 10))
 
     _agent_section = _cfg_dict(_agent_cfg, "agent")
+    agent.budget_warning_ratio = _normalize_budget_warning_ratio(
+        _agent_section.get("budget_warning_ratio")
+    )
     # Both: "auto" (model-list match), true, false, or list of model substrings; independent
     # of each other (gates in agent/system_prompt.py).
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")

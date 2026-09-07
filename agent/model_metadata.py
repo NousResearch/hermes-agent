@@ -416,8 +416,9 @@ def _normalize_base_url(base_url: str) -> str:
     return (base_url or "").strip().rstrip("/")
 
 
-def _auth_headers(api_key: str = "") -> Dict[str, str]:
-    token = str(api_key or "").strip()
+def _auth_headers(api_key: object = "") -> Dict[str, str]:
+    from agent.command_token_source import materialize_probe_api_key
+    token = materialize_probe_api_key(api_key)
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
@@ -919,7 +920,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
         return {}
     alternate = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized + "/v1"
     candidates = [normalized] + ([alternate] if alternate != normalized else [])
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    headers = _auth_headers(api_key)
     verify = _resolve_requests_verify(normalized)
     last_error: Optional[Exception] = None
     if local:

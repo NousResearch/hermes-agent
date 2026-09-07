@@ -104,7 +104,9 @@ def _runtime_main(key: str) -> str:
     try:
         from agent.auxiliary_client import _runtime_main_value
 
-        return _clean_str(_runtime_main_value(key))
+        from agent.command_token_source import materialize_probe_api_key
+        value = _runtime_main_value(key)
+        return materialize_probe_api_key(value) if key == "api_key" else _clean_str(value)
     except Exception:
         return ""
 

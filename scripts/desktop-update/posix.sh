@@ -72,7 +72,7 @@ RESULT="$HERMES_HOME/.hermes-update-result.json"
 STATUS="${TMPDIR:-/tmp}/hermes-update-status.$$"
 STARTED_AT="$(date +%s)"  # the shim's elapsed clock; see serve-ui.py
 
-UI_SERVER_PID="" UI_BROWSER_PID="" FINAL_CODE=1
+UI_SERVER_PID="" UI_BROWSER_PID="" UI_PROFILE_DIR="" FINAL_CODE=1
 FINAL_MSG="update did not complete"
 DONE_NOTE=""  # set when the update succeeded but the app will NOT reopen itself
 
@@ -267,8 +267,11 @@ start_ui() {
   [ -n "$port" ] || { kill -9 "$UI_SERVER_PID" 2>/dev/null; UI_SERVER_PID=""; return; }
 
   # Throwaway profile: new window/process we own; user's browser untouched.
+  # stop_ui removes it once the browser has exited — before that, every
+  # update parked another full Chromium profile (~117MB) in TMPDIR (#104350).
+  UI_PROFILE_DIR="${TMPDIR:-/tmp}/hermes-update-ui-$$"
   "$py" -c 'import os, signal, sys; os.setsid(); signal.signal(signal.SIGTERM, signal.SIG_DFL); os.execv(sys.argv[1], sys.argv[1:])' \
-    "$browser" --app="http://127.0.0.1:$port/" --user-data-dir="${TMPDIR:-/tmp}/hermes-update-ui-$$" \
+    "$browser" --app="http://127.0.0.1:$port/" --user-data-dir="$UI_PROFILE_DIR" \
     --no-first-run --no-default-browser-check --window-size=280,320 >/dev/null 2>&1 &
   UI_BROWSER_PID=$!
   log "shim: app window on 127.0.0.1:$port"
@@ -289,6 +292,13 @@ stop_ui() { # error/manual outcomes keep the window up briefly so a watching
   fi
   if [ -n "$UI_BROWSER_PID" ]; then
     { kill "$UI_BROWSER_PID" && wait "$UI_BROWSER_PID"; } 2>/dev/null
+  fi
+  if [ -n "$UI_PROFILE_DIR" ]; then
+    # The throwaway profile from start_ui (#104350). Best-effort: a browser
+    # that survived TERM keeps whatever it manages to recreate, exactly as
+    # before — but the clean-exit path no longer leaks ~117MB per update.
+    rm -rf "$UI_PROFILE_DIR" 2>/dev/null || true
+    UI_PROFILE_DIR=""
   fi
   UI_SERVER_PID="" UI_BROWSER_PID=""
 }

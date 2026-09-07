@@ -421,15 +421,15 @@ def _append_unconfigured_rows(
         if entry.slug.lower() == cur:
             saved_model = "" if _model_requires_account_discovery(entry.slug, cur_model) else cur_model
             auth_type, key_env = _provider_auth_hint(entry.slug)
-            warning = (
-                f"Configured provider missing usable credentials; paste {key_env} to reactivate. "
-                "Showing the saved model only."
-                if auth_type == "api_key" and key_env
-                else "Configured provider is not authenticated; run `hermes model` to reactivate. "
-                "Showing the saved model only."
+            tail = (
+                "Astra requires successful account-scoped model discovery."
+                if cur_model and not saved_model else "Showing the saved model only."
             )
-            if cur_model and not saved_model:
-                warning = warning.replace("Showing the saved model only.", "Astra requires successful account-scoped model discovery.")
+            warning = (
+                f"Configured provider missing usable credentials; paste {key_env} to reactivate. {tail}"
+                if auth_type == "api_key" and key_env
+                else f"Configured provider is not authenticated; run `hermes model` to reactivate. {tail}"
+            )
             extras.append(_canonical_row(
                 entry, cur, models=[saved_model] if saved_model else [], total_models=1 if saved_model else 0,
                 source="configured-current", authenticated=False, auth_type=auth_type, key_env=key_env,

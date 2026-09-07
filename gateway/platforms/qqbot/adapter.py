@@ -1110,8 +1110,13 @@ class QQAdapter(BasePlatformAdapter):
         self._unlink_quiet(src_path)
         return result
 
+    # SILK magic: plain "#!SILK_V3"/"#!SILK" plus the Tencent-prefixed
+    # "\x02#!SILK_V3" header that QQ voice notes actually carry. pilk treats any
+    # 0x02-prefixed file as Tencent format (it reads 1 byte then seeks 10), so a
+    # single b"\x02" prefix covers both the real "\x02#" header and the legacy
+    # "\x02!" marker.
     _MAGIC_EXTS = (
-        (b"#!SILK", ".silk"), (b"\x02!", ".silk"), (b"RIFF", ".wav"), (b"fLaC", ".flac"),
+        (b"#!SILK", ".silk"), (b"\x02", ".silk"), (b"RIFF", ".wav"), (b"fLaC", ".flac"),
         (b"\xff\xfb", ".mp3"), (b"\xff\xf3", ".mp3"), (b"\xff\xf2", ".mp3"),
         (b"\x30\x26\xb2\x75", ".ogg"), (b"\x4f\x67\x67\x53", ".ogg"))
 

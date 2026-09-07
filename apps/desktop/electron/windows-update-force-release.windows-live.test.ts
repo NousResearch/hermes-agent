@@ -496,15 +496,22 @@ describe('target watcher transport boundary (live)', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-watcher-bridge-'))
     const proofPath = path.join(tmp, 'powershell.pid')
     const readyPath = path.join(tmp, 'ready')
+    const releasePath = path.join(tmp, 'release')
     const nonce = randomBytes(16).toString('hex')
     const ps = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
 
+    // The child stays alive on a GATE, not a 4 s sleep. The test has to
+    // snapshot the tree while this process lives, and on a loaded host a
+    // stopwatch loses that window (the arm then failed with 'bridge identity
+    // missing from snapshot').
     const powershellScript = String.raw`
 $proofPath = [Environment]::GetEnvironmentVariable('HERMES_TEST_BRIDGE_PROOF_PATH')
 $readyPath = [Environment]::GetEnvironmentVariable('HERMES_TEST_BRIDGE_READY_PATH')
+$releasePath = [Environment]::GetEnvironmentVariable('HERMES_TEST_BRIDGE_RELEASE_PATH')
 $nonce = [Environment]::GetEnvironmentVariable('HERMES_TEST_BRIDGE_NONCE')
 [IO.File]::WriteAllText($proofPath, [string]$PID)
-Start-Sleep -Milliseconds 4000
+$deadline = (Get-Date).AddSeconds(180)
+while (-not (Test-Path -LiteralPath $releasePath) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 25 }
 [IO.File]::WriteAllText($readyPath, 'READY:' + $nonce)
 exit 17
 `.trim()
@@ -522,6 +529,7 @@ exit 17
         HERMES_TERMINATE_WATCHER_ENCODED_COMMAND: encodedCommand,
         HERMES_TEST_BRIDGE_PROOF_PATH: proofPath,
         HERMES_TEST_BRIDGE_READY_PATH: readyPath,
+        HERMES_TEST_BRIDGE_RELEASE_PATH: releasePath,
         HERMES_TEST_BRIDGE_NONCE: nonce
       }
     })
@@ -544,7 +552,16 @@ exit 17
       assert.equal(fs.existsSync(proofPath), true, 'bridge never executed its PowerShell child')
       const powershellPid = Number(fs.readFileSync(proofPath, 'utf8').trim())
       assert.ok(Number.isInteger(powershellPid) && powershellPid > 0, 'PowerShell proof PID invalid')
-      const tree = await snapshotProcessTreeIdentities(bridgePid as number, { timeoutMs: 2_000 })
+      // Poll: a snapshot taken microseconds after spawn can legitimately miss
+      // the bridge, and a 2 s snapshot budget is not a budget on a loaded host.
+      let tree = await snapshotProcessTreeIdentities(bridgePid as number, { timeoutMs: IDENTITY_PROBE_TIMEOUT_MS })
+      const snapshotDeadline = Date.now() + LIVE_STATE_TIMEOUT_MS
+
+      while (!tree.some(identity => identity.pid === bridgePid) && Date.now() < snapshotDeadline) {
+        await delay(100)
+        tree = await snapshotProcessTreeIdentities(bridgePid as number, { timeoutMs: IDENTITY_PROBE_TIMEOUT_MS })
+      }
+
       assert.ok(tree.some(identity => identity.pid === bridgePid), 'bridge identity missing from snapshot')
       const powershellCreatedAt = await queryWindowsProcessCreatedAt(powershellPid, { platform: 'win32', timeoutMs: IDENTITY_PROBE_TIMEOUT_MS })
       assert.ok(powershellCreatedAt && powershellCreatedAt > 0, 'PowerShell generation unavailable')
@@ -555,6 +572,8 @@ exit 17
         ).values()
       ]
 
+      // Everything that had to observe the live tree is done: let the child finish.
+      fs.writeFileSync(releasePath, 'release')
       const result = await bridgeResult
       assert.equal(result.code, 17, `bridge did not propagate PowerShell exit: ${JSON.stringify(result)}`)
       assert.equal(fs.readFileSync(readyPath, 'utf8'), `READY:${nonce}`)

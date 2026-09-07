@@ -610,6 +610,13 @@ def finalize_turn(
                     candidate["_row_id"] = canonical["row_id"]
                     candidate.pop(_DB_PERSISTED_MARKER, None)
                     final_response = canonical["content"]
+                    replace = getattr(agent, "_replace_conversational_response", None)
+                    if callable(replace):
+                        replace(final_response)
+                    else:
+                        discard = getattr(agent, "_discard_conversational_response", None)
+                        if callable(discard):
+                            discard()
         agent._persist_session(messages, conversation_history)
 
     _guarded_cleanup("persist_session", _persist_step, _cleanup_errors, logger)

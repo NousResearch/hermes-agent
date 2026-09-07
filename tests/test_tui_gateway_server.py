@@ -22503,6 +22503,35 @@ def test_closeout_notification_requires_matching_profile_affinity(tmp_path):
     assert not server._session_owns_notification_event("same-ui", session, event)
 
 
+def test_closeout_recovery_filter_requires_current_tui_session_affinity(tmp_path):
+    profile_home = tmp_path / "profile"
+    session = {
+        "profile_home": str(profile_home),
+        "session_key": "owned-session",
+    }
+    assert server._session_owns_closeout_candidate(
+        "owned-ui",
+        session,
+        {
+            "routing": {
+                "origin_ui_session_id": "owned-ui",
+                "origin_session": "owned-session",
+            }
+        },
+    )
+    assert not server._session_owns_closeout_candidate(
+        "owned-ui",
+        session,
+        {
+            "routing": {
+                "origin_ui_session_id": "foreign-ui",
+                "origin_session": "foreign-session",
+            }
+        },
+    )
+    assert not server._session_owns_closeout_candidate("owned-ui", session, {})
+
+
 def test_internal_closeout_handoff_failure_releases_exact_claim(monkeypatch, tmp_path):
     from collections import deque
     from queue import Queue
@@ -22534,8 +22563,6 @@ def test_internal_closeout_handoff_failure_releases_exact_claim(monkeypatch, tmp
         "tools.process_registry.process_registry.completion_queue",
         replacement_queue,
     )
-    # Importing the singleton can legitimately run startup recovery; this test
-    # asserts only the retry scheduled by the failed handoff below.
     recovered.clear()
 
     with pytest.raises(RuntimeError, match="cannot resume"):
@@ -22547,8 +22574,14 @@ def test_internal_closeout_handoff_failure_releases_exact_claim(monkeypatch, tmp
         "delivery_id": "delivery-x", "claim_id": "claim-x",
         "_ledger_profile_home": str(profile_home),
     })]
-    assert recovered == [(profile_home.resolve(), {
+    assert len(recovered) == 1
+    recovered_home, recovered_kwargs = recovered[0]
+    assert recovered_home == profile_home.resolve()
+    work_filter = recovered_kwargs.pop("work_filter")
+    assert recovered_kwargs == {
         "consumer": "tui-closeout-retry",
         "target_queue": replacement_queue,
-    })]
+    }
+    assert work_filter({"work_id": "work-x"})
+    assert not work_filter({"work_id": "other-work"})
     assert session["running"] is False

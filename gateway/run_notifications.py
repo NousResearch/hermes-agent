@@ -1446,6 +1446,24 @@ class GatewayNotificationsMixin:
                         _pr.completion_queue.put(evt)
         return delivered
 
+    def _owns_closeout_recovery_candidate(self, item: dict) -> bool:
+        """Claim only durable closeouts this gateway can positively route."""
+        routing = item.get("routing")
+        if not isinstance(routing, dict):
+            return False
+        session_key = str(routing.get("session_key") or routing.get("origin_session") or "")
+        if not session_key:
+            return False
+        source = self._build_process_event_source({"session_key": session_key})
+        if source is None:
+            return False
+        platform = (
+            source.platform.value
+            if hasattr(source.platform, "value")
+            else str(source.platform or "")
+        )
+        return self._resolve_injection_adapter(platform) is not None
+
     def _recover_closeout_work_groups(self, target_queue) -> None:
         """Recover grouped closeouts from every authoritative profile ledger."""
         from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
@@ -1453,11 +1471,17 @@ class GatewayNotificationsMixin:
 
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
-            recover_and_enqueue_work_groups(target_queue=target_queue)
+            recover_and_enqueue_work_groups(
+                target_queue=target_queue,
+                work_filter=self._owns_closeout_recovery_candidate,
+            )
             return
         for _profile_name, profile_home in _multiplex_profile_homes(config):
             with _profile_runtime_scope(profile_home):
-                recover_and_enqueue_work_groups(target_queue=target_queue)
+                recover_and_enqueue_work_groups(
+                    target_queue=target_queue,
+                    work_filter=self._owns_closeout_recovery_candidate,
+                )
 
     @contextmanager
     def _closeout_event_runtime_scope(self, evt: dict):
@@ -1543,6 +1567,8 @@ class GatewayNotificationsMixin:
                                 await asyncio.to_thread(
                                     recover_and_enqueue_work_groups,
                                     target_queue=_pr.completion_queue,
+                                    work_filter=lambda candidate: candidate.get("work_id")
+                                    == evt.get("origin_work_id"),
                                 )
                                 continue
                             try:
@@ -1559,6 +1585,8 @@ class GatewayNotificationsMixin:
                                 await asyncio.to_thread(
                                     recover_and_enqueue_work_groups,
                                     target_queue=_pr.completion_queue,
+                                    work_filter=lambda candidate: candidate.get("work_id")
+                                    == evt.get("origin_work_id"),
                                 )
                     except ValueError:
                         _pr.completion_queue.put(evt)

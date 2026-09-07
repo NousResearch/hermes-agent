@@ -470,7 +470,7 @@ def test_enqueue_deduplication_is_scoped_by_profile_home(tmp_path):
     assert target.empty()
 
 
-def test_process_registry_startup_recovers_group_with_creation_disabled():
+def test_process_registry_does_not_claim_group_without_delivery_owner():
     assert _register()
     _finish("deleg-1")
     assert ad.seal_work_group("work-1", "turn-1")
@@ -486,22 +486,21 @@ def test_process_registry_startup_recovers_group_with_creation_disabled():
                    closeout_owner_started_at=1"""
         )
 
-    # A new host starts with the creation flag still absent/false. Registry
-    # construction must nevertheless recover the existing durable group onto
-    # that host's own completion rail without importing the module singleton.
     ad._reset_for_tests()
     import tools.process_registry as pr_module
 
-    # Importing the module creates its singleton; if the module was already
-    # imported earlier in this pytest process, constructing a fresh registry is
-    # the equivalent startup boundary for this isolated ledger.
-    registry = pr_module.process_registry
-    if registry.completion_queue.empty():
-        registry = pr_module.ProcessRegistry()
-    recovered = registry.completion_queue.get_nowait()
-    assert recovered["type"] == "async_delegation_work_closeout"
-    assert recovered["origin_work_id"] == "work-1"
-    assert recovered["claim_id"] != old["claim_id"]
+    registry = pr_module.ProcessRegistry()
+    assert registry.completion_queue.empty()
+    recovered = ad.recover_and_enqueue_work_groups(
+        target_queue=registry.completion_queue,
+        work_filter=lambda item: item.get("work_id") == "work-1",
+    )
+    assert len(recovered) == 1
+    assert recovered[0]["origin_work_id"] == "work-1"
+    event = registry.completion_queue.get_nowait()
+    assert event["type"] == "async_delegation_work_closeout"
+    assert event["origin_work_id"] == "work-1"
+    assert event["claim_id"] != old["claim_id"]
     assert ad.task_scoped_closeout_enabled({}) is False
 
 

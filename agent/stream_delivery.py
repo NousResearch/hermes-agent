@@ -108,6 +108,26 @@ class StreamDeliveryMixin:
         self._conversational_response_gated = False
         self._conversational_stream_end = None
 
+    def _replace_conversational_response(self, final_text: str) -> None:
+        """Replace a gated provisional stream with the canonical persisted answer."""
+        if not getattr(self, "_conversational_response_gated", False):
+            return
+        self._settle_conversational_response(has_tool_calls=False)
+        stream_end = next(
+            (
+                dict(payload)
+                for kind, payload in reversed(self._conversational_response_events)
+                if kind == "stream_end"
+            ),
+            None,
+        )
+        self._conversational_response_events = []
+        if final_text:
+            self._conversational_response_events.append(("delta", final_text))
+        if stream_end is not None:
+            stream_end["final_text"] = final_text
+            self._conversational_response_events.append(("stream_end", stream_end))
+
     def _admit_conversational_response(self) -> None:
         """Release one completed no-tool response through its normal observers."""
         events = list(getattr(self, "_conversational_response_events", ()) or ())

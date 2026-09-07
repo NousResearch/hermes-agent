@@ -79,6 +79,21 @@ def test_closeout_formatter_is_bounded_internal_envelope():
     assert "deleg-1" in text
 
 
+def test_gateway_recovery_filter_requires_routable_session():
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+
+    assert runner._owns_closeout_recovery_candidate(
+        {"routing": {"origin_session": "agent:main:telegram:dm:12345:678"}}
+    )
+    assert not runner._owns_closeout_recovery_candidate(
+        {"routing": {"origin_session": "agent:main:slack:channel:C123:456"}}
+    )
+    assert not runner._owns_closeout_recovery_candidate(
+        {"routing": {"origin_session": "unowned-cli-session"}}
+    )
+    assert not runner._owns_closeout_recovery_candidate({})
+
+
 def test_closeout_watcher_injects_typed_metadata_once(
     monkeypatch, isolated_registry,
 ):

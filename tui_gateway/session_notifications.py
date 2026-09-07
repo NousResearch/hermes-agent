@@ -95,6 +95,21 @@ def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool
     return bool(evt_key) and (evt_key in current_keys or _notif_resolve_event_key(evt_key) in current_keys)
 
 
+def _session_owns_closeout_candidate(sid: str, session: dict, item: dict) -> bool:
+    """Require positive TUI ownership before a durable closeout row is claimed."""
+    routing = item.get("routing")
+    if not isinstance(routing, dict):
+        return False
+    evt = {
+        "type": "async_delegation_work_closeout",
+        "origin_ui_session_id": routing.get("origin_ui_session_id"),
+        "session_key": routing.get("session_key") or routing.get("origin_session"),
+        "parent_session_id": routing.get("parent_session_id"),
+        "_ledger_profile_home": str(session.get("profile_home") or _hermes_home),
+    }
+    return _session_owns_notification_event(sid, session, evt)
+
+
 def _notification_event_requires_owner(evt: dict) -> bool:
     """Whether ``evt`` must be positively claimed before TUI delivery."""
     return evt.get("type") == "async_delegation" or bool(evt.get("origin_ui_session_id") or evt.get("session_key"))
@@ -470,6 +485,7 @@ def _start_next_internal_continuation(rid, sid: str, session: dict) -> bool:
                     recover_and_enqueue_work_groups(
                         consumer="tui-closeout-retry",
                         target_queue=process_registry.completion_queue,
+                        work_filter=lambda candidate: candidate.get("work_id") == item.work_id,
                     )
         finally:
             with session["history_lock"]:
@@ -621,6 +637,9 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
                     recover_and_enqueue_work_groups(
                         consumer="tui-closeout-poller",
                         target_queue=queue,
+                        work_filter=lambda candidate: _session_owns_closeout_candidate(
+                            sid, session, candidate
+                        ),
                     )
             except Exception:
                 logger.warning("TUI closeout recovery poll failed", exc_info=True)

@@ -170,6 +170,115 @@ def test_pr_state_lookup_failures_keep_ready_task_guarded(
         assert kbd.check_respawn_guard(conn, task_id) == "active_pr"
 
 
+def test_inactive_pr_state_is_not_cached_across_reopen(kanban_home, monkeypatch):
+    """A reopened PR must be checked again rather than using CLOSED cache data."""
+    calls = []
+    responses = iter([
+        '{"state":"CLOSED"}',
+        '{"state":"OPEN"}',
+    ])
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return type("Completed", (), {"returncode": 0, "stdout": next(responses)})()
+
+    monkeypatch.setattr(kbd.subprocess, "run", fake_run)
+    assert kbd._github_pr_state("example/repo", "96") == "CLOSED"
+    assert kbd._github_pr_state("example/repo", "96") == "OPEN"
+    assert len(calls) == 2
+
+
+def test_pr_lookup_budget_fails_closed_before_unbounded_gh_calls(
+    kanban_home, monkeypatch,
+):
+    """A comment backlog cannot consume an unbounded number of GH calls."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="many PR references", assignee="worker")
+        urls = " ".join(
+            f"https://github.com/example/repo/pull/{number}"
+            for number in range(100, 110)
+        )
+        kb.add_comment(conn, task_id, author="worker", body=urls)
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            return type(
+                "Completed", (), {"returncode": 0, "stdout": '{"state":"MERGED"}'}
+            )()
+
+        monkeypatch.setattr(kbd.subprocess, "run", fake_run)
+        assert kbd._has_active_pr_comment(
+            conn, task_id, 0, lookup_budget=[3],
+        ) is True
+        assert len(calls) == 3
+
+
+def test_pr_comment_scan_bounds_body_work(kanban_home, monkeypatch):
+    """Oversized comments fail closed without scanning their full body."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="oversized comment", assignee="worker")
+        kb.add_comment(conn, task_id, author="worker", body="x" * 70_000)
+        calls = []
+        monkeypatch.setattr(
+            kbd.subprocess,
+            "run",
+            lambda *args, **kwargs: calls.append(args) or None,
+        )
+        assert kbd._has_active_pr_comment(conn, task_id, 0, lookup_budget=[3]) is True
+        assert calls == []
+
+
+def test_pr_comment_scan_bounds_comment_count(kanban_home, monkeypatch):
+    """A noisy comment backlog fails closed before unbounded scanning."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="many comments", assignee="worker")
+        for index in range(70):
+            kb.add_comment(conn, task_id, author="worker", body=f"note {index}")
+        calls = []
+        monkeypatch.setattr(
+            kbd.subprocess,
+            "run",
+            lambda *args, **kwargs: calls.append(args) or None,
+        )
+        assert kbd._has_active_pr_comment(conn, task_id, 0, lookup_budget=[3]) is True
+        assert calls == []
+
+
+def test_pr_lookup_deadline_fails_closed_before_lookup(kanban_home, monkeypatch):
+    """An exhausted per-tick deadline must not start another GH subprocess."""
+    with kbc.connect() as conn:
+        task_id = _task_with_pr_comment(
+            conn,
+            title="expired lookup budget",
+            url="https://github.com/example/repo/pull/97",
+        )
+        calls = []
+        monkeypatch.setattr(
+            kbd.subprocess,
+            "run",
+            lambda *args, **kwargs: calls.append(args) or None,
+        )
+        assert kbd._has_active_pr_comment(
+            conn, task_id, 0, lookup_budget=[3], lookup_deadline=0,
+        ) is True
+        assert calls == []
+
+
+    """Repeated guarded ticks do not grow task_events without progress."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="deduplicated guard", assignee="worker")
+        with kb.write_txn(conn):
+            kb._append_event(conn, task_id, "respawn_guarded", {"reason": "active_pr"})
+        assert not kbd._should_emit_respawn_guard_event(conn, task_id, "active_pr")
+        with kb.write_txn(conn):
+            kb._append_event(conn, task_id, "commented", {"author": "worker"})
+        assert not kbd._should_emit_respawn_guard_event(conn, task_id, "active_pr")
+        with kb.write_txn(conn):
+            kb._append_event(conn, task_id, "status", {"status": "ready"})
+        assert kbd._should_emit_respawn_guard_event(conn, task_id, "active_pr")
+
+
 def test_dispatch_json_and_text_expose_respawn_guarded():
     """Operators must see why dispatch spawned zero workers."""
     result = kbd.DispatchResult(respawn_guarded=[("t_demo", "active_pr")])
@@ -228,6 +337,34 @@ def test_ready_diagnostics_identify_respawn_guard(kanban_home):
     assert "active_pr" in stranded[0].title
 
 
+def test_ready_diagnostics_reject_nonfinite_guard_window(kanban_home):
+    """Malformed persisted windows must not suppress the guard diagnostic."""
+    now = 100_000
+    task = {
+        "id": "t_demo",
+        "status": "ready",
+        "assignee": "worker",
+        "claim_lock": None,
+        "created_at": now - 3600,
+    }
+    events = [
+        {"kind": "created", "created_at": now - 3600, "payload": None},
+        {
+            "kind": "respawn_guarded",
+            "created_at": now - 30,
+            "payload": '{"reason":"active_pr","window_seconds":Infinity}',
+        },
+    ]
+
+    stranded = [
+        item
+        for item in diagnostics.compute_task_diagnostics(task, events, [], now=now)
+        if item.kind == "stranded_in_ready"
+    ]
+    assert len(stranded) == 1
+    assert "respawn guard" in stranded[0].title.lower()
+
+
 def test_ready_diagnostics_ignore_stale_respawn_guard_after_lifecycle_progress(
     kanban_home,
 ):
@@ -259,3 +396,39 @@ def test_ready_diagnostics_ignore_stale_respawn_guard_after_lifecycle_progress(
     assert "respawn guard" not in stranded[0].title.lower()
     assert "no worker" in stranded[0].title.lower()
     assert "guard_reason" not in stranded[0].data
+
+
+def test_ready_diagnostics_do_not_reset_guard_expiry_on_repeated_events(
+    kanban_home,
+):
+    """Repeated historical guard rows use the first event for expiry."""
+    now = 100_000
+    task = {
+        "id": "t_demo",
+        "status": "ready",
+        "assignee": "worker",
+        "claim_lock": None,
+        "created_at": now - 7200,
+    }
+    events = [
+        {"kind": "created", "created_at": now - 7200, "payload": None},
+        {
+            "kind": "respawn_guarded",
+            "created_at": now - 4000,
+            "payload": '{"reason":"recent_success"}',
+        },
+        {
+            "kind": "respawn_guarded",
+            "created_at": now - 1,
+            "payload": '{"reason":"recent_success"}',
+        },
+    ]
+
+    stranded = [
+        item
+        for item in diagnostics.compute_task_diagnostics(task, events, [], now=now)
+        if item.kind == "stranded_in_ready"
+    ]
+    assert len(stranded) == 1
+    assert "respawn guard" not in stranded[0].title.lower()
+    assert "no worker" in stranded[0].title.lower()

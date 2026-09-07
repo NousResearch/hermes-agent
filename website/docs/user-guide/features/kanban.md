@@ -57,7 +57,10 @@ read-only with `gh pr view`. `OPEN` (or unknown) PR state continues to defer a
 ready task; `MERGED` and `CLOSED` references in audit/evidence comments do not
 strand it. State lookup failures fail closed. `hermes kanban dispatch --json`
 reports guard-deferred task IDs and reasons, and diagnostics identifies a
-current guard separately from an ordinary missing-worker condition.
+current guard separately from an ordinary missing-worker condition. An explicit
+`changes_requested` review outcome is treated as a rework handoff so the
+existing PR can be reused. Lookups are bounded per task and dispatch tick;
+unknown state remains fail-closed.
 
 After publishing, pass `metadata.published_pr` to completion. The first matching
 URL binds the card permanently; retries cannot substitute a green sibling PR.

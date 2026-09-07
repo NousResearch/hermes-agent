@@ -2,6 +2,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $voicePlayback } from '@/store/voice-playback'
+import { $voiceFollowUpIdleSeconds, DEFAULT_FOLLOW_UP_IDLE_SECONDS } from '@/store/voice-prefs'
 
 import { useVoiceConversation } from './use-voice-conversation'
 
@@ -160,6 +161,7 @@ describe('useVoiceConversation playback rearm', () => {
     cleanup()
     vi.clearAllMocks()
     mocks.resetSpeechMocks()
+    $voiceFollowUpIdleSeconds.set(DEFAULT_FOLLOW_UP_IDLE_SECONDS)
     $voicePlayback.set({
       audioElement: null,
       messageId: null,
@@ -167,6 +169,142 @@ describe('useVoiceConversation playback rearm', () => {
       source: null,
       status: 'idle'
     })
+  })
+
+  it('arms the follow-up idle window from voice.follow_up_idle_seconds', async () => {
+    $voiceFollowUpIdleSeconds.set(45)
+    const hook = renderRearmConversation('reply-idle-cfg', 'Hello back')
+
+    hook.rerender({ enabled: true })
+    await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(1))
+
+    expect(mocks.handle.start).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idleSilenceMs: 45_000
+      })
+    )
+  })
+
+  it('does not let a short follow-up idle window truncate an in-progress listen', async () => {
+    // Reviewer finding on #79574: voice.follow_up_idle_seconds must only govern
+    // the no-speech follow-up window (idleSilenceMs, handled by useMicRecorder),
+    // never the hard cap on an already-in-progress listen/utterance. A short
+    // idle setting (5s here) must not cut off active speech before the
+    // independent per-listen turn timeout (60s) elapses.
+    vi.useFakeTimers()
+
+    try {
+      $voiceFollowUpIdleSeconds.set(5)
+
+      const hook = renderHook(
+        ({ enabled }) =>
+          useVoiceConversation({
+            busy: false,
+            consumePendingResponse: vi.fn(),
+            enabled,
+            onSubmit: async () => undefined,
+            onTranscribeAudio: async () => 'still talking',
+            pendingResponse: () => null
+          }),
+        { initialProps: { enabled: false } }
+      )
+
+      hook.rerender({ enabled: true })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(mocks.handle.start).toHaveBeenCalledTimes(1)
+      // The follow-up idle setting still reaches the mic recorder's own
+      // no-speech detector...
+      expect(mocks.handle.start).toHaveBeenCalledWith(
+        expect.objectContaining({
+          idleSilenceMs: 5_000
+        })
+      )
+
+      // ...but it must NOT shrink the per-listen turn timeout. At the 5s mark
+      // (the configured follow-up idle) the listen must still be alive — no
+      // forced stop/transcribe of the in-progress utterance.
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(mocks.handle.stop).not.toHaveBeenCalled()
+
+      // The independent hard cap (60s) still protects against a stuck listen.
+      await vi.advanceTimersByTimeAsync(55_000)
+      expect(mocks.handle.stop).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ends the voice conversation when follow-up idle elapses with no speech', async () => {
+    const onStopWord = vi.fn()
+    mocks.handle.stop.mockResolvedValueOnce({
+      audio: new Blob(['silence'], { type: 'audio/webm' }),
+      heardSpeech: false
+    })
+
+    const hook = renderHook(
+      ({ enabled }) =>
+        useVoiceConversation({
+          busy: false,
+          consumePendingResponse: vi.fn(),
+          enabled,
+          onStopWord,
+          onSubmit: async () => undefined,
+          onTranscribeAudio: async () => 'should not run',
+          pendingResponse: () => null
+        }),
+      { initialProps: { enabled: false } }
+    )
+
+    hook.rerender({ enabled: true })
+    await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(1))
+
+    await act(async () => {
+      mocks.triggerSilence()
+    })
+
+    await waitFor(() => expect(onStopWord).toHaveBeenCalledTimes(1))
+    expect(mocks.handle.start).toHaveBeenCalledTimes(1)
+    expect(hook.result.current.status).toBe('idle')
+  })
+
+  it('re-arms after silent idle when follow_up_idle_seconds is 0 (legacy)', async () => {
+    $voiceFollowUpIdleSeconds.set(0)
+    mocks.handle.stop.mockResolvedValueOnce({
+      audio: new Blob(['silence'], { type: 'audio/webm' }),
+      heardSpeech: false
+    })
+
+    const onStopWord = vi.fn()
+
+    const hook = renderHook(
+      ({ enabled }) =>
+        useVoiceConversation({
+          busy: false,
+          consumePendingResponse: vi.fn(),
+          enabled,
+          onStopWord,
+          onSubmit: async () => undefined,
+          onTranscribeAudio: async () => 'should not run',
+          pendingResponse: () => null
+        }),
+      { initialProps: { enabled: false } }
+    )
+
+    hook.rerender({ enabled: true })
+    await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(1))
+    expect(mocks.handle.start).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idleSilenceMs: 12_000
+      })
+    )
+
+    await act(async () => {
+      mocks.triggerSilence()
+    })
+
+    await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
+    expect(onStopWord).not.toHaveBeenCalled()
+    expect(hook.result.current.status).toBe('listening')
   })
 
   it('re-arms the microphone after normal streaming playback completes', async () => {

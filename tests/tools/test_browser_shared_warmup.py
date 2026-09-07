@@ -29,8 +29,8 @@ def test_shared_cache_contention_is_bounded_and_releases_after_warmup(tmp_path, 
 import json, subprocess, sys
 from tools import browser_tool_install as install
 real_popen = subprocess.Popen
-real_which = install.shutil.which
-install.shutil.which = lambda name, *a, **kw: 'fake-npm' if name == 'npm' else real_which(name, *a, **kw)
+real_find_node = install.find_node_executable
+install.find_node_executable = lambda name: 'fake-npm' if name == 'npm' else real_find_node(name)
 install._resolve_npx_bin = lambda: 'fake-npx'
 def spawn(cmd, **kwargs):
     assert cmd[0] in {'fake-npx', 'fake-npm'}

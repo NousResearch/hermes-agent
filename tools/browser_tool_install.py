@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
-from hermes_constants import agent_browser_runnable, get_hermes_home, is_termux as _is_termux_environment, node_tool_runnable
+from hermes_constants import agent_browser_runnable, find_node_executable, get_hermes_home, is_termux as _is_termux_environment, node_tool_runnable
 from tools.browser_tool_origin import origin_module as _origin
 from tools import browser_tool_cdp as _cdp
 from tools import browser_tool_cloud as _cloud
@@ -112,7 +112,7 @@ def _agent_browser_npx_lock_path(env: dict[str, str], *, timeout: float = 5.0) -
     """Use npm's effective cache, including project/user npmrc configuration."""
     configured = env.get("npm_config_cache") or env.get("NPM_CONFIG_CACHE")
     if not configured:
-        npm = shutil.which("npm", path=env.get("PATH"))
+        npm = find_node_executable("npm")
         if not npm:
             return None
         try:

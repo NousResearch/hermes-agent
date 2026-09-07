@@ -10,6 +10,7 @@ import functools
 import json
 import logging
 import re
+import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -401,6 +402,28 @@ async def _pty_fail(ws: WebSocket, text: str) -> None:
     await ws.close(code=1011)
 
 
+def _pty_unavailable_banner() -> str:
+    """Remediation text when no PTY bridge could be imported.
+
+    Windows HAS a bridge (ConPTY via pywinpty) — it is just not installed —
+    so prescribing WSL2 there sends users down the wrong path; POSIX without
+    ptyprocess genuinely needs another runtime.
+    """
+    if sys.platform.startswith("win"):
+        return (
+            "\r\n\x1b[31mChat unavailable: the embedded terminal needs the "
+            "ConPTY bridge, which is not installed.\x1b[0m\r\n"
+            "\x1b[33mRun: pip install pywinpty — then reopen the dashboard's "
+            "/chat tab. The rest of the dashboard works here.\x1b[0m\r\n"
+        )
+    return (
+        "\r\n\x1b[31mChat unavailable: the embedded terminal requires a "
+        "POSIX PTY, which this Python doesn't provide.\x1b[0m\r\n"
+        "\x1b[33mInstall Hermes inside WSL2 to use the dashboard's /chat "
+        "tab — the rest of the dashboard works here.\x1b[0m\r\n"
+    )
+
+
 @router.websocket("/api/pty")
 async def pty_ws(ws: WebSocket) -> None:
     from hermes_cli.web_server_chat import PTY_REGISTRY, PtyBridge, PtyUnavailableError, _PTY_BRIDGE_AVAILABLE, _RESIZE_RE
@@ -411,14 +434,11 @@ async def pty_ws(ws: WebSocket) -> None:
     await ws.accept()
     _log.info("pty accepted peer=%s mode=%s cred=%s", peer, mode, cred)
 
-    # Native Windows can't import the POSIX PTY bridge: say so and close cleanly.
+    # No PTY bridge import: say so and close cleanly, with remediation
+    # matching the platform (plain WSL2 guidance is wrong on Windows,
+    # whose ConPTY bridge is merely not installed).
     if not _PTY_BRIDGE_AVAILABLE:
-        await ws.send_text(
-            "\r\n\x1b[31mChat unavailable: the embedded terminal requires a "
-            "POSIX PTY, which native Windows Python doesn't provide.\x1b[0m\r\n"
-            "\x1b[33mInstall Hermes inside WSL2 to use the dashboard's /chat "
-            "tab — the rest of the dashboard works here.\x1b[0m\r\n"
-        )
+        await ws.send_text(_pty_unavailable_banner())
         await ws.close(code=1011)
         return
 

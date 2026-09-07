@@ -302,6 +302,18 @@ class CLITuiMixin:
             return _state_fragment("class:prompt-working", "⚕")
         if self._voice_mode:
             return _state_fragment("class:voice-prompt", "🎤")
+        # ── KENSEI CUSTOM: Walkie-Talkie ambient ●N pill (G7) ──
+        # Show live peer count in the prompt when the peer plugin is active.
+        # Defensive: empty when the plugin is absent — never breaks the prompt.
+        try:
+            from hermes_cli.peer_presence import peer_presence_pill
+
+            pill = peer_presence_pill()
+            if pill:
+                return [("class:peer-presence", pill + " ")] + [("class:prompt", symbol)]
+        except Exception:
+            pass
+        # ── END KENSEI CUSTOM ──
         return [("class:prompt", symbol)]
 
     def _get_tui_prompt_text(self) -> str:

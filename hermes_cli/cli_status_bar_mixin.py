@@ -167,6 +167,7 @@ class CLIStatusBarMixin:
             return ""
         return f"✓ {format_duration_compact(max(0.0, time.time() - last_finished_at))}"
 
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         from cli import _reverse_alias_for_display, datetime, format_duration_compact
         agent = getattr(self, "agent", None)
@@ -191,6 +192,9 @@ class CLIStatusBarMixin:
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            # ── KENSEI CUSTOM: agent mode in status bar ──
+            "agent_mode": self._detect_current_mode(),
+            # ── END KENSEI CUSTOM ──
             "duration": format_duration_compact(elapsed_seconds),
             "session_title": self._get_status_bar_session_title(),
             "prompt_elapsed": self._format_prompt_elapsed(
@@ -997,6 +1001,16 @@ class CLIStatusBarMixin:
                 segs.append([(_SB, " ⚕ "), (_STRONG, model_short)])
             else:
                 segs.append([("", f"⚕ {model_short}")])
+            # ── KENSEI CUSTOM: mode badge (all width tiers; appended right after model) ──
+            _MODE_FRAGS = {
+                "plan": ("class:status-bar-good", " 📋 Plan"),
+                "gods_plan": ("class:status-bar-bad", " 👑 UltraPlan"),
+                "recon": ("class:status-bar-warn", " 🔍 Recon"),
+            }
+            _mode_frag = _MODE_FRAGS.get(snapshot.get("agent_mode", "auto"))
+            if _mode_frag:
+                segs.append([_mode_frag])
+            # ── END KENSEI CUSTOM ──
         narrow, wide = width < 52, width >= 76
         if narrow:
             # Narrow bars put duration ahead of the goal segment; the other tiers reverse it.
@@ -1077,6 +1091,18 @@ class CLIStatusBarMixin:
             return self._right_align_status_title(text, session_title, width)
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
+
+    # ── KENSEI CUSTOM: detect current mode for status bar ──
+    def _detect_current_mode(self) -> str:
+        """Return the authoritative agent mode key for the status bar."""
+        try:
+            from hermes_cli.mode_prompts import validate_mode
+
+            current = getattr(self, "agent", None)
+            return validate_mode(getattr(current, "agent_mode", "auto") or "auto")
+        except Exception:
+            return "auto"
+    # ── END KENSEI CUSTOM ──
 
     def _get_status_bar_fragments(self):
         if (

@@ -308,6 +308,8 @@ def divert_session_transcript_jsonl(session_id: str, messages) -> "Optional[Path
             if msg is not None:
                 record = msg if isinstance(msg, dict) else {"content": str(msg)}
                 handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
     return path
 
 

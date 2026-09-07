@@ -1476,12 +1476,18 @@ class TurnRunner:
                 _final_for_stream = fr
         if _final_for_stream is None:
             stream_consumer.finish()
-            return
-        # Duck-type safe: test doubles / older consumers may expose a zero-arg finish().
-        try:
-            stream_consumer.finish(_final_for_stream)
-        except TypeError:
-            stream_consumer.finish()
+        else:
+            # Duck-type safe: test doubles / older consumers may expose a zero-arg finish().
+            try:
+                stream_consumer.finish(_final_for_stream)
+            except TypeError:
+                stream_consumer.finish()
+        # The outer gateway starts the consumer only after this method returns and the
+        # persistence result has been accepted.  This prevents preview frames from
+        # escaping before the canonical transcript is durable.  Empty successful turns
+        # also release the task; only failed turns remain fail-closed.
+        if ctx.stream_release_event is not None and not result.get("failed"):
+            ctx.stream_release_event.set()
 
     def _restore_telegram_thread_id_after_split(self, agent_session_id) -> None:
         """Telegram DM whose source.thread_id was lost in the session split (synthetic/recovered

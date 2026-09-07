@@ -1895,6 +1895,10 @@ class BasePlatformAdapter(ABC):
     # answer, and an acknowledgement would silently abandon the task (#57056). Read generically via
     # ``getattr(adapter, "interactive_resume", True)`` — no per-platform branching at the call site.
     interactive_resume: bool = True
+    # Whether a clarify prompt can be answered back into the pending gateway turn. Ordinary
+    # ``send()`` success is not sufficient: one-shot transports must opt out, while a plugin
+    # that implements a resolver can explicitly opt back in.
+    supports_interactive_clarification: bool = True
     # Back-reference to the running ``GatewayRunner`` (set by gateway/run.py); ``build_source``
     # resolves the inbound profile via ``runner._profile_name_for_source``.
     gateway_runner = None  # type: ignore[assignment]

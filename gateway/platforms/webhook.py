@@ -148,6 +148,9 @@ def _validate_svix_signature(body: bytes, secret: str, msg_id: str, timestamp: s
 class WebhookAdapter(BasePlatformAdapter):
     """Generic webhook receiver that triggers agent runs from HTTP POSTs."""
 
+    # Each delivery owns a distinct session, so a later webhook cannot resolve a pending clarify
+    # wait from the first delivery. Resolver-capable plugin subclasses may explicitly opt back in.
+    supports_interactive_clarification: bool = False
     # Event-triggered, no human present: startup auto-resume must FINISH the interrupted work, not ask "what next?".
     # The startup auto-resume turn must instruct the model to FINISH the interrupted work instead of
     # emitting an interactive acknowledgement that abandons the task (#57056).

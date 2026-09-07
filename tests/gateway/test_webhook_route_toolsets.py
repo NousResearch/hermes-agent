@@ -135,3 +135,30 @@ class TestGatewayResolveEnabledToolsetsForSource:
             gr, cfg, _Src("webhook:mon:d"), "webhook"
         )
         assert cfg["platform_toolsets"]["webhook"] == ["web"]
+
+
+class TestGatewayResolveDisabledToolsetsForSource:
+    def test_one_shot_webhook_disables_clarify_even_when_configured(self):
+        wa = _make_adapter({"mon": {"secret": "x", "toolsets": ["web", "clarify"]}})
+        gr = _make_runner(wa)
+
+        enabled, disabled = GatewayRunner._resolve_turn_toolsets(
+            gr, BASE_CONFIG, _Src("webhook:mon:d1"), "webhook"
+        )
+
+        assert "clarify" in enabled
+        assert "clarify" in disabled
+
+    def test_explicit_resumable_capability_preserves_clarify(self):
+        class ResumableWebhookAdapter(WebhookAdapter):
+            supports_interactive_clarification = True
+
+        wa = object.__new__(ResumableWebhookAdapter)
+        wa._routes = {"mon": {"secret": "x", "toolsets": ["web", "clarify"]}}
+        gr = _make_runner(wa)
+
+        _enabled, disabled = GatewayRunner._resolve_turn_toolsets(
+            gr, BASE_CONFIG, _Src("webhook:mon:d1"), "webhook"
+        )
+
+        assert not disabled or "clarify" not in disabled

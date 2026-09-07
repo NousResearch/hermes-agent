@@ -54,6 +54,7 @@ Output a single JSON object with this exact shape:
         "title": "<concrete task title, imperative voice, <= 80 chars>",
         "body":  "<detailed spec for the worker on this child task>",
         "assignee": "<profile name from the roster, or null for default>",
+        "repo": "<repo name from the list below, or null when the child needs no checkout>",
         "parents": [<int>, ...]
       },
       ...
@@ -71,6 +72,12 @@ Rules:
   - Pick assignees from the roster by matching the task to the profile's
     DESCRIPTION (not just the name). When nothing matches well, use null
     and the system will route to the default_assignee.
+  - "repo" names the checkout the child works in. Pick it by matching the
+    child's own work, NOT by copying the parent's repo: one card routinely
+    fans out across repositories (a UI child and an API child belong to
+    different checkouts). Use null only when the child needs no repository
+    at all. A child that needs a checkout but names no repo cannot be
+    dispatched, and the decomposition is rejected.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
 
@@ -102,6 +109,9 @@ Available profiles (assignees you may pick from):
 {roster}
 
 Default assignee (used when no profile fits a task): {default_assignee}
+
+Available repos (values you may use for "repo"):
+{repos}
 """
 
 
@@ -189,6 +199,58 @@ def _normalize_assignee_choice(assignee: object, *, default_assignee: str, valid
     return chosen if chosen in valid_names else default_assignee
 
 
+def _build_repos() -> list[dict]:
+    """``[{name, path, project_id}]`` for every registered project that has a
+    primary repo, so the decomposer can hand each child its own checkout.
+
+    An unreadable registry yields no choices rather than raising: the prompt
+    then offers no repos and anchoring falls back to the board default.
+    """
+    try:
+        from hermes_cli import projects_db as _pdb
+
+        with _pdb.connect_closing() as conn:
+            projects = _pdb.list_projects(conn)
+    except Exception:
+        logger.debug("decompose: project registry unreadable; offering no repo choices")
+        return []
+    return [
+        {"name": p.slug, "path": str(p.primary_path), "project_id": p.id}
+        for p in projects
+        if p.primary_path
+    ]
+
+
+def _format_repos(repos: list[dict]) -> str:
+    if not repos:
+        return '  (none registered — omit "repo" or set it to null)'
+    return "\n".join(f"  - {r['name']}: {r['path']}" for r in repos)
+
+
+def _resolve_repo_choice(task_id: str, idx: int, choice: object, repos: list[dict]) -> dict:
+    """Workspace fields for one child, or ``{}`` when it named no repo.
+
+    An unknown name is dropped with a log rather than fuzzy-matched: the DB
+    layer refuses an unanchored worktree child loudly, and a loud stall beats
+    checking the work out into whichever repo happened to look similar.
+    """
+    if not isinstance(choice, str) or not choice.strip():
+        return {}
+    wanted = choice.strip()
+    for repo in repos:
+        if wanted in (repo["name"], repo["path"]):
+            return {
+                "workspace_kind": "worktree",
+                "workspace_path": repo["path"],
+                "project_id": repo["project_id"],
+            }
+    logger.info(
+        "decompose: task %s child %d named unknown repo %r — leaving it unanchored",
+        task_id, idx, wanted,
+    )
+    return {}
+
+
 @dataclass
 class _Routing:
     """Config-derived routing context for one decomposition."""
@@ -198,6 +260,7 @@ class _Routing:
     auto_promote: bool
     roster: list[dict]
     valid_names: set[str]
+    repos: list[dict]
 
 
 def _load_routing() -> _Routing:
@@ -210,6 +273,7 @@ def _load_routing() -> _Routing:
         auto_promote=bool(kanban_cfg.get("auto_promote_children", True)),
         roster=roster,
         valid_names=valid_names,
+        repos=_build_repos(),
     )
 
 
@@ -256,10 +320,12 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[l
         parents = entry.get("parents") or []
         if not isinstance(parents, list):
             parents = []
+        repo = _resolve_repo_choice(task_id, idx, entry.get("repo"), routing.repos)
         children.append({
             "title": title.strip()[:200],
             "body": body.strip() if isinstance(body, str) else "",
             "assignee": chosen,
+            **repo,
             # Drop non-int, out-of-range and self parent indices.
             "parents": [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx],
         })
@@ -315,6 +381,7 @@ def decompose_task(
             **_task_prompt_fields(task),
             roster=_format_roster(routing.roster),
             default_assignee=routing.default_assignee,
+            repos=_format_repos(routing.repos),
         ),
         max_tokens=4000, timeout=timeout or 180, log=logger,
     )

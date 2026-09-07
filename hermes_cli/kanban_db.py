@@ -3545,7 +3545,7 @@ def decompose_triage_task(
     now = int(time.time())
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "SELECT id, status, tenant, workspace_kind, workspace_path, project_id "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if root_row is None or root_row["status"] != "triage":
@@ -3602,12 +3602,33 @@ def _insert_decomposed_child(
     and one shared checkout would put them all on the first sibling's branch
     with no lock; leaving it unset makes dispatch materialize a fresh
     ``<repo>/.worktrees/<child-id>`` per child from the board anchor.
+
+    A worktree child with neither a repo of its own nor a board anchor is
+    rejected rather than written: it cannot be dispatched at all, and the
+    root's repo is not a safe guess — one card fans out across repos.
     """
     root_ws_kind = root_row["workspace_kind"] or "scratch"
     child_ws_kind = child.get("workspace_kind") or root_ws_kind
+    child_project = child.get("project_id")
     if child.get("workspace_path"):
         child_ws_path = child.get("workspace_path")
     elif child_ws_kind == "worktree":
+        # The child named no repo of its own. Dispatch can still anchor it on
+        # the board's ``default_workdir``; with no board anchor either it has
+        # no repo to be checked out in, so it fails at spawn, burns its
+        # retries and parks as ``blocked`` behind a message that reads like an
+        # infrastructure fault. Refuse the fan-out here instead -- and do NOT
+        # fall back to the root's repo: one card routinely fans out across
+        # repos, so inheriting checks the work out into the wrong tree
+        # silently, which is worse than a loud stall.
+        if not (_board_meta_for(None).get("default_workdir") or "").strip():
+            raise ValueError(
+                f"decomposed child {child['title'].strip()[:60]!r} of {root_id} "
+                "is a worktree task with no repo: it named no 'repo' and this "
+                "board has no default_workdir to anchor it on. Give the child a "
+                "repo, or set a board default workdir. Inheriting the parent's "
+                "repo is not safe -- one card fans out across repos."
+            )
         child_ws_path = None
     elif child_ws_kind == root_ws_kind:
         child_ws_path = root_row["workspace_path"]
@@ -3618,12 +3639,12 @@ def _insert_decomposed_child(
     conn.execute(
         "INSERT INTO tasks "
         "(id, title, body, assignee, status, workspace_kind, "
-        " workspace_path, tenant, created_at, created_by) "
-        "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+        " workspace_path, project_id, tenant, created_at, created_by) "
+        "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)",
         (
             new_id, child["title"].strip(), body if isinstance(body, str) else None,
             _canonical_assignee(child.get("assignee")), child_ws_kind, child_ws_path,
-            root_row["tenant"], now, (author or "decomposer"),
+            child_project, root_row["tenant"], now, (author or "decomposer"),
         ),
     )
     _append_event(

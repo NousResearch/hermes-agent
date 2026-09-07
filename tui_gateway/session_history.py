@@ -167,7 +167,13 @@ def _legacy_display_kind(role: str, text: str) -> str | None:
     return "auto_continue" if role == "user" and text.lstrip().startswith(_AUTO_CONTINUE_NOTE_PREFIX) else None
 
 
-_HISTORY_REASONING_KEYS = ("reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items")
+_HISTORY_ASSISTANT_DETAIL_KEYS = (
+    "reasoning",
+    "reasoning_content",
+    "reasoning_details",
+    "codex_reasoning_items",
+    "codex_message_items",
+)
 _HISTORY_ROLES = frozenset({"user", "assistant", "tool", "system"})
 
 
@@ -205,9 +211,9 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             # `context` is an 80-char preview; ship args so a full-call renderer isn't truncated.
             messages.append({"role": "tool", "name": name, "context": _tool_ctx(name, args), **({"args": args} if args else {})})
             continue
-        # A reasoning-only assistant turn is kept so "Thinking…" still shows after resume/reload.
-        has_reasoning = role == "assistant" and any(m.get(key) for key in _HISTORY_REASONING_KEYS)
-        if not content_text.strip() and not has_reasoning:
+        # Assistant detail sidecars can carry the only visible reply or reasoning after resume/reload.
+        has_assistant_detail = role == "assistant" and any(m.get(key) for key in _HISTORY_ASSISTANT_DETAIL_KEYS)
+        if not content_text.strip() and not has_assistant_detail:
             continue
         msg = {"role": role, "text": content_text}
         # Authoring time (Unix seconds) for display.timestamps; display-only.
@@ -223,7 +229,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if invocation:
             msg.update(text=invocation, display_kind="skill_invocation")
         if role == "assistant":
-            msg.update((key, m[key]) for key in _HISTORY_REASONING_KEYS if m.get(key) is not None)
+            msg.update((key, m[key]) for key in _HISTORY_ASSISTANT_DETAIL_KEYS if m.get(key) is not None)
         # Display-only timeline metadata (model switches, delegation events).
         display_kind = m.get("display_kind") or _legacy_display_kind(role, content_text)
         if display_kind:

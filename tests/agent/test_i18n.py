@@ -70,6 +70,16 @@ def test_catalog_placeholders_match_english(lang: str):
         )
 
 
+@pytest.mark.parametrize("lang", list(i18n.SUPPORTED_LANGUAGES))
+@pytest.mark.parametrize("key", ["gateway.fast.picker_title", "gateway.reasoning.picker_title"])
+def test_picker_titles_use_rendered_newlines(lang: str, key: str):
+    """Interactive picker headings must contain line breaks, not visible ``\\n`` text."""
+    value = i18n.t(key, lang=lang, display="on", level="high", mode="fast", scope="global")
+
+    assert "\n" in value
+    assert "\\" not in value
+
+
 # ---------------------------------------------------------------------------
 # Language resolution
 # ---------------------------------------------------------------------------
@@ -138,5 +148,3 @@ def test_locales_dir_env_override_ignored_when_missing(tmp_path, monkeypatch):
     assert result != tmp_path / "does-not-exist"
     # In a source checkout this is the repo-root locales dir.
     assert result.name == "locales"
-
-

@@ -59,6 +59,14 @@ from hermes_state_maintenance import SessionMaintenanceMixin
 from hermes_state_gateway import SessionGatewayMixin
 from hermes_state_compression import SessionCompressionMixin
 from hermes_state_search import SessionSearchMixin
+from agent.session_policy import (
+    mark_session_ephemeral,
+    unmark_session_ephemeral,
+    is_session_ephemeral,
+    register_ephemeral_session,
+    unregister_ephemeral_session,
+    is_ephemeral_session,
+)
 
 try:  # Hard dependency, but tolerate scaffold-phase imports before pip install.
     import psutil

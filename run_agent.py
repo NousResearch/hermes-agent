@@ -270,6 +270,7 @@ class AIAgent(
         checkpoint_max_total_size_mb: int = 500, checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False, requested_provider: str = None,
         capabilities: Dict[str, bool] | None = None,
+        persist_disabled: bool = False, ephemeral: bool = False,
     ):
         """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
         init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay")}
@@ -742,6 +743,8 @@ class AIAgent(
         instead of hitting the user's GPU mid-session; everything else spawns immediately. ``explicit``
         (/refine) is never deferred but does not touch the ``focus``-keyed delegate/enabled gates.
         """
+        if getattr(self, "ephemeral", False):
+            return
         # Gates run at enqueue/spawn time; the idle dispatcher re-checks `enabled` at dispatch time.
         if focus is None and getattr(self, "_delegate_depth", 0) > 0:
             return
@@ -846,20 +849,25 @@ class AIAgent(
     def shutdown_memory_provider(self, messages: list = None) -> None:
         """Shut down the memory provider and context engine at session end (idempotent: gateway cleanup and
         ``close()`` may both call it)."""
+        persist_disabled = getattr(self, "_persist_disabled", False)
         if getattr(self, "_memory_provider_shutdown", False):
             return
         self._memory_provider_shutdown = True
         if self._memory_manager:
-            try:
-                self._memory_manager.on_session_end(messages or [])
-            except Exception as e:
-                logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
+            if not persist_disabled:
+                try:
+                    self._memory_manager.on_session_end(messages or [])
+                except Exception as e:
+                    logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
             _quietly(lambda: self._memory_manager.shutdown_all())
-        _notify_context_engine_session_end(self, messages)
+        if not persist_disabled:
+            _notify_context_engine_session_end(self, messages)
 
     def commit_memory_session(self, messages: list = None) -> None:
         """Flush end-of-session extraction on session_id rotation (/new, compression) without tearing providers
         down."""
+        if getattr(self, "_persist_disabled", False):
+            return
         if self._memory_manager:
             _quietly(lambda: self._memory_manager.on_session_end(messages or []))
         _notify_context_engine_session_end(self, messages)
@@ -877,7 +885,7 @@ class AIAgent(
         is almost certainly a retry of the same intent, and a prefetch keyed on the interrupted turn would
         fire against stale context. See #15218.
         """
-        if interrupted or not (self._memory_manager and final_response and original_user_message):
+        if interrupted or getattr(self, "_persist_disabled", False) or not (self._memory_manager and final_response and original_user_message):
             return
         # Flatten multimodal parts to text (newline-joined for memory).
         user_text = _summarize_user_message_for_log(original_user_message, sep="\n")
@@ -923,6 +931,12 @@ class AIAgent(
         self._streamed_assistant_text_parts = []
         _quietly(self._trim_process_memory)
         _quietly(self._finalize_owned_session_row)
+        if getattr(self, "ephemeral", False) and getattr(self, "session_id", None):
+            try:
+                from hermes_state import unmark_session_ephemeral
+                unmark_session_ephemeral(self.session_id)
+            except Exception:
+                pass
 
     # -- close()/release_clients() phases -------------------------------------------------------------
 

@@ -1121,7 +1121,8 @@ def _publish_session_id(session_id: str) -> None:
 
 
 def _init_session_state(agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,
-    checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb):
+    checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb,
+    persist_disabled: bool = False, ephemeral: bool = False):
     agent.session_start = datetime.now()
     agent.session_id = session_id or (
         f"{agent.session_start.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
@@ -1139,6 +1140,16 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
         agent._session_json_enabled = bool(_sess_cfg.get("write_json_snapshots", False))
 
     _set_defaults(agent, _SESSION_STATE)
+
+    agent._persist_disabled = persist_disabled
+    agent.ephemeral = ephemeral
+    if ephemeral:
+        agent._persist_disabled = True
+        if agent.session_id:
+            from agent.session_policy import mark_session_ephemeral
+            mark_session_ephemeral(agent.session_id)
+    if agent._persist_disabled:
+        agent._session_json_enabled = False
 
     # Filesystem checkpoint manager (transparent — not a tool)
     from tools.checkpoint_manager import CheckpointManager
@@ -2219,6 +2230,7 @@ def init_agent(
     fallback_model: Dict[str, Any] = None, credential_pool=None, checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
+    persist_disabled: bool = False, ephemeral: bool = False,
     requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None,
 ):
     """Initialize the AI Agent (body of :meth:`AIAgent.__init__`).
@@ -2293,6 +2305,7 @@ def init_agent(
     _init_session_state(
         agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,
         checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb,
+        persist_disabled=persist_disabled, ephemeral=ephemeral,
     )
 
     # Load config once for memory, skills, and compression sections

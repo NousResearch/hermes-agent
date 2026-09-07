@@ -11,6 +11,8 @@ import time
 import weakref
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.session_policy import is_session_ephemeral
+
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
 
@@ -109,6 +111,8 @@ class SessionUsageMixin:
         """Enqueue a token/cost delta for the background writer (same kwargs as
         :meth:`update_token_counts`). After close() stopped the writer, falls back to the
         synchronous path and may raise."""
+        if is_session_ephemeral(session_id):
+            return
         with self._token_queue_cond:
             thread = self._token_writer_thread
             writer_alive = thread is not None and thread.is_alive()
@@ -282,6 +286,8 @@ class SessionUsageMixin:
         """Update token counters and backfill model if unset. *absolute*=False increments
         (per-API-call deltas, CLI path); *absolute*=True sets directly (gateway path,
         where the cached agent holds cumulative totals)."""
+        if is_session_ephemeral(session_id):
+            return
         usage = {k: v for k, v in locals().items() if k in _MODEL_USAGE_FIELDS}
         # Ensure the row exists: under concurrent load create_session() may have failed on
         # locking, and the UPDATE would silently affect 0 rows.
@@ -377,7 +383,7 @@ class SessionUsageMixin:
         ``task='background_review'`` (issue #87250).
         """
         usage = {k: v for k, v in locals().items() if k in _MODEL_USAGE_FIELDS}
-        if not session_id or not task:
+        if not session_id or not task or is_session_ephemeral(session_id):
             return
         usage["api_call_count"] = 1 if api_call_count is None else int(api_call_count)
         # FK to sessions.id: same INSERT OR IGNORE guard as update_token_counts.

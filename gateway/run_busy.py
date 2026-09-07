@@ -353,6 +353,19 @@ class GatewayBusySessionMixin:
             "source_message_id": source.message_id,
         }
         origin = {key: value for key, value in origin.items() if value not in (None, "")}
+        from gateway.run import _load_gateway_config
+        from gateway.session import _hash_chat_id, _hash_id, _hash_sender_id, _should_redact_pii
+
+        redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
+        if _should_redact_pii(source.platform, redact_pii):
+            # Only the model-facing copy changes; event/source remain valid routing state.
+            hashers = {
+                "user_id": _hash_sender_id, "user_id_alt": _hash_sender_id,
+                "chat_id": _hash_chat_id, "chat_id_alt": _hash_chat_id,
+                "parent_chat_id": _hash_chat_id,
+            }
+            origin = {key: (value if key in ("platform", "chat_type") else
+                            hashers.get(key, _hash_id)(value)) for key, value in origin.items()}
         # JSON preserves identifiers exactly (including colons/whitespace) instead of
         # normalizing them into another destination. Escape marker delimiters too.
         encoded = json.dumps(origin, ensure_ascii=True).replace("[", "\\u005b").replace("]", "\\u005d")

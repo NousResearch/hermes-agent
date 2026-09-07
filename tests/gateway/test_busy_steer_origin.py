@@ -12,14 +12,24 @@ from gateway.session import SessionSource
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("route", ["explicit", "priority", "normal", "redirect", "priority_redirect"])
-async def test_busy_injection_preserves_original_routing_fields(route):
+@pytest.mark.parametrize("platform", [Platform.TELEGRAM, Platform.SIGNAL, Platform.WHATSAPP, Platform.DISCORD])
+@pytest.mark.parametrize("redact_pii", [False, True])
+async def test_busy_injection_preserves_original_routing_fields(route, platform, redact_pii, tmp_path, monkeypatch):
+    from dataclasses import asdict
+    from gateway.session import _hash_chat_id, _hash_id, _hash_sender_id
+
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        f"privacy:\n  redact_pii: {str(redact_pii).lower()}\n", encoding="utf-8",
+    )
     runner = GatewayRunner(config=GatewayConfig())
     source = SessionSource(
-        platform=Platform.TELEGRAM, chat_id="chat", thread_id="thread", user_id="user",
+        platform=platform, chat_id="+15551230001", thread_id="thread", user_id="+15551230002",
         chat_type="group", scope_id="scope", profile="profile", parent_chat_id="parent",
         chat_id_alt="chat-alt", user_id_alt="user-alt", prospective_thread_id="future-thread",
         message_id="source-message",
     )
+    original_source = asdict(source)
     event = MessageEvent(text="/steer request" if route == "explicit" else "request", source=source, message_id="message")
 
     class Receiver:
@@ -44,12 +54,21 @@ async def test_busy_injection_preserves_original_routing_fields(route):
         await runner._resolve_busy_steer_or_redirect(event, "key", "interrupt" if route == "redirect" else "steer", receiver)
     assert receiver.payload.endswith("\n\nrequest")
     origin = json.loads(receiver.payload.splitlines()[1])
-    assert {key: origin[key] for key in ("platform", "chat_id", "thread_id", "user_id", "message_id")} == {
-        "platform": "telegram", "chat_id": "chat", "thread_id": "thread", "user_id": "user", "message_id": "message",
-    }
-    for field in ("chat_type", "scope_id", "profile", "parent_chat_id", "chat_id_alt", "user_id_alt", "prospective_thread_id"):
-        assert origin[field] == getattr(source, field)
-    assert origin["source_message_id"] == source.message_id
+    expected = {key: original_source[key] for key in (
+        "chat_id", "thread_id", "user_id", "chat_type", "scope_id", "profile",
+        "parent_chat_id", "chat_id_alt", "user_id_alt", "prospective_thread_id",
+    )}
+    expected.update(platform=platform.value, message_id=event.message_id, source_message_id=source.message_id)
+    if redact_pii and platform != Platform.DISCORD:
+        for key, value in expected.items():
+            if key in ("platform", "chat_type"):
+                continue
+            hasher = (_hash_sender_id if key in ("user_id", "user_id_alt") else
+                      _hash_chat_id if key in ("chat_id", "chat_id_alt", "parent_chat_id") else _hash_id)
+            expected[key] = hasher(value)
+            assert origin[key] != value
+    assert origin == expected
+    assert asdict(source) == original_source
     assert event.text == ("/steer request" if route == "explicit" else "request")
 
 

@@ -110,6 +110,25 @@ def test_empty_session_acquisition_is_profile_local(monkeypatch, tmp_path):
         assert cu._get_backend("") is backend_a
 
 
+def test_empty_session_injection_is_profile_local(monkeypatch, tmp_path):
+    from tools.computer_use import tool as cu
+
+    injected = _InstantBackend()
+    monkeypatch.setattr(cu, "_new_backend", _InstantBackend)
+    with _profile(tmp_path / "a"):
+        cu._backend[cu.hermes_home_key()] = injected
+    with _profile(tmp_path / "b"):
+        assert cu.release_computer_use_session("") is False
+        other = cu._get_backend("")
+        assert other is not injected
+        assert cu.release_computer_use_session("")
+    assert not injected.stopped
+    with _profile(tmp_path / "a"):
+        assert cu._get_backend("") is injected
+        assert cu.release_computer_use_session("")
+    assert injected.stopped
+
+
 def test_release_fences_mode_replacement_teardown(monkeypatch):
     from tools.computer_use import tool as cu
 
@@ -281,7 +300,7 @@ def test_backend_cache_keys_are_profile_qualified(monkeypatch):
         lambda: Path("/home/fake/profile-a"),
     )
     key_a = computer_use._backend_owner_key("session-1")
-    assert key_a == f"{hermes_home_key('/home/fake/profile-a')}:session-1"
+    assert key_a == (hermes_home_key('/home/fake/profile-a'), "session-1")
 
     monkeypatch.setattr(
         "hermes_constants.get_hermes_home",

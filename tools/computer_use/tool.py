@@ -75,24 +75,24 @@ def _input_target_mismatch(backend, requested_app: str) -> Optional[str]:
 
 # ── Backend selection — env-swappable for tests ─────────────────────────────
 # Per-Hermes-session cached backends (own cua-driver session, native target, refs, grant namespace).
-# Keys are profile-qualified (hermes_home_key + session_id) so a multiplexed gateway cannot
+# Keys are structural (hermes_home_key, session_id) pairs so a multiplexed gateway cannot
 # hand profile B the live desktop authority of profile A's backend (#104080 review finding 1).
 _backend_lock = threading.Lock()
-_backend: Optional[ComputerUseBackend] = None  # backward-compatible empty-session injection hook (older tests)
-_backends: Dict[str, ComputerUseBackend] = {}
-_backend_call_locks: Dict[str, threading.RLock] = {}
-_backend_permission_modes: Dict[str, str] = {}
+_backend: Dict[str, ComputerUseBackend] = {}  # home-keyed empty-session injection hook (private test callers)
+_backends: Dict[Tuple[str, str], ComputerUseBackend] = {}
+_backend_call_locks: Dict[Tuple[str, str], threading.RLock] = {}
+_backend_permission_modes: Dict[Tuple[str, str], str] = {}
 # Per-owner single-flight locks: ensure only one thread does the expensive backend.start()
 # (which may be a network handshake to a remote host) — other threads for the same owner
 # wait, and unrelated owners proceed concurrently without holding _backend_lock (#104080 finding 3).
 # The lock object also identifies the ownership generation: detaching invalidates starters and waiters.
-_backend_start_locks: Dict[str, threading.Lock] = {}
+_backend_start_locks: Dict[Tuple[str, str], threading.Lock] = {}
 _AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str], bool] = {}  # process-scoped: (provider, model) → bool
 # Approval authority uses the same profile-qualified owner as the backend cache.
 # Callers without a session_id share only their profile's empty-session bucket.
 _approval_lock = threading.Lock()
-_session_auto_approve: Dict[str, bool] = {}   # owner -> "always_approve everything"
-_always_allow: Dict[str, set] = {}            # owner -> set of (action, delivery_mode) scope keys
+_session_auto_approve: Dict[Tuple[str, str], bool] = {}   # owner -> "always_approve everything"
+_always_allow: Dict[Tuple[str, str], set] = {}            # owner -> set of (action, delivery_mode) scope keys
 _escalation_warned: set = set()               # sids already warned that a bypass widened the driver mode
 
 def _cua_permission_mode(session_id: str) -> str:
@@ -123,7 +123,7 @@ def _cua_permission_mode(session_id: str) -> str:
             return "unrestricted"
     return configured
 
-def _backend_owner_key(session_id: str) -> str:
+def _backend_owner_key(session_id: str) -> Tuple[str, str]:
     """Profile-qualified cache key: ``(hermes_home_key, session_id)``.
 
     Under ``gateway.multiplex_profiles`` multiple profiles share one process;
@@ -132,7 +132,7 @@ def _backend_owner_key(session_id: str) -> str:
     A's remote desktop. Qualifying with ``hermes_home_key()`` ensures each
     profile's backend cache is independent (#104080 finding 1).
     """
-    return f"{hermes_home_key()}:{str(session_id or '')}"
+    return hermes_home_key(), str(session_id or "")
 
 
 def _new_backend(permission_mode: str) -> ComputerUseBackend:
@@ -144,25 +144,24 @@ def _new_backend(permission_mode: str) -> ComputerUseBackend:
         raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
     return _NoopBackend()  # pragma: no cover
 
-def _install_backend(owner: str, backend: ComputerUseBackend, permission_mode: str) -> ComputerUseBackend:
+def _install_backend(owner: Tuple[str, str], backend: ComputerUseBackend, permission_mode: str) -> ComputerUseBackend:
     """Record a backend in the session caches (the empty session also mirrors it onto the ``_backend`` hook).
     Caller holds ``_backend_lock``."""
-    global _backend
     _backends[owner], _backend_permission_modes[owner] = backend, permission_mode
     _backend_call_locks[owner] = threading.RLock()
-    _backend = backend if owner.endswith(":") else _backend  # empty session mirrors onto the injection hook
+    if owner[1] == "":
+        _backend[owner[0]] = backend
     return backend
 
-def _detach_locked(owner: str) -> Tuple[Optional[ComputerUseBackend], Optional[threading.RLock]]:
+def _detach_locked(owner: Tuple[str, str]) -> Tuple[Optional[ComputerUseBackend], Optional[threading.RLock]]:
     """Remove one session's cache entries, plus the ``_backend`` injection hook when it aliases the empty session
     (older callers/tests may populate only the hook). Caller holds ``_backend_lock``."""
-    global _backend
     _backend_permission_modes.pop(owner, None)
     _backend_start_locks.pop(owner, None)
     backend, call_lock = _backends.pop(owner, None), _backend_call_locks.pop(owner, None)
-    if owner.endswith(":"):  # empty session
-        backend = _backend if backend is None else backend
-        _backend = None if _backend is backend else _backend
+    if owner[1] == "":
+        injected = _backend.pop(owner[0], None)
+        backend = injected if backend is None else backend
     return backend, call_lock
 
 def _stop_backend(backend: ComputerUseBackend, call_lock: Optional[threading.RLock], on_error: Callable[[Exception], None]) -> None:
@@ -181,8 +180,8 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
         with _backend_lock:
             # Mode resolved under the cache lock; YOLO mutation never holds the approval lock while releasing it.
             permission_mode = _cua_permission_mode(sid)
-            if sid == "" and _backend is not None and owner not in _backends:
-                _install_backend(owner, _backend, permission_mode)  # fold the injection hook into the cache
+            if sid == "" and owner[0] in _backend and owner not in _backends:
+                _install_backend(owner, _backend[owner[0]], permission_mode)
             if (cached := _backends.get(owner)) is None:
                 # No cached backend — create one. start() happens OUTSIDE _backend_lock so a slow
                 # remote handshake (up to ~35s) cannot pin unrelated sessions' lifecycle operations
@@ -253,12 +252,11 @@ def _shutdown_backend_atexit() -> None:
     the Hermes process that spawned it (#28152 item 3). #69903 kept the orphan from burning a core by
     disabling the cursor overlay; the process itself still lingered.
     """
-    global _backend
     with _backend_lock:
         unique = {id(b): (b, _backend_call_locks.get(owner)) for owner, b in _backends.items()}
-        if _backend is not None:
-            unique.setdefault(id(_backend), (_backend, None))
-        _backend = None
+        for home, backend in _backend.items():
+            unique.setdefault(id(backend), (backend, _backend_call_locks.get((home, ""))))
+        _backend.clear()
         _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear(), _backend_start_locks.clear()
     with _approval_lock:
         _session_auto_approve.clear(), _always_allow.clear(), _escalation_warned.clear()

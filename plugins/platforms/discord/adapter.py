@@ -5376,11 +5376,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 "[%s] Handoff thread: cannot resolve parent %s: %s", self.name, parent_chat_id, exc,
             )
             return None
-        # DMs, voice channels, and existing threads can't host child threads.
-        if isinstance(parent, getattr(discord, "DMChannel", ())):
+
+        # Only guild text/announcement channels can host the kind of child
+        # thread created below.  Discord Thread, ForumChannel, voice/stage,
+        # category, and DM objects may expose ``send`` and/or ``create_thread``
+        # attributes with different semantics; attempting either path there
+        # yields HTTP 50024 ("Cannot execute action on this channel type").
+        text_channel_type = getattr(discord, "TextChannel", None)
+        if text_channel_type is None or not isinstance(parent, text_channel_type):
             logger.info(
-                "[%s] Handoff thread: parent %s is a DM; threads not supported here",
-                self.name, parent_chat_id,
+                "[%s] Handoff thread: parent %s has unsupported channel type %s; skipping",
+                self.name, parent_chat_id, type(parent).__name__,
             )
             return None
         thread_name = (name or "handoff").strip()[:80] or "handoff"

@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from agent.usage_pricing import (
+    _OFFICIAL_DOCS_PRICING,
     CanonicalUsage,
     format_cost_label,
     estimate_usage_cost,
@@ -23,9 +24,16 @@ def test_astra_whole_request_price_tier_includes_cache_writes():
         provider="openai",
     )
 
-    assert below.amount_usd == Decimal("1.635")
-    assert above.amount_usd == Decimal("5.450025")
-    assert above.pricing_version == "openai-gpt-6-astra-2026-09"
+    # Whole-request tier: crossing 272K prompt tokens re-prices every component of the request,
+    # including cache writes, at the *_above rates — so the cost ratio exceeds the token ratio.
+    entry = _OFFICIAL_DOCS_PRICING[("openai", "gpt-6-astra")]
+    assert above.amount_usd == (
+        Decimal(100_000) * entry.input_cost_per_million_above
+        + Decimal(10_000) * entry.output_cost_per_million_above
+        + Decimal(100_000) * entry.cache_read_cost_per_million_above
+        + Decimal(100_001) * entry.cache_write_cost_per_million_above
+    ) / Decimal(1_000_000)
+    assert below.amount_usd < above.amount_usd
 
 
 

@@ -15,6 +15,7 @@ from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
 from hermes_cli.models import provider_label
 from hermes_cli.runtime_provider import resolve_requested_provider
+from hermes_cli.db_ownership import DbOpenDecision, decide_direct_db_open
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_cli.status_auth import (  # renderers wired into _SECTIONS below
     _render_api_keys, _render_apikey_providers, _render_auth_providers, _render_nous_gateway)
@@ -265,7 +266,15 @@ def _render_sessions(ctx):
     # pre-migration installs.
     try:
         from hermes_state import SessionDB
-        db = SessionDB()
+        decision = decide_direct_db_open(
+            role="cli",
+            operation="read",
+            db_path=get_hermes_home() / "state.db",
+            gateway_pid=None,
+        )
+        if decision not in {DbOpenDecision.ALLOW, DbOpenDecision.SAFE_READ}:
+            raise RuntimeError(f"unsafe direct DB policy for status: {decision.name}")
+        db = SessionDB(read_only=True)
         try:
             gateway_rows = db.list_gateway_sessions(active_only=True) or []
         finally:

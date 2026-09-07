@@ -967,6 +967,15 @@ class BuzzAdapter(BasePlatformAdapter):
             self._remember_event_meta(str(chat_id), result.message_id, self._self_pubkey, content)
         return result
 
+    async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
+        """Create a Buzz thread by publishing its top-level seed event."""
+        try:
+            result = await self.send(parent_chat_id, name)
+        except Exception:
+            logger.warning("Buzz: failed to create handoff thread in %s", parent_chat_id, exc_info=True)
+            return None
+        return result.message_id if result.success else None
+
     def _reply_args(self, anchor: Optional[str]) -> List[str]:
         """``--reply-to`` CLI args for *anchor*, honoring ``reply_to_mode``."""
         reply_target = self._resolve_reply_anchor(anchor)

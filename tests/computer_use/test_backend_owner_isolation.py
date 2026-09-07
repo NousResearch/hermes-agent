@@ -285,6 +285,129 @@ class _SlowStartBackend:
         self.stopped = True
 
 
+@pytest.fixture
+def lifecycle_session(monkeypatch, tmp_path):
+    from agent import context_compressor
+    from run_agent import AIAgent
+    from tui_gateway import server
+
+    # Construction may probe model metadata; this lifecycle test never needs I/O.
+    monkeypatch.setattr(context_compressor, "get_model_context_length", lambda *args, **kwargs: 128000)
+    launch_home = tmp_path / "profile-a"
+    launch_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+    monkeypatch.setattr(server, "_sessions", {})
+    monkeypatch.setattr(server, "_pending_ws_reaps", {})
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_broadcast_global_event", lambda *args: None)
+    agents = []
+
+    def create(home, *, record_home=True):
+        with _profile(home):
+            agent = AIAgent(
+                api_key="test", base_url="http://127.0.0.1:9/v1",
+                provider="openai-compat", model="test", enabled_toolsets=[],
+                quiet_mode=True, skip_context_files=True, skip_memory=True,
+                session_id="same-durable-session",
+            )
+        agents.append(agent)
+        session = {
+            "agent": agent, "session_key": agent.session_id, "source": "tui",
+            "history": [], "history_lock": threading.Lock(), "running": False,
+            "transport": server._detached_ws_transport,
+        }
+        if record_home:
+            session["profile_home"] = str(home)
+        server._sessions["ui-b"] = session
+        return agent
+
+    yield server, launch_home, create
+    for timer in server._pending_ws_reaps.values():
+        timer.cancel()
+        timer.join(timeout=5)
+    for agent in agents:
+        agent.close()
+
+
+@pytest.mark.parametrize("profile", ["named", "default", "missing-record"])
+def test_session_close_releases_its_profile_owner(monkeypatch, tmp_path, lifecycle_session, profile):
+    from tools.computer_use import tool as cu
+
+    server, launch_home, create = lifecycle_session
+    home = tmp_path / ".hermes" if profile == "default" else tmp_path / "profile-b"
+    agent = create(home, record_home=profile != "missing-record")
+    monkeypatch.setattr(cu, "_new_backend", _InstantBackend)
+    prompts = []
+    monkeypatch.setattr(cu, "_approval_callback", lambda *args: prompts.append(args[0]) or "approve_session")
+    args = {"action": "click", "x": 1, "y": 1}
+    with _profile(launch_home):
+        backend_a = cu._get_backend(agent.session_id)
+        cu._request_approval("click", args, agent.session_id)
+    with _profile(home):
+        backend_b = cu._get_backend(agent.session_id)
+        cu._request_approval("click", args, agent.session_id)
+
+    # The reaper has no B scope; HERMES_HOME still belongs to launch profile A.
+    assert server._close_session_by_id("ui-b", end_reason="idle_timeout")
+    assert backend_b.stopped, "closing B must stop B's backend"
+    assert not backend_a.stopped, "closing B must preserve A's same-ID backend"
+    with _profile(launch_home):
+        assert cu._get_backend(agent.session_id) is backend_a
+        cu._request_approval("click", args, agent.session_id)
+    assert prompts == ["click", "click"]
+    with _profile(home):
+        cu._request_approval("click", args, agent.session_id)
+    assert prompts == ["click", "click", "click"]
+
+
+def test_session_timer_close_fences_its_profile_blocked_start(monkeypatch, tmp_path, lifecycle_session):
+    from tools.computer_use import tool as cu
+
+    server, launch_home, create = lifecycle_session
+    home = tmp_path / "profile-b"
+    agent = create(home)
+    monkeypatch.setattr(cu, "_new_backend", _InstantBackend)
+    with _profile(launch_home):
+        backend_a = cu._get_backend(agent.session_id)
+    stale = _SlowStartBackend()
+    monkeypatch.setattr(cu, "_new_backend", lambda mode: stale)
+    closed = threading.Event()
+    close = agent.close
+
+    def observed_close():
+        try:
+            close()
+        finally:
+            closed.set()
+
+    monkeypatch.setattr(agent, "close", observed_close)
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 1)
+
+    def acquire():
+        with _profile(home):
+            return cu._get_backend(agent.session_id)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        lookup = pool.submit(acquire)
+        try:
+            assert stale.started.wait(5)
+            server._schedule_ws_orphan_reap("ui-b", delay_s=0)
+            assert closed.wait(5), "real orphan timer did not finish session teardown"
+        finally:
+            stale.release.set()
+        with pytest.raises(RuntimeError, match="released"):
+            lookup.result(timeout=5)
+    assert "ui-b" not in server._sessions
+    assert stale.stopped, "revoked late startup must be stopped rather than published"
+    assert not backend_a.stopped
+    with _profile(home):
+        owner = cu._backend_owner_key(agent.session_id)
+        assert owner not in cu._backends
+        assert owner not in cu._backend_start_locks
+
+
 def _permission_mode(*args):
     return args[-1]
 

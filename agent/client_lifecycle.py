@@ -115,8 +115,16 @@ class ClientLifecycleMixin:
                     )
 
         def release_computer_use() -> None:
+            from hermes_constants import set_hermes_home_override, reset_hermes_home_override
             from tools.computer_use.tool import release_computer_use_session
-            release_computer_use_session(task_id)
+            # Never guess an unknown owner's home from the thread doing teardown.
+            if (home := getattr(self, "_session_hermes_home", None)) is None:
+                return
+            token = set_hermes_home_override(home)
+            try:
+                release_computer_use_session(task_id)
+            finally:
+                reset_hermes_home_override(token)
 
         for step in (kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id), release_computer_use):
             _quietly(step)

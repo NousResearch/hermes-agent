@@ -301,9 +301,14 @@ def test_timeout_retires_setup_descendants_before_returning(native, monkeypatch)
         return
     try:
         assert child.status() == psutil.STATUS_ZOMBIE, "Timed-out setup child is still running"
+    except psutil.NoSuchProcess:
+        return  # The kernel can reap the child between lookup and observation.
     finally:
-        if child.is_running():
-            child.kill()
+        try:
+            if child.is_running():
+                child.kill()
+        except psutil.NoSuchProcess:
+            pass
 
 
 def test_run_return_value_is_not_part_of_the_setup_contract(native):

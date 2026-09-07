@@ -24,6 +24,7 @@ from agent.memory_recall_planner import (
 class _CurrentQueryProvider(MemoryProvider):
     def __init__(self) -> None:
         self.queries: list[str] = []
+        self.turn_starts: list[tuple[int, str]] = []
 
     @property
     def name(self) -> str:
@@ -40,6 +41,9 @@ class _CurrentQueryProvider(MemoryProvider):
 
     def supports_current_query_recall_planning(self) -> bool:
         return True
+
+    def on_turn_start(self, turn_number: int, message: str, **kwargs: Any) -> None:
+        self.turn_starts.append((turn_number, message))
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         self.queries.append(query)
@@ -292,6 +296,23 @@ def test_memory_manager_prefetch_uses_planned_query(monkeypatch):
     assert provider.queries == ["What did the user previously decide about Atlas?"]
 
 
+def test_active_planner_withholds_raw_query_from_provider_turn_start(monkeypatch):
+    manager = MemoryManager(recall_planner_config={"mode": "active"})
+    provider = _CurrentQueryProvider()
+    manager.add_provider(provider)
+    monkeypatch.setattr(
+        manager._recall_planner,
+        "route_query",
+        lambda *_args, **_kwargs: "What did the user previously decide about Atlas?",
+    )
+
+    manager.on_turn_start(1, "raw private query")
+    assert manager.prefetch_all("raw private query", history=[]) == "remembered context"
+
+    assert provider.turn_starts == [(1, "")]
+    assert provider.queries == ["What did the user previously decide about Atlas?"]
+
+
 def test_async_session_boundary_resets_previous_recall_before_new_prefetch(monkeypatch):
     manager = MemoryManager(recall_planner_config={"mode": "active"})
     provider = _CurrentQueryProvider()
@@ -311,6 +332,28 @@ def test_async_session_boundary_resets_previous_recall_before_new_prefetch(monke
 
     manager.commit_session_boundary_async([], new_session_id="new-session")
     assert manager.prefetch_all("Why?", history=[]) == "remembered context"
+    queued[0]()
+    assert manager.prefetch_all("What next?", history=[]) == "remembered context"
 
     assert len(queued) == 1
-    assert previous_turn_flags == [False]
+    assert previous_turn_flags == [False, True]
+
+
+def test_trivial_turn_clears_previous_recall_signal(monkeypatch):
+    manager = MemoryManager(recall_planner_config={"mode": "active"})
+    provider = _CurrentQueryProvider()
+    manager.add_provider(provider)
+    previous_turn_flags: list[bool] = []
+    monkeypatch.setattr(
+        manager._recall_planner,
+        "route_query",
+        lambda *_args, previous_turn_recall_injected=False, **_kwargs: (
+            previous_turn_flags.append(previous_turn_recall_injected) or "Planned query?"
+        ),
+    )
+
+    assert manager.prefetch_all("First substantive query", history=[]) == "remembered context"
+    manager.on_turn_start(2, "hi")
+    assert manager.prefetch_all("Second substantive query", history=[]) == "remembered context"
+
+    assert previous_turn_flags == [False, False]

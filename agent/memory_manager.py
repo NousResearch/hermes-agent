@@ -16,7 +16,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional
 
-from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION
+from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, is_trivial_prompt
 from agent.memory_recall_planner import MemoryRecallPlanner
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.hook_output_spill import get_spill_config, spill_if_oversized
@@ -613,7 +613,24 @@ class MemoryManager:
             return tool_error(f"Memory tool '{tool_name}' failed: {e}")
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
-        self._each_provider("on_turn_start failed", lambda p: p.on_turn_start(turn_number, message, **kwargs))
+        """Notify providers without bypassing the host's current-query recall gate.
+
+        An active planner must be the first component allowed to disclose the current
+        query to an external provider. Providers still receive the lifecycle tick, but
+        with an empty message until :meth:`prefetch_all` supplies the planned query.
+        Trivial turns likewise carry no recall query and clear the previous-turn signal.
+        """
+        trivial = is_trivial_prompt(message)
+        if trivial:
+            self._last_prefetch_injected = False
+        external = next((p for p in self._providers if p.name != "builtin"), None)
+        planner_controls_query = self._recall_planner.effective_mode(external) == "active"
+
+        def _notify(provider: MemoryProvider) -> None:
+            provider_message = "" if provider is external and (trivial or planner_controls_query) else message
+            provider.on_turn_start(turn_number, provider_message, **kwargs)
+
+        self._each_provider("on_turn_start failed", _notify)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         self._each_provider("on_session_end failed", lambda p: p.on_session_end(messages), level=logging.WARNING,
@@ -650,20 +667,27 @@ class MemoryManager:
             except Exception as e:  # pragma: no cover
                 logger.warning("Session-boundary extraction failed: %s", e)
             try:
-                self.on_session_switch(new_session_id, parent_session_id=parent_session_id, reset=True, reason=reason)
+                self.on_session_switch(
+                    new_session_id,
+                    parent_session_id=parent_session_id,
+                    reset=True,
+                    reason=reason,
+                    reset_prefetch_state=False,
+                )
             except Exception as e:  # pragma: no cover
                 logger.warning("Session-boundary switch failed: %s", e)
 
         self._submit_background(_run)
 
     def on_session_switch(self, new_session_id: str, *, parent_session_id: str = "", reset: bool = False,
-                          rewound: bool = False, **kwargs) -> None:
+                          rewound: bool = False, reset_prefetch_state: bool = True, **kwargs) -> None:
         """Notify providers that ``AIAgent.session_id`` rotated without teardown
         (``/resume``, ``/branch``, ``/reset``, ``/new``, compression). ``rewound=True``
         (``/undo``): same id, truncated transcript."""
         if not new_session_id:
             return
-        self._last_prefetch_injected = False
+        if reset_prefetch_state:
+            self._last_prefetch_injected = False
         if rewound:  # forward only when set so it never pollutes providers' **kwargs
             kwargs["rewound"] = True
         self._each_provider(

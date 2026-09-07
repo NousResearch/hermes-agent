@@ -136,7 +136,12 @@ class MemoryProvider(ABC):
     # -- Optional hooks (override to opt in) ---------------------------------
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
-        """Per-turn tick. kwargs may include remaining_tokens, model, platform, tool_count."""
+        """Per-turn tick. kwargs may include remaining_tokens, model, platform, tool_count.
+
+        ``message`` is empty when host policy withholds the current query (for example,
+        until active recall planning has produced the provider-facing query). Providers
+        may still update turn counters, but must not infer or start query-based recall.
+        """
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """End-of-session extraction; fires only at real session boundaries, never per-turn."""

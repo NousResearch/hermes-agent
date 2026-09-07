@@ -202,19 +202,11 @@ def _stamp_worker_session_metadata(
     # closes the run, but it does NOT mark success — doing so would skew the
     # measured "finalize concluded the work" rate with handoffs that hand off
     # rather than conclude. For those, only the fired flag is stamped.
-    try:
-        from agent.kanban_checkpoint import finalize_metrics, mark_finalize_succeeded
-
-        m = finalize_metrics()
-        if m.get("finalize_turn_fired"):
-            if finalize_conclusive:
-                mark_finalize_succeeded()
-                m = finalize_metrics()
-            for key, val in m.items():
-                if val is not None:
-                    to_stamp[key] = val
-    except Exception:
-        logger.debug("finalize-metrics stamp failed", exc_info=True)
+    # 2026-09-07: the finalize-turn metrics stamp was retired with the turn
+    # itself. `finalize_conclusive` stays in the signature so callers keep
+    # working; it no longer drives a stamp. The stop-nudge is measured by the
+    # dispatcher's protocol_violation accounting, which needs no per-process
+    # global to be correct.
     if not to_stamp:
         return metadata
     stamped = dict(metadata or {})

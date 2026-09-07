@@ -2182,18 +2182,9 @@ def run_conversation(
     # turn is capped at ONE per worker run; zero it here, not later, so the
     # first text-exit attempt of this run is the one that may get the forced
     # terminal-tool turn.
-    try:
-        from agent.kanban_checkpoint import (
-            reset_finalize_state,
-            kanban_checkpoint_enabled,
-        )
-
-        if kanban_checkpoint_enabled():
-            reset_finalize_state()
-            agent._kanban_finalize_turn_fired = False
-            agent._kanban_finalize_tools = None
-    except Exception:
-        logger.debug("kanban finalize reset failed", exc_info=True)
+    # 2026-09-07: retired with the finalize turn. agent/kanban_stop.py keeps
+    # its own per-run attempt count on the agent, so there is no cross-run
+    # state left to zero here.
 
     user_message = _ctx.user_message
     original_user_message = _ctx.original_user_message
@@ -3449,38 +3440,19 @@ def run_conversation(
                 # this ONE request's toolset to the terminal kanban tools so the
                 # model can only complete/block — then consume the restriction
                 # so it applies to exactly one turn.
-                try:
-                    from agent.kanban_checkpoint import (
-                        maybe_append_checkpoint_reminder,
-                        worker_task_id,
+                # 2026-09-07: the per-turn `[checkpoint]` reminder and the
+                # forced terminal-only restriction were REMOVED. The reminder
+                # was injected on EVERY turn from turn 1 and opened with a bare
+                # imperative; on t_125dfa35 a deepseek-v4-flash worker read it
+                # as an order and obeyed it mid-orientation, three runs running,
+                # blocking a card with no code written. agent/kanban_stop.py
+                # nudges only at turn END, which is where upstream landed too.
+                if False:  # retired
+                    from agent.kanban_stop import (
+                        session_called_kanban_terminal as _unused_terminal,
                     )
 
-                    if not getattr(agent, "_kanban_finalize_turn_fired", False):
-                        api_messages = maybe_append_checkpoint_reminder(
-                            api_messages, worker_task_id()
-                        )
-                    # (b) Forced finalize-tool restriction. While a finalize
-                    # turn is active, every request of that turn (including
-                    # provider retries) sees ONLY the terminal kanban tools —
-                    # the model cannot make any non-terminal call. The
-                    # restriction releases the moment a terminal tool call is
-                    # visible in the request (i.e. the finalize succeeded).
-                    _fin = getattr(agent, "_kanban_finalize_tools", None)
-                    if _fin:
-                        from agent.kanban_checkpoint import (
-                            _session_called_terminal_in as _terminal_seen,
-                        )
-
-                        if _terminal_seen(api_messages):
-                            # Finalize succeeded — the model produced the
-                            # terminal call; stop restricting next turn.
-                            agent._kanban_finalize_tools = None
-                        else:
-                            tools_for_api = _fin
-                except Exception:
-                    logger.debug(
-                        "kanban finalize request-build hook failed", exc_info=True
-                    )
+                    pass
                 if tools_for_api == agent.tools:
                     api_kwargs = agent._build_api_kwargs(api_messages)
                 else:
@@ -9124,85 +9096,13 @@ def run_conversation(
                     # produces no terminal tool, we fall through to the existing
                     # text-nudge path (bounded, then exit exactly as today — the
                     # dispatcher's protocol-violation retry is untouched).
-                    _finalize_pending = False
-                    if not getattr(agent, "_kanban_finalize_turn_fired", False):
-                        try:
-                            from agent.kanban_checkpoint import (
-                                build_finalize_instruction,
-                                mark_finalize_fired,
-                                should_fire_finalize_turn,
-                                terminal_only_schemas,
-                                worker_task_id,
-                            )
-                            if should_fire_finalize_turn(
-                                attempts=getattr(agent, "_kanban_stop_nudges", 0),
-                                terminal_tools_available=(
-                                    terminal_only_schemas(agent.tools) is not None
-                                ),
-                            ):
-                                _finalize_pending = True
-                        except Exception:
-                            logger.debug(
-                                "kanban finalize-turn decide failed", exc_info=True
-                            )
-
-                    if _finalize_pending:
-                        agent._kanban_finalize_turn_fired = True
-                        agent._kanban_finalize_tools = terminal_only_schemas(agent.tools)
-                        mark_finalize_fired()
-                        # Instrumentation: record the fired flag on the run row
-                        # now, so it is measurable even if the finalize turn still
-                        # fails and the worker exits without a terminal tool
-                        # (best-effort; never breaks the loop).
-                        try:
-                            from tools.kanban_tools import _connect as _kck_connect
-                            _tid = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
-                            _kb, _conn = _kck_connect()
-                            try:
-                                _rid_raw = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
-                                _kb.stamp_worker_run_metadata(
-                                    _conn, _tid,
-                                    extra={"finalize_turn_fired": True},
-                                    expected_run_id=(
-                                        int(_rid_raw) if _rid_raw else None
-                                    ),
-                                )
-                            finally:
-                                try:
-                                    _conn.close()
-                                except Exception:
-                                    pass
-                        except Exception:
-                            logger.debug(
-                                "kanban finalize fired-stamp failed", exc_info=True
-                            )
-                        # Hard token cap for the forced turn: the request-build
-                        # hook consumed by build_api_kwargs reads this once.
-                        agent._ephemeral_max_output_tokens = 600
-                        final_msg["finish_reason"] = "kanban_terminal_required"
-                        final_msg["_kanban_stop_synthetic"] = True
-                        append_message(messages, final_msg)
-                        append_message(messages, {
-                            "role": "user",
-                            "content": build_finalize_instruction(worker_task_id()),
-                            "_kanban_stop_synthetic": True,
-                        })
-                        agent._session_messages = messages
-                        logger.info(
-                            "kanban finalize-in-process turn fired task=%s",
-                            os.environ.get("HERMES_KANBAN_TASK", ""),
-                        )
-                        agent._emit_status(
-                            "⚠️ Kanban finalize turn: forcing terminal tool call "
-                            "(kanban_complete/kanban_block)"
-                        )
-                        _pending_verification_response = final_response
-                        _pending_verification_response_previewed = (
-                            agent._interim_content_was_streamed(final_response or "")
-                        )
-                        final_response = None
-                        continue
-
+                    # 2026-09-07: the forced terminal-only finalize turn was
+                    # REMOVED. Restricting the toolset to complete/block and
+                    # demanding one is coercion, not a reminder — and on a
+                    # worker that had not finished, the only reachable option
+                    # was to block a card that was not broken. The bounded
+                    # text nudge below already recovers the narrated-exit case
+                    # it was built for, and is what upstream kept.
                     # Existing bounded text-nudge path (unchanged).
                     agent._kanban_stop_nudges = (
                         getattr(agent, "_kanban_stop_nudges", 0) + 1

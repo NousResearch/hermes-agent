@@ -162,85 +162,14 @@ def test_stamp_foreign_run_rejected_even_if_id_exists(kanban_home):
         conn.close()
 
 
-# ── _stamp_worker_session_metadata (success-path instrumentation) ─────
-
-
-def normalize(metadata):
-    return dict(metadata or {})
-
-
-def test_stamp_includes_worker_session_and_finalize(kanban_home, monkeypatch):
-    from tools.kanban_tools import _stamp_worker_session_metadata
-
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc")
-    monkeypatch.setenv("HERMES_SESSION_ID", "sess-1")
-
-    from agent import kanban_checkpoint as kcp
-
-    kcp.reset_finalize_state()
-    kcp.mark_finalize_fired()
-
-    # kanban_complete is the conclusive close → marks finalize_turn_succeeded.
-    out = _stamp_worker_session_metadata(
-        "t_abc", {"handoff": "done"}, finalize_conclusive=True
-    )
-    out = normalize(out)
-    assert out["worker_session_id"] == "sess-1"
-    assert out["finalize_turn_fired"] is True
-    assert out["finalize_turn_succeeded"] is True  # conclusive complete
-
-
-def test_stamp_review_handoff_does_not_mark_succeeded(kanban_home, monkeypatch):
-    """A review handoff after a finalize fired is a valid terminal close but not
-    a conclusive complete — it must stamp the fired flag, never succeeded."""
-    from tools.kanban_tools import _stamp_worker_session_metadata
-
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc")
-    monkeypatch.setenv("HERMES_SESSION_ID", "sess-1")
-
-    from agent import kanban_checkpoint as kcp
-
-    kcp.reset_finalize_state()
-    kcp.mark_finalize_fired()
-
-    # kanban_request_review path (default conclusive=False) → NOT succeeded.
-    out = _stamp_worker_session_metadata(
-        "t_abc", {"handoff": "review"}
-    )
-    out = normalize(out)
-    assert out["worker_session_id"] == "sess-1"
-    assert out["finalize_turn_fired"] is True
-    assert out["finalize_turn_succeeded"] is False
-
-
-def test_stamp_foreign_task_untouched(kanban_home, monkeypatch):
-    from tools.kanban_tools import _stamp_worker_session_metadata
-
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
-    monkeypatch.setenv("HERMES_SESSION_ID", "sess-1")
-
-    from agent import kanban_checkpoint as kcp
-
-    kcp.reset_finalize_state()
-    kcp.mark_finalize_fired()
-
-    # Different task id → the stamp is a pass-through, no kanban metadata.
-    out = _stamp_worker_session_metadata("t_other", {"handoff": "done"})
-    assert out == {"handoff": "done"}
-
-
-def test_stamp_no_finalize_leaves_metrics_off(kanban_home, monkeypatch):
-    from tools.kanban_tools import _stamp_worker_session_metadata
-
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc")
-    monkeypatch.setenv("HERMES_SESSION_ID", "sess-1")
-
-    from agent import kanban_checkpoint as kcp
-
-    kcp.reset_finalize_state()
-
-    out = _stamp_worker_session_metadata("t_abc", {"handoff": "done"})
-    out = normalize(out)
-    assert out["worker_session_id"] == "sess-1"
-    assert "finalize_turn_fired" not in out
-    assert "finalize_turn_succeeded" not in out
+# ── 2026-09-07: the finalize-turn stamp tests were removed ───────────
+# Four tests here exercised _stamp_worker_session_metadata stamping
+# finalize_turn_fired / finalize_turn_succeeded, which came from
+# agent.kanban_checkpoint. That module is retired.
+#
+# The six tests above are KEPT and still matter: they cover
+# stamp_worker_run_metadata itself (merge, preserve, empty, missing run,
+# stale-run pinning, foreign-run rejection), used by other callers and
+# unrelated to the finalize turn.
+#
+# The replacement pins live in tests/agent/test_kanban_stop.py.

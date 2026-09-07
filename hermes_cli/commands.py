@@ -383,8 +383,11 @@ def is_gateway_known_command(name: str | None) -> bool:
     up lazily); decides whether the gateway emits ``command:<name>`` hooks."""
     if not name:
         return False
+    plugin_name = name.replace("_", "-")
     return name in GATEWAY_KNOWN_COMMANDS or any(
-        plugin_name == name for plugin_name, _d, _h in _iter_plugin_command_entries())
+        registered_name == name or registered_name == plugin_name
+        for registered_name, _d, _h in _iter_plugin_command_entries()
+    )
 
 
 # Commands with explicit mid-run handling (busy_policy != "reject"). Kept
@@ -411,7 +414,7 @@ def should_bypass_active_session(command_name: str | None) -> bool:
 
     See #10370, #4665, #5057, #6252.
     """
-    return resolve_command(command_name) is not None if command_name else False
+    return is_gateway_known_command(command_name)
 
 
 def _resolve_config_gates() -> set[str]:

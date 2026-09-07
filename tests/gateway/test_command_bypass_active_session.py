@@ -358,6 +358,39 @@ class TestAllResolvableCommandsBypassGuard:
         # A file path split on whitespace: '/path/to/file.py' -> 'path/to/file.py'
         assert should_bypass_active_session("path/to/file.py") is False
 
+    @pytest.mark.asyncio
+    async def test_plugin_commands_are_known_and_bypass_in_telegram_form(self, monkeypatch):
+        from hermes_cli import plugins as plugins_module
+        from hermes_cli.commands import is_gateway_known_command, should_bypass_active_session
+
+        registered = {
+            name: {"description": name}
+            for name in ("rozmilo-override", "rozmilo-resume", "rozmilo-abort")
+        }
+        monkeypatch.setattr(plugins_module, "get_plugin_commands", lambda: registered)
+
+        for registered_name in registered:
+            telegram_name = registered_name.replace("-", "_")
+            assert is_gateway_known_command(registered_name) is True
+            assert is_gateway_known_command(telegram_name) is True
+            assert should_bypass_active_session(registered_name) is True
+            assert should_bypass_active_session(telegram_name) is True
+
+            for command_name in (registered_name, telegram_name):
+                adapter = _make_adapter()
+                session_key = _session_key()
+                adapter._active_sessions[session_key] = asyncio.Event()
+
+                await adapter.handle_message(_make_event(f"/{command_name}"))
+
+                assert session_key not in adapter._pending_messages
+                assert adapter.sent_responses == [f"handled:{command_name}"]
+
+        assert is_gateway_known_command("status") is True
+        assert should_bypass_active_session("reset") is True
+        assert is_gateway_known_command("not-a-plugin-command") is False
+        assert should_bypass_active_session("not-a-plugin-command") is False
+
 
 # ---------------------------------------------------------------------------
 # Tests: non-bypass messages still get queued

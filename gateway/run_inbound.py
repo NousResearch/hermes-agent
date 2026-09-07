@@ -494,9 +494,12 @@ class GatewayInboundMixin:
     async def _hm_busy_slash_or_photo(
         self, event: "MessageEvent", source: SessionSource, _quick_key: str
     ) -> Tuple[bool, Optional[str]]:
-        """Slash-command / photo-burst handling on the busy fast-path → ``(handled, result)``. Each
-        command's mid-run behavior is declared on its CommandDef (busy_policy / busy_handler)."""
-        from hermes_cli.commands import resolve_command as _resolve_cmd_inner
+        """Slash-command / photo-burst handling on the busy fast-path → ``(handled, result)``.
+        Built-ins follow their CommandDef busy policy; registered plugin commands dispatch inline."""
+        from hermes_cli.commands import (
+            is_gateway_known_command as _is_gateway_known_command,
+            resolve_command as _resolve_cmd_inner,
+        )
         _evt_cmd = event.get_command()
         _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
 
@@ -506,14 +509,30 @@ class GatewayInboundMixin:
                 return True, await self._handle_status_command(event)
             if _cmd_def_inner.name == "context":
                 return True, await self._handle_context_command(event)
+            canonical_command = _cmd_def_inner.name
+        elif _evt_cmd and _is_gateway_known_command(_evt_cmd):
+            canonical_command = _evt_cmd.replace("_", "-")
+        else:
+            canonical_command = None
+
+        if canonical_command:
             # Slash access control mirrors the cold-path gate so non-admins can't bypass gating
             # just because an agent is busy. /help and /whoami are the always-allowed floor.
-            _denied = self._check_slash_access(source, _cmd_def_inner.name)
+            _denied = self._check_slash_access(source, canonical_command)
             if _denied is not None:
                 return True, _denied
+
+        if _cmd_def_inner:
             # Any recognized slash command dispatches per its declared busy_policy (dispatch /
-            # interrupt_then_dispatch / reject). Unrecognized commands and plain text fall through.
+            # interrupt_then_dispatch / reject).
             return True, await self._dispatch_busy_slash_command(event, _cmd_def_inner, _quick_key, source)
+
+        if canonical_command:
+            _handled, _result, _command = await self._hm_dispatch_quick_and_plugin_commands(
+                event, source, _evt_cmd
+            )
+            if _handled:
+                return True, _result
 
         # Telegram photo bursts arrive as near-simultaneous updates — never interrupt for a
         # photo-only follow-up; adapter-level batching absorbs them.

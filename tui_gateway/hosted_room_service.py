@@ -27,7 +27,7 @@ from gateway.hosted_room_peer import (
     GatewayRoomCatalog, HostedMemberDispatch, PROTOCOL_VERSION, room_grant_needs_dispatch_refresh,
     attachment_manifest_digest)
 from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime, MemberTransportUnavailable
-from tui_gateway.hosted_room_peer_status import _RouteStatusPeerClient
+from tui_gateway.hosted_room_peer_status import PeerRoomRouteChangedError, _RouteStatusPeerClient
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
 from tui_gateway.hosted_room_artifact_service import HostedRoomArtifactMixin
 from tui_gateway.hosted_room_peer_http import (
@@ -1013,7 +1013,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
                     (room_id, member_id) in self._persisted_peer_route_keys
                     or replace(route, grant=grant) != self.peer_routes.get((room_id, member_id))
                 ):
-                    raise RuntimeError("peer room route changed before admission")
+                    raise PeerRoomRouteChangedError("peer room route changed before admission")
                 return
             if (
                 stored.grant != grant
@@ -1025,7 +1025,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
                 or stored.cancellation_scope_id != route.cancellation_scope_id
                 or stored.trace_id != route.trace_id
             ):
-                raise RuntimeError("peer room route changed before admission")
+                raise PeerRoomRouteChangedError("peer room route changed before admission")
 
         def resolve_observer_grant(grant):
             # Read a CAS-published bearer, never rebind the observer's client/run identity.

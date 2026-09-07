@@ -68,6 +68,13 @@ def main():
             healthy = jobs.create_job(prompt="Local control", schedule="every 1h", script=str(script), no_agent=True, deliver="local")
             ok, _, final, healthy_error = scheduler.run_job(healthy)
             checks["healthy_run"] = ok and "healthy local control" in final and healthy_error is None
+            secret_error = "RuntimeError: https://user:password@localhost/api?token=secret-token"
+            jobs.mark_job_run(job["id"], False, error=secret_error)
+            secret_listing = _format_job(jobs.get_job(job["id"]))
+            visible = secret_listing.get("last_error") or ""
+            checks["listed_credentials_redacted"] = (
+                "localhost" in visible and "password" not in visible and "secret-token" not in visible
+            )
             jobs.mark_job_run(job["id"], True)
             checks["success_clears_error"] = jobs.get_job(job["id"])["last_error"] is None
             print(json.dumps({"checkout": str(checkout), "checks": checks}, indent=2))

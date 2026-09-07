@@ -47,6 +47,18 @@ load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).parent.p
 _CRASH_LOG = os.path.join(_hermes_home, "logs", "tui_gateway_crash.log")
 
 
+def _stderr_write(text: str) -> None:
+    """Best-effort stderr write that never raises.
+
+    The TUI parent can close its stderr pipe mid-session (session recovery, UI
+    recycling); a plain ``print(file=sys.stderr)`` then raises BrokenPipeError
+    and kills the child — worst of all inside the panic hook, where the crash
+    reporter itself would die. All diagnostic stderr writes go through here.
+    """
+    with contextlib.suppress(OSError):
+        print(text, file=sys.stderr, flush=True)
+
+
 def _record_crash(kind: str, exc_type, exc_value, exc_tb, *, thread_name: str | None = None) -> None:
     import traceback
     trace = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
@@ -59,7 +71,7 @@ def _record_crash(kind: str, exc_type, exc_value, exc_tb, *, thread_name: str | 
     # The first line is what the user sees (gateway.stderr Activity line); the rest stays in the log.
     first = str(exc_value).strip().splitlines()[0] if str(exc_value).strip() else exc_type.__name__
     who = f"thread {thread_name} raised " if thread_name is not None else ""
-    print(f"[gateway-crash] {who}{exc_type.__name__}: {first}", file=sys.stderr, flush=True)
+    _stderr_write(f"[gateway-crash] {who}{exc_type.__name__}: {first}")
 
 
 def _panic_hook(exc_type, exc_value, exc_tb):
@@ -1764,7 +1776,7 @@ def _gui_surface_toolsets(platform: str) -> set[str]:
 
 
 def _tui_notice(text: str) -> None:
-    print(text, file=sys.stderr, flush=True)
+    _stderr_write(text)
 
 
 def _resolve_explicit_toolsets(explicit: list[str], validate_toolset) -> list[str] | None | bool:

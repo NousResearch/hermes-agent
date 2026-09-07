@@ -394,21 +394,22 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
     complete_event_delivery(evt, claim)
 
 
-def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, completions=None) -> bool:
+def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, completions=None, *, owned=False) -> bool:
     """Route one dequeued event: foreign (another live session owns it) → requeued, or onto ``deferred`` during the
     shutdown drain; unowned (addressed but unprovable — never adopt an orphan) → dropped, except delegation payloads
     deferred for a resume; ours (or ownerless legacy, kept process-global) → status.update once, then an agent turn if
-    idle. False = the drain must stop (session busy)."""
+    idle. False = the drain must stop (session busy). ``owned`` skips the ownership gates for events a caller already
+    drained through ``_session_owns_notification_event`` (the post-turn safety net), so lineage resolves once."""
     queue = registry.completion_queue
     evt_type, is_delegation = evt.get("type", "completion"), evt.get("type") == "async_delegation"
-    if _notification_event_belongs_elsewhere(sid, session, evt):
+    if not owned and _notification_event_belongs_elsewhere(sid, session, evt):
         if deferred is not None:
             deferred.append(evt)
         else:  # otherwise a process started in session A surfaces in whichever poller wakes first
             queue.put(evt)
             time.sleep(0.1)
         return True
-    if _notification_event_requires_owner(evt) and not _session_owns_notification_event(sid, session, evt):
+    if not owned and _notification_event_requires_owner(evt) and not _session_owns_notification_event(sid, session, evt):
         origin, key = str(evt.get("origin_ui_session_id") or ""), str(evt.get("session_key") or "")
         if deferred is None:
             (logger.warning if is_delegation else logger.debug)(
@@ -474,14 +475,14 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
         complete_event_delivery(event, claim)
 
 
-def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred):
+def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, *, owned=False):
     """One ready snapshot: ownership and UI emission per event, one turn per completion run."""
     completions = []
     for index, event in enumerate(events):
         if event.get("type", "completion") != "completion":
             _notif_dispatch_completions(sid, session, completions, registry, deferred)
             completions = []
-        if not _notif_handle_event(sid, session, event, emitted, registry, fmt, deferred, completions):
+        if not _notif_handle_event(sid, session, event, emitted, registry, fmt, deferred, completions, owned=owned):
             for remaining in events[index + 1:]:
                 (deferred.append if deferred is not None else registry.completion_queue.put)(remaining)
             break

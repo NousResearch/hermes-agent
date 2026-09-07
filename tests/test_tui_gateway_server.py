@@ -7564,6 +7564,9 @@ def test_run_prompt_submit_requeues_all_unstarted_notifications_with_real_thread
         }
         for index in range(1, 4)
     ]
+    # Consecutive completions share one turn (#104671); a watch_match is a turn
+    # barrier, so it is the in-flight turn behind which batch_2/batch_3 must survive.
+    events[0].update(type="watch_match", pattern="owned-1")
     isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
     for event in events:
         isolated_queue.put(event)

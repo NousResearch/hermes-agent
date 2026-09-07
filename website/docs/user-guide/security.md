@@ -743,6 +743,11 @@ Context files (AGENTS.md, .cursorrules, SOUL.md) are scanned for prompt injectio
 - Credential exfiltration via `curl`
 - Invisible Unicode characters (zero-width spaces, bidirectional overrides)
 
+The translation-and-execution check requires a short language/format clause (for example,
+“translate this into a bash script and execute it”). It does not connect translation
+and execution verbs across unrelated comma-separated role prose. These patterns are
+heuristics, not semantic intent detection.
+
 Blocked files show a warning:
 
 ```

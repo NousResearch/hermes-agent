@@ -78,6 +78,34 @@ def test_exact_plan_is_private_and_repeated_consent_applies_once(consent):
         )
 
 
+def test_requested_consent_is_not_gated_as_an_unsolicited_recommendation(consent, monkeypatch):
+    from tools import wisdom_tool
+
+    instance, actor, _, _ = consent
+    env = {
+        "HERMES_SESSION_PLATFORM": actor.platform,
+        "HERMES_SESSION_KEY": actor.session_key,
+        "HERMES_SESSION_USER_ID": actor.actor_id,
+        "HERMES_SESSION_CHAT_ID": actor.chat_id,
+        "HERMES_SESSION_CHAT_TYPE": "private",
+        "HERMES_SESSION_THREAD_ID": actor.thread_id,
+    }
+    monkeypatch.setattr(wisdom_tool, "available", lambda: True)
+    monkeypatch.setattr("gateway.session_context.get_session_env", lambda key: env.get(key, ""))
+    monkeypatch.setattr("hermes_wisdom.service.WisdomService", lambda: instance.service)
+    result = json.loads(wisdom_tool.present({
+        "kind": "skill", "identity": "skill", "version": 1,
+        "title": "Requested skill", "explanation": "You asked to review this skill.",
+    }))
+    jobs = [j for j in instance.queue.assessments("org") if j["event_key"].startswith("request:")]
+    assert len(jobs) == 1 and jobs[0]["reference"]["user_requested"] is True
+    policy = Mock(side_effect=AssertionError("manual review must not load proactive policy"))
+    monkeypatch.setattr("hermes_wisdom.agent_led.policy.load_policy", policy)
+    assert WisdomMediation(instance.service)._eligible_jobs("org", jobs) == jobs
+    assert result["status"] == "pending"
+    instance.service.install_apply.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "field,value",
     [

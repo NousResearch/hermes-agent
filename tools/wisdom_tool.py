@@ -123,6 +123,7 @@ def present(args: dict) -> str:
         get_session_env("HERMES_SESSION_SCOPE_ID"),
     )
     reference = _reference(service, target)
+    reference["user_requested"] = True
     identity = mediation.queue.enqueue(
         org,
         f"request:{target.kind}:{target.identity}:{target.version or reference.get('content_hash')}",

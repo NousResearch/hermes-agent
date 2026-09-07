@@ -29,6 +29,9 @@ first used; the server remains running for reuse after a Hermes session exits.
 Quick Local deliberately ignores `OPENVIKING_*` environment overrides so its
 profile-scoped managed configuration remains authoritative. Those variables
 continue to apply to self-managed connections.
+Quick Local cannot verify which configuration a manually started OpenViking
+process loaded. When setup reports that a restart is required, stop that process
+and let Hermes start the managed server through the normal Quick Local flow.
 
 ## Self-managed requirements
 

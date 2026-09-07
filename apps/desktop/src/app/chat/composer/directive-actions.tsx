@@ -96,8 +96,10 @@ export function ComposerDirectiveActions({ editorRef }: { editorRef: RefObject<H
       const editor = editorRef.current
       const chip = editor && actionableChipAt(event.target, editor)
 
-      // A move within the same chip (its icon → its label) is not a leave.
-      if (chip && editor && chip === actionableChipAt(event.relatedTarget, editor)) {
+      // Only this editor's chip departures start the grace window. The pill
+      // owns its own boundary; internal pill or unrelated document transitions
+      // must neither dismiss a hovered action nor postpone an existing leave.
+      if (!chip || !editor || chip === actionableChipAt(event.relatedTarget, editor)) {
         return
       }
 

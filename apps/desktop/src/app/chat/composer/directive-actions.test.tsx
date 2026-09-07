@@ -150,6 +150,11 @@ describe('ComposerDirectiveActions', () => {
     })
 
     expect(pillValue()).toBe('https://example.com')
+
+    const button = screen.getByRole('button')
+    fireEvent.pointerOut(button, { relatedTarget: button.firstElementChild })
+    act(() => { vi.advanceTimersByTime(750) })
+    expect(pillValue()).toBe('https://example.com')
   })
 
   it('still hides shortly after the pointer leaves the pill for good', () => {
@@ -162,9 +167,9 @@ describe('ComposerDirectiveActions', () => {
     fireEvent.pointerOut(chip, { relatedTarget: null })
     fireEvent.mouseEnter(screen.getByRole('button').parentElement!)
     fireEvent.mouseLeave(screen.getByRole('button').parentElement!)
-    act(() => {
-      vi.advanceTimersByTime(500)
-    })
+    act(() => { vi.advanceTimersByTime(300) })
+    fireEvent.pointerOut(document.body, { relatedTarget: document.documentElement })
+    act(() => { vi.advanceTimersByTime(200) })
 
     expect(pillValue()).toBeNull()
   })

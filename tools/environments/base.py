@@ -59,6 +59,14 @@ def _run_best_effort_bounded(fn, budget_s: float, label: str) -> None:
     unkillable D-state children — that would otherwise wedge the caller far past
     the command's own timeout and, on the gateway, silently disable the asyncio
     event loop until the shutdown watchdog kills the whole process.
+
+    Trade-off: an abandoned worker that unblocks late can still run its kill
+    against a PID the kernel has since recycled. PID reuse within the second-scale
+    window is unlikely, and the kills are identity-aware where possible (psutil
+    ``is_running`` checks) or target an already-dead, unkillable tree — the worst
+    realistic case is signalling an unrelated short-lived process, not a wedge.
+    Cancellable kills do not exist for blocking syscalls, so abandonment is the
+    only option; the bound is worth more than the residual risk.
     """
     done = threading.Event()
 

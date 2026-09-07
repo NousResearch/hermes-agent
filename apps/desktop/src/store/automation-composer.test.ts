@@ -5,6 +5,7 @@ import {
   closeAutomationComposer,
   invalidateOnSessionSwitch,
   openAutomationComposer,
+  openAutomationComposerForEdit,
   setAutomationComposerType,
   submitAutomation
 } from './automation-composer'
@@ -27,6 +28,7 @@ const resetStore = () => {
     open: false,
     sessionId: null,
     type: 'goal',
+    mode: 'create',
     submitting: false,
     error: null
   })
@@ -44,6 +46,7 @@ describe('automation-composer store', () => {
       const state = $automationComposer.get()
       expect(state.open).toBe(true)
       expect(state.type).toBe('loop')
+      expect(state.mode).toBe('create')
       expect(state.sessionId).toBe('session-456')
       expect(state.submitting).toBe(false)
       expect(state.error).toBe(null)
@@ -59,6 +62,7 @@ describe('automation-composer store', () => {
         open: true,
         sessionId: 'session-1',
         type: 'goal',
+        mode: 'create',
         submitting: true,
         error: null
       })
@@ -77,6 +81,7 @@ describe('automation-composer store', () => {
         open: false,
         sessionId: null,
         type: 'goal',
+        mode: 'create',
         submitting: false,
         error: null
       })
@@ -87,6 +92,7 @@ describe('automation-composer store', () => {
         open: true,
         sessionId: 'session-1',
         type: 'goal',
+        mode: 'create',
         submitting: true,
         error: null
       })
@@ -110,11 +116,19 @@ describe('automation-composer store', () => {
         open: true,
         sessionId: 'session-1',
         type: 'goal',
+        mode: 'create',
         submitting: true,
         error: null
       })
       setAutomationComposerType('loop')
       expect($automationComposer.get().type).toBe('goal')
+    })
+
+    it('does not switch type in edit mode', () => {
+      openAutomationComposerForEdit('goal', 'session-1')
+      setAutomationComposerType('loop')
+      expect($automationComposer.get().type).toBe('goal')
+      expect($automationComposer.get().mode).toBe('edit')
     })
   })
 
@@ -140,7 +154,7 @@ describe('automation-composer store', () => {
     })
 
     it('ignores an unset captured session', () => {
-      $automationComposer.set({ open: true, sessionId: null, type: 'goal', submitting: false, error: null })
+      $automationComposer.set({ open: true, sessionId: null, type: 'goal', mode: 'create', submitting: false, error: null })
       invalidateOnSessionSwitch()
       expect($automationComposer.get().open).toBe(true)
     })
@@ -228,6 +242,78 @@ describe('automation-composer store', () => {
       openAutomationComposer('goal', 'session-1')
       await expect(submitAutomation('goal', { prompt: 'x' })).rejects.toThrow()
       expect($automationComposer.get().error!.length).toBeLessThanOrEqual(240)
+    })
+  })
+
+  describe('openAutomationComposerForEdit', () => {
+    it('opens in edit mode with the given type and session', () => {
+      openAutomationComposerForEdit('loop', 'session-789')
+      const state = $automationComposer.get()
+      expect(state.open).toBe(true)
+      expect(state.type).toBe('loop')
+      expect(state.mode).toBe('edit')
+      expect(state.sessionId).toBe('session-789')
+    })
+
+    it('does not reopen while submitting', () => {
+      $automationComposer.set({
+        open: true,
+        sessionId: 'session-1',
+        type: 'goal',
+        mode: 'edit',
+        submitting: true,
+        error: null
+      })
+      openAutomationComposerForEdit('loop', 'session-2')
+      expect($automationComposer.get().type).toBe('goal')
+      expect($automationComposer.get().sessionId).toBe('session-1')
+    })
+  })
+
+  describe('submitAutomation in edit mode', () => {
+    it('dispatches the matching update action', async () => {
+      vi.mocked(runSessionControlAction).mockResolvedValueOnce({ type: 'exec' } as never)
+      openAutomationComposerForEdit('goal', 'session-7')
+      await submitAutomation('goal', { prompt: 'updated objective', max_turns: 30 })
+      expect(runSessionControlAction).toHaveBeenCalledWith('session-7', 'goal.update', {
+        prompt: 'updated objective',
+        max_turns: 30
+      })
+    })
+
+    it('dispatches loop.update for loop edit', async () => {
+      vi.mocked(runSessionControlAction).mockResolvedValueOnce({ type: 'exec' } as never)
+      openAutomationComposerForEdit('loop', 'session-7')
+      await submitAutomation('loop', { prompt: 'updated', interval_seconds: 120 })
+      expect(runSessionControlAction).toHaveBeenCalledWith('session-7', 'loop.update', {
+        prompt: 'updated',
+        interval_seconds: 120
+      })
+    })
+
+    it('dispatches heartbeat.update for heartbeat edit', async () => {
+      vi.mocked(runSessionControlAction).mockResolvedValueOnce({ type: 'exec' } as never)
+      openAutomationComposerForEdit('heartbeat', 'session-7')
+      await submitAutomation('heartbeat', { prompt: 'updated', interval_seconds: 300 })
+      expect(runSessionControlAction).toHaveBeenCalledWith('session-7', 'heartbeat.update', {
+        prompt: 'updated',
+        interval_seconds: 300
+      })
+    })
+
+    it('closes on success after edit', async () => {
+      vi.mocked(runSessionControlAction).mockResolvedValueOnce({ type: 'exec' } as never)
+      openAutomationComposerForEdit('goal', 'session-1')
+      await submitAutomation('goal', { prompt: 'updated' })
+      expect($automationComposer.get().open).toBe(false)
+    })
+
+    it('keeps dialog open with error on failure', async () => {
+      vi.mocked(runSessionControlAction).mockRejectedValueOnce(new Error('No goal exists to update'))
+      openAutomationComposerForEdit('goal', 'session-1')
+      await expect(submitAutomation('goal', { prompt: 'x' })).rejects.toThrow()
+      expect($automationComposer.get().open).toBe(true)
+      expect($automationComposer.get().error).toContain('No goal exists')
     })
   })
 })

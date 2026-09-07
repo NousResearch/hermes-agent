@@ -2616,6 +2616,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("drive_preview", {"action": "elements"}),
         ("annotate_preview", {"action": "clear"}),
         ("read_window_below", {}),
+        ("pen_canvas", {"action": "get_app_state"}),
         ("setup_mcp", {"server": "linear", "action": "install"}),
         ("gui_tour", {"action": "stop"}),
         ("delegate_task", {"goal": "Check the child path"}),
@@ -2671,6 +2672,10 @@ class TestAgentRuntimePostHookOwnershipSync:
         )
         monkeypatch.setattr(
             "tools.read_window_tool.read_window_below_tool",
+            lambda **kwargs: '{"ok":true}',
+        )
+        monkeypatch.setattr(
+            "tools.pen_canvas_tool.pen_canvas_tool",
             lambda **kwargs: '{"ok":true}',
         )
         monkeypatch.setattr(agent, "_get_session_db_for_recall", lambda: None)

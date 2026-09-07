@@ -1,9 +1,9 @@
 import { mediaExternalUrl, resolveMediaDisplaySrc } from '@/lib/media'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
-export type ArtifactKind = 'image' | 'file' | 'link'
+export type ArtifactKind = 'canvas' | 'file' | 'image' | 'link'
 export type ArtifactFilter = 'all' | ArtifactKind
-export const ARTIFACT_FILTERS: readonly ArtifactFilter[] = ['all', 'image', 'file', 'link']
+export const ARTIFACT_FILTERS: readonly ArtifactFilter[] = ['all', 'canvas', 'image', 'file', 'link']
 
 export interface ArtifactRecord {
   id: string
@@ -11,6 +11,8 @@ export interface ArtifactRecord {
   value: string
   href: string
   label: string
+  /** Canvas records only: absolute path of the rendered preview PNG. */
+  preview?: null | string
   sessionId: string
   sessionTitle: string
   timestamp: number
@@ -192,6 +194,32 @@ export async function artifactImageSrc(value: string): Promise<string> {
   // Reimplementing that ladder here would drift from resolveMediaDisplaySrc
   // and regress one of its legs (#83380).
   return resolveMediaDisplaySrc(value)
+}
+
+export async function loadCanvasArtifacts(): Promise<ArtifactRecord[]> {
+  const pen = window.hermesDesktop?.pen
+
+  if (!pen?.library) {
+    return []
+  }
+
+  try {
+    const { items } = await pen.library()
+
+    return items.map(item => ({
+      id: `canvas:${item.path}`,
+      kind: 'canvas' as const,
+      value: item.path,
+      href: item.path,
+      label: item.name,
+      preview: item.previewPath,
+      sessionId: item.sessionId ?? '',
+      sessionTitle: item.name,
+      timestamp: item.modifiedAt
+    }))
+  } catch {
+    return []
+  }
 }
 
 function artifactLabel(value: string): string {

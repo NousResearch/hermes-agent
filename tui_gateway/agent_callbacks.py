@@ -112,6 +112,9 @@ def _agent_cbs(sid: str) -> dict:
         # (typing an API key, browser OAuth) and, like clarify, a late answer is tolerated.
         "setup_mcp_callback": lambda server, action, reason: _block(
             "mcp.setup.request", sid, {"server": server, "action": action, "reason": reason}, timeout=600),
+        # pen_canvas (desktop GUI): a long design render can outlive the tool's bounded wait.
+        "pen_canvas_callback": lambda action, args: _block(
+            "pen.tool.request", sid, {"action": action, "args": args or {}}, timeout=120),
         # tour (desktop GUI): renderer drives driver.js and answers tour.respond.
         "tour_callback": lambda payload: _tour_request(sid, payload)}
 

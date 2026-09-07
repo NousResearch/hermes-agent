@@ -304,6 +304,7 @@ import {
   runPrimaryBackendStartup
 } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
+import { shutdownPenHost, syncPenWebTheme, wirePenCanvas } from './pen'
 import {
   assertLocalProfileCanStart,
   decideProfileDeleteAction,
@@ -17158,6 +17159,8 @@ ipcMain.on('hermes:native-theme', (_event, mode) => {
     nativeTheme.themeSource = mode
     writePersistedThemeSource(mode)
   }
+
+  syncPenWebTheme()
 })
 
 // See-through window translucency. Persist + re-apply to every open window at
@@ -18080,6 +18083,10 @@ app.whenReady().then(() => {
   installMediaPermissions()
   installDownloadHandling()
   registerMediaProtocol()
+  wirePenCanvas({
+    preloadPath: path.join(APP_ROOT, 'dist', 'pen-web-preload.cjs'),
+    windowBackground: getWindowBackgroundColor
+  })
   installEmbedReferer()
   installRemoteHeaderRules()
   registerDeepLinkProtocol()
@@ -18242,6 +18249,9 @@ app.on('before-quit', event => {
   // callbacks cannot recreate a backend for a registration whose app is
   // already quitting (#91668).
   sshBootstrapCoordinator.shutdown()
+
+  // Drop the embed-bridge port so a relaunch doesn't meet a stale handshake.
+  shutdownPenHost()
 
   if (!backendQuitTeardownDone) {
     event.preventDefault()

@@ -29,12 +29,13 @@ import {
   urlSlugTitleLabel,
   useLinkTitle
 } from '@/lib/external-link'
-import { FileImage, FileText, FolderOpen, Link2 } from '@/lib/icons'
+import { FileImage, FileText, FolderOpen, Link2, Pencil } from '@/lib/icons'
 import { downloadGatewayMediaFile, isRemoteGateway } from '@/lib/media'
 import { normalize } from '@/lib/text'
 import { fmtDayTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
+import { openPenCanvas } from '@/store/pen'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -47,7 +48,8 @@ import {
   type ArtifactFilter,
   artifactImageSrc,
   type ArtifactRecord,
-  loadArtifactsForSessions
+  loadArtifactsForSessions,
+  loadCanvasArtifacts
 } from './artifact-utils'
 
 function formatArtifactTime(timestamp: number): string {
@@ -138,10 +140,15 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     try {
       const sessions = (await listAllProfileSessions(30, 1)).sessions
 
-      const { artifacts: nextArtifacts, failures } = await loadArtifactsForSessions(
-        sessions,
-        async session => (await getAllSessionMessages(session.id, session.profile)).messages
-      )
+      // Canvases load beside the transcript mine — filesystem library, not
+      // message parsing — so a library-only failure can't take the page down.
+      const [{ artifacts: nextArtifacts, failures }, canvases] = await Promise.all([
+        loadArtifactsForSessions(
+          sessions,
+          async session => (await getAllSessionMessages(session.id, session.profile)).messages
+        ),
+        loadCanvasArtifacts()
+      ])
 
       if (failures.length > 0) {
         const safeLimitFailures = failures.filter(({ error }) =>
@@ -167,7 +174,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         })
       }
 
-      setArtifacts(nextArtifacts.sort((left, right) => right.timestamp - left.timestamp))
+      setArtifacts([...canvases, ...nextArtifacts].sort((left, right) => right.timestamp - left.timestamp))
     } catch (err) {
       notifyError(err, a.failedLoad)
       setArtifacts([])
@@ -212,13 +219,15 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     })
   }, [artifacts, kindFilter, query])
 
+  // Canvases are visual artifacts: they share the thumbnail grid with images
+  // rather than sitting as rows in the file table.
   const visibleImageArtifacts = useMemo(
-    () => visibleArtifacts.filter(artifact => artifact.kind === 'image'),
+    () => visibleArtifacts.filter(artifact => artifact.kind === 'image' || artifact.kind === 'canvas'),
     [visibleArtifacts]
   )
 
   const visibleFileArtifacts = useMemo(
-    () => visibleArtifacts.filter(artifact => artifact.kind !== 'image'),
+    () => visibleArtifacts.filter(artifact => artifact.kind !== 'image' && artifact.kind !== 'canvas'),
     [visibleArtifacts]
   )
 
@@ -263,6 +272,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
     return {
       all: all.length,
+      canvas: all.filter(artifact => artifact.kind === 'canvas').length,
       image: all.filter(artifact => artifact.kind === 'image').length,
       file: all.filter(artifact => artifact.kind === 'file').length,
       link: all.filter(artifact => artifact.kind === 'link').length
@@ -337,6 +347,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       searchValue={query}
       tabs={[
         { id: 'all', label: a.tabAll, meta: artifacts ? counts.all : null },
+        { id: 'canvas', label: a.tabCanvases, meta: artifacts ? counts.canvas : null },
         { id: 'image', label: a.tabImages, meta: artifacts ? counts.image : null },
         { id: 'file', label: a.tabFiles, meta: artifacts ? counts.file : null },
         { id: 'link', label: a.tabLinks, meta: artifacts ? counts.link : null }
@@ -467,14 +478,21 @@ interface ArtifactImageCardProps {
 function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: ArtifactImageCardProps) {
   const { t } = useI18n()
   const a = t.artifacts
-  const kindLabel = artifact.kind === 'image' ? a.kindImage : artifact.kind === 'file' ? a.kindFile : a.kindLink
+  const isCanvas = artifact.kind === 'canvas'
+  const kindLabel = isCanvas
+    ? a.kindCanvas
+    : artifact.kind === 'image'
+      ? a.kindImage
+      : artifact.kind === 'file'
+        ? a.kindFile
+        : a.kindLink
   const [src, setSrc] = useState('')
 
   useEffect(() => {
     let active = true
 
     setSrc('')
-    void artifactImageSrc(artifact.value)
+    void artifactImageSrc(isCanvas ? (artifact.preview ?? '') : artifact.value)
       .then(nextSrc => {
         if (active) {
           setSrc(nextSrc)
@@ -489,7 +507,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
     return () => {
       active = false
     }
-  }, [artifact.href, artifact.id, artifact.value, onImageError])
+  }, [artifact.href, artifact.id, artifact.preview, artifact.value, isCanvas, onImageError])
 
   return (
     <article
@@ -519,7 +537,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
       <div className="space-y-1.5 p-2">
         <div className="min-w-0">
           <div className="mb-0.5 flex items-center gap-1 text-[0.625rem] uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
-            <FileImage className="size-3" />
+            {isCanvas ? <Pencil className="size-3" /> : <FileImage className="size-3" />}
             {kindLabel}
           </div>
           <div className="truncate text-[length:var(--conversation-caption-font-size)] font-medium">
@@ -533,10 +551,23 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
         </div>
 
         <div className="flex flex-wrap gap-1.5">
-          <Button onClick={() => onOpenChat(artifact.sessionId)} size="xs" type="button" variant="textStrong">
-            <FolderOpen className="size-3" />
-            {a.chat}
-          </Button>
+          {isCanvas && (
+            <Button
+              onClick={() => void openPenCanvas({ path: artifact.value })}
+              size="xs"
+              type="button"
+              variant="textStrong"
+            >
+              <Pencil className="size-3" />
+              {a.openCanvas}
+            </Button>
+          )}
+          {artifact.sessionId && (
+            <Button onClick={() => onOpenChat(artifact.sessionId)} size="xs" type="button" variant="textStrong">
+              <FolderOpen className="size-3" />
+              {a.chat}
+            </Button>
+          )}
         </div>
       </div>
     </article>

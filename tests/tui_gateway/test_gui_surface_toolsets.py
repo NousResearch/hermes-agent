@@ -23,6 +23,7 @@ GUI_TOOLS = {
     "drive_preview",
     "close_terminal",
     "focus_pane",
+    "pen_canvas",
     "read_terminal",
     "read_window_below",
     "react_to_message",

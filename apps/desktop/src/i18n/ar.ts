@@ -1097,6 +1097,15 @@ export const ar = defineLocale({
     durationMinutes: (minutes, seconds) => `${minutes} د ${seconds} ث`,
     tokens: value => `${value} رمز`
   },
+  penLibrary: {
+    title: 'اللوحات',
+    searchPlaceholder: 'ابحث في اللوحات…',
+    empty: 'لا توجد لوحات بعد',
+    delete: 'حذف اللوحة',
+    confirmDelete: 'حذف',
+    cancelDelete: 'إبقاء'
+  },
+
   commandCenter: {
     close: 'إغلاق',
     paletteTitle: 'لوحة الأوامر',
@@ -2471,6 +2480,10 @@ export const ar = defineLocale({
     loadingFiles: 'جار تحميل الملفات...',
     terminalHide: 'إخفاء الطرفية',
     addToChat: 'إضافة للمحادثة'
+  },
+
+  pen: {
+    openFailed: 'تعذّر فتح اللوحة'
   },
   preview: {
     tab: 'معاينة',

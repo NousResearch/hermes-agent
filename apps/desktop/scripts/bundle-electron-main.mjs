@@ -23,6 +23,8 @@ const mainEntry = resolve(root, 'electron/main.ts')
 const mainOut = resolve(distDir, 'electron-main.mjs')
 const preloadEntry = resolve(root, 'electron/preload.ts')
 const preloadOut = resolve(distDir, 'electron-preload.js')
+const penWebPreloadEntry = resolve(root, 'electron/pen-web-preload.ts')
+const penWebPreloadOut = resolve(distDir, 'pen-web-preload.cjs')
 
 const external = ['electron', 'node-pty', 'get-windows', 'fs']
 // Production bundles bake packaged=true so unpackaged `electron .` still
@@ -63,3 +65,19 @@ await build({
   logLevel: 'info',
 })
 console.log(`bundled ${preloadOut}${isDev ? ' (dev)' : ''}`)
+
+// Bundle pen-web-preload.ts → dist/pen-web-preload.cjs (app.pen.dev MessagePort
+// relay — see electron/pen/web-bridge.ts). .cjs because the package is
+// "type": "module" and an unsandboxed preload loads through Node's resolver.
+await build({
+  entryPoints: [penWebPreloadEntry],
+  bundle: true,
+  platform: 'node',
+  format: 'cjs',
+  target: 'node20',
+  outfile: penWebPreloadOut,
+  external,
+  define,
+  logLevel: 'info',
+})
+console.log(`bundled ${penWebPreloadOut}${isDev ? ' (dev)' : ''}`)

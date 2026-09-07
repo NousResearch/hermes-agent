@@ -175,6 +175,38 @@ test('abort restoration keeps retries excluded while allowing its backend start 
   assert.equal(state.phase, 'idle')
 })
 
+test('an aborted handoff reports the failure before it starts restoring', async () => {
+  const state: WindowsUpdateState = { phase: 'idle' }
+  const events: string[] = []
+
+  const result = await applyWindowsUpdate(
+    {},
+    deps(state, {
+      authenticate: async () => false,
+      emitProgress: progress => {
+        events.push(`progress:${progress.stage}`)
+      },
+      // The script adopted the marker before the ack wait ran out, so the
+      // Desktop cannot release it and falls back to polling for clearance.
+      releaseMarker: () => false,
+      waitForMarkerClearance: async () => {
+        events.push('clearance')
+
+        return 'clear'
+      },
+      restoreBackends: async () => {
+        events.push('restore')
+      }
+    })
+  )
+
+  // The error came last, so the user sat on the 100% "this window will close
+  // and Hermes will restart" card for the whole clearance poll -- up to 20
+  // minutes -- with no backend behind it and no word about the failure.
+  assert.deepEqual(events, ['progress:restart', 'progress:error', 'clearance', 'restore'])
+  assert.equal(result.ok, false)
+})
+
 test('restoration cannot enter its backend-start phase until marker clearance is proven', async () => {
   const state: WindowsUpdateState = { phase: 'idle' }
   let clearMarker!: () => void

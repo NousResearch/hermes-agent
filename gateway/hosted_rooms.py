@@ -379,6 +379,7 @@ def _migrate_legacy_columns(conn: sqlite3.Connection) -> None:
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
+    from gateway.hosted_room_authority_history import MAX_AUTHORITY_SPANS
     for statement in _SCHEMA_DDL:
         conn.execute(statement)
     _migrate_legacy_columns(conn)
@@ -388,6 +389,14 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     conn.execute(_RETIRE_FROM_ROOMS.format(where="disbanded_at IS NOT NULL"))
     _migrate_remote_run_schema(conn)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_hosted_room_events_cursor ON hosted_room_events(room_id, seq)")
+    conn.execute("""CREATE INDEX IF NOT EXISTS idx_hosted_room_authority_history
+        ON hosted_room_events(room_id, seq) WHERE kind='authority.claimed'""")
+    conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_hosted_room_authority_history_bound
+        BEFORE INSERT ON hosted_room_events
+        WHEN NEW.kind='authority.claimed' AND
+          (SELECT COUNT(*) FROM hosted_room_events WHERE room_id=NEW.room_id AND kind='authority.claimed')
+          >= {MAX_AUTHORITY_SPANS - 1}
+        BEGIN SELECT RAISE(ABORT, 'authority history capacity exceeded'); END""")
     route_schema.initialize_route_schema(conn)
     room_safety.initialize_safety_schema(conn)
     if not _schema_is_current(conn):
@@ -402,6 +411,10 @@ def _schema_is_current(conn: sqlite3.Connection) -> bool:
         and (table != "hosted_room_remote_runs" or _remote_run_schema_current(conn, columns))
         for (table, required), columns in zip(_REQUIRED_COLUMNS, actual, strict=True)) and conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_hosted_room_events_cursor'"
+    ).fetchone() is not None and conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_hosted_room_authority_history'"
+    ).fetchone() is not None and conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='trg_hosted_room_authority_history_bound'"
     ).fetchone() is not None and room_safety.safety_schema_is_current(conn) and route_schema.route_schema_is_current(conn)
 
 
@@ -1199,6 +1212,7 @@ def probe_peer_room_reservation(
 
 def room_state(db_path: DbPath, *, room_id: Any, include_disbanded: bool = False) -> dict[str, Any]:
     """Return durable replay and authority state for one room."""
+    from gateway.hosted_room_authority_history import AuthorityHistoryError, read_history_locked
     room_id = _room_id(room_id)
     with _transaction(db_path) as conn:
         room_safety._raise_if_quarantined(conn, room_id)
@@ -1210,7 +1224,13 @@ def room_state(db_path: DbPath, *, room_id: Any, include_disbanded: bool = False
             f"""SELECT {_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=?
                 AND kind='authority.claimed' AND authority_epoch=? ORDER BY seq DESC LIMIT 1""",
             (room_id, int(row["authority_epoch"]))).fetchone()
-    return {**_room_from_row(row), **({"authority_claim": _event_from_row(claim_row)} if claim_row is not None else {})}
+        try:
+            history = read_history_locked(conn, room_id, gateway_id=str(row["authority_gateway_id"]),
+                                          epoch=int(row["authority_epoch"]))
+        except (AuthorityHistoryError, ValueError, TypeError) as exc:
+            raise AuthorityConflictError("hosted room authority history is unavailable") from exc
+    return {**_room_from_row(row), **({"authority_claim": _event_from_row(claim_row)} if claim_row is not None else {}),
+            **({"authority_history": history} if history is not None else {})}
 
 
 def request_room_stop(
@@ -1253,6 +1273,12 @@ def claim_authority(
                 raise AuthoritySupersededError("authority claim succeeded but was later superseded")
         else:
             _require_authority(row, expected_gateway_id, expected_epoch, "hosted room authority changed")
+            from gateway.hosted_room_authority_history import MAX_AUTHORITY_SPANS
+            claim_count = conn.execute(
+                "SELECT COUNT(*) FROM hosted_room_events WHERE room_id=? AND kind='authority.claimed'", (room_id,)
+            ).fetchone()[0]
+            if claim_count >= MAX_AUTHORITY_SPANS - 1:
+                raise AuthorityConflictError("Group Chat recovery history is full. The current host can keep working.")
             # Insert the claim event, then CAS the room's authority behind the epoch fence.
             claim_bytes = _insert_event(
                 conn, row, room_id, int(row["next_seq"]), event_id, "authority.claimed", claim_actor_json, target_epoch,

@@ -155,6 +155,14 @@ FEISHU_ALLOWED_USERS=ou_xxx,ou_yyy
 
 如果白名单为空，任何能访问机器人的人都可能使用它。在群聊中，消息处理前会根据发送者的 open_id 检查白名单。
 
+白名单之外的用户发来的单聊消息，遵循网关全局的 `unauthorized_dm_behavior` 设置（参见[安全](../security.md#dm-pairing-system)）。配置了白名单时默认值为 `ignore`（静默丢弃）；设为 `pair` 则回复配对码，也可以只为飞书单独覆盖：
+
+```yaml
+platforms:
+  feishu:
+    unauthorized_dm_behavior: pair   # 或 ignore
+```
+
 ### Webhook 加密密钥
 
 在 webhook 模式下运行时，设置加密密钥以启用入站 webhook payload 的签名验证：

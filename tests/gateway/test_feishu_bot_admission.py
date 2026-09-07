@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -566,3 +567,103 @@ def test_handle_message_event_data_forwards_sender_when_admitted():
     assert captured.get("sender_id") is sender.sender_id
     assert captured.get("is_bot") is True
     assert captured.get("message_id") == "om_bot_ok"
+
+
+# --- Unauthorized DM → gateway unauthorized_dm_behavior --------------------
+
+
+def _unauthorized_dm_event(message_id: str = "om_stranger") -> Any:
+    return SimpleNamespace(
+        event=SimpleNamespace(
+            sender=make_sender(open_id="ou_stranger"),
+            message=make_message(message_id=message_id, chat_type="p2p"),
+        )
+    )
+
+
+def _allowlisted_adapter(monkeypatch, *, behavior: str | None, via_runner: bool = True):
+    """Adapter with FEISHU_ALLOWED_USERS set; the stranger is not on it."""
+    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+    adapter = make_adapter_skeleton()
+    install_dedup_state(adapter)
+    adapter._allowed_group_users = frozenset({"ou_owner"})
+    adapter._owner_profile = None
+    adapter.config = SimpleNamespace(extra={})
+    adapter._message_handler = None
+    if behavior is not None:
+        if via_runner:
+            runner = SimpleNamespace()
+            runner._get_unauthorized_dm_behavior = lambda platform, *, profile=None: behavior
+
+            class _Handler:
+                __self__ = runner
+
+            adapter._message_handler = _Handler()
+        else:
+            adapter.config = SimpleNamespace(extra={"unauthorized_dm_behavior": behavior})
+    captured: dict = {}
+
+    async def _fake_process_inbound_message(**kwargs):
+        captured.update(kwargs)
+
+    adapter._process_inbound_message = _fake_process_inbound_message
+    return adapter, captured
+
+
+@pytest.mark.parametrize("behavior", ["pair", "decline"])
+def test_unauthorized_dm_forwarded_when_gateway_would_reply(monkeypatch, behavior):
+    """Allowlist-rejected DM reaches gateway intake so unauthorized_dm_behavior runs."""
+    import asyncio
+
+    adapter, captured = _allowlisted_adapter(monkeypatch, behavior=behavior)
+    asyncio.run(adapter._handle_message_event_data(_unauthorized_dm_event()))
+    assert captured.get("message_id") == "om_stranger"
+    assert captured.get("chat_type") == "p2p"
+
+
+def test_unauthorized_dm_dropped_when_behavior_is_ignore(monkeypatch):
+    import asyncio
+
+    adapter, captured = _allowlisted_adapter(monkeypatch, behavior="ignore")
+    asyncio.run(adapter._handle_message_event_data(_unauthorized_dm_event()))
+    assert captured == {}
+
+
+def test_unauthorized_dm_dropped_without_gateway_or_override(monkeypatch):
+    """No runner and no per-platform override → keep the fail-closed drop."""
+    import asyncio
+
+    adapter, captured = _allowlisted_adapter(monkeypatch, behavior=None)
+    asyncio.run(adapter._handle_message_event_data(_unauthorized_dm_event()))
+    assert captured == {}
+
+
+def test_unauthorized_dm_honors_adapter_extra_override_without_runner(monkeypatch):
+    import asyncio
+
+    adapter, captured = _allowlisted_adapter(monkeypatch, behavior="pair", via_runner=False)
+    asyncio.run(adapter._handle_message_event_data(_unauthorized_dm_event()))
+    assert captured.get("message_id") == "om_stranger"
+
+
+def test_unauthorized_dm_forward_does_not_widen_group_gate(monkeypatch):
+    """Forwarding is DM-only: a stranger's group message stays rejected."""
+    import asyncio
+
+    adapter, captured = _allowlisted_adapter(monkeypatch, behavior="pair")
+    data = SimpleNamespace(
+        event=SimpleNamespace(
+            sender=make_sender(open_id="ou_stranger"),
+            message=make_message(message_id="om_group", chat_type="group", chat_id="oc_g"),
+        )
+    )
+    asyncio.run(adapter._handle_message_event_data(data))
+    assert captured == {}
+
+
+def test_admit_still_reports_dm_policy_rejected_for_stranger(monkeypatch):
+    """The admission verdict itself is unchanged; only the drop site consults the gateway."""
+    adapter, _ = _allowlisted_adapter(monkeypatch, behavior="pair")
+    verdict = adapter._admit(make_sender(open_id="ou_stranger"), make_message(chat_type="p2p"))
+    assert verdict == "dm_policy_rejected"

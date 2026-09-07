@@ -2638,6 +2638,15 @@ class FeishuAdapter(BasePlatformAdapter):
             return
 
         reason = self._admit(sender, message)
+        if reason == "dm_policy_rejected" and self._should_forward_unauthorized_dm():
+            # The gateway owns the unauthorized-DM reply (pairing code or a
+            # configured decline). Dropping here would make Feishu the only
+            # platform where ``unauthorized_dm_behavior`` never fires. Gateway
+            # auth still fail-closes agent access for the unknown sender.
+            logger.debug(
+                "[Feishu] forwarding unauthorized DM to gateway intake (unauthorized_dm_behavior)"
+            )
+            reason = None
         if reason is not None:
             logger.debug("[Feishu] dropping inbound event: %s", reason)
             return
@@ -4416,6 +4425,37 @@ class FeishuAdapter(BasePlatformAdapter):
         if rule and rule.require_mention is not None:
             return rule.require_mention
         return self._require_mention
+
+    def _should_forward_unauthorized_dm(self) -> bool:
+        """Return True when an allowlist-rejected DM must still reach the gateway.
+
+        ``_admit`` drops DMs from senders outside ``FEISHU_ALLOWED_USERS`` before
+        any event is built, so the gateway's ``unauthorized_dm_behavior`` never
+        runs for Feishu: a ``pair`` or ``decline`` configuration is silently
+        ignored while every other platform honors it. Mirror the Telegram
+        intake rule (``_should_pass_unauthorized_dm_for_pairing``): resolve the
+        effective behavior through the gateway runner when one is attached,
+        else fall back to the adapter's own ``extra.unauthorized_dm_behavior``.
+        Only ``ignore`` keeps the pre-event drop.
+        """
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        behavior_fn = getattr(runner, "_get_unauthorized_dm_behavior", None)
+        behavior = ""
+        if callable(behavior_fn):
+            try:
+                behavior = str(
+                    behavior_fn(Platform.FEISHU, profile=self._owner_profile) or ""
+                ).strip().lower()
+            except Exception:
+                logger.debug(
+                    "[Feishu] Failed to resolve unauthorized DM behavior; "
+                    "falling back to adapter-local override",
+                    exc_info=True,
+                )
+        if not behavior:
+            extra = getattr(getattr(self, "config", None), "extra", None) or {}
+            behavior = str(extra.get("unauthorized_dm_behavior", "")).strip().lower()
+        return bool(behavior) and behavior != "ignore"
 
     # --- Group policy ---------------------------------------------------------
 

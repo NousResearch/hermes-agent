@@ -743,7 +743,8 @@ export const sessionCommands: SlashCommand[] = [
         const sections: PanelSection[] = [{ rows }]
 
         if (r.context_max) {
-          sections.push({ text: `Context: ${f(r.context_used)} / ${f(r.context_max)} (${r.context_percent}%)` })
+          const mark = r.context_estimated ? '~' : ''
+          sections.push({ text: `Context: ${mark}${f(r.context_used)} / ${f(r.context_max)} (${mark}${r.context_percent}%)` })
         }
 
         if (r.compressions) {

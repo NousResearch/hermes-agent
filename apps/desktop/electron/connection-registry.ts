@@ -906,7 +906,16 @@ export function normalizeConnectionInput(input: ConnectionInput, registry: Conne
       throw new Error(`A connection to this SSH host already exists ("${sshDupe.label}").`)
     }
 
-    return { id, kind: 'ssh', label, ...sshFields }
+    const entry: RegistryConnection = { id, kind: 'ssh', label, ...sshFields }
+
+    // Carry the adopted session-token envelope across edits (mirrors the remote
+    // branch): dropping it made a label rename wipe the backend's reuse
+    // credential and force the reap-and-respawn loop of #103795.
+    if (input.token !== undefined) {
+      entry.token = input.token
+    }
+
+    return entry
   }
 
   if (kind === 'remote' || kind === 'cloud') {
@@ -1191,6 +1200,14 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
 
         const { mode: _mode, ...sshFields } = ssh
         Object.assign(clean, sshFields)
+
+        // normalizeSshConfig describes only the dial, so the token
+        // persistSshConnectionToken() adopted must be carried explicitly (as the
+        // remote/cloud branch does). Losing it on a cold read fails the
+        // remote-lifecycle reuse gate and reaps a healthy backend (#103795).
+        if (entry.token !== undefined) {
+          clean.token = entry.token
+        }
       }
 
       connections.push(clean)

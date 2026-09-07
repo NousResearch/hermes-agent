@@ -672,9 +672,76 @@ class TestCronUnavailable:
 
 
 # ---------------------------------------------------------------------------
-# Cron prompt-scan parity with the agent-facing cronjob tool (GHSA-fr3q-rjg3-x6mf)
+# Extended field invariants through the real HTTP and storage boundaries
 # ---------------------------------------------------------------------------
 
+class TestExtendedJobsRealStore:
+    @pytest.mark.asyncio
+    async def test_create_round_trip_preserves_fields_and_paused_state(self, adapter):
+        from cron.jobs import get_job, use_cron_store
+        from hermes_constants import get_hermes_home
+
+        with use_cron_store(get_hermes_home()):
+            async with TestClient(TestServer(_create_app(adapter))) as cli:
+                response = await cli.post("/api/jobs", json={
+                    "name": "paused collection",
+                    "schedule": "every 1h",
+                    "prompt": "Collect a daily report",
+                    "context_from": ["self"],
+                    "no_agent": True,
+                    "script": "collect.py",
+                    "reasoning_effort": "HIGH",
+                    "paused": True,
+                    "paused_reason": "Awaiting approval",
+                })
+                assert response.status == 200, await response.text()
+                job = (await response.json())["job"]
+                stored = get_job(job["id"])
+                expected = {
+                    "context_from": ["self"], "no_agent": True,
+                    "script": "collect.py", "reasoning_effort": "high",
+                    "enabled": False, "state": "paused", "next_run_at": None,
+                    "paused_reason": "Awaiting approval",
+                }
+                assert {key: stored[key] for key in expected} == expected
+                read = await cli.get(f"/api/jobs/{job['id']}")
+                assert (await read.json())["job"] == stored
+                listed = await cli.get("/api/jobs?include_disabled=true")
+                listed_job = next(
+                    item for item in (await listed.json())["jobs"] if item["id"] == job["id"])
+                assert {key: listed_job[key] for key in expected} == expected
+
+    @pytest.mark.asyncio
+    async def test_update_real_store_validates_before_persisting(self, adapter):
+        from cron.jobs import create_job, get_job, use_cron_store
+        from hermes_constants import get_hermes_home
+
+        with use_cron_store(get_hermes_home()):
+            job = create_job(
+                name="paused collection", schedule="every 1h", prompt="Collect a report",
+                no_agent=True, script="collect.py", paused=True,
+            )
+            async with TestClient(TestServer(_create_app(adapter))) as cli:
+                path = f"/api/jobs/{job['id']}"
+                update = {
+                    "context_from": ["self"], "no_agent": True,
+                    "script": "updated.py", "reasoning_effort": "LOW",
+                }
+                response = await cli.patch(path, json=update)
+                assert response.status == 200, await response.text()
+                stored = get_job(job["id"])
+                assert {key: stored[key] for key in update} == {
+                    **update, "reasoning_effort": "low"}
+                for invalid in (
+                    {"script": "../outside.py"}, {"script": None},
+                    {"context_from": ["abcdef123456"]}, {"reasoning_effort": "warp9"},
+                ):
+                    rejected = await cli.patch(path, json=invalid)
+                    assert rejected.status == 400, await rejected.text()
+                    assert get_job(job["id"]) == stored
+
+
+# Cron prompt-scan parity with the agent-facing cronjob tool (GHSA-fr3q-rjg3-x6mf)
 class TestCronPromptScanParity:
     """The REST cron endpoints must reject exfiltration/injection prompts the
     same way the agent-facing ``cronjob`` tool does (tools/cronjob_tools.py).

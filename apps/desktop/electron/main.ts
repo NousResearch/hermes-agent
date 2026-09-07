@@ -284,7 +284,7 @@ import {
   localRouteFallbackProfiles,
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
-import { selectPoolEvictions } from './pool-eviction'
+import { selectForegroundPoolEviction, selectPoolEvictions } from './pool-eviction'
 import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS } from './pool-limits'
 import {
   isBackgroundSlotWaitTimeout,
@@ -11505,6 +11505,7 @@ async function ensureBackend(profile, opts: { spawnPriority?: LocalBackendSpawnP
     releaseLocalBackendSlot: null,
     localBackendSlotKey: null,
     localBackendSpawnRequest: null,
+    activeTurn: false,
     spawnPriority
   }
 
@@ -11680,6 +11681,7 @@ async function ensureRegistryBackend(
       releaseLocalBackendSlot: null,
       localBackendSlotKey: null,
       localBackendSpawnRequest: null,
+      activeTurn: false,
       spawnPriority
     }
 
@@ -12365,14 +12367,19 @@ async function stopRegistryConnectionBackends(connectionId) {
 }
 
 // Mark a pool profile as recently used so the idle reaper spares it. The
-// renderer calls this when it opens a profile's chat WS and periodically while
-// streaming, since the main process can't see the direct renderer↔backend WS.
-function touchPoolBackend(profile) {
+// renderer also reports whether a prompt turn currently owns the backend:
+// keepalive freshness alone is not enough to distinguish an idle resident
+// from a backend that must not be reclaimed for a foreground dial.
+function touchPoolBackend(profile, options: { activeTurn?: boolean } = {}) {
   for (const key of poolTouchKeys(profile)) {
     const entry = backendPool.get(key)
 
     if (entry) {
       entry.lastActiveAt = Date.now()
+
+      if (typeof options.activeTurn === 'boolean') {
+        entry.activeTurn = options.activeTurn
+      }
 
       return
     }
@@ -12396,6 +12403,23 @@ function evictLruPoolBackends(keep) {
     rememberLog(`Evicting idle profile backend "${profile}" (LRU cap ${poolMaxBackends()})`)
     stopPoolBackend(profile)
   }
+}
+
+// A foreground dial may rotate a keepalive-fresh resident, but only after the
+// renderer has explicitly reported that no prompt turn owns it. The ordinary
+// LRU path remains conservative so background hydration never tears down a
+// socket merely because the soft cap was reached.
+async function reclaimForegroundPoolBackend(): Promise<boolean> {
+  const profile = selectForegroundPoolEviction(backendPool.entries())
+
+  if (profile === undefined) {
+    return false
+  }
+
+  rememberLog(`Reclaiming idle profile backend "${profile}" for a foreground dial`)
+  await stopPoolBackend(profile)
+
+  return true
 }
 
 function startPoolIdleReaper() {
@@ -12534,6 +12558,10 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   }
 
   const spawnPriority: LocalBackendSpawnPriority = spawnPriorityFrom(entry.spawnPriority)
+
+  if (spawnPriority === 'foreground' && localBackendSpawnCoordinator.activeCount >= poolMaxBackends()) {
+    await reclaimForegroundPoolBackend()
+  }
 
   const spawnRequest = localBackendSpawnCoordinator.request(poolKey, {
     timeoutMs: POOL_SLOT_WAIT_MS,
@@ -14988,8 +15016,8 @@ function revalidateSuspectPoolAfterResume() {
   )
 }
 
-ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
-  touchPoolBackend(profile)
+ipcMain.handle('hermes:backend:touch', async (_event, profile, options) => {
+  touchPoolBackend(profile, options)
 
   return { ok: true }
 })

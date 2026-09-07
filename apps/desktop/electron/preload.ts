@@ -23,7 +23,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   getConnectionFor: payload => ipcRenderer.invoke('hermes:connection:for', payload),
   getProfileRoutes: profiles => ipcRenderer.invoke('hermes:plugin-profile-routes', profiles),
   revalidateConnection: () => ipcRenderer.invoke('hermes:connection:revalidate'),
-  touchBackend: profile => ipcRenderer.invoke('hermes:backend:touch', profile),
+  touchBackend: (profile, options) => ipcRenderer.invoke('hermes:backend:touch', profile, options),
   getPoolLimits: () => ipcRenderer.invoke('hermes:pool-limits:get'),
   setPoolLimits: limits => ipcRenderer.invoke('hermes:pool-limits:set', limits),
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),

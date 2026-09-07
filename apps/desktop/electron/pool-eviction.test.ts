@@ -11,7 +11,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { selectPoolEvictions } from './pool-eviction'
+import { selectForegroundPoolEviction, selectPoolEvictions } from './pool-eviction'
 
 const NOW = 1_000_000
 // Mirrors main.ts POOL_KEEPALIVE_FRESH_MS (4 minutes — see #95189).
@@ -19,6 +19,11 @@ const FRESH_MS = 4 * 60_000
 
 /** A spawned local backend entry (has a child process). */
 const spawned = (idleMs: number) => ({ process: { pid: 123 }, lastActiveAt: NOW - idleMs })
+const resident = (idleMs: number, activeTurn = false) => ({
+  process: { pid: 123 },
+  lastActiveAt: NOW - idleMs,
+  activeTurn
+})
 
 /** A process-less remote/cloud descriptor entry. */
 const descriptor = (idleMs: number) => ({ process: null, lastActiveAt: NOW - idleMs })
@@ -150,4 +155,27 @@ test('#95189: a backend genuinely idle for minutes IS evicted (#95189 long-windo
 
   // keep=1, idle is over the cap AND past the fresh window → evicted.
   assert.deepEqual(selectPoolEvictions(entries, 1, NOW, FRESH_MS), ['idle'])
+})
+
+test('foreground dial reclaims the least-recently-used idle resident after the pool fills', () => {
+  const entries: [string, ReturnType<typeof resident>][] = [
+    ['prior-foreground', resident(30_000)],
+    ['idle-newer', resident(10_000)],
+    ['active-turn', resident(120_000, true)]
+  ]
+
+  // The prior foreground open is still keepalive-fresh, but it is now idle.
+  // A later explicit open must rotate it out instead of waiting 30 seconds for
+  // the coordinator lease to be released.
+  assert.equal(selectForegroundPoolEviction(entries), 'prior-foreground')
+})
+
+test('foreground reclaim never selects a backend with an active turn lease', () => {
+  const entries: [string, ReturnType<typeof resident>][] = [
+    ['old-active-turn', resident(500_000, true)],
+    ['idle', resident(1_000)],
+    ['unknown-activity', { process: { pid: 456 }, lastActiveAt: NOW - 900_000 }]
+  ]
+
+  assert.equal(selectForegroundPoolEviction(entries), 'idle')
 })

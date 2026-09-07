@@ -1293,10 +1293,12 @@ export async function retainGatewayForSessionTurn(
     }
 
     cancelTurnLeaseRelease(key)
+    void window.hermesDesktop?.touchBackend?.(scope, { activeTurn: false }).catch(() => undefined)
     releaseRoute()
   }
 
   g.turnLeases.set(key, release)
+  void window.hermesDesktop?.touchBackend?.(scope, { activeTurn: true }).catch(() => undefined)
 
   return release
 }
@@ -1658,10 +1660,13 @@ export function openSecondaryCount(): number {
 // secondary. The active one is pinged separately (touchActiveGatewayBackend).
 export function touchSecondaryGateways(): void {
   const desktop = window.hermesDesktop
+  const activeTurnScopes = new Set([...g.turnLeases.keys()].map(key => key.slice(0, key.indexOf('\u0000'))))
 
   for (const entry of g.secondaries.values()) {
     if (entry.wantOpen) {
-      void desktop?.touchBackend?.(entry.scope).catch(() => undefined)
+      void desktop
+        ?.touchBackend?.(entry.scope, { activeTurn: activeTurnScopes.has(entry.scope) })
+        .catch(() => undefined)
     }
   }
 }

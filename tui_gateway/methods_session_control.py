@@ -23,7 +23,11 @@ _profile_scoped = _registry.profile_scoped
 
 logger = logging.getLogger(__name__)
 
-# Serialize GUI check-and-create so competing requests never replace state.
+# The supported gateway topology has one dispatcher process per profile; the
+# launcher refuses a second instance because those processes would share mutable
+# session state. This lock serializes competing handler threads inside that
+# process. If multi-process dispatch is ever supported, move check-and-create
+# arbitration into the persistent manager/registry layer.
 _CREATION_LOCK = threading.RLock()
 
 

@@ -43,6 +43,8 @@ import {
 } from './windows-update-force-release'
 
 const execFileAsync = promisify(execFile)
+// Absolute path for the same reason production uses one: PATH is not trustworthy here.
+const taskkillPath = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe')
 const isWindows = process.platform === 'win32'
 
 /**
@@ -193,27 +195,43 @@ if ($null -eq $result -or [int]$result.ReturnValue -ne 0) {
 Write-Output ([int]$result.ProcessId)
 `.trim()
 
-  const { stdout, stderr } = await execFileAsync(
-    ps,
-    ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', brokerScript],
-    {
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: 2_000,
-      env: {
-        ...process.env,
-        HERMES_TEST_WMI_COMMAND_LINE: commandLine
+  // Two retries with a real budget. A 2 s timeout could not cover PowerShell
+  // start-up on a loaded host, and Win32_Process.Create is documented to
+  // return 8 ("unknown failure") transiently on this class of machine -- the
+  // same flake scripts/desktop-update/windows.ps1 works around. Neither is a
+  // property of the boundary under test.
+  let lastError: unknown
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const { stdout, stderr } = await execFileAsync(
+        ps,
+        ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', brokerScript],
+        {
+          encoding: 'utf8',
+          windowsHide: true,
+          timeout: 60_000,
+          env: {
+            ...process.env,
+            HERMES_TEST_WMI_COMMAND_LINE: commandLine
+          }
+        }
+      )
+
+      const pid = Number(String(stdout).trim().split(/\r?\n/).pop())
+
+      if (!Number.isInteger(pid) || pid <= 0) {
+        throw new Error(`WMI process broker returned invalid PID stdout=${stdout} stderr=${stderr}`)
       }
+
+      return pid
+    } catch (error) {
+      lastError = error
+      await new Promise(resolve => setTimeout(resolve, 500))
     }
-  )
-
-  const pid = Number(String(stdout).trim().split(/\r?\n/).pop())
-
-  if (!Number.isInteger(pid) || pid <= 0) {
-    throw new Error(`WMI process broker returned invalid PID stdout=${stdout} stderr=${stderr}`)
   }
 
-  return pid
+  throw new Error(`WMI process broker failed after 3 attempts: ${String((lastError as any)?.message ?? lastError)}`)
 }
 
 function buildHoldTargetJobScript(
@@ -389,7 +407,7 @@ async function queryWindowsProcessDetails(
         '-Command',
         `$p = Get-CimInstance Win32_Process -Filter 'ProcessId = ${Math.trunc(pid)}' -ErrorAction SilentlyContinue; if ($null -eq $p) { 'absent' } else { $p | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress }`
       ],
-      { encoding: 'utf8', windowsHide: true, timeout: 3_000 }
+      { encoding: 'utf8', windowsHide: true, timeout: 30_000 }
     )
 
     const raw = String(stdout).trim() || 'absent'
@@ -954,9 +972,9 @@ Start-Sleep -Seconds 20
         assert.deepEqual(await awaitIdentitiesGone(identities), [], 'target generation reappeared after failed watcher')
       } finally {
         if (Number.isInteger(launchedRootPid) && (launchedRootPid as number) > 0) {
-          await execFileAsync('taskkill', ['/PID', String(launchedRootPid), '/T', '/F'], {
+          await execFileAsync(taskkillPath, ['/PID', String(launchedRootPid), '/T', '/F'], {
             windowsHide: true,
-            timeout: 2_000
+            timeout: 30_000
           }).catch(() => undefined)
         }
 
@@ -1173,9 +1191,9 @@ Start-Sleep -Seconds 20
         assert.deepEqual(await awaitIdentitiesGone(identities), [])
       } finally {
         if (Number.isInteger(launchedRootPid) && (launchedRootPid as number) > 0) {
-          await execFileAsync('taskkill', ['/PID', String(launchedRootPid), '/T', '/F'], {
+          await execFileAsync(taskkillPath, ['/PID', String(launchedRootPid), '/T', '/F'], {
             windowsHide: true,
-            timeout: 2_000
+            timeout: 30_000
           }).catch(() => undefined)
         }
 
@@ -1384,9 +1402,9 @@ Start-Sleep -Seconds 30
             `${phase}:${writerPid}`,
             `${phase}: wrong checkpoint marker`
           )
-          await execFileAsync('taskkill', ['/PID', String(boundaryChild.pid), '/T', '/F'], {
+          await execFileAsync(taskkillPath, ['/PID', String(boundaryChild.pid), '/T', '/F'], {
             windowsHide: true,
-            timeout: 2_000
+            timeout: 30_000
           }).catch(() => undefined)
           const boundaryResult = await boundaryPromise
           const boundaryPid = boundaryChild.pid
@@ -1463,9 +1481,9 @@ Start-Sleep -Seconds 30
             if (!Number.isInteger(pid) || (pid as number) <= 0) {continue}
 
             try {
-              await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+              await execFileAsync(taskkillPath, ['/PID', String(pid), '/T', '/F'], {
                 windowsHide: true,
-                timeout: 2_000
+                timeout: 30_000
               })
             } catch {
               void 0
@@ -1622,9 +1640,9 @@ Start-Sleep -Seconds 30
             if (!Number.isInteger(pid) || (pid as number) <= 0) {continue}
 
             try {
-              await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+              await execFileAsync(taskkillPath, ['/PID', String(pid), '/T', '/F'], {
                 windowsHide: true,
-                timeout: 2_000
+                timeout: 30_000
               })
             } catch {
               void 0
@@ -1737,7 +1755,7 @@ Start-Sleep -Seconds 30
 
         for (const pid of [writerPid, rootPid]) {
           if (!Number.isInteger(pid) || (pid as number) <= 0) {continue}
-          await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: 2_000 }).catch(() => undefined)
+          await execFileAsync(taskkillPath, ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: 30_000 }).catch(() => undefined)
         }
 
         fs.rmSync(tmp, { recursive: true, force: true })

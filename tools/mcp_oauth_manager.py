@@ -45,6 +45,23 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 
+def _is_credential_rejection(status: int) -> bool:
+    """Return True if ``status`` is the server rejecting the credential itself.
+
+    Only a 4xx that speaks about authorization tells us the refresh token is no
+    good. Anything else — 5xx (the origin never answered; Cloudflare's 530 is
+    literally "origin unreachable"), 429 (quota, a verdict about the caller's
+    rate, not its identity), or a redirect — leaves the credential's validity
+    unknown, so the cached tokens must survive for the next attempt.
+
+    408 and 425 are excluded on purpose: they are retryable timing failures
+    dressed as 4xx, not authorization verdicts.
+    """
+    if status in (408, 425, 429):
+        return False
+    return 400 <= status < 500
+
+
 def _same_endpoint(a: str, b: str) -> bool:
     """Return True if two URLs target the same endpoint (ignoring query/fragment).
 
@@ -219,10 +236,20 @@ def _make_hermes_provider_class() -> Optional[type]:
             raise OAuthTokenError(f"Token exchange failed ({response.status_code})")
 
         async def _handle_refresh_response(self, response) -> bool:
-            """Accept any 2xx refresh response and avoid logging token bodies."""
+            """Accept any 2xx refresh response and avoid logging token bodies.
+
+            On failure, only discard the cached tokens when the server actually
+            *rejected the credential*. A 5xx (including Cloudflare's 530
+            "origin unreachable") or a 429 means the refresh token was never
+            evaluated: dropping it there turns a seconds-long upstream blip
+            into a dead session, because the next attempt has nothing left to
+            refresh and falls through to the full browser authorization flow —
+            which no background gateway can complete.
+            """
             if not (200 <= response.status_code < 300):
                 logger.warning("Token refresh failed: %s", response.status_code)
-                self.context.clear_tokens()
+                if _is_credential_rejection(response.status_code):
+                    self.context.clear_tokens()
                 return False
 
             from mcp.shared.auth import OAuthToken

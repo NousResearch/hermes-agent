@@ -488,3 +488,78 @@ async def test_manager_refresh_read_error_clears_tokens(tmp_path, monkeypatch):
 
     assert result is False
     assert provider.context.current_tokens is None
+
+# ---------------------------------------------------------------------------
+# A transport failure is not a credential rejection.
+#
+# Measured against a live MCP server over ~2 weeks: 148 refresh failures were
+# 5xx (102x502, 44x530 Cloudflare "origin unreachable", 2x500), not 400s. On
+# one day, seven 530s at 04:02 were followed by nothing but invalid_grant from
+# 08:07 onward -- the transient blip is what killed the session for good.
+#
+# Discarding cached tokens on a 5xx makes every later probe fall through to the
+# full browser authorization flow, which in a background gateway means either a
+# hard failure or (with an inherited TTY) an unattended browser window every
+# retry interval.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [500, 502, 503, 530])
+async def test_refresh_5xx_keeps_tokens(tmp_path, monkeypatch, status):
+    """A 5xx means the refresh token was never evaluated -- keep it."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
+    )
+    sentinel = object()
+    provider.context.current_tokens = sentinel
+
+    response = _fake_response(status, "https://idp.example.com/oauth/token", b"upstream down")
+    result = await provider._handle_refresh_response(response)
+
+    assert result is False, "the refresh still did not succeed"
+    assert provider.context.current_tokens is sentinel, (
+        f"HTTP {status} is a transport failure, not a rejected credential: "
+        "the cached tokens must survive so the next attempt can retry"
+    )
+
+
+@pytest.mark.asyncio
+async def test_refresh_429_keeps_tokens(tmp_path, monkeypatch):
+    """429 is a quota verdict about the caller, not about the credential."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
+    )
+    sentinel = object()
+    provider.context.current_tokens = sentinel
+
+    response = _fake_response(429, "https://idp.example.com/oauth/token", b"slow down")
+    result = await provider._handle_refresh_response(response)
+
+    assert result is False
+    assert provider.context.current_tokens is sentinel
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 401, 403])
+async def test_refresh_4xx_still_clears_tokens(tmp_path, monkeypatch, status):
+    """Positive control: an explicit rejection must still drop the tokens.
+
+    Without this, "keep the tokens on failure" would silently become "never
+    clear them", and a genuinely dead refresh token would be replayed forever.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
+    )
+    provider.context.current_tokens = object()
+
+    response = _fake_response(
+        status, "https://idp.example.com/oauth/token", b'{"error": "invalid_grant"}'
+    )
+    result = await provider._handle_refresh_response(response)
+
+    assert result is False
+    assert provider.context.current_tokens is None

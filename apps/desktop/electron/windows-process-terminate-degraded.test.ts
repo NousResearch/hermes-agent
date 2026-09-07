@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 
 import { describe, it } from 'vitest'
 
-import { buildExactTerminateScript, parseTerminateScriptOutput } from './windows-process-terminate'
+import { parseTerminateScriptOutput } from './windows-process-terminate'
+import { buildExactTerminateScript } from './windows-process-terminate-scripts'
 
 /**
  * 2026-09-05: the force-release refused the gateway's venv trampoline with

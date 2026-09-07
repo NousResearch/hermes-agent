@@ -12,6 +12,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import subprocess
 import threading
 from dataclasses import dataclass
@@ -20,6 +21,19 @@ from typing import Any, Optional
 from tools.environments.local import hermes_subprocess_env
 
 MIN_CODEX_VERSION = (0, 125, 0)
+
+
+def resolve_codex_bin(codex_bin: str) -> str:
+    """Absolute path for *codex_bin*, or the name unchanged when it cannot be resolved.
+
+    Windows ``CreateProcess`` does not apply PATHEXT, so a bare ``"codex"`` that exists only
+    as ``codex.CMD`` (every npm global shim) raises FileNotFoundError from subprocess even
+    though ``shutil.which`` finds it. Resolving up front keeps the bare default working on
+    npm installs without resorting to ``shell=True``.
+    """
+    if "/" in codex_bin or "\\" in codex_bin:
+        return codex_bin
+    return shutil.which(codex_bin) or codex_bin
 
 
 @dataclass
@@ -62,7 +76,7 @@ class CodexAppServerClient:
         if codex_home:
             spawn_env["CODEX_HOME"] = codex_home
 
-        cmd = [codex_bin, "app-server", *(extra_args or [])]
+        cmd = [resolve_codex_bin(codex_bin), "app-server", *(extra_args or [])]
         # Kanban workers must write handoff/status to the board DB outside the
         # workspace: keep the sandbox on, add the Kanban root as writable.
         if spawn_env.get("HERMES_KANBAN_TASK"):
@@ -260,7 +274,7 @@ def check_codex_binary(
     """Verify codex CLI is installed and meets minimum version. Returns (ok, message)."""
     try:
         proc = subprocess.run(
-            [codex_bin, "--version"], capture_output=True, text=True, encoding='utf-8', errors='replace',
+            [resolve_codex_bin(codex_bin), "--version"], capture_output=True, text=True, encoding='utf-8', errors='replace',
             timeout=10, stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:

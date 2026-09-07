@@ -102,6 +102,25 @@ class TestCodexAppServerModule:
         assert ok is False
         assert "not found" in msg.lower() or "no such" in msg.lower()
 
+    def test_resolve_codex_bin_finds_path_via_which(self, monkeypatch) -> None:
+        import shutil
+        from agent.transports.codex_app_server import resolve_codex_bin
+
+        monkeypatch.setattr(shutil, "which", lambda cmd: r"C:\npm\codex.CMD" if cmd == "codex" else None)
+        assert resolve_codex_bin("codex") == r"C:\npm\codex.CMD"
+        assert resolve_codex_bin("nonexistent") == "nonexistent"
+
+    def test_resolve_codex_bin_preserves_explicit_paths(self, monkeypatch) -> None:
+        import shutil
+        from agent.transports.codex_app_server import resolve_codex_bin
+
+        called = []
+        monkeypatch.setattr(shutil, "which", lambda cmd: called.append(cmd) or "/resolved/path")
+        assert resolve_codex_bin("/usr/local/bin/codex") == "/usr/local/bin/codex"
+        assert resolve_codex_bin(r"C:\bin\codex.exe") == r"C:\bin\codex.exe"
+        assert resolve_codex_bin("./bin/codex") == "./bin/codex"
+        assert len(called) == 0
+
     def test_codex_error_class_is_runtimeerror(self) -> None:
         from agent.transports.codex_app_server import CodexAppServerError
 

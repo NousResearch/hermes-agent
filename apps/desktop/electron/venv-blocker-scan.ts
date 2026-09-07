@@ -31,6 +31,16 @@ export interface VenvBlockerIdentity {
   createdAt?: number
   /** Parent PID when the scanner could prove it for leaf-first drain. */
   parentPid?: number
+  /**
+   * ONE file under the target venv this holder maps, when the scanner proved
+   * one. The venv is the update's mutation set, so this is the evidence the
+   * exact-terminate script re-proves before it stops a holder whose own image
+   * lives under the SHARED `.hermes-runtime` (otherwise that holder is refused
+   * with TERMINATION_SHARED_RUNTIME_WITHOUT_MUTATION_PROOF). The parser
+   * rejects anything that is not an absolute path inside the scanned venv, so
+   * a runtime path can never arrive here.
+   */
+  resource?: string
 }
 
 // The preview classification is optional so every identity record — including
@@ -268,10 +278,37 @@ function comparableCanonicalPath(value: unknown): string | null {
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized
 }
 
+/**
+ * Accept a scanner `resource` claim only when it names a file inside the venv
+ * this scan targeted.
+ *
+ * The claim exists to authorize terminating a holder whose image sits under
+ * the shared `.hermes-runtime`, so a claim that is not inside the mutation set
+ * is worse than no claim at all. `.hermes-runtime` is a sibling of the venv,
+ * never inside it, so "under the venv" is exactly the property required.
+ * `undefined` means the scanner proved nothing and is always allowed.
+ */
+function parseVenvResourceClaim(
+  value: unknown,
+  expectedVenv: string
+): { ok: true; resource?: string } | { ok: false } {
+  if (value === undefined) {return { ok: true }}
+
+  const resource = comparableCanonicalPath(value)
+  const venv = comparableCanonicalPath(expectedVenv)
+
+  if (resource === null || venv === null) {return { ok: false }}
+
+  const prefix = venv.endsWith(path.sep) ? venv : `${venv}${path.sep}`
+
+  return resource.startsWith(prefix) ? { ok: true, resource: value as string } : { ok: false }
+}
+
 function parseIdentityRecord(
   entry: unknown,
   kind: 'gateway' | 'process',
-  seenPids: Set<number>
+  seenPids: Set<number>,
+  target: ScanTargetIdentity
 ): VenvBlockerProcess | null {
   const required = ['pid', 'name', 'cmdline', 'owner', 'role', 'actionable', 'actionability', 'action']
 
@@ -285,7 +322,10 @@ function parseIdentityRecord(
   // accepting it here turned every scan taken while a gateway was alive into a
   // probe-failure (masked in production only because the pre-scan kill-all
   // had already removed the gateway).
-  const optional = kind === 'process' ? ['created_at', 'parent_pid', ...LOCAL_PREVIEW_HINT_KEYS] : ['parent_pid']
+  const optional =
+    kind === 'process'
+      ? ['created_at', 'parent_pid', 'resource', ...LOCAL_PREVIEW_HINT_KEYS]
+      : ['parent_pid', 'resource']
 
   if (!hasExactKeys(entry, required, optional)) {return null}
 
@@ -299,8 +339,13 @@ function parseIdentityRecord(
     actionability,
     action,
     created_at: createdAt,
-    parent_pid: parentPid
+    parent_pid: parentPid,
+    resource: rawResource
   } = entry
+
+  const resourceClaim = parseVenvResourceClaim(rawResource, target.expectedVenv)
+
+  if (!resourceClaim.ok) {return null}
 
   if (
     !Number.isInteger(pid) ||
@@ -340,7 +385,8 @@ function parseIdentityRecord(
   return {
     ...classifyVenvBlocker({ pid, name, cmdline }, entry),
     ...(createdAt === undefined ? {} : { createdAt }),
-    ...(parentPid === undefined ? {} : { parentPid })
+    ...(parentPid === undefined ? {} : { parentPid }),
+    ...(resourceClaim.resource === undefined ? {} : { resource: resourceClaim.resource })
   }
 }
 
@@ -460,7 +506,7 @@ export function parseVenvBlockerScanOutput(raw: string, target: ScanTargetIdenti
   const seenPids = new Set<number>()
 
   for (const entry of parsed.processes) {
-    const process = parseIdentityRecord(entry, 'process', seenPids)
+    const process = parseIdentityRecord(entry, 'process', seenPids, target)
 
     if (!process) {return { kind: 'probe-failure', error: 'generic process identity is invalid' }}
     processes.push(process)
@@ -481,7 +527,7 @@ export function parseVenvBlockerScanOutput(raw: string, target: ScanTargetIdenti
       'action'
     ]
 
-    if (!hasExactKeys(entry, required, ['wrapper_pid'])) {
+    if (!hasExactKeys(entry, required, ['wrapper_pid', 'resource'])) {
       return { kind: 'probe-failure', error: 'MCP bridge entry must be an object' }
     }
 
@@ -495,8 +541,15 @@ export function parseVenvBlockerScanOutput(raw: string, target: ScanTargetIdenti
       actionable,
       actionability,
       action,
-      wrapper_pid: wrapperPid
+      wrapper_pid: wrapperPid,
+      resource: rawResource
     } = entry
+
+    const resourceClaim = parseVenvResourceClaim(rawResource, target.expectedVenv)
+
+    if (!resourceClaim.ok) {
+      return { kind: 'probe-failure', error: 'MCP bridge resource is not inside the scanned venv' }
+    }
 
     if (!Number.isInteger(pid) || pid <= 0) {
       return { kind: 'probe-failure', error: 'MCP bridge pid must be a positive integer' }
@@ -566,7 +619,8 @@ export function parseVenvBlockerScanOutput(raw: string, target: ScanTargetIdenti
         actionable,
         actionability,
         action,
-        ...(wrapperPid === undefined ? {} : { wrapperPid })
+        ...(wrapperPid === undefined ? {} : { wrapperPid }),
+        ...(resourceClaim.resource === undefined ? {} : { resource: resourceClaim.resource })
       },
       ...(wrapperPid === undefined ? {} : { wrapperPid })
     })
@@ -599,7 +653,7 @@ export function parseVenvBlockerScanOutput(raw: string, target: ScanTargetIdenti
       'action'
     ]
 
-    if (!hasExactKeys(entry, required, ['wrapper_pid'])) {
+    if (!hasExactKeys(entry, required, ['wrapper_pid', 'resource'])) {
       return { kind: 'probe-failure', error: 'desktop plugin service entry must be an object' }
     }
 
@@ -613,8 +667,18 @@ export function parseVenvBlockerScanOutput(raw: string, target: ScanTargetIdenti
       actionable,
       actionability,
       action,
-      wrapper_pid: wrapperPid
+      wrapper_pid: wrapperPid,
+      resource: rawResource
     } = entry
+
+    const resourceClaim = parseVenvResourceClaim(rawResource, target.expectedVenv)
+
+    if (!resourceClaim.ok) {
+      return {
+        kind: 'probe-failure',
+        error: 'desktop plugin service resource is not inside the scanned venv'
+      }
+    }
 
     if (
       !Number.isInteger(pid) ||
@@ -650,7 +714,8 @@ export function parseVenvBlockerScanOutput(raw: string, target: ScanTargetIdenti
       actionable,
       actionability,
       action,
-      ...(wrapperPid === undefined ? {} : { wrapperPid })
+      ...(wrapperPid === undefined ? {} : { wrapperPid }),
+      ...(resourceClaim.resource === undefined ? {} : { resource: resourceClaim.resource })
     })
   }
 
@@ -678,7 +743,7 @@ export function parseVenvBlockerScanOutput(raw: string, target: ScanTargetIdenti
   }
 
   for (const entry of parsed.pausable_gateway_processes) {
-    if (!parseIdentityRecord(entry, 'gateway', seenPids)) {
+    if (!parseIdentityRecord(entry, 'gateway', seenPids, target)) {
       return { kind: 'probe-failure', error: 'pausable gateway identity is invalid' }
     }
   }

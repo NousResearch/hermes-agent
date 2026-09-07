@@ -90,9 +90,8 @@ class TestPreUpdateBackupIntegrityGuard:
     HERMES_HOME whose state.db is corrupted mid-flight (#68474)."""
 
     @pytest.fixture()
-    def hermes_home(self, tmp_path, monkeypatch):
+    def hermes_home(self, tmp_path, monkeypatch, purged_hermes_modules):
         from pathlib import Path
-        import sys
 
         root = tmp_path / ".hermes"
         root.mkdir()
@@ -104,9 +103,11 @@ class TestPreUpdateBackupIntegrityGuard:
         conn.close()
         monkeypatch.setenv("HERMES_HOME", str(root))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        for mod in list(sys.modules.keys()):
-            if mod.startswith("hermes_cli.config") or mod == "hermes_constants":
-                del sys.modules[mod]
+        # purged_hermes_modules (requested above, so it runs first) evicts
+        # hermes_cli*/hermes_constants so the in-test imports below re-resolve
+        # config/constants against this fake HERMES_HOME — and, unlike the
+        # previous bare `del sys.modules[...]` loop, restores the original
+        # module objects on teardown (t_63128384 / t_19f4c777).
         return root
 
     def test_healthy_db_stays_quiet(self, hermes_home, capsys):

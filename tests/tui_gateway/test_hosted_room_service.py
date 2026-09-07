@@ -327,10 +327,16 @@ def test_same_thread_followup_migrates_and_delivers_committed_peer_reply(
     tmp_path: Path,
 ):
     db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
-    service.rpc = _PromptRecordingRPC()
-    service.runtime.rpc = service.rpc
-    service.local_profiles = lambda: ("default", "ops")
+    rpc = _PromptRecordingRPC()
+
+    def restarted_service():
+        service = HostedRoomService(_server(), db_path=db)
+        service.rpc = rpc
+        service.runtime.rpc = rpc
+        service.local_profiles = lambda: ("default", "ops")
+        return service
+
+    service = restarted_service()
     service.create_room(
         room_id="room-1",
         name="Shared context room",
@@ -341,19 +347,24 @@ def test_same_thread_followup_migrates_and_delivers_committed_peer_reply(
     )
 
     service.start()
-    service.send(
-        room_id="room-1",
-        event_id="user-1",
-        payload={"text": "@ops provide the marker", "thread_id": "thread-1"},
-    )
-    _wait_for(lambda: len(service.rpc.prompts) == 1)
-    _wait_for(
-        lambda: any(
-            event["kind"] == "room.activity"
-            and event["payload"]["discussion_event_id"] == "user-1"
-            for event in service._events("room-1")
+    try:
+        service.send(
+            room_id="room-1",
+            event_id="user-1",
+            payload={"text": "@ops provide the marker", "thread_id": "thread-1"},
         )
-    )
+        _wait_for(lambda: len(rpc.prompts) == 1)
+        _wait_for(
+            lambda: any(
+                event["kind"] == "room.activity"
+                and event["payload"]["discussion_event_id"] == "user-1"
+                for event in service._events("room-1")
+            )
+        )
+    finally:
+        assert service.stop(timeout=5.0)
+    # An upgrade changes derived caches while the coordinator is stopped. Deleting
+    # them during sync can race between its schema check and replay/snapshot reads.
     with sqlite3.connect(db) as conn:
         assert conn.execute(
             """SELECT COUNT(*) FROM hosted_room_policy_transcript
@@ -364,15 +375,19 @@ def test_same_thread_followup_migrates_and_delivers_committed_peer_reply(
             """DELETE FROM hosted_room_policy_transcript_state
                WHERE room_id='room-1'"""
         )
-    service.send(
-        room_id="room-1",
-        event_id="user-2",
-        payload={"text": "@hermes continue", "thread_id": "thread-1"},
-    )
-    _wait_for(lambda: len(service.rpc.prompts) == 2)
-    assert service.stop(timeout=1.0)
+    service = restarted_service()
+    service.start()
+    try:
+        service.send(
+            room_id="room-1",
+            event_id="user-2",
+            payload={"text": "@hermes continue", "thread_id": "thread-1"},
+        )
+        _wait_for(lambda: len(rpc.prompts) == 2)
+    finally:
+        assert service.stop(timeout=5.0)
 
-    profile, prompt = service.rpc.prompts[1]
+    profile, prompt = rpc.prompts[1]
     assert profile == "default"
     assert "@ops: reply from ops" in prompt
     assert "User (user): @hermes continue" in prompt

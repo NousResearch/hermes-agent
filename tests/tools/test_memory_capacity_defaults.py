@@ -10,8 +10,6 @@ memory accumulated over weeks of daily distillation.
 import sys
 from pathlib import Path
 
-sys.path.insert(0, r"C:\Users\salma\dev\hermes-agent")
-
 import pytest
 
 from tools.memory_tool import MemoryStore, load_on_disk_store

@@ -1,28 +1,12 @@
 """Auto-installation of LSP server binaries.
 
-Tries to install missing servers using whatever package manager is
-appropriate.  All installs go to a Hermes-owned bin staging dir,
-``<HERMES_HOME>/lsp/bin/``, so we don't pollute the user's global
-toolchain.
-
-Strategies:
-
-- ``auto`` — attempt to install with the best available package
-  manager.  This is the default.
-- ``manual`` — never install; if a binary is missing, the server is
-  silently skipped and the user is told about it via ``hermes lsp
-  status``.
-- ``off`` — same as ``manual`` for now (kept distinct so we can
-  evolve behavior later, e.g. logging differently).
-
-The actual installs happen synchronously the first time a server is
-needed and concurrent calls to :func:`try_install` for the same
-package are deduplicated via a per-package lock.
-
-Failure modes are non-fatal: every install path is wrapped in
-try/except and returns ``None`` on failure.  The tool layer then
-falls back to its in-process syntax checker, exactly as if the user
-hadn't enabled LSP at all.
+Installs go to a Hermes-owned staging dir, ``<HERMES_HOME>/lsp/bin/``, so the
+user's global toolchain stays untouched.  Strategies: ``auto`` (install with
+the best available package manager), ``manual`` / ``off`` (probe only; a
+missing binary skips the server and ``hermes lsp status`` reports it).
+Installs run synchronously the first time a server is needed, serialized
+per-package; every failure path returns ``None`` so the tool layer falls
+back to its in-process syntax checker.
 """
 from __future__ import annotations
 
@@ -32,85 +16,51 @@ import shutil
 import subprocess
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_constants import find_node_executable
 
 logger = logging.getLogger("agent.lsp.install")
 
-# Package-name → install-strategy hint registry.  Each entry is a
-# tuple of strategy name + package name + executable name.  When the
-# install completes, we look for the executable in
-# ``<HERMES_HOME>/lsp/bin/`` first, then on PATH.
-#
-# Optional fields:
-#   - ``extra_pkgs``: list of sibling packages to install alongside
-#     ``pkg`` in the same node_modules tree.  Used when an LSP server
-#     has a runtime peer dependency that npm doesn't auto-pull (e.g.
-#     typescript-language-server needs ``typescript``).
-INSTALL_RECIPES: Dict[str, Dict[str, Any]] = {
-    # Python
-    "pyright": {"strategy": "npm", "pkg": "pyright", "bin": "pyright-langserver"},
-    # JS/TS family
-    "typescript-language-server": {
-        "strategy": "npm",
-        "pkg": "typescript-language-server",
-        "bin": "typescript-language-server",
-        # typescript-language-server requires the `typescript` SDK
-        # (tsserver) to be importable from the same node_modules tree;
-        # otherwise initialize() fails with "Could not find a valid
-        # TypeScript installation".  Install them together.
-        "extra_pkgs": ["typescript"],
-    },
-    "@vue/language-server": {
-        "strategy": "npm",
-        "pkg": "@vue/language-server",
-        "bin": "vue-language-server",
-    },
-    "svelte-language-server": {
-        "strategy": "npm",
-        "pkg": "svelte-language-server",
-        "bin": "svelteserver",
-    },
-    "@astrojs/language-server": {
-        "strategy": "npm",
-        "pkg": "@astrojs/language-server",
-        "bin": "astro-ls",
-    },
-    "yaml-language-server": {
-        "strategy": "npm",
-        "pkg": "yaml-language-server",
-        "bin": "yaml-language-server",
-    },
-    "bash-language-server": {
-        "strategy": "npm",
-        "pkg": "bash-language-server",
-        "bin": "bash-language-server",
-    },
-    "intelephense": {"strategy": "npm", "pkg": "intelephense", "bin": "intelephense"},
-    "dockerfile-language-server-nodejs": {
-        "strategy": "npm",
-        "pkg": "dockerfile-language-server-nodejs",
-        "bin": "docker-langserver",
-    },
-    # Go
-    "gopls": {"strategy": "go", "pkg": "golang.org/x/tools/gopls@latest", "bin": "gopls"},
-    # Rust — too heavy (hundreds of MB to bootstrap).  We do NOT
-    # auto-install rust-analyzer; users install via rustup.
-    "rust-analyzer": {"strategy": "manual", "pkg": "", "bin": "rust-analyzer"},
-    # C/C++ — manual (clangd ships with LLVM, very heavy)
-    "clangd": {"strategy": "manual", "pkg": "", "bin": "clangd"},
-    # Lua — manual (LuaLS is platform-specific binaries from GitHub
-    # releases; complex enough that we punt to the user)
-    "lua-language-server": {"strategy": "manual", "pkg": "", "bin": "lua-language-server"},
-    # PowerShell — PowerShellEditorServices ships as a GitHub release
-    # zip driven by a pwsh bootstrap script, not a single binary.  We
-    # require a manual bundle install and probe for the pwsh host so
-    # `hermes lsp status` reports the host's presence.
-    "powershell": {"strategy": "manual", "pkg": "", "bin": "pwsh"},
-}
 
+def _recipe(strategy: str, pkg: str, bin_name: str, **extra: Any) -> Dict[str, Any]:
+    return {"strategy": strategy, "pkg": pkg, "bin": bin_name, **extra}
+
+
+def _npm(pkg: str, bin_name: str, **extra: Any) -> Dict[str, Any]:
+    return _recipe("npm", pkg, bin_name, **extra)
+
+
+def _manual(bin_name: str) -> Dict[str, Any]:
+    return _recipe("manual", "", bin_name)
+
+
+# Recipe key → {strategy, pkg, bin[, extra_pkgs]}.  After install we look for
+# ``bin`` in ``<HERMES_HOME>/lsp/bin/`` first, then on PATH.  ``extra_pkgs``
+# are sibling npm packages a server needs in the same node_modules tree.
+INSTALL_RECIPES: Dict[str, Dict[str, Any]] = {
+    "pyright": _npm("pyright", "pyright-langserver"),
+    # tsserver must be importable from the same node_modules tree or
+    # initialize() fails with "Could not find a valid TypeScript installation".
+    "typescript-language-server": _npm("typescript-language-server", "typescript-language-server", extra_pkgs=["typescript"]),
+    "@vue/language-server": _npm("@vue/language-server", "vue-language-server"),
+    "svelte-language-server": _npm("svelte-language-server", "svelteserver"),
+    "@astrojs/language-server": _npm("@astrojs/language-server", "astro-ls"),
+    "yaml-language-server": _npm("yaml-language-server", "yaml-language-server"),
+    "bash-language-server": _npm("bash-language-server", "bash-language-server"),
+    "intelephense": _npm("intelephense", "intelephense"),
+    "dockerfile-language-server-nodejs": _npm("dockerfile-language-server-nodejs", "docker-langserver"),
+    "gopls": _recipe("go", "golang.org/x/tools/gopls@latest", "gopls"),
+    # Manual: rust-analyzer (via rustup) and clangd (ships with LLVM) are far too
+    # heavy to bootstrap; LuaLS is platform-specific GitHub release binaries.
+    "rust-analyzer": _manual("rust-analyzer"),
+    "clangd": _manual("clangd"),
+    "lua-language-server": _manual("lua-language-server"),
+    # PowerShellEditorServices is a release-zip bundle driven by pwsh; we probe
+    # the host so `hermes lsp status` reports its presence.
+    "powershell": _manual("pwsh"),
+}
 
 _install_locks: Dict[str, threading.Lock] = {}
 _install_results: Dict[str, Optional[str]] = {}
@@ -132,17 +82,18 @@ def hermes_lsp_bin_dir() -> Path:
 
 
 def _native_binary_candidates(base: Path) -> list[Path]:
-    """Return platform-native executable candidates for a staged binary."""
-    candidates = [base]
-    if _is_windows():
-        existing = {str(base).lower()}
-        for suffix in _WINDOWS_WRAPPER_SUFFIXES:
-            candidate = Path(str(base) + suffix)
-            key = str(candidate).lower()
-            if key not in existing:
-                candidates.append(candidate)
-                existing.add(key)
-    return candidates
+    """Return platform-native executable candidates for a staged binary (``base`` plus Windows wrappers)."""
+    if not _is_windows():
+        return [base]
+    cands: Dict[str, Path] = {}
+    for c in (base, *(Path(str(base) + s) for s in _WINDOWS_WRAPPER_SUFFIXES)):
+        cands.setdefault(str(c).lower(), c)
+    return list(cands.values())
+
+
+def _first_existing(*bases: Path) -> Optional[Path]:
+    """First platform-native candidate of any ``base`` that exists on disk."""
+    return next((c for base in bases for c in _native_binary_candidates(base) if c.exists()), None)
 
 
 def _existing_binary(name: str) -> Optional[str]:
@@ -150,155 +101,94 @@ def _existing_binary(name: str) -> Optional[str]:
     for staged in _native_binary_candidates(hermes_lsp_bin_dir() / name):
         if staged.exists() and os.access(staged, os.X_OK):
             return str(staged)
-    on_path = shutil.which(name)
-    if on_path:
-        return on_path
-    if _is_windows():
-        for suffix in _WINDOWS_WRAPPER_SUFFIXES:
-            on_path = shutil.which(f"{name}{suffix}")
-            if on_path:
-                return on_path
-    return None
-
-
-def _get_lock(pkg: str) -> threading.Lock:
-    with _install_lock_meta:
-        lock = _install_locks.get(pkg)
-        if lock is None:
-            lock = threading.Lock()
-            _install_locks[pkg] = lock
-        return lock
+    suffixes = ("", *_WINDOWS_WRAPPER_SUFFIXES) if _is_windows() else ("",)
+    return next((p for s in suffixes if (p := shutil.which(f"{name}{s}"))), None)
 
 
 def try_install(pkg: str, strategy: str = "auto") -> Optional[str]:
-    """Try to install ``pkg`` and return the binary path if successful.
+    """Try to install ``pkg``; return the binary path or ``None``.
 
-    ``strategy`` is ``"auto"``, ``"manual"``, or ``"off"``.  In
-    ``manual``/``off`` mode, this function only probes for an
-    existing binary and returns ``None`` if not found.
-
-    The install is cached per-package — a second call returns the
-    same path (or ``None``) without reinstalling.  Concurrent calls
-    are serialized.
+    Only ``"auto"`` installs; ``"manual"``/``"off"`` just probe for an existing
+    binary.  Results are cached per package and concurrent calls are serialized.
     """
-    if strategy not in {"auto",}:
-        # Only ``auto`` triggers an actual install.  In manual/off,
-        # we still check whether the binary already exists.
-        recipe = INSTALL_RECIPES.get(pkg, {})
-        bin_name = recipe.get("bin", pkg)
-        return _existing_binary(bin_name)
-
+    if strategy != "auto":
+        return _existing_binary(INSTALL_RECIPES.get(pkg, {}).get("bin", pkg))
     if pkg in _install_results:
         return _install_results[pkg]
-
-    lock = _get_lock(pkg)
+    with _install_lock_meta:
+        lock = _install_locks.setdefault(pkg, threading.Lock())
     with lock:
-        # Double-check after acquiring lock.
-        if pkg in _install_results:
-            return _install_results[pkg]
-        result = _do_install(pkg)
-        _install_results[pkg] = result
-        return result
+        if pkg not in _install_results:
+            _install_results[pkg] = _do_install(pkg)
+        return _install_results[pkg]
 
 
 def _do_install(pkg: str) -> Optional[str]:
     recipe = INSTALL_RECIPES.get(pkg)
     if recipe is None:
-        # Not in our registry — best-effort: just probe PATH.
-        return shutil.which(pkg)
-
+        return shutil.which(pkg)  # not in our registry — best-effort: just probe PATH
     strategy = recipe.get("strategy", "manual")
     bin_name = recipe.get("bin", pkg)
-
-    # Check if already present (shutil.which or staging dir)
-    existing = _existing_binary(bin_name)
-    if existing:
+    if existing := _existing_binary(bin_name):
         return existing
-
     if strategy == "manual":
         logger.debug("[install] %s requires manual install (recipe=%s)", pkg, recipe)
         return None
+    installer = _INSTALLERS.get(strategy)
+    if installer is None:
+        logger.warning("[install] unknown strategy %r for %s", strategy, pkg)
+        return None
+    return installer(recipe, bin_name)
 
-    if strategy == "npm":
-        return _install_npm(
-            recipe.get("pkg", pkg),
-            bin_name,
-            extra_pkgs=recipe.get("extra_pkgs") or [],
+
+def _run_installer(tool: str, pkg: str, cmd: list, *, timeout: int, env: Optional[dict] = None) -> bool:
+    """Run one install subprocess; log and return False on non-zero exit or error."""
+    try:
+        proc = subprocess.run(
+            cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout, env=env, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags(),
         )
-    if strategy == "go":
-        return _install_go(recipe.get("pkg", pkg), bin_name)
-    if strategy == "pip":
-        return _install_pip(recipe.get("pkg", pkg), bin_name)
+        if proc.returncode != 0:
+            logger.warning("[install] %s install failed for %s: %s", tool, pkg, proc.stderr.strip()[:500])
+            return False
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.warning("[install] %s install errored for %s: %s", tool, pkg, e)
+        return False
+    return True
 
-    logger.warning("[install] unknown strategy %r for %s", strategy, pkg)
-    return None
+
+def _link_into_bin(target: Path) -> str:
+    """Symlink (or copy, where symlinks fail) ``target`` into ``lsp/bin/`` and return the path to use."""
+    link = hermes_lsp_bin_dir() / target.name
+    if not link.exists():
+        try:
+            link.symlink_to(target)
+        except (OSError, NotImplementedError):
+            # Symlinks fail on some Windows setups — copy instead.
+            try:
+                shutil.copy2(target, link)
+            except OSError:
+                return str(target)
+    return str(link if link.exists() else target)
 
 
-def _install_npm(
-    pkg: str,
-    bin_name: str,
-    extra_pkgs: Optional[list] = None,
-) -> Optional[str]:
-    """Install an npm package into our staging dir.
-
-    Uses ``npm install --prefix`` so the binaries land in
-    ``<staging>/node_modules/.bin/<bin_name>`` and we symlink them up
-    one level for direct PATH-style access.
-
-    ``extra_pkgs`` is a list of sibling packages to install in the
-    same ``node_modules`` tree.  Used for LSP servers with runtime
-    peer deps that npm doesn't auto-pull (typescript-language-server
-    needs ``typescript`` next to it; intelephense ships standalone).
-    """
-    # Managed npm first: $HERMES_HOME/node is not on an arbitrary process's
-    # PATH, so a bare which() misses the Node that Hermes installed and
-    # reports "npm not on PATH" on a machine that has a perfectly good one.
+def _install_npm(pkg: str, bin_name: str, extra_pkgs: Optional[list] = None) -> Optional[str]:
+    """``npm install --prefix <staging>`` then link ``node_modules/.bin/<bin_name>`` into ``lsp/bin/``."""
+    # Managed npm first: $HERMES_HOME/node isn't on an arbitrary process's
+    # PATH, so a bare which() would miss the Node that Hermes installed.
     npm = find_node_executable("npm")
     if npm is None:
         logger.info("[install] cannot install %s: no usable npm found", pkg)
         return None
     staging = hermes_lsp_bin_dir().parent  # <HERMES_HOME>/lsp/
     install_targets = [pkg] + list(extra_pkgs or [])
-    try:
-        logger.info(
-            "[install] npm install --prefix %s %s",
-            staging,
-            " ".join(install_targets),
-        )
-        proc = subprocess.run(
-            [npm, "install", "--prefix", str(staging), "--silent", "--no-fund", "--no-audit", *install_targets],
-            check=False,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            timeout=300,
-            stdin=subprocess.DEVNULL,
-            creationflags=windows_hide_flags(),
-        )
-        if proc.returncode != 0:
-            logger.warning(
-                "[install] npm install failed for %s: %s", pkg, proc.stderr.strip()[:500]
-            )
-            return None
-    except (subprocess.TimeoutExpired, OSError) as e:
-        logger.warning("[install] npm install errored for %s: %s", pkg, e)
+    logger.info("[install] npm install --prefix %s %s", staging, " ".join(install_targets))
+    cmd = [npm, "install", "--prefix", str(staging), "--silent", "--no-fund", "--no-audit", *install_targets]
+    if not _run_installer("npm", pkg, cmd, timeout=300):
         return None
-
-    # Find the bin
-    nm_bin = staging / "node_modules" / ".bin" / bin_name
-    for c in _native_binary_candidates(nm_bin):
-        if c.exists():
-            # Symlink into our `lsp/bin/` for stable PATH access.
-            link = hermes_lsp_bin_dir() / c.name
-            if not link.exists():
-                try:
-                    link.symlink_to(c)
-                except (OSError, NotImplementedError):
-                    # Symlinks fail on some Windows setups — copy instead.
-                    try:
-                        shutil.copy2(c, link)
-                    except OSError:
-                        return str(c)
-            return str(link if link.exists() else c)
+    found = _first_existing(staging / "node_modules" / ".bin" / bin_name)
+    if found is not None:
+        return _link_into_bin(found)
     logger.warning("[install] npm install for %s succeeded but bin %s not found", pkg, bin_name)
     return None
 
@@ -310,31 +200,10 @@ def _install_go(pkg: str, bin_name: str) -> Optional[str]:
         logger.info("[install] cannot install %s: go not on PATH", pkg)
         return None
     staging = hermes_lsp_bin_dir()
-    env = dict(os.environ)
-    env["GOBIN"] = str(staging)
-    try:
-        logger.info("[install] go install %s (GOBIN=%s)", pkg, staging)
-        proc = subprocess.run(
-            [go, "install", pkg],
-            check=False,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            timeout=600,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            creationflags=windows_hide_flags(),
-        )
-        if proc.returncode != 0:
-            logger.warning(
-                "[install] go install failed for %s: %s", pkg, proc.stderr.strip()[:500]
-            )
-            return None
-    except (subprocess.TimeoutExpired, OSError) as e:
-        logger.warning("[install] go install errored for %s: %s", pkg, e)
+    logger.info("[install] go install %s (GOBIN=%s)", pkg, staging)
+    if not _run_installer("go", pkg, [go, "install", pkg], timeout=600, env={**os.environ, "GOBIN": str(staging)}):
         return None
-    bin_path = staging / bin_name
-    if _is_windows():
-        bin_path = bin_path.with_suffix(".exe")
+    bin_path = (staging / bin_name).with_suffix(".exe") if _is_windows() else staging / bin_name
     if bin_path.exists():
         return str(bin_path)
     logger.warning("[install] go install for %s succeeded but bin %s not found", pkg, bin_name)
@@ -342,71 +211,40 @@ def _install_go(pkg: str, bin_name: str) -> Optional[str]:
 
 
 def _install_pip(pkg: str, bin_name: str) -> Optional[str]:
-    """Install a Python package into a hermes-owned target dir.
-
-    We avoid polluting the user's site-packages by using
-    ``pip install --target``.  Bins go into
-    ``<staging>/python-packages/bin/`` which we symlink into
-    ``<staging>/bin``.  Note: this only works for packages that ship a
-    console script.
-    """
+    """``pip install --target <staging>/python-packages`` then link the console script into ``lsp/bin/``."""
     pip_target = hermes_lsp_bin_dir().parent / "python-packages"
     pip_target.mkdir(parents=True, exist_ok=True)
     try:
         logger.info("[install] pip install --target %s %s", pip_target, pkg)
         from hermes_cli.tools_config import _pip_install
 
-        proc = _pip_install(
-            ["--target", str(pip_target), "--quiet", pkg],
-            timeout=300,
-        )
+        proc = _pip_install(["--target", str(pip_target), "--quiet", pkg], timeout=300)
         if proc.returncode != 0:
-            logger.warning(
-                "[install] pip install failed for %s: %s", pkg, (proc.stderr or "").strip()[:500]
-            )
+            logger.warning("[install] pip install failed for %s: %s", pkg, (proc.stderr or "").strip()[:500])
             return None
     except (subprocess.TimeoutExpired, OSError) as e:
         logger.warning("[install] pip install errored for %s: %s", pkg, e)
         return None
-    # Look for the console script.  POSIX wheels generally write to bin/,
-    # while native Windows installs use Scripts/.
-    script_dirs = [pip_target / "bin"]
-    if _is_windows():
-        script_dirs.append(pip_target / "Scripts")
-    for script_dir in script_dirs:
-        for bin_path in _native_binary_candidates(script_dir / bin_name):
-            if bin_path.exists():
-                link = hermes_lsp_bin_dir() / bin_path.name
-                if not link.exists():
-                    try:
-                        link.symlink_to(bin_path)
-                    except (OSError, NotImplementedError):
-                        try:
-                            shutil.copy2(bin_path, link)
-                        except OSError:
-                            return str(bin_path)
-                return str(link if link.exists() else bin_path)
-    return None
+    # POSIX wheels write console scripts to bin/, native Windows to Scripts/.
+    script_dirs = [pip_target / "bin"] + ([pip_target / "Scripts"] if _is_windows() else [])
+    found = _first_existing(*(d / bin_name for d in script_dirs))
+    return _link_into_bin(found) if found is not None else None
+
+
+# strategy → installer(recipe, bin_name).  ``manual`` is handled before dispatch.
+_INSTALLERS: Dict[str, Callable[[Dict[str, Any], str], Optional[str]]] = {
+    "npm": lambda r, b: _install_npm(r["pkg"], b, extra_pkgs=r.get("extra_pkgs") or []),
+    "go": lambda r, b: _install_go(r["pkg"], b),
+    "pip": lambda r, b: _install_pip(r["pkg"], b),
+}
 
 
 def detect_status(pkg: str) -> str:
-    """Return ``installed``, ``missing``, or ``manual-only`` for a package.
-
-    Used by the ``hermes lsp status`` CLI to give users a quick
-    overview of what's available without spawning anything.
-    """
+    """Return ``installed``, ``missing``, or ``manual-only`` (for ``hermes lsp status``; spawns nothing)."""
     recipe = INSTALL_RECIPES.get(pkg)
-    bin_name = recipe.get("bin", pkg) if recipe else pkg
-    if _existing_binary(bin_name):
+    if _existing_binary(recipe.get("bin", pkg) if recipe else pkg):
         return "installed"
-    if recipe and recipe.get("strategy") == "manual":
-        return "manual-only"
-    return "missing"
+    return "manual-only" if recipe and recipe.get("strategy") == "manual" else "missing"
 
 
-__all__ = [
-    "INSTALL_RECIPES",
-    "try_install",
-    "detect_status",
-    "hermes_lsp_bin_dir",
-]
+__all__ = ["INSTALL_RECIPES", "try_install", "detect_status", "hermes_lsp_bin_dir"]

@@ -7,24 +7,34 @@ import {
   AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS,
   audioSpeakRequestTimeoutMs,
   audioTranscribeRequestTimeoutMs,
+  deleteProfile,
+  deleteSession,
   getAllSessionMessages,
   getCronJobs,
   getGlobalModelInfo,
   getGlobalModelOptions,
   getHermesConfig,
   getHermesConfigDefaults,
+  getLatestSessionMessages,
+  getOlderSessionMessages,
   getProfiles,
+  getSession,
   getSessionMessages,
   getStatus,
+  LATEST_SESSION_MESSAGES_LIMIT,
   listAllProfileSessions,
   listSessions,
   listSidebarSessions,
+  pluginSocket,
   resetSidebarBatchCapability,
+  setApiRequestConnection,
   setApiRequestProfile,
   speakText,
-  transcribeAudio
+  transcribeAudio,
+  triggerCronJob
 } from './hermes'
 import { refreshActiveProfile } from './store/profile'
+import { $transcriptTailBySessionId, transcriptTailState } from './store/transcript-tail'
 
 const emptySessionsResponse = {
   limit: 0,
@@ -46,6 +56,7 @@ describe('Hermes REST helpers', () => {
   })
 
   afterEach(() => {
+    setApiRequestConnection(null)
     setApiRequestProfile(null)
     vi.restoreAllMocks()
     Reflect.deleteProperty(window, 'hermesDesktop')
@@ -93,6 +104,115 @@ describe('Hermes REST helpers', () => {
         timeoutMs: 60_000
       })
     )
+  })
+
+  it('routes session, profile, and model reads through the active registry source', async () => {
+    api.mockImplementation(async ({ path }: { path: string }) =>
+      path.startsWith('/api/profiles/sessions/sidebar')
+        ? { recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] } }
+        : emptySessionsResponse
+    )
+    setApiRequestConnection('personal')
+
+    await listSessions()
+    await listAllProfileSessions()
+    await listSidebarSessions({
+      recentsProfile: 'default',
+      recentsLimit: 20,
+      recentsExclude: [],
+      cronLimit: 20,
+      messagingLimit: 20,
+      messagingExclude: []
+    })
+    await getProfiles()
+    await getGlobalModelInfo()
+
+    for (const call of api.mock.calls) {
+      expect(call[0]).toEqual(expect.objectContaining({ connectionId: 'personal' }))
+    }
+  })
+
+  it('keeps an explicit This device source on REST requests', async () => {
+    setApiRequestConnection('local')
+
+    await getProfiles()
+
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ connectionId: 'local', path: '/api/profiles' }))
+  })
+
+  it('routes the batched sidebar refresh through the active backend scope', async () => {
+    setApiRequestConnection('cubi')
+    setApiRequestProfile('default')
+    api.mockResolvedValue({ recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] } })
+
+    await listSidebarSessions({
+      recentsProfile: 'default',
+      recentsLimit: 20,
+      recentsExclude: ['cron'],
+      cronLimit: 50,
+      messagingLimit: 100,
+      messagingExclude: ['cron', 'desktop']
+    })
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: 'cubi',
+        profile: 'default',
+        path: expect.stringContaining('/api/profiles/sessions/sidebar?recents_profile=default')
+      })
+    )
+  })
+
+  it('routes legacy profile-session slices through the active backend scope', async () => {
+    setApiRequestConnection('cubi')
+    setApiRequestProfile('default')
+
+    await listAllProfileSessions(20, 1, 'exclude', 'recent', 'default')
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: 'cubi',
+        profile: 'default',
+        path: expect.stringContaining('/api/profiles/sessions?')
+      })
+    )
+  })
+
+  it('does not stamp ambient profile onto unscoped helpers', async () => {
+    setApiRequestProfile('iris')
+
+    await getProfiles()
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/profiles'
+      })
+    )
+    expect(api.mock.calls[0][0]).not.toHaveProperty('profile')
+  })
+
+  it('preserves ambient and explicit-local ownership for session and profile requests', async () => {
+    setApiRequestConnection('remote-a')
+
+    await getSession('ambient-session')
+    await getSessionMessages('ambient-session')
+    await deleteSession('ambient-session')
+
+    for (const call of api.mock.calls) {
+      expect(call[0]).toEqual(expect.objectContaining({ connectionId: 'remote-a' }))
+    }
+
+    api.mockClear()
+    const localScope = { connectionId: 'local', profile: 'worker' }
+
+    await getSession('local-session', localScope)
+    await getSessionMessages('local-session', localScope)
+    await deleteSession('local-session', localScope)
+    await deleteProfile('worker', localScope)
+
+    for (const call of api.mock.calls) {
+      expect(call[0]).toEqual(expect.objectContaining({ connectionId: 'local', profile: 'worker' }))
+    }
   })
 
   it('defaults missing sidebar slices to empty session arrays', async () => {
@@ -151,7 +271,7 @@ describe('Hermes REST helpers', () => {
     })
 
     // Slices reassembled from the legacy per-slice route with the same
-    // scoping: recents on the caller's profile, cron + messaging cross-profile.
+    // scoping: every section follows the caller's profile.
     expect(result.recents.sessions.map(s => s.id)).toEqual(['recent-1'])
     // One row back against a 30-row window: the profile is fully loaded, so
     // the legacy path must not claim there's another page.
@@ -162,9 +282,47 @@ describe('Hermes REST helpers', () => {
     const paths = api.mock.calls.map(call => (call[0] as { path: string }).path)
     expect(paths.filter(p => p.startsWith('/api/profiles/sessions/sidebar'))).toHaveLength(1)
     expect(paths.filter(p => p.startsWith('/api/profiles/sessions?'))).toHaveLength(3)
-    expect(paths).toContainEqual(expect.stringContaining('profile=work'))
+    expect(
+      paths.filter(path => path.startsWith('/api/profiles/sessions?') && path.includes('profile=work'))
+    ).toHaveLength(3)
+    expect(paths.some(path => path.includes('profile=all'))).toBe(false)
     expect(paths).toContainEqual(expect.stringContaining('source=cron'))
     expect(paths).toContainEqual(expect.stringContaining('exclude_sources=cron%2Ctool'))
+  })
+
+  it('keeps per-slice errors on the legacy fallback so a cron failure does not taint recents', async () => {
+    resetSidebarBatchCapability()
+    const row = (id: string) => ({ id, title: id, profile: 'default' })
+
+    api.mockImplementation(({ path }: { path: string }) => {
+      if (path.startsWith('/api/profiles/sessions/sidebar')) {
+        return Promise.reject(new Error('404: {"detail":"No such API endpoint: /api/profiles/sessions/sidebar"}'))
+      }
+
+      if (path.includes('source=cron')) {
+        return Promise.resolve({
+          ...emptySessionsResponse,
+          sessions: [],
+          errors: [{ profile: 'default', error: 'disk I/O error' }]
+        })
+      }
+
+      return Promise.resolve({ ...emptySessionsResponse, sessions: [row('recent-1')] })
+    })
+
+    const result = await listSidebarSessions({
+      recentsProfile: 'default',
+      recentsLimit: 20,
+      recentsExclude: [],
+      cronLimit: 50,
+      messagingLimit: 100,
+      messagingExclude: []
+    })
+
+    expect(result.recents.sessions.map(s => s.id)).toEqual(['recent-1'])
+    expect(result.recents.errors).toBeUndefined()
+    expect(result.cron.errors).toEqual([{ profile: 'default', error: 'disk I/O error' }])
+    expect(result.errors).toBeUndefined()
   })
 
   it('remembers endpoint-missing and skips re-probing the batched route on later refreshes', async () => {
@@ -310,6 +468,21 @@ describe('Hermes REST helpers', () => {
     }
   })
 
+  it('waits for synchronous cron triggers as a long-running operation', async () => {
+    api.mockResolvedValue({ id: 'job-1' })
+
+    await triggerCronJob('job-1')
+
+    const request = api.mock.calls[0]?.[0]
+    expect(request).toEqual(
+      expect.objectContaining({
+        path: '/api/cron/jobs/job-1/trigger',
+        method: 'POST'
+      })
+    )
+    expect(request.timeoutMs).toBeGreaterThanOrEqual(60 * 60 * 1000)
+  })
+
   it('keeps the liveness poll on the short default so a dead backend fails fast', async () => {
     api.mockResolvedValue({})
     api.mockClear()
@@ -330,6 +503,83 @@ describe('Hermes REST helpers', () => {
 
     expect(api).toHaveBeenCalledWith({
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu',
+      profile: 'xiaoxuxu'
+    })
+  })
+
+  it('pins session metadata and transcripts to an explicit connection scope', async () => {
+    api.mockResolvedValue({ messages: [], session_id: 'session-1' })
+    const scope = { connectionId: 'source-a', profile: 'backend-default' }
+
+    await getSession('session-1', scope)
+    await getSessionMessages('session-1', scope)
+
+    expect(api).toHaveBeenNthCalledWith(1, {
+      connectionId: 'source-a',
+      path: '/api/sessions/session-1?profile=backend-default',
+      profile: 'backend-default'
+    })
+    expect(api).toHaveBeenNthCalledWith(2, {
+      connectionId: 'source-a',
+      path: '/api/sessions/session-1/messages?profile=backend-default',
+      profile: 'backend-default'
+    })
+  })
+
+  it('scopes profile deletion and rejects default before Electron dispatch', async () => {
+    api.mockResolvedValue({ ok: true, path: '/profiles/worker' })
+
+    await deleteProfile('backend-worker', { connectionId: 'source-a', profile: 'backend-worker' })
+    await expect(deleteProfile('worker', { connectionId: 'source-a', profile: 'default' })).rejects.toThrow(
+      /default profile cannot be deleted/i
+    )
+
+    expect(api).toHaveBeenCalledOnce()
+    expect(api).toHaveBeenCalledWith({
+      connectionId: 'source-a',
+      method: 'DELETE',
+      path: '/api/profiles/backend-worker',
+      profile: 'backend-worker'
+    })
+  })
+
+  it('hydrates the latest transcript with a small tail page (120, latest, compacted rows included)', async () => {
+    api.mockResolvedValue({
+      messages: [],
+      pagination: { limit: 120, offset: 0, order: 'latest', returned: 0 },
+      session_id: 'session-1'
+    })
+
+    await getLatestSessionMessages('session-1', 'xiaoxuxu')
+
+    expect(LATEST_SESSION_MESSAGES_LIMIT).toBe(120)
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=120&order=latest&include_compacted=true',
+      profile: 'xiaoxuxu'
+    })
+  })
+
+  it('records tail truncation state under the requested and resolved session ids', async () => {
+    $transcriptTailBySessionId.set({})
+    api.mockResolvedValue({
+      messages: Array.from({ length: 120 }, (_, index) => ({ content: `m${index}`, id: index, role: 'user' })),
+      pagination: { limit: 120, offset: 0, order: 'latest', returned: 120 },
+      session_id: 'resolved-1'
+    })
+
+    await getLatestSessionMessages('prefix-1')
+
+    expect(transcriptTailState('prefix-1')).toMatchObject({ nextOffset: 120, possiblyTruncated: true })
+    expect(transcriptTailState('resolved-1')).toMatchObject({ nextOffset: 120, possiblyTruncated: true })
+  })
+
+  it('requests older pages backwards from the newest message', async () => {
+    api.mockResolvedValue({ messages: [], session_id: 'session-1' })
+
+    await getOlderSessionMessages('session-1', 'xiaoxuxu', 240)
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=120&offset=240&order=latest&include_compacted=true',
       profile: 'xiaoxuxu'
     })
   })
@@ -366,11 +616,11 @@ describe('Hermes REST helpers', () => {
 
     expect(result.messages).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }])
     expect(api).toHaveBeenNthCalledWith(1, {
-      path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=500&offset=0&order=oldest',
+      path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=500&offset=0&order=oldest&include_compacted=true',
       profile: 'xiaoxuxu'
     })
     expect(api).toHaveBeenNthCalledWith(2, {
-      path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=500&offset=2&order=oldest',
+      path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=500&offset=2&order=oldest&include_compacted=true',
       profile: 'xiaoxuxu'
     })
   })
@@ -463,5 +713,43 @@ describe('Hermes REST helpers', () => {
         path: '/api/model/options?refresh=1&include_unconfigured=1'
       })
     )
+  })
+})
+
+describe('pluginSocket', () => {
+  let getConnection: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    getConnection = vi.fn().mockResolvedValue(null)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { api: vi.fn(), getConnection }
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    Reflect.deleteProperty(window, 'hermesDesktop')
+    setApiRequestProfile(null)
+  })
+
+  it('scopes the connection to the active profile, like pluginRest', async () => {
+    setApiRequestProfile('work')
+
+    const dispose = pluginSocket('kanban', '/events', () => {})
+
+    await vi.waitFor(() => expect(getConnection).toHaveBeenCalled())
+    expect(getConnection).toHaveBeenCalledWith('work')
+
+    dispose()
+  })
+
+  it('passes null when no profile is scoped (single-profile / primary)', async () => {
+    const dispose = pluginSocket('kanban', '/events', () => {})
+
+    await vi.waitFor(() => expect(getConnection).toHaveBeenCalled())
+    expect(getConnection).toHaveBeenCalledWith(null)
+
+    dispose()
   })
 })

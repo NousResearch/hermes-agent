@@ -11,6 +11,7 @@ import { Check, ChevronDown, ChevronLeft, KeyRound, Loader2 } from '@/lib/icons'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { cn } from '@/lib/utils'
 import { $desktopBoot, type DesktopBootState } from '@/store/boot'
+import { $localModelsEnabled } from '@/store/local-models-flag'
 import {
   $desktopOnboarding,
   clearPendingProviderOAuth,
@@ -32,6 +33,7 @@ import { DocsLink, FlowPanel, Status } from './flow'
 import {
   FeaturedProviderRow,
   FireworksProviderRow,
+  LocalModelsProviderRow,
   OpenRouterProviderRow,
   ProviderRow,
   sortProviders
@@ -41,6 +43,7 @@ export {
   FeaturedProviderRow,
   FireworksProviderRow,
   KeyProviderRow,
+  LocalModelsProviderRow,
   OpenRouterProviderRow,
   ProviderRow,
   providerTitle,
@@ -308,6 +311,10 @@ export function DesktopOnboardingOverlay({
         bare && leaving ? '[transition-delay:660ms]' : '',
         leaving ? 'pointer-events-none opacity-0' : 'opacity-100'
       )}
+      // Masks the whole app until onboarding finishes — must stay filled under
+      // window glass or the shell shows through. Contract:
+      // `[data-glass-opaque]` in styles.css.
+      data-glass-opaque=""
     >
       <div
         className={cn(
@@ -474,10 +481,29 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   const collapsible = Boolean(featured)
   const showRest = !collapsible || showAll
 
+  // "Run models locally" leaves the picker for Settings -> Providers ->
+  // Local Models, where install/download live. First-run: persist the skip
+  // (same contract as ChooseLaterLink) so the blocking overlay never
+  // re-nags; manual mode just closes. window.location keeps this picker
+  // router-independent (it renders outside the route tree on first run).
+  const openLocalModels = () => {
+    if (manual) {
+      closeManualOnboarding()
+    } else {
+      dismissFirstRunOnboarding()
+    }
+
+    window.location.hash = '#/settings?tab=providers&pview=local'
+  }
+
   return (
     <div className="grid gap-2">
       <div className="grid max-h-[60dvh] gap-2 overflow-y-auto p-1">
         {featured ? <FeaturedProviderRow onSelect={select} provider={featured} /> : null}
+        {/* The no-account path: everything runs on this machine. Shipped
+            behind the --local launch flag. (Fireworks moved into the
+            expanded list on main.) */}
+        {$localModelsEnabled.get() ? <LocalModelsProviderRow onClick={openLocalModels} /> : null}
         {showRest ? (
           <>
             {/* Fireworks leads the expanded list, matching CANONICAL_PROVIDERS
@@ -662,7 +688,7 @@ export function ApiKeyForm({
           autoFocus
           className="font-mono"
           onChange={e => setValue(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && void submit()}
+          onKeyDown={e => e.key === 'Enter' && !e.nativeEvent.isComposing && void submit()}
           placeholder={
             currentRedacted ??
             (alreadySet ? t.onboarding.replaceCurrent : option.placeholder || t.onboarding.pasteApiKey)
@@ -675,7 +701,7 @@ export function ApiKeyForm({
             autoComplete="off"
             className="font-mono"
             onChange={e => setLocalKey(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && void submit()}
+            onKeyDown={e => e.key === 'Enter' && !e.nativeEvent.isComposing && void submit()}
             placeholder={t.onboarding.localApiKeyPlaceholder}
             type="password"
             value={localKey}

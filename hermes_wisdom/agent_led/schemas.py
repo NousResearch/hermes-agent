@@ -23,7 +23,7 @@ RECIPIENT_ACTIONS: tuple[str, ...] = ("install", "view", "mute")
 UPDATE_ACTIONS: tuple[str, ...] = ("update", "view_changes", "mute")
 
 _SECRET_SHAPES = (
-    re.compile(r"(?i)\b(sk|ghp|gho|xox[abpr]|AKIA|AIza)[A-Za-z0-9_-]{12,}"),
+    re.compile(r"(?i)\b(?:sk-|gh[po]_|xox[abpr]-|AKIA|AIza)[A-Za-z0-9_-]{12,}"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
     re.compile(r"(?i)(api[_-]?key|secret|token|password)\s*[:=]\s*['\"]?[A-Za-z0-9_\-/+]{16,}"),
 )

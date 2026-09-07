@@ -255,6 +255,19 @@ def test_mute_uses_fixed_options(tmp_path):
 
 # ---------------------------------------------------------------------------
 # schema validation
+
+
+def test_credential_detector_allows_long_skill_names():
+    from hermes_wisdom.agent_led.schemas import PackagedFile
+    text = "Use skill-qualification-test and skill-publishing-flow-test."
+    assert PackagedFile(path="SKILL.md", content=text).content == text
+
+
+@pytest.mark.parametrize("prefix", ["sk-", "ghp_", "gho_", "xoxb-", "AKIA", "AIza"])
+def test_credential_detector_still_rejects_key_shapes(prefix):
+    from hermes_wisdom.agent_led.schemas import PackagedFile
+    with pytest.raises(ValueError, match="credential-shaped"):
+        PackagedFile(path="SKILL.md", content=prefix + "a" * 32)
 # ---------------------------------------------------------------------------
 
 def test_candidate_review_schema_accepts_valid_and_repairs_bad_item():

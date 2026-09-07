@@ -2073,6 +2073,15 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.debug("[Feishu] Dropping duplicate/missing message_id: %s", message_id)
             return
         reason = self._admit(sender, message)
+        if reason == "dm_policy_rejected" and not _is_bot_sender(sender) and await self._should_forward_unauthorized_dm():
+            # The gateway owns the unauthorized-DM reply (pairing code or a
+            # configured decline). Dropping here would make Feishu the only
+            # platform where ``unauthorized_dm_behavior`` never fires. Gateway
+            # auth still fail-closes agent access for the unknown sender.
+            logger.debug(
+                "[Feishu] forwarding unauthorized DM to gateway intake (unauthorized_dm_behavior)"
+            )
+            reason = None
         if reason is not None:
             logger.debug("[Feishu] dropping inbound event: %s", reason)
             if reason == "group_policy_rejected":
@@ -3398,6 +3407,35 @@ class FeishuAdapter(BasePlatformAdapter):
         if rule and rule.require_mention is not None:
             return rule.require_mention
         return self._require_mention
+
+    async def _should_forward_unauthorized_dm(self) -> bool:
+        """True when an allowlist-rejected DM must still reach the gateway so its
+        ``unauthorized_dm_behavior`` can reply (a pairing code or a one-time decline).
+
+        ``_admit`` rejects DMs from senders outside ``FEISHU_ALLOWED_USERS`` before any
+        event is built, which would make ``pair``/``decline`` silently inert on Feishu.
+        Mirrors Telegram's ``_should_pass_unauthorized_dm_for_pairing``: only ``ignore``
+        (the allowlist default) keeps the drop; gateway auth still fail-closes agent access.
+        """
+        # Bound-handler ``__self__`` is None under multiplex; ``gateway_runner`` survives that wrapping.
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None) or getattr(self, "gateway_runner", None)
+        behavior_fn = getattr(runner, "_get_unauthorized_dm_behavior", None)
+        if callable(behavior_fn):
+            profile = getattr(self, "_owner_profile", None)
+            try:
+                if not profile:
+                    return behavior_fn(Platform.FEISHU, profile=None) != "ignore"
+                # This path runs unscoped, and a secondary's allowlist lives only in its own scope
+                # (#86905): resolve under the scope its message handler uses, or an allowlisted
+                # profile reads as allowlist-less and the default flips from ``ignore`` to ``pair``.
+                from gateway.run import _async_profile_runtime_scope
+                from hermes_cli.profiles import get_profile_dir
+                async with _async_profile_runtime_scope(get_profile_dir(profile)):
+                    return behavior_fn(Platform.FEISHU, profile=profile) != "ignore"
+            except Exception:
+                logger.debug("[Feishu] Failed to resolve unauthorized DM behavior; falling back to adapter-local override", exc_info=True)
+        extra = getattr(getattr(self, "config", None), "extra", None) or {}
+        return str(extra.get("unauthorized_dm_behavior", "")).strip().lower() in ("pair", "decline")
 
     def _allow_group_message(self, sender_id: Any, chat_id: str = "", *, is_bot: bool = False) -> bool:
         """Per-group policy gate for non-DM traffic."""

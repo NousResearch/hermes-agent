@@ -190,6 +190,16 @@ FEISHU_ALLOWED_USERS=ou_xxx,ou_yyy
 
 If you leave the allowlist empty, anyone who can reach the bot may be able to use it. In group chats, the allowlist is checked against the sender's open_id before the message is processed.
 
+Direct messages from senders outside the allowlist are handled by `unauthorized_dm_behavior` (see [Security](../security.md#dm-pairing-system)). With an allowlist configured the default is `ignore` (silent drop). To answer those senders, set it for Feishu — `pair` offers a pairing code, `decline` sends one polite refusal:
+
+```yaml
+platforms:
+  feishu:
+    unauthorized_dm_behavior: pair   # or decline / ignore
+```
+
+A gateway-wide `decline` also applies here; a gateway-wide `pair` does not override an allowlist, so pairing needs the Feishu entry above.
+
 ### Webhook Encryption Key
 
 When running in webhook mode, set an encryption key to enable signature verification of inbound webhook payloads:

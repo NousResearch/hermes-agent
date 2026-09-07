@@ -395,33 +395,37 @@ def _split_child_budget(effective_max_iter: int, task_count: int) -> int:
 
 
 def _check_delegation_cycle(parent_agent, profile_name: str | None) -> None:
-    """Reject a spawn that would recurse into its own ancestor profile.
-
-    Walks the _delegate_parent_ref chain (cap 8 hops); if the requested
-    profile name matches any ancestor's stamped profile, raises ValueError
-    loudly (same posture as pinned-transport preflight #80450) instead of
-    building a child that recurses until budgets die. Profile-less
-    (inherit-model) children carry no name and skip the check.
-    """
+    """Reject repeated profiles and malformed ancestry metadata."""
     if not profile_name:
         return
-    _want = str(profile_name).strip().lower()
-    if not _want:
+    want = str(profile_name).strip().lower()
+    if not want:
         return
-    _cur = parent_agent
+    current = parent_agent
+    seen: set[int] = set()
     for _ in range(8):
-        _ref = getattr(_cur, "_delegate_parent_ref", None)
-        _ancestor = _ref() if callable(_ref) else None
-        if _ancestor is None:
+        if current is None:
             return
-        _ancestor_profile = getattr(_ancestor, "_delegate_profile_name", None)
-        if _ancestor_profile and str(_ancestor_profile).strip().lower() == _want:
+        current_id = id(current)
+        if current_id in seen:
+            raise ValueError("Delegation cycle rejected: malformed ancestry metadata")
+        seen.add(current_id)
+        ancestor_profile = getattr(current, "_delegate_profile_name", None)
+        if ancestor_profile and str(ancestor_profile).strip().lower() == want:
             raise ValueError(
                 f"Delegation cycle rejected: profile '{profile_name}' is "
-                f"already in this spawn chain. A profile may not delegate "
-                f"to itself — route the sub-task to a different profile."
+                "already in this spawn chain. A profile may not delegate "
+                "to itself — route the sub-task to a different profile."
             )
-        _cur = _ancestor
+        ref = getattr(current, "_delegate_parent_ref", None)
+        if ref is None:
+            return
+        if not callable(ref):
+            raise ValueError("Delegation cycle rejected: malformed ancestry metadata")
+        current = ref()
+        if current is None:
+            raise ValueError("Delegation cycle rejected: malformed ancestry metadata")
+    raise ValueError("Delegation cycle rejected: ancestry exceeds the 8-hop safety bound")
 
 # KENSEI: delegation fidelity helpers (direct fix, 2026-09-04).
 # 1) Receipts — every child summary must carry verifiable handles.

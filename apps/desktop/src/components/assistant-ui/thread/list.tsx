@@ -26,9 +26,9 @@ import {
   onScrollToBottomRequest,
   onThreadEditClose,
   onThreadEditOpen,
+  planThreadScrollRestore,
   publishThreadAtBottom,
   resetPublishedThreadScroll,
-  planThreadScrollRestore,
   saveThreadScrollPosition,
   THREAD_SCROLL_BOTTOM,
   type ThreadScrollState,
@@ -495,11 +495,6 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // Session the settle loop last armed for, so a re-arm within the same load
   // is distinguishable from a switch to a different transcript.
   const settleKeyRef = useRef(sessionKey)
-  // True once the CURRENT session has settled with a non-empty transcript.
-  // A same-session refresh must keep the reader's position; only a switch or
-  // a cold-load arrival re-arms. Reset on switch so a mid-settle key change
-  // cannot inherit the outgoing session's settled flag.
-  const settledNonEmptyRef = useRef(false)
 
   // Record where the view should land once a prepend has grown the content,
   // measured from the BOTTOM so the added height doesn't invalidate it. Only a

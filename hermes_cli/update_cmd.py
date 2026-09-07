@@ -446,15 +446,13 @@ def _log_only_write(text: str) -> None:
 _LOGGED_SUBPROCESS_PROGRESS_SECONDS = 30.0
 
 
-def _run_logged_subprocess(
-    cmd,
-    *,
-    cwd=None,
-    env=None,
-    label: str = "desktop build",
-    progress_every: float = _LOGGED_SUBPROCESS_PROGRESS_SECONDS,
-):
+def _run_logged_subprocess(cmd, *, cwd=None, env=None):
     """Stream combined build output to update.log, retaining it for failure reporting.
+
+    The progress cadence is read from the module constant rather than taken as a
+    parameter: the only production caller is the desktop rebuild in
+    update_cmd_deps, which passes neither a label nor an interval, so a knob in
+    the signature existed for tests alone.
 
     A silent stretch is never dressed up as output: the periodic line below only
     reports how long the build has been running and how much has been captured,
@@ -464,6 +462,7 @@ def _run_logged_subprocess(
     import io
     from hermes_cli._subprocess_compat import kill_process_tree, windows_hide_flags
 
+    progress_every = _LOGGED_SUBPROCESS_PROGRESS_SECONDS
     child_env = dict(os.environ if env is None else env)
     child_env.setdefault("PYTHONUNBUFFERED", "1")
     spawn = {"creationflags": windows_hide_flags()} if os.name == "nt" else {"process_group": 0}
@@ -490,7 +489,7 @@ def _run_logged_subprocess(
             if progress_every > 0 and now - last_progress >= progress_every:
                 last_progress = now
                 print(
-                    f"  … {label} running: {int(now - started)}s, "
+                    f"  … desktop build running: {int(now - started)}s, "
                     f"{line_count} lines captured (full output: logs/update.log)",
                     flush=True,
                 )

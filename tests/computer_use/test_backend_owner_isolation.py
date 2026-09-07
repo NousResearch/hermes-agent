@@ -293,6 +293,7 @@ def lifecycle_session(monkeypatch, tmp_path):
 
     # Construction may probe model metadata; this lifecycle test never needs I/O.
     monkeypatch.setattr(context_compressor, "get_model_context_length", lambda *args, **kwargs: 128000)
+    monkeypatch.setattr("agent.agent_init.query_ollama_num_ctx", lambda *args, **kwargs: None)
     launch_home = tmp_path / "profile-a"
     launch_home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)

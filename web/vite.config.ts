@@ -77,8 +77,8 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
-      "@hermes/shared": path.resolve(__dirname, "../apps/shared/src"),
+      "@": path.resolve(import.meta.dirname, "./src"),
+      "@hermes/shared": path.resolve(import.meta.dirname, "../apps/shared/src"),
     },
     // When @nous-research/ui is symlinked via `file:../../design-language`,
     // Node's module resolution would pick up shared deps from
@@ -111,6 +111,8 @@ export default defineConfig({
     // imports in App.tsx create the route boundaries; these groups keep
     // shared node_modules out of every page chunk.
     rolldownOptions: {
+      // React Compiler dominates these short builds; keep correctness warnings enabled.
+      checks: { pluginTimings: false },
       output: {
         codeSplitting: {
           minSize: 20_000,

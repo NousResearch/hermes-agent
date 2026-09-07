@@ -2302,6 +2302,10 @@ def init_agent(
     except Exception:
         _agent_cfg = {}
 
+    # Opt-in output detail, independent of reasoning effort. Only the GPT
+    # Responses transport consumes this; other transports remain unchanged.
+    agent.verbosity = cfg_get(_agent_cfg, "agent", "verbosity", default=None)
+
     _apply_display_config(agent, _agent_cfg, platform)
     _init_memory(agent, _agent_cfg, skip_memory, platform)
     _apply_agent_section(agent, _agent_cfg)

@@ -47,6 +47,8 @@ DEFAULT_CONFIG = {
         "terminal_continue": True,
     },
     "agent": {
+        # GPT Responses only: low | medium | high. None preserves upstream defaults.
+        "verbosity": None,
         # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int
         # caps; "none"/"unlimited"/"inf"/0/-1 also mean unlimited (resolve_turn_limit).
         "max_turns": None,

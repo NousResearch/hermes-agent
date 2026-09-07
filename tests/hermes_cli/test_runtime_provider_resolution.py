@@ -86,6 +86,236 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     assert resolved["source"] == "manual"
 
 
+@pytest.mark.parametrize(
+    "env_source",
+    ["env:ANTHROPIC_TOKEN", "env:CLAUDE_CODE_OAUTH_TOKEN"],
+)
+def test_anthropic_env_pool_token_defers_to_canonical_resolver(
+    monkeypatch, env_source
+):
+    """Env-seeded pool tokens must not shadow the canonical Anthropic resolver."""
+
+    class _Entry:
+        access_token = "stale-env-token"
+        source = env_source
+        base_url = "https://api.anthropic.com"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "anthropic",
+            "default": "claude-haiku-4-5-20251001",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.resolve_anthropic_token",
+        lambda **kwargs: (
+            "current-resolved-token"
+            if kwargs.get("allow_pool_fallback") is False
+            else (_ for _ in ()).throw(
+                AssertionError("env-pool re-resolution must exclude pool fallback")
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+    assert resolved["api_key"] == "current-resolved-token"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://api.anthropic.com"
+
+
+def test_anthropic_manual_pool_token_is_preserved(monkeypatch):
+    """An explicitly managed pool credential must not be replaced implicitly."""
+
+    class _Entry:
+        access_token = "manual-pool-token"
+        source = "manual"
+        base_url = "https://api.anthropic.com"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "anthropic", "default": "claude-haiku-4-5-20251001"},
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.resolve_anthropic_token",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("manual pool credentials must not invoke the resolver")
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+    assert resolved["api_key"] == "manual-pool-token"
+
+
+def test_anthropic_api_key_pool_entry_is_preserved(monkeypatch):
+    """An explicit Anthropic API key must not be replaced by OAuth discovery."""
+
+    class _Entry:
+        access_token = "explicit-api-key"
+        source = "env:ANTHROPIC_API_KEY"
+        base_url = "https://api.anthropic.com"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "anthropic", "default": "claude-haiku-4-5-20251001"},
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.resolve_anthropic_token",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("explicit API key must skip OAuth resolution")
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+    assert resolved["api_key"] == "explicit-api-key"
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://example.services.ai.azure.com/anthropic",
+        "https://proxy.api.anthropic.com/anthropic",
+    ],
+)
+def test_anthropic_custom_endpoint_keeps_endpoint_bound_pool_token(
+    monkeypatch, endpoint
+):
+    """OAuth discovery must not replace credentials bound to a custom endpoint."""
+
+    class _Entry:
+        access_token = "endpoint-bound-token"
+        source = "env:ANTHROPIC_TOKEN"
+        base_url = endpoint
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "anthropic",
+            "default": "claude-haiku-4-5-20251001",
+            "base_url": endpoint,
+        },
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.resolve_anthropic_token",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("custom endpoint must keep its bound credential")
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+    assert resolved["api_key"] == "endpoint-bound-token"
+    assert resolved["base_url"] == endpoint
+
+
+def test_anthropic_env_pool_scope_error_remains_fail_closed(monkeypatch):
+    """Multiplex scope failures must not fall back to an ambient pool token."""
+    from agent.secret_scope import UnscopedSecretError
+
+    class _Entry:
+        access_token = "stale-env-token"
+        source = "env:ANTHROPIC_TOKEN"
+        base_url = "https://api.anthropic.com"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "anthropic", "default": "claude-haiku-4-5-20251001"},
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.resolve_anthropic_token",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            UnscopedSecretError("scope required")
+        ),
+    )
+
+    with pytest.raises(UnscopedSecretError, match="scope required"):
+        rp.resolve_runtime_provider(requested="anthropic")
+
+
+def test_anthropic_env_pool_without_canonical_token_fails_closed(monkeypatch):
+    """An env-backed pool token is not a fallback when canonical auth is absent."""
+
+    class _Entry:
+        access_token = "stale-env-token"
+        source = "env:ANTHROPIC_TOKEN"
+        base_url = "https://api.anthropic.com"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "anthropic", "default": "claude-haiku-4-5-20251001"},
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.resolve_anthropic_token",
+        lambda **_kwargs: None,
+    )
+
+    with pytest.raises(rp.AuthError, match="No usable Anthropic credentials"):
+        rp.resolve_runtime_provider(requested="anthropic")
+
+
 class TestCustomProviderPoolLoopbackNoKeyExemption:
     """Regression for issue #86864: legacy custom_providers configs often
     used short/placeholder api_keys ('123', 'm') for local no-auth

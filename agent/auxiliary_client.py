@@ -1036,6 +1036,38 @@ def _is_anthropic_compatible_host(url: str) -> bool:
         return False
 
 
+
+
+def _should_reresolve_inherited_anthropic_token(entry: Any, base_url: str) -> bool:
+    """True when a native Anthropic pool/runtime snapshot must be refreshed live."""
+    source = str(getattr(entry, "source", "") or "")
+    if source not in {"env:ANTHROPIC_TOKEN", "env:CLAUDE_CODE_OAUTH_TOKEN"}:
+        return False
+    try:
+        host = (urlparse(base_url or "").hostname or "").strip().lower().rstrip(".")
+    except Exception:
+        return False
+    return host == "api.anthropic.com"
+
+
+def _is_anthropic_auth_exception(exc: BaseException) -> bool:
+    name = type(exc).__name__
+    if name in {"UnscopedSecretError", "AuthError"}:
+        return True
+    try:
+        from agent.secret_scope import UnscopedSecretError
+        if isinstance(exc, UnscopedSecretError):
+            return True
+    except Exception:
+        pass
+    try:
+        from hermes_cli.auth import AuthError
+        if isinstance(exc, AuthError):
+            return True
+    except Exception:
+        pass
+    return False
+
 def _nous_min_key_ttl_seconds() -> int:
     try:
         return max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800")))
@@ -2795,11 +2827,17 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
         return None, None
     pool_present, entry = _select_pool_entry("anthropic")
     if pool_present and entry is not None:
-        token = explicit_api_key or _pool_runtime_api_key(entry)
+        inherited_base = _pool_runtime_base_url(entry, _ANTHROPIC_DEFAULT_BASE_URL)
+        if not explicit_api_key and _should_reresolve_inherited_anthropic_token(entry, inherited_base):
+            from agent.anthropic_adapter import resolve_anthropic_token as resolve_live_token
+            token = resolve_live_token(allow_pool_fallback=False)
+        else:
+            token = explicit_api_key or _pool_runtime_api_key(entry)
     else:
         # Pool absent/empty: legacy resolver so a dead pool entry can't wedge aux tasks when a standalone credential exists.
         entry = None
-        token = explicit_api_key or resolve_anthropic_token()
+        from agent.anthropic_adapter import resolve_anthropic_token as resolve_live_token
+        token = explicit_api_key or resolve_live_token()
     if not token:
         return None, None
     # Honor config.yaml model.base_url only when provider is anthropic AND the URL is
@@ -3334,6 +3372,9 @@ def _prepare_same_provider_retry(
             provider=resolved_provider, model=final_model, base_url=resolved_base_url,
             api_key=resolved_api_key, async_mode=async_mode,
         )
+    elif _normalize_aux_provider(resolved_provider) == "anthropic" and not async_mode:
+        retry_client, retry_model = _try_anthropic()
+        effective_provider = "anthropic"
     else:
         retry_client, retry_model = _get_cached_client(
             resolved_provider, resolved_model, async_mode=async_mode, base_url=resolved_base_url,
@@ -3413,7 +3454,7 @@ def _refresh_anthropic_credentials() -> bool:
     creds = read_claude_code_credentials()
     token = _refresh_oauth_token(creds) if isinstance(creds, dict) and creds.get("refreshToken") else None
     if not str(token or "").strip():
-        token = resolve_anthropic_token()
+        token = resolve_anthropic_token(allow_pool_fallback=False)
     return bool(str(token or "").strip())
 
 
@@ -3457,6 +3498,8 @@ def _refresh_provider_credentials(provider: str) -> bool:
         _evict_cached_clients(normalized)
         return True
     except Exception as exc:
+        if normalized == "anthropic" and _is_anthropic_auth_exception(exc):
+            raise
         logger.debug("Auxiliary provider credential refresh failed for %s: %s", normalized, exc)
         return False
 
@@ -4082,6 +4125,22 @@ def _try_main_provider_route(
         elif runtime_api_key:
             explicit_api_key = runtime_api_key
     elif runtime_api_key:
+        peek = _peek_pool_entry(resolved_provider)
+        if peek is None and resolved_provider == "anthropic":
+            _, peek = _select_pool_entry(resolved_provider)
+        peek_url = runtime_base_url or _pool_runtime_base_url(peek, "")
+        from agent.anthropic_credentials import _is_oauth_token
+        if (
+            resolved_provider == "anthropic"
+            and peek is not None
+            and _is_oauth_token(str(runtime_api_key or ""))
+            and _should_reresolve_inherited_anthropic_token(peek, peek_url or runtime_base_url)
+        ):
+            client, resolved = _try_anthropic()
+            if client is None:
+                return None
+            logger.info("Auxiliary auto-detect: using main provider %s (%s)", main_provider, resolved or main_model)
+            return client, resolved or main_model, resolved_provider
         # Pin aux to the main session's working key, not a re-selected (maybe exhausted) pool key.
         explicit_api_key = runtime_api_key
     # Skip if the main provider was recently 402'd (unhealthy TTL bounds the bypass).

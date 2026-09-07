@@ -464,7 +464,23 @@ def _resolve_runtime_from_pool_entry(*, provider: str, entry: PooledCredential, 
                                                   _pool_entry_base_url(entry).rstrip("/"))
     base_url = _finalize_base_url(provider, api_mode, base_url)
     api_mode = _maybe_apply_codex_app_server_runtime(provider=provider, api_mode=api_mode, model_cfg=model_cfg)
-    return _runtime(provider, api_mode, base_url, _pool_entry_api_key(entry), source=getattr(entry, "source", "pool"),
+    api_key = _pool_entry_api_key(entry)
+    source = str(getattr(entry, "source", "") or "")
+    if (
+        provider == "anthropic"
+        and source in {"env:ANTHROPIC_TOKEN", "env:CLAUDE_CODE_OAUTH_TOKEN"}
+        and base_url_hostname(base_url) == "api.anthropic.com"
+    ):
+        from agent.anthropic_adapter import resolve_anthropic_token
+        preferred = resolve_anthropic_token(allow_pool_fallback=False)
+        if not preferred:
+            raise AuthError(
+                "No usable Anthropic credentials found for env-backed pool entry.",
+                provider="anthropic",
+                code="missing_api_key",
+            )
+        api_key = preferred
+    return _runtime(provider, api_mode, base_url, api_key, source=getattr(entry, "source", "pool"),
                     credential_pool=pool, requested_provider=requested_provider)
 
 

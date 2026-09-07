@@ -110,10 +110,14 @@ def advice_view(
                 )
             ):
                 check = facts.get(key) or {}
-                detail += f"\n{label}: {review_status_text(check.get('status'))}"
-                if check.get("status") in {"advisory", "blocked"} and check.get(
-                    "summary"
-                ):
+                local = check.get("source") == "local_preflight"
+                display_label = f"{label} (local preflight)" if local else label
+                status = check.get("local_status") if local else check.get("status")
+                detail += f"\n{display_label}: {review_status_text(status)}"
+                if (
+                    check.get("status") in {"advisory", "blocked", "unavailable"}
+                    or check.get("source") == "local_preflight"
+                ) and check.get("summary"):
                     detail += "\n" + str(check["summary"])[:512]
             if sharing:
                 check = facts.get("professionalism_check") or {}

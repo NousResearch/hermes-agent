@@ -104,6 +104,7 @@ def process_share_package(mediation, org: str, job: dict, *, runtime) -> dict:
         source_path=source,
         staging_root=service.store.root / "share-staging",
         _lease_guard=guard,
+        finish_reviews=True,
     )
     service.require_setup()
     with service.store.transaction() as db:

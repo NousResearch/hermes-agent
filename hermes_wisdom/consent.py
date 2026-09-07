@@ -172,6 +172,7 @@ class WisdomConsent:
                 or checks.get("systemSpec"),
                 "allowed": not (
                     (checks.get("security_check") or {}).get("status") == "blocked"
+                    or (checks.get("security_check") or {}).get("upload_allowed") is False
                     or ((checks.get("local_scan") or {}).get("guard") or {}).get(
                         "allowed"
                     )

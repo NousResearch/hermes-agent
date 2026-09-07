@@ -1,5 +1,6 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -56,6 +57,15 @@ def test_generated_package_is_the_prepared_and_uploaded_package(staged):
     assert "ORIGINAL_PRIVATE_SETUP" not in text and "PRIVATE_REFERENCE" not in text
     assert "Release Notes" in text
     assert service.client.uploaded == 0 and service.client.submissions == []
+    security = prepared["security_check"]
+    draft = service.store.draft(prepared["local_draft_id"])
+    assert security["source"] == "local_preflight"
+    assert security["content_hash"] == draft["content_hash"]
+    assert security["author_description_hash"] == draft["description_hash"]
+    assert security["upload_allowed"] is True
+    rows = {row["key"]: row["status"] for row in security["checks"]}
+    assert rows["private_keys"] == rows["live_credentials"] == "pass"
+    assert rows["organization_policy"] == rows["personal_information"] == "pending"
     assert "ORIGINAL_PRIVATE_SETUP" in (source / "SKILL.md").read_text()
     result = service.suggest(
         "notes",
@@ -78,6 +88,79 @@ def test_generated_package_is_the_prepared_and_uploaded_package(staged):
     assert service.client.submissions[0]["professionalism_review"] == {
         "status": "unavailable"
     }
+
+
+def test_prepared_security_never_attaches_results_to_changed_bytes(staged):
+    service, package, source, root = staged
+    prepared = service.prepare_share_package(package, source_path=source, staging_root=root)
+    (Path(prepared["overlay_path"]) / "SKILL.md").write_text("changed")
+    with pytest.raises(WisdomConflict, match="prepared package changed"):
+        service._prepared_result(service.store.draft(prepared["local_draft_id"]))
+    assert service.client.uploaded == 0
+
+
+def test_background_package_waits_for_parallel_reviews(staged, monkeypatch):
+    service, package, source, root = staged
+    scan_started, review_started = Event(), Event()
+
+    def scan(_path):
+        scan_started.set()
+        assert review_started.wait(5), "review must start alongside the local scan"
+        return {"guard": {"allowed": True, "findings": []}}
+
+    def review(**kwargs):
+        review_started.set()
+        assert scan_started.wait(5), "scan must not wait for the model"
+        assert kwargs["content_hash"] != package.source_content_hash
+        return {"status": "pass", "summary": "No concerning language detected."}
+
+    monkeypatch.setattr("hermes_wisdom.service._scan_summary", scan)
+    monkeypatch.setattr(service, "_require_professionalism_review", review)
+    result = service.prepare_share_package(
+        package, source_path=source, staging_root=root, finish_reviews=True
+    )
+    assert result["professionalism_check"]["status"] == "pass"
+    assert result["security_check"]["source"] == "local_preflight"
+    assert service.client.uploaded == 0
+
+
+@pytest.mark.parametrize("status", ["unavailable", "pending"])
+def test_background_package_requires_terminal_professionalism(staged, monkeypatch, status):
+    service, package, source, root = staged
+    monkeypatch.setattr(service, "_require_professionalism_review", lambda **_: {"status": status})
+    if status == "pending":
+        with pytest.raises(WisdomConflict, match="still running"):
+            service.prepare_share_package(
+                package, source_path=source, staging_root=root, finish_reviews=True
+            )
+    else:
+        result = service.prepare_share_package(
+            package, source_path=source, staging_root=root, finish_reviews=True
+        )
+        assert result["professionalism_check"]["status"] == "unavailable"
+    assert service.client.uploaded == 0
+
+
+def test_background_review_rejects_bytes_changed_during_model_call(staged, monkeypatch):
+    service, package, source, root = staged
+    scanned = Event()
+
+    def scan(_path):
+        scanned.set()
+        return {"guard": {"allowed": True}}
+
+    def review(**kwargs):
+        assert scanned.wait(5)
+        (kwargs["package_root"] / "SKILL.md").write_text("Changed during review")
+        return {"status": "pass"}
+
+    monkeypatch.setattr("hermes_wisdom.service._scan_summary", scan)
+    monkeypatch.setattr(service, "_require_professionalism_review", review)
+    with pytest.raises(WisdomConflict, match="changed"):
+        service.prepare_share_package(
+            package, source_path=source, staging_root=root, finish_reviews=True
+        )
+    assert service.client.uploaded == 0
 
 
 def test_staging_is_content_addressed_and_concurrent_retries_do_not_overwrite(staged):

@@ -112,6 +112,12 @@ def connect(
     another process can safely retry it.
     """
     def _initialize(conn: sqlite3.Connection) -> None:
+        from hermes_cli.sqlite_runtime import ensure_safe_sqlite_writer
+        # open_db() has already set the journal mode (WAL-reset-bug gate included) by the time this
+        # runs, so this is the harder stop for the one case that leaves open — an existing on-disk WAL
+        # database on a vulnerable runtime, which the journal-mode fallback deliberately keeps
+        # (never-live-downgrade) rather than refuses.
+        ensure_safe_sqlite_writer(conn)
         if not ready(conn):
             try:
                 conn.execute("BEGIN IMMEDIATE")

@@ -101,6 +101,11 @@ def is_native_gemini_base_url(base_url: str) -> bool:
     return "generativelanguage.googleapis.com" in normalized and not normalized.endswith("/openai")
 
 
+
+def is_gemini_model(model: str) -> bool:
+    """Return True when the model id identifies a Gemini model."""
+    name = bare_gemini_model_id(model or "").lower()
+    return name.startswith("gemini-") or name.startswith("gemini/")
 def probe_gemini_tier(
     api_key: str, base_url: str = DEFAULT_GEMINI_BASE_URL, *, model: str = "gemini-3.7-flash", timeout: float = 10.0
 ) -> str:

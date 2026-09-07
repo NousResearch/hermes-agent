@@ -234,7 +234,9 @@ process query methods load retained snapshots without adopting PIDs or enqueuing
 notifications. Reads require the commissioning durable session or its compression
 continuation; knowing a handle alone does not authorize a retained result read.
 The registry captures that owner before starting any output reader, including on
-CLI and non-notifying processes. Receipt retention is bounded by age and count.
+CLI and non-notifying processes, and preserves the producer's profile context in
+reader threads. Receipt redaction is forced independently of live-output opt-out;
+retention is bounded by age and count.
 
 ## Concurrency
 

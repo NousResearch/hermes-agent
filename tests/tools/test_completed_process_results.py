@@ -152,6 +152,8 @@ def test_receipts_are_bounded_redacted_and_session_scoped(tmp_path, monkeypatch)
     from tools import process_registry_results as receipts
     from tools.process_registry import MAX_OUTPUT_CHARS, ProcessRegistry, ProcessSession
 
+    from agent import redact
+    monkeypatch.setattr(redact, "_REDACT_ENABLED", False)
     monkeypatch.setattr(receipts, "MAX_RETAINED_RESULTS", 2)
     secret = "sk-" + "aB2cD3eF4gH5iJ6kL7mN8pQ9rS0tU1vW2xY3zA4bC5dE6fG7"
     from gateway.session_context import scoped_current_session_id

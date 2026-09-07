@@ -242,7 +242,8 @@ also includes retained results for the current task or conversation.
 Hermes keeps the newest **64 completed results**, for up to **7 days after
 completion**, under `logs/process-results/` in the profile's Hermes home. Each
 receipt contains at most the existing rolling **200,000-character output tail**,
-with the same secret redaction as terminal output. Receipts expire on subsequent
+with terminal secret-redaction rules always applied, even when live-output
+redaction is disabled. Receipts expire on subsequent
 result reads or writes. Recovery does not rerun commands or replay completion
 notifications. This preserves work that finished while the parent was alive;
 it does not keep unfinished children alive after a timeout or crash.

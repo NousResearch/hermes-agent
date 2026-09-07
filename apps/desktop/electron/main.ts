@@ -1417,9 +1417,10 @@ const backendDialClaims = new BackendDialClaims()
 const runClaimedBackendDial = <T>(
   connectionId: string | null,
   profile: string | null | undefined,
-  dial: () => Promise<T>
+  dial: () => Promise<T>,
+  claimKey?: string
 ) =>
-  runBackendDial({ claims: backendDialClaims, scopeKey: backendScopeKey }, connectionId, profile, dial)
+  runBackendDial({ claims: backendDialClaims, scopeKey: backendScopeKey }, connectionId, profile, dial, claimKey)
 // True while connection-config:apply soft-rehomes the primary — suppresses the
 // backend-exit toast so an intentional kill doesn't look like a crash.
 let softRehomeInProgress = false
@@ -14971,8 +14972,11 @@ function revalidatePool() {
 function redialPoolBackendAfterResume(poolKey: string) {
   const { connectionId, profile } = parseBackendScopeKey(poolKey)
 
-  return runClaimedBackendDial(connectionId, profile, () =>
-    connectionId ? ensureRegistryBackend(connectionId, profile) : ensureBackend(profile)
+  return runClaimedBackendDial(
+    connectionId,
+    profile,
+    () => connectionId ? ensureRegistryBackend(connectionId, profile) : ensureBackend(profile),
+    poolKey
   )
 }
 

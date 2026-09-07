@@ -138,4 +138,17 @@ describe('backend dial routing (#90812)', () => {
     expect(scopeKey).toHaveBeenCalledWith(null, 'default')
     expect(dial).toHaveBeenCalledTimes(1)
   })
+
+  it('preserves an explicit pooled key when the parsed route would normalize it', async () => {
+    const claims = new BackendDialClaims()
+    const dial = vi.fn(async () => 'forced-local')
+    const scopeKey = vi.fn((connectionId: string | null, profile: string | null | undefined) =>
+      `conn:${connectionId ?? 'local'}::${profile ?? 'default'}`)
+
+    await expect(
+      runBackendDial({ claims, scopeKey }, 'local', 'work', dial, 'conn:local::work')
+    ).resolves.toBe('forced-local')
+    expect(scopeKey).not.toHaveBeenCalled()
+    expect(dial).toHaveBeenCalledTimes(1)
+  })
 })

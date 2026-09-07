@@ -2270,6 +2270,22 @@ def _startup_system_prompt(cfg: dict, task_id: str) -> str:
     return system_prompt
 
 
+
+def _load_prefill_messages() -> list:
+    """Ephemeral prefill messages for TUI/Desktop-built agents.
+
+    Desktop/TUI agents are built in ``_make_agent`` and never run the CLI's
+    ``CLIAgentSetupMixin``, so the CLI-side resolution does not apply to them.
+    The resolver and the file loader are shared with the CLI and the gateway
+    (``hermes_cli.prefill_messages``) so the three surfaces cannot drift; only
+    the config read is local, because this backend reads the active profile's
+    config through :func:`_load_cfg`.
+    """
+    from hermes_cli.prefill_messages import load_configured_prefill_messages
+
+    return load_configured_prefill_messages(_load_cfg())
+
+
 def _make_agent(
     sid: str, key: str, session_id: str | None = None, session_db=None,
     model_override: dict | str | None = None, provider_override: str | None = None,
@@ -2310,6 +2326,7 @@ def _make_agent(
         provider_sort=_pr.get("sort"), provider_require_parameters=_pr.get("require_parameters", False),
         provider_data_collection=_pr.get("data_collection"), platform=platform, session_id=session_id or key,
         session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
+        prefill_messages=_load_prefill_messages() or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),

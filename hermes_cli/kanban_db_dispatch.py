@@ -1201,8 +1201,10 @@ def check_respawn_guard(
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR). The review
-    lane skips the last two: they are the *inputs* to a review handoff. Stale /
+    (a recent PR URL whose GitHub state is ``OPEN`` or unknown; ``MERGED`` and
+    ``CLOSED`` references no longer guard). A latest ``changes_requested`` run
+    is an explicit rework handoff and bypasses the PR guard. The review lane
+    skips the last two: they are the *inputs* to a review handoff. Stale /
     dead claim locks are NOT a guard reason — the reclaim passes own those.
     """
     row = conn.execute(

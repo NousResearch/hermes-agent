@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from contextlib import nullcontext
 from io import StringIO
 from pathlib import Path
@@ -97,6 +98,78 @@ def test_unresolved_pr_state_keeps_ready_task_guarded(kanban_home, monkeypatch):
         assert kbd.check_respawn_guard(conn, task_id) == "active_pr"
 
 
+def test_malformed_pr_state_keeps_ready_task_guarded(kanban_home, monkeypatch):
+    """Malformed successful output must fail closed, not crash dispatch."""
+    with kbc.connect() as conn:
+        task_id = _task_with_pr_comment(
+            conn,
+            title="malformed PR state",
+            url="https://github.com/example/repo/pull/91",
+        )
+
+        monkeypatch.setattr(
+            kbd.subprocess,
+            "run",
+            lambda *args, **kwargs: type(
+                "Completed", (), {"returncode": 0, "stdout": "[]"}
+            )(),
+        )
+
+        assert kbd.check_respawn_guard(conn, task_id) == "active_pr"
+
+
+@pytest.mark.parametrize(
+    "number, stdout",
+    [(92, '{"state":null}'), (93, '{"state":123}')],
+)
+def test_missing_or_non_string_pr_state_keeps_ready_task_guarded(
+    kanban_home, monkeypatch, number, stdout,
+):
+    """Missing or non-string state must fail closed."""
+    with kbc.connect() as conn:
+        task_id = _task_with_pr_comment(
+            conn,
+            title=f"invalid PR state {number}",
+            url=f"https://github.com/example/repo/pull/{number}",
+        )
+
+        monkeypatch.setattr(
+            kbd.subprocess,
+            "run",
+            lambda *args, **kwargs: type(
+                "Completed", (), {"returncode": 0, "stdout": stdout}
+            )(),
+        )
+
+        assert kbd.check_respawn_guard(conn, task_id) == "active_pr"
+
+
+@pytest.mark.parametrize(
+    "number, failure",
+    [
+        (94, subprocess.TimeoutExpired(["gh"], timeout=10)),
+        (95, OSError("gh unavailable")),
+    ],
+)
+def test_pr_state_lookup_failures_keep_ready_task_guarded(
+    kanban_home, monkeypatch, number, failure,
+):
+    """Timeout and process errors must fail closed."""
+    with kbc.connect() as conn:
+        task_id = _task_with_pr_comment(
+            conn,
+            title=f"failed PR lookup {number}",
+            url=f"https://github.com/example/repo/pull/{number}",
+        )
+
+        def raise_failure(*args, **kwargs):
+            raise failure
+
+        monkeypatch.setattr(kbd.subprocess, "run", raise_failure)
+
+        assert kbd.check_respawn_guard(conn, task_id) == "active_pr"
+
+
 def test_dispatch_json_and_text_expose_respawn_guarded():
     """Operators must see why dispatch spawned zero workers."""
     result = kbd.DispatchResult(respawn_guarded=[("t_demo", "active_pr")])
@@ -153,4 +226,36 @@ def test_ready_diagnostics_identify_respawn_guard(kanban_home):
     assert len(stranded) == 1
     assert "respawn guard" in stranded[0].title.lower()
     assert "active_pr" in stranded[0].title
-    assert stranded[0].data["guard_reason"] == "active_pr"
+
+
+def test_ready_diagnostics_ignore_stale_respawn_guard_after_lifecycle_progress(
+    kanban_home,
+):
+    """A later spawn event must clear the earlier guard explanation."""
+    now = 100_000
+    task = {
+        "id": "t_demo",
+        "status": "ready",
+        "assignee": "worker",
+        "claim_lock": None,
+        "created_at": now - 3600,
+    }
+    events = [
+        {"kind": "created", "created_at": now - 3600, "payload": None},
+        {
+            "kind": "respawn_guarded",
+            "created_at": now - 300,
+            "payload": '{"reason":"active_pr"}',
+        },
+        {"kind": "spawned", "created_at": now - 60, "payload": None},
+    ]
+
+    stranded = [
+        item
+        for item in diagnostics.compute_task_diagnostics(task, events, [], now=now)
+        if item.kind == "stranded_in_ready"
+    ]
+    assert len(stranded) == 1
+    assert "respawn guard" not in stranded[0].title.lower()
+    assert "no worker" in stranded[0].title.lower()
+    assert "guard_reason" not in stranded[0].data

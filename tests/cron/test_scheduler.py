@@ -1690,13 +1690,17 @@ class TestSendMediaViaAdapter:
 
     @staticmethod
     def _run_with_loop(adapter, chat_id, media_files, metadata, job):
-        """Helper: run _send_media_via_adapter with immediate scheduling."""
         from concurrent.futures import Future
-
         def fake_run_coro(coro, _loop):
-            coro.close()
+            try:
+                coro.send(None)
+            except StopIteration as done:
+                value = done.value
+            else:
+                coro.close()
+                value = None
             completed = Future()
-            completed.set_result(MagicMock(success=True))
+            completed.set_result(value or MagicMock(success=True))
             return completed
 
         with patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
@@ -1983,22 +1987,15 @@ class TestDeliverOriginUnresolvableIsLocal:
         assert self._deliver(job, monkeypatch) is None
 
 class TestSendMediaTimeoutCancelsFuture:
-    """Same orphan-coroutine guarantee for _send_media_via_adapter's
-    future.result(timeout=30) call. If this times out mid-batch, the
-    in-flight coroutine must be cancelled before the next file is tried.
-    """
+    """A media send that never starts is cancelled; later files in the batch still go out."""
 
     def test_media_send_timeout_cancels_future_and_continues(self, tmp_path, monkeypatch):
-        """End-to-end: _send_media_via_adapter with a future whose .result()
-        raises TimeoutError. Assert cancel() fires and the loop proceeds
-        to the next file rather than hanging or crashing."""
         from concurrent.futures import Future
 
         adapter = MagicMock()
         adapter.send_image_file = AsyncMock()
         adapter.send_video = AsyncMock()
 
-        # First file: future that times out. Second file: future that resolves OK.
         timeout_future = Future()
         timeout_cancel_calls = []
         original_cancel = timeout_future.cancel
@@ -2016,8 +2013,17 @@ class TestSendMediaTimeoutCancelsFuture:
         futures_iter = iter([timeout_future, ok_future])
 
         def fake_run_coro(coro, _loop):
-            coro.close()
-            return next(futures_iter)
+            fut = next(futures_iter)
+            if fut is timeout_future:
+                coro.close()
+            else:
+                try:
+                    coro.send(None)
+                except StopIteration:
+                    pass
+                else:
+                    coro.close()
+            return fut
 
         root = tmp_path / "media-cache"
         slow = root / "slow.png"
@@ -2029,21 +2035,15 @@ class TestSendMediaTimeoutCancelsFuture:
             "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
             (root,),
         )
-        media_files = [
-            (str(slow), False),   # times out
-            (str(fast), False),   # succeeds
-        ]
+        media_files = [(str(slow), False), (str(fast), False)]
 
         loop = MagicMock()
         job = {"id": "media-timeout"}
 
         with patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
-            # Should not raise — the except Exception clause swallows the timeout
             _send_media_via_adapter(adapter, "chat-1", media_files, None, loop, job)
 
-        # 1. The timed-out future was cancelled (the bug fix)
         assert timeout_cancel_calls == [True], "future.cancel() must fire on TimeoutError"
-        # 2. Second file still got dispatched — one timeout doesn't abort the batch
         adapter.send_video.assert_called_once()
         assert adapter.send_video.call_args[1]["video_path"] == str(fast.resolve())
 

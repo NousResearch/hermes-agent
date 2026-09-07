@@ -10,7 +10,6 @@ Symbols that tests patch on ``run_agent.*`` (``OpenAI``, ``get_tool_definitions`
 from __future__ import annotations
 
 import logging
-import math
 import os
 import re
 import sys
@@ -26,7 +25,7 @@ from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
 from agent.agent_runtime_helpers import _ra
-from agent.iteration_budget import IterationBudget
+from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
 from agent.memory_manager import StreamingContextScrubber
 from agent.session_activity import ActivityProvenance
 from agent.model_metadata import (
@@ -317,16 +316,6 @@ def _normalize_run_budget_seconds(value) -> Optional[float]:
         return None
     return seconds if seconds > 0 else None  # NaN compares False → None
 
-
-def _normalize_budget_warning_ratio(value) -> Optional[float]:
-    """A finite ratio strictly between zero and one, or None (feature off)."""
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        ratio = float(value)
-    except (TypeError, ValueError):
-        return None
-    return ratio if math.isfinite(ratio) and 0 < ratio < 1 else None
 
 
 def _refuse_checkpoint_required_on_codex_app_server(
@@ -1320,7 +1309,7 @@ def _apply_agent_section(agent, _agent_cfg):
         agent._skill_nudge_interval = int(_agent_cfg.get("skills", {}).get("creation_nudge_interval", 10))
 
     _agent_section = _cfg_dict(_agent_cfg, "agent")
-    agent.budget_warning_ratio = _normalize_budget_warning_ratio(
+    agent.budget_warning_ratio = normalize_budget_warning_ratio(
         _agent_section.get("budget_warning_ratio")
     )
     # Both: "auto" (model-list match), true, false, or list of model substrings; independent

@@ -33,4 +33,4 @@ def test_watch_names_resolved_board(tmp_path, monkeypatch, capsys, environment, 
 
     monkeypatch.setattr(kanban_ops.time, "sleep", interrupt)
     assert kanban_command(parser.parse_args(argv)) == 0
-    assert f"board '{expected}'" in capsys.readouterr().out
+    assert f"initial board '{expected}'" in capsys.readouterr().out

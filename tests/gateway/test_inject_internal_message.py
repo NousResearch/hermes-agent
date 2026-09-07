@@ -343,7 +343,7 @@ class TestInjectInternalMessageSteerMode:
             profile="skillrx",
         )
         session_key = build_session_key(source)
-        runner._running_agents[session_key] = (agent,)
+        runner._running_agents[session_key] = agent
 
         await runner.inject_internal_message(
             profile="skillrx",
@@ -397,7 +397,7 @@ class TestInjectInternalMessageSteerMode:
             profile="skillrx",
         )
         session_key = build_session_key(source)
-        runner._running_agents[session_key] = (agent,)
+        runner._running_agents[session_key] = agent
 
         await runner.inject_internal_message(
             profile="skillrx",
@@ -430,7 +430,7 @@ class TestInjectInternalMessageSteerMode:
             profile="skillrx",
         )
         session_key = build_session_key(source)
-        runner._running_agents[session_key] = (agent,)
+        runner._running_agents[session_key] = agent
 
         await runner.inject_internal_message(
             profile="skillrx",
@@ -462,7 +462,7 @@ class TestInjectInternalMessageSteerMode:
             profile="skillrx",
         )
         session_key = build_session_key(source)
-        runner._running_agents[session_key] = (agent,)
+        runner._running_agents[session_key] = agent
 
         await runner.inject_internal_message(
             profile="skillrx",
@@ -543,7 +543,7 @@ class TestInjectInternalMessageIsolation:
             platform=Platform.TELEGRAM, chat_id="chatA-id",
             chat_type="dm", user_id="chatA-id", profile="test-profile",
         )
-        runner._running_agents[build_session_key(source_a)] = (agent_a,)
+        runner._running_agents[build_session_key(source_a)] = agent_a
 
         # Steer into chat B's profile
         await runner.inject_internal_message(
@@ -595,7 +595,7 @@ class TestInjectInternalMessageIsolation:
             platform=Platform.TELEGRAM, chat_id="chatA-id",
             chat_type="dm", user_id="chatA-id", profile="test-profile",
         )
-        runner._running_agents[build_session_key(source_a)] = (agent_a,)
+        runner._running_agents[build_session_key(source_a)] = agent_a
 
         # Steer into chat B — must NOT affect chat A's agent
         await runner.inject_internal_message(
@@ -619,7 +619,7 @@ class TestInjectInternalMessageIsolation:
             platform=Platform.TELEGRAM, chat_id="chatB-id",
             chat_type="dm", user_id="chatB-id", profile="test-profile",
         )
-        runner._running_agents[build_session_key(source_b)] = (agent_b,)
+        runner._running_agents[build_session_key(source_b)] = agent_b
         # Remove agent A so it can't interfere
         del runner._running_agents[build_session_key(source_a)]
 
@@ -659,7 +659,7 @@ class TestInjectInternalMessageIsolation:
         )
         runner._running_agents[
             build_session_key(source_a, profile="profileA")
-        ] = (agent_a,)
+        ] = agent_a
 
         # Profile B has its own adapter, no running agent
         tg_b = _FakeTelegramAdapter()
@@ -729,3 +729,150 @@ class TestGatewayStartupHook:
         runner = _make_runner()
         assert hasattr(runner, "inject_internal_message")
         assert callable(runner.inject_internal_message)
+
+
+# ------------------------------------------------------------------
+# P1 review regressions (solar@atm-dev HGF-001..004, 2026-09-07)
+# ------------------------------------------------------------------
+
+class TestSteerProductionShape:
+    """HGF-001: production stores SessionState.turn.agent DIRECTLY (the live
+    _running_agents view maps to that field); the seam must steer that shape.
+    The old tests only exercised a (agent,) tuple that production never
+    writes, hiding the mismatch."""
+
+    @pytest.mark.asyncio
+    async def test_steer_direct_agent_shape(self):
+        """runner._running_agents[key] = agent (production shape) steers."""
+        runner = _make_runner()
+        tg = _FakeTelegramAdapter()
+        runner._profile_adapters["skillrx"] = {Platform.TELEGRAM: tg}
+        agent = _FakeRunningAgent()
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="100000001",
+            chat_type="dm", user_id="100000001", profile="skillrx",
+        )
+        runner._running_agents[build_session_key(source)] = agent
+
+        await runner.inject_internal_message(
+            profile="skillrx", platform=Platform.TELEGRAM,
+            chat_id="100000001", text="direct shape", mode="steer",
+        )
+
+        assert agent.steered_texts == ["direct shape"]
+        assert tg.handled_events == []  # steered, NOT queued
+
+    @pytest.mark.asyncio
+    async def test_steer_legacy_tuple_shape_compat(self):
+        """The legacy (agent,) tuple shape still steers (compat)."""
+        runner = _make_runner()
+        tg = _FakeTelegramAdapter()
+        runner._profile_adapters["skillrx"] = {Platform.TELEGRAM: tg}
+        agent = _FakeRunningAgent()
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="100000001",
+            chat_type="dm", user_id="100000001", profile="skillrx",
+        )
+        runner._running_agents[build_session_key(source)] = (agent,)
+
+        await runner.inject_internal_message(
+            profile="skillrx", platform=Platform.TELEGRAM,
+            chat_id="100000001", text="tuple shape", mode="steer",
+        )
+
+        assert agent.steered_texts == ["tuple shape"]
+        assert tg.handled_events == []
+
+    @pytest.mark.asyncio
+    async def test_steer_pending_sentinel_falls_back_to_queue(self):
+        """_AGENT_PENDING_SENTINEL (turn claimed, agent not built yet) cannot
+        be steered — falls through to queue, same rule as /steer."""
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        runner = _make_runner()
+        tg = _FakeTelegramAdapter()
+        runner._profile_adapters["skillrx"] = {Platform.TELEGRAM: tg}
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="100000001",
+            chat_type="dm", user_id="100000001", profile="skillrx",
+        )
+        runner._running_agents[build_session_key(source)] = _AGENT_PENDING_SENTINEL
+
+        await runner.inject_internal_message(
+            profile="skillrx", platform=Platform.TELEGRAM,
+            chat_id="100000001", text="pending steer", mode="steer",
+        )
+
+        assert len(tg.handled_events) == 1  # queued
+        assert tg.handled_events[0].text == "pending steer"
+
+
+class TestNoticeDeadline:
+    """HGF-002: the visible notice is soft-fail; a never-returning adapter
+    must not prevent the main event from routing."""
+
+    @pytest.mark.asyncio
+    async def test_hung_notice_times_out_and_main_event_still_routes(self, monkeypatch, caplog):
+        import logging
+        import gateway.run as gr
+
+        class _HangingAdapter(_FakeTelegramAdapter):
+            async def send(self, chat_id, text, **kwargs):
+                await asyncio.sleep(3600)  # never returns in test time
+
+        monkeypatch.setattr(gr, "NOTICE_SEND_TIMEOUT_S", 0.05)
+        runner = _make_runner()
+        hanging = _HangingAdapter()
+        runner._profile_adapters["skillrx"] = {Platform.TELEGRAM: hanging}
+
+        with caplog.at_level(logging.WARNING):
+            await asyncio.wait_for(
+                runner.inject_internal_message(
+                    profile="skillrx", platform=Platform.TELEGRAM,
+                    chat_id="100000001", text="routed anyway",
+                    mode="queue", notice_text="visible notice",
+                ),
+                timeout=5,  # fails the test if the hang propagates
+            )
+
+        # exactly one main event routed despite the hung notice
+        assert len(hanging.handled_events) == 1
+        assert hanging.handled_events[0].text == "routed anyway"
+        # the timeout was logged as a warning
+        assert any("timed out" in r.message for r in caplog.records)
+
+
+class TestStartupEmitProductionPath:
+    """HGF-004: exercise the REAL production emit path
+    (GatewayStartupMixin._start_post_connect_services), not a hand-built
+    hook payload — a hand-called AsyncMock cannot detect removal of the
+    gateway_runner key at run_startup.py."""
+
+    @pytest.mark.asyncio
+    async def test_production_post_connect_services_emits_gateway_runner(self):
+        from gateway.run_startup import GatewayStartupMixin
+
+        class _StartupStub:
+            pass
+
+        stub = _StartupStub()
+        stub._ensure_hosted_room_worker = AsyncMock()
+        stub._hosted_room_worker_watcher = AsyncMock()
+        stub._spawn_supervised = MagicMock()
+        stub._start_loop_heartbeat_task = MagicMock()
+        stub.hooks = MagicMock()
+        stub.hooks.loaded_hooks = []
+        stub.hooks.emit = AsyncMock()
+        stub.adapters = {}
+        stub._send_update_notification = AsyncMock(return_value=True)
+
+        with patch(
+            "gateway.channel_directory.build_channel_directory",
+            new=AsyncMock(return_value={"platforms": {}}),
+        ):
+            await GatewayStartupMixin._start_post_connect_services(stub, 0)
+
+        stub.hooks.emit.assert_awaited_once()
+        event, context = stub.hooks.emit.await_args.args
+        assert event == "gateway:startup"
+        assert context["gateway_runner"] is stub  # the seam's lifeline
+        assert "platforms" in context

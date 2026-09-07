@@ -84,10 +84,14 @@ Current stack shape (3 commits + this doc commit):
 3. Resolve conflicts per the contract above — the contract, not the old diff, is the
    spec. If upstream now provides an equivalent public injection API, prefer
    adapting hermes-atm to it and SHRINKING the patch (goal state: patch size zero).
-4. Verify (all with Python 3.11, deps frozen from the repo's own `uv.lock`):
-   `uv sync --frozen --no-dev --extra messaging` then
-   `python -m pytest tests/gateway/test_inject_internal_message.py` → 26 passed,
-   plus `tests/gateway/test_hooks.py` and any test file the conflict touched.
+4. Verify (all with Python 3.11, deps frozen from the repo's own `uv.lock`).
+   pytest lives in the `dev` extra, so `--no-dev` cannot run the suite
+   (HGF-003): sync with both extras, then
+   `uv sync --frozen --extra messaging --extra dev` and
+   `uv run --frozen python -m pytest tests/gateway/test_inject_internal_message.py`
+   → all collected tests pass (31 as of the P1 fix round: 26 seam + 5 P1
+   regressions), plus `tests/gateway/test_hooks.py` and any test file the
+   conflict touched.
 5. Definition of done: tests green AND a live check that
    `hermes_atm.HermesAtmRuntime.from_gateway_runner` accepts the runner (import
    `hermes_atm`, construct against a stub runner exposing the API — the seam tests

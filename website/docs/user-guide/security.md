@@ -154,16 +154,19 @@ approvals:
 
 Details:
 
-- Patterns are [fnmatch](https://docs.python.org/3/library/fnmatch.html) globs (`*`, `?`, `[...]`) matched **case-insensitively** against the whole command text. `git push --force*` matches `git push --force origin main` but not `git push origin main`.
+- Patterns are [fnmatch](https://docs.python.org/3/library/fnmatch.html) globs (`*`, `?`, `[...]`) matched **case-insensitively** against the whole command text and individual executable-command candidates. `git push --force*` matches `git push --force origin main` but not `git push origin main`.
 - Matching runs over the same normalized/deobfuscated command variants the dangerous-pattern detector uses, so simple quoting tricks (`git pu""sh --force`) don't slip past a rule.
+- Executable candidates retain the literal path and also match its basename: `sudo *` covers `/usr/bin/sudo -n id` and `./sudo -n id`. A path-specific rule such as `/usr/bin/sudo *` does **not** become a rule for every binary named `sudo`.
+- Quote-aware parsing exposes commands after assignments, leading redirections, `;`, `&&`, `||`, pipelines, groups, command substitutions, and ordinary `if`/`then`/`else`/`do` transitions. Supported launchers include `sudo`, `env`, `command`, `exec`, `nohup`, `setsid`, `time`, `nice`, `timeout`, `stdbuf`, `ionice`, `chrt`, `taskset`, and `chroot`. Known option operands are skipped; `command -v`/`-V` lookups are not executions. Shell `-c` payloads and literal `env -S` / `--split-string` payloads are inspected recursively.
+- In the additional executable candidates, whitespace **between** words is collapsed, but quoted argument content and argument paths are retained. An exact rule such as `git status` therefore also matches `env git\tstatus; echo done` (where `\t` represents a tab). Quoted mentions such as `echo 'sudo -n id'` are not promoted to commands. Existing whole-input globs such as `*sudo*` still intentionally match mentions anywhere.
 - **YAML quoting:** always quote patterns. A bare leading `*` is a YAML alias and fails to parse; `{`, `!`, and `: ` have their own YAML meanings. Single quotes are safest for shell-ish content.
-- Deny rules apply to host-reaching backends (local, SSH, host-mounted Docker). Isolated container backends skip the guard stack entirely, as they always have — nothing they run can touch the host.
+- User-defined deny rules apply to all terminal backends, including isolated containers, before any backend-specific approval shortcut.
 - A denied command returns a BLOCKED error to the agent telling it not to retry or rephrase. Nothing runs.
 
 Like the rest of the approval config, changes take effect immediately (the config cache is mtime-keyed) — no session restart needed.
 
 :::note Threat model
-Deny rules are a guardrail against an honest-but-wrong agent, the same threat model as the dangerous-pattern detector. They are not a sandbox against a deliberately adversarial process — for that, use an isolated backend (Docker, Modal) or an egress-restricted environment.
+Deny rules are a shell-command policy, not a complete shell interpreter or an OS capability sandbox. Normalization does not resolve arbitrary variables, aliases, functions, renamed binaries, scripts, interpreter programs, or every shell/launcher grammar (for example, case-pattern syntax). Do not use a basename deny rule as a guarantee that a capability cannot be reached by other means. For containment, use OS permissions and an isolated backend with appropriately restricted mounts, credentials, and network access. This matching behavior does not change the configured approval mode or the empty-deny-list default.
 :::
 
 ### Approval Timeout

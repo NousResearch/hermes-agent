@@ -672,6 +672,16 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
     :func:`kanban_db_path` (``HERMES_KANBAN_DB`` -> ``HERMES_KANBAN_BOARD`` ->
     ``<root>/kanban/current`` -> ``default``)."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    from agent.delegation_context import is_delegated_child_process_context
+    if is_delegated_child_process_context():
+        # Reads must not enter schema/backfill write transactions. Never create a
+        # missing board or migrate on a descendant's behalf; the owner initializes it.
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        if not _schema_is_present(conn):
+            conn.close()
+            raise PermissionError("Kanban descendants require an initialized board; ask its owner to initialize it")
+        return conn
     path.parent.mkdir(parents=True, exist_ok=True)
 
     # Fast path: once THIS process has initialized this path, skip the

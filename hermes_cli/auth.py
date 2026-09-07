@@ -1725,6 +1725,10 @@ OAUTH_PROVIDER_FLOWS: Dict[str, OAuthProviderFlow] = {
         logout_from_config=True),
     "qwen-oauth": OAuthProviderFlow(
         "qwen-oauth", "resolve_qwen_runtime_credentials", "get_qwen_auth_status"),
+    "commandcode-oauth": OAuthProviderFlow(
+        "commandcode-oauth", "resolve_commandcode_runtime_credentials", "get_commandcode_auth_status"),
+    "command-code": OAuthProviderFlow(
+        "command-code", "resolve_commandcode_runtime_credentials", "get_commandcode_auth_status"),
     "minimax-oauth": OAuthProviderFlow(
         "minimax-oauth", "resolve_minimax_oauth_runtime_credentials", "get_minimax_oauth_auth_status"),
 }

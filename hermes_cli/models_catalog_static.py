@@ -199,6 +199,16 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "minimax": list(_MINIMAX_MODELS),
     "minimax-oauth": ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
     "minimax-cn": list(_MINIMAX_MODELS),
+    "commandcode-oauth": [
+        "meituan/LongCat-2.0:free", "poolside/laguna-s-2.1-free",
+        "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro",
+        "deepseek/deepseek-v4-flash-vision-exp", "deepseek/deepseek-v4-flash-fast",
+        "Qwen/Qwen3.7-Max", "Qwen/Qwen3.6-Plus",
+        "moonshotai/Kimi-K3", "moonshotai/Kimi-K2.7-Code", "moonshotai/Kimi-K2.6",
+        "zai-org/GLM-5.1", "MiniMaxAI/MiniMax-M2.7", "xiaomi/mimo-v2.5-pro",
+        "google/gemini-3.5-flash", "claude-sonnet-4-6", "claude-opus-4-7",
+        "claude-haiku-4-5-20251001", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol",
+    ],
     "anthropic": [
         "claude-fable-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
         "claude-sonnet-4-6", "claude-opus-4-5-20251101", "claude-sonnet-4-5-20250929",

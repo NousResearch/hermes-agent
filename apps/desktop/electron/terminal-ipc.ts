@@ -14,6 +14,7 @@ import { resolveTerminalConnectionForSender } from './connection-apply'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { buildInteractiveSshArgs } from './ssh-connection'
 import { createTerminalOutputGate } from './terminal-output-gate'
+import { windowsPowerShellExecutable } from './windows-powershell-path'
 import { buildWindowsInteractiveCommand } from './windows-remote-lifecycle'
 
 export interface TerminalIpcDeps {
@@ -65,8 +66,9 @@ export function registerTerminalIpc({
   // Windows PowerShell 5.1 ships at a fixed System32 path on every Windows box;
   // prefer it only after PowerShell 7+ (`pwsh`).
   function windowsPowerShellPath() {
-    const systemRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows'
-    const builtin = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    const builtin = windowsPowerShellExecutable(
+      process.env.SystemRoot || process.env.windir || 'C:\\Windows'
+    )
 
     return isExecutableFile(builtin) ? builtin : findOnPath('powershell.exe')
   }

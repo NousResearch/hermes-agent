@@ -1178,6 +1178,14 @@ class TurnRunner:
         if not ctx._status_adapter:
             return ""
         session_key = ctx.session_key or ""
+        # Gate #105097: one-shot webhook adapters (``webhook:{route}:{delivery_id}`` session_key)
+        # cannot resume blocked interactive clarify waits — the next delivery lands in a completely
+        # independent session. The guard fires before registration so the agent ASKS the question as
+        # a final reply (the one-shot completes cleanly, no dangling wait).
+        adapter_name = getattr(ctx._status_adapter, "name", "")
+        is_webhook_oneshot = (adapter_name == "webhook" and session_key.count(":") >= 2)
+        if is_webhook_oneshot:
+            return ""  # Empty string => clarify_tool falls back to inline question text.
         clarify_id = uuid.uuid4().hex[:10]
         choices = list(choices) if choices else None
         clarify_mod.register(

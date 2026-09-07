@@ -195,14 +195,14 @@ class GlobalMeshCoordinator:
         id_file = self.state_dir / "mesh_node_id.txt"
         if id_file.exists():
             try:
-                content = id_file.read_text("utf-8").strip()
+                content = id_file.read_text(encoding="utf-8").strip()
                 if content:
                     return content
             except Exception:
                 pass
         new_id = f"node-{uuid.uuid4().hex[:16]}"
         try:
-            id_file.write_text(new_id, "utf-8")
+            id_file.write_text(new_id, encoding="utf-8")
         except Exception:
             pass
         return new_id
@@ -211,14 +211,14 @@ class GlobalMeshCoordinator:
         key_file = self.state_dir / "mesh_node_secret.key"
         if key_file.exists():
             try:
-                content = key_file.read_text("utf-8").strip()
+                content = key_file.read_text(encoding="utf-8").strip()
                 if content:
                     return content
             except Exception:
                 pass
         new_key = hashlib.sha256(os.urandom(32)).hexdigest()
         try:
-            key_file.write_text(new_key, "utf-8")
+            key_file.write_text(new_key, encoding="utf-8")
         except Exception:
             pass
         return new_key
@@ -471,7 +471,7 @@ class GlobalMeshCoordinator:
             "peers": {nid: p.to_dict() for nid, p in self.peers.items()},
         }
         try:
-            self.peers_file.write_text(json.dumps(data, indent=2), "utf-8")
+            self.peers_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
         except Exception as exc:
             logger.error("Failed to save global mesh peers: %s", exc)
 
@@ -480,7 +480,7 @@ class GlobalMeshCoordinator:
         if not self.peers_file.exists():
             return
         try:
-            data = json.loads(self.peers_file.read_text("utf-8"))
+            data = json.loads(self.peers_file.read_text(encoding="utf-8"))
             raw_peers = data.get("peers", {})
             for nid, pdict in raw_peers.items():
                 self.peers[nid] = MeshNodeInfo.from_dict(pdict)

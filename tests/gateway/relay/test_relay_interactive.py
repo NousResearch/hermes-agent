@@ -85,6 +85,36 @@ def _event(
 
 
 @pytest.mark.asyncio
+async def test_exec_approval_press_resolves_only_its_bound_request(monkeypatch):
+    """A relay press settles the request generation its prompt was minted for (#104915)."""
+    adapter, _stub = _adapter()
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        "tools.approval.resolve_gateway_approval",
+        lambda session_key, choice, request_id=None: calls.append((session_key, choice, request_id)) or 1,
+    )
+
+    await adapter._resolve_exec_approval({"session_key": "s1", "request_id": "req-1"}, "once", "c1", None)
+
+    assert calls == [("s1", "once", "req-1")]
+
+
+@pytest.mark.asyncio
+async def test_unbound_exec_approval_press_fails_closed(monkeypatch):
+    """A prompt without a bound request id must not settle the session FIFO (#104915)."""
+    adapter, _stub = _adapter()
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        "tools.approval.resolve_gateway_approval",
+        lambda session_key, choice, request_id=None: calls.append((session_key, choice, request_id)) or 1,
+    )
+
+    await adapter._resolve_exec_approval({"session_key": "s1", "request_id": None}, "once", "c1", None)
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_exec_approval_renders_full_option_set():
     adapter, stub = _adapter()
     result = await adapter.send_exec_approval(

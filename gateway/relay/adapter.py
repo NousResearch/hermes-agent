@@ -1835,6 +1835,7 @@ class RelayAdapter(BasePlatformAdapter):
         allow_permanent: bool = True,
         allow_session: bool = True,
         smart_denied: bool = False,
+        request_id: Optional[str] = None,
     ) -> SendResult:
         """Native-button exec approval over the relay (same choice set as native; the
         press resolves via tools.approval.resolve_gateway_approval). When the lane is
@@ -1851,7 +1852,8 @@ class RelayAdapter(BasePlatformAdapter):
         if smart_denied:
             text += "\n\n**Smart DENY:** owner override applies to this one operation only."
         result = await self._mint_and_send_prompt(
-            "exec_approval", {"session_key": session_key}, chat_id, prompt_kind="approval",
+            "exec_approval", {"session_key": session_key, "request_id": request_id},
+            chat_id, prompt_kind="approval",
             text=text, options=options, metadata=metadata,
         )
         return result if result is not None else self._PROMPT_UNAVAILABLE
@@ -1966,7 +1968,14 @@ class RelayAdapter(BasePlatformAdapter):
         from tools.approval import resolve_gateway_approval
 
         choice = option_id if option_id in _EXEC_APPROVAL_LABELS else "deny"
-        count = resolve_gateway_approval(str(state.get("session_key") or ""), choice)
+        # A press settles only the request generation its prompt was issued for; an unbound
+        # prompt must not fall back to the session FIFO (#104915).
+        request_id = state.get("request_id")
+        count = (
+            resolve_gateway_approval(str(state.get("session_key") or ""), choice, request_id=request_id)
+            if request_id
+            else 0
+        )
         label = _EXEC_APPROVAL_LABELS[choice] if count else "⌛ Approval expired — no command was waiting."
         # In-channel ack preserves the audit trail the native edit gives (the
         # connector's prompt message can't be edited cross-platform yet).

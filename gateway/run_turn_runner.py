@@ -1246,12 +1246,25 @@ class TurnRunner:
         desc = approval_data.get("description", "dangerous command")
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
-        if getattr(type(adapter), "send_exec_approval", None) is not None:
+        has_exec_approval = getattr(type(adapter), "send_exec_approval", None) is not None
+        binds_requests = has_exec_approval and _accepts_keyword(adapter.send_exec_approval, "request_id")
+        if has_exec_approval and not binds_requests:
+            # Fail closed (#104915): an external/plugin adapter predating the converged
+            # signature can only resolve its cards through the session FIFO, so a stale or
+            # overlapping control could settle a different pending request. Degrade to the
+            # typed-text prompt instead of rendering an unbound interactive approval.
+            logger.warning(
+                "%s.send_exec_approval predates request binding — failing closed to typed-text approval",
+                type(adapter).__name__,
+            )
+        if binds_requests:
+            extra: Dict[str, Any] = {}
+            extra["request_id"] = approval_data.get("request_id")
             try:
                 fut = self._schedule(
                     adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
+                        description=desc, metadata=ctx._status_thread_metadata, **flags, **extra,
                     ),
                     "send_exec_approval scheduling error",
                 )

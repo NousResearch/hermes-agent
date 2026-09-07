@@ -149,6 +149,57 @@ class TestSlackApprovalAction:
 
 
     @pytest.mark.asyncio
+    async def test_tap_resolves_only_its_bound_action(self):
+        """A click settles the request generation its card was issued for (#104915).
+
+        The button value carries ``session_key|request_id`` (slash-confirm convention).
+        """
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        adapter._approval_resolved["1.2"] = False
+
+        ack = AsyncMock()
+        body = {
+            "message": {"ts": "1.2", "blocks": []},
+            "channel": {"id": "C1"},
+            "user": {"name": "alice", "id": "U_ALICE"},
+        }
+        action = {"action_id": "hermes_approve_once", "value": "session-key|req-9"}
+
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            await adapter._handle_approval_action(ack, body, action)
+
+        mock_resolve.assert_called_once_with("session-key", "once", request_id="req-9")
+
+    @pytest.mark.asyncio
+    async def test_unbound_tap_fails_closed(self):
+        """A legacy card without a request id must not settle the session FIFO (#104915)."""
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        adapter._approval_resolved["1.3"] = False
+
+        ack = AsyncMock()
+        body = {
+            "message": {"ts": "1.3", "blocks": []},
+            "channel": {"id": "C1"},
+            "user": {"name": "alice", "id": "U_ALICE"},
+        }
+        action = {"action_id": "hermes_approve_once", "value": "session-key"}
+
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            await adapter._handle_approval_action(ack, body, action)
+
+        mock_resolve.assert_not_called()
+        update_kwargs = mock_client.chat_update.call_args[1]
+        assert "expired" in update_kwargs["text"]
+
+    @pytest.mark.asyncio
     async def test_truncates_inflated_original_text(self):
         """Interaction payload re-escapes HTML entities; text must be capped."""
         adapter = _make_adapter()

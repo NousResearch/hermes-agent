@@ -4580,10 +4580,13 @@ class SlackAdapter(BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True,
-        allow_session: bool = True, smart_denied: bool = False) -> SendResult:
+        allow_session: bool = True, smart_denied: bool = False,
+        request_id: Optional[str] = None) -> SendResult:
         """Send a Block Kit approval prompt with interactive buttons.
         The buttons call ``resolve_gateway_approval()`` to unblock the waiting agent thread — same
-        mechanism as the text ``/approve`` flow."""
+        mechanism as the text ``/approve`` flow. The button value carries ``session_key|request_id``
+        (the slash-confirm convention) so a click settles only the request generation its card
+        was issued for (#104915)."""
 
         def _build() -> Tuple[str, list]:
             # Slack caps a section's text at 3000 chars (overflow → invalid_blocks → no buttons);
@@ -4594,14 +4597,15 @@ class SlackAdapter(BasePlatformAdapter):
             reason = f"Reason: {description[:500]}"
             budget = 3000 - len(header) - len(reason) - len("``````\n") - len("...")
             cmd_preview = command[:budget] + "..." if len(command) > budget else command
+            value = f"{session_key}|{request_id}" if request_id else session_key
             actions = [
-                self._button("Allow Once", "hermes_approve_once", session_key, style="primary")]
+                self._button("Allow Once", "hermes_approve_once", value, style="primary")]
             if not smart_denied and allow_session:
-                actions.append(self._button("Allow Session", "hermes_approve_session", session_key))
+                actions.append(self._button("Allow Session", "hermes_approve_session", value))
                 if allow_permanent:
                     actions.append(
-                        self._button("Always Allow", "hermes_approve_always", session_key))
-            actions.append(self._button("Deny", "hermes_deny", session_key, style="danger"))
+                        self._button("Always Allow", "hermes_approve_always", value))
+            actions.append(self._button("Deny", "hermes_deny", value, style="danger"))
             blocks = [
                 {
                     "type": "section",
@@ -5239,8 +5243,11 @@ class SlackAdapter(BasePlatformAdapter):
         started = await self._begin_interaction(ack, body, action, "approval")
         if started is None:
             return
-        team_id, action_id, session_key, message, msg_ts, channel_id, user_name, user_id = started
+        team_id, action_id, value, message, msg_ts, channel_id, user_name, user_id = started
         choice = self._APPROVAL_CHOICES.get(action_id, "deny")
+        # Button value is ``session_key|request_id`` (slash-confirm convention); legacy
+        # cards carry a bare session_key and resolve fail-closed (#104915).
+        session_key, _, request_id = value.partition("|")
         # Double-click guard (atomic pop). Also accept the bare ts: the approval may
         # have been stored without a team id while the click carries one.
         approval_key = self._workspace_message_marker(team_id, msg_ts)
@@ -5252,7 +5259,13 @@ class SlackAdapter(BasePlatformAdapter):
         # timeout (count == 0) shows "expired", not "approved".
         try:
             from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(session_key, choice)
+            # A click settles only the request generation its card was issued for; an
+            # unbound card must not fall back to the session FIFO (#104915).
+            count = (
+                resolve_gateway_approval(session_key, choice, request_id=request_id)
+                if request_id
+                else 0
+            )
             logger.info(
                 "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)", count,
                 session_key, choice, user_name)

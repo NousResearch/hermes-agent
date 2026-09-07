@@ -665,8 +665,16 @@ class TestApprovalButtonData:
     def test_parse_allow_once(self):
         from gateway.platforms.qqbot.keyboards import parse_approval_button_data
         result = parse_approval_button_data("approve:agent:main:qqbot:c2c:UID:allow-once")
-        assert result == ("agent:main:qqbot:c2c:UID", "allow-once")
+        assert result == ("agent:main:qqbot:c2c:UID", "allow-once", None)
 
+    def test_parse_allow_once_with_request_id(self):
+        from gateway.platforms.qqbot.keyboards import parse_approval_button_data
+        result = parse_approval_button_data("approve:agent:main:qqbot:c2c:UID:allow-once:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6")
+        assert result == ("agent:main:qqbot:c2c:UID", "allow-once", "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6")
+
+    def test_parse_rejects_non_hex_request_id(self):
+        from gateway.platforms.qqbot.keyboards import parse_approval_button_data
+        assert parse_approval_button_data("approve:sess:allow-once:not-hex!") is None
 
     def test_parse_empty_returns_none(self):
         from gateway.platforms.qqbot.keyboards import parse_approval_button_data
@@ -694,6 +702,13 @@ class TestBuildApprovalKeyboard:
         assert datas[0] == "approve:agent:main:qqbot:c2c:UID:allow-once"
         assert datas[1] == "approve:agent:main:qqbot:c2c:UID:allow-always"
         assert datas[2] == "approve:agent:main:qqbot:c2c:UID:deny"
+
+    def test_button_data_binds_request_id_when_present(self):
+        from gateway.platforms.qqbot.keyboards import build_approval_keyboard
+        kb = build_approval_keyboard("agent:main:qqbot:c2c:UID", request_id="a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6")
+        datas = [b.action.data for b in kb.content.rows[0].buttons]
+        assert datas[0] == "approve:agent:main:qqbot:c2c:UID:allow-once:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
+        assert datas[2] == "approve:agent:main:qqbot:c2c:UID:deny:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
 
 
 class TestBuildUpdatePromptKeyboard:
@@ -905,12 +920,41 @@ class TestDefaultInteractionDispatch:
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
-            resolve_calls.append((session_key, choice, resolve_all))
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
+            resolve_calls.append((session_key, choice, resolve_all, request_id))
             return 1
 
         # Patch the *module-level* function that _default_interaction_dispatch
         # imports lazily.
+        import tools.approval
+        orig = tools.approval.resolve_gateway_approval
+        tools.approval.resolve_gateway_approval = fake_resolve
+        try:
+            from gateway.platforms.qqbot.keyboards import parse_interaction_event
+            event = parse_interaction_event({
+                "id": "i",
+                "chat_type": 2,
+                "user_openid": "u-42",
+                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:c2c:u-42:allow-once:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"}},
+            })
+            await adapter._default_interaction_dispatch(event)
+        finally:
+            tools.approval.resolve_gateway_approval = orig
+
+        assert resolve_calls == [
+            ("agent:main:qqbot:c2c:u-42", "once", False, "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6")
+        ]
+
+    @pytest.mark.asyncio
+    async def test_unbound_approval_click_fails_closed(self):
+        """A legacy card without a request id must not settle the session FIFO (#104915)."""
+        adapter = self._make_adapter()
+        resolve_calls = []
+
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
+            resolve_calls.append((session_key, choice, resolve_all, request_id))
+            return 1
+
         import tools.approval
         orig = tools.approval.resolve_gateway_approval
         tools.approval.resolve_gateway_approval = fake_resolve
@@ -926,7 +970,7 @@ class TestDefaultInteractionDispatch:
         finally:
             tools.approval.resolve_gateway_approval = orig
 
-        assert resolve_calls == [("agent:main:qqbot:c2c:u-42", "once", False)]
+        assert resolve_calls == []
 
 
     @pytest.mark.asyncio

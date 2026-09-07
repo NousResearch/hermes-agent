@@ -306,6 +306,7 @@ class _MatrixApprovalPrompt:
     resolved: bool = False
     requester_user_id: str | None = None
     expires_at: float | None = None
+    request_id: str | None = None  # binds reactions to one request generation (#104915)
     bot_reaction_events: dict[str, str] = field(default_factory=dict, init=False)  # emoji -> event_id
 
 
@@ -1551,7 +1552,7 @@ class MatrixAdapter(BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
         metadata: Optional[dict] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False) -> SendResult:
+        smart_denied: bool = False, request_id: Optional[str] = None) -> SendResult:
         if not self._client:
             return SendResult(success=False, error="Not connected")
         if smart_denied:
@@ -1582,7 +1583,7 @@ class MatrixAdapter(BasePlatformAdapter):
             self._approval_prompt_by_session[session_key] = message_id
             return _MatrixApprovalPrompt(
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
-                expires_at=expires_at)
+                expires_at=expires_at, request_id=request_id)
         return await self._send_reaction_prompt(
             chat_id, text, metadata, _make, self._approval_prompts_by_event, tuple(reactions), "approval")
 
@@ -2292,7 +2293,13 @@ class MatrixAdapter(BasePlatformAdapter):
             return handled
         try:
             from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(prompt.session_key, choice)
+            # A reaction settles only the request generation its prompt was issued for; an
+            # unbound prompt must not fall back to the session FIFO (#104915).
+            count = (
+                resolve_gateway_approval(prompt.session_key, choice, request_id=prompt.request_id)
+                if prompt.request_id
+                else 0
+            )
             if count:
                 prompt.resolved = True
                 self._approval_prompts_by_event.pop(reacts_to, None)

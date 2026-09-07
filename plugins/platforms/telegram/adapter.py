@@ -513,6 +513,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}  # per-chat interactive picker state
         self._choice_picker_state: Dict[str, dict] = {}
         self._approval_state: Dict[int, str] = {}  # message_id → session_key
+        self._approval_request_ids: Dict[int, str] = {}  # approval_id → gateway request_id (#104915)
         self._slash_confirm_state: Dict[str, str] = {}  # confirm_id → session_key
         self._clarify_state: Dict[str, str] = {}  # clarify_id → session_key
         # "important" (default): only final responses, approvals and slash confirmations notify;
@@ -3793,7 +3794,7 @@ class TelegramAdapter(BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False) -> SendResult:
+        smart_denied: bool = False, request_id: Optional[str] = None) -> SendResult:
         """Send an inline-keyboard approval prompt; buttons call ``resolve_gateway_approval()`` like the
         text ``/approve`` flow."""
         def build():
@@ -3809,8 +3810,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 if allow_permanent:
                     buttons.append(InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}"))
             buttons.append(InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"))
-            return text, InlineKeyboardMarkup(
-                self._rows_of_two(buttons)), lambda msg: self._approval_state.__setitem__(approval_id, session_key)
+
+            def _register(msg):
+                self._approval_state[approval_id] = session_key
+                if request_id:
+                    # callback_data caps at 64 bytes, so the request id rides out-of-band;
+                    # the tap settles only the request generation this prompt was issued for (#104915).
+                    self._approval_request_ids[approval_id] = request_id
+
+            return text, InlineKeyboardMarkup(self._rows_of_two(buttons)), _register
         return await self._send_prompt(
             "send_exec_approval", chat_id, metadata, build, parse_mode=ParseMode.HTML,
             thread_id=self._metadata_thread_id(metadata), reply_to_mode=self._reply_to_mode)
@@ -4287,12 +4295,19 @@ class TelegramAdapter(BasePlatformAdapter):
         user_display = getattr(query.from_user, "first_name", "User")
         # Resolve FIRST (unblocks the agent thread), render after: a tap landing after the wait timed out
         # (count == 0) must NOT claim "Approved" — the command was already denied.
+        request_id = self._approval_request_ids.pop(approval_id, None)
         try:
             # Rendering happens after so the message reflects what actually occurred: a tap that lands after
             # the approval wait timed out (count == 0) must NOT claim "Approved" — the command was already
             # denied and will not run (#63501 regression follow-up: 60s waits made stale taps common).
             from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(session_key, choice)
+            # A tap settles only the request generation its prompt was issued for; an
+            # unbound prompt must not fall back to the session FIFO (#104915).
+            count = (
+                resolve_gateway_approval(session_key, choice, request_id=request_id)
+                if request_id
+                else 0
+            )
             logger.info(
                 "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, user_display)
         except Exception as exc:

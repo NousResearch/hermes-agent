@@ -852,7 +852,7 @@ def _run_approval_gate(
 def _should_skip_container_guards(env_type: str, has_host_access: bool = False) -> bool:
     """True when the backend is isolated enough to skip dangerous-command prompts. Docker is the
     exception once host paths are bind-mounted: ``rm -rf /workspace`` then reaches host files."""
-    if env_type == "docker":
+    if env_type in {"docker", "kubernetes"}:
         return not has_host_access
     return env_type in ("singularity", "modal", "daytona", "vercel_sandbox")
 

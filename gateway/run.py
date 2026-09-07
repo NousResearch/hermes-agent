@@ -1850,6 +1850,7 @@ def _bridge_terminal_config_to_env(_terminal_cfg: dict) -> None:
         "modal_image": "TERMINAL_MODAL_IMAGE",
         "daytona_image": "TERMINAL_DAYTONA_IMAGE",
         "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
+        "kubernetes": "TERMINAL_KUBERNETES",
         "ssh_host": "TERMINAL_SSH_HOST",
         "ssh_user": "TERMINAL_SSH_USER",
         "ssh_port": "TERMINAL_SSH_PORT",
@@ -1875,6 +1876,8 @@ def _bridge_terminal_config_to_env(_terminal_cfg: dict) -> None:
         if _cfg_key not in _terminal_cfg:
             continue
         _val = _terminal_cfg[_cfg_key]
+        if _cfg_key == "kubernetes" and _terminal_backend != "kubernetes":
+            continue
         if _cfg_key == "cwd":
             # Placeholders (".", "auto", "cwd") resolve to Path.home() later; only explicit paths bridge.
             if str(_val) in {".", "auto", "cwd"}:

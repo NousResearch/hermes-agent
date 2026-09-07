@@ -226,6 +226,66 @@ def _check_plugin_backend(terminal_env: str, issues: list[str]) -> None:
 _BACKEND_CHECKS = {"ssh": _check_ssh_backend, "daytona": _check_daytona_backend, "vercel_sandbox": _check_vercel_backend}
 
 
+def _dry_run_pod_template(kcfg, namespace, core_api, issues) -> None:
+    """Ask the API server to validate the rendered session Pod without creating it."""
+    from tools.environments.kubernetes import PodProvisioner, STRICT_FIELD_VALIDATION, api_call
+    try:
+        body = PodProvisioner(kcfg, namespace, api=core_api).pod_manifest("doctor")
+    except Exception as exc:
+        return _fail_and_issue("kubernetes pod template unrenderable", f"({exc})",
+                               "Fix terminal.kubernetes.spec in config.yaml", issues)
+    from kubernetes.client.exceptions import ApiException
+    try:
+        api_call(core_api.create_namespaced_pod, namespace=namespace, body=body,
+                 dry_run="All", **STRICT_FIELD_VALIDATION)
+    except ApiException as exc:
+        if exc.status in (400, 403, 422):
+            _fail_and_issue("kubernetes pod template rejected", f"({exc.status} {exc.reason})",
+                            "Fix terminal.kubernetes.spec or the cluster admission policy", issues)
+        else:
+            check_warn("kubernetes pod template dry-run skipped", f"({exc.status} {exc.reason})")
+    except Exception as exc:
+        check_warn("kubernetes pod template dry-run skipped", f"({exc})")
+    else:
+        check_ok("kubernetes pod template", "(accepted with fieldValidation=Strict)")
+
+
+def _check_kubernetes_backend(issues: list[str]) -> None:
+    if importlib.util.find_spec("kubernetes") is None:
+        return _fail_and_issue("kubernetes client not installed", "",
+                               "Install hermes-agent[kubernetes]", issues)
+    from tools.environments.kubernetes import (
+        STRICT_FIELD_VALIDATION, api_call, load_core_api, merge_kubernetes_config,
+        resolve_namespace, resolve_provisioner_kind,
+    )
+    from tools.terminal_tool import _get_env_config
+    kcfg = merge_kubernetes_config(_get_env_config().get("kubernetes"))
+    try:
+        resolve_provisioner_kind(kcfg)
+        core_api = load_core_api(kcfg)
+        namespace = resolve_namespace(kcfg)
+    except Exception as exc:
+        return _fail_and_issue("kubernetes backend unavailable", f"({exc})",
+                               "Check terminal.kubernetes configuration", issues)
+    from kubernetes import client as k8s_client
+    auth = k8s_client.AuthorizationV1Api(core_api.api_client)
+    for group, resource, verb in (
+        ("", "pods", "create"), ("", "pods", "get"), ("", "pods", "delete"),
+        ("", "pods/exec", "get"), ("", "pods/exec", "create"),
+    ):
+        review = k8s_client.V1SelfSubjectAccessReview(
+            spec=k8s_client.V1SelfSubjectAccessReviewSpec(
+                resource_attributes=k8s_client.V1ResourceAttributes(
+                    namespace=namespace, group=group, resource=resource, verb=verb)))
+        result = api_call(auth.create_self_subject_access_review, review, **STRICT_FIELD_VALIDATION)
+        if getattr(result.status, "allowed", False):
+            check_ok(f"RBAC {verb} {resource}", f"(in {namespace})")
+        else:
+            _fail_and_issue(f"RBAC {verb} {resource}", "(denied)",
+                            f"Grant {verb} on {resource} in {namespace}", issues)
+    _dry_run_pod_template(kcfg, namespace, core_api, issues)
+
+
 @doctor_check()
 def _check_terminal_backend(should_fix: bool, f: Finding) -> None:
     """Docker/SSH/Daytona/Vercel/plugin terminal backends, gated on TERMINAL_ENV."""
@@ -243,6 +303,8 @@ def _check_terminal_backend(should_fix: bool, f: Finding) -> None:
     _check_docker_backend(terminal_env, running_in_container, f.issues)
     if terminal_env in _BACKEND_CHECKS:
         _BACKEND_CHECKS[terminal_env](f.issues)
+    elif terminal_env == "kubernetes":
+        _check_kubernetes_backend(f.issues)
     elif terminal_env not in _BUILTIN_TERMINAL_BACKENDS:
         _check_plugin_backend(terminal_env, f.issues)
 

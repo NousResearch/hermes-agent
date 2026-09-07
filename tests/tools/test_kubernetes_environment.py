@@ -283,7 +283,7 @@ def test_an_empty_owned_selector_means_the_managed_by_label():
     )) == {"platform.example.com/owner": "ml-team"}
 
     from hermes_cli.config_defaults import DEFAULT_CONFIG
-    from hermes_cli.web_server import _build_schema_from_config
+    from hermes_cli.web_server_config import _build_schema_from_config
 
     schema = _build_schema_from_config(DEFAULT_CONFIG)
     assert not [k for k in schema if "/" in k], \
@@ -955,7 +955,7 @@ def _install_fake_backend(monkeypatch):
 
 
 def test_factory_builds_kubernetes_env(monkeypatch):
-    import tools.terminal_tool as tt
+    import tools.terminal_tool_backends as tt
 
     captured, fake_cls = _install_fake_backend(monkeypatch)
     env = tt._create_environment(
@@ -982,7 +982,7 @@ def test_factory_rejects_a_kind_it_has_no_provisioner_for(monkeypatch, bad):
     is called, so an unimplemented kind never becomes a request the server
     would answer with a confusing 404. Everything else is the server's to
     validate."""
-    import tools.terminal_tool as tt
+    import tools.terminal_tool_backends as tt
 
     _install_fake_backend(monkeypatch)
     with pytest.raises(ValueError, match="unsupported apiVersion/kind"):
@@ -1039,7 +1039,7 @@ def test_live_terminal_tool_kubernetes_container_config(monkeypatch):
     """Regression pin for the two spots the upstream PR missed at first: the
     image-selection ladder and the container_config builder in terminal_tool().
 
-    Drives the real terminal_tool() entry path with _create_environment stubbed,
+    Drives the real terminal_tool() entry path with _create_configured_env stubbed,
     so no cluster is needed.
     """
     import uuid
@@ -1056,13 +1056,15 @@ def test_live_terminal_tool_kubernetes_container_config(monkeypatch):
 
     captured = {}
 
-    def _fake_create_environment(**kwargs):
+    def _fake_create_environment(config, env_type, **kwargs):
+        kwargs["config"] = config
+        kwargs["env_type"] = env_type
         captured.update(kwargs)
         mock_env = MagicMock()
         mock_env.execute.return_value = {"output": "", "returncode": 0}
         return mock_env
 
-    monkeypatch.setattr(tt, "_create_environment", _fake_create_environment)
+    monkeypatch.setattr(tt, "_create_configured_env", _fake_create_environment)
     monkeypatch.setattr(tt, "_check_all_guards", lambda *a, **kw: {"approved": True})
     monkeypatch.setattr(tt, "_start_cleanup_thread", lambda: None)
 
@@ -1089,9 +1091,9 @@ def test_live_terminal_tool_kubernetes_container_config(monkeypatch):
             tt._active_environments.pop(unique_task_id, None)
         tt._task_env_overrides.pop(unique_task_id, None)
 
-    assert captured, "_create_environment was never called"
-    cc = captured.get("container_config")
-    assert cc is not None, "container_config was None — kubernetes missing from the builder"
+    assert captured, "_create_configured_env was never called"
+    cc = captured.get("config")
+    assert cc is not None, "config was None — kubernetes missing from the builder"
     assert cc["kubernetes"]["exec_container_name"] == "devbox"
     assert cc["kubernetes"]["namespace"] == "hermes"
     # Defaults survive a partial payload.
@@ -2228,7 +2230,7 @@ def _doctor_rbac_reviews(kcfg):
     import importlib.util
 
     import kubernetes.client as kclient
-    from hermes_cli import doctor
+    from hermes_cli import doctor_tools as doctor
 
     seen: list = []
 
@@ -2297,7 +2299,7 @@ def test_doctor_dry_runs_the_rendered_pod_with_strict_field_validation():
     "Warning: 299 - unknown field" header, so Warn is indistinguishable from
     success. doctor submits the real rendered pod as a dry-run create so the
     server names the offending path here, not at the first session."""
-    from hermes_cli import doctor
+    from hermes_cli import doctor_tools as doctor
 
     core = MagicMock()
     doctor._dry_run_pod_template(_kcfg(), "hermes", core, [])
@@ -2317,7 +2319,7 @@ def test_doctor_reports_the_api_servers_rejection_as_a_failure():
     `create pods` is allowed, so a 403 here is a verdict about the pod, not a
     permission problem — reporting it as "skipped" hid the failures doctor
     exists to surface. Only a transient error (429, 5xx, network) is a warning."""
-    from hermes_cli import doctor
+    from hermes_cli import doctor_tools as doctor
     from kubernetes.client.exceptions import ApiException
 
     for status, reason in ((400, "Bad Request"), (422, "Unprocessable Entity"),

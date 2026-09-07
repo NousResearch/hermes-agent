@@ -44,6 +44,11 @@ def _memory_provider_options() -> List[str]:
     return list(dict.fromkeys(options))
 
 
+def _kubernetes_kind_options() -> list[str]:
+    from tools.environments.kubernetes import PROVISIONERS_BY_KIND
+    return sorted({kind for _api_version, kind in PROVISIONERS_BY_KIND})
+
+
 def _timezone_options() -> List[str]:
     """Return sorted IANA timezone identifiers, cached at import time."""
     try:
@@ -76,7 +81,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
     "terminal.backend": _select(
         "Terminal execution backend",
-        "local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity",
+        "local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity", "kubernetes",
+    ),
+    "terminal.kubernetes.kind": _select(
+        "Kubernetes object kind used for each terminal session",
+        *_kubernetes_kind_options(),
     ),
     # sync with _SUPPORTED_VERCEL_RUNTIMES in terminal_tool.py
     "terminal.vercel_runtime": _select("Vercel Sandbox runtime", "node24", "node22", "python3.13"),
@@ -160,6 +169,8 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         ),
     },
 }
+
+
 
 # Small categories fold into a bigger tab to avoid one-field orphan tabs. Several sources
 # (models_dev, onboarding, mcp, computer_use, telemetry, plugins, doctor, runtime, session,

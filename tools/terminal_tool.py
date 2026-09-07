@@ -49,7 +49,9 @@ from tools.terminal_tool_config import (
 )
 from tools.terminal_tool_backends import (
     _REQUIREMENT_CHECKERS, _VERCEL_SANDBOX_DEFAULT_CWD, _check_plugin_requirements,
+    _create_environment,
 )
+from tools.terminal_tool_config import _CONTAINER_BACKENDS
 # display_hermes_home imported lazily at call site (stale-module safety during hermes update)
 from tools.tool_backend_helpers import coerce_modal_mode, managed_nous_tools_enabled
 
@@ -136,6 +138,9 @@ def _docker_volume_uses_host_path(volume_spec: str) -> bool:
 
 def _docker_has_host_access(config: Dict[str, Any]) -> bool:
     """Return True when a Docker sandbox exposes host paths through bind mounts."""
+    if config.get("env_type") == "kubernetes":
+        from tools.environments import kubernetes as _k8s
+        return not _k8s.trusted_sandbox(_k8s.merge_kubernetes_config(config.get("kubernetes")))
     if config.get("env_type") != "docker":
         return False
     if config.get("host_cwd") and config.get("docker_mount_cwd_to_workspace"):
@@ -282,6 +287,11 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     too, so env-side seeding stays consistent (ACP switching project root
     mid-session via ``session/load``).
     """
+    if "kubernetes_image" in overrides:
+        raise ValueError(
+            "Kubernetes session images are declared in terminal.kubernetes.spec; "
+            "per-task kubernetes_image overrides are unsupported."
+        )
     _task_env_overrides[task_id] = overrides
 
     new_cwd = overrides.get("cwd")
@@ -620,7 +630,19 @@ def _get_env_config() -> Dict[str, Any]:
     else:
         docker_forward_env, docker_volumes, docker_env, docker_extra_args, docker_shm_size = [], [], {}, [], "1g"
 
-    cwd, host_cwd = _resolve_config_cwd(env_type, mount_docker_cwd)
+    if env_type == "kubernetes":
+        from tools.environments.kubernetes import merge_kubernetes_config
+        kubernetes_config = merge_kubernetes_config(
+            _parse_env_var("TERMINAL_KUBERNETES", "{}", json.loads, "valid JSON")
+        )
+    else:
+        kubernetes_config = {}
+
+    if env_type == "kubernetes" and not _tenv("TERMINAL_CWD"):
+        from tools.environments.kubernetes import session_cwd
+        cwd, host_cwd = session_cwd(kubernetes_config), None
+    else:
+        cwd, host_cwd = _resolve_config_cwd(env_type, mount_docker_cwd)
 
     return {
         "env_type": env_type,
@@ -631,6 +653,7 @@ def _get_env_config() -> Dict[str, Any]:
         "modal_image": _tenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": _tenv("TERMINAL_DAYTONA_IMAGE", default_image),
         "vercel_runtime": _tenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
+        "kubernetes": kubernetes_config,
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,

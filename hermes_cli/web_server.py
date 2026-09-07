@@ -1476,6 +1476,9 @@ import zipfile  # noqa: F401,E402
 
 
 _PLUGIN_COMPAT_LAZY = {
+    '_SCHEMA_OVERRIDES': ('hermes_cli.web_server_config', '_SCHEMA_OVERRIDES'),
+    '_build_schema_from_config': ('hermes_cli.web_server_config', '_build_schema_from_config'),
+    '_kubernetes_kind_options': ('hermes_cli.web_server_config', '_kubernetes_kind_options'),
     'AudioTranscriptionRequest': ('hermes_cli.web_models', 'AudioTranscriptionRequest'),
     'AutomationBlueprintInstantiate': ('hermes_cli.web_models', 'AutomationBlueprintInstantiate'),
     'BackupRequest': ('hermes_cli.web_models', 'BackupRequest'),

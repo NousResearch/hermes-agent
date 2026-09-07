@@ -338,6 +338,21 @@ DEFAULT_CONFIG = {
         "docker_snap_compat": False,
         # Trusted profiles sharing one Docker container identity; empty = per-profile boundary.
         "docker_shared_container_key": "",
+        # Mirror of tools/environments/kubernetes.py:DEFAULT_KUBERNETES_CONFIG.
+        "kubernetes": {
+            "namespace": "",
+            "kubeconfig": "",
+            "context": "",
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {},
+            "exec_container_name": "workspace",
+            "owned_selector": {},
+            "spec": {},
+            "ready_timeout_seconds": 120,
+            "owner_reference": "auto",
+            "trusted_sandbox": True,
+        },
         # Keep a long-lived bash shell across execute() calls so cwd/env/shell variables survive.
         # Applies to non-local backends (SSH); local is opt-in via TERMINAL_LOCAL_PERSISTENT env.
         "persistent_shell": True,

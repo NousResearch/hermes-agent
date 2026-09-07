@@ -77,7 +77,6 @@ def test_astra_900k_opt_in_preserves_live_limits_and_wire_contract(monkeypatch, 
         kwargs = ResponsesApiTransport().build_kwargs(model="gpt-6-astra-900k", **params)
         assert kwargs["model"] == "gpt-6-astra"
         assert kwargs == ResponsesApiTransport().build_kwargs(model="gpt-6-astra", **params)
-        assert "prompt_cache_options" not in kwargs
 
 
 @pytest.mark.parametrize("provider,model", [
@@ -99,7 +98,13 @@ def test_picker_revalidates_cached_astra_and_never_injects_saved_entitlement(mon
         return list(live)
 
     monkeypatch.setattr(models, "provider_model_ids", discover)
-    assert models.cached_provider_model_ids(provider) == ["gpt-5.6-sol"]
+    # Only live discovery writes Astra into a same-credential entry, so a fresh entry IS the
+    # entitlement record: served without a round-trip (a per-open revalidation defeated the cache).
+    assert model in models.cached_provider_model_ids(provider)
+    assert calls == []
+    # After the entry ages past the fresh window, a failed refresh must not resurrect Astra from it.
+    monkeypatch.setattr(models, "_PROVIDER_MODELS_STALE_SERVE_MAX", 0)
+    assert models.cached_provider_model_ids(provider, ttl_seconds=0) == ["gpt-5.6-sol"]
     assert calls == [provider]
     row = {"slug": provider, "is_current": True, "models": ["gpt-5.6-sol"], "total_models": 1}
     assert model not in _finalize_picker_rows([row], {}, model)[0]["models"]

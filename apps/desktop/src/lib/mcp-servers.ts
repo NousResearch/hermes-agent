@@ -21,9 +21,28 @@ export function normalizeEntry(entry: Record<string, unknown>): Record<string, u
   return entry
 }
 
-/** The `mcp_servers` map out of a config record, or `{}` when absent/malformed. */
+/** A value a reader can reach into: an object, not `null`, an array or a scalar. */
+const isEntry = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === 'object' && !Array.isArray(value)
+
+/** The `mcp_servers` map out of a config record, or `{}` when absent/malformed.
+ *
+ *  Entries that aren't objects are dropped rather than handed on. Every reader
+ *  takes properties straight off the value — `enabled` for the runtime gate,
+ *  `command`/`url` for the transport, `tools` for the filter — so one bad entry
+ *  throws on the first property read and, with nothing between it and the pane,
+ *  takes the whole Capabilities workspace down with it. A `name:` left without
+ *  a value in `config.yaml` parses as `null` and does exactly that. The backend
+ *  already refuses to *write* a non-object entry (`_replace_mcp_servers`), so
+ *  this only has to survive a config edited by hand or by another tool. */
 export function getServers(config: { mcp_servers?: unknown } | null): McpServers {
   const raw = config?.mcp_servers
 
-  return raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as McpServers) : {}
+  if (!isEntry(raw)) {
+    return {}
+  }
+
+  return Object.fromEntries(
+    Object.entries(raw).filter((entry): entry is [string, Record<string, unknown>] => isEntry(entry[1]))
+  )
 }

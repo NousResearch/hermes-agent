@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.web_server import _legacy_pump
+from hermes_cli.web_server_chat import _legacy_pump
 
 
 class _FakeBridge:
@@ -20,8 +20,8 @@ class _FakeBridge:
             return self._reads.pop(0)
         return None
 
-    def write(self, data):
-        pass
+    async def write(self, data):
+        return True
 
     def resize(self, cols, rows):
         pass

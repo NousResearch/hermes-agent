@@ -41,6 +41,7 @@ describe('resolveSpeakStreamUrl', () => {
     setApiRequestConnection(null)
     setApiRequestProfile(null)
     Reflect.deleteProperty(window, 'hermesDesktop')
+    vi.useRealTimers()
   })
 
   it('resolves through the registry (connection, profile) bridges when a registry connection is active', async () => {
@@ -101,5 +102,21 @@ describe('resolveSpeakStreamUrl', () => {
     // descriptor's own wsUrl (no cross-scope re-mint).
     expect(url).toContain('/api/audio/speak-stream')
     expect(getConnection).toHaveBeenCalledWith('research')
+  })
+
+  it('resolves to null instead of hanging forever when getConnection() wedges (#93454)', async () => {
+    // desktop.getConnection/getConnectionFor/resolveGatewayWsUrl are IPC
+    // round-trips into the main process with no timeout of their own. A
+    // wedged main-process round-trip otherwise hangs voice mode's "speaking"
+    // state forever instead of falling back to playSpeechText.
+    vi.useFakeTimers()
+    setApiRequestProfile('coder')
+    getConnection.mockImplementation(() => new Promise(() => undefined))
+
+    const pending = resolveSpeakStreamUrl()
+
+    await vi.advanceTimersByTimeAsync(20_000)
+
+    await expect(pending).resolves.toBeNull()
   })
 })

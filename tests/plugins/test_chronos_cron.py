@@ -204,16 +204,11 @@ def test_chronos_is_split_fire_capable(chronos):
     fire webhook uses durable claim admission (not the legacy fire_due path).
     Chronos deliberately has NO fire_due override — its re-arm logic lives in
     fire_claimed, which the split path invokes."""
-    from cron.scheduler_provider import (
-        provider_supports_fire_cancel,
-        provider_supports_force_fire,
-        provider_supports_split_fire,
-    )
+    from cron.scheduler_provider import provider_supports_force_fire, provider_supports_split_fire
 
     prov, _fake = chronos
     assert provider_supports_split_fire(prov) is True
     assert provider_supports_force_fire(prov) is True
-    assert provider_supports_fire_cancel(prov) is True
 
 
 def test_fire_claimed_no_rearm_when_run_failed(chronos, monkeypatch):

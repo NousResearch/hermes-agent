@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.kanban_watchers import _resolve_auto_decompose_settings
+from gateway.kanban_watchers_common import _resolve_auto_decompose_settings
 
 
 def test_enabled_by_default_when_key_absent():

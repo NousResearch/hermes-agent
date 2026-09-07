@@ -166,10 +166,10 @@ def test_digest_records_tool_names_in_arc():
 
 def test_enabled_defaults_true():
     with patch("hermes_cli.config.load_config_readonly", return_value={}):
-        assert br.is_background_review_enabled() is True
+        assert br.load_background_review_settings()[0] is True
 
 
 def test_enabled_false_disables_automatic_review():
     cfg = {"auxiliary": {"background_review": {"enabled": False}}}
     with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
-        assert br.is_background_review_enabled() is False
+        assert br.load_background_review_settings()[0] is False

@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Competitors, News, Market-Research, Monitoring]
-    related_skills: [blogwatcher]
+    related_skills: [blogwatcher, rss-feeds, reddit-reading]
 ---
 
 # Competitor News Monitor
@@ -42,7 +42,7 @@ For each company include, where available:
 5. reputable trade and financial press
 6. job postings as weak supporting evidence
 
-Use `blogwatcher` for feeds and `web_search`/`web_extract` for pages. Write the watch contract (watchlist, categories, materiality threshold, last cutoff) to a state file under `~/.hermes/competitor-watches/<watch-slug>.json`, then create the job:
+Use `rss-feeds` (bundled) or `blogwatcher` (optional, stateful) for feeds, `reddit-reading` for community discussion, and `web_search`/`web_extract` for pages. Write the watch contract (watchlist, categories, materiality threshold, last cutoff) to a state file under `~/.hermes/competitor-watches/<watch-slug>.json`, then create the job:
 
 ```
 cronjob(action="create",

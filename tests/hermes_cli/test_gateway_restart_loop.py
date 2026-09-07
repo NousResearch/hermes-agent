@@ -12,10 +12,8 @@ from argparse import Namespace
 
 import pytest
 
-from hermes_cli.cron import (
-    _contains_gateway_lifecycle_command,
-    cron_command,
-)
+from cron.lifecycle_guard import contains_gateway_lifecycle_command as _contains_gateway_lifecycle_command
+from hermes_cli.cron import cron_command
 
 
 # ---------------------------------------------------------------------------
@@ -586,6 +584,33 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         assert result["exit_code"] == 1
         assert "KeepAlive" in result["error"]
+
+    def test_oversized_root_skips_launchctl_prescan_and_fails_closed(
+        self, monkeypatch
+    ):
+        """#78398: an over-budget root must never reach shlex — not even via
+        the launchctl pre-scan that runs before the full guard."""
+        import cron.lifecycle_guard as lifecycle_guard
+        import tools.terminal_tool as tt
+
+        self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
+        monkeypatch.setattr(
+            lifecycle_guard, "_MAX_LIFECYCLE_SCAN_BYTES", 8, raising=False
+        )
+        monkeypatch.setattr(
+            lifecycle_guard, "_MAX_LIFECYCLE_SCAN_LINE_BYTES", 8, raising=False
+        )
+
+        def explode_if_tokenized(*args, **kwargs):
+            raise AssertionError("over-budget root reached shlex")
+
+        monkeypatch.setattr(lifecycle_guard.shlex, "shlex", explode_if_tokenized)
+
+        result = json.loads(tt.terminal_tool(command="x" * 9))
+
+        assert result["exit_code"] == 1
+        assert "command or referenced script" in result["error"]
+        assert "KeepAlive" not in result["error"]
 
     @pytest.mark.parametrize("command", [
         # Neutral, non-hermes label: label-independent detection is the point
@@ -1676,6 +1701,8 @@ class TestShellShortOptionBundles:
     @pytest.mark.parametrize("flags", [
         "-c", "-lc", "-ec", "-xc", "-lxc", "-ic", "-sc", "-euc",
         "--command", "-c -l", "-l -c", "-euo pipefail -c",
+        # zsh runs these two; measured, not inferred from the option grammar.
+        "-Wc", "-Zc",
     ])
     def test_bundled_command_flag_still_scans_the_payload(
         self, tmp_path, helper, shell, flags,
@@ -1706,13 +1733,27 @@ class TestShellShortOptionBundles:
         assert _shell_command_string(["-c", "-l", "PAYLOAD"]) == "PAYLOAD"
         assert _shell_command_string(["-c", "--", "PAYLOAD"]) == "PAYLOAD"
 
-    def test_an_unknown_control_is_not_read_as_a_bundle(self):
-        """`-Wc` is not a bash short-option bundle. Treating any token
-        containing `c` as `-c` would invent payloads out of unrelated flags."""
+    def test_a_letter_the_scanner_does_not_know_still_carries_the_c(self):
+        """Filtering bundles against a known-letter alphabet first is unsound,
+        because the shells do not agree on which letters are known.
+
+        Measured, `<shell> <token> 'echo RAN'`, over sh/bash/dash/zsh/ksh:
+
+            -c   all five      -Wc  zsh      -Zc  zsh      -oc  ksh      -Oc  zsh
+
+        `-W` is a real zsh option (--autoremoveslash), and for `-Z` zsh prints
+        `bad option` and then honours the rest of the bundle anyway — so zsh
+        runs both, and an alphabet gate is exactly what let them past. ksh
+        takes `-oc` where zsh and bash reject it. No single shell's grammar is
+        authoritative here, so the scanner reads `c` wherever it appears."""
         from cron.lifecycle_guard import _shell_command_string
 
-        assert _shell_command_string(["-Wc", "PAYLOAD"]) is None
+        for token in ("-Wc", "-Zc", "-oc", "-Oc", "-lc", "-euxc"):
+            assert _shell_command_string([token, "PAYLOAD"]) == "PAYLOAD", token
+        # A bundle with no `c` is still not a command flag, and neither is the
+        # empty argument list — over-reading must not become "always true".
         assert _shell_command_string(["-l", "script.sh"]) is None
+        assert _shell_command_string(["-euo", "pipefail", "script.sh"]) is None
         assert _shell_command_string([]) is None
 
     # -- attached option values -------------------------------------------
@@ -1754,8 +1795,12 @@ class TestShellShortOptionBundles:
         """`bash -c'payload'` reaches the shell as the single token
         `-cpayload`, and no shell reads it as a command string: bash answers
         `- : invalid option`, dash and busybox `Illegal option -h`, zsh, ksh
-        and mksh reject it too. Nothing runs, so there is nothing to scan, and
-        inventing a payload here would only add false positives."""
+        and mksh reject it too. Nothing runs, so there is nothing to scan.
+
+        The scanner does count the `c` in such a token — it cannot tell one
+        from a real bundle — but the command string is the first OPERAND, and
+        a lone attached payload leaves none, so nothing is yielded. Pinned so
+        that a later change cannot start inventing payloads here."""
         from cron.lifecycle_guard import _shell_command_string
 
         assert _shell_command_string(["-cecho hi"]) is None
@@ -1873,17 +1918,6 @@ class TestRestartLoopGuard:
         import gateway.restart_loop_guard as rlg
         rlg.clear()
 
-
-
-
-    def test_is_tripped_reads_without_recording(self):
-        import gateway.restart_loop_guard as rlg
-        rlg.record_restart_interrupted_boot(60, now=1000.0)
-        rlg.record_restart_interrupted_boot(60, now=1001.0)
-        assert rlg.is_restart_loop_tripped(3, 60, now=1002.0) is False
-        rlg.record_restart_interrupted_boot(60, now=1002.0)
-        assert rlg.is_restart_loop_tripped(3, 60, now=1003.0) is True
-
     def test_clear_resets(self):
         import gateway.restart_loop_guard as rlg
         rlg.check_and_record(3, 60, now=1000.0)
@@ -1917,7 +1951,6 @@ class TestRestartLoopGuard:
         rlg.check_and_record(3, 60, now=1150.0)
         # 1h later: unrelated restart, chain reset to a single boot.
         assert rlg.check_and_record(3, 60, now=4800.0) is False
-        assert rlg.is_restart_loop_tripped(3, 60, now=4801.0) is False
 
     def test_fast_respawn_loop_still_trips(self):
         """#30719 regression: the original ~10s loop must keep tripping."""
@@ -1946,7 +1979,6 @@ class TestRestartLoopGuard:
         import gateway.restart_loop_guard as rlg
         for ts in (1000.0, 1150.0, 1300.0, 1450.0):
             assert rlg.check_and_record(0, 60, now=ts) is False
-        assert rlg.is_restart_loop_tripped(0, 60, now=1451.0) is False
 
 class TestTerminalToolGatewayLifecycleGuardRemote:
     """Remote-backend and two-session cwd regression coverage."""

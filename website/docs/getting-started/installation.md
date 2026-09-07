@@ -94,7 +94,7 @@ You don't need to rebuild your setup from scratch. Restore a full backup with `h
 
 - **uv** (fast Python package manager)
 - **Python 3.11** (via uv, no sudo needed)
-- **Node.js v22** (for browser automation and WhatsApp bridge)
+- **Node.js v26** (for browser automation and WhatsApp bridge; existing system Node 22.22+, 24.11+, or 26+ is used as-is)
 - **ripgrep** (fast file search)
 - **ffmpeg** (audio format conversion for TTS)
 

@@ -61,7 +61,7 @@ def _fake_tts_call(monkeypatch, audio_bytes=b"\x00" * 32):
         _fake_text_to_speech_tool,
     )
     monkeypatch.setattr(
-        "tools.tts_tool._strip_markdown_for_tts",
+        "tools.tts_text_normalize._strip_markdown_for_tts",
         lambda text: text,
     )
 

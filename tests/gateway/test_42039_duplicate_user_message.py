@@ -25,6 +25,7 @@ import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource
+from gateway.session_transcript import TranscriptReadError
 
 
 def _bootstrap(monkeypatch, tmp_path):
@@ -183,6 +184,24 @@ async def test_not_new_messages_skip_db_when_agent_has_session_db(
     _assert_user_call_has_skip_db(
         runner.session_store.append_to_transcript.call_args_list, True
     )
+
+
+@pytest.mark.asyncio
+async def test_transcript_read_failure_stops_turn_before_agent_or_append(
+    monkeypatch, tmp_path
+):
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner.session_store.load_transcript.side_effect = TranscriptReadError("sess-dedup")
+    runner._run_agent = AsyncMock()
+
+    response = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert "history is temporarily unavailable" in response
+    assert "not processed" in response
+    runner._run_agent.assert_not_awaited()
+    runner.session_store.append_to_transcript.assert_not_called()
 
 
 # ── Post-stream MEDIA delivery keeps prior-turn deduplication ──────────

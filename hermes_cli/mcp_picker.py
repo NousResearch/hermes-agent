@@ -1,20 +1,4 @@
-"""MCP picker — interactive `hermes mcp picker` (also the default `hermes mcp`).
-
-Lists every catalog entry plus any custom MCP servers the user has added via
-``hermes mcp add``, lets them pick one, and routes to install / enable /
-disable / uninstall / configure-tools flows.
-
-Mirrors the `hermes plugin` picker UX: arrow keys to navigate, ENTER on a row
-to act on it. The action depends on current status:
-
-  not installed (catalog)   → install  (clone/bootstrap if needed, prompt for creds)
-  installed / disabled      → enable
-  installed / enabled       → submenu: configure tools / disable / uninstall / reinstall
-  custom (non-catalog)      → submenu: configure tools / enable / disable / remove
-
-The picker loops until the user hits ESC/q so they can manage multiple
-entries in one session.
-"""
+"""MCP picker — interactive `hermes mcp picker` (also the default `hermes mcp`)."""
 
 from __future__ import annotations
 
@@ -22,24 +6,14 @@ import sys
 from dataclasses import dataclass
 from typing import List, Optional
 
-from hermes_cli.colors import Colors, color
+from hermes_cli.colors import Colors
 from hermes_cli.cli_output import prompt_yes_no
 from hermes_cli.curses_ui import curses_single_select
 from hermes_cli.mcp_catalog import (
-    CatalogEntry,
-    CatalogError,
-    catalog_diagnostics,
-    install_entry,
-    is_enabled,
-    is_installed,
-    list_catalog,
-    installed_servers,
-    uninstall_entry,
+    CatalogEntry, CatalogError, catalog_diagnostics, install_entry, is_enabled, is_installed,
+    list_catalog, installed_servers, remove_server, server_enabled, uninstall_entry, _say,
 )
 from hermes_cli.config import load_config, save_config
-
-
-# ─── Status badges ────────────────────────────────────────────────────────────
 
 _STATUS_NOT_INSTALLED = "available"
 _STATUS_DISABLED = "installed (disabled)"
@@ -48,13 +22,9 @@ _STATUS_CUSTOM_ENABLED = "custom — enabled"
 _STATUS_CUSTOM_DISABLED = "custom — disabled"
 
 
-# ─── Row model — unifies catalog and custom entries ──────────────────────────
-
-
 @dataclass
 class _Row:
-    """A row in the picker. ``entry`` is set for catalog rows; for custom
-    user-added MCPs only ``name`` + ``description`` + status are populated."""
+    """A picker row. ``entry`` is set for catalog rows; custom MCPs carry only name/description/status."""
 
     name: str
     description: str
@@ -70,36 +40,24 @@ def _build_rows() -> List[_Row]:
     """Return catalog rows + any custom (non-catalog) MCPs found in config."""
     catalog_entries = list_catalog()
     catalog_names = {e.name for e in catalog_entries}
+    servers = installed_servers()
 
     rows: List[_Row] = []
     for entry in catalog_entries:
-        if not is_installed(entry.name):
+        cfg = servers.get(entry.name)
+        if entry.name not in servers:
             status = _STATUS_NOT_INSTALLED
-        elif is_enabled(entry.name):
+        elif cfg and server_enabled(cfg):
             status = _STATUS_ENABLED
         else:
             status = _STATUS_DISABLED
-        rows.append(
-            _Row(
-                name=entry.name,
-                description=entry.description,
-                status=status,
-                entry=entry,
-            )
-        )
-
-    # Custom MCPs the user added directly (not in the catalog)
-    for name, cfg in sorted(installed_servers().items()):
+        rows.append(_Row(entry.name, entry.description, status, entry))
+    # Custom (non-catalog) MCPs: the transport URL/command doubles as the description.
+    for name, cfg in sorted(servers.items()):
         if name in catalog_names:
             continue
-        enabled = cfg.get("enabled", True)
-        if isinstance(enabled, str):
-            enabled = enabled.lower() in {"true", "1", "yes"}
-        status = _STATUS_CUSTOM_ENABLED if enabled else _STATUS_CUSTOM_DISABLED
-        # Use the transport URL/command as the "description" for custom rows
-        desc = cfg.get("url") or cfg.get("command") or "(no transport)"
-        rows.append(_Row(name=name, description=str(desc), status=status))
-
+        status = _STATUS_CUSTOM_ENABLED if server_enabled(cfg) else _STATUS_CUSTOM_DISABLED
+        rows.append(_Row(name, str(cfg.get("url") or cfg.get("command") or "(no transport)"), status))
     return rows
 
 
@@ -107,161 +65,121 @@ def _format_row(row: _Row) -> str:
     return f"{row.name:<18} {row.status:<24} {row.description}"
 
 
-# ─── Actions ──────────────────────────────────────────────────────────────────
-
 
 def _enable_disable(name: str, *, enable: bool) -> None:
     cfg = load_config()
     servers = cfg.get("mcp_servers") or {}
     server = servers.get(name)
     if not server:
-        print(color(f"  '{name}' is not installed.", Colors.RED))
+        _say(f"  '{name}' is not installed.", Colors.RED)
         return
     server["enabled"] = enable
     cfg["mcp_servers"] = servers
     save_config(cfg)
-    print(color(
+    _say(
         f"  ✓ '{name}' {'enabled' if enable else 'disabled'}. "
-        "Start a new Hermes session for changes to take effect.",
-        Colors.GREEN,
-    ))
+        "Start a new Hermes session for changes to take effect."
+    )
 
 
 def _configure_tools(name: str) -> None:
-    """Open the tool selection checklist for an already-installed MCP.
-
-    Delegates to the existing ``cmd_mcp_configure`` flow which probes the
-    server, displays a checklist, and writes ``tools.include``.
-    """
-    import argparse
+    """Open the tool selection checklist for an already-installed MCP."""
+    from argparse import Namespace
     from hermes_cli.mcp_config import cmd_mcp_configure
 
-    cmd_mcp_configure(argparse.Namespace(name=name))
+    cmd_mcp_configure(Namespace(name=name))
 
 
 def _remove_custom(name: str) -> None:
     """Remove a non-catalog MCP entry from config.yaml."""
-    cfg = load_config()
-    servers = cfg.get("mcp_servers") or {}
-    if name not in servers:
-        print(color(f"  '{name}' is not configured.", Colors.RED))
+    if not is_installed(name):
+        _say(f"  '{name}' is not configured.", Colors.RED)
         return
     if not prompt_yes_no(f"Remove '{name}' from mcp_servers?", default=False):
         return
-    del servers[name]
-    if not servers:
-        cfg.pop("mcp_servers", None)
+    remove_server(name)
+    _say(f"  ✓ Removed '{name}'")
+
+
+def _install(entry: CatalogEntry, verb: str) -> bool:
+    """Install *entry*, printing (not raising) a CatalogError. True on success."""
+    try:
+        install_entry(entry, enable=True)
+    except CatalogError as exc:
+        _say(f"  ✗ {verb} failed: {exc}", Colors.RED)
+        return False
+    return True
+
+
+def _uninstall(name: str) -> None:
+    if not prompt_yes_no(f"Uninstall '{name}'?", default=False):
+        return
+    if uninstall_entry(name):
+        _say(
+            f"  ✓ Uninstalled '{name}'. "
+            "Credentials in .env preserved — delete manually if no longer needed."
+        )
     else:
-        cfg["mcp_servers"] = servers
-    save_config(cfg)
-    print(color(f"  ✓ Removed '{name}'", Colors.GREEN))
+        _say(f"  '{name}' was not installed", Colors.DIM)
+
+
+def _run_submenu(title: str, actions: list) -> None:
+    """Show a single-select of ``(label, callback)`` pairs and run the picked callback."""
+    choice = curses_single_select(title, [label for label, _ in actions])
+    if choice is not None:
+        actions[choice][1]()
 
 
 def _handle_row(row: _Row) -> None:
     """Act on the picked row based on its current status."""
-    # === Catalog row, not yet installed ===
     if row.entry and not is_installed(row.name):
-        try:
-            install_entry(row.entry, enable=True)
-        except CatalogError as exc:
-            print(color(f"  ✗ install failed: {exc}", Colors.RED))
+        _install(row.entry, "install")
         return
-
-    # === Catalog row, installed but disabled ===
     if row.entry and not is_enabled(row.name):
         _enable_disable(row.name, enable=True)
         return
-
-    # === Catalog row, installed + enabled OR custom row ===
     if row.is_custom:
-        # Custom (non-catalog) row submenu
-        actions = [
-            "Configure tools (probe server + re-pick)",
-            "Enable" if not is_enabled(row.name) else "Disable",
-            "Remove from config",
-        ]
-        choice = curses_single_select(f"Action for '{row.name}' (custom)", actions)
-        if choice is None:
-            return
-        if choice == 0:
-            _configure_tools(row.name)
-        elif choice == 1:
-            _enable_disable(row.name, enable=not is_enabled(row.name))
-        elif choice == 2:
-            _remove_custom(row.name)
+        enabled = is_enabled(row.name)
+        _run_submenu(f"Action for '{row.name}' (custom)", [
+            ("Configure tools (probe server + re-pick)", lambda: _configure_tools(row.name)),
+            ("Enable" if not enabled else "Disable",
+             lambda: _enable_disable(row.name, enable=not is_enabled(row.name))),
+            ("Remove from config", lambda: _remove_custom(row.name))])
         return
-
     # Catalog row, installed + enabled
     print()
-    print(color(f"  '{row.name}' is already enabled.", Colors.DIM))
-    actions = [
-        "Configure tools (probe server + re-pick)",
-        "Disable (keep config, stop loading on next session)",
-        "Uninstall (remove config and any cloned files)",
-        "Reinstall (re-clone, re-prompt for credentials)",
-    ]
-    choice = curses_single_select(f"Action for '{row.name}'", actions)
-    if choice is None:
-        return
-    if choice == 0:
-        _configure_tools(row.name)
-    elif choice == 1:
-        _enable_disable(row.name, enable=False)
-    elif choice == 2:
-        if prompt_yes_no(f"Uninstall '{row.name}'?", default=False):
-            if uninstall_entry(row.name):
-                print(color(
-                    f"  ✓ Uninstalled '{row.name}'. "
-                    "Credentials in .env preserved — delete manually if no longer needed.",
-                    Colors.GREEN,
-                ))
-            else:
-                print(color(f"  '{row.name}' was not installed", Colors.DIM))
-    elif choice == 3:
-        try:
-            assert row.entry is not None
-            install_entry(row.entry, enable=True)
-        except CatalogError as exc:
-            print(color(f"  ✗ reinstall failed: {exc}", Colors.RED))
-
-
-# ─── Output / entry points ────────────────────────────────────────────────────
+    _say(f"  '{row.name}' is already enabled.", Colors.DIM)
+    _run_submenu(f"Action for '{row.name}'", [
+        ("Configure tools (probe server + re-pick)", lambda: _configure_tools(row.name)),
+        ("Disable (keep config, stop loading on next session)",
+         lambda: _enable_disable(row.name, enable=False)),
+        ("Uninstall (remove config and any cloned files)", lambda: _uninstall(row.name)),
+        ("Reinstall (re-clone, re-prompt for credentials)",
+         lambda: _install(row.entry, "reinstall"))])
 
 
 def _print_rows_text(rows: List[_Row]) -> None:
-    """Plain-text catalog dump used as a fallback when curses can't run, and
-    as the default output of `hermes mcp catalog`."""
+    """Plain-text catalog dump: `hermes mcp catalog` output and the non-curses fallback."""
+    print()
     if not rows:
-        print()
-        print(color("  No MCPs in the catalog or configured.", Colors.DIM))
+        _say("  No MCPs in the catalog or configured.", Colors.DIM)
         print()
         return
 
-    print()
-    print(color("  MCP Catalog + configured servers:", Colors.CYAN + Colors.BOLD))
+    _say("  MCP Catalog + configured servers:", Colors.CYAN + Colors.BOLD)
     print()
     print(f"  {'Name':<18} {'Status':<24} Description")
     print(f"  {'-' * 18} {'-' * 24} {'-' * 11}")
     for row in rows:
         print(f"  {_format_row(row)}")
     print()
-    print(color(
-        "  Install: hermes mcp install <name>    Picker: hermes mcp",
-        Colors.DIM,
-    ))
-
-    # Surface manifest-version warnings so users know when their Hermes is
-    # too old to install everything in the catalog.
-    diags = catalog_diagnostics()
-    future = [d for d in diags if d[1] == "future_manifest"]
+    _say("  Install: hermes mcp install <name>    Picker: hermes mcp", Colors.DIM)
+    # Manifest-version warnings: the user's Hermes is too old to install everything listed.
+    future = [d for d in catalog_diagnostics() if d[1] == "future_manifest"]
     if future:
         print()
-        for name, _, msg in future:
-            print(color(
-                f"  ⚠ '{name}' requires a newer Hermes — run `hermes update` "
-                "to install this entry.",
-                Colors.YELLOW,
-            ))
+        for name, _, _msg in future:
+            _say(f"  ⚠ '{name}' requires a newer Hermes — run `hermes update` to install this entry.", Colors.YELLOW)
         print()
     print()
 
@@ -272,26 +190,16 @@ def show_catalog() -> None:
 
 
 def run_picker() -> None:
-    """`hermes mcp picker` (and default `hermes mcp`) — interactive selector.
-
-    Loops until the user hits ESC/q. After each action the picker re-renders
-    so the user can manage several entries in one session.
-    """
-    if not sys.stdin.isatty():
-        # Non-interactive shell: degrade to the text dump rather than failing.
-        _print_rows_text(_build_rows())
-        return
-
+    """`hermes mcp picker` (and default `hermes mcp`) — interactive selector; re-renders after each
+    action until ESC/q."""
     while True:
         rows = _build_rows()
-        if not rows:
-            _print_rows_text(rows)
+        if not rows or not sys.stdin.isatty():
+            _print_rows_text(rows)  # non-interactive: degrade to the text dump
             return
-
-        labels = [_format_row(r) for r in rows]
         idx = curses_single_select(
             "MCP Catalog  —  ↑↓ navigate  ENTER act on entry  ESC/q quit",
-            labels,
+            [_format_row(r) for r in rows],
         )
         if idx is None:
             return
@@ -299,24 +207,36 @@ def run_picker() -> None:
 
 
 def install_by_name(identifier: str) -> int:
-    """`hermes mcp install <name>` — non-interactive entry-point.
-
-    Returns 0 on success, non-zero on failure (so the CLI can propagate
-    exit codes).
-    """
+    """`hermes mcp install <name>` — non-interactive entry-point."""
     from hermes_cli.mcp_catalog import get_entry
 
     entry = get_entry(identifier)
     if entry is None:
-        print(color(
-            f"  ✗ '{identifier}' is not in the catalog. "
-            "Run `hermes mcp catalog` to see available entries.",
+        _say(
+            f"  ✗ '{identifier}' is not in the catalog. Run `hermes mcp catalog` to see available entries.",
             Colors.RED,
-        ))
+        )
         return 1
-    try:
-        install_entry(entry, enable=True)
-    except CatalogError as exc:
-        print(color(f"  ✗ install failed: {exc}", Colors.RED))
-        return 1
-    return 0
+    return 0 if _install(entry, "install") else 1
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'color': ('hermes_cli.colors', 'color'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

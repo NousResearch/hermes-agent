@@ -9,13 +9,11 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { expect, test } from './test'
-
 import {
-  type MockBackendFixture,
   buildAppEnv,
   createSandbox,
   launchDesktop,
+  type MockBackendFixture,
   waitForAppReady,
   writeEnvFile,
   writeMockProviderConfig,
@@ -27,6 +25,7 @@ import {
   VERIFICATION_STOP_TRIGGER,
 } from './mock-server'
 import { RealSessionBuilder } from './real-session-builder'
+import { expect, test } from './test'
 
 const SESSION_TITLE = 'E2E Hidden History Messages'
 const VISIBLE_USER_TEXT = 'E2E_VISIBLE_USER_HISTORY'
@@ -44,6 +43,7 @@ async function setupSeededMockBackend(): Promise<MockBackendFixture> {
   )
   writeEnvFile(sandbox.hermesHome)
   const builder = await RealSessionBuilder.start(sandbox.hermesHome)
+
   try {
     await builder.createSession({
       title: SESSION_TITLE,
@@ -83,6 +83,7 @@ test('resume hides real context-compaction handoffs', async ({}, testInfo) => {
       .locator('[data-slot="sidebar"] button')
       .filter({ hasText: SESSION_TITLE })
       .first()
+
     await sessionRow.click()
 
     const transcript = page.locator('[data-slot="aui_thread-viewport"]')
@@ -110,8 +111,20 @@ test('live verify-on-stop continuations stay out of the transcript', async ({}, 
   const mock = await startMockServer({ verificationWritePath: changedFile })
   writeMockProviderConfig(sandbox.hermesHome, mock.url)
   fs.appendFileSync(path.join(sandbox.hermesHome, 'config.yaml'), '\nagent:\n  verify_on_stop: true\n', 'utf8')
+  // Auto session titling (feat f726090d48) fires an auxiliary title_generation
+  // LLM call whose user snippet CONTAINS the trigger keyword, so the mock's
+  // isVerificationStopTrigger matches it and the title call steals a scripted
+  // verify-on-stop turn (the transcript then ends on 'The code edit is
+  // complete.' instead of the exhausted-verifier final). Disable the
+  // model-backed title upgrade so script indices track real chat turns.
+  fs.appendFileSync(
+    path.join(sandbox.hermesHome, 'config.yaml'),
+    '\nauxiliary:\n  title_generation:\n    enabled: false\n',
+    'utf8',
+  )
   writeEnvFile(sandbox.hermesHome)
   const { app, page } = await launchDesktop(buildAppEnv(sandbox))
+
   const fixture: MockBackendFixture = {
     app,
     page,

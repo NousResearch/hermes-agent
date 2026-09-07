@@ -4,7 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 
-import { $activeSessionId, $selectedStoredSessionId, $unreadFinishedSessionIds } from './session'
+import {
+  $activeSessionId,
+  $awaitingResponse,
+  $busy,
+  $selectedStoredSessionId,
+  $unreadFinishedSessionIds
+} from './session'
 import {
   $attentionSessionIds,
   $stalledSessionIds,
@@ -13,12 +19,38 @@ import {
   publishSessionState,
   reconcileBusyStatesOnReconnect,
   recordSessionEventScope,
-  SESSION_WATCHDOG_TIMEOUT_MS
+  SESSION_WATCHDOG_TIMEOUT_MS,
+  type SessionTileDelegate,
+  setSessionTileDelegate
 } from './session-states'
 
 function state(over: Partial<ClientSessionState> = {}): ClientSessionState {
   return { ...createClientSessionState(null), storedSessionId: 's1', ...over }
 }
+
+// Stand-in for the wiring layer's `retireBusyClaim`: cache keyed by runtime
+// id, miss (or idle) → false and no write, hit → write + mirror publish. No
+// unset API exists, so `noDelegate` (empty cache) plays "no wiring mounted".
+function tileDelegate(cache: Map<string, ClientSessionState>): SessionTileDelegate {
+  return {
+    retireBusyClaim: runtimeId => {
+      const cached = cache.get(runtimeId)
+
+      if (!cached || (!cached.busy && !cached.awaitingResponse)) {
+        return false
+      }
+
+      const next = { ...cached, awaitingResponse: false, busy: false }
+
+      cache.set(runtimeId, next)
+      publishSessionState(runtimeId, next)
+
+      return true
+    }
+  } as SessionTileDelegate
+}
+
+const noDelegate = tileDelegate(new Map())
 
 // The stale-flag half of #53902/#73082: a backend respawn re-mints runtime
 // ids, so a pre-reconnect busy state never receives its terminal busy:false
@@ -32,6 +64,9 @@ describe('reconcileBusyStatesOnReconnect', () => {
     $unreadFinishedSessionIds.set([])
     $selectedStoredSessionId.set(null)
     $activeSessionId.set(null)
+    $busy.set(false)
+    $awaitingResponse.set(false)
+    setSessionTileDelegate(noDelegate)
   })
 
   afterEach(() => {
@@ -41,6 +76,9 @@ describe('reconcileBusyStatesOnReconnect', () => {
     $unreadFinishedSessionIds.set([])
     $selectedStoredSessionId.set(null)
     $activeSessionId.set(null)
+    $busy.set(false)
+    $awaitingResponse.set(false)
+    setSessionTileDelegate(noDelegate)
   })
 
   it('clears a stale busy session on primary reconnect', () => {
@@ -100,6 +138,61 @@ describe('reconcileBusyStatesOnReconnect', () => {
     expect($workingSessionIds.get()).not.toContain('sA')
     expect($workingSessionIds.get()).toContain('sB')
     expect($workingSessionIds.get()).toContain('sLocal')
+  })
+
+  // #93059: the store is a mirror of the wiring cache; downgrading only the
+  // mirror leaves the cache busy, and warm resume ORs it over `running: false`.
+  it('routes the downgrade through the session-state write path (#93059)', () => {
+    const cache = new Map<string, ClientSessionState>()
+    const stale = state({ awaitingResponse: true, busy: true, storedSessionId: 's1' })
+
+    cache.set('rt1', stale)
+    publishSessionState('rt1', stale)
+    setSessionTileDelegate(tileDelegate(cache))
+    expect($workingSessionIds.get()).toContain('s1')
+
+    reconcileBusyStatesOnReconnect()
+
+    expect(cache.get('rt1')?.busy).toBe(false)
+    expect(cache.get('rt1')?.awaitingResponse).toBe(false)
+    expect($workingSessionIds.get()).not.toContain('s1')
+  })
+
+  // Cache miss (background-profile rows, cold window): the mirror is still
+  // retired and nothing is minted in the cache.
+  it('falls back to the mirror when the write path has no state for the runtime', () => {
+    const cache = new Map<string, ClientSessionState>()
+
+    publishSessionState('rt1', state({ busy: true, storedSessionId: 's1' }))
+    setSessionTileDelegate(tileDelegate(cache))
+
+    reconcileBusyStatesOnReconnect()
+
+    expect(cache.has('rt1')).toBe(false)
+    expect($workingSessionIds.get()).not.toContain('s1')
+  })
+
+  // With no live slice, PRIMARY_SESSION_VIEW and busyRef fall back to the
+  // draft latches — a stuck one silently no-ops Send until restart (#93059).
+  it('retires the focused composer latches on primary reconnect (#93059)', () => {
+    $busy.set(true)
+    $awaitingResponse.set(true)
+
+    reconcileBusyStatesOnReconnect()
+
+    expect($busy.get()).toBe(false)
+    expect($awaitingResponse.get()).toBe(false)
+  })
+
+  it('a scoped reconcile leaves the focused composer alone', () => {
+    // A background socket returning says nothing about the primary composer.
+    $busy.set(true)
+    $awaitingResponse.set(true)
+
+    reconcileBusyStatesOnReconnect(registryBackendScopeKey('connA', 'default'))
+
+    expect($busy.get()).toBe(true)
+    expect($awaitingResponse.get()).toBe(true)
   })
 
   it('a live turn re-asserting busy after reconcile re-arms the arc', () => {

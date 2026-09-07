@@ -14,6 +14,7 @@ export type GatewayEventName =
   | 'tool.progress'
   | 'tool.complete'
   | 'tool.generating'
+  | 'todo.updated'
   | 'clarify.request'
   | 'approval.request'
   | 'sudo.request'
@@ -272,9 +273,9 @@ export class JsonRpcGatewayClient {
             }
 
             this.socket = null
+            this.setState('error')
           }
 
-          this.setState('error')
           reject(new Error(this.options.connectErrorMessage))
         }, this.options.connectTimeoutMs)
       }

@@ -28,6 +28,7 @@ import { notify, notifyError, readableError } from '@/store/notifications'
 
 import { ConnectionsRegistrySection } from './connections-registry'
 import { CONTROL_TEXT } from './constants'
+import { ManagedUpdatesSection } from './managed-updates-section'
 import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { enrichSelectedSshHost, selectSshHost } from './ssh-host-selection'
 
@@ -37,7 +38,7 @@ type ProbeStatus = 'idle' | 'probing' | 'done' | 'error'
 // Hermes Cloud discovery lifecycle for the cloud-mode panel.
 type CloudDiscoverStatus = 'idle' | 'loading' | 'done' | 'error'
 
-interface GatewaySettingsState {
+export interface GatewaySettingsState {
   envOverride: boolean
   mode: Mode
   remoteAuthMode: AuthMode
@@ -79,6 +80,18 @@ const EMPTY_STATE: GatewaySettingsState = {
   sshKeyPath: '',
   sshRemoteHermesPath: '',
   sshRemoteProfile: ''
+}
+
+export function normalizeGatewaySettingsState(
+  config: Partial<GatewaySettingsState> | null | undefined
+): GatewaySettingsState {
+  if (!config || typeof config !== 'object') {
+    return { ...EMPTY_STATE }
+  }
+
+  const defined = Object.fromEntries(Object.entries(config).filter(([, value]) => value != null))
+
+  return { ...EMPTY_STATE, ...defined }
 }
 
 export function savedCloudConnectionUrl(config: Pick<GatewaySettingsState, 'mode' | 'remoteUrl'>): string {
@@ -199,8 +212,10 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   }
 
   const acceptSavedConfig = (config: GatewaySettingsState) => {
-    setState(config)
-    setConnectedCloudUrl(savedCloudConnectionUrl(config))
+    const normalized = normalizeGatewaySettingsState(config)
+
+    setState(normalized)
+    setConnectedCloudUrl(savedCloudConnectionUrl(normalized))
   }
 
   // When set, the plain-text opt-in dialog is open; `apply` remembers whether
@@ -622,11 +637,15 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   }
 
   const signOut = async () => {
+    if (!trimmedUrl) {
+      return
+    }
+
     const seq = ++signingSeq.current
     setSigningIn(true)
 
     try {
-      await window.hermesDesktop.oauthLogoutConnectionConfig(trimmedUrl || undefined)
+      await window.hermesDesktop.oauthLogoutConnectionConfig(trimmedUrl)
       const refreshed = await window.hermesDesktop.getConnectionConfig(null)
 
       if (seq !== signingSeq.current) {
@@ -1546,7 +1565,15 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
       {/* Unified Gateways page: the full connections registry (add/edit/delete
           named agent sources) lives on this page now, below the window
           connection controls. Hidden in the embedded (boot-recovery) form. */}
-      {embedded ? null : <ConnectionsRegistrySection />}
+      {embedded ? null : (
+        <>
+          <ConnectionsRegistrySection />
+          {/* Per-connection driver for the transactional managed SSH update
+              engine (#95942). Renders only when SSH sources are registered and
+              the Electron main exposes connections.updateManaged. */}
+          <ManagedUpdatesSection />
+        </>
+      )}
 
       {/* Plain-text token opt-in: gated when secure storage is unavailable and a
           new token would be persisted. Confirm resumes the remembered save/apply. */}

@@ -12,10 +12,12 @@ from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
 from gateway.config import Platform, PlatformConfig
-from gateway.kanban_watchers import _wake_scope_id
+from gateway.kanban_watchers_notifier import _wake_scope_id
 from gateway.run import GatewayRunner
 from gateway.session import build_session_key
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_notify as kbn
 from plugins.platforms.slack.adapter import SlackAdapter
 
 TEAM = "T0B8U2M6NRE"
@@ -75,7 +77,7 @@ async def _one_notifier_tick(monkeypatch, runner):
 
 
 def _completed_subscription(**sub_kwargs):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(
             conn,
@@ -87,7 +89,7 @@ def _completed_subscription(**sub_kwargs):
         # delivery_mode ("notify+wake"/"wake") on current main; the plain
         # "notify" default would never reach the wake path under test.
         sub_kwargs.setdefault("delivery_mode", "notify+wake")
-        kb.add_notify_sub(conn, task_id=tid, **sub_kwargs)
+        kbn.add_notify_sub(conn, task_id=tid, **sub_kwargs)
         kb.complete_task(conn, tid, summary="done")
         return tid
     finally:

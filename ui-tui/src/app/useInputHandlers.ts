@@ -167,6 +167,10 @@ export function dismissSensitivePrompt(
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
 
+export function shouldDetachEditedHistoryInput(historyIdx: null | number, history: readonly string[], value: string) {
+  return historyIdx !== null && value !== history[historyIdx]
+}
+
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
   const { actions: cActions, refs: cRefs, state: cState } = composer

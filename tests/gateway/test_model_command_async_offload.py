@@ -119,7 +119,7 @@ async def test_picker_path_offloads_list_picker_providers(_isolated_config, monk
         return fake_providers
 
     monkeypatch.setattr(
-        "hermes_cli.model_switch.list_picker_providers",
+        "hermes_cli.model_switch_providers.list_picker_providers",
         _fake_list_picker_providers,
     )
 

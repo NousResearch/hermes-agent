@@ -359,17 +359,22 @@ def _db_unavailable_line() -> str:
     return f"  {format_session_db_unavailable()}"
 
 
-def _print_side_result_panel(cli, *, header_lines, body, title_suffix, empty_note) -> None:
-    """Print a worker-thread result (/bg, /btw) into the scrollback: accent rules around
+def _print_side_result_panel(cli, *, header_lines, body, title_suffix, empty_note, console=None) -> None:
+    """Print a worker-thread result (/bg, /btw, /signin) into the scrollback: accent rules around
     ``header_lines``, then ``body`` in a skinned Rich panel (or ``empty_note``).
     Forces a TUI refresh first so the spinner/status bar don't overlap the output."""
     from cli import ChatConsole, _accent_hex, _maybe_remap_for_light_mode, _render_final_assistant_content
     _refresh_tui_before_print(cli)
-    ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
-    _cp(*header_lines)
-    ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+    rich_console = console or ChatConsole()
+    rich_console.print(f"[{_accent_hex()}]{'─' * 40}[/]")
+    if console is None:
+        _cp(*header_lines)
+    else:
+        for line in header_lines:
+            console.print(line)
+    rich_console.print(f"[{_accent_hex()}]{'─' * 40}[/]")
     if not body:
-        return _cp(empty_note)
+        return _cp(empty_note) if console is None else console.print(empty_note)
     try:
         from hermes_cli.skin_engine import get_active_skin
         _skin = get_active_skin()
@@ -378,7 +383,7 @@ def _print_side_result_panel(cli, *, header_lines, body, title_suffix, empty_not
         _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC"))
     except Exception:
         label, _resp_color, _resp_text = "⚕ Hermes", "#CD7F32", "#FFF8DC"
-    ChatConsole().print(Panel(
+    rich_console.print(Panel(
         _render_final_assistant_content(body, mode=cli.final_response_markdown),
         title=f"[{_resp_color} bold]{label} {title_suffix}[/]", title_align="left",
         border_style=_resp_color, style=_resp_text, box=rich_box.HORIZONTALS, padding=(1, 4),
@@ -1982,20 +1987,26 @@ class CLICommandsMixin:
         thread.start()
 
     def _side_worker(self, produce, *, name, fail_label, header_lines, title_suffix, empty_note,
-                     bell=False, on_done=None) -> threading.Thread:
-        """Daemon thread for /bg and /btw: ``produce()`` returns the body to print in a side-result
+                     bell=False, on_done=None, console=None) -> threading.Thread:
+        """Daemon thread for /bg, /btw and /signin: ``produce()`` returns the body to print in a side-result
         panel; failures print ``fail_label`` failed; the TUI is always re-invalidated afterwards."""
         def run():
             try:
                 body = produce()
                 _print_side_result_panel(self, header_lines=header_lines, body=body,
-                                         title_suffix=title_suffix, empty_note=empty_note)
+                                         title_suffix=title_suffix, empty_note=empty_note,
+                                         console=console)
                 if bell and self.bell_on_complete:
                     sys.stdout.write("\a")
                     sys.stdout.flush()
             except Exception as e:
                 _refresh_tui_before_print(self)
-                _cp(f"  ❌ {fail_label} failed: {e}")
+                line = f"  ❌ {fail_label} failed: {e}"
+                # Same console the caller captured, so a late failure can't splice into a later command.
+                if console is not None:
+                    console.print(line, markup=False)
+                else:
+                    _cp(line)
             finally:
                 if on_done is not None:
                     on_done()
@@ -2003,6 +2014,29 @@ class CLICommandsMixin:
                     self._invalidate(min_interval=0)
 
         return threading.Thread(target=run, daemon=True, name=name)
+
+    def _handle_signin_command(self, cmd_original: str) -> None:
+        """Start an in-chat sign-in without blocking the input loop while approval is pending."""
+        from hermes_cli import anon_auth
+        console = getattr(self, "console", None)
+        _cp(f"  {anon_auth.SIGNIN_STARTING}")
+        gen = anon_auth.run_sign_in(timeout_seconds=8.0)
+        try:
+            first = next(gen, None)
+        except KeyboardInterrupt:
+            with suppress(Exception):
+                gen.close()
+            return _cp(anon_auth.UPGRADE_CANCELLED)
+        if first is None:
+            return
+        if first.terminal:
+            return _cp(f"  {first.copy}")
+        anon_auth.render_sign_in_cli_code(first, chat=True, printer=_cp)
+        thread = self._side_worker(
+            lambda: anon_auth.drain_sign_in_copy(gen, chat=True),
+            name="signin", fail_label="Sign-in", header_lines=["  Sign-in"],
+            title_suffix="(sign-in)", empty_note="  (No result)", console=console)
+        thread.start()
 
     def _handle_btw_command(self, cmd: str):
         """Handle /btw <question> — answer a side question about this conversation from a

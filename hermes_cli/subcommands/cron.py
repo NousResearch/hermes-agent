@@ -150,6 +150,24 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "remove", aliases=["rm", "delete"], help="Remove a scheduled job")
     cron_remove.add_argument("job_id", help="Job ID to remove")
 
+    cron_resnap = cron_subparsers.add_parser(
+        "resnap",
+        help=(
+            "Adopt the current global inference resolution for unpinned jobs "
+            "without pinning them (they keep tracking future global changes). "
+            "Use after deliberately changing the default model."
+        ),
+    )
+    cron_resnap.add_argument(
+        "job_id", nargs="?", help="Job ID to resnap (omit with --all)"
+    )
+    cron_resnap.add_argument(
+        "--all",
+        action="store_true",
+        help="Resnap every unpinned agent job to the current global resolution",
+    )
+
+    # cron status
     cron_subparsers.add_parser("status", help="Check if cron scheduler is running")
 
     cron_runs = cron_subparsers.add_parser(

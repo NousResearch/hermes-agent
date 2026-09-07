@@ -389,17 +389,20 @@ def _format_concurrent_instances_message(matches: list[tuple[int, str]], scripts
 
 
 def _classify_concurrent_instance(pid: int) -> str:
-    """Classify ``pid`` as "gateway" / "non-gateway" / "unknown" (psutil can't read it). Uses
-    ``_is_pausable_gateway`` (same matcher as the Desktop preflight and venv-holder guard) so
-    "gateway" is exactly what the pause/restart machinery stops; "unknown" gates as non-gateway."""
+    """Classify live gateway runtimes using the gateway lifecycle matcher.
+
+    This includes dedicated launchers and bare ``hermes gateway`` (defaults
+    to run). Unreadable identity remains blocking.
+    """
     try:
         import psutil  # noqa: PLC0415
         cmdline_list = psutil.Process(int(pid)).cmdline()
     except Exception:
         return "unknown"
 
-    from hermes_cli._scan_venv_blockers import _is_pausable_gateway  # noqa: PLC0415
-    return "gateway" if _is_pausable_gateway(" ".join(cmdline_list or [])) else "non-gateway"
+    from gateway.status import looks_like_gateway_runtime_command_line  # noqa: PLC0415
+    command = subprocess.list2cmdline(cmdline_list or [])
+    return "gateway" if looks_like_gateway_runtime_command_line(command) else "non-gateway"
 
 
 def _filter_non_gateway_concurrent_instances(matches: list[tuple[int, str]]) -> list[tuple[int, str]]:

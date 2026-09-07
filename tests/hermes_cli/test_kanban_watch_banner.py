@@ -16,8 +16,11 @@ from hermes_cli.kanban_parser import build_parser
 )
 def test_watch_names_resolved_board(tmp_path, monkeypatch, capsys, environment, explicit, expected):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    kb.create_board("alpha")
+    kb.create_board("beta")
     kb.set_current_board("alpha")
     if environment:
         monkeypatch.setenv("HERMES_KANBAN_BOARD", environment)

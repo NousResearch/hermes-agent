@@ -172,6 +172,70 @@ a NAT boundary, put the room's authority on the host every participant can
 reach (typically the public VPS), or bridge the network with Tailscale/VPN.
 :::
 
+### Transferring hosted room authority
+
+Authority takeover is an **operator recovery procedure**, not an atomic handover.
+Use the existing JSON-RPC methods `groups.promote` and `groups.demote` on the
+appropriate gateway. There are no `groups.peer.promote` or `groups.peer.demote`
+methods; `groups.capabilities` lists the methods your gateway supports.
+
+:::warning Fence the old writer before promotion
+Before sending `confirm: true`, establish that the previous authority **cannot
+commit**, and keep that fence in place until it has been demoted. Stop its
+room-writing processes and prevent automatic restart, or use an equivalent
+infrastructure fence. A network timeout, disconnecting Desktop, or `groups.stop`
+is not proof: the old gateway may still be running, and stopping a turn does not
+revoke room authority. If you cannot establish the fence, do not promote.
+:::
+
+1. **Check replica coverage.** On the replacement gateway, inspect
+   `groups.replica_state` with `{"room_id":"ROOM_ID"}` and compare `last_seq`
+   with `latest_seq`. Require a complete replica before planned takeover;
+   promotion itself does not check this coverage. `groups.replicate` reports
+   `caught_up` after ingesting pages returned by `groups.log`; peer registration
+   alone does not prove the replacement has the room history. Caught-up status
+   describes the last replicated page, not proof the old writer has stopped or
+   that no newer events exist. For a planned move, quiesce writers, replicate
+   through the final cursor, then maintain the fence. For disaster recovery,
+   account for any history that never reached the replica.
+2. **Promote only while the old writer is fenced.** On the replacement:
+
+   ```json
+   {"jsonrpc":"2.0","id":1,"method":"groups.promote","params":{"room_id":"ROOM_ID","confirm":true,"reason":"planned-handover"}}
+   ```
+
+   `room_id` and `confirm: true` are required; `reason` is optional and defaults
+   to `authority-unreachable`. Confirmation is your assertion that the previous
+   authority cannot commit, **not** a request to fence it automatically. Without
+   confirmation the call returns error `4118`. A successful result reports
+   `authority_gateway_id` and `authority_epoch` (the replicated epoch plus one).
+3. **Demote the old authority before returning it to service.** Keep its normal
+   room writers fenced while applying this RPC through a controlled recovery
+   connection on the old gateway. Replace the example gateway ID and epoch with
+   the exact values returned by the successful promotion:
+
+   ```json
+   {"jsonrpc":"2.0","id":2,"method":"groups.demote","params":{"room_id":"ROOM_ID","observed_gateway_id":"NEW_GATEWAY_ID","observed_epoch":2}}
+   ```
+
+   All three parameters are required. Do not guess a future epoch: demotion
+   requires evidence of a newer authority, not an invented value. It records
+   `authority.lost` and adopts the observed lineage; repeating the same lineage
+   is idempotent. If the old host is unavailable, keep it fenced and perform
+   this step before restoring its normal writers.
+4. **Verify and reconnect.** Read `groups.state` on both gateways and compare
+   `room.authority_gateway_id` and `room.authority_epoch` with the promotion
+   result. Old-authority sends must be refused; direct clients to the replacement.
+   Demotion fences writes; it does not merge histories or automatically turn the
+   old authoritative store into a synchronized replica.
+
+Promoting while the old gateway remains writable allows both independent
+`state.db` stores to accept messages and develop divergent histories. A higher
+epoch on the replacement does not remotely disable the old writer; equal epochs
+are not required for split-brain. If histories have already diverged, fence
+writers and preserve both histories for recovery rather than assuming that
+promotion, demotion, or replay will merge them.
+
 ## Bots across machines
 
 When you register several backends in **Settings → Connections** — the local runtime, remote gateways, SSH hosts, Hermes Cloud instances — the roster shows the Bots from **every** connected source, persistently: SSH sources are inventoried without spawning anything on the remote box, and machines that are momentarily unreachable keep their last-known rows instead of vanishing. When the same profile name exists on several sources, handles disambiguate as `@name-device` (for example `@research-homelab`). A Bot's chats, sessions, memory, and routines live on the machine that owns the profile.

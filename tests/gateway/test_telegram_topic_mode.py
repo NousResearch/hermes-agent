@@ -830,3 +830,83 @@ def test_get_telegram_topic_binding_by_session_returns_binding(tmp_path):
 # Test for session-split thread_id recovery (issue #27166)
 # ---------------------------------------------------------------------------
 
+
+
+# Terminal egress contracts carried forward from #70093.
+
+@pytest.mark.asyncio
+async def test_displayed_reasoning_is_sanitized_after_final_composition(monkeypatch):
+    """Reasoning prepended after the model final cannot bypass forced egress."""
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"display": {"show_reasoning": True}},
+    )
+    runner = _make_runner()
+    runner._show_reasoning = True
+    secret = "opaqueReasoningCredentialValue123"
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "safe final",
+            "last_reasoning": 'Data: {"token": "' + secret,
+            "messages": [],
+            "api_calls": 1,
+        }
+    )
+    event = _make_event("hello", thread_id="17585")
+    source = event.source
+    session_key = build_session_key(
+        source,
+        group_sessions_per_user=runner.config.group_sessions_per_user,
+        thread_sessions_per_user=runner.config.thread_sessions_per_user,
+    )
+
+    response = await runner._handle_message_with_agent(
+        event,
+        source,
+        session_key,
+        1,
+    )
+
+    assert secret not in response
+    assert '"token": "***"' in response
+    assert "safe final" in response
+
+
+@pytest.mark.asyncio
+async def test_foreground_exception_forces_terminal_secret_redaction(monkeypatch):
+    """Foreground exception details cannot bypass the final egress boundary."""
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    runner = _make_runner()
+    secret = "opaqueForegroundExceptionCredential123"
+    runner._run_agent = AsyncMock(
+        side_effect=RuntimeError(f"OPENAI_API_KEY={secret}")
+    )
+    event = _make_event("hello", thread_id="17585")
+    source = event.source
+    session_key = build_session_key(
+        source,
+        group_sessions_per_user=runner.config.group_sessions_per_user,
+        thread_sessions_per_user=runner.config.thread_sessions_per_user,
+    )
+
+    response = await runner._handle_message_with_agent(
+        event,
+        source,
+        session_key,
+        1,
+    )
+
+    assert secret not in response
+    assert response == (
+        "Sorry, I encountered an unexpected error.\n"
+        "Try again or use /reset to start a fresh session."
+    )

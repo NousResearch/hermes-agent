@@ -2709,12 +2709,90 @@ def _unavailable_stream_consumer(**kwargs):
 
 # Terminal egress contracts carried forward from #70093.
 
+@pytest.mark.asyncio
+async def test_transformed_response_edit_forces_secret_redaction(monkeypatch, tmp_path):
+    """The post-stream plugin edit cannot bypass final-output sanitization."""
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SecretTransformedStreamAgent,
+        session_id="sess-secret-transformed-stream",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+        adapter_cls=MetadataEditProgressCaptureAdapter,
+    )
+
+    assert result.get("already_sent") is True
+    payloads = [call["content"] for call in adapter.sent + adapter.edits]
+    assert all(SecretTransformedStreamAgent.SECRET not in payload for payload in payloads)
+    assert any("***" in payload for payload in payloads)
 
 
+class QueuedSecretAgent:
+    calls = 0
+    SECRET = "github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        type(self).calls += 1
+        response = (
+            f"First credential: {self.SECRET}"
+            if type(self).calls == 1
+            else "second response"
+        )
+        return {"final_response": response, "messages": [], "api_calls": 1}
 
 
+@pytest.mark.asyncio
+async def test_queued_followup_fallback_send_forces_secret_redaction(monkeypatch, tmp_path):
+    """The pre-follow-up final send uses the assistant egress sanitizer."""
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    QueuedSecretAgent.calls = 0
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedSecretAgent,
+        session_id="sess-queued-secret",
+        pending_text="queued follow-up",
+        config_data={"display": {"interim_assistant_messages": False}},
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result["final_response"] == "second response"
+    payloads = [call["content"] for call in adapter.sent]
+    assert all(QueuedSecretAgent.SECRET not in payload for payload in payloads)
+    assert any("github...6789" in payload for payload in payloads)
 
 
+class SecretTransformedStreamAgent:
+    SECRET = "github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.stream_delta_callback:
+            self.stream_delta_callback("safe original answer")
+        return {
+            "final_response": f"safe original answer\n\nCredential: {self.SECRET}",
+            "response_previewed": True,
+            "response_transformed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
 
 
 class SplitSecretUrlPreviewAgent:

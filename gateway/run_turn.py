@@ -1369,7 +1369,7 @@ class GatewayTurnMixin:
         ``(response, _intentional_silence, agent_messages)``."""
         from gateway.run import (
             _is_gateway_hidden_reasoning_incomplete_turn, _normalize_empty_agent_response,
-            _sanitize_gateway_final_response, _should_clear_resume_pending_after_turn,
+            _should_clear_resume_pending_after_turn,
         )
         response = agent_result.get("final_response") or ""
         # Hidden-reasoning-only retry exhaustion: the loop's sentinel text doubles as final_response
@@ -1404,7 +1404,6 @@ class GatewayTurnMixin:
         # Fix for #18765.
         if not _intentional_silence:
             response = _normalize_empty_agent_response(agent_result, response, history_len=len(history))
-            response = _sanitize_gateway_final_response(source.platform, response)
 
         # The agent thread already updated the contextvar; propagate to SessionEntry + _save() only
         # if the binding still points at the session this run was launched against.
@@ -1457,6 +1456,10 @@ class GatewayTurnMixin:
             display_reasoning = "\n".join(lines[:15]) + f"\n_... ({len(lines) - 15} more lines)_"
         else:
             display_reasoning = last_reasoning.strip()
+        # Resolve this completed component before adding the final answer: an
+        # unfinished structured credential must not consume the answer's text.
+        from agent.streaming_redact import sanitize_terminal_secret_text
+        display_reasoning = sanitize_terminal_secret_text(display_reasoning)
         # Per-platform render style: Discord defaults to "-# " subtext, others keep the code block.
         try:
             from gateway.display_config import resolve_display_setting
@@ -2005,6 +2008,9 @@ class GatewayTurnMixin:
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
+            if response and not _intentional_silence:
+                from gateway.run import _sanitize_gateway_final_response
+                response = _sanitize_gateway_final_response(source.platform, response)
             await self._hmwa_post_turn_hooks(hook_ctx, agent_result, response)
 
             agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure = (
@@ -2202,7 +2208,10 @@ class GatewayTurnMixin:
             if response:
                 response = repair_explicit_computer_use_media_paths(response, result.get("messages", []))
 
-            preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
+            from gateway.run import _sanitize_gateway_final_response
+            from agent.streaming_redact import sanitize_terminal_secret_text
+            display_prompt = sanitize_terminal_secret_text(prompt)
+            preview = display_prompt[:60] + ("..." if len(display_prompt) > 60 else "")
             header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
             images, media_files, text_content = [], [], ""
             if response:
@@ -2210,15 +2219,22 @@ class GatewayTurnMixin:
                 media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
                 images, text_content = adapter.extract_images(response)
             if text_content:
-                await adapter.send(chat_id=source.chat_id, content=header + text_content, metadata=_thread_metadata)
+                await adapter.send(
+                    chat_id=source.chat_id,
+                    content=_sanitize_gateway_final_response(source.platform, header + text_content),
+                    metadata=_thread_metadata,
+                )
             elif not images and not media_files:
                 await adapter.send(
-                    chat_id=source.chat_id, content=header + "(No response generated)", metadata=_thread_metadata,
+                    chat_id=source.chat_id,
+                    content=_sanitize_gateway_final_response(source.platform, header + "(No response generated)"),
+                    metadata=_thread_metadata,
                 )
             for image_url, alt_text in (images or []):
                 with suppress(Exception):
                     await adapter.send_image(
-                        chat_id=source.chat_id, image_url=image_url, caption=alt_text, metadata=_thread_metadata,
+                        chat_id=source.chat_id, image_url=image_url,
+                        caption=sanitize_terminal_secret_text(alt_text), metadata=_thread_metadata,
                     )
             # Route each media file by type (voice bubble / video / image / document), as the
             # streaming + kanban paths do.
@@ -2242,9 +2258,11 @@ class GatewayTurnMixin:
 
         except Exception as e:
             logger.exception("Background task %s failed", task_id)
+            from gateway.run import _sanitize_gateway_final_response
             with suppress(Exception):
                 await adapter.send(
-                    chat_id=source.chat_id, content=f"❌ Background task {task_id} failed: {e}",
+                    chat_id=source.chat_id,
+                    content=_sanitize_gateway_final_response(source.platform, f"❌ Background task {task_id} failed: {e}"),
                     metadata=_thread_metadata,
                 )
 
@@ -3383,9 +3401,11 @@ class GatewayTurnMixin:
                 logger.debug("Stream consumer wait before queued message failed: %s", e)
         # Delivery uses the finalized task result (empty/failure normalization), not raw ``result``.
         _delivery_result = response if isinstance(response, dict) else (result or {})
+        from gateway.run import _sanitize_gateway_final_response
         first_response = _delivery_result.get("final_response", "")
         _already_streamed = self._run_agent_stream_confirmed_final_delivery(
-            _sc, first_response, previewed=bool(_delivery_result.get("response_previewed")),
+            _sc, _sanitize_gateway_final_response(turn_ctx.source.platform, first_response),
+            previewed=bool(_delivery_result.get("response_previewed")),
         )
         # Same silence predicate as the normal path, else this branch leaks the literal marker.
         if self._is_intentional_silence(_delivery_result, first_response):
@@ -3591,6 +3611,8 @@ class GatewayTurnMixin:
         """Edit the stream consumer's message in place with ``content``; on success mark
         ``response["already_sent"]`` and log ``ok``. ``fail_result`` (None = trust the call) logs a
         returned failure as ``(session, error)``; ``fail_exc`` logs an exception as ``(session, exc)``."""
+        from gateway.run import _sanitize_gateway_final_response
+        content = _sanitize_gateway_final_response(source.platform, content)
         try:
             _res = await _sc.adapter.edit_message(
                 chat_id=source.chat_id, message_id=_sc.message_id, content=content, finalize=True,

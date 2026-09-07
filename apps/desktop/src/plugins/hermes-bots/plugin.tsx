@@ -59,6 +59,7 @@ import { groupWorkspaceOwnerKey } from './group-membership'
 import { annotateOrphanedGroupChatMembers } from './hygiene'
 import { BOTS_LOCALES } from './i18n'
 import { displayName } from './labels'
+import { BOT_PINBOARD_HEIGHT, BotPinboard } from './pinboard'
 import { startBotRelay, stopBotRelay } from './relay'
 import { $activityToasts } from './roster-actions'
 import {
@@ -399,6 +400,30 @@ export default {
         }
       },
       render: () => <BotsPane />
+    })
+
+    // The fast launcher belongs above the ordinary Sessions list, like pinned
+    // conversations in iMessage. It is a separate fixed-height pane rather
+    // than a second session list: the existing Bots pane remains the place for
+    // search, editing, grouping and pin management.
+    ctx.register({
+      id: 'pinboard',
+      area: 'panes',
+      title: 'Bot Pinboard',
+      data: {
+        headerVeto: true,
+        height: BOT_PINBOARD_HEIGHT,
+        hideOnly: true,
+        maxHeight: BOT_PINBOARD_HEIGHT,
+        minHeight: BOT_PINBOARD_HEIGHT,
+        placement: 'left',
+        dock: {
+          pane: 'sessions',
+          pos: 'top',
+          enforce: true
+        }
+      },
+      render: () => <BotPinboard />
     })
 
     // Routines — its OWN tiling pane splitting the workspace's right edge

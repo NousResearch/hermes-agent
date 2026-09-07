@@ -44,7 +44,10 @@ describe('enforced dock (stacked Bots pane → sessions-zone tab, every boot)', 
     vi.resetModules()
   })
 
-  async function setupTree(initialTree: object, options: { routines?: boolean } = {}) {
+  async function setupTree(
+    initialTree: object,
+    options: { botsPane?: boolean; pinboard?: boolean; routines?: boolean } = {}
+  ) {
     window.localStorage.setItem(TREE_KEY, JSON.stringify(initialTree))
 
     const tree = await import('@/components/pane-shell/tree/store')
@@ -65,16 +68,37 @@ describe('enforced dock (stacked Bots pane → sessions-zone tab, every boot)', 
       data: { placement: 'left' },
       render: () => null
     })
-    registry.register({
-      id: 'hermes-bots:pane',
-      area: 'panes',
-      title: 'Bots',
-      data: {
-        placement: 'left',
-        dock: { pane: 'sessions', pos: 'center', enforce: true }
-      },
-      render: () => null
-    })
+
+    if (options.botsPane !== false) {
+      registry.register({
+        id: 'hermes-bots:pane',
+        area: 'panes',
+        title: 'Bots',
+        data: {
+          placement: 'left',
+          dock: { pane: 'sessions', pos: 'center', enforce: true }
+        },
+        render: () => null
+      })
+    }
+
+    if (options.pinboard) {
+      registry.register({
+        id: 'hermes-bots:pinboard',
+        area: 'panes',
+        title: 'Bot Pinboard',
+        data: {
+          headerVeto: true,
+          height: '128px',
+          hideOnly: true,
+          maxHeight: '128px',
+          minHeight: '128px',
+          placement: 'left',
+          dock: { pane: 'sessions', pos: 'top', enforce: true }
+        },
+        render: () => null
+      })
+    }
 
     if (options.routines) {
       registry.register({
@@ -243,6 +267,38 @@ describe('enforced dock (stacked Bots pane → sessions-zone tab, every boot)', 
     expect(botsGroup.active).toBe('hermes-bots:pane')
     expect(routinesGroup.panes).toEqual(['hermes-bots:routines'])
     expect(routinesGroup.id).not.toBe(botsGroup.id)
+  })
+
+  it('adopts the real top-docked pinboard above Sessions with its fixed chrome-free contract', async () => {
+    const topDockTree = {
+      type: 'split',
+      id: 'root',
+      orientation: 'row',
+      weights: [1, 3],
+      children: [
+        { type: 'group', id: 'g-sessions', panes: ['sessions'], active: 'sessions' },
+        { type: 'group', id: 'g-main', panes: ['workspace'], active: 'workspace' }
+      ]
+    }
+
+    const { model, registry, tree } = await setupTree(topDockTree, { botsPane: false, pinboard: true })
+
+    tree.watchContributedPanes()
+
+    const adopted = tree.$layoutTree.get()!
+    const pinboardGroup = model.findGroupOfPane(adopted, 'hermes-bots:pinboard')!
+    const parent = model.findParentSplit(adopted, pinboardGroup.id)!
+    const pinboard = registry.getArea('panes').find(pane => pane.id === 'hermes-bots:pinboard')!
+
+    expect(parent.orientation).toBe('column')
+    expect(parent.children[0]).toMatchObject({ type: 'group', panes: ['hermes-bots:pinboard'] })
+    expect(parent.children[1]).toMatchObject({ type: 'group', panes: ['sessions'] })
+    expect(pinboard.data).toMatchObject({
+      headerVeto: true,
+      height: '128px',
+      maxHeight: '128px',
+      minHeight: '128px'
+    })
   })
 
   it('leaves an edge-enforced pane alone when it already occupies the declared split', async () => {

@@ -61,6 +61,7 @@ vi.mock('./roster-pane', () => ({
   selectedRosterBot: () => null,
   sessionOwnsWorkspace: mocks.sessionOwnsWorkspace
 }))
+vi.mock('./pinboard', () => ({ BotPinboard: () => null, BOT_PINBOARD_HEIGHT: '128px' }))
 vi.mock('./group-chat', async () => {
   const { atom: nanoAtom } = await import('nanostores')
 
@@ -175,6 +176,29 @@ describe('the Bots pane dock', () => {
     expect((data.dock as { pos: string }).pos).not.toBe('bottom')
     // No heal token: the invariant runs at every adoption, unconditionally.
     expect(data).not.toHaveProperty('heal')
+
+    harness.dispose()
+  })
+})
+
+describe('the Sessions bot pinboard dock', () => {
+  it('docks above Sessions with a fixed rail height and no pane chrome', () => {
+    paneStores()
+
+    const harness = recordingContext()
+
+    plugin.register(harness.ctx)
+
+    const data = harness.find('pinboard')!.data!
+
+    expect(data).toMatchObject({
+      headerVeto: true,
+      height: '128px',
+      hideOnly: true,
+      maxHeight: '128px',
+      minHeight: '128px'
+    })
+    expect(data.dock).toEqual({ enforce: true, pane: 'sessions', pos: 'top' })
 
     harness.dispose()
   })

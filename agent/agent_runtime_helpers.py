@@ -2867,12 +2867,27 @@ def looks_like_codex_intermediate_ack(
     )
 
 
-# Narrow "trailing continue-intent" detector for the stall guard (agent.stall_guards): only the
-# message TAIL announcing a next action, so mid-sentence "I will" never trips it.
+# Narrow "trailing continue-intent" detectors for the stall guard (agent.stall_guards): only the
+# message TAIL announcing a next action, so mid-sentence future tense never trips them.
 _TRAILING_CONTINUE_INTENT_RE = re.compile(
     r"(?:\blet me now\b|\bi(?:['\u2019])?ll now\b|\bi will now\b"
     r"|\bnow i(?:['\u2019]ll| will)\b|\bnext[,:] i\b)"
     r"[^.!?\n]{0,100}[.:\u2026]?\s*$", re.IGNORECASE,
+)
+
+# Japanese normally omits the subject, so an English-style first-person marker is unavailable.
+# Require either an explicit sequence marker or a chained action, followed by a small action-verb
+# vocabulary. The topic-particle exclusion keeps short descriptions such as "this function does X"
+# from looking like bare execution plans.
+_TRAILING_JAPANESE_CONTINUE_INTENT_RE = re.compile(
+    r"(?:^|[。！？…]\s*)"
+    r"(?:"
+    r"(?:これから|今から|次に|続いて|まず|では|それでは|このあと|その後)[、,:：]?\s*"
+    r"|(?![^。！？\n]{0,100}(?:は|とは))[^。！？\n]{0,60}(?:て[、,]?|し[、,])\s*"
+    r")"
+    r"[^。！？\n]{0,80}"
+    r"(?:確認|アクセス|実行|更新|調査|検索|チェック|検証|修正|作成|取得|接続|起動|再試行|待機|開始)"
+    r"(?:します|する)[。！…]?\s*$"
 )
 
 # Content longer than this is a substantive reply, not a dangling ack.
@@ -2884,7 +2899,11 @@ def trailing_continue_intent(text: str) -> bool:
     t = (text or "").strip()
     if not t or len(t) > _TRAILING_CONTINUE_INTENT_MAX_CHARS:
         return False
-    return bool(_TRAILING_CONTINUE_INTENT_RE.search(t[-160:]))
+    tail = t[-160:]
+    return bool(
+        _TRAILING_CONTINUE_INTENT_RE.search(tail)
+        or _TRAILING_JAPANESE_CONTINUE_INTENT_RE.search(tail)
+    )
 
 
 _INTENT_ACK_ON = {"true", "always", "yes", "on"}

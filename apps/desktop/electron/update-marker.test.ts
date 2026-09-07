@@ -7,8 +7,10 @@
  * (Wired into npm test:desktop:platforms in package.json.)
  *
  * Why this matters: the gate must (a) report a live update only when the
- * updater pid identity is proven alive, (b) keep malformed/unreadable and
- * overdue claims blocking, and (c) self-heal only a proven-dead exact claim.
+ * updater pid identity is proven alive, (b) never wedge on a body nobody owns
+ * -- empty/malformed/future markers self-heal after a dwell and an owner whose
+ * identity cannot be proven expires at the age ceiling, and (c) self-heal only
+ * through an exact-content CAS so a real writer never loses its claim.
  */
 
 import fs from 'fs'
@@ -26,6 +28,7 @@ import {
   readLiveUpdateMarker,
   releaseUpdateMarkerIfOwnedBy,
   UPDATE_HANDOFF_BRIDGE_GRACE_MS,
+  UPDATE_MARKER_DWELL_MS,
   UPDATE_MARKER_MAX_AGE_MS,
   updateHandoffConflict,
   writeUpdateMarker
@@ -112,21 +115,84 @@ test('dead pid => no live update and marker is pruned', () => {
   assert.ok(!fs.existsSync(markerPath(home)), 'a dead-pid marker self-heals (deleted)')
 })
 
-test('expired marker remains live but is marked overdue', () => {
+test('expired PROVEN owner remains live and is marked overdue', () => {
   const home = tmpHome('expired')
   const now = 1_000_000_000_000
-  writeMarker(home, 4242, Math.floor((now - UPDATE_MARKER_MAX_AGE_MS - 60_000) / 1000))
-  const result = readLiveUpdateMarker(home, { kill: ALIVE, now: () => now })
+  const startedAt = Math.floor((now - UPDATE_MARKER_MAX_AGE_MS - 60_000) / 1000)
+  writeMarker(home, 4242, startedAt)
+  const result = readLiveUpdateMarker(home, {
+    kill: ALIVE, now: () => now, getProcessCreatedAt: () => startedAt
+  })
   assert.equal(result?.kind, 'live')
   assert.equal(result?.overdue, true)
-  assert.ok(fs.existsSync(markerPath(home)), 'an overdue live owner remains authoritative')
+  assert.ok(fs.existsSync(markerPath(home)), 'a proven live owner stays authoritative past the ceiling')
 })
 
-test('malformed marker is unreadable and remains blocking', () => {
+// Upstream main unlinks a marker past the ceiling. The PR removed that for
+// EVERY owner, so one recycled pid wedged updates and the MCP bridge for good.
+// Restore it for owners we cannot prove -- never for owners we can.
+test('expired UNPROVABLE owner is reclaimed at the age ceiling', () => {
+  const home = tmpHome('expired-unknown')
+  const now = 1_000_000_000_000
+  writeMarker(home, 4242, Math.floor((now - UPDATE_MARKER_MAX_AGE_MS - 60_000) / 1000))
+  assert.equal(readLiveUpdateMarker(home, { kill: ALIVE, now: () => now }), null)
+  assert.ok(!fs.existsSync(markerPath(home)), 'an unprovable owner cannot hold the gate forever')
+})
+
+test('malformed marker blocks for the dwell, then self-heals', () => {
   const home = tmpHome('malformed')
+  let now = 1_000_000_000_000
   fs.writeFileSync(markerPath(home), 'not-a-pid\nnonsense')
-  assert.equal(readLiveUpdateMarker(home, { kill: ALIVE })?.kind, 'unreadable')
+
+  const first = readLiveUpdateMarker(home, { kill: ALIVE, now: () => now })
+  assert.equal(first?.kind, 'unreadable')
+  assert.equal(first?.reason, 'malformed')
+  assert.ok(fs.existsSync(markerPath(home)), 'a body seen once may still be a write in flight')
+  assert.ok(String(first?.message).includes(markerPath(home)), 'the message must name the file')
+
+  now += UPDATE_MARKER_DWELL_MS
+  assert.equal(readLiveUpdateMarker(home, { kill: ALIVE, now: () => now }), null)
+  assert.ok(!fs.existsSync(markerPath(home)), 'an unowned body must not block every future launch')
+})
+
+test('a body that changes inside the dwell is never reclaimed', () => {
+  const home = tmpHome('malformed-inflight')
+  let now = 1_000_000_000_000
+  fs.writeFileSync(markerPath(home), 'partial')
+  assert.equal(readLiveUpdateMarker(home, { kill: ALIVE, now: () => now })?.kind, 'unreadable')
+
+  // The writer completes its rewrite mid-dwell: the dwell restarts and the
+  // finished claim is honoured rather than deleted out from under its owner.
+  now += UPDATE_MARKER_DWELL_MS
+  const startedAt = Math.floor(now / 1000) - 5
+  writeMarker(home, 4242, startedAt)
+  assert.equal(
+    readLiveUpdateMarker(home, { kill: ALIVE, now: () => now, getProcessCreatedAt: () => startedAt })?.pid,
+    4242
+  )
   assert.ok(fs.existsSync(markerPath(home)))
+})
+
+test('future-dated marker self-heals on the same dwell rule', () => {
+  const home = tmpHome('future')
+  let now = 1_000_000_000_000
+  writeMarker(home, 4242, Math.floor(now / 1000) + 3_600)
+  assert.equal(readLiveUpdateMarker(home, { kill: ALIVE, now: () => now })?.reason, 'future')
+
+  now += UPDATE_MARKER_DWELL_MS
+  assert.equal(readLiveUpdateMarker(home, { kill: ALIVE, now: () => now }), null)
+  assert.ok(!fs.existsSync(markerPath(home)))
+})
+
+test('an empty marker -- a torn write with no attacker -- self-heals', () => {
+  const home = tmpHome('empty')
+  let now = 1_000_000_000_000
+  fs.writeFileSync(markerPath(home), '')
+  assert.equal(readLiveUpdateMarker(home, { kill: ALIVE, now: () => now })?.reason, 'malformed')
+
+  now += UPDATE_MARKER_DWELL_MS
+  assert.equal(readLiveUpdateMarker(home, { kill: ALIVE, now: () => now }), null)
+  assert.ok(!fs.existsSync(markerPath(home)))
 })
 
 test('isPidAlive: own pid is alive, impossible pid is dead', () => {
@@ -282,11 +348,20 @@ test('a dead-pid marker does not block a hand-off (self-heals)', () => {
   assert.equal(updateHandoffConflict(home, { kill: DEAD }), null)
 })
 
-test('an expired live marker still blocks a hand-off', () => {
+test('an expired PROVEN live marker still blocks a hand-off', () => {
   const home = tmpHome('conflict-expired')
   const now = 1_000_000_000_000
-  writeMarker(home, 1010, Math.floor((now - UPDATE_MARKER_MAX_AGE_MS - 60_000) / 1000))
-  assert.ok(updateHandoffConflict(home, { kill: ALIVE, now: () => now }))
+  const startedAt = Math.floor((now - UPDATE_MARKER_MAX_AGE_MS - 60_000) / 1000)
+  writeMarker(home, 1010, startedAt)
+  assert.ok(updateHandoffConflict(home, { kill: ALIVE, now: () => now, getProcessCreatedAt: () => startedAt }))
+})
+
+test('a blocked hand-off names the marker path so recovery is possible', () => {
+  const home = tmpHome('conflict-blocked-path')
+  fs.writeFileSync(markerPath(home), 'garbage')
+  const conflict = updateHandoffConflict(home, { kill: ALIVE, now: () => 1_000_000_000_000 })
+  assert.ok(conflict)
+  assert.ok(conflict.message.includes(markerPath(home)), conflict.message)
 })
 
 test('minutes-scale elapsed time is formatted as "Nm Ss"', () => {
@@ -338,14 +413,25 @@ test('recycled PID is reclaimed', () => {
   assert.equal(readLiveUpdateMarker(home, { now: () => 110000, kill: ALIVE, getProcessCreatedAt: () => 102 }), null)
 })
 
-test('empty marker and unknown cleanup artifacts never age out', () => {
+// Inverted from the PR, which pinned "never age out" as intended behaviour.
+// An empty marker names nobody and blocked every launch forever, with no
+// message saying which file to delete. Unknown CAS artifacts DO still stay:
+// each names a real in-flight release, so removing one resurrects a dead claim.
+test('an empty marker ages out; unknown cleanup artifacts still do not', () => {
   const home = tmpHome('incomplete')
+  let now = 10_000_000
   fs.writeFileSync(markerPath(home), '')
-  assert.equal(readLiveUpdateMarker(home, { now: () => 10000000 })?.kind, 'unreadable')
-  assert.equal(fs.readFileSync(markerPath(home), 'utf8'), '')
-  fs.unlinkSync(markerPath(home))
+  const blocked = readLiveUpdateMarker(home, { now: () => now })
+  assert.equal(blocked?.kind, 'unreadable')
+  assert.ok(String(blocked?.message).includes(markerPath(home)), 'the blocking message must name the file')
+
+  now += UPDATE_MARKER_DWELL_MS
+  assert.equal(readLiveUpdateMarker(home, { now: () => now }), null)
+  assert.equal(fs.existsSync(markerPath(home)), false)
+
   fs.writeFileSync(markerPath(home) + '.cas-unknown', '123\n100\n')
-  assert.equal(readLiveUpdateMarker(home, { now: () => 10000000 })?.kind, 'unreadable')
+  now += UPDATE_MARKER_DWELL_MS * 10
+  assert.equal(readLiveUpdateMarker(home, { now: () => now })?.kind, 'unreadable')
   assert.ok(fs.existsSync(markerPath(home) + '.cas-unknown'))
 })
 

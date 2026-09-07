@@ -29,11 +29,21 @@ import { getCachedWindowsProcessCreatedAt } from './windows-process-identity'
 
 export { transferUpdateMarkerIfOwnedBy } from './windows-update-marker'
 
-// Age is an advisory diagnostic only. A full update (git pull + pip + desktop
-// rebuild) can be slow; an exact live owner remains authoritative beyond this
-// age so a second updater cannot race the first one into the same install.
+// A full update (git pull + pip + desktop rebuild) can be slow, so an owner
+// PROVEN to be the claimant (`matching`) remains authoritative past this age
+// and a second updater can never race it into the same install. An owner whose
+// creation time is unprovable (`unknown` — a live pid that may just be a
+// recycled number) expires here, as upstream main does today; without that a
+// single recycled pid wedges every future update and the MCP bridge forever.
 export const UPDATE_MARKER_MAX_AGE_MS = 20 * 60 * 1000
 export const UPDATE_MARKER_CLOCK_SKEW_MS = 5 * 1000
+
+// A marker that is empty, malformed or future-dated is not a claim — nothing
+// alive is provably behind it. It is still not reclaimed on sight: windows.ps1
+// and the Rust updater rewrite the marker in place, so a reader can catch a
+// mid-write body. Observe the exact same bytes across this dwell first, then
+// reclaim with an exact-content CAS, so a real write in flight always wins.
+export const UPDATE_MARKER_DWELL_MS = 2 * 1000
 
 export type ProcessCreateTimeProbe = (pid: number) => number | null | undefined
 export type PidIdentityStatus = 'matching' | 'stale' | 'unknown'
@@ -54,6 +64,9 @@ export interface LiveUpdateMarker extends UpdateMarkerClaim {
 export interface UnreadableUpdateMarker {
   kind: 'unreadable'
   reason: UpdateMarkerBlockedReason
+  /** The exact file a human has to look at; every message must name it. */
+  file: string
+  message: string
   pid: null
   ageMs: null
   overdue: null
@@ -69,6 +82,7 @@ interface PidIdentityProbeOptions {
 interface UpdateMarkerReadOptions extends PidIdentityProbeOptions {
   now?: () => number
   maxAgeMs?: number
+  dwellMs?: number
 }
 
 // The Windows script starts through a short-lived cmd.exe wrapper. Hold the
@@ -263,8 +277,58 @@ function removeMarkerIfExact(file: string, expectedRaw: string): 'retry' | 'unre
   }
 }
 
-function blockedMarker(reason: UpdateMarkerBlockedReason): UnreadableUpdateMarker {
-  return { kind: 'unreadable', reason, pid: null, ageMs: null, overdue: null }
+const BLOCKED_MARKER_CAUSE: Record<UpdateMarkerBlockedReason, string> = {
+  unreadable: 'the update marker could not be read',
+  malformed: 'the update marker is empty or malformed',
+  future: 'the update marker is dated in the future',
+  'cleanup-race': 'an update marker cleanup is still unresolved'
+}
+
+/**
+ * Never surface a blocked marker without the path. Recovery is deleting one
+ * file; users spent whole sessions on "Hermes is still updating" because no
+ * message ever said which file, and the self-heal below can be defeated by a
+ * clock jump or a read-only directory.
+ */
+export function blockedUpdateMarkerMessage(file: string, reason: UpdateMarkerBlockedReason): string {
+  return (
+    `Hermes cannot verify the update marker: ${BLOCKED_MARKER_CAUSE[reason]}. ` +
+    `If no update is running, delete this file and retry: ${file}`
+  )
+}
+
+function blockedMarker(file: string, reason: UpdateMarkerBlockedReason): UnreadableUpdateMarker {
+  return {
+    kind: 'unreadable',
+    reason,
+    file,
+    message: blockedUpdateMarkerMessage(file, reason),
+    pid: null,
+    ageMs: null,
+    overdue: null
+  }
+}
+
+// First sighting of an unclaimable body, keyed by marker path. Deliberately
+// process-local and content-keyed: a marker that changes between polls restarts
+// the dwell, so an in-flight rewrite is never reclaimed out from under its
+// writer. Only ever grows by one entry per HERMES_HOME in a process.
+const dwellSightings = new Map<string, { raw: string; firstSeenAt: number }>()
+
+/**
+ * Whether an unclaimable marker body has now sat unchanged long enough to
+ * reclaim. Returns false (and records/refreshes the sighting) otherwise.
+ */
+function unclaimableBodyHasSettled(file: string, raw: string, at: number, dwellMs: number): boolean {
+  const seen = dwellSightings.get(file)
+
+  if (!seen || seen.raw !== raw || !Number.isFinite(seen.firstSeenAt) || seen.firstSeenAt > at) {
+    dwellSightings.set(file, { raw, firstSeenAt: at })
+
+    return false
+  }
+
+  return at - seen.firstSeenAt >= dwellMs
 }
 
 /**
@@ -285,7 +349,8 @@ export function readLiveUpdateMarker(
     kill,
     getProcessCreatedAt = kill ? undefined : getCachedWindowsProcessCreatedAt,
     now = Date.now,
-    maxAgeMs = UPDATE_MARKER_MAX_AGE_MS
+    maxAgeMs = UPDATE_MARKER_MAX_AGE_MS,
+    dwellMs = UPDATE_MARKER_DWELL_MS
   }: UpdateMarkerReadOptions = {}
 ): UpdateMarkerState | null {
   const file = markerPath(hermesHome)
@@ -297,10 +362,12 @@ export function readLiveUpdateMarker(
       raw = fs.readFileSync(file, 'utf8')
     } catch (error: any) {
       if (error?.code === 'ENOENT') {
+        dwellSightings.delete(file)
+
         const artifacts = recoveryArtifacts(file)
 
         if (artifacts === null) {
-          return blockedMarker('cleanup-race')
+          return blockedMarker(file, 'cleanup-race')
         }
 
         if (artifacts.length === 0) {
@@ -316,61 +383,94 @@ export function readLiveUpdateMarker(
           // Restoring its temporary file here would resurrect the very claim
           // it is removing. Only recover an abandoned release.
           if (!Number.isSafeInteger(releaserPid) || releaserPid <= 0 || isPidAlive(releaserPid, kill)) {
-            return blockedMarker('cleanup-race')
+            return blockedMarker(file, 'cleanup-race')
           }
 
           if (restoreIsolatedMarker(file, artifacts[0]) === 'unresolved') {
-            return blockedMarker('cleanup-race')
+            return blockedMarker(file, 'cleanup-race')
           }
 
           continue
         }
 
-        return blockedMarker('cleanup-race')
+        return blockedMarker(file, 'cleanup-race')
       }
 
-      return blockedMarker('unreadable')
+      return blockedMarker(file, 'unreadable')
     }
 
     const artifacts = recoveryArtifacts(file)
 
     if (artifacts === null || artifacts.length > 0) {
-      return blockedMarker('cleanup-race')
+      return blockedMarker(file, 'cleanup-race')
+    }
+
+    // An empty/malformed/future body names nobody, so no owner can be harmed
+    // by reclaiming it — but a torn write is momentarily indistinguishable
+    // from one, so require the exact same bytes across the dwell first.
+    const reclaimUnclaimable = (reason: UpdateMarkerBlockedReason): UpdateMarkerState | 'retry' => {
+      if (!unclaimableBodyHasSettled(file, String(raw), now(), dwellMs)) {
+        return blockedMarker(file, reason)
+      }
+
+      if (removeMarkerIfExact(file, String(raw)) === 'unresolved') {
+        return blockedMarker(file, 'cleanup-race')
+      }
+
+      dwellSightings.delete(file)
+
+      return 'retry'
     }
 
     const parsed = parseMarker(String(raw))
 
     if (!parsed) {
-      return blockedMarker('malformed')
+      const outcome = reclaimUnclaimable('malformed')
+
+      if (outcome !== 'retry') { return outcome }
+
+      continue
     }
 
     const { pid, startedAt, bridge } = parsed
     const ageMs = now() - startedAt * 1000
 
     if (!Number.isFinite(ageMs) || ageMs < -UPDATE_MARKER_CLOCK_SKEW_MS) {
-      return blockedMarker('future')
+      const outcome = reclaimUnclaimable('future')
+
+      if (outcome !== 'retry') { return outcome }
+
+      continue
     }
+
+    dwellSightings.delete(file)
 
     if (bridge && ageMs > UPDATE_HANDOFF_BRIDGE_GRACE_MS) {
       if (removeMarkerIfExact(file, String(raw)) === 'unresolved') {
-        return blockedMarker('cleanup-race')
+        return blockedMarker(file, 'cleanup-race')
       }
 
       continue
     }
 
-    if (probePidIdentity(pid, startedAt, { kill, getProcessCreatedAt }) === 'stale' && !bridge) {
+    const identity = probePidIdentity(pid, startedAt, { kill, getProcessCreatedAt })
+    const overdue = ageMs > maxAgeMs
+
+    // `stale` is a proven-dead or proven-recycled pid. `unknown` is a live pid
+    // we could not tie to this claim; it holds the gate until the age ceiling
+    // and is then reclaimed, which is what keeps a marker recoverable at all.
+    if (!bridge && (identity === 'stale' || (identity === 'unknown' && overdue))) {
       if (removeMarkerIfExact(file, String(raw)) === 'unresolved') {
-        return blockedMarker('cleanup-race')
+        return blockedMarker(file, 'cleanup-race')
       }
 
       continue
     }
 
-    return { kind: 'live', pid, startedAt, ageMs, overdue: ageMs > maxAgeMs, ...(bridge ? { bridge: true } : {}) }
+    return { kind: 'live', pid, startedAt, ageMs, overdue, ...(bridge ? { bridge: true } : {}) }
   }
 
-  return blockedMarker('cleanup-race')
+  return blockedMarker(file, 'cleanup-race')
 }
 
 export type UpdateMarkerClaimResult =
@@ -402,7 +502,10 @@ export function acquireUpdateMarker(
     fs.writeFileSync(descriptor, raw)
     fs.fsyncSync(descriptor)
   } catch {
-    return { acquired: false, message: 'Could not claim the update marker. Another update may have started; retry when it finishes.' }
+    return {
+      acquired: false,
+      message: `Could not claim the update marker. Another update may have started; retry when it finishes. Marker: ${file}`
+    }
   } finally {
     if (descriptor !== undefined) { fs.closeSync(descriptor) }
   }
@@ -412,7 +515,7 @@ export function acquireUpdateMarker(
   if (artifacts === null || artifacts.length > 0) {
     removeMarkerIfExact(file, raw)
 
-    return { acquired: false, message: 'Update marker cleanup is unresolved. Retry after the current update finishes.' }
+    return { acquired: false, message: blockedUpdateMarkerMessage(file, 'cleanup-race') }
   }
 
   return { acquired: true, owner: { kind: 'live', pid, startedAt, ageMs: 0, overdue: false } }
@@ -501,13 +604,7 @@ export function updateHandoffConflict(
   }
 
   if (owner.kind === 'unreadable') {
-    return {
-      pid: null,
-      ageMs: null,
-      message:
-        'Hermes found an update marker but could not verify its owner safely. ' +
-        'Wait for the current update to finish or resolve the marker permissions, then retry.'
-    }
+    return { pid: null, ageMs: null, message: owner.message }
   }
 
   const mins = Math.floor(owner.ageMs / 60_000)
@@ -517,7 +614,9 @@ export function updateHandoffConflict(
   return {
     pid: owner.pid,
     ageMs: owner.ageMs,
-    message: `An update is already running (PID ${owner.pid}, started ${elapsed} ago). Wait for it to finish, then try again.`
+    message:
+      `An update is already running (PID ${owner.pid}, started ${elapsed} ago). ` +
+      `Wait for it to finish, then try again. Marker: ${markerPath(hermesHome)}`
   }
 }
 

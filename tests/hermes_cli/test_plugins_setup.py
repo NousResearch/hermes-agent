@@ -73,7 +73,10 @@ def test_every_enable_surface_refuses_unconsented_setup(native, monkeypatch, sur
         from hermes_cli.web_routers import dashboard_ui
         monkeypatch.setattr(dashboard_ui, "_require_token", lambda r: None)
         with pytest.raises(HTTPException) as error:
-            asyncio.run(dashboard_ui.post_agent_plugin_enable(None, "native-fixture"))
+            # Reuse the sync-test fixture's loop; asyncio.run() would orphan it.
+            asyncio.get_event_loop().run_until_complete(
+                dashboard_ui.post_agent_plugin_enable(None, "native-fixture")
+            )
         assert error.value.detail["status"] == "consent_required"
     assert not (home / "runtime").exists()
     assert "native-fixture" not in cmd._get_enabled_set()
@@ -108,7 +111,10 @@ def test_install_enable_cannot_bypass_setup(native, tmp_path, monkeypatch, surfa
         from hermes_cli.web_routers import dashboard_ui
         monkeypatch.setattr(dashboard_ui, "_require_token", lambda r: None)
         with pytest.raises(HTTPException) as error:
-            asyncio.run(dashboard_ui.post_agent_plugin_install(None, _AgentPluginInstallBody(identifier=source.as_uri())))
+            # Reuse the sync-test fixture's loop; asyncio.run() would orphan it.
+            asyncio.get_event_loop().run_until_complete(
+                dashboard_ui.post_agent_plugin_install(None, _AgentPluginInstallBody(identifier=source.as_uri()))
+            )
         assert error.value.detail["status"] == "consent_required"
     assert plugin.is_dir()
     assert not (home / "runtime").exists()

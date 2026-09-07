@@ -300,9 +300,16 @@ class CLIChatTurnMixin:
         # Notes and voice prefix are API-local: the staged input stays the durable transcript
         # value so a close-path marker follows the same dict instead of a second user row.
         _persist_clean_user_message = message if (turn.voice_prefix or agent_message != message) else None
-        _one_turn_model_restore = getattr(self, "_pending_one_turn_model_restore", None)
+        from agent.plan_route import planning_route_for_message
+        from hermes_cli.config import load_config_readonly
+        _planning_route = planning_route_for_message(agent_message, load_config_readonly())
+        _one_turn_model_restore = self._snapshot_model_runtime() if _planning_route else getattr(self, "_pending_one_turn_model_restore", None)
         self._pending_one_turn_model_restore = None
         try:
+            if _planning_route:
+                _planning_error = self._apply_planning_route(_planning_route)
+                if _planning_error:
+                    raise RuntimeError(_planning_error)
             turn.result = self.agent.run_conversation(
                 user_message=agent_message,
                 conversation_history=self.conversation_history[:-1],  # exclude the message just staged

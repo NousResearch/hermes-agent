@@ -469,6 +469,12 @@ class CLIModelSwitchMixin:
             **_runtime_fields(self),
             "agent_primary_runtime": copy.deepcopy(
                 getattr(agent, "_primary_runtime", None)
+            ) if agent is not None else None,
+            "agent_cached_system_prompt": copy.deepcopy(
+                getattr(agent, "_cached_system_prompt", None)
+            ) if agent is not None else None,
+            "agent_reasoning_config": copy.deepcopy(
+                getattr(agent, "reasoning_config", None)
             ) if agent is not None else None}
 
     def _restore_model_runtime_snapshot(self, snapshot: dict | None) -> None:
@@ -484,16 +490,16 @@ class CLIModelSwitchMixin:
         if agent is None:
             return
         primary = snapshot.get("agent_primary_runtime")
+        restored_primary = False
         if primary and hasattr(agent, "_restore_primary_runtime"):
             try:
                 agent._primary_runtime = copy.deepcopy(primary)
                 agent._fallback_activated = True
                 agent._rate_limited_until = 0
-                if agent._restore_primary_runtime():
-                    return
+                restored_primary = bool(agent._restore_primary_runtime())
             except Exception:
                 logger.debug("CLI one-turn model restore via primary runtime failed", exc_info=True)
-        if hasattr(agent, "switch_model"):
+        if not restored_primary and hasattr(agent, "switch_model"):
             try:
                 agent.switch_model(
                     new_model=snapshot.get("model", ""), new_provider=snapshot.get("provider", ""),
@@ -502,6 +508,34 @@ class CLIModelSwitchMixin:
                     capabilities=snapshot.get("capabilities"))
             except Exception as exc:
                 logger.warning("CLI one-turn model restore failed: %s", exc)
+        # A one-turn route must not turn the route switch into a prompt-cache invalidation.
+        # Restore the cached prefix after the client/runtime has been restored.
+        if "agent_cached_system_prompt" in snapshot:
+            agent._cached_system_prompt = copy.deepcopy(snapshot["agent_cached_system_prompt"])
+        if "agent_reasoning_config" in snapshot:
+            agent.reasoning_config = copy.deepcopy(snapshot["agent_reasoning_config"])
+
+    def _apply_planning_route(self, route: dict) -> str | None:
+        """Apply the configured /plan route to the live client for this turn only."""
+        from hermes_cli.model_switch import switch_model
+        from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+        from hermes_constants import parse_reasoning_effort
+        config = load_config_readonly() or {}
+        result = switch_model(
+            raw_input=route["model"] or self.model or "", current_provider=self.provider or "",
+            current_model=self.model or "", current_base_url=self.base_url or "",
+            current_api_key=self.api_key or "", is_global=False,
+            explicit_provider=route.get("provider") or None,
+            user_providers=config.get("providers") or {},
+            custom_providers=get_compatible_custom_providers(config))
+        if not result.success:
+            return f"planning route unavailable: {result.error_message}"
+        if not self._stage_and_swap_model(result, self.model):
+            return "planning route unavailable"
+        effort = parse_reasoning_effort(route.get("reasoning_effort"))
+        if route.get("reasoning_effort") and effort is not None and self.agent is not None:
+            self.agent.reasoning_config = effort
+        return None
 
     @staticmethod
     def _filter_model_picker_entries(entries: list, query: str) -> list:

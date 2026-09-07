@@ -48,7 +48,24 @@ hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
 
 :::tip
 The `hermes config set` command automatically routes values to the right file — API keys are saved to `.env`, everything else to `config.yaml`.
+
 :::
+
+### Dedicated `/plan` route
+
+`/plan` normally uses the current session route. To dedicate planning to another model, add
+this optional block to `config.yaml`:
+
+```yaml
+planning:
+  provider: openai-codex
+  model: gpt-6-astra
+  reasoning_effort: high
+```
+
+The configured route and reasoning apply to that planning turn only. The next ordinary turn
+returns to the session's prior model, provider, and reasoning; the session override and cached
+system prompt are not changed.
 
 ## Configuration Precedence
 

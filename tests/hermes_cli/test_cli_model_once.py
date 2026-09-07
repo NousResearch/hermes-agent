@@ -134,6 +134,8 @@ def test_cli_restore_model_runtime_prefers_primary_runtime():
 
     stub = _StubCLI()
     stub.agent = Agent()
+    stub.agent._cached_system_prompt = "temporary prompt"
+    stub.agent.reasoning_config = {"effort": "low"}
     snapshot = {
         "model": "old/model",
         "provider": "openrouter",
@@ -147,6 +149,8 @@ def test_cli_restore_model_runtime_prefers_primary_runtime():
             "model": "old/model",
             "provider": "openrouter",
         },
+        "agent_cached_system_prompt": "original prompt",
+        "agent_reasoning_config": {"effort": "high"},
     }
 
     cli_mod.HermesCLI._restore_model_runtime_snapshot(stub, snapshot)
@@ -154,3 +158,5 @@ def test_cli_restore_model_runtime_prefers_primary_runtime():
     assert stub.agent.model == "old/model"
     assert stub.agent.provider == "openrouter"
     assert stub.agent.calls == []
+    assert stub.agent._cached_system_prompt == "original prompt"
+    assert stub.agent.reasoning_config == {"effort": "high"}

@@ -1625,6 +1625,7 @@ class TurnRunner:
         try:
             model, runtime_kwargs = runner._resolve_session_agent_runtime(
                 source=ctx.source, session_key=ctx.session_key, user_config=ctx.user_config,
+                user_message=ctx.message,
             )
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
@@ -1634,6 +1635,13 @@ class TurnRunner:
             return {"final_response": f"⚠️ Provider authentication failed: {exc}", "messages": [], "api_calls": 0, "tools": []}
         pr = runner._provider_routing
         reasoning_config = runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model)
+        from agent.plan_route import planning_route_for_message
+        plan_route = planning_route_for_message(ctx.message, ctx.user_config)
+        if plan_route and plan_route.get("reasoning_effort"):
+            from hermes_constants import parse_reasoning_effort
+            planning_reasoning = parse_reasoning_effort(plan_route["reasoning_effort"])
+            if planning_reasoning is not None:
+                reasoning_config = planning_reasoning
         runner._reasoning_config = reasoning_config
         runner._service_tier = runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key)
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)

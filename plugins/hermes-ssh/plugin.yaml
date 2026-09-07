@@ -1,0 +1,59 @@
+# Hermes 用户插件清单 — hermes-ssh
+name: hermes-ssh
+version: 1.0.0
+description: >-
+  原生 SSH 客户端插件：消费 ~/.ssh/config（含 ProxyJump 多级跳板），
+  免密凭据来自 ~/.hermes/.env（缺失时返回精确设置指引；认证失败自动冷却隔离）。
+  会话跨调用复用、欠账式保活防 suspend 断链、监督线程指数退避自愈；
+  未 pin 会话按 idle_ttl 自动回收，总量上限防失控。全程审计日志。
+author: 小T (for 布布)
+kind: standalone
+
+config_schema:
+  tuning:
+    idle_ttl_seconds:
+      type: int
+      default: 1800
+      description: 未pin会话空闲多少秒后回收（1小时=3600）
+    max_sessions:
+      type: int
+      default: 16
+      description: 会话池总量上限；满载驱逐最久未用的未pin会话
+    channel_limit:
+      type: int
+      default: 8
+      description: 单会话并发执行通道数软上限，超出排队等待
+    auth_cooldown_seconds:
+      type: int
+      default: 600
+      description: 认证失败后的凭据冷却期，期间绝不带旧密码重试（保护堡垒机账户）
+    warmup:
+      type: list
+      default: []
+      description: 启动即建连并常驻(pin)的主机清单, 如 [byd-54]; 空则纯惰性
+    keepalive_interval_seconds:
+      type: int
+      default: 20
+      description: 保活心跳间隔（欠账模型，suspend 醒来后补发）
+    supervisor_poll_seconds:
+      type: int
+      default: 5
+      description: 自愈监督线程轮询间隔
+  audit:
+    enabled:
+      type: bool
+      default: true
+      description: 是否写审计日志 (~/.hermes/plugin-data/hermes-ssh/audit.log)
+    record_output:
+      type: bool
+      default: false
+      description: 危险开关——是否把命令输出全文记入审计（默认只记长度）
+    max_file_mb:
+      type: int
+      default: 20
+      description: 审计日志单文件体积上限（滚动保留3个）
+  echo:
+    card_enabled:
+      type: bool
+      default: true
+      description: ssh_exec 执行后向当前对话推送飞书回执卡片（✅/⏱❌ · exit码 · 耗时 · 输出）

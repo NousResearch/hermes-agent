@@ -93,7 +93,7 @@ You don't need to rebuild your setup from scratch. Restore a full backup with `h
 **Installer:** On non-Windows platforms, the only prerequisite is **Git**. On Linux, also make sure `curl` and `xz-utils` are available (the installer downloads Node.js as a `.tar.xz` archive). The desktop app additionally requires `g++` (or `build-essential` on Debian/Ubuntu) to compile native modules. The installer automatically handles everything else:
 
 - **uv** (fast Python package manager)
-- **Python 3.11** (via uv, no sudo needed)
+- **Python 3.12** (via uv, no sudo needed)
 - **Node.js v26** (for browser automation and WhatsApp bridge; existing system Node 22.22+, 24.11+, or 26+ is used as-is)
 - **ripgrep** (fast file search)
 - **ffmpeg** (audio format conversion for TTS)

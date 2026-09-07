@@ -60,6 +60,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
       - name: Check ci-reviewed label
         id: label-check
         env:
@@ -100,7 +104,7 @@ jobs:
 
           # Write to both $GITHUB_OUTPUT and review-status.json for the
           # live comment poller to pick up as an artifact.
-          python3 scripts/ci/emit_review_status.py "${args[@]}" \
+          python3.12 scripts/ci/emit_review_status.py "${args[@]}" \
             --repo-url "$REPO_URL" --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" \
             --output "$GITHUB_OUTPUT"
           grep '^review_status=' "$GITHUB_OUTPUT" > review-status.json

@@ -56,7 +56,7 @@ else
     INSTALL_DIR=""
     INSTALL_DIR_EXPLICIT=false
 fi
-PYTHON_VERSION="3.11"
+PYTHON_VERSION="3.12"
 NODE_VERSION="26"
 
 # FHS-style root install layout (set by resolve_install_layout when applicable):
@@ -618,16 +618,14 @@ install_uv() {
 check_python() {
     if [ "$DISTRO" = "termux" ]; then
         log_info "Checking Termux Python..."
-        # Hermes currently declares requires-python >=3.11,<3.14.  Termux can
+        # Hermes operational runtime is exactly Python 3.12. Termux can
         # expose a newer default `python` before dependencies have compatible
-        # wheels, so do not accept the default interpreter until the upper bound
-        # is verified. Prefer the project's pinned minor when present, then
-        # other explicit compatible interpreters.
-        for python_cmd in python3.11 python3.12 python3.13 python; do
+        # wheels, so only accept an interpreter whose version probe proves 3.12.
+        for python_cmd in python3.12; do
             if command -v "$python_cmd" >/dev/null 2>&1; then
                 local candidate_path
                 candidate_path="$(command -v "$python_cmd")"
-                if "$candidate_path" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+                if "$candidate_path" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)' 2>/dev/null; then
                     PYTHON_PATH="$candidate_path"
                     PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
                     log_success "Python found: $PYTHON_FOUND_VERSION"
@@ -639,23 +637,22 @@ check_python() {
         log_info "Installing Python via pkg..."
         pkg install -y python >/dev/null
         PYTHON_PATH="$(command -v python)"
-        if "$PYTHON_PATH" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+        if "$PYTHON_PATH" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)' 2>/dev/null; then
             PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
             log_success "Python installed: $PYTHON_FOUND_VERSION"
             return 0
         fi
 
-        # Termux's default `python` package is outside the supported range
-        # (e.g. 3.14.x before Rust transitives ship cp314 wheels). The Termux
-        # User Repository (TUR) publishes versioned CPython packages
-        # (python3.13, python3.11), so try to provision a supported
-        # interpreter from there before giving up.
+        # Termux's default `python` package is outside the supported version
+        # (e.g. 3.14.x where Rust transitives lack wheels). The Termux
+        # User Repository (TUR) publishes versioned CPython packages,
+        # so try to provision exactly 3.12 from there before giving up.
         PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null || true)"
-        log_warn "Termux Python $PYTHON_FOUND_VERSION is outside the supported range (>=3.11,<3.14)"
+        log_warn "Termux Python $PYTHON_FOUND_VERSION is outside the supported version (exactly 3.12)"
         log_info "Trying the Termux User Repository (TUR) for a supported Python..."
         pkg install -y tur-repo >/dev/null 2>&1 || true
         local tur_pkg
-        for tur_pkg in python3.13 python3.12 python3.11; do
+        for tur_pkg in python3.12; do
             if ! pkg install -y "$tur_pkg" >/dev/null 2>&1; then
                 continue
             fi
@@ -664,7 +661,7 @@ check_python() {
             fi
             local tur_path
             tur_path="$(command -v "$tur_pkg")"
-            if "$tur_path" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+            if "$tur_path" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)' 2>/dev/null; then
                 PYTHON_PATH="$tur_path"
                 PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
                 log_success "Python installed from TUR: $PYTHON_FOUND_VERSION"
@@ -672,15 +669,18 @@ check_python() {
             fi
         done
 
-        log_error "Termux Python $PYTHON_FOUND_VERSION is not supported; Hermes requires Python >=3.11,<3.14"
+        log_error "Termux Python $PYTHON_FOUND_VERSION is not supported; Hermes requires exactly Python 3.12"
         log_info "Install a supported interpreter and re-run this script:"
-        log_info "  pkg install tur-repo && pkg install python3.13"
+        log_info "  pkg install tur-repo && pkg install python3.12"
         exit 1
     fi
 
     log_info "Checking Python $PYTHON_VERSION..."
 
-    # Let uv handle Python — it can download and manage Python versions
+    # Let uv handle Python — it can download and manage Python versions.
+    # Never honor an inherited UV_PYTHON selector (e.g. UV_PYTHON=3.11/3.13/3.14):
+    # force resolution of exactly 3.12.
+    unset UV_PYTHON
     # First check if a suitable Python is already available
     if PYTHON_PATH="$("$UV_CMD" python find "$PYTHON_VERSION" 2>/dev/null)"; then
         PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
@@ -1724,6 +1724,10 @@ setup_venv() {
         fi
 
         "$PYTHON_PATH" -m venv venv
+        if ! ./venv/bin/python -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)' 2>/dev/null; then
+            log_error "venv interpreter is not Python 3.12 ($(./venv/bin/python --version 2>/dev/null || echo unknown)); Hermes requires exactly Python 3.12"
+            exit 1
+        fi
         log_success "Virtual environment ready ($(./venv/bin/python --version 2>/dev/null))"
         return 0
     fi
@@ -1735,18 +1739,27 @@ setup_venv() {
         rm -rf venv
     fi
 
-    # uv creates the venv and pins the Python version in one step
+    # uv creates the venv and pins the Python version in one step.
+    # Drop any inherited UV_PYTHON selector first so exactly 3.12 is used.
+    unset UV_PYTHON
     $UV_CMD venv venv --python "$PYTHON_VERSION"
 
-    # Neutralize any inherited UV_PYTHON (e.g. UV_PYTHON=3.14 left in the
+    # Neutralize any inherited UV_PYTHON (e.g. UV_PYTHON=3.11/3.13/3.14 left in the
     # user's shell env). uv honours UV_PYTHON over an existing venv for the
     # later `uv sync` / `uv pip install` tiers, so without this it would
-    # silently delete this 3.11 venv and recreate it at the inherited
+    # silently delete this 3.12 venv and recreate it at the inherited
     # version — building Rust transitives that have no wheel for that
     # version from source via maturin, which fails. Pinning UV_PYTHON to the
     # interpreter we just created forces every subsequent uv command onto it.
     if [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+        if ! "$INSTALL_DIR/venv/bin/python" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)' 2>/dev/null; then
+            log_error "venv interpreter is not Python 3.12 ($("$INSTALL_DIR/venv/bin/python" --version 2>/dev/null || echo unknown)); Hermes requires exactly Python 3.12"
+            exit 1
+        fi
         export UV_PYTHON="$INSTALL_DIR/venv/bin/python"
+    else
+        log_error "venv interpreter missing at $INSTALL_DIR/venv/bin/python; Hermes requires exactly Python 3.12"
+        exit 1
     fi
 
     log_success "Virtual environment ready (Python $PYTHON_VERSION)"
@@ -1769,7 +1782,9 @@ run_locked_uv_sync() {
         unset UV_NO_CONFIG UV_CONFIG_FILE
         export XDG_CONFIG_HOME="$isolated_uv_config"
         export XDG_CONFIG_DIRS="$isolated_uv_config"
-        UV_PROJECT_ENVIRONMENT="$project_env" $UV_CMD sync --extra all --locked
+        # Locked sync must run against the validated 3.12 venv interpreter;
+        # never honor an inherited UV_PYTHON selector.
+        UV_PROJECT_ENVIRONMENT="$project_env" UV_PYTHON="$project_env/bin/python" $UV_CMD sync --extra all --locked
     )
     sync_rc=$?
     rmdir "$isolated_uv_config" 2>/dev/null || true
@@ -1779,14 +1794,24 @@ run_locked_uv_sync() {
 install_deps() {
     log_info "Installing dependencies..."
 
-    # Re-pin UV_PYTHON to the venv interpreter. setup_venv already does this,
+    # Re-pin UV_PYTHON to the validated 3.12 venv interpreter. setup_venv already does this,
     # but the bootstrap runs install stages (`venv`, `python-deps`) as separate
     # processes, so an export from setup_venv does NOT survive into a separate
     # python-deps invocation. Re-deriving it here covers that path. Without it,
-    # an inherited UV_PYTHON=3.14 makes the uv sync/pip tiers below recreate the
-    # venv at 3.14 and fail the maturin source build (no cp314 wheels yet).
-    if [ "$DISTRO" != "termux" ] && [ -x "$INSTALL_DIR/venv/bin/python" ]; then
-        export UV_PYTHON="$INSTALL_DIR/venv/bin/python"
+    # an inherited UV_PYTHON=3.11/3.13/3.14 makes the uv sync/pip tiers below recreate the
+    # venv at an unsupported version and fail the maturin source build. Fail closed
+    # if the venv interpreter is missing or does not probe as 3.12.
+    if [ "$DISTRO" != "termux" ]; then
+        if [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+            if ! "$INSTALL_DIR/venv/bin/python" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)' 2>/dev/null; then
+                log_error "venv interpreter is not Python 3.12 ($("$INSTALL_DIR/venv/bin/python" --version 2>/dev/null || echo unknown)); Hermes requires exactly Python 3.12"
+                exit 1
+            fi
+            export UV_PYTHON="$INSTALL_DIR/venv/bin/python"
+        else
+            log_error "venv interpreter missing at $INSTALL_DIR/venv/bin/python; Hermes requires exactly Python 3.12"
+            exit 1
+        fi
     fi
 
     if [ "$DISTRO" = "termux" ]; then
@@ -1959,7 +1984,7 @@ install_deps() {
     local _BROKEN_EXTRAS=()  # populate when an extra becomes unresolvable
 
     # Parse [project.optional-dependencies].all from pyproject.toml.
-    # tomllib is stdlib on Python 3.11+ which uv's bootstrap guarantees.
+    # tomllib is stdlib on Python 3.12 which uv's bootstrap guarantees.
     # Falls back to a hand list if parse fails — defensive only.
     local _ALL_EXTRAS_CSV
     _ALL_EXTRAS_CSV="$(
@@ -2008,7 +2033,9 @@ PY
     install_tier() {
         local name="$1"; local spec="$2"
         log_info "Trying tier: $name ..."
-        if $UV_CMD pip install -e "$spec" 2>"$ALL_INSTALL_LOG"; then
+        # Every pip fallback tier is pinned to the validated 3.12 venv
+        # interpreter; an inherited UV_PYTHON selector must never retarget it.
+        if UV_PYTHON="$INSTALL_DIR/venv/bin/python" $UV_CMD pip install --python "$INSTALL_DIR/venv/bin/python" -e "$spec" 2>"$ALL_INSTALL_LOG"; then
             log_success "Main package installed ($name)"
             _installed=true
             _tier_name="$name"

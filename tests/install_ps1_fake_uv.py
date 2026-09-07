@@ -15,8 +15,33 @@ public static class FakeUv {
     public static int Main(string[] args) {
         if (Path.GetFileName(Environment.GetCommandLineArgs()[0]).Equals(
                 "python.exe", StringComparison.OrdinalIgnoreCase)) {
+            // Version probe (`-c 'import sys; print(...)'`) must report the
+            // fake's major.minor so installer/desktop version gates can be
+            // exercised. `--version` reports the full fake version string.
+            bool isVersionProbe = args.Any(a => a == "-c");
+            if (isVersionProbe) {
+                string managedVer = Environment.GetEnvironmentVariable(
+                    "FAKE_MANAGED_PYTHON_VERSION");
+                if (!string.IsNullOrEmpty(managedVer)) {
+                    Console.WriteLine(managedVer);
+                    return 0;
+                }
+                // Derive from the managed path (cpython-3.11 vs cpython-3.12)
+                // so stale-path fixtures report their true (unsupported) line.
+                string managedPath = Environment.GetEnvironmentVariable("FAKE_MANAGED_PYTHON") ?? "";
+                var pathMatch = System.Text.RegularExpressions.Regex.Match(managedPath, @"cpython-(\d+)\.(\d+)");
+                if (pathMatch.Success) {
+                    Console.WriteLine(pathMatch.Groups[1].Value + "." + pathMatch.Groups[2].Value);
+                    return 0;
+                }
+                string full = Environment.GetEnvironmentVariable("FAKE_PYTHON_VERSION")
+                    ?? "Python 3.12.0";
+                var m = System.Text.RegularExpressions.Regex.Match(full, @"(\d+)\.(\d+)");
+                Console.WriteLine(m.Success ? (m.Groups[1].Value + "." + m.Groups[2].Value) : "3.12");
+                return 0;
+            }
             Console.WriteLine(Environment.GetEnvironmentVariable("FAKE_PYTHON_VERSION")
-                ?? "Python 3.11.0");
+                ?? "Python 3.12.0");
             return 0;
         }
 

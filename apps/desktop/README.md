@@ -50,7 +50,7 @@ hermes update
 
 ## Requirements
 
-The installer handles everything for you (Python 3.11+, a portable Git, ripgrep).
+The installer handles everything for you (Python 3.12, a portable Git, ripgrep).
 
 ---
 

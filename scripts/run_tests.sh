@@ -11,7 +11,8 @@
 #   * Env vars blanked (conftest.py also does this, but this
 #     is belt-and-suspenders for anyone running pytest outside our
 #     conftest path — e.g. on a single file)
-#   * Proper venv activation (probes .venv, venv, then ~/.hermes/...)
+#   * Proper venv activation (exact Python 3.12 only: probes .venv, venv,
+#     then HERMES_PYTHON; fails closed with no python/PATH fallback)
 #
 # Usage:
 #   scripts/run_tests.sh                            # full suite
@@ -37,23 +38,30 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# ── Locate python ───────────────────────────────────────────────────────────
-# Probe local venvs first; fall back to the Nix devShell's editable venv
+# ── Locate python (exact Python 3.12 only) ───────────────────────────────────
+# Probe repo-local venvs first; fall back to the Nix devShell's editable venv
 # (HERMES_PYTHON is exported by the devShell hook and ships [dev] extras:
 # pytest, pytest-asyncio, pytest-timeout, ruff, ty).
 #
-# A candidate must have pytest INSTALLED, not merely exist. The release venv
-# at ~/.hermes/hermes-agent/venv has bin/activate but no pytest, so an
-# existence-only probe selected it in checkouts/worktrees without a local
-# .venv — every file then died with "No module named pytest" and the run
-# reported "0 tests passed" (which reads green at a glance even though the
-# exit code is 1). Skip such a venv and keep probing instead.
+# A candidate is accepted ONLY if its executable probes as exactly
+# Python 3.12 (sys.version_info[:2] == (3, 12)) AND imports pytest.
+# Anything else — missing pytest, or a 3.11/3.13/3.14 interpreter even with
+# pytest installed — is skipped (repo venvs) or rejected (HERMES_PYTHON),
+# and the runner fails closed. There is deliberately no `python`/`python3`/
+# PATH fallback: an unpinned lookup resolves to whatever the host provides.
+#
+# The live release venv at $HOME/.hermes/hermes-agent/venv is NEVER probed
+# here. It is a protected 3.11 runtime, so accepting it whenever a checkout
+# has no local .venv lets the canonical runner select a forbidden
+# interpreter. Create $REPO_ROOT/.venv with Python 3.12 (plus dev extras)
+# or enter the Nix devShell instead.
 VENV=""
 VENV_PYTHON=""
 SKIPPED_VENVS=""
-for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
+_PY312_PYTEST_PROBE='import sys, pytest; sys.exit(sys.version_info[:2] != (3, 12))'
+for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv"; do
   if [ -f "$candidate/bin/activate" ]; then
-    if "$candidate/bin/python" -c 'import pytest' 2>/dev/null; then
+    if "$candidate/bin/python" -c "$_PY312_PYTEST_PROBE" 2>/dev/null; then
       VENV="$candidate"
       VENV_PYTHON="$candidate/bin/python"
       break
@@ -64,8 +72,9 @@ for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agen
   # Scripts/, and there is no bin/. Anyone running this script from
   # Git Bash / MSYS with a `python -m venv`- or uv-created venv hits
   # this branch — without it the canonical runner refuses to start.
+  # The same exact-Python-3.12-plus-pytest gate applies here.
   if [ -f "$candidate/Scripts/activate" ]; then
-    if "$candidate/Scripts/python.exe" -c 'import pytest' 2>/dev/null; then
+    if "$candidate/Scripts/python.exe" -c "$_PY312_PYTEST_PROBE" 2>/dev/null; then
       VENV="$candidate"
       VENV_PYTHON="$candidate/Scripts/python.exe"
       break
@@ -76,24 +85,28 @@ done
 
 if [ -n "$SKIPPED_VENVS" ]; then
   for skipped in $SKIPPED_VENVS; do
-    echo "▶ skipping venv without pytest: $skipped" >&2
+    echo "▶ skipping venv without exactly Python 3.12 + pytest: $skipped" >&2
   done
 fi
 
 if [ -n "$VENV" ]; then
   PYTHON="$VENV_PYTHON"
 elif [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ] \
-    && "$HERMES_PYTHON" -c 'import pytest' 2>/dev/null; then
-  # Guard with an import check: HERMES_PYTHON may point at the RELEASE
-  # venv (no pytest) when inherited from a wrapped `hermes` binary rather
-  # than the devShell hook.
+    && "$HERMES_PYTHON" -c "$_PY312_PYTEST_PROBE" 2>/dev/null; then
+  # Guard with a version + import check: HERMES_PYTHON may point at the
+  # live RELEASE venv (protected 3.11 runtime, with pytest installed) when
+  # inherited from a wrapped `hermes` binary rather than the devShell hook.
+  # A non-3.12 interpreter is rejected even when pytest imports.
   PYTHON="$HERMES_PYTHON"
-  echo "▶ no local venv — using Nix dev venv via HERMES_PYTHON: $PYTHON"
+  echo "▶ no local venv — using Nix dev venv via HERMES_PYTHON: $PYTHON (Python 3.12 with pytest)"
 else
-  echo "error: no virtualenv with pytest found in $REPO_ROOT/.venv or $REPO_ROOT/venv," >&2
-  echo "       and HERMES_PYTHON is not a python with pytest (enter the Nix devShell or create a venv)" >&2
+  if [ -n "${HERMES_PYTHON:-}" ]; then
+    echo "▶ rejecting HERMES_PYTHON=${HERMES_PYTHON} (requires exactly Python 3.12 with pytest)" >&2
+  fi
+  echo "error: no Python 3.12 virtualenv with pytest found in $REPO_ROOT/.venv or $REPO_ROOT/venv," >&2
+  echo "       and HERMES_PYTHON is not an exactly-Python-3.12 python with pytest (enter the Nix devShell or create a 3.12 venv)" >&2
   if [ -n "$SKIPPED_VENVS" ]; then
-    echo "       (skipped for missing pytest:$SKIPPED_VENVS — install dev extras there, or create $REPO_ROOT/.venv)" >&2
+    echo "       (skipped — not exactly Python 3.12 with pytest:$SKIPPED_VENVS — install dev extras into a 3.12 venv, or create $REPO_ROOT/.venv with Python 3.12)" >&2
   fi
   exit 1
 fi

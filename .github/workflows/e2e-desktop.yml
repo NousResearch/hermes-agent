@@ -70,15 +70,15 @@ jobs:
             pyproject.toml
             uv.lock
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.12
         uses: ./.github/actions/retry
         with:
-          command: uv python install 3.11
+          command: uv python install 3.12
 
       - name: Install Python dependencies
         uses: ./.github/actions/retry
         with:
-          command: uv sync --locked --python 3.11 --extra all --extra dev
+          command: uv sync --locked --python 3.12 --extra all --extra dev
 
       # ── Build desktop app ─────────────────────────────────────────────
       # The Playwright step below runs `npm run build` before testing so
@@ -176,7 +176,7 @@ jobs:
         env:
           RESULTS_URL: ${{ steps.upload-results.outputs.artifact-url }}
         run: |
-          python3 ../../scripts/ci/e2e_screenshot_status.py \
+          uv run --locked --python 3.12 python ../../scripts/ci/e2e_screenshot_status.py \
             --results-dir test-results \
             --manifest-output /tmp/e2e-screenshot-manifest.json \
             --evidence-dir /tmp/e2e-evidence \

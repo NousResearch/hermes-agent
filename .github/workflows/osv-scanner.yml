@@ -66,6 +66,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
       - name: Download SARIF result
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -81,7 +85,7 @@ jobs:
 
           if [ -f /tmp/osv-results/osv-results.sarif ]; then
             # Count vulnerabilities from the SARIF file
-            VULN_COUNT=$(python3 -c "
+            VULN_COUNT=$(python3.12 -c "
           import json, sys
           try:
               with open('/tmp/osv-results/osv-results.sarif') as f:
@@ -105,7 +109,7 @@ jobs:
             VULN_DETAIL=""
             if [ "$VULN_COUNT" -gt 0 ] 2>/dev/null; then
               VULN_PLURAL=$([ "$VULN_COUNT" -eq 1 ] && echo "y" || echo "ies")
-              VULN_DETAIL=$(python3 -c "
+              VULN_DETAIL=$(python3.12 -c "
           import json, sys
           try:
               with open('/tmp/osv-results/osv-results.sarif') as f:

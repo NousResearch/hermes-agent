@@ -59,10 +59,10 @@ jobs:
             pyproject.toml
             uv.lock
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.12
         uses: ./.github/actions/retry
         with:
-          command: uv python install 3.11
+          command: uv python install 3.12
 
       - name: Install dependencies
         # `uv sync --locked` installs the exact pinned set from uv.lock (and
@@ -80,7 +80,7 @@ jobs:
         # also honors the exact supply-chain pins these extras carry.
         uses: ./.github/actions/retry
         with:
-          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
+          command: uv sync --locked --python 3.12 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
 
       - name: Minimize uv cache
         # Optimized for CI: prunes pre-built wheels that are cheap to
@@ -164,8 +164,8 @@ jobs:
             pyproject.toml
             uv.lock
 
-      - name: Set up Python 3.11
-        run: uv python install 3.11
+      - name: Set up Python 3.12
+        run: uv python install 3.12
 
       - name: Install dependencies
         # `uv sync --locked` installs the exact pinned set from uv.lock (and
@@ -179,7 +179,7 @@ jobs:
         # in the venv up front.
         uses: ./.github/actions/retry
         with:
-          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
+          command: uv sync --locked --python 3.12 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
 
       - name: Minimize uv cache
         # Optimized for CI: prunes pre-built wheels that are cheap to
@@ -189,7 +189,7 @@ jobs:
       - name: Run e2e tests
         run: |
           source .venv/bin/activate
-          python -m pytest tests/e2e/ -v --tb=short
+          .venv/bin/python -m pytest tests/e2e/ -v --tb=short
         env:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""

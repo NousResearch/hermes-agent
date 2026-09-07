@@ -5,14 +5,14 @@ name = "hermes-agent"
 version = "0.21.0"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
-# Upper bound is load-bearing, not cosmetic. uv resolves the project's
+# Operational runtime is exactly Python 3.12. uv resolves the project's
 # Python from `requires-python`, and an inherited `UV_PYTHON` env var (or a
 # fresh distro whose newest interpreter uv auto-picks) will otherwise select
-# 3.14, where Rust-backed transitives (e.g. pydantic-core) have no cp314
-# wheel yet and fall back to a maturin source build that fails. Capping at
-# <3.14 makes uv refuse 3.14 with a clear error instead of attempting that
-# build. Raise the ceiling once our Rust transitives ship cp314 wheels.
-requires-python = ">=3.11,<3.14"
+# 3.11, 3.13, or 3.14, where Rust-backed transitives (e.g. pydantic-core)
+# have no matching wheel or the SQLite/native baseline diverges. Pinning to
+# >=3.12,<3.13 makes uv refuse any other minor with a clear error instead of
+# attempting an unsupported build.
+requires-python = ">=3.12,<3.13"
 authors = [{ name = "Nous Research" }]
 license = "MIT"
 license-files = ["LICENSE"]
@@ -231,8 +231,12 @@ wake = [
   # openWakeWord's onnx embedding model scores near-zero on macOS ARM64
   # (dscripka/openWakeWord#336), so the wake word runs on tflite there.
   # Upstream declares tflite-runtime for Linux only; ai-edge-litert is the
-  # macOS equivalent, bridged in tools/wake_word.py.
+  # macOS equivalent, bridged in tools/wake_word.py. tflite-runtime 2.14.0
+  # has no cp312 wheels, so on Python 3.12 Linux the same bridge is used
+  # (ai-edge-litert ships cp312 manylinux wheels); the override below drops
+  # the uninstallable transitive. Windows stays ONNX-only (no litert).
   "ai-edge-litert==2.1.6; platform_system == 'Darwin'",
+  "ai-edge-litert==2.1.6; platform_system == 'Linux'",
 ]
 honcho = ["honcho-ai==2.2.0"]
 # Cloud memory providers — opt-in, lazy-installed via tools/lazy_deps.py
@@ -407,6 +411,13 @@ override-dependencies = [
   # requests with RSA and AES, and that API did not break in 49 or 50.
   # Remove this line when alibabacloud-tea-openapi lifts the cap.
   "cryptography>=50,<51",
+  # openwakeword declares tflite-runtime on Linux, but 2.14.0 ships only
+  # cp311 wheels (no cp312, no sdist), so `uv sync --extra wake` cannot
+  # resolve on the exact-3.12 runtime. Drop the transitive on 3.12+ where
+  # tools/wake_word.ensure_tflite_runtime bridges ai-edge-litert (which
+  # ships cp312 manylinux + macOS wheels and keeps the TFLite Interpreter
+  # API) instead. Windows never had the transitive (Linux-only marker).
+  "tflite-runtime; python_version < '3.12'",
 ]
 exclude-newer = "14 days"
 # h2: temporary exclude-newer exception for the CVE-2026-71554 (GHSA-6hr6-w5qg-qmwg,
@@ -596,7 +607,7 @@ markers = [
 addopts = "-m 'not integration'"
 
 [tool.ty.environment]
-python-version = "3.13"
+python-version = "3.12"
 
 [tool.ty.rules]
 unknown-argument = "warn"

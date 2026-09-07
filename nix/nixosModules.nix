@@ -19,7 +19,7 @@
 # Tool resolution: the hermes wrapper uses --suffix PATH for nix store tools,
 # so apt/uv-installed versions take priority. The container entrypoint provisions
 # extensible tools on first boot: nodejs/npm via apt, uv via curl, and a Python
-# 3.11 venv (bootstrapped entirely by uv) at ~/.venv with pip seeded. Agents get
+# 3.12 venv (bootstrapped entirely by uv) at ~/.venv with pip seeded. Agents get
 # writable tool prefixes for npm i -g, pip install, uv tool install, etc.
 #
 # Usage:

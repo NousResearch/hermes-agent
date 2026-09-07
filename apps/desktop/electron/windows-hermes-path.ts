@@ -172,6 +172,7 @@ export interface ResolveVenvHermesCommandDeps {
   fileExists: (filePath: string) => boolean
   directoryExists: (filePath: string) => boolean
   canImportHermesCli: (python: string, opts?: { env?: Record<string, string> }) => boolean
+  isSupportedHermesPython?: (python: string, opts?: { env?: Record<string, string> }) => boolean
   getVenvPython: (venvRoot: string) => string
   getVenvSitePackagesEntries: (venvRoot: string) => string[]
   buildDesktopBackendEnv: (opts: {
@@ -190,20 +191,22 @@ export interface ResolveVenvHermesCommandDeps {
  * If `command` is a Windows venv `hermes`/`hermes.exe` console-script shim
  * (i.e. `<venvRoot>/Scripts/hermes(.exe)`), resolve it to the underlying
  * venv python invoked as `python -m hermes_cli.main <backendArgs>` — but
- * ONLY after smoke-testing that interpreter with canImportHermesCli(). A
+ * ONLY after smoke-testing that interpreter with canImportHermesCli() AND
+ * proving it is exactly Python 3.12 via isSupportedHermesPython(). A
  * venv whose update died mid-`pip install` still has python.exe + hermes.exe
  * on disk, but the backend dies on its first import (e.g.
  * ModuleNotFoundError: dotenv) before the gateway ever binds. Returning it
  * unprobed also bypasses the caller's `--version` probe, so Retry/"Repair
  * install" re-resolves the same broken venv forever instead of falling
- * through to the bootstrap installer.
+ * through to the bootstrap installer. An interpreter that cannot prove 3.12
+ * (unsupported 3.11/3.13/3.14 or an unproven probe) fails closed to null.
  *
  * Mirrors isActiveRuntimeUsable(): probes with the checkout on PYTHONPATH so
  * a healthy source-tree venv passes.
  *
  * Returns null when `command` is not a venv hermes shim, the underlying
- * python doesn't exist, or the import probe fails. Otherwise returns the
- * resolved backend descriptor.
+ * python doesn't exist, the version probe fails, or the import probe fails.
+ * Otherwise returns the resolved backend descriptor.
  */
 export function resolveVenvHermesCommand(
   command: string,
@@ -225,6 +228,7 @@ export function resolveVenvHermesCommand(
     fileExists,
     directoryExists,
     canImportHermesCli,
+    isSupportedHermesPython,
     getVenvPython,
     getVenvSitePackagesEntries,
     buildDesktopBackendEnv,
@@ -259,6 +263,17 @@ export function resolveVenvHermesCommand(
   }
 
   const root = dirname(venvRoot)
+
+  // Fail closed unless the venv interpreter proves exactly Python 3.12.
+  // When the caller does not inject isSupportedHermesPython (older tests),
+  // fall through to the import probe only; production always injects it.
+  if (isSupportedHermesPython && !isSupportedHermesPython(python)) {
+    rememberLog?.(
+      `Ignoring venv Hermes at ${python}: version probe did not prove Python 3.12; falling through to bootstrap.`
+    )
+
+    return null
+  }
 
   if (
     !canImportHermesCli(python, {

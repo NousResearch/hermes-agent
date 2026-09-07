@@ -108,7 +108,7 @@ jobs:
         env:
           HEAD_REF: ${{ inputs.event_name == 'pull_request' && github.head_ref || github.ref_name }}
         run: |
-          python scripts/lint_diff.py \
+          uv run --locked --python 3.12 python scripts/lint_diff.py \
             --base-ruff .lint-reports/base/ruff.json \
             --head-ruff .lint-reports/head/ruff.json \
             --base-ty   .lint-reports/base/ty.json \
@@ -171,19 +171,19 @@ jobs:
           # fail the job (2026-07-28 incident). Keep in sync with tests.yml.
           version: "0.9.28"
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.12
         uses: ./.github/actions/retry
         with:
-          command: uv python install 3.11
+          command: uv python install 3.12
 
       - name: Run footgun checker
-        run: python scripts/check-windows-footguns.py --all
+        run: uv run --locked --python 3.12 python scripts/check-windows-footguns.py --all
 
       # The Sep 2026 decomposition kept old import paths alive for external plugins
       # (PLUGIN-COMPAT blocks, see COMPAT_MANIFEST.md). They are removed on schedule by
       # reverting one commit, so in-tree code must never depend on them.
       - name: Forbid in-tree use of plugin-compat pointers
-        run: python scripts/check_compat_pointers.py
+        run: uv run --locked --python 3.12 python scripts/check_compat_pointers.py
 
       # Advisory: dropped public names / methods / test defs vs the PR base, printed into the log.
       # A refactor that silently removes a public symbol breaks plugins that import it; the Sep 2026
@@ -199,4 +199,4 @@ jobs:
             git merge-base "origin/${{ github.base_ref }}" HEAD >/dev/null 2>&1 && break
             git fetch --no-tags --deepen=1000 origin "${{ github.base_ref }}" HEAD
           done
-          python scripts/ci/check_public_surface.py --base "origin/${{ github.base_ref }}" --head HEAD
+          uv run --locked --python 3.12 python scripts/ci/check_public_surface.py --base "origin/${{ github.base_ref }}" --head HEAD

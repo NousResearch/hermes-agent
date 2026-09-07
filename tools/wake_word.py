@@ -379,9 +379,20 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
     # and nothing perceptible happens — refuse with a hint.
     stt_ok, tts_ok = _stt_ready(), _tts_ready()
     # tflite needs a runtime openWakeWord doesn't declare off Linux; report it as a
-    # remediation instead of arming a detector that can't fire.
-    tflite_ok = (feature != "wake.openwakeword" or resolve_inference_framework(cfg) != "tflite"
-                 or ensure_tflite_runtime() or lazy_deps.is_available("wake.openwakeword.tflite") or lazy_ok)
+    # remediation instead of arming a detector that can't fire. Lazy-install
+    # permission alone never satisfies this — only an actually resolvable bridge
+    # (or the already-installed tflite feature) counts; bridge failures fail closed.
+    # Only probe the bridge when tflite is actually requested — probing imports/aliases
+    # ai_edge_litert as a side effect, which must not happen for ONNX or non-openwakeword.
+    tflite_requested = (feature == "wake.openwakeword" and resolve_inference_framework(cfg) == "tflite")
+    if tflite_requested:
+        try:
+            bridge_ok = bool(ensure_tflite_runtime())
+        except Exception:
+            bridge_ok = False
+        tflite_ok = bridge_ok or lazy_deps.is_available("wake.openwakeword.tflite")
+    else:
+        tflite_ok = True
     key_ok = provider != "porcupine" or bool((os.getenv("PORCUPINE_ACCESS_KEY") or "").strip())
     capture_mode = resolve_capture_mode(cfg)
     missing = " and ".join(n for n, ok in (("speech-to-text", stt_ok), ("text-to-speech", tts_ok)) if not ok)

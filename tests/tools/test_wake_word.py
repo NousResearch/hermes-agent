@@ -182,6 +182,54 @@ def test_requirements_deps_present_but_no_audio_hint(monkeypatch):
     assert "audio device" in r["hint"] or "microphone" in r["hint"].lower()
 
 
+def test_requirements_explicit_tflite_needs_bridge_not_just_lazy_permission(monkeypatch):
+    """Explicit tflite is unavailable when the bridge fails, even with lazy installs allowed.
+
+    Regression: ``lazy_ok`` alone used to satisfy ``tflite_ok``, arming a detector
+    that could never fire. Permission to install later is not a runtime — only an
+    actually resolvable bridge (or the already-installed tflite feature) counts.
+    """
+    _voice_loop_ready(monkeypatch)
+    monkeypatch.setattr(ww, "ensure_tflite_runtime", lambda: False)
+    monkeypatch.setattr("tools.lazy_deps.is_available", lambda f: False)
+    monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", lambda: True)
+    r = ww.check_wake_word_requirements(
+        {"provider": "openwakeword", "openwakeword": {"inference_framework": "tflite"}}
+    )
+    assert r["available"] is False
+    assert "tflite" in r["hint"].lower()
+
+
+def test_requirements_onnx_does_not_probe_tflite_runtime(monkeypatch):
+    """ONNX (and non-openwakeword) configs must not touch the tflite bridge.
+
+    Regression: computing bridge_ok unconditionally imported/aliased ai_edge_litert
+    even for ONNX. The bridge may only be probed when openwakeword + tflite is requested.
+    """
+    _voice_loop_ready(monkeypatch)
+    monkeypatch.setattr(ww, "_is_macos_arm64", lambda: False)
+    monkeypatch.setattr(ww, "_audio_available", lambda: True)
+    monkeypatch.setattr(ww, "_local_input_device_ready", lambda: True)
+    monkeypatch.setattr("tools.lazy_deps.is_available", lambda f: True)
+    monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", lambda: True)
+    calls = []
+
+    def _track_bridge():
+        calls.append(1)
+        return True
+
+    monkeypatch.setattr(ww, "ensure_tflite_runtime", _track_bridge)
+    r = ww.check_wake_word_requirements(
+        {"provider": "openwakeword", "openwakeword": {"inference_framework": "onnx"}}
+    )
+    assert calls == []
+    assert r["available"] is True
+    # Non-openwakeword providers never need the bridge either.
+    r = ww.check_wake_word_requirements({"provider": "sherpa"})
+    assert calls == []
+    assert r["available"] is True
+
+
 # ── openWakeWord engine (bundled model + base-model fetch) ───────────────
 
 

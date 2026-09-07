@@ -75,12 +75,12 @@ jobs:
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
-          python-version: '3.11'
+          python-version: '3.12'
 
       - name: Install PyYAML for skill extraction
         uses: ./.github/actions/retry
         with:
-          command: pip install pyyaml==6.0.2 httpx==0.28.1
+          command: python3.12 -m pip install pyyaml==6.0.2 httpx==0.28.1
 
       - name: Prepare skills index (unified multi-source catalog)
         env:
@@ -105,7 +105,7 @@ jobs:
           mkdir -p "$(dirname "$INDEX_PATH")"
 
           validate_index() {
-            python3 - "$INDEX_PATH" <<'PY'
+            python3.12 - "$INDEX_PATH" <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -126,7 +126,7 @@ jobs:
           }
 
           if [ "$REBUILD_SKILLS_INDEX" = "true" ]; then
-            python3 scripts/build_skills_index.py
+            python3.12 scripts/build_skills_index.py
             validate_index
             exit 0
           fi
@@ -155,14 +155,14 @@ jobs:
 
           echo "::warning::Live skills index unavailable or unhealthy; falling back to a fresh crawl"
           rm -f "$INDEX_PATH"
-          python3 scripts/build_skills_index.py
+          python3.12 scripts/build_skills_index.py
           validate_index
 
       - name: Extract skill metadata for dashboard
-        run: python3 website/scripts/extract-skills.py
+        run: python3.12 website/scripts/extract-skills.py
 
       - name: Regenerate per-skill docs pages + catalogs
-        run: python3 website/scripts/generate-skill-docs.py
+        run: python3.12 website/scripts/generate-skill-docs.py
 
       - name: Install dependencies
         uses: ./.github/actions/retry

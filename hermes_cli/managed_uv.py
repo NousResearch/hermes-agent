@@ -37,6 +37,13 @@ _ALT_VENV_NAME = ".venv"
 _REPAIR_LOCK_NAME = "runtime-repair.lock"
 _MACOS_MANAGED_PYTHON_IDENTIFIER = "com.nousresearch.hermes.managed-python"
 
+# Operational Hermes runtime is exactly Python 3.12. All provisioning and
+# repair targets this line; stale 3.11/3.13/3.14 installs repair forward to
+# 3.12. A numeric downgrade (3.13/3.14 -> 3.12) is still a forward migration
+# and must not be rejected by a downgrade guard.
+_SUPPORTED_PYTHON_LINE = (3, 12)
+_SUPPORTED_PYTHON_REQUEST = "3.12"
+
 _Provisioned = tuple[Path, Path, SQLiteRuntimeInfo]
 
 
@@ -338,9 +345,11 @@ def _make_world_traversable(path: Path) -> None:
 
 
 def _runtime_request(info: SQLiteRuntimeInfo) -> str:
-    """Pin the candidate to the current CPython minor line (e.g. ``3.11``): requesting the exact
+    """Return the pinned operational runtime request (always ``3.12``).
+
+    Stale 3.11/3.13/3.14 installs repair forward to 3.12; requesting the exact
     patch can never repair installs whose patch has no fixed-SQLite artifact at all."""
-    return _dotted(info.python_version[:2])
+    return _SUPPORTED_PYTHON_REQUEST
 
 
 # Cap on newer patches tried, newest-first, before giving up: each attempt is a real
@@ -350,11 +359,11 @@ _MAX_PATCH_RETRIES = 5
 
 def _list_available_patches(
     uv_bin: str, minor: str, *, cwd: Path, env: dict) -> list[tuple[int, int, int]]:
-    """Known patch versions for ``minor`` (e.g. "3.11"), newest first; [] on any failure
+    """Known patch versions for ``minor`` (e.g. "3.12"), newest first; [] on any failure
     (network, parse), in which case callers fall back to the bare-minor request.
 
     Queries ``uv python list --all-versions`` rather than trusting the bare minor-line request to resolve to
-    the newest patch (issue #71250: on some hosts/uv versions, the resolved candidate for a bare "3.11"
+    the newest patch (issue #71250: on some hosts/uv versions, the resolved candidate for a bare "3.12"
     request can be an older cached/indexed patch that still links a vulnerable SQLite, even when a newer
     non-vulnerable patch is available).
     """
@@ -390,7 +399,7 @@ def _attempt_install_generation(
     uv_bin: str, request: str, *, project_root: Path, python_root: Path,
     current: SQLiteRuntimeInfo, allow_minor_upgrade: bool = False,
     tried_versions: set[tuple[int, int, int]] | None = None) -> _Provisioned | None:
-    """One install+probe attempt for ``request`` (bare minor "3.11" or explicit patch "3.11.15").
+    """One install+probe attempt for ``request`` (bare minor "3.12" or explicit patch "3.12.x").
 
     Each attempt gets its own generation directory so a rejected candidate is fully cleaned up
     before the next attempt (--reinstall semantics). Returns None (and cleans up) on any failure.
@@ -429,17 +438,19 @@ def _attempt_install_generation(
         return reject("could not probe candidate Python runtime: %s", python)
     if tried_versions is not None:
         tried_versions.add(candidate.python_version[:3])
-    if allow_minor_upgrade:
-        # Falling forward to a higher minor line: only reject downgrades.
-        if candidate.python_version < current.python_version:
-            return reject(
-                "candidate Python downgraded from %s: %s",
-                _dotted(current.python_version), candidate.python_version)
-    elif candidate.python_version[:2] != current.python_version[:2] or (
+    # Operational runtime is exactly 3.12. Reject any other minor line.
+    # Migration from stale 3.11/3.13/3.14 to 3.12 is always forward, even when
+    # numerically a downgrade (3.13/3.14 -> 3.12); only a downgrade within the
+    # 3.12 line itself is rejected.
+    if candidate.python_version[:2] != _SUPPORTED_PYTHON_LINE:
+        return reject(
+            "candidate Python is not the supported 3.12 line: %s",
+            _dotted(candidate.python_version))
+    if current.python_version[:2] == _SUPPORTED_PYTHON_LINE and (
         candidate.python_version < current.python_version):
         return reject(
-            "candidate Python drifted off the %s minor line or downgraded: %s",
-            _dotted(current.python_version[:2]), candidate.python_version)
+            "candidate Python downgraded from %s: %s",
+            _dotted(current.python_version), candidate.python_version)
     if candidate.wal_reset_vulnerable:
         return reject(
             "candidate Python still links vulnerable SQLite %s (%s)",
@@ -512,31 +523,20 @@ def _install_safe_python_generation(
 
     request = _runtime_request(current)
     print(f"  → Provisioning a private Python {request} runtime with fixed SQLite...")
-    tried_versions = {current.python_version[:3]}
+    # Repair always targets exactly 3.12. When the live interpreter is already
+    # 3.12, only newer 3.12 patches can carry the fix; when migrating from a
+    # stale 3.11/3.13/3.14 line, every 3.12 patch is a forward migration.
+    on_supported_line = current.python_version[:2] == _SUPPORTED_PYTHON_LINE
+    tried_versions: set[tuple[int, int, int]] = (
+        {current.python_version[:3]} if on_supported_line else set())
+    skip_at_or_below = current.python_version[:3] if on_supported_line else None
     # If the bare minor-line request resolves to a still-vulnerable (or otherwise rejected)
     # candidate, the default resolution may have picked an older cached/indexed patch even though
     # a newer, non-vulnerable one exists: retry with explicit newer patches, newest-first.
     result = _provision_line(
-        uv_bin, request, tried=tried_versions, skip_at_or_below=current.python_version[:3], **common
+        uv_bin, request, tried=tried_versions, skip_at_or_below=skip_at_or_below, **common
     )
-    if result is not None:
-        return result
-    # All patches on the current minor line are vulnerable or rejected. Fall forward to the next
-    # supported minor (e.g. 3.11 → 3.12) so the user isn't stuck on every `hermes update`. The
-    # requires-python window (>=3.11,<3.14) and the import smoke-test gate compatibility.
-    # See #76106.
-    cur_major, cur_minor = current.python_version[:2]
-    fb_tried: set[tuple[int, int, int]] = set(tried_versions)
-    for next_minor in range(cur_minor + 1, 14):  # up to 3.13
-        next_request = f"{cur_major}.{next_minor}"
-        print(
-            f"  → No fixed {cur_major}.{cur_minor} build available; "
-            f"trying {next_request} as fallback...")
-        result = _provision_line(
-            uv_bin, next_request, tried=fb_tried, allow_minor_upgrade=True, **common)
-        if result is not None:
-            return result
-    return None
+    return result
 
 
 def _smoke_candidate_venv(venv_dir: Path) -> tuple[bool, str, SQLiteRuntimeInfo | None]:
@@ -783,8 +783,8 @@ def _refresh_managed_uv_catalog(uv_bin: str) -> bool:
 
     The managed uv is installed with ``UV_UNMANAGED_INSTALL``, which disables ``uv self update`` by design —
     so its embedded python-build-standalone download catalog stays frozen at bootstrap age.
-    python-build-standalone re-releases existing CPython patch versions with newer SQLite (e.g. the 3.11.15
-    build was re-cut with SQLite 3.53.x), so a stale catalog can make every provisioning attempt resolve to
+    python-build-standalone re-releases existing CPython patch versions with newer SQLite (e.g. the 3.12.x
+    build was re-cut with newer SQLite), so a stale catalog can make every provisioning attempt resolve to
     a vulnerable build even though a fixed build of the SAME patch version exists (issue #72093). The
     patch-retry loop cannot recover from that: the fixed build carries no newer version number to retry
     with.
@@ -884,11 +884,16 @@ def _repair_under_lock(
     current = probe_sqlite_runtime(live_python)
     if current is None:
         return RuntimeRepairResult("skipped", "live interpreter probe failed")
-    if not current.wal_reset_vulnerable:
+    if not current.wal_reset_vulnerable and current.python_version[:2] == _SUPPORTED_PYTHON_LINE:
         return _result("safe", current, sqlite_after=current.sqlite_version_string)
-    print(
-        "  ⚠ Hermes venv links SQLite "
-        f"{current.sqlite_version_string}, which has the WAL-reset bug.")
+    if current.python_version[:2] != _SUPPORTED_PYTHON_LINE:
+        print(
+            "  ⚠ Hermes venv runs Python "
+            f"{_dotted(current.python_version)}; Hermes requires exactly Python 3.12.")
+    else:
+        print(
+            "  ⚠ Hermes venv links SQLite "
+            f"{current.sqlite_version_string}, which has the WAL-reset bug.")
     provisioned = _install_safe_python_generation(uv_bin, project_root=root, current=current)
     # Likely a stale managed-uv catalog: python-build-standalone re-releases the same patch
     # versions with fixed SQLite, but a frozen catalog keeps resolving the old vulnerable build
@@ -945,8 +950,9 @@ def repair_vulnerable_runtime(
     current = probe_sqlite_runtime(live_python)
     if current is None:
         return RuntimeRepairResult("skipped", f"could not probe live interpreter {live_python}")
-    if not current.wal_reset_vulnerable:
-        # Already fixed: any venv.stale.runtime-* markers next to the live venv are leftovers
+    if not current.wal_reset_vulnerable and current.python_version[:2] == _SUPPORTED_PYTHON_LINE:
+        # Already on the supported 3.12 line with fixed SQLite: any
+        # venv.stale.runtime-* markers next to the live venv are leftovers
         # from a past repair and will never be rolled back to. Sweep them so they don't leak
         # ~1 GB each forever. Age-gated to avoid racing an in-flight repair in a sibling process.
         # See #73109.
@@ -1001,5 +1007,5 @@ def _install_uv_windows(env: dict[str, str]) -> None:
         capture_output=True)
 
 
-def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> bool:
+def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.12") -> bool:
     True  # dont remove me. ask ethernet

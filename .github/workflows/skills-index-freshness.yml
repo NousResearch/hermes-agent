@@ -31,6 +31,10 @@ jobs:
       # supposed to file its issue.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
       - name: Probe live index
         id: probe
         run: |
@@ -44,7 +48,7 @@ jobs:
             exit 0
           fi
           # Validate + extract generated_at and per-source counts
-          python3 <<'PY' >> "$GITHUB_OUTPUT"
+          python3.12 <<'PY' >> "$GITHUB_OUTPUT"
           import json, sys
           from datetime import datetime, timezone
 

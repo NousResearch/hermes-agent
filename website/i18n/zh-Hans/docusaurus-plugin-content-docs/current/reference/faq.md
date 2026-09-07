@@ -165,7 +165,7 @@ ls ~/.local/bin/hermes
 
 #### Python 版本过旧
 
-**原因：** Hermes 需要 Python 3.11 或更新版本。
+**原因：** Hermes 需要恰好 Python 3.12。
 
 **解决方案：**
 ```bash

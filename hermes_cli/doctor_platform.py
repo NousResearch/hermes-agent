@@ -371,10 +371,8 @@ def _check_security_advisories(should_fix: bool, f: Finding) -> None:
 def _check_python_environment(should_fix: bool, f: Finding) -> None:
     """Interpreter, linked SQLite, venv, macOS TCC anchors/FDA/grants, version-file drift."""
     v, label = sys.version_info, f"Python {'.'.join(map(str, sys.version_info[:3]))}"
-    if v < (3, 8):
-        _fail_and_issue(label, "(3.10+ required)", "Upgrade Python to 3.10+", f.issues)
-    elif check_bool(v >= (3, 10), label, (label, "(3.10+ recommended)")) and v < (3, 11):
-        check_warn("Python 3.11+ recommended for RL Training tools (tinker requires >= 3.11)")
+    if v[:2] != (3, 12):
+        _fail_and_issue(label, "(exactly Python 3.12 required)", "Install Python 3.12 via uv (`uv python install 3.12`)", f.issues)
     # Linked SQLite: version + source id matter independently of the Python minor (uv's
     # python-build-standalone can keep a vulnerable SQLite across upgrades).
     with warn_on_error("SQLite version probe failed: {e}", ""):

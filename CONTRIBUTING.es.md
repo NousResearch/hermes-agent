@@ -74,7 +74,7 @@ Esto no es una barra de calidad — es una decisión de acoplamiento y mantenimi
 | Requisito | Notas |
 |-----------|-------|
 | **Git** | Con la extensión `git-lfs` instalada |
-| **Python 3.11–3.13** | uv lo instalará si falta |
+| **Python 3.12** | uv lo instalará si falta |
 | **uv** | Gestor de paquetes Python rápido ([instalar](https://docs.astral.sh/uv/)) |
 | **Node.js 20+** | Opcional — necesario para herramientas de navegador y puente WhatsApp (coincide con los engines de `package.json` raíz) |
 
@@ -84,8 +84,8 @@ Esto no es una barra de calidad — es una decisión de acoplamiento y mantenimi
 git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
 
-# Crear venv con Python 3.11
-uv venv venv --python 3.11
+# Crear venv con Python 3.12
+uv venv venv --python 3.12
 export VIRTUAL_ENV="$(pwd)/venv"
 
 # Instalar con todos los extras (mensajería, cron, menús CLI, herramientas de desarrollo)

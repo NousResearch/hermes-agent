@@ -261,12 +261,16 @@ jobs:
     outputs:
       needs-json: ${{ steps.evaluate.outputs.needs-json }}
     steps:
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
       - name: Evaluate job results
         id: evaluate
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: |
-          echo "$NEEDS" | python3 -c "
+          echo "$NEEDS" | python3.12 -c "
           import json, sys
           needs = json.load(sys.stdin)
           # Emit compact {job_name: result} for the comment assembler.
@@ -305,6 +309,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
       - name: Restore baseline cache (PR only)
         if: github.event_name == 'pull_request'
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
@@ -320,7 +328,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/ci/timings_report.py \
+          python3.12 scripts/ci/timings_report.py \
             --baseline ci-timings-baseline.json \
             --output ci-timings-report.html \
             --json-out ci-timings.json \
@@ -341,7 +349,7 @@ jobs:
         env:
           CI_TIMINGS_REPORT_URL: ${{ steps.ci-timings-html.outputs.artifact-url }}
         run: |
-          python3 scripts/ci/timings_report.py \
+          python3.12 scripts/ci/timings_report.py \
             --from-json ci-timings.json \
             --baseline ci-timings-baseline.json \
             --review-status-out review-status.json \

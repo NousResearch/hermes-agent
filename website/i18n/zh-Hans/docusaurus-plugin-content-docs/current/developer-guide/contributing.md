@@ -34,7 +34,7 @@ description: "如何为 Hermes Agent 做贡献 — 开发环境配置、代码�
 | 要求 | 说明 |
 |-------------|-------|
 | **Git** | 需安装 `git-lfs` 扩展 |
-| **Python 3.11–3.13** | 若未安装，uv 会自动安装 |
+| **Python 3.12** | 若未安装，uv 会自动安装 |
 | **uv** | 高速 Python 包管理器（[安装](https://docs.astral.sh/uv/)） |
 | **Node.js 20+** | 可选 — 浏览器工具和 WhatsApp bridge 需要（与根目录 `package.json` engines 字段一致） |
 
@@ -68,8 +68,8 @@ scripts/run_tests.sh
 git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
 
-# 使用 Python 3.11 创建虚拟环境
-uv venv venv --python 3.11
+# 使用 Python 3.12 创建虚拟环境
+uv venv venv --python 3.12
 export VIRTUAL_ENV="$(pwd)/venv"
 
 # 安装所有扩展（messaging、cron、CLI 菜单、开发工具）

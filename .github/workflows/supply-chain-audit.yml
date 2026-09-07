@@ -65,6 +65,10 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
       - name: Scan diff for critical patterns
         id: scan
         env:
@@ -164,7 +168,7 @@ jobs:
         env:
           FOUND: ${{ steps.scan.outputs.found }}
         run: |
-          python3 - <<'PYEOF'
+          python3.12 - <<'PYEOF'
           import json, os
 
           # The review-label gate renders and blocks critical findings. Keep
@@ -189,6 +193,10 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
 
       - name: Check for unbounded PyPI deps
         id: bounds
@@ -224,7 +232,7 @@ jobs:
         env:
           FOUND: ${{ steps.bounds.outputs.found }}
         run: |
-          python3 - <<'PYEOF'
+          python3.12 - <<'PYEOF'
           import json, os
 
           found = os.environ.get("FOUND", "") == "true"
@@ -265,6 +273,10 @@ jobs:
       review_status: ${{ steps.merge.outputs.review_status }}
       critical_findings: ${{ steps.merge.outputs.critical_findings }}
     steps:
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
       - name: Merge review statuses
         id: merge
         env:
@@ -272,7 +284,7 @@ jobs:
           DEP_STATUS: ${{ needs.dep-bounds.outputs.review_status }}
           CRITICAL_FINDINGS: ${{ needs.scan.outputs.critical_findings }}
         run: |
-          python3 - <<'PYEOF'
+          python3.12 - <<'PYEOF'
           import json, os
 
           merged = []

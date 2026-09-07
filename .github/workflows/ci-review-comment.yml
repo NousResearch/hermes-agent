@@ -55,6 +55,10 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
       - name: Run live comment poller
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -75,6 +79,6 @@ jobs:
           COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
           COMMIT_MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
         run: |
-          python3 -u scripts/ci/live_comment.py \
+          python3.12 -u scripts/ci/live_comment.py \
             --interval 15 \
             --timeout 3000

@@ -6,7 +6,7 @@
  * candidates -- bootstrap marker, `hermes` on PATH, system Python with
  * hermes_cli installed -- and historically returned the first candidate
  * whose binary existed on disk. That assumption breaks when a user has
- * a pre-installed Python 3.11-3.13 (so findSystemPython() returns a
+ * a pre-installed Python 3.12 (so findSystemPython() returns a
  * path) but no hermes_cli in its site-packages: the resolver hands back
  * a backend the spawn step can't actually run, and the user gets a
  * dead-on-arrival "ModuleNotFoundError: No module named 'hermes_cli'"
@@ -113,6 +113,94 @@ function execProbeSync(
 }
 
 /**
+ * Operational Hermes runtime is exactly Python 3.12. Every interpreter
+ * candidate (override, venv, PATH, managed) is accepted only after a real
+ * read-only version probe proves sys.version_info[:2] == (3, 12).
+ * Unsupported or unproven candidates fail closed.
+ */
+const SUPPORTED_PYTHON_MAJOR = 3
+const SUPPORTED_PYTHON_MINOR = 12
+
+/**
+ * Pure check: does (major, minor) equal the supported 3.12 line?
+ */
+function isSupportedPythonVersion(major: number, minor: number): boolean {
+  return major === SUPPORTED_PYTHON_MAJOR && minor === SUPPORTED_PYTHON_MINOR
+}
+
+/**
+ * Parse a version probe output like "3.12" or "3.12.3" into [major, minor].
+ * Returns null when the output does not start with two numeric components.
+ */
+function parsePythonVersionFromProbeOutput(output: string): [number, number] | null {
+  if (!output) {
+    return null
+  }
+  const match = String(output).trim().match(/^(\d+)\.(\d+)/)
+  if (!match) {
+    return null
+  }
+  const major = Number.parseInt(match[1], 10)
+  const minor = Number.parseInt(match[2], 10)
+  if (!Number.isFinite(major) || !Number.isFinite(minor)) {
+    return null
+  }
+  return [major, minor]
+}
+
+/**
+ * Read-only version probe snippet. Prints "major.minor" without importing
+ * anything beyond sys, so it is safe against broken venvs.
+ */
+function pythonVersionProbe(): string {
+  return 'import sys; print("%d.%d" % sys.version_info[:2])'
+}
+
+/**
+ * Probe an interpreter's version read-only. Returns the raw "major.minor"
+ * string, or null when the probe cannot be proven (missing binary, timeout,
+ * non-zero exit, unparsable output). Never throws.
+ */
+function probePythonVersion(
+  pythonPath: string,
+  opts: { env?: Record<string, string> } = {}
+): string | null {
+  if (!pythonPath) {
+    return null
+  }
+  try {
+    const out = execFileSync(pythonPath, ['-c', pythonVersionProbe()], {
+      env: { ...process.env, ...(opts.env || {}) },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: PROBE_TIMEOUT_MS,
+      windowsHide: true
+    } as never) as unknown as string
+    const text = String(out ?? '').trim()
+    return text ? text : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Return true iff a read-only version probe proves the interpreter is
+ * exactly Python 3.12. Unsupported or unproven candidates return false
+ * (fail closed) rather than being spawned.
+ */
+function isSupportedHermesPython(
+  pythonPath: string,
+  opts: { env?: Record<string, string> } = {}
+): boolean {
+  const raw = probePythonVersion(pythonPath, opts)
+  const parsed = raw ? parsePythonVersionFromProbeOutput(raw) : null
+  if (!parsed) {
+    return false
+  }
+  return isSupportedPythonVersion(parsed[0], parsed[1])
+}
+
+/**
  * Return the Python snippet used to verify Hermes can import far enough to
  * launch the CLI. Kept exported for tests so dependency regressions are
  * caught without needing a real broken venv fixture.
@@ -127,7 +215,7 @@ function hermesRuntimeImportProbe() {
  * Return true iff the Hermes runtime import probe exits 0.
  *
  * Used to gate the "fallback to system Python with hermes_cli installed"
- * rung of resolveHermesBackend. Without this, a system Python 3.11-3.13
+ * rung of resolveHermesBackend. Without this, a system Python 3.12
  * registered in PEP 514 makes findSystemPython() succeed regardless of
  * whether hermes_cli has actually been pip-installed into its
  * site-packages -- and the resolver returns a backend that immediately
@@ -214,8 +302,15 @@ export {
   DEFAULT_PROBE_TIMEOUT_MS,
   execProbeSync,
   hermesRuntimeImportProbe,
+  isSupportedHermesPython,
+  isSupportedPythonVersion,
+  parsePythonVersionFromProbeOutput,
+  probePythonVersion,
+  pythonVersionProbe,
   PROBE_TIMEOUT_MS,
   resolveProbeTimeoutMs,
   shouldTrustHermesOverride,
+  SUPPORTED_PYTHON_MAJOR,
+  SUPPORTED_PYTHON_MINOR,
   verifyHermesCli
 }

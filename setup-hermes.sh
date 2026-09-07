@@ -10,7 +10,7 @@
 #
 # This script:
 # 1. Detects desktop/server vs Android/Termux setup path
-# 2. Creates a Python 3.11 virtual environment
+# 2. Creates a Python 3.12 virtual environment
 # 3. Installs the appropriate dependency set for the platform
 # 4. Creates .env from template (if not exists)
 # 5. Symlinks the 'hermes' CLI command into a user-facing bin dir
@@ -33,7 +33,7 @@ cd "$SCRIPT_DIR"
 # wrong user's home directory when running under sudo -u <user>.  See #21269.
 export UV_NO_CONFIG=1
 
-PYTHON_VERSION="3.11"
+PYTHON_VERSION="3.12"
 
 is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
@@ -133,14 +133,13 @@ fi
 echo -e "${CYAN}→${NC} Checking Python $PYTHON_VERSION..."
 
 if is_termux; then
-    # Hermes currently declares requires-python >=3.11,<3.14. Termux can expose
+    # Hermes operational runtime is exactly Python 3.12. Termux can expose
     # a newer default `python` before dependencies have compatible wheels, so
-    # prefer explicit compatible minors and verify the upper bound before using
-    # the interpreter to create the venv.
-    for python_cmd in python3.11 python3.12 python3.13 python; do
+    # only accept an interpreter whose version probe proves 3.12.
+    for python_cmd in python3.12; do
         if command -v "$python_cmd" >/dev/null 2>&1; then
             CANDIDATE_PATH="$(command -v "$python_cmd")"
-            if "$CANDIDATE_PATH" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+            if "$CANDIDATE_PATH" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)' 2>/dev/null; then
                 PYTHON_PATH="$CANDIDATE_PATH"
                 PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
                 echo -e "${GREEN}✓${NC} $PYTHON_FOUND_VERSION found"
@@ -152,9 +151,9 @@ if is_termux; then
     if [ -z "${PYTHON_PATH:-}" ]; then
         if command -v python >/dev/null 2>&1; then
             PYTHON_FOUND_VERSION="$(python --version 2>/dev/null || true)"
-            echo -e "${RED}✗${NC} Termux Python $PYTHON_FOUND_VERSION is not supported; Hermes requires Python >=3.11,<3.14"
+            echo -e "${RED}✗${NC} Termux Python $PYTHON_FOUND_VERSION is not supported; Hermes requires exactly Python 3.12"
             echo "    Install a supported interpreter and re-run this script:"
-            echo "      pkg install tur-repo && pkg install python3.13"
+            echo "      pkg install tur-repo && pkg install python3.12"
         else
             echo -e "${RED}✗${NC} Python not found in Termux"
             echo "    Run: pkg install python"
@@ -162,6 +161,9 @@ if is_termux; then
         exit 1
     fi
 else
+    # Never honor an inherited UV_PYTHON selector (e.g. UV_PYTHON=3.11/3.13/3.14):
+    # force resolution of exactly 3.12.
+    unset UV_PYTHON
     if $UV_CMD python find "$PYTHON_VERSION" &> /dev/null; then
         PYTHON_PATH=$($UV_CMD python find "$PYTHON_VERSION")
         PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
@@ -190,12 +192,23 @@ if is_termux; then
     "$PYTHON_PATH" -m venv venv
     echo -e "${GREEN}✓${NC} venv created with stdlib venv"
 else
+    unset UV_PYTHON
     $UV_CMD venv venv --python "$PYTHON_VERSION"
     echo -e "${GREEN}✓${NC} venv created (Python $PYTHON_VERSION)"
 fi
 
 export VIRTUAL_ENV="$SCRIPT_DIR/venv"
 SETUP_PYTHON="$SCRIPT_DIR/venv/bin/python"
+
+# Fail closed unless the venv interpreter probes as exactly 3.12. An
+# inherited UV_PYTHON=3.11/3.13/3.14 (or any other selector) must never
+# silently retarget the venv.
+if ! "$SETUP_PYTHON" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)' 2>/dev/null; then
+    echo -e "${RED}✗${NC} venv interpreter is not Python 3.12 ($("$SETUP_PYTHON" --version 2>/dev/null || echo unknown)); Hermes requires exactly Python 3.12"
+    exit 1
+fi
+# Pin every subsequent uv command onto the validated venv interpreter.
+export UV_PYTHON="$SETUP_PYTHON"
 
 # ============================================================================
 # Dependencies
@@ -218,7 +231,9 @@ run_locked_uv_sync() {
         unset UV_NO_CONFIG UV_CONFIG_FILE
         export XDG_CONFIG_HOME="$isolated_uv_config"
         export XDG_CONFIG_DIRS="$isolated_uv_config"
-        UV_PROJECT_ENVIRONMENT="$project_env" $UV_CMD sync --extra all --locked
+        # Locked sync must run against the validated 3.12 venv interpreter;
+        # never honor an inherited UV_PYTHON selector.
+        UV_PROJECT_ENVIRONMENT="$project_env" UV_PYTHON="$project_env/bin/python" $UV_CMD sync --extra all --locked
     )
     sync_rc=$?
     rmdir "$isolated_uv_config" 2>/dev/null || true
@@ -265,9 +280,11 @@ else
     done
     _SAFE_SPEC=".[$(IFS=,; echo "${_SAFE_EXTRAS[*]}")]"
     _try_install() {
-        $UV_CMD pip install -e ".[all]" \
-            || $UV_CMD pip install -e "$_SAFE_SPEC" \
-            || $UV_CMD pip install -e "."
+        # Every pip fallback tier is pinned to the validated 3.12 venv
+        # interpreter; an inherited UV_PYTHON selector must never retarget it.
+        UV_PYTHON="$SETUP_PYTHON" $UV_CMD pip install --python "$SETUP_PYTHON" -e ".[all]" \
+            || UV_PYTHON="$SETUP_PYTHON" $UV_CMD pip install --python "$SETUP_PYTHON" -e "$_SAFE_SPEC" \
+            || UV_PYTHON="$SETUP_PYTHON" $UV_CMD pip install --python "$SETUP_PYTHON" -e "."
     }
 
     if [ -f "uv.lock" ]; then

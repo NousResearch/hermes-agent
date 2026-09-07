@@ -146,7 +146,7 @@ The installer adds `~/.local/bin` to your PATH. If you use a non-standard shell 
 
 #### Python version too old
 
-**Cause:** Hermes requires Python 3.11 or newer.
+**Cause:** Hermes requires exactly Python 3.12.
 
 **Solution:**
 ```bash

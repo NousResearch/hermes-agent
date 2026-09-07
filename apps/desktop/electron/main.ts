@@ -59,6 +59,7 @@ import { backendCommandMatches, createBackendOwnership, createBackendShutdownCoo
 import {
   canImportHermesCli,
   execProbeSync,
+  isSupportedHermesPython,
   PROBE_TIMEOUT_MS,
   shouldTrustHermesOverride,
   verifyHermesCli
@@ -2512,6 +2513,7 @@ function unwrapWindowsVenvHermesCommand(command, backendArgs) {
     fileExists,
     directoryExists,
     canImportHermesCli,
+    isSupportedHermesPython,
     getVenvPython,
     getVenvSitePackagesEntries,
     buildDesktopBackendEnv,
@@ -2649,8 +2651,14 @@ function isHermesSourceRoot(root) {
 function findPythonForRoot(root) {
   const override = process.env.HERMES_DESKTOP_PYTHON
 
+  // An explicit override is accepted only after a read-only version probe
+  // proves exactly Python 3.12; unsupported or unproven candidates fail
+  // closed rather than being spawned.
   if (override && fileExists(override)) {
-    return override
+    if (isSupportedHermesPython(override)) {
+      return override
+    }
+    rememberLog(`Ignoring HERMES_DESKTOP_PYTHON override at ${override}: version probe did not prove Python 3.12`)
   }
 
   const relativePaths = IS_WINDOWS
@@ -2660,7 +2668,7 @@ function findPythonForRoot(root) {
   for (const relativePath of relativePaths) {
     const candidate = path.join(root, relativePath)
 
-    if (fileExists(candidate)) {
+    if (fileExists(candidate) && isSupportedHermesPython(candidate)) {
       return candidate
     }
   }
@@ -2670,11 +2678,13 @@ function findPythonForRoot(root) {
 
 function findSystemPython() {
   if (!IS_WINDOWS) {
-    // POSIX systems: PATH lookup is safe.
+    // POSIX systems: PATH lookup is safe, but every candidate must still
+    // prove exactly Python 3.12 via a read-only version probe. Unsupported
+    // or unproven candidates fail closed.
     for (const command of ['python3', 'python']) {
       const candidate = findOnPath(command)
 
-      if (candidate) {
+      if (candidate && isSupportedHermesPython(candidate)) {
         return candidate
       }
     }
@@ -2692,16 +2702,14 @@ function findSystemPython() {
   //      pop the Store dialog (bad UX during boot).
   //  (2) `py.exe` (Python launcher) is missing from per-user installs
   //      that didn't check the launcher option, so PATH-only checks
-  //      miss real Python 3.13 installs (user-reported case).
+  //      miss real Python 3.12 installs (user-reported case).
   //
-  // We also restrict ourselves to Python 3.11–3.13. 3.14 is the latest
-  // CPython but several Hermes deps (notably pywinpty's Rust-built
-  // windows_x86_64_msvc crate) don't yet publish 3.14 wheels, and
-  // `pip install -e .` falls back to source-build, which fails without
-  // a Rust toolchain. install.ps1 sidesteps this by pinning to 3.11
-  // via uv; until we add the same uv-managed Python pathway here, the
-  // simplest fix is to refuse 3.14 detection and let the NSIS prereq
-  // page offer to install 3.11 alongside.
+  // Operational Hermes runtime is exactly Python 3.12. Every candidate
+  // below is accepted only after a read-only version probe proves
+  // sys.version_info[:2] == (3, 12); 3.11/3.13/3.14 and unproven
+  // candidates fail closed. install.ps1 provisions 3.12 via uv; the
+  // NSIS prereq page offers to install 3.12 alongside when nothing
+  // usable is found.
   //
   // Strategy: probe in three passes, in order from most-precise to
   // least-precise, and ONLY use PATH lookup as a last resort after
@@ -2710,19 +2718,19 @@ function findSystemPython() {
   //  Pass 1: PEP 514 registry — every standards-compliant Python
   //          installer registers itself at SOFTWARE\Python\PythonCore.
   //          The MS Store stub does NOT register here, so a hit means
-  //          a real Python install. Versions are explicit so we
-  //          inherently filter 3.14 out.
+  //          a real Python install. Only 3.12 is queried so other
+  //          minors are inherently filtered out.
   //  Pass 2: Filesystem probe of standard install locations
   //          (Program Files, LocalAppData\Programs\Python). Same
-  //          version filtering by directory name.
+  //          3.12-only filtering by directory name, plus a version probe.
   //  Pass 3: PATH lookup of `py.exe` (the launcher itself never
-  //          triggers the Store) — but call it with a version flag so
-  //          we resolve to a SPECIFIC supported version, not whatever
-  //          py.exe's default is (which on a 3.14-only box would be
-  //          3.14).
+  //          triggers the Store) — but call it with an explicit -3.12
+  //          flag so we resolve to exactly 3.12, not whatever
+  //          py.exe's default is (which on a 3.11/3.13/3.14-only box would be
+  //          unsupported).
 
-  const SUPPORTED_VERSIONS = ['3.11', '3.12', '3.13']
-  const SUPPORTED_VERSIONS_NO_DOT = ['311', '312', '313']
+  const SUPPORTED_VERSIONS = ['3.12']
+  const SUPPORTED_VERSIONS_NO_DOT = ['312']
 
   // Pass 1: registry. Use `reg query` since main process doesn't have
   // a reliable in-process registry API across all electron versions.
@@ -2745,7 +2753,7 @@ function findSystemPython() {
           const installPath = match[1].trim()
           const pythonExe = path.join(installPath, 'python.exe')
 
-          if (fileExists(pythonExe)) {
+          if (fileExists(pythonExe) && isSupportedHermesPython(pythonExe)) {
             return pythonExe
           }
         }
@@ -2762,24 +2770,23 @@ function findSystemPython() {
   for (const versionDir of SUPPORTED_VERSIONS_NO_DOT) {
     const systemWide = path.join(programFiles, `Python${versionDir}`, 'python.exe')
 
-    if (fileExists(systemWide)) {
+    if (fileExists(systemWide) && isSupportedHermesPython(systemWide)) {
       return systemWide
     }
 
     if (localAppData) {
       const perUser = path.join(localAppData, 'Programs', 'Python', `Python${versionDir}`, 'python.exe')
 
-      if (fileExists(perUser)) {
+      if (fileExists(perUser) && isSupportedHermesPython(perUser)) {
         return perUser
       }
     }
   }
 
   // Pass 3: py.exe with explicit version flag. The launcher itself is
-  // safe to invoke (no Store popup) and `py -3.13 -c "import sys;
+  // safe to invoke (no Store popup) and `py -3.12 -c "import sys;
   // print(sys.executable)"` resolves to the actual python.exe path of
-  // the requested version. We try in version-priority order so the
-  // first hit wins.
+  // exactly 3.12.
   const pyExe = findOnPath('py.exe')
 
   if (pyExe) {
@@ -2801,7 +2808,7 @@ function findSystemPython() {
 
         const candidate = out.trim()
 
-        if (candidate && fileExists(candidate)) {
+        if (candidate && fileExists(candidate) && isSupportedHermesPython(candidate)) {
           return candidate
         }
       } catch {
@@ -2813,9 +2820,9 @@ function findSystemPython() {
   // We deliberately do NOT fall back to plain `python.exe` on PATH.
   // Without a way to verify the version safely (running `python -V`
   // risks the Microsoft Store popup), accepting whatever's there
-  // could land us on 3.14 and trigger the Rust-build-from-source
-  // failure. Better to return null and let the NSIS prereq page
-  // offer to install a known-good 3.11 via winget.
+  // could land us on an unsupported 3.11/3.13/3.14 and trigger the
+  // Rust-build-from-source failure. Better to return null and let the
+  // NSIS prereq page offer to install a known-good 3.12 via winget.
   return null
 }
 
@@ -4677,6 +4684,7 @@ function isActiveRuntimeUsable() {
   return (
     isHermesSourceRoot(ACTIVE_HERMES_ROOT) &&
     fileExists(venvPython) &&
+    isSupportedHermesPython(venvPython) &&
     canImportHermesCli(venvPython, {
       env: {
         PYTHONPATH: [ACTIVE_HERMES_ROOT, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
@@ -4929,9 +4937,12 @@ function createPythonBackend(root, label, backendArgs, options: any = {}) {
   // `venv`, and mixing the two crashes the backend on its first native
   // import (see venvRootForPython). Fall back to root/venv only for a
   // system python, where the historical layout is the best guess.
+  // findPythonForRoot already proves exactly 3.12; the Windows venv shim
+  // path below must not reintroduce an unproven interpreter.
   const venvRoot = venvRootForPython(python, root) ?? path.join(root, 'venv')
   const venvPython = getVenvPython(venvRoot)
-  const command = IS_WINDOWS && fileExists(venvPython) ? venvPython : python
+  const venvUsable = IS_WINDOWS && fileExists(venvPython) && isSupportedHermesPython(venvPython)
+  const command = venvUsable ? venvPython : python
 
   return {
     kind: 'python',
@@ -4952,10 +4963,13 @@ function createPythonBackend(root, label, backendArgs, options: any = {}) {
 // createActiveBackend — build a backend pointing at ACTIVE_HERMES_ROOT, the
 // canonical install location shared with the CLI installer. The venv at
 // VENV_ROOT may not exist yet on first run; bootstrap=true tells
-// ensureRuntime() to create / refresh it before launch.
+// ensureRuntime() to create / refresh it before launch. An existing venv
+// interpreter is used only after proving exactly 3.12; otherwise the
+// probed system Python (also 3.12-only) is used so bootstrap provisions 3.12.
 function createActiveBackend(backendArgs) {
   const venvPython = getVenvPython(VENV_ROOT)
-  const command = fileExists(venvPython) ? venvPython : findSystemPython()
+  const venvUsable = fileExists(venvPython) && isSupportedHermesPython(venvPython)
+  const command = venvUsable ? venvPython : findSystemPython()
 
   return {
     kind: 'python',
@@ -5101,15 +5115,15 @@ function resolveHermesBackend(backendArgs) {
   const python = findSystemPython()
 
   if (python) {
-    // Same smoke-test rationale as step 4: a system Python in the
-    // SUPPORTED_VERSIONS range can be registered (PEP 514) without
-    // having hermes_cli installed -- common on dev boxes that have
-    // a python.org install from prior unrelated work. Returning that
-    // backend hands the spawn step a guaranteed ModuleNotFoundError.
-    // Verify the import works before trusting the candidate; on
+    // Same smoke-test rationale as step 4: a system Python 3.12 can be
+    // registered (PEP 514) without having hermes_cli installed -- common
+    // on dev boxes that have a python.org install from prior unrelated
+    // work. Returning that backend hands the spawn step a guaranteed
+    // ModuleNotFoundError. findSystemPython already proves exactly 3.12;
+    // verify the import works before trusting the candidate; on
     // failure, fall through to step 6 so the bootstrap runner pulls
-    // a uv-managed 3.11 into %LOCALAPPDATA%\hermes\hermes-agent\venv.
-    if (canImportHermesCli(python)) {
+    // a uv-managed 3.12 into %LOCALAPPDATA%\hermes\hermes-agent\venv.
+    if (isSupportedHermesPython(python) && canImportHermesCli(python)) {
       return {
         kind: 'python',
         label: `installed hermes_cli module via ${python}`,

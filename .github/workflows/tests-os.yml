@@ -79,10 +79,10 @@ jobs:
             pyproject.toml
             uv.lock
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.12
         uses: ./.github/actions/retry
         with:
-          command: uv python install 3.11
+          command: uv python install 3.12
 
       - name: Install dependencies
         # Same extras as the Linux test lane so an OS-marked test can import
@@ -92,7 +92,7 @@ jobs:
         # because it could not build here).
         uses: ./.github/actions/retry
         with:
-          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
+          command: uv sync --locked --python 3.12 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
 
       - name: Minimize uv cache
         run: uv cache prune --ci
@@ -124,7 +124,7 @@ jobs:
 
           # Process substitution would hide the helper's exit status, so write
           # to a file and check it explicitly.
-          if ! uv run --no-sync python scripts/ci/list_os_marked_tests.py \
+          if ! uv run --no-sync --python 3.12 python scripts/ci/list_os_marked_tests.py \
                  "${{ matrix.marker }}" > "$LIST"; then
             echo "::error::could not enumerate ${{ matrix.marker }} test files"
             exit 1
@@ -161,7 +161,7 @@ jobs:
           fi
 
           status=0
-          uv run --no-sync python -m pytest \
+          uv run --no-sync --python 3.12 python -m pytest \
             "$@" \
             ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
             -m "${{ matrix.marker }} and not integration" \

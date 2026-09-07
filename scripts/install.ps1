@@ -385,12 +385,13 @@ $script:ResolvedPathReport = @{
 
 $RepoUrlSsh = "git@github.com:NousResearch/hermes-agent.git"
 $RepoUrlHttps = "https://github.com/NousResearch/hermes-agent.git"
-$PythonVersion = "3.11"
-# Minor versions the installer accepts when the requested $PythonVersion isn't
-# available, in preference order. Only checkout-private uv-managed interpreters
-# are eligible. Single source of truth shared by Test-Python's fallback and
+$PythonVersion = "3.12"
+# Hermes operational runtime is exactly Python 3.12. No other minor is
+# accepted; the fallback list retains only 3.12 so Resolve-AvailablePythonVersion
+# and Test-Python cannot select 3.11/3.13/3.14. Only checkout-private uv-managed
+# interpreters are eligible. Single source of truth shared by Test-Python's fallback and
 # Resolve-AvailablePythonVersion.
-$PythonFallbackVersions = @("3.12", "3.13", "3.10")
+$PythonFallbackVersions = @("3.12")
 $PythonFindTimeoutMs = 30000
 $NodeVersion = "22"
 # The npm range the root package.json pins in `engines.npm`.  A constant rather
@@ -1232,6 +1233,9 @@ function Resolve-AvailablePythonVersion {
             if ($foundPath) {
                 $absolute = [System.IO.Path]::GetFullPath($foundPath)
                 if ($absolute.StartsWith($managedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    # Accept only after a real read-only version probe proves 3.12.
+                    $probe = & $absolute -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>$null
+                    if ($probe -ne "3.12") { continue }
                     return [PSCustomObject]@{
                         Path = $absolute
                         Version = $ver
@@ -1268,7 +1272,7 @@ function Test-Python {
     $prevEAP = $ErrorActionPreference
     try {
         # Temporarily relax ErrorActionPreference: uv writes download progress
-        # ("Downloading cpython-3.11.15-windows-x86_64-none (24.5MiB)") to
+        # ("Downloading cpython-3.12.12-windows-x86_64-none (24.5MiB)") to
         # stderr.  With $ErrorActionPreference = "Stop" (set at the top of this
         # script) PowerShell wraps stderr lines from native commands as
         # ErrorRecord objects when captured via 2>&1, then throws a terminating
@@ -2557,11 +2561,10 @@ function Install-Venv {
     }
 
     # Re-resolve the interpreter before creating the venv.  Under Hermes-Setup.exe
-    # each stage runs in its own powershell.exe, so the fallback the `python`
-    # stage picked (e.g. 3.12 when 3.11 is absent) did NOT propagate into this
-    # fresh process -- $PythonVersion is back at its "3.11" default.  Trusting it
-    # here made `uv venv venv --python 3.11` fail with exit 2 on machines without
-    # 3.11 even though the `python` stage reported success (issue #50769).
+    # each stage runs in its own powershell.exe, so the resolved 3.12 interpreter
+    # did NOT propagate into this fresh process -- $PythonVersion is back at its
+    # "3.12" default. Re-resolving here keeps the venv stage pinned to exactly
+    # 3.12 even though the `python` stage reported success (issue #50769).
     $resolvedPython = Resolve-AvailablePythonVersion
     if (-not $resolvedPython) {
         throw "Hermes-managed Python is unavailable. Run install.ps1 -Stage python first."
@@ -2723,9 +2726,14 @@ function Install-Venv {
     # uv can return success without leaving the interpreter expected by the
     # installer (for example after an interrupted filesystem operation). Treat
     # that as a failed transaction so the previous venv can be restored.
+    # Fail closed unless the venv interpreter probes as exactly 3.12.
     $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
     if (-not (Test-Path -LiteralPath $venvPythonExe -PathType Leaf)) {
         throw "uv reported success but venv interpreter is missing at $venvPythonExe"
+    }
+    $venvProbe = & $venvPythonExe -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>$null
+    if ($venvProbe -ne "3.12") {
+        throw "venv interpreter is not Python 3.12 (found $venvProbe); Hermes requires exactly Python 3.12"
     }
 
     # The replacement has a working interpreter, but the transaction is only
@@ -2748,10 +2756,10 @@ function Install-Venv {
             Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue
         }
 
-    # Neutralize any inherited UV_PYTHON (e.g. $env:UV_PYTHON = "3.14" left in
+    # Neutralize any inherited UV_PYTHON (e.g. $env:UV_PYTHON = "3.11"/"3.13"/"3.14" left in
     # the user's shell). uv honours UV_PYTHON over an existing venv for the
     # later `uv sync` / `uv pip install` tiers, so without this it would
-    # silently delete this 3.11 venv and recreate it at the inherited version
+    # silently delete this 3.12 venv and recreate it at the inherited version
     # -- building Rust transitives that have no wheel for that version from
     # source via maturin, which fails. Pinning UV_PYTHON to the interpreter we
     # just created forces every subsequent uv command onto it.
@@ -2871,17 +2879,23 @@ function Install-Dependencies {
         $env:VIRTUAL_ENV = "$InstallDir\venv"
     }
 
-    # Re-pin UV_PYTHON to the venv interpreter. Install-Venv already does this,
+    # Re-pin UV_PYTHON to the validated 3.12 venv interpreter. Install-Venv already does this,
     # but the bootstrap runs install stages (venv, python-deps) as separate
     # processes, so the env var set in Install-Venv does NOT survive into a
     # separate python-deps invocation. Re-deriving it here covers that path.
-    # Without it, an inherited $env:UV_PYTHON = "3.14" makes the uv sync/pip
-    # tiers below recreate the venv at 3.14 and fail the maturin source build
-    # (no cp314 wheels yet).
+    # Without it, an inherited $env:UV_PYTHON = "3.11"/"3.13"/"3.14" makes the uv sync/pip
+    # tiers below recreate the venv at an unsupported version and fail the maturin source build.
+    # Fail closed if the venv interpreter is missing or does not probe as 3.12.
     if (-not $NoVenv) {
         $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
         if (Test-Path $venvPythonExe) {
+            $venvVer = & $venvPythonExe -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>$null
+            if ($venvVer -ne "3.12") {
+                throw "venv interpreter is not Python 3.12 (found $venvVer); Hermes requires exactly Python 3.12"
+            }
             $env:UV_PYTHON = $venvPythonExe
+        } else {
+            throw "venv interpreter missing at $venvPythonExe; Hermes requires exactly Python 3.12"
         }
     }
 
@@ -2954,7 +2968,7 @@ function Install-Dependencies {
     $brokenExtras = @()
 
     # Parse [project.optional-dependencies].all from pyproject.toml.
-    # tomllib is stdlib on Python 3.11+ which the bootstrap guarantees.
+    # tomllib is stdlib on Python 3.12 which the bootstrap guarantees.
     $pythonExeForParse = if (-not $NoVenv) { "$InstallDir\venv\Scripts\python.exe" } else { (& $UvCmd python find $PythonVersion) }
     $allExtras = @()
     if (Test-Path $pythonExeForParse) {
@@ -2993,7 +3007,10 @@ except Exception:
     if (-not $skipPipFallback) {
         foreach ($tier in $installTiers) {
         Write-Info "Trying tier: $($tier.Name) ..."
-        Invoke-NativeWithRelaxedErrorAction { & $UvCmd pip install -e $tier.Spec }
+        # Every pip fallback tier is pinned to the validated 3.12 venv
+        # interpreter; an inherited UV_PYTHON selector must never retarget it.
+        $env:UV_PYTHON = $venvPythonExe
+        Invoke-NativeWithRelaxedErrorAction { & $UvCmd pip install --python "$venvPythonExe" -e $tier.Spec }
         if ($LASTEXITCODE -eq 0) {
             Write-Success "Main package installed ($($tier.Name))"
             $script:InstalledTier = $tier.Name

@@ -71,6 +71,10 @@ const zoneAt = (index: number) => {
 
 const tabEl = (paneId: string) => document.querySelector<HTMLElement>(`[data-tree-tab="${paneId}"]`)
 
+// Load stable modules during collection, after mock fixtures are initialized.
+// Cold transforms must not consume a behavioral test or hook deadline.
+const { closeActiveTab } = await import('@/app/chat/close-tab')
+
 describe('right-clicking a tool panel tab', () => {
   it('offers Close when logs is STACKED with the terminal', async () => {
     declareDefaultTree(
@@ -121,7 +125,6 @@ describe('right-clicking a tool panel tab', () => {
 
 describe('⌘W over a focused tool panel', () => {
   it('closes the logs tab and the toggle brings it back', async () => {
-    const { closeActiveTab } = await import('@/app/chat/close-tab')
     const { allPaneIds } = await import('../model')
     const { revealTreePane, setPaneCollapsed } = await import('../store')
 

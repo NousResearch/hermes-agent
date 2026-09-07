@@ -140,6 +140,23 @@ CASES = {
     # install.ps1 is a shell script Python never imports, but it's also not
     # provably prose, so python stays on (fail-open) alongside the Windows lane.
     "install.ps1 → installer": (["scripts/install.ps1"], _lanes(python=True, installer=True)),
+    "checkout encoding → installer": ([".gitattributes"], _lanes(python=True, installer=True)),
+    "installer authored module → installer": (
+        ["scripts/windows-installer/source/venv.ps1"],
+        _lanes(python=True, installer=True),
+    ),
+    "installer manifest → installer": (
+        ["scripts/windows-installer/manifest.json"],
+        _lanes(python=True, installer=True),
+    ),
+    "installer assembler → installer": (
+        ["scripts/build_windows_installer.py"],
+        _lanes(python=True, installer=True, scan=True),
+    ),
+    "installer delivery test → installer": (
+        ["tests/test_windows_installer_delivery.py"],
+        _lanes(python=True, python_prod=False, installer=True, scan=True),
+    ),
     "installer test → installer": (
         ["scripts/tests/test-install-ps1-longpath.ps1"],
         _lanes(python=True, installer=True),

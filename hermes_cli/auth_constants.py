@@ -157,6 +157,7 @@ _spotify_err = _provider_error_factory("spotify")
 _qwen_err = _provider_error_factory("qwen-oauth")
 _minimax_err = _provider_error_factory("minimax-oauth")
 _commandcode_err = _provider_error_factory("commandcode")
+_commandcode_oauth_err = _provider_error_factory("commandcode-oauth")
 
 
 def _decode_jwt_claims(token: Any) -> Dict[str, Any]:

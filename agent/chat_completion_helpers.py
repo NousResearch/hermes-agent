@@ -693,6 +693,9 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         return agent._anthropic_messages_create(api_kwargs, client=request_client)
     if agent.api_mode == "bedrock_converse":
         return _bedrock_converse_call(api_kwargs, stream=False)
+    if agent.api_mode == "commandcode_alpha" or getattr(agent, "provider", None) in ("commandcode-oauth", "command-code"):
+        from agent.commandcode_alpha_adapter import stream_commandcode_alpha
+        return stream_commandcode_alpha(agent, api_kwargs)
     if agent.provider == "moa":
         # MoA is a virtual provider backed by the in-process MoAClient facade — never
         # rebuild a request-local client from the virtual metadata. After a client
@@ -3328,6 +3331,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         return _stream_codex_passthrough(agent, api_kwargs, on_first_delta)
     if agent.api_mode == "bedrock_converse":
         return _BedrockStream(agent, api_kwargs, on_first_delta).run()
+    if agent.api_mode == "commandcode_alpha" or getattr(agent, "provider", None) in ("commandcode-oauth", "command-code"):
+        from agent.commandcode_alpha_adapter import stream_commandcode_alpha
+        return stream_commandcode_alpha(agent, api_kwargs, on_first_delta)
     # Cross-turn stale-stream circuit breaker (see ``_stale_streak()``).
     _check_stale_giveup(agent)
     return _StreamingCall(agent, api_kwargs, on_first_delta).run()

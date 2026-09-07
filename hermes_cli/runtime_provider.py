@@ -25,7 +25,7 @@ from hermes_cli.auth import (  # resolve_external_process_provider_credentials i
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, AuthError, DEFAULT_CODEX_BASE_URL, DEFAULT_QWEN_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL,
     PROVIDER_REGISTRY, _agent_key_is_usable, _nous_inference_env_override, format_auth_error, resolve_provider,
     resolve_nous_runtime_credentials, resolve_codex_runtime_credentials, resolve_xai_oauth_runtime_credentials,
-    resolve_qwen_runtime_credentials, resolve_api_key_provider_credentials,
+    resolve_qwen_runtime_credentials, resolve_commandcode_runtime_credentials, resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,  # noqa: F401
     has_usable_secret, is_actual_local_base_url, normalize_actual_base_url,
 )
@@ -638,6 +638,10 @@ _OAUTH_RUNTIME_PROVIDERS: Dict[str, _OAuthRuntimeSpec] = {
                                    "last_refresh", "Auto-detected xAI OAuth provider but credentials failed", DEFAULT_XAI_OAUTH_BASE_URL),
     "qwen-oauth": _OAuthRuntimeSpec(lambda: resolve_qwen_runtime_credentials(), "chat_completions", "qwen-cli",
                                     "expires_at_ms", "Qwen OAuth credentials failed"),
+    "commandcode-oauth": _OAuthRuntimeSpec(lambda: resolve_commandcode_runtime_credentials(), "commandcode_alpha", "commandcode-cli",
+                                           "expires_at_ms", "Command Code OAuth credentials failed", "https://api.commandcode.ai"),
+    "command-code": _OAuthRuntimeSpec(lambda: resolve_commandcode_runtime_credentials(), "commandcode_alpha", "commandcode-cli",
+                                      "expires_at_ms", "Command Code OAuth credentials failed", "https://api.commandcode.ai"),
 }
 
 

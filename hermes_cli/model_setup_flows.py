@@ -420,6 +420,42 @@ def _model_flow_qwen_oauth(_config, current_model=""):
     _activate_provider_model(selected, "qwen-oauth", DEFAULT_QWEN_BASE_URL, f"Default model set to: {selected} (via Qwen OAuth)")
 
 
+def _model_flow_commandcode_oauth(_config, current_model="", args=None):
+    """Command Code OAuth provider: reuse local Command Code CLI login / OAuth, then pick model."""
+    from hermes_cli.auth import (
+        get_commandcode_auth_status, _commandcode_oauth_login, _prompt_model_selection,
+    )
+    status = get_commandcode_auth_status()
+    if not status.get("logged_in"):
+        _say("Not logged into Command Code OAuth. Starting authentication...", "")
+        try:
+            creds = _commandcode_oauth_login(args)
+        except Exception as exc:
+            print(f"Command Code OAuth login failed: {exc}")
+            return
+    else:
+        from hermes_cli.auth_commandcode import resolve_commandcode_runtime_credentials
+        creds = resolve_commandcode_runtime_credentials()
+
+    models = [
+        "meituan/LongCat-2.0:free",
+        "poolside/laguna-s-2.1-free",
+        "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-v4-pro",
+        "Qwen/Qwen3.7-Max",
+        "Qwen/Qwen3.6-Plus",
+        "moonshotai/Kimi-K2.6",
+        "zai-org/GLM-5.1",
+        "MiniMaxAI/MiniMax-M2.7",
+        "xiaomi/mimo-v2.5-pro",
+        "google/gemini-3.5-flash",
+        "gpt-5.5",
+    ]
+    default = current_model if current_model in models else models[0]
+    selected = _prompt_model_selection(models, current_model=default, confirm_provider="commandcode-oauth", confirm_base_url="https://api.commandcode.ai")
+    _activate_provider_model(selected, "commandcode-oauth", "https://api.commandcode.ai", f"Default model set to: {selected} (via Command Code OAuth)")
+
+
 def _model_flow_minimax_oauth(config, current_model="", args=None):
     """MiniMax OAuth provider: ensure logged in, then pick model."""
     from hermes_cli.auth import (

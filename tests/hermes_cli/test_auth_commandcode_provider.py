@@ -163,7 +163,7 @@ def test_commandcode_oauth_login_auto_import(commandcode_env):
 
 
 def test_commandcode_in_oauth_capable_providers():
-    assert "commandcode" in _OAUTH_CAPABLE_PROVIDERS
-    assert "commandcode" in _OAUTH_ADD_SPECS
-    spec = _OAUTH_ADD_SPECS["commandcode"]
+    assert "commandcode-oauth" in _OAUTH_CAPABLE_PROVIDERS
+    assert "commandcode-oauth" in _OAUTH_ADD_SPECS
+    spec = _OAUTH_ADD_SPECS["commandcode-oauth"]
     assert spec.token({"api_key": "my-key"}) == "my-key"

@@ -24,7 +24,7 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth", "commandcode"}
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth", "commandcode-oauth", "command-code"}
 
 
 def _get_custom_provider_entries() -> list[dict]:
@@ -247,12 +247,24 @@ _OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
         source=f"{SOURCE_MANUAL}:minimax_oauth",
         fields=lambda creds, provider: {
             "refresh_token": creds.get("refresh_token"), "base_url": creds.get("inference_base_url")}),
-    "commandcode": _OAuthAddSpec(
+    "commandcode-oauth": _OAuthAddSpec(
         login=lambda args: auth_mod._commandcode_oauth_login(args),
         token=lambda creds: creds["api_key"],
         source=f"{SOURCE_MANUAL}:commandcode_cli",
         fields=lambda creds, provider: {
-            "base_url": creds.get("base_url") or _provider_base_url(provider),
+            "base_url": "https://api.commandcode.ai",
+            "extra": {
+                "user_id": creds.get("userId"),
+                "user_name": creds.get("userName"),
+                "key_name": creds.get("keyName"),
+            },
+        }),
+    "command-code": _OAuthAddSpec(
+        login=lambda args: auth_mod._commandcode_oauth_login(args),
+        token=lambda creds: creds["api_key"],
+        source=f"{SOURCE_MANUAL}:commandcode_cli",
+        fields=lambda creds, provider: {
+            "base_url": "https://api.commandcode.ai",
             "extra": {
                 "user_id": creds.get("userId"),
                 "user_name": creds.get("userName"),

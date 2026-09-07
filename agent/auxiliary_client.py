@@ -1380,8 +1380,14 @@ class _CodexCompletionsAdapter:
             if isinstance(reasoning_cfg, dict) and reasoning_cfg.get("enabled") is not False:
                 # Truthy-only: Codex 400s on e.g. {"effort": null}, so falsy → default. Shared
                 # per-model clamp with the main transport ("max" is gpt-5.6-only; "minimal"/"ultra" rejected).
-                from agent.reasoning_effort import clamp_effort, codex_supported_efforts
-                effort = clamp_effort(reasoning_cfg.get("effort") or "medium", codex_supported_efforts(model))
+                from agent.codex_responses_adapter import classify_responses_route
+                from agent.reasoning_effort import clamp_effort
+                from agent.transports.codex import _codex_efforts_for_route
+                is_codex_backend = classify_responses_route(SimpleNamespace(base_url=host)).is_codex_backend
+                effort = clamp_effort(
+                    reasoning_cfg.get("effort") or "medium",
+                    _codex_efforts_for_route(model, host, is_codex_backend=is_codex_backend),
+                )
                 resp_kwargs["reasoning"] = {"effort": effort, "summary": "auto"}
                 resp_kwargs["include"] = ["reasoning.encrypted_content"]
         tools = kwargs.get("tools")
@@ -1434,6 +1440,9 @@ class _CodexCompletionsAdapter:
                     resp_kwargs["prompt_cache_retention"] = cache_retention
         except Exception:
             logger.debug("Codex auxiliary: prompt_cache_key derivation skipped", exc_info=True)
+        # Last, like the main transport: caller extra_body must not put a rejected Astra field back.
+        from agent.transports.codex import _sanitize_astra_request_kwargs
+        _sanitize_astra_request_kwargs(resp_kwargs, model, host)
         return resp_kwargs, model, timeout
 
     def create(self, **kwargs) -> Any:

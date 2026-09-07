@@ -2077,6 +2077,8 @@ DEFAULT_CONFIG = {
     },
 
     "updates": {
+        # Passive version/banner checks only; explicit `hermes update --check` remains enabled.
+        "check": True,
         # Pre-update backup. quick = snapshot small critical state (pairing JSONs, cron jobs,
         # config.yaml, .env, auth.json, profile DBs) into <HERMES_HOME>/state-snapshots/, skipping
         # files >1 GiB; restore via ``/snapshot``. full = quick PLUS a ``hermes backup`` zip in

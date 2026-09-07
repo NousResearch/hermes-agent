@@ -20,6 +20,16 @@ This pulls the latest code from `main`, updates dependencies, and prompts you to
 `hermes update` automatically detects new configuration options and prompts you to add them. If you skipped that prompt, you can manually run `hermes config check` to see missing options, then `hermes config migrate` to interactively add them.
 :::
 
+### Passive update notices
+
+Pinned or noninteractive installations can disable passive CLI version and banner update checks:
+
+```bash
+hermes config set updates.check false
+```
+
+This suppresses both cached update notices and passive update-check network requests. The default is `true`. Explicit `hermes update --check` and `hermes update` still work; this setting does not control the Desktop application's updater.
+
 ### What happens during an update
 
 When you run `hermes update`, the following steps occur:

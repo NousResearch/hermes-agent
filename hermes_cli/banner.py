@@ -327,6 +327,13 @@ def check_for_updates() -> Optional[int]:
     If ``HERMES_REVISION`` is set (nix builds embed it), compare it to upstream main via
     ``git ls-remote``; otherwise count commits behind ``origin/main`` in the local checkout.
     """
+    def _read_config_opt_out():
+        from hermes_cli.config import load_config
+        return load_config().get("updates", {}).get("check", True) is False
+
+    if _quiet(_read_config_opt_out) is True:
+        return None
+
     cache_file = get_hermes_home() / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
     # Docker images have no working tree (the image excludes `.git`) and set no HERMES_REVISION.

@@ -1370,9 +1370,10 @@ def _plugins_toggle(rid, params):
     if not ident:
         return _err(rid, 4019, "plugins.toggle requires a 'key' or 'name'")
     toggle = _tools_mod("hermes_cli.plugins_cmd").dashboard_set_agent_plugin_enabled
-    result = toggle(ident, enabled=bool(params.get("enable")))
+    result = toggle(ident, enabled=bool(params.get("enable")),
+                    **({"setup_consent": params["setup_consent"]} if "setup_consent" in params else {}))
     if not result.get("ok"):
-        return _err(rid, 5026, result.get("error") or "toggle failed")
+        return _err(rid, 5026, result.get("error") or "toggle failed", data=result)
     row = next((r for r in _plugin_rows() if ident in (r["key"], r["name"])), None)
     return _ok(rid, {"ok": True, "unchanged": bool(result.get("unchanged")), "name": ident, "plugin": row})
 
@@ -1382,8 +1383,9 @@ def _plugins_install(rid, params):
     if not ident:
         return _err(rid, 4019, "plugins.install requires 'identifier' or 'repo'")
     result = _tools_mod("hermes_cli.plugins_cmd").dashboard_install_plugin(
-        ident, force=bool(params.get("force")), enable=params.get("enable", True))
-    return _ok(rid, result) if result.get("ok") else _err(rid, 5026, result.get("error") or "install failed")
+        ident, force=bool(params.get("force")), enable=params.get("enable", True),
+        **({"setup_consent": params["setup_consent"]} if "setup_consent" in params else {}))
+    return _ok(rid, result) if result.get("ok") else _err(rid, 5026, result.get("error") or "install failed", data=result)
 
 
 _PLUGINS_ACTIONS = {"list": _plugins_list, "toggle": _plugins_toggle, "install": _plugins_install}

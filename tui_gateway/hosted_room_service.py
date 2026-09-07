@@ -468,7 +468,15 @@ class HostedRoomService:
                 existing = driver.get_task_for_turn(self.db_path, decision.task.identity)
                 legacy_payload = dict(decision.task.payload)
                 legacy_payload.pop("input_context", None)
-                if existing is not None and existing["payload"] == legacy_payload:
+                if existing is not None and "input_context" in existing["payload"]:
+                    # A rebuilt cache may add older committed context. The slot
+                    # already belongs to its original, frozen admission.
+                    prior_events = self.policy_checkpoint.events_for_task(
+                        room_id=binding.room_id, source_event_seq=existing["payload"]["source_event_seq"],
+                        input_context=existing["payload"]["input_context"], task_id=existing["identity"].task_id)
+                    discussion.reconstruct_task_plan(room, prior_events, existing, local_profiles=self.local_profiles())
+                    admitted = existing
+                elif existing is not None and existing["payload"] == legacy_payload:
                     discussion.reconstruct_task_plan(room, list(snapshot.events), existing,
                                                      local_profiles=self.local_profiles())
                     admitted = existing

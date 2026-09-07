@@ -20,7 +20,7 @@ from gateway.hosted_rooms_common import DbPath, compact_json, fenced_update
 
 MAX_ACTIVE_POLICY_EVENTS = 64
 MAX_THREAD_TRANSCRIPT_EVENTS = 24
-_TRANSCRIPT_SCHEMA_VERSION = 2
+_TRANSCRIPT_SCHEMA_VERSION = 4
 MAX_TRANSCRIPT_POLICY_EVENTS = MAX_THREAD_TRANSCRIPT_EVENTS * (MAX_ACTIVE_POLICY_EVENTS + 2)
 _TERMINAL_KINDS = frozenset({"turn.settled", "turn.failed", "turn.cancelled", "turn.deferred"})
 

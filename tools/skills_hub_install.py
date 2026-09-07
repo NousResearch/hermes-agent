@@ -247,18 +247,23 @@ def bundle_content_hash(bundle: SkillBundle) -> str:
 _SOURCE_ID_ALIASES = {"skills.sh": "skills-sh"}
 
 _FETCH_TIMEOUT_SECONDS = 30.0
+# Keep capacity occupied until fetch really exits, including after caller timeout.
+# Repeated/concurrent checks must not accumulate abandoned credential contexts.
+_FETCH_SLOT = threading.BoundedSemaphore(1)
 
 
 def _fetch_bundle_bounded(
     src: SkillSource, identifier: str, timeout: float = _FETCH_TIMEOUT_SECONDS,
 ) -> Optional[SkillBundle]:
-    """Fetch one bundle with a hard wall-clock bound.
+    """Bound caller waiting, not execution of the synchronous source adapter.
 
-    A dead upstream can hang on network IO far past any useful patience, and
-    every installed skill pays that cost on each update run (#104291). The
-    helper thread is a daemon so an abandoned fetch cannot block CLI exit.
+    One process-wide slot bounds lingering workers. While it is occupied, new
+    checks fail fast rather than enqueue work or retain more request contexts.
+    Python cannot cancel a running thread; the daemon may finish in background.
     """
     deadline = time.monotonic() + timeout
+    if timeout <= 0 or not _FETCH_SLOT.acquire(blocking=False):
+        return None
     box: Dict[str, Tuple[float, Optional[SkillBundle]]] = {}
 
     def _run() -> None:
@@ -267,9 +272,16 @@ def _fetch_bundle_bounded(
             box["result"] = (time.monotonic(), bundle)
         except Exception:
             logger.debug("Skill update fetch failed for %s", identifier, exc_info=True)
+        finally:
+            _FETCH_SLOT.release()
 
-    worker = threading.Thread(target=copy_context().run, args=(_run,), daemon=True)
-    worker.start()
+    try:
+        worker = threading.Thread(target=copy_context().run, args=(_run,),
+                                  name="skills-update-fetch", daemon=True)
+        worker.start()
+    except Exception:
+        _FETCH_SLOT.release()
+        raise
     worker.join(max(0.0, deadline - time.monotonic()))
     finished, bundle = box.get("result", (float("inf"), None))
     return bundle if finished <= deadline else None
@@ -299,6 +311,9 @@ def check_for_skill_updates(
     if sources is None:
         sources = create_source_router(auth=auth)
 
+    # A shared remote-wait budget, not N independent 30-second waits. Local
+    # lock/path/hash work is not cancellable and is outside this wait guarantee.
+    deadline = time.monotonic() + _FETCH_TIMEOUT_SECONDS
     results: List[dict] = []
     for entry in installed:
         identifier, source_name = entry.get("identifier", ""), entry.get("source", "")
@@ -307,8 +322,9 @@ def check_for_skill_updates(
             install_dir = _resolve_lock_install_path(
                 entry.get("install_path", ""), entry.get("name", "skill"))
             orphaned = not install_dir.is_dir()
-        except ValueError:
-            orphaned = False  # unresolvable entries keep the pre-existing fetch behavior
+        except (ValueError, OSError, RuntimeError):
+            results.append({**row, "status": "invalid_install"})
+            continue
         if orphaned:
             # The lock-file entry points at a directory that is gone: the fetched
             # bundle could never be applied, so skip the network cost entirely
@@ -317,7 +333,7 @@ def check_for_skill_updates(
             continue
         bundle = None
         for src in filter(lambda s: _source_matches(s, source_name), sources):
-            bundle = _fetch_bundle_bounded(src, identifier)
+            bundle = _fetch_bundle_bounded(src, identifier, timeout=deadline - time.monotonic())
             if bundle:
                 break
         if not bundle:

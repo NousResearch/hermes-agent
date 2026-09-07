@@ -112,3 +112,17 @@ def test_kill_switch_routes_search_back_to_the_shell(tree, ops_factory, monkeypa
     assert result.total_count == 4
     assert any(c.startswith("test -e") for c in calls)
     assert any("pipefail" in c and "rg" in c for c in calls)
+
+
+def test_bounded_native_file_search_keeps_results_at_the_kill_bound(tmp_path, ops_factory, monkeypatch):
+    """#104696: hitting the read bound kills rg mid-walk; the collected lines
+    must survive teardown (on macOS killpg then reports EPERM for the
+    exited-but-unreaped group — tolerated in test_local_setsid_descendant_sweep)."""
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "1")
+    for i in range(30):  # enough entries that rg is still walking at the bound
+        (tmp_path / f"file_{i:02d}.txt").write_text("x\n")
+    result = ops_factory(tmp_path, []).search(pattern="*", path=str(tmp_path), target="files", limit=2)
+    assert result.error is None
+    assert len(result.files) == 2
+    assert result.total_count == 3  # the limit plus the truncation-lookahead row
+    assert result.truncated is True

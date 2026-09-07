@@ -648,6 +648,26 @@ def _sweep_escaped_descendants(descendants: list, pgid: int) -> None:
             continue
 
 
+def _group_teardown_complete(proc, descendants: list) -> bool:
+    """Leader reaped + every snapshotted descendant exited — the state XNU can
+    only report as ``killpg`` EPERM, because its ``killpg1`` skips SZOMB members
+    and an all-zombie group has no eligible target. Any live member means a
+    genuine signal denial callers must still see. POSIX-only."""
+    if proc.poll() is None:
+        return False
+    if not descendants:
+        return True
+    import psutil
+    exited = (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD)
+    for child in descendants:
+        try:
+            if child.status() not in exited:
+                return False
+        except Exception:  # psutil.NoSuchProcess — already reaped
+            continue
+    return True
+
+
 def _kill_process_group_posix(proc) -> None:
     """TERM the group, wait, KILL, then sweep setsid escapees. Descendants are
     snapshotted BEFORE the first signal — once the wrapper dies they reparent to
@@ -672,6 +692,14 @@ def _kill_process_group_posix(proc) -> None:
                 proc.wait(timeout=0.2)
     except ProcessLookupError:
         pass
+    except PermissionError:
+        # An all-zombie group (every member exited unreaped) reports EPERM on
+        # macOS instead of ESRCH; the bounded native-rg reader hits this whenever
+        # rg exits inside the psutil-snapshot window and would otherwise lose its
+        # collected results (#104696). Tolerate it only once teardown is proven
+        # complete — a live leader or live descendant keeps the denial visible.
+        if not _group_teardown_complete(proc, descendants):
+            raise
     _sweep_escaped_descendants(descendants, pgid)
 
 

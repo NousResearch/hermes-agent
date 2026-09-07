@@ -11,13 +11,15 @@ outside the (now-dead) group with SIGKILL afterwards.
 
 import os
 import signal
+import subprocess
+import sys
 import textwrap
 import time
 from types import SimpleNamespace
 
 import pytest
 
-from tools.environments.local import LocalEnvironment
+from tools.environments.local import LocalEnvironment, _kill_process_group_posix
 
 
 @pytest.fixture(autouse=True)
@@ -146,3 +148,98 @@ def test_kill_process_survives_psutil_snapshot_failure(monkeypatch):
     # escalation path completed despite the snapshot failure.
     assert killpg_calls[0] == (67890, signal.SIGTERM)
     assert (67890, 0) in killpg_calls
+
+
+# ---------------------------------------------------------------------------
+# #104696: killpg EPERM on a fully-exited, unreaped group (XNU skips SZOMB)
+# ---------------------------------------------------------------------------
+
+
+def _eperm_killpg(pgid, sig):
+    raise PermissionError(1, "Operation not permitted")
+
+
+def _fake_proc(poll_result):
+    return SimpleNamespace(
+        pid=12345,
+        _hermes_pgid=67890,
+        poll=lambda: poll_result,
+        wait=lambda timeout=None: 0,
+        kill=lambda: None,
+    )
+
+
+def _patch_snapshot(monkeypatch, children):
+    """Point the helper's psutil descendant snapshot at ``children``."""
+    psutil = pytest.importorskip("psutil")
+    monkeypatch.setattr(os, "getpgid", lambda _pid: 67890)
+    monkeypatch.setattr(
+        psutil,
+        "Process",
+        lambda _pid: SimpleNamespace(children=lambda recursive=True: children),
+    )
+
+
+def test_killpg_eperm_tolerated_when_group_fully_exited(monkeypatch):
+    """Leader reaped + only zombie descendants: EPERM merely reports completed
+    teardown (macOS XNU killpg1 skips SZOMB members), so the helper must not
+    raise and drop the caller's already-collected results."""
+    psutil = pytest.importorskip("psutil")
+    _patch_snapshot(monkeypatch, [SimpleNamespace(status=lambda: psutil.STATUS_ZOMBIE)])
+    monkeypatch.setattr(os, "killpg", _eperm_killpg)
+
+    _kill_process_group_posix(_fake_proc(poll_result=0))  # must not raise
+
+
+def test_killpg_eperm_reraised_while_leader_alive(monkeypatch):
+    """A live leader cannot explain EPERM by the all-zombie rule — the denial
+    must stay visible to callers."""
+    _patch_snapshot(monkeypatch, [])
+    monkeypatch.setattr(os, "killpg", _eperm_killpg)
+
+    with pytest.raises(PermissionError):
+        _kill_process_group_posix(_fake_proc(poll_result=None))
+
+
+def test_killpg_eperm_reraised_while_descendant_alive(monkeypatch):
+    """Leader gone but a snapshotted descendant still lives: the group has an
+    eligible member, so EPERM is a genuine denial, not completed teardown."""
+    _patch_snapshot(monkeypatch, [SimpleNamespace(status=lambda: "sleeping")])
+    monkeypatch.setattr(os, "killpg", _eperm_killpg)
+
+    with pytest.raises(PermissionError):
+        _kill_process_group_posix(_fake_proc(poll_result=0))
+
+
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups only")
+def test_group_kill_survives_a_real_exited_unreaped_group():
+    """Real-OS regression for #104696: a session leader that exits while
+    unreaped makes killpg report EPERM on macOS (ESRCH would require a missing
+    group); the group-kill must complete without raising either way."""
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.buffer.read(1)"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        # Real callers cache the pgid at spawn time (LocalEnvironment does); the
+        # helper's getpgid falls back to it once the child is reaped — the 3.14
+        # Popen watchdog can reap an exited child before we ever signal.
+        proc._hermes_pgid = os.getpgid(proc.pid)
+        proc.stdin.write(b"x")
+        proc.stdin.close()
+        proc.stdout.read()  # the child has now exited...
+        time.sleep(0.1)  # ...unreaped (zombie) on 3.11-3.13
+        # Must not raise on either teardown path: killpg EPERM for the
+        # all-zombie group (macOS XNU), or ESRCH once reaped (3.14 watchdog).
+        _kill_process_group_posix(proc)
+        assert proc.wait(timeout=5) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        proc.stdout.close()
+        if not proc.stdin.closed:
+            proc.stdin.close()

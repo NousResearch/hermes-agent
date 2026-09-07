@@ -4,6 +4,7 @@
 (no I/O).
 """
 
+import contextlib
 import os
 import posixpath
 import re
@@ -343,6 +344,11 @@ class SearchMixin:
                 start_new_session=True)
         except OSError as exc:
             return ExecuteResult(stdout=f"rg: {exc}", exit_code=2)
+        # Cache the pgid while the child is guaranteed alive: the group must stay
+        # signalable across the poll→killpg window even when rg (or the 3.14
+        # Popen watchdog) exits inside it (#104696).
+        with contextlib.suppress(OSError):
+            proc._hermes_pgid = os.getpgid(proc.pid)
 
         # Drain on a thread so a silent rg (huge tree, no hits yet) cannot pin the
         # caller past the deadline or past a /stop; the waiter below owns both.

@@ -84,7 +84,6 @@ def _db_path():
 
 
 def _connect() -> sqlite3.Connection:
-    ensure_safe_sqlite_writer()
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=10)
@@ -110,6 +109,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     # Preserve the journal mode SessionDB configured on state.db: forcing WAL from
     # every short-lived connection collides with live transcript/FTS writers.
     apply_durability_barriers(conn)
+    ensure_safe_sqlite_writer(conn)
     conn.execute("""CREATE TABLE IF NOT EXISTS async_delegations (
             delegation_id TEXT PRIMARY KEY,
             origin_session TEXT NOT NULL,

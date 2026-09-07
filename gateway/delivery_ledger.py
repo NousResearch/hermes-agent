@@ -144,7 +144,6 @@ def _db_path():
 
 
 def _connect() -> sqlite3.Connection:
-    ensure_safe_sqlite_writer()
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=10)
@@ -159,6 +158,7 @@ def _connect() -> sqlite3.Connection:
 def _initialize_schema(conn: sqlite3.Connection) -> None:
     from hermes_state_wal import apply_wal_with_fallback
     apply_wal_with_fallback(conn, db_label="state.db (delivery_ledger)")
+    ensure_safe_sqlite_writer(conn)
     conn.execute(
         """CREATE TABLE IF NOT EXISTS delivery_obligations (
             obligation_id TEXT PRIMARY KEY,

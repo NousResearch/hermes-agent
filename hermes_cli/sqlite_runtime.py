@@ -30,16 +30,26 @@ def is_sqlite_wal_reset_vulnerable(version_info: tuple[int, ...]) -> bool:
         or (3, 44, 6) <= info < (3, 45, 0))
 
 
-def ensure_safe_sqlite_writer() -> None:
-    """Fail closed before opening a writable state database on a vulnerable SQLite runtime."""
+def ensure_safe_sqlite_writer(conn) -> None:
+    """Fail closed for vulnerable SQLite only when the opened database is already in WAL mode.
+
+    The journal-mode owner must run first: vulnerable runtimes can safely use the
+    existing rollback-journal DELETE fallback, while vulnerable + WAL is the
+    unsafe state this gate is intended to reject.
+    """
     import sqlite3
 
     if is_sqlite_wal_reset_vulnerable(sqlite3.sqlite_version_info):
-        raise RuntimeError(
-            "refusing writable state.db open with vulnerable SQLite runtime "
-            f"{sqlite3.sqlite_version}; use SQLite 3.51.3+, or patched 3.50.7-3.50.x "
-            "or 3.44.6-3.44.x"
-        )
+        try:
+            mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).strip().lower()
+        except (sqlite3.Error, TypeError, IndexError):
+            raise RuntimeError("refusing writable state.db open: could not verify journal mode") from None
+        if mode == "wal":
+            raise RuntimeError(
+                "refusing writable state.db open with vulnerable SQLite runtime "
+                f"{sqlite3.sqlite_version} while journal_mode=WAL; use SQLite 3.51.3+, "
+                "or patched 3.50.7-3.50.x or 3.44.6-3.44.x"
+            )
 
 
 @dataclass(frozen=True)

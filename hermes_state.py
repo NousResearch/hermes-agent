@@ -422,8 +422,7 @@ class SessionDB(
         self.db_path = db_path or _default_db_path()
         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
         self.read_only = read_only
-        if not read_only:
-            ensure_safe_sqlite_writer()
+
         self._lock = threading.Lock()
         # Read-path split (WAL only): reads borrow from a BOUNDED read-only pool so they
         # never queue behind writer flushes on self._lock (see _read_ctx); unbounded
@@ -600,6 +599,7 @@ class SessionDB(
         try:
             conn.row_factory = sqlite3.Row
             self._wal_active = apply_wal_with_fallback(conn, db_label="state.db") == "wal"
+            ensure_safe_sqlite_writer(conn)
             apply_database_pragmas(conn, db_label="state.db")
             conn.execute("PRAGMA foreign_keys=ON")
             self._fts_cjk_loaded = load_fts5_cjk_extension(conn)
@@ -765,7 +765,6 @@ class SessionDB(
             "flight — reopening (teardown/worker race, #94736)", self.db_path, context,
         )
         try:
-            ensure_safe_sqlite_writer()
             self._conn = self._open_writer_conn()
         except Exception as exc:
             raise sqlite3.OperationalError(

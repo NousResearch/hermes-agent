@@ -16,13 +16,19 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
+from agent.async_utils import consume_detached_task_result
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.delivery import resolve_delivery_transport
+from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.session import SessionEntry, SessionSource
 from gateway.run_shutdown import _log_suppressed, _notice_target_key, _send_error, _send_failed
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+_RESTART_NOTIFICATION_RETRY_TIMEOUT_SECS = 180.0
+_RESTART_NOTIFICATION_RETRY_BASE_DELAY_SECS = 1.0
+_RESTART_NOTIFICATION_RETRY_MAX_DELAY_SECS = 15.0
 
 _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
 # Routing fields copied verbatim from a process watcher onto its synthetic completion event.
@@ -596,55 +602,323 @@ class GatewayNotificationsMixin:
                     p.unlink(missing_ok=True)
         return True
 
-    async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
-        """Notify the chat that initiated /restart that the gateway is back."""
-        from gateway.delivery import resolve_delivery_transport
+    async def _send_restart_notification(
+        self, *, claimed_marker_payload: Optional[str] = None,
+    ) -> Optional[tuple[str, str, Optional[str]]]:
+        """Deliver one owned restart marker with a bounded transient-retry window.
+
+        Known-safe pre-send failures keep the durable marker for a reconnect or
+        later boot. Successful, permanent, and ambiguous provider outcomes
+        consume only the marker generation this worker claimed.
+        """
         from gateway.run import _hermes_home, _non_conversational_metadata
+
         notify_path = _hermes_home / ".restart_notify.json"
-        if not notify_path.exists():
-            return None
+        marker_payload = claimed_marker_payload
+        marker_request_id: Optional[str] = None
+        marker_owned = False
+        delivered_target: Optional[tuple[str, str, Optional[str]]] = None
+        clear_marker = False
+
+        def _read_marker_payload() -> Optional[str]:
+            try:
+                return notify_path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                return None
+
+        def _owns_marker() -> bool:
+            current_payload = _read_marker_payload()
+            if current_payload is None or current_payload != marker_payload:
+                return False
+            if marker_request_id is None:
+                return False
+            try:
+                current_data = json.loads(current_payload)
+            except Exception:
+                return False
+            current_request_id = current_data.get("request_id")
+            if current_request_id is None:
+                current_request_id = f"legacy:{current_payload}"
+            return current_request_id == marker_request_id
+
+        def _clear_owned_marker() -> None:
+            if getattr(self, "_restart_notification_request_id", None) != marker_request_id:
+                return
+            from gateway.restart import restart_notification_marker_lock
+
+            try:
+                with restart_notification_marker_lock(_hermes_home):
+                    if not _owns_marker():
+                        return
+                    notify_path.unlink(missing_ok=True)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to verify restart notification marker before cleanup: %s", exc
+                )
+                return
+            if delivered_target is not None:
+                (_hermes_home / ".restart_prompt_sent.json").unlink(missing_ok=True)
+
         try:
-            data = json.loads(notify_path.read_text(encoding="utf-8"))
+            if marker_payload is None:
+                try:
+                    marker_payload = _read_marker_payload()
+                except Exception as exc:
+                    logger.warning("Failed to read restart notification marker: %s", exc)
+                    return None
+            if marker_payload is None:
+                return None
+
+            try:
+                data = json.loads(marker_payload)
+            except Exception as exc:
+                logger.warning("Failed to parse restart notification marker: %s", exc)
+                return None
+            if not isinstance(data, dict):
+                logger.warning("Restart notification marker is not a JSON object")
+                return None
+
             platform_str = data.get("platform")
             chat_id = data.get("chat_id")
             thread_id = data.get("thread_id")
-            if not platform_str or not chat_id:
+            if not isinstance(platform_str, str) or not platform_str.strip():
+                logger.warning("Restart notification marker has invalid platform")
                 return None
-            platform = Platform(platform_str)
-            transport = resolve_delivery_transport(platform, self.config, self.adapters)
-            if transport is None:
-                logger.debug("Restart notification skipped: no live transport for %s", platform_str)
+            if not isinstance(chat_id, str) or not chat_id.strip():
+                logger.warning("Restart notification marker has invalid chat_id")
                 return None
+            if thread_id is not None and not isinstance(thread_id, str):
+                logger.warning("Restart notification marker has invalid thread_id")
+                return None
+
+            marker_request_id = data.get("request_id")
+            if marker_request_id is not None and (
+                not isinstance(marker_request_id, str) or not marker_request_id
+            ):
+                logger.warning("Restart notification marker has invalid request_id")
+                return None
+            if marker_request_id is None:
+                marker_request_id = f"legacy:{marker_payload}"
+
+            if getattr(self, "_restart_notification_request_id", None) is None:
+                self._restart_notification_request_id = marker_request_id
+            try:
+                marker_owned = _owns_marker()
+            except Exception as exc:
+                logger.warning("Failed to verify restart notification marker: %s", exc)
+                return None
+            if not marker_owned:
+                return None
+
+            try:
+                platform = Platform(platform_str)
+            except (TypeError, ValueError):
+                logger.warning("Restart notification marker has unknown platform: %s", platform_str)
+                return None
+
             platform_cfg = self.config.platforms.get(platform)
             if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
                 logger.info(
-                    "Restart notification suppressed: %s has gateway_restart_notification=false", platform_str
+                    "Restart notification suppressed: %s has gateway_restart_notification=false",
+                    platform_str,
                 )
+                clear_marker = True
                 return None
-            metadata = self._pending_marker_metadata(platform, chat_id, data, transport.adapter)
-            if data.get("delivered_via_upstream_relay") is True:
-                metadata = dict(metadata or {})
-                for field in ("user_id", "scope_id"):
-                    if data.get(field):
-                        metadata[field] = str(data[field])
-            result = await transport.send(
-                platform, str(chat_id), "♻ Gateway restarted successfully. Your session continues.",
-                metadata=_non_conversational_metadata(metadata, platform=platform),
-            )
-            # adapter.send() catches provider errors (e.g. "Chat not found") and returns
-            # SendResult(success=False) rather than raising, so inspect the result before claiming success.
-            if _send_failed(result):
+
+            deadline = time.monotonic() + _RESTART_NOTIFICATION_RETRY_TIMEOUT_SECS
+            delay = _RESTART_NOTIFICATION_RETRY_BASE_DELAY_SECS
+            attempt = 0
+
+            while True:
+                if not self._running:
+                    return None
+                if self._restart_notification_request_id != marker_request_id:
+                    return None
+                try:
+                    if not _owns_marker():
+                        return None
+                except Exception as exc:
+                    logger.warning("Failed to verify restart notification marker: %s", exc)
+                    return None
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.warning(
+                        "Restart notification retry budget exhausted after %.1fs",
+                        _RESTART_NOTIFICATION_RETRY_TIMEOUT_SECS,
+                    )
+                    return None
+
+                transport = resolve_delivery_transport(platform, self.config, self.adapters)
+                if transport is None:
+                    result = SendResult(
+                        success=False,
+                        error=f"{platform_str} adapter not available",
+                        retryable=True,
+                    )
+                else:
+                    metadata = self._pending_marker_metadata(
+                        platform, chat_id, data, transport.adapter
+                    )
+                    if data.get("delivered_via_upstream_relay") is True:
+                        metadata = dict(metadata or {})
+                        for field in ("user_id", "scope_id"):
+                            if data.get(field):
+                                metadata[field] = str(data[field])
+                    send_started = False
+
+                    async def _dispatch_once() -> SendResult:
+                        nonlocal send_started
+                        if not self._running:
+                            return SendResult(
+                                success=False,
+                                error="gateway shutdown in progress",
+                                retryable=True,
+                            )
+                        if self._restart_notification_request_id != marker_request_id:
+                            return SendResult(
+                                success=False,
+                                error="restart notification marker superseded",
+                                retryable=True,
+                            )
+                        try:
+                            if not _owns_marker():
+                                return SendResult(
+                                    success=False,
+                                    error="restart notification marker superseded",
+                                    retryable=True,
+                                )
+                        except Exception as exc:
+                            return SendResult(
+                                success=False,
+                                error=f"restart notification marker check failed: {exc}",
+                                retryable=True,
+                            )
+                        if deadline - time.monotonic() <= 0:
+                            return SendResult(
+                                success=False,
+                                error="restart notification retry budget exhausted",
+                                retryable=True,
+                            )
+                        send_started = True
+                        return await transport.send(
+                            platform,
+                            str(chat_id),
+                            "♻ Gateway restarted successfully. Your session continues.",
+                            metadata=_non_conversational_metadata(metadata, platform=platform),
+                        )
+
+                    send_task = asyncio.ensure_future(_dispatch_once())
+                    try:
+                        done, _pending = await asyncio.wait({send_task}, timeout=remaining)
+                    except asyncio.CancelledError:
+                        if send_task.done():
+                            if send_task.cancelled():
+                                clear_marker = send_started
+                                raise
+                            try:
+                                completed_result = send_task.result()
+                            except Exception:
+                                clear_marker = True
+                            else:
+                                if not completed_result.success and completed_result.retryable:
+                                    raise
+                                clear_marker = True
+                        elif send_started:
+                            clear_marker = True
+                        send_task.cancel()
+                        send_task.add_done_callback(consume_detached_task_result)
+                        raise
+
+                    if send_task not in done:
+                        send_task.cancel()
+                        send_task.add_done_callback(consume_detached_task_result)
+                        logger.warning(
+                            "Restart notification send exceeded %.1fs; consuming marker to avoid duplicates",
+                            _RESTART_NOTIFICATION_RETRY_TIMEOUT_SECS,
+                        )
+                        clear_marker = True
+                        return None
+                    try:
+                        result = send_task.result()
+                    except asyncio.CancelledError:
+                        clear_marker = send_started
+                        raise
+                    except Exception as exc:
+                        logger.warning(
+                            "Restart notification send raised; consuming marker to avoid duplicate: %s",
+                            exc,
+                        )
+                        clear_marker = True
+                        return None
+
+                if result.success:
+                    logger.info("Sent restart notification to %s:%s", platform_str, chat_id)
+                    delivered_target = (
+                        str(platform_str),
+                        str(chat_id),
+                        str(thread_id) if thread_id else None,
+                    )
+                    clear_marker = True
+                    return delivered_target
+
+                if not result.retryable:
+                    logger.warning(
+                        "Restart notification to %s:%s was not delivered: %s",
+                        platform_str,
+                        chat_id,
+                        result.error,
+                    )
+                    clear_marker = True
+                    return None
+
+                if not self._running:
+                    return None
+                if self._restart_notification_request_id != marker_request_id:
+                    return None
+                try:
+                    if not _owns_marker():
+                        return None
+                except Exception as exc:
+                    logger.warning("Failed to verify restart notification marker: %s", exc)
+                    return None
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.warning(
+                        "Restart notification retry budget exhausted after %.1fs",
+                        _RESTART_NOTIFICATION_RETRY_TIMEOUT_SECS,
+                    )
+                    return None
+
+                retry_delay = result.retry_after
+                if retry_delay is None:
+                    retry_delay = delay
+                    delay = min(delay * 2, _RESTART_NOTIFICATION_RETRY_MAX_DELAY_SECS)
+                retry_delay = max(0.0, min(float(retry_delay), remaining))
+                attempt += 1
                 logger.warning(
-                    "Restart notification to %s:%s was not delivered: %s", platform_str, chat_id, _send_error(result),
+                    "Restart notification attempt %d failed (%s); retrying in %.1fs",
+                    attempt,
+                    result.error,
+                    retry_delay,
                 )
-                return None
-            logger.info("Sent restart notification to %s:%s", platform_str, chat_id)
-            return str(platform_str), str(chat_id), str(thread_id) if thread_id else None
-        except Exception as e:
-            logger.warning("Restart notification failed: %s", e)
+                await asyncio.sleep(retry_delay)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Restart notification failed: %s", exc)
             return None
         finally:
-            notify_path.unlink(missing_ok=True)
+            if clear_marker:
+                cleanup_lock = getattr(self, "_restart_command_lock", None)
+                if cleanup_lock is None:
+                    _clear_owned_marker()
+                else:
+                    # The restart handler holds this lock while publishing replacement
+                    # marker generations, so ownership check + unlink cannot delete one.
+                    async with cleanup_lock:
+                        _clear_owned_marker()
 
     def _home_channel_transports(self):
         """Yield ``(platform, platform_cfg, home, transport)`` for every home channel with a live transport."""

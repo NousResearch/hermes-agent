@@ -52,6 +52,36 @@ async def test_redelivered_restart_with_older_update_id_is_ignored(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_newer_restart_after_boot_is_not_blocked_by_persistent_marker(
+    tmp_path, monkeypatch
+):
+    """The retained marker distinguishes a legitimate immediate second restart."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    marker = tmp_path / ".restart_last_processed.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "platform": "telegram",
+                "update_id": 100,
+                "requested_at": time.time(),
+            }
+        )
+    )
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+    runner._booted_from_restart = True
+    runner._startup_time = time.time()
+
+    result = await runner._handle_restart_command(_make_restart_event(update_id=101))
+
+    assert "Restarting gateway" in result
+    runner.request_restart.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_stale_marker_older_than_5min_does_not_block(tmp_path, monkeypatch):
     """A marker older than the 5-minute window is ignored — fresh /restart proceeds."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)

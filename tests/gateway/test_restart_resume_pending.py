@@ -937,7 +937,7 @@ class TestStuckLoopEscalation:
         # Simulate counter already at threshold (3 consecutive interrupted
         # restarts).  _suspend_stuck_loop_sessions will flip suspended=True.
         counts_file = tmp_path / ".restart_failure_counts"
-        counts_file.write_text(json.dumps({entry.session_key: 3}))
+        counts_file.write_text(json.dumps({entry.session_key: 3}), encoding="utf-8")
 
         monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
         runner = object.__new__(GatewayRunner)
@@ -1214,6 +1214,7 @@ async def test_startup_restore_gate_releases_when_boot_path_send_hangs(
 
     await asyncio.wait_for(
         runner._await_startup_boot_sends(
+            restart_marker_payload="restart-marker",
             planned_restart_notification_pending=False,
         ),
         timeout=5,
@@ -1228,9 +1229,10 @@ async def test_startup_restore_gate_releases_when_boot_path_send_hangs(
     assert runner._startup_restore_in_progress is False
     # The DB half (claim + resume clear) runs inline BEFORE the abandonable
     # send task, so it must have completed even though the boot send hung;
-    # the network half never ran because the hung notification precedes it.
+    # obligation redelivery is a sibling of restart delivery, so a blocked
+    # lifecycle notification cannot hold generated responses behind it.
     runner._claim_pending_obligations.assert_awaited_once()
-    runner._redeliver_claimed_obligations.assert_not_awaited()
+    runner._redeliver_claimed_obligations.assert_awaited_once_with([])
 
     hung.set()
     leftover = [t for t in list(runner._background_tasks) if not t.done()]
@@ -1250,10 +1252,13 @@ async def test_startup_boot_sends_still_run_when_they_finish_quickly(monkeypatch
     runner._redeliver_claimed_obligations = AsyncMock(return_value=0)
 
     await runner._await_startup_boot_sends(
+        restart_marker_payload="restart-marker",
         planned_restart_notification_pending=False,
     )
 
-    runner._send_restart_notification.assert_awaited_once()
+    runner._send_restart_notification.assert_awaited_once_with(
+        claimed_marker_payload="restart-marker"
+    )
     runner._claim_pending_obligations.assert_awaited_once()
     runner._redeliver_claimed_obligations.assert_awaited_once()
 

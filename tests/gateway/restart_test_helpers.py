@@ -61,6 +61,8 @@ def make_restart_runner(
     )
     runner._running = True
     runner._shutdown_event = asyncio.Event()
+    runner._restart_command_lock = asyncio.Lock()
+    runner._restart_notification_request_id = None
     runner._exit_reason = None
     runner._exit_code = None
     runner._running_agents = {}

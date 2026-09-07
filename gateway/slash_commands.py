@@ -15,9 +15,10 @@ import re
 import shlex
 import sys
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
@@ -32,6 +33,36 @@ from hermes_cli.config import atomic_config_write, cfg_get
 from utils import atomic_json_write, is_truthy_value
 
 logger = logging.getLogger("gateway.run")
+
+
+async def _atomic_json_write_completion_safe(
+    path: Path, payload: dict[str, Any]
+) -> asyncio.CancelledError | None:
+    """Finish an in-flight marker write and return deferred cancellation."""
+    def _write_locked() -> None:
+        from gateway.restart import restart_notification_marker_lock
+
+        with restart_notification_marker_lock(path.parent):
+            atomic_json_write(path, payload, indent=None)
+
+    write_task = asyncio.create_task(asyncio.to_thread(_write_locked))
+    cancellation: asyncio.CancelledError | None = None
+    while True:
+        try:
+            await asyncio.shield(write_task)
+            break
+        except asyncio.CancelledError as exc:
+            if write_task.cancelled():
+                raise
+            # Do not release the command lock while the worker thread can still
+            # overwrite a marker published by a newer restart request.
+            cancellation = exc
+        except Exception:
+            if cancellation is not None:
+                logger.debug("Cancelled marker write failed while draining", exc_info=True)
+                return cancellation
+            raise
+    return cancellation
 
 
 # /rollback result keys -> i18n line for files the safe restore left alone.
@@ -497,6 +528,17 @@ class GatewaySlashCommandsMixin(
         return f"✓ {name} resumed — retrying on next watcher tick."
 
     async def _handle_restart_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        """Serialize restart marker publication and the restart state transition."""
+        lock = getattr(self, "_restart_command_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._restart_command_lock = lock
+        async with lock:
+            return await self._handle_restart_command_serialized(event)
+
+    async def _handle_restart_command_serialized(
+        self, event: MessageEvent
+    ) -> Union[str, EphemeralReply]:
         """Handle /restart command - drain active work, then restart the gateway."""
         from gateway.run import _hermes_home
         # Idempotency check: if the previous gateway process recorded this same /restart (platform +
@@ -513,14 +555,11 @@ class GatewaySlashCommandsMixin(
             count = self._running_agent_count()
             return t("gateway.draining", count=count) if count else EphemeralReply(t("gateway.restart.in_progress"))
 
-        async def _write_marker(name: str, build, label: str) -> None:
-            try:
-                await asyncio.to_thread(atomic_json_write, _hermes_home / name, build(), indent=None)
-            except Exception as e:
-                logger.debug("Failed to write restart %s: %s", label, e)
+        request_id = uuid.uuid4().hex
 
         def _notify_payload() -> dict:
             data = _restart_notify_payload(event)
+            data["request_id"] = request_id
             mid = str(event.message_id) if event.message_id is not None else event.source.message_id
             try:
                 self._restart_command_source = dataclasses.replace(event.source, message_id=mid)
@@ -536,12 +575,36 @@ class GatewaySlashCommandsMixin(
                 data["update_id"] = event.platform_update_id
             return data
 
-        # Save the requester's routing info so the new gateway process can notify them once back.
-        await _write_marker(".restart_notify.json", _notify_payload, "notify file")
+        pending_cancellation: asyncio.CancelledError | None = None
+
+        # Publish the generation before dispatching the worker-thread write. An
+        # older delivery worker can then avoid unlinking this marker during the
+        # final read/unlink race.
+        self._restart_notification_request_id = request_id
+        try:
+            pending_cancellation = await _atomic_json_write_completion_safe(
+                _hermes_home / ".restart_notify.json", _notify_payload()
+            )
+        except asyncio.CancelledError as exc:
+            pending_cancellation = exc
+        except Exception as exc:
+            logger.debug("Failed to write restart notify file: %s", exc)
+
         # Record the triggering platform + update_id in a dedicated dedup marker. Unlike
         # .restart_notify.json (unlinked once the new gateway sends its notification) this persists
         # so a delayed Telegram redelivery is still detectable. Overwritten on every /restart.
-        await _write_marker(".restart_last_processed.json", _dedup_payload, "dedup marker")
+        try:
+            cancellation = await _atomic_json_write_completion_safe(
+                _hermes_home / ".restart_last_processed.json", _dedup_payload()
+            )
+            if pending_cancellation is None:
+                pending_cancellation = cancellation
+        except asyncio.CancelledError as exc:
+            if pending_cancellation is None:
+                pending_cancellation = exc
+        except Exception as exc:
+            logger.debug("Failed to write restart dedup marker: %s", exc)
+
         active_agents = self._running_agent_count()
         # Under a service manager (systemd/launchd) or Docker/Podman, exit 75 so the supervisor /
         # restart policy restarts us — detached setsid+bash fails there (systemd KillMode=mixed kills
@@ -549,6 +612,11 @@ class GatewaySlashCommandsMixin(
         from gateway.restart import is_container_restart_context, is_gateway_supervisor_process
         via_service = is_gateway_supervisor_process() or is_container_restart_context()
         self.request_restart(detached=not via_service, via_service=via_service)
+        # Marker publication and the restart transition are one obligation. Only
+        # propagate cancellation after restart was requested, so a completed
+        # worker write cannot leave a false success marker behind.
+        if pending_cancellation is not None:
+            raise pending_cancellation
         # Track sessions that were active at shutdown for stuck-loop detection (#7536). On each restart, the
         # counter increments for sessions that were running. If a session hits the threshold (3 consecutive
         # restarts while active), the next startup auto-suspends it — breaking the loop.

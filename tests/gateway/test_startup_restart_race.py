@@ -26,6 +26,7 @@ class StartupRaceAdapter(BasePlatformAdapter):
         self.connected = False
         self.disconnected = False
         self.background_cancelled = False
+        self.send_calls = 0
 
     async def connect(self, *, is_reconnect: bool = False):
         if self.on_connect:
@@ -43,6 +44,7 @@ class StartupRaceAdapter(BasePlatformAdapter):
         await super().cancel_background_tasks()
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
+        self.send_calls += 1
         return SendResult(success=True, message_id="1")
 
     async def send_typing(self, chat_id, metadata=None):
@@ -60,6 +62,9 @@ def make_startup_runner(tmp_path):
             Platform.SLACK: PlatformConfig(enabled=True, token="***"),
         },
         sessions_dir=tmp_path / "sessions",
+        # The real loop watchdog is unrelated to these startup lifecycle tests
+        # and owns an out-of-loop thread; keep this fixture deterministic.
+        loop_watchdog=False,
     )
     runner.adapters = {}
     runner._running = False
@@ -127,6 +132,129 @@ def patch_startup_side_effects(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
     monkeypatch.setattr("agent.shell_hooks.register_from_config", lambda *args, **kwargs: None)
     monkeypatch.setattr("tools.process_registry.process_registry.recover_from_checkpoint", lambda: 0)
+
+    async def _empty_channel_directory(_adapters):
+        return {"platforms": {}}
+
+    monkeypatch.setattr(
+        "gateway.channel_directory.build_channel_directory",
+        _empty_channel_directory,
+    )
+
+
+@pytest.mark.asyncio
+async def test_startup_schedules_restart_notification_without_waiting(
+    tmp_path, monkeypatch
+):
+    """A temporarily blocked lifecycle delivery must not hold startup open."""
+    monkeypatch.setenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", "0.05")
+    patch_startup_side_effects(monkeypatch, tmp_path)
+    (tmp_path / ".restart_notify.json").write_text(
+        '{"platform":"telegram","chat_id":"42"}',
+        encoding="utf-8",
+    )
+    runner = make_startup_runner(tmp_path)
+    runner.config.platforms.pop(Platform.SLACK)
+    runner._create_adapter = MagicMock(
+        return_value=StartupRaceAdapter(Platform.TELEGRAM)
+    )
+    release_notification = asyncio.Event()
+    notification_task = None
+
+    async def _blocked_notification(*, claimed_marker_payload=None):
+        nonlocal notification_task
+        assert claimed_marker_payload == '{"platform":"telegram","chat_id":"42"}'
+        notification_task = asyncio.current_task()
+        await release_notification.wait()
+
+    runner._send_restart_notification = AsyncMock(
+        side_effect=_blocked_notification
+    )
+
+    result = await asyncio.wait_for(runner.start(), timeout=10)
+
+    assert result is True
+    runner._send_restart_notification.assert_awaited_once()
+    assert notification_task in runner._background_tasks
+
+    release_notification.set()
+    await asyncio.sleep(0)
+    tasks = list(runner._background_tasks)
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_startup_preserves_invalid_utf8_restart_marker(tmp_path, monkeypatch):
+    """A malformed marker cannot abort gateway startup or be consumed unsent."""
+    patch_startup_side_effects(monkeypatch, tmp_path)
+    notify_path = tmp_path / ".restart_notify.json"
+    marker_bytes = b"\xff\xfeinvalid"
+    notify_path.write_bytes(marker_bytes)
+
+    runner = make_startup_runner(tmp_path)
+    runner.config.platforms.pop(Platform.SLACK)
+    runner._create_adapter = MagicMock(
+        return_value=StartupRaceAdapter(Platform.TELEGRAM)
+    )
+    send_restart_notification = AsyncMock()
+    runner._send_restart_notification = send_restart_notification
+
+    result = await asyncio.wait_for(runner.start(), timeout=10)
+
+    assert result is True
+    send_restart_notification.assert_not_awaited()
+    assert notify_path.read_bytes() == marker_bytes
+
+    tasks = list(runner._background_tasks)
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_startup_restart_worker_does_not_claim_replacement_before_first_run(
+    tmp_path, monkeypatch
+):
+    """The scheduled worker must stay bound to the marker that created it."""
+    patch_startup_side_effects(monkeypatch, tmp_path)
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(
+        '{"platform":"telegram","chat_id":"42","request_id":"old"}',
+        encoding="utf-8",
+    )
+    runner = make_startup_runner(tmp_path)
+    runner.config.platforms.pop(Platform.SLACK)
+
+    def _replace_marker_during_connect():
+        notify_path.write_text(
+            '{"platform":"telegram","chat_id":"42","request_id":"new"}',
+            encoding="utf-8",
+        )
+
+    adapter = StartupRaceAdapter(
+        Platform.TELEGRAM,
+        on_connect=_replace_marker_during_connect,
+    )
+    runner._create_adapter = MagicMock(return_value=adapter)
+    runner._send_restart_notification = (
+        gateway_run.GatewayRunner._send_restart_notification.__get__(
+            runner,
+            gateway_run.GatewayRunner,
+        )
+    )
+
+    result = await asyncio.wait_for(runner.start(), timeout=10)
+    assert result is True
+
+    assert adapter.send_calls == 0
+    assert '"request_id":"new"' in notify_path.read_text(encoding="utf-8")
+
+    tasks = list(runner._background_tasks)
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio

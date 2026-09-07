@@ -398,6 +398,7 @@ import {
   resolvePosixScriptHandoff,
   resolveStagedUpdaterBinary,
   resolveUpdateScriptHandoff,
+  windowsUpdatePrerequisiteError,
   sandboxFallbackFromEnv,
   spawnUpdaterProcess,
   stagedUpdaterSupportsPrewrittenMarker,
@@ -4048,6 +4049,14 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     // Emergency backup and header verification before the update touches
     // anything.  Runs while the backend is still alive.
     preflightStateDb(HERMES_HOME, rememberLog)
+
+    if (IS_WINDOWS && resolveUpdateScriptHandoff(updateRoot)) {
+      const message = windowsUpdatePrerequisiteError(updateRoot)
+      if (message) {
+        emitUpdateProgress({ stage: 'error', message, percent: null })
+        return { ok: false, error: message }
+      }
+    }
 
     // Stop our own backend(s) and wait for the venv shim to unlock BEFORE we
     // spawn the updater. Without this the updater races a still-locked

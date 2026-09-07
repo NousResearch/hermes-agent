@@ -114,7 +114,10 @@ describe('StatusRule session title', () => {
           usage: { ...baseProps.usage, context_estimated: estimated }
         }))
 
-        expect(text.includes('~')).toBe(estimated)
+        const context = text.match(/(~?\d+(?:\.\d+)?k(?:\/\d+k| tok))/)?.[1]
+
+        expect(context, `context must render at ${cols} columns`).toBeTruthy()
+        expect(context?.startsWith('~')).toBe(estimated)
       }
     }
   })

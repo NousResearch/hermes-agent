@@ -40,10 +40,13 @@ def child(out: Path) -> None:
     class ProviderFixture(BaseHTTPRequestHandler):
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            (out / "provider-request.json").write_text(json.dumps(request, indent=2))
+            request_file = "provider-request-unmetered.json" if getattr(self.server, "omit_usage", False) else "provider-request.json"
+            (out / request_file).write_text(json.dumps(request, indent=2))
             response = {"id": "fixture", "object": "chat.completion", "created": 0, "model": "fixture",
                         "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "fixture answer"}}],
                         "usage": {"prompt_tokens": 1234, "completion_tokens": 20, "total_tokens": 1254}}
+            if getattr(self.server, "omit_usage", False):
+                response.pop("usage")
             body = json.dumps(response).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -88,6 +91,15 @@ def child(out: Path) -> None:
         print(asyncio.run(runner._handle_context_command(MessageEvent(text="/context", source=source, message_id="fixture"))), flush=True)
         results[scenario] = {"breakdown": compute_session_context_breakdown(agent, cli.conversation_history), "usage": usage}
     (out / "payloads.json").write_text(json.dumps(results, indent=2))
+    server.omit_usage = True
+    unmetered = AIAgent(model="fixture", provider="openai-compat", api_key="fixture", base_url=base_url, enabled_toolsets=[], quiet_mode=True, skip_context_files=True, skip_memory=True, save_trajectories=False)
+    unmetered.context_compressor._config_context_length = 100_000
+    unmetered.context_compressor._resolved_context_length = 100_000
+    unmetered.context_compressor.maybe_seed_preflight_display_tokens(1234)
+    unmetered._disable_streaming = True
+    unmetered_result = unmetered.run_conversation("fixture without usage")
+    assert unmetered_result["completed"]
+    (out / "unmetered-result.json").write_text(json.dumps({"last_prompt_tokens": unmetered_result["last_prompt_tokens"]}))
     server.shutdown()
     server.server_close()
     print("DISPLAY_PROBE_COMPLETE", flush=True)

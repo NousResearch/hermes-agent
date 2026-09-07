@@ -1,0 +1,23 @@
+manifest_version: 1
+name: trackly-sms
+description: Connect Trackly SMS, check account setup, and prepare text messages for human approval.
+source: https://docs.tracklysms.com/agents/connect
+transport:
+  type: http
+  url: https://mcp.tracklysms.com/mcp
+auth:
+  type: oauth
+suggest:
+  keywords:
+    - trackly
+    - sms
+    - texting
+  hosts:
+    - tracklysms.com
+post_install: |
+  Authenticate through the Trackly browser consent screen using Hermes MCP OAuth.
+  If authentication has not started, run hermes mcp login trackly-sms.
+  Reconnect, then ask for trackly_whoami and trackly_get_setup_status.
+  Live SMS through hosted MCP is not enabled during the current rollout.
+  Complete any sender and billing setup in Trackly. Review each held message in
+  Trackly before execution. Never paste API keys, tokens, or email codes in chat.

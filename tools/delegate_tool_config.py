@@ -98,6 +98,11 @@ def _get_max_concurrent_children() -> int:
         )
     return result
 
+def _get_independent_completions() -> bool:
+    """delegation.independent_completions (bool, default False): split a background call into per-task / per-group
+    completion messages that land as each finishes. Off = one consolidated message when the whole call is done."""
+    return is_truthy_value(_cfg().get("independent_completions", False))
+
 def _get_worktree_isolation() -> bool:
     """delegation.worktree_isolation (bool, default False): each child gets its own
     git worktree off the parent's HEAD so parallel children never contend for one

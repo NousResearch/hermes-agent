@@ -101,6 +101,8 @@ Explore and preview the working directory without leaving the app — useful for
 
 ### Artifacts
 
+When connected to a remote gateway, opening a file artifact downloads it through that gateway, using the artifact’s originating profile and session. Relative paths resolve against the session’s saved working directory; home-relative paths use the gateway’s home, never the Desktop machine’s home. Windows-style relative paths are recognized alongside forward-slash paths, and file URIs retain drive and network-share information for the gateway to interpret. Missing sessions or working directories produce an error rather than selecting a different local file.
+
 The **Artifacts** view collects what your sessions generate — **images, files, and links** — into one searchable, browsable gallery. Open it from the sidebar, the command palette (**Artifacts — Browse generated outputs**), or a `nav.artifacts` shortcut you bind yourself. It indexes recent session outputs automatically; every artifact shows which session produced it with a jump back to that chat, and images and files open in a preview with download / open-in-browser / copy actions.
 
 ### Windows, tabs & panes

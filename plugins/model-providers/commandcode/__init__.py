@@ -100,12 +100,20 @@ commandcode_oauth = CommandCodeOAuthProfile(
     signup_url="https://commandcode.ai/", base_url="https://api.commandcode.ai", models_url=_COMMANDCODE_MODELS_URL,
     auth_type="oauth_external",
     fallback_models=(
-        "meituan/LongCat-2.0:free", "poolside/laguna-s-2.1-free",
-        "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro", "Qwen/Qwen3.7-Max", "Qwen/Qwen3.6-Plus",
-        "moonshotai/Kimi-K2.6", "zai-org/GLM-5.1", "MiniMaxAI/MiniMax-M2.7", "stepfun/Step-3.5-Flash",
-        "xiaomi/mimo-v2.5-pro", "google/gemini-3.5-flash", "gpt-5.5",
+        "command-code/deepseek-deepseek-v4-flash",
+        "command-code/deepseek-deepseek-v4-flash-vision-exp",
+        "command-code/deepseek-deepseek-v4-pro",
+        "command-code/meituan-LongCat-2.0:free",
+        "command-code/meta-muse-spark-1.3-contributor",
+        "command-code/MiniMaxAI-MiniMax-M3",
+        "command-code/moonshotai-Kimi-K3",
+        "command-code/poolside-laguna-s-2.1-free",
+        "command-code/Qwen-Qwen3.8-Max-0902",
+        "command-code/xai-grok-4.5",
+        "command-code/xiaomi-mimo-v2.5-pro",
+        "command-code/z-ai-glm-5.3-flash",
     ),
-    default_aux_model="meituan/LongCat-2.0:free",
+    default_aux_model="command-code/meituan-LongCat-2.0:free",
 )
 
 register_provider(commandcode)

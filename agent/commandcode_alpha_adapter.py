@@ -134,9 +134,37 @@ def _workspace_config(cwd: Optional[str] = None) -> Dict[str, Any]:
     }
 
 
+# Mapping from dashed slugs to canonical wire model IDs accepted by /alpha/generate
+COMMAND_CODE_MODEL_ALIASES: Dict[str, str] = {
+    "deepseek-deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+    "deepseek-deepseek-v4-flash-vision-exp": "deepseek/deepseek-v4-flash-vision-exp",
+    "deepseek-deepseek-v4-pro": "deepseek/deepseek-v4-pro",
+    "meituan-LongCat-2.0:free": "meituan/LongCat-2.0:free",
+    "meta-muse-spark-1.3-contributor": "meta/muse-spark-1.3-contributor",
+    "MiniMaxAI-MiniMax-M3": "MiniMaxAI/MiniMax-M3",
+    "moonshotai-Kimi-K3": "moonshotai/Kimi-K3",
+    "poolside-laguna-s-2.1-free": "poolside/laguna-s-2.1-free",
+    "Qwen-Qwen3.8-Max-0902": "Qwen/Qwen3.8-Max-0902",
+    "xai-grok-4.5": "xai/grok-4.5",
+    "xiaomi-mimo-v2.5-pro": "xiaomi/mimo-v2.5-pro",
+    "z-ai-glm-5.3-flash": "z-ai/glm-5.3-flash",
+}
+
+
+def canonical_commandcode_model_id(model_id: str) -> str:
+    """Normalize model ID so dashed slugs or prefixed names map to canonical wire format."""
+    clean = model_id.strip()
+    if clean.startswith("command-code/"):
+        clean = clean[len("command-code/"):]
+    elif clean.startswith("commandcode-oauth/"):
+        clean = clean[len("commandcode-oauth/"):]
+    return COMMAND_CODE_MODEL_ALIASES.get(clean, clean)
+
+
 def stream_commandcode_alpha(agent: Any, api_kwargs: Dict[str, Any], on_first_delta: Any = None) -> Any:
     """Stream a completion via Command Code /alpha/generate and return standard response."""
-    model = api_kwargs.get("model") or "meituan/LongCat-2.0:free"
+    raw_model = api_kwargs.get("model") or "meituan/LongCat-2.0:free"
+    model = canonical_commandcode_model_id(raw_model)
     messages = api_kwargs.get("messages") or []
     tools = api_kwargs.get("tools")
     max_tokens = api_kwargs.get("max_tokens") or 4096
@@ -248,7 +276,11 @@ def stream_commandcode_alpha(agent: Any, api_kwargs: Dict[str, Any], on_first_de
                     if not tool_calls and event.get("finishReason"):
                         finish_reason = event.get("finishReason")
                 elif ev_type == "error":
-                    err_msg = event.get("message") or "Command Code generation error"
+                    err_obj = event.get("error")
+                    if isinstance(err_obj, dict):
+                        err_msg = err_obj.get("message") or err_obj.get("type") or "Command Code generation error"
+                    else:
+                        err_msg = event.get("message") or str(err_obj) or "Command Code generation error"
                     raise RuntimeError(f"Command Code stream error: {err_msg}")
     except urllib.error.HTTPError as exc:
         body_text = ""

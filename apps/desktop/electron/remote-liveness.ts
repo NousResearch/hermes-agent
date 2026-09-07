@@ -240,6 +240,159 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
   return { dropped }
 }
 
+export interface RevalidateSuspectPooledRemoteBackendsOptions<TConnection extends RemoteConnectionDescriptor> {
+  entries: Iterable<[string, PooledRemoteEntry<TConnection>]>
+  log: (message: string) => void
+  probe: (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>
+  /** Re-dial a retired pool key so the tunnel is rebuilt eagerly, not on the next click. */
+  rebuild: (poolKey: string) => Promise<unknown>
+  /** Tear down the dead descriptor (pool entry + SSH tunnel/master) for this key. */
+  retire: (poolKey: string) => Promise<void> | void
+  tracker: RemoteLivenessTracker
+}
+
+/**
+ * Post-resume sweep of pooled REMOTE descriptors (#93910).
+ *
+ * After a sleep/wake or network restore every pooled SSH tunnel is suspect:
+ * the SSH master died with the network, but the local forward's descriptor is
+ * still cached and the renderer keepalive keeps the idle reaper off it. Unlike
+ * the background policy in revalidatePooledRemoteBackends — which tolerates a
+ * failure streak because transient blips are common in steady state — a
+ * suspect descriptor that fails ONE bounded probe after resume is dead: retire
+ * it immediately and rebuild, instead of serving "Gateway offline" through two
+ * more failure rounds.
+ *
+ * Bounded by construction: one probe per remote entry per invocation, retire
+ * and rebuild each awaited once; the caller coalesces invocations and applies
+ * the resume holdoff, so there is no polling loop here. A failed retire skips
+ * the rebuild (never dial on top of a descriptor that is still installed) and
+ * a failed rebuild is logged and left for the renderer's normal reconnect
+ * path — fail closed, never throw out of the sweep.
+ */
+export async function revalidateSuspectPooledRemoteBackends<TConnection extends RemoteConnectionDescriptor>({
+  entries,
+  log,
+  probe,
+  rebuild,
+  retire,
+  tracker
+}: RevalidateSuspectPooledRemoteBackendsOptions<TConnection>): Promise<{ rebuilt: string[]; retired: string[] }> {
+  const remotes = [...entries].filter(([, entry]) => !entry.process && entry.remoteBaseUrl)
+  const rebuilt: string[] = []
+  const retired: string[] = []
+
+  await Promise.all(
+    remotes.map(async ([poolKey, entry]) => {
+      const baseUrl = String(entry.remoteBaseUrl).replace(/\/+$/, '')
+
+      try {
+        if (!entry.connectionPromise) {
+          throw new Error('Remote backend descriptor is unavailable.')
+        }
+
+        const connection = await entry.connectionPromise
+        await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
+        tracker.recordSuccess(baseUrl)
+
+        return
+      } catch (probeError) {
+        log(
+          `Pooled remote backend "${poolKey}" failed its post-resume probe (${probeError instanceof Error ? probeError.message : String(probeError)}); rebuilding tunnel.`
+        )
+      }
+
+      try {
+        await retire(poolKey)
+      } catch (retireError) {
+        // The dead entry may still be installed; rebuilding on top of it could
+        // double-dial one scope. Leave it — the dispatch-time probe retires it
+        // on the next use.
+        log(
+          `Pooled remote backend "${poolKey}" could not be retired after resume (${retireError instanceof Error ? retireError.message : String(retireError)}); leaving descriptor for dispatch-time recovery.`
+        )
+
+        return
+      }
+
+      retired.push(poolKey)
+      // The rebuilt tunnel must start from a clean failure state; stale
+      // pre-sleep failures should not count against the fresh descriptor.
+      tracker.recordSuccess(baseUrl)
+
+      try {
+        await rebuild(poolKey)
+        rebuilt.push(poolKey)
+      } catch (rebuildError) {
+        log(
+          `Pooled remote backend "${poolKey}" could not be rebuilt after resume (${rebuildError instanceof Error ? rebuildError.message : String(rebuildError)}); renderer reconnect will retry.`
+        )
+      }
+    })
+  )
+
+  return { rebuilt, retired }
+}
+
+// macOS fires 'resume' and 'unlock-screen' near-simultaneously on wake, and a
+// flapping Wi-Fi association can restore the network several times in a few
+// seconds. One sweep per window is enough: the sweep itself probes every
+// remote entry, and the renderer's revalidate IPC covers anything that dies
+// later. Keep this comfortably above the dispatch probe timeout so overlapping
+// signals can never queue back-to-back sweeps into a hot loop.
+export const POWER_RESUME_REVALIDATION_HOLDOFF_MS = 15_000
+
+export interface AttachPowerResumeRemoteRevalidationOptions {
+  log: (message: string) => void
+  now?: () => number
+  // Method syntax (bivariant) so Electron's overloaded PowerMonitor.on
+  // satisfies this structural seam while tests can pass a tiny fake.
+  powerMonitor: { on(event: 'resume' | 'unlock-screen', listener: () => void): unknown }
+  revalidate: () => Promise<unknown>
+}
+
+/**
+ * Wire the suspect-pool sweep to the Electron powerMonitor seam (#93910).
+ *
+ * Returns the trigger so tests (and the network-restore nudge, if main ever
+ * wants one) can drive the exact code path the events run. The trigger is a
+ * plain function: holdoff first (one sweep per wake window, never a hot
+ * loop), then a fire-and-forget revalidation whose rejection is logged and
+ * swallowed — a broken sweep must never take down the resume handler or wedge
+ * future wakes.
+ */
+export function attachPowerResumeRemoteRevalidation({
+  log,
+  now = Date.now,
+  powerMonitor,
+  revalidate
+}: AttachPowerResumeRemoteRevalidationOptions): () => Promise<void> {
+  let lastKickAt: null | number = null
+
+  const trigger = async (): Promise<void> => {
+    const at = now()
+
+    if (lastKickAt !== null && at - lastKickAt < POWER_RESUME_REVALIDATION_HOLDOFF_MS) {
+      return
+    }
+
+    lastKickAt = at
+
+    try {
+      await revalidate()
+    } catch (error) {
+      log(
+        `Post-resume remote revalidation failed (${error instanceof Error ? error.message : String(error)}); will retry on the next wake or renderer reconnect.`
+      )
+    }
+  }
+
+  powerMonitor.on('resume', () => void trigger())
+  powerMonitor.on('unlock-screen', () => void trigger())
+
+  return trigger
+}
+
 /**
  * Probe the cached primary remote connection and apply the failure policy.
  * The caller owns single-flight coordination; identity checks here ensure an

@@ -25,7 +25,7 @@ function createBootstrapCoordinator() {
   const drains = new Map<string, Promise<void>>()
   let shutdownRequested = false
 
-  function start(scope, fingerprint, run) {
+  function start(scope, fingerprint, run, metadata = null) {
     if (shutdownRequested) {
       const error: any = new Error('SSH bootstrap was cancelled because Desktop is quitting.')
       error.kind = 'superseded'
@@ -65,7 +65,7 @@ function createBootstrapCoordinator() {
 
     const drain = drains.get(scope) || Promise.resolve()
     const predecessor = current ? Promise.allSettled([current.promise, drain]) : drain
-    const entry: any = { controller, fingerprint, forceCleanups, generation, promise: null, scope }
+    const entry: any = { controller, fingerprint, forceCleanups, generation, metadata, promise: null, scope }
 
     const promise = predecessor
       .then(() => {

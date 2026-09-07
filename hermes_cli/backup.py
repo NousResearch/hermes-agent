@@ -99,7 +99,7 @@ _IMPORT_SKIP_NAMES = {"gateway_state.json", "gateway.pid", "cron.pid", "gateway.
 _SECRET_FILE_NAMES = {".env", "auth.json", "state.db", "ov.conf"}
 # Directories containing files that seed further provider-managed state must also
 # remain private after import. The Hermes home itself retains HERMES_HOME_MODE.
-_PRIVATE_PARENT_FILE_NAMES = {"ov.conf"}
+_PRIVATE_PARENT_PATHS = {Path("openviking/ov.conf")}
 
 # Reserved archive subtree for memory-provider state OUTSIDE HERMES_HOME (e.g. ~/.honcho, via
 # MemoryProvider.backup_paths()), stored and restored relative to the user's home; paths not
@@ -910,7 +910,7 @@ def _import_members(
                         # preserving an explicit HERMES_HOME_MODE on the root.
                         if (
                             not external
-                            and target.name in _PRIVATE_PARENT_FILE_NAMES
+                            and Path(rel) in _PRIVATE_PARENT_PATHS
                             and target.parent.resolve() != root
                         ):
                             os.chmod(target.parent, 0o700)

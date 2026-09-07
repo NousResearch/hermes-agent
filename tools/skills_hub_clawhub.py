@@ -347,6 +347,8 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
             return version
         vd = self._get_json(f"{self.BASE_URL}/skills/{slug}/versions",
                             params={"owner": owner} if owner else None)
+        if isinstance(vd, dict):
+            vd = vd.get("items")
         return _first_str(vd[0].get("version")) if isinstance(vd, list) and vd and isinstance(vd[0], dict) else None
 
     def _fetch_owner_handle(self, slug: str) -> Optional[str]:

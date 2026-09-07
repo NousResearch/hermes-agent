@@ -16,7 +16,7 @@ def test_settled_discussion_retry_publishes_once(tmp_path, monkeypatch, later_me
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     (tmp_path / ".hermes" / "profiles" / "reviewer").mkdir(parents=True)
     server = SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock())
-    service = HostedRoomService(server, db_path=tmp_path / "state.db")
+    service = HostedRoomService(server, db_path=tmp_path / ".hermes" / "state.db")
     service.create_room(room_id="room", name="Room", members=[
         {"member_id": "worker", "profile": "default", "handle": "worker"},
         {"member_id": "reviewer", "profile": "reviewer", "handle": "reviewer"},
@@ -64,7 +64,12 @@ def test_settled_discussion_retry_publishes_once(tmp_path, monkeypatch, later_me
         restarted.prepare_room(binding)
     events = restarted._events("room")
     assert sum(e["kind"] == "message.member" and e["payload"].get("text") == "Recovered answer"
-               for e in events) == 1
+               for e in events) == (0 if later_messages else 1)
+    terminal = [e for e in events if e["kind"] in {"turn.settled", "turn.cancelled"}
+                and e["payload"].get("task_id") == task["identity"].task_id]
+    assert len(terminal) == 1
+    if later_messages:
+        assert terminal[0]["payload"]["reason"] == "superseded_by_newer_user_event"
     assert restarted.policy_checkpoint.publication_exists(
         room_id="room", task_id=task["identity"].task_id, status="settled", execution_generation=2)
     for event_id in ("next", "after-stop"):

@@ -93,7 +93,7 @@ def _status_model_route(status_agent, persisted_route: dict, session_row: dict, 
                        _clean_str(getattr(status_agent, "provider", ""))))
         ctx = getattr(status_agent, "context_compressor", None)
         if ctx is not None:
-            context_used = _int_value(getattr(ctx, "last_prompt_tokens", 0))
+            context_used = max(0, _int_value(getattr(ctx, "last_prompt_tokens", 0)))
             context_total = _int_value(getattr(ctx, "context_length", 0))
     routes.append((_clean_str(persisted_route.get("model")),
                    _clean_str(persisted_route.get("billing_provider"))))
@@ -189,8 +189,10 @@ def _usage_agent_stats_lines(agent) -> list[str]:
     ctx = agent.context_compressor
     if ctx.last_prompt_tokens > 0:
         pct = _pct(ctx.last_prompt_tokens, ctx.context_length)
-        lines.append(t("gateway.usage.label_context", used=_fmt(ctx.last_prompt_tokens),
-                       total=_fmt(ctx.context_length), pct=f"{pct:.0f}"))
+        from agent.context_breakdown import context_display_source
+        mark = "~" if context_display_source(ctx) != "provider_usage" else ""
+        lines.append(t("gateway.usage.label_context", used=mark + _fmt(ctx.last_prompt_tokens),
+                       total=_fmt(ctx.context_length), pct=f"{mark}{pct:.0f}"))
     if ctx.compression_count:
         lines.append(t("gateway.usage.label_compressions", count=ctx.compression_count))
     return lines
@@ -243,12 +245,14 @@ class GatewayStatusCommandsMixin:
             lines.append(t("gateway.status.model_provider", model=model_name, provider=provider_name))
         elif model_name:
             lines.append(t("gateway.status.model", model=model_name))
+        from agent.context_breakdown import context_display_source
+        mark = "~" if context_display_source(getattr(status_agent, "context_compressor", None)) != "provider_usage" else ""
         if context_total:
             pct = min(100, round((context_used / context_total) * 100))
-            lines.append(t("gateway.status.context", used=_fmt(context_used), total=_fmt(context_total),
-                           pct=f"{pct}"))
+            lines.append(t("gateway.status.context", used=mark + _fmt(context_used), total=_fmt(context_total),
+                           pct=f"{mark}{pct}"))
         elif context_used:
-            lines.append(t("gateway.status.context_used", used=_fmt(context_used)))
+            lines.append(t("gateway.status.context_used", used=mark + _fmt(context_used)))
         state = t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")
         lines += [t("gateway.status.tokens", tokens=_fmt(db_total_tokens)),
                   t("gateway.status.agent_running", state=state)]
@@ -311,7 +315,9 @@ class GatewayStatusCommandsMixin:
         used, context_length, model_name = await self._resolve_context_figures(
             agent, ctx, session_entry, source
         )
-        # Gauge path: real current-context figure
+        from agent.context_breakdown import context_display_source
+        mark = "~" if context_display_source(ctx) != "provider_usage" else ""
+        # Gauge path: preserve the provenance of the selected occupancy figure.
         if used > 0 and context_length > 0:
             pct = _pct(used, context_length)
             filled = int(round(pct / 100 * 24))
@@ -319,9 +325,9 @@ class GatewayStatusCommandsMixin:
                 t("gateway.context.header"), "",
                 t("gateway.context.model", model=model_name or "?"),
                 t("gateway.context.window", total=_fmt(context_length)),
-                t("gateway.context.in_use", used=_fmt(used), total=_fmt(context_length), pct=f"{pct:.0f}"),
+                t("gateway.context.in_use", used=mark + _fmt(used), total=_fmt(context_length), pct=f"{mark}{pct:.0f}"),
                 t("gateway.context.bar", bar="█" * max(0, filled) + "░" * max(0, 24 - filled)),
-                t("gateway.context.headroom", headroom=_fmt(max(0, context_length - used))),
+                t("gateway.context.headroom", headroom=mark + _fmt(max(0, context_length - used))),
                 "",
             ]
             # Full view — compression / throughput need the live agent.
@@ -349,7 +355,7 @@ class GatewayStatusCommandsMixin:
     async def _resolve_context_figures(self, agent, ctx, session_entry, source):
         """``(used, context_length, model_name)`` for /context: used = compressor -> SessionStore;
         model = agent -> SessionDB row; window = compressor -> gateway model route -> model metadata."""
-        used = _n(ctx, "last_prompt_tokens") or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
+        used = max(0, _n(ctx, "last_prompt_tokens")) or max(0, _int_value(getattr(session_entry, "last_prompt_tokens", 0)))
         context_length = _n(ctx, "context_length")
         model_name = _clean_str(getattr(agent, "model", "")) if agent is not None else ""
         if not model_name and self._session_db:
@@ -495,7 +501,7 @@ class GatewayStatusCommandsMixin:
                 if label.endswith(f"breakdown_cat_{cat_id}"):  # missing key: t() echoes it back
                     label = str(cat.get("label") or cat_id)
                 pct = round(tokens / total * 100) if total else 0
-                out.append(t("gateway.usage.breakdown_line", label=label, count=_fmt(tokens), pct=pct))
+                out.append(t("gateway.usage.breakdown_line", label=label, count="~" + _fmt(tokens), pct=f"~{pct}"))
             return out if len(out) > 1 else []
         except Exception:
             return []

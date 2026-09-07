@@ -713,7 +713,9 @@ class CLIInfoMixin:
         print(f"  API calls:                 {calls:>10,}")
         print(f"  Session duration:          {elapsed:>10}")
         print(f"  {'─' * 40}")
-        print(f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")
+        from agent.context_breakdown import context_display_source
+        mark = "~" if context_display_source(compressor) != "provider_usage" else ""
+        print(f"  Current context:  {mark}{last_prompt:,} / {ctx_len:,} ({mark}{pct:.0f}%)")
         print(f"  Messages:         {len(self.conversation_history)}")
         print(f"  Compressions:     {compressor.compression_count}")
 

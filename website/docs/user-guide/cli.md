@@ -143,7 +143,7 @@ A persistent status bar sits above the input area, updating in real time:
 | Element | Description |
 |---------|-------------|
 | Model name | Current model (truncated if longer than 26 chars) |
-| Token count | Context tokens used / max context window |
+| Token count | Context tokens used / max context window; `~` marks an estimate |
 | Context bar | Visual fill indicator with color-coded thresholds |
 | Cost | Estimated session cost (or `n/a` for unknown/zero-priced models) |
 | 🗜️ N | **Context compression count** — how many times the running session has been auto-compressed. Appears once the first compression fires. |
@@ -151,6 +151,8 @@ A persistent status bar sits above the input area, updating in real time:
 | Duration | Elapsed session time |
 | Session title | Once the session has a title, it appears as a gold badge pinned to the far-right edge. Long titles truncate before displacing the essential model and context fields. |
 | ⚠ YOLO | **YOLO mode warning** — shown whenever `HERMES_YOLO_MODE` is on (either `hermes --yolo` at launch or `/yolo` toggled mid-session). Mirrors the banner-line warning so you can't forget you're in auto-approve mode. |
+
+A `~` before a context count or percentage means it includes a local estimate. This also applies to gateway `/status` and `/context`, the TUI, and the Desktop context gauge. An unchanged provider-usage reading has no `~`; a provider anchor plus unpriced new messages does. `/context` reports the selected source. Category, free-space, skill, and toolset breakdowns are always local estimates, even when the overall occupancy comes from provider usage. These display labels do not change compaction decisions or make extra provider requests.
 
 The bar adapts to terminal width — full layout at ≥ 76 columns, compact at 52–75, minimal (model + duration, plus the YOLO badge when active) below 52.
 

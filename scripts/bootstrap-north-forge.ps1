@@ -99,10 +99,29 @@ Write-Host "  venv : $VenvDir"
 Write-Host "  data : $DataDir   (HERMES_HOME)"
 Write-Host ""
 
-if ((Test-Path -LiteralPath $hermes) -and (Test-Path -LiteralPath $marker) -and -not $Force) {
-    New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
-    Write-Host "Already bootstrapped (pass -Force to rebuild). Ready - run north-forge.cmd." -ForegroundColor Green
-    exit 0
+# --- "already bootstrapped?" - a REAL probe, not an existence check ---------
+# hermes.exe + .nf-bootstrapped being present is NOT proof the venv can run: a
+# venv built on another machine is not portable, and a renamed / copied /
+# re-lettered checkout leaves both files in place while the interpreter fails or
+# imports stale code from a path that no longer exists (ERR-2026-09-07-006). Run
+# the same four-check readiness probe the launcher uses; only skip the rebuild
+# when it actually passes. A failing probe falls through to the -Force path below
+# and rebuilds the VENV ONLY - the data folder is never touched.
+. (Join-Path $PSScriptRoot 'lib\nf-readiness.ps1')
+
+if (-not $Force -and (Test-Path -LiteralPath $hermes) -and (Test-Path -LiteralPath $marker)) {
+    $ready = Test-NfVenvReady -RepoRoot $RepoRoot -VenvDir $VenvDir
+    if ($ready.Ready) {
+        New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
+        Write-Host "Already bootstrapped; venv passes the readiness probe. Ready - run north-forge.cmd." -ForegroundColor Green
+        exit 0
+    }
+    Write-Host "A venv is present but FAILS the readiness probe ($($ready.Summary)):" -ForegroundColor Yellow
+    foreach ($k in $ready.Details.Keys) {
+        if (-not $ready.Checks[$k]) { Write-Host "  $k : $($ready.Details[$k])" -ForegroundColor Yellow }
+    }
+    Write-Host "Rebuilding the venv (the data folder is left untouched)." -ForegroundColor Yellow
+    $Force = $true
 }
 
 $uv = Get-Command uv -ErrorAction SilentlyContinue

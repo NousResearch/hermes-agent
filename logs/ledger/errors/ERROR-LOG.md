@@ -78,25 +78,6 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
   parity tests (two runs one date, one report ⇒ flagged).
 - **Status:** OPEN — logged for scheduling; no change this run.
 
-### ERR-2026-09-07-006 — MEDIUM — Bootstrap readiness marker is not validated
-
-- **Opened:** 2026-09-07 · **Base:** hermes@233757037d (6 behind upstream/main)
-- **Run:** RUN-2026-09-07-006
-- **Source:** Codex audit **F-05**.
-- **Confidence:** Confirmed Fact (code inspection).
-- **What:** `.nf-bootstrapped` records `repo=<path>`, but the bootstrap
-  early-return and `north-forge.cmd` only test that the marker and `hermes.exe`
-  *exist*. Neither checks that the editable install still points at the current
-  checkout. A renamed checkout, a copied launcher, or a reused sibling venv can
-  silently run code from a different/old repository — likeliest on portable
-  drives whose folder name or letter changes.
-- **Impact:** confusing stale-code execution; no data loss.
-- **Fix sketch (not done — R-03 step 3):** parse `.nf-bootstrapped`; verify its
-  `repo=` equals the current `$RepoRoot`, that `hermes.exe` belongs to the
-  selected venv, and that `import hermes_cli` resolves under the current repo;
-  offer a safe rebuild when it doesn't.
-- **Status:** OPEN — logged for scheduling; no change this run.
-
 ### ERR-2026-09-07-007 — MEDIUM — Secret defenses narrower than "credential protection" implies
 
 - **Opened:** 2026-09-07 · **Base:** hermes@233757037d (6 behind upstream/main)
@@ -123,6 +104,49 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
 ---
 
 ## Resolved
+
+### ERR-2026-09-07-006 — CRITICAL — Launcher trusts "hermes.exe exists" as environment readiness
+
+- **Opened:** 2026-09-07 · **Base:** hermes@233757037d (6 behind upstream/main)
+- **Run:** RUN-2026-09-07-006 (opened) · RUN-2026-09-07-008 (reclassified + fixed)
+- **Source:** Codex audit **F-05**; **reclassified CRITICAL 2026-09-07** after a
+  real first-handoff failure confirmed the fault in the field — not theoretical.
+- **Confidence:** Confirmed Fact — reproduced **and** verified fixed this session
+  (`RUN-2026-09-07-008`): a foreign-machine venv was simulated two ways — (a) a
+  healthy venv whose *only* defect is `.nf-bootstrapped`'s `repo=` pointing at a
+  different path → the new probe reports `python_exec=PASS import_hermes_cli=PASS
+  module_in_checkout=PASS marker_repo_matches=FAIL`, `Ready=False`; (b) a full
+  venv layout with `python.exe` present but its recorded base `home` gone and the
+  marker → another path → `nf-preflight.ps1` detects it, calls
+  `bootstrap-north-forge.ps1 -Force` (rebuild, **not** launch), re-probes green,
+  and the data folder's canary file survives. `tests/test_nf_preflight_readiness.py`
+  (10 cases) + the real `.\north-forge.cmd --version` (probes `action=none
+  result=ready`, then starts).
+- **What:** `north-forge.cmd` and `bootstrap-north-forge.ps1` both treated
+  "`hermes.exe` (and `.nf-bootstrapped`) exist" as proof the run environment was
+  ready. A Python venv built on one machine is **not portable** to another — it
+  fails or crashes on the new machine — and there was **no readiness check** to
+  catch this before a launch attempt. A renamed / copied / re-lettered checkout
+  had the same effect: both files present, interpreter broken or importing stale
+  code from a path that no longer exists.
+- **Impact:** the launcher hands a broken environment straight to the agent on a
+  fresh machine — i.e. the **first handoff fails**. No data loss (data dir is
+  never touched), but the product does not start.
+- **Resolved:** 2026-09-07 (`RUN-2026-09-07-008`, `CHG-2026-09-07-020`,
+  `NF-v0.5.4`). New `scripts/lib/nf-readiness.ps1` runs a **four-check
+  launch-time probe** before every launch — (1) the venv's `python.exe` executes,
+  (2) `import hermes_cli` succeeds, (3) the resolved `hermes_cli` lives under
+  **this** checkout, (4) the marker's `repo=` equals this checkout's path. New
+  `scripts/nf-preflight.ps1` (called by `north-forge.cmd`) **silently rebuilds
+  the venv — never the data folder** — on any failure, matching the existing
+  self-healing principle, and appends **one line per launch** to
+  `<parent>\<checkout>-launcher.log` *before* Python is invoked (timestamp,
+  computer name, drive/repo path, per-check PASS/FAIL, recovery action).
+  `bootstrap-north-forge.ps1`'s early-return now runs the same probe. Resolving
+  change: `CHG-2026-09-07-020` (+ `tests/test_nf_preflight_readiness.py`).
+- **Status:** RESOLVED. (`R-03` step 3 done; steps 4–6 — Python-ABI/arch fields
+  in the marker, native-Windows path/UNC test matrix, a data-side diagnostic log
+  — remain future work, not tracked as a fault.)
 
 ### ERR-2026-09-07-005 — HIGH — `.githooks/content-scan` whitespace-path bypass
 
@@ -373,5 +397,5 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
 | ERR-2026-09-07-003 | 2026-09-07 | HIGH | Bootstrap tooling | Codex F-04 (data-loss): `bootstrap-north-forge.ps1` path guard rejected venv/data *inside* the repo but not *equal to* it → `-VenvDir <repo>` + `-Force` runs `Remove-Item -Recurse` on the checkout. Default `north-forge.cmd` path unaffected (no `-VenvDir` passed). Canonicalize + reject equal/inside/contains for venv AND data | RESOLVED | CHG-2026-09-07-015 (+ `tests/test_bootstrap_north_forge_path_safety.py`) |
 | ERR-2026-09-07-004 | 2026-09-07 | HIGH | Ledger tooling | Codex F-02: `collect-logs.{sh,ps1}` completeness check compares newest report-filename *date* to newest ledger-ID date, not `RUN-` id to report. One same-day report covers every run that day; run id can be absent entirely | OPEN | — (R-01: RUN-to-report manifest + FAIL on missing run) |
 | ERR-2026-09-07-005 | 2026-09-07 | HIGH | Secret scanning | Codex F-03 (reproduced): `.githooks/content-scan` expands changed paths unquoted → a filename with a space word-splits into non-existent pathspecs; a planted `ghp_` token in `dir/file name.txt` passed `--commits` clean. Pre-push + CI both affected | RESOLVED | CHG-2026-09-07-019 — `--commits` gate now reads `git diff-tree -z` and scans by post-image **blob OID**, never by path string; +7 `run.sh` cases (space/tab/dash/Unicode/rename/add-delete/negative). Verified before/after |
-| ERR-2026-09-07-006 | 2026-09-07 | MEDIUM | Bootstrap tooling | Codex F-05: `.nf-bootstrapped` / `north-forge.cmd` only check the marker + `hermes.exe` exist, never that the editable install points at the current checkout → renamed/copied checkout can launch stale code | OPEN | — (R-03.3: verify marker `repo=` == `$RepoRoot`, venv owns `hermes.exe`, `import hermes_cli` resolves in-repo) |
+| ERR-2026-09-07-006 | 2026-09-07 | **CRITICAL** (was MEDIUM) | Launcher / bootstrap tooling | `north-forge.cmd` + `bootstrap-north-forge.ps1` trusted "`hermes.exe` exists" as environment readiness. A venv is **not portable between machines** — a real first handoff failed on this. No readiness check before launch | RESOLVED | CHG-2026-09-07-020 — four-check launch-time probe (`scripts/lib/nf-readiness.ps1`), silent venv-only rebuild on any failure (`scripts/nf-preflight.ps1`), one-line-per-launch launcher log; `bootstrap` early-return now probe-gated. + `tests/test_nf_preflight_readiness.py` (10) |
 | ERR-2026-09-07-007 | 2026-09-07 | MEDIUM | Secret scanning | Codex F-09: coverage is narrow — 3 provider token shapes only; filename block is `.env`-family only (`credentials.json` / `id_rsa` / `*.pfx` / SA-JSON unblocked); redactor skips binary/large; `--no-verify` bypasses hooks | OPEN | — (R-02.4/5: pinned maintained CI scanner + private-key/container filename policy) |

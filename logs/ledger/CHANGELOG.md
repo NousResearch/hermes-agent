@@ -8,6 +8,81 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.5.4] — 2026-09-07 — hermes@03f3b09222 (47 behind upstream/main)
+
+`RUN-2026-09-07-008`. Committed on `e288a7f0c5` (`origin/main` tip after
+`NF-v0.5.3`). **PATCH** — one critical bug fix to fork launcher tooling
+(`ERR-2026-09-07-006`, reclassified CRITICAL after a real first-handoff failure).
+No application/engine code; launcher + bootstrap + a new shared probe library +
+tests only. `origin/main` advanced +9 mid-run (`e288a7f0c5` `Merge branch
+'NousResearch:main'`, an upstream sync); this commit was rebased **clean** onto
+it (no file overlap), moving the base `hermes@233757037d (8 behind)` →
+`hermes@03f3b09222 (47 behind)`.
+
+### Fixed
+
+- **CHG-2026-09-07-020** — the launcher no longer treats **"`hermes.exe`
+  exists"** as proof the run environment is ready (`ERR-2026-09-07-006`, Codex
+  audit **F-05**, fix sketch **R-03.3**). A Python venv built on one machine is
+  **not portable** to another: copy the drive to a new computer — or just rename
+  / re-letter the checkout — and `hermes.exe` + `.nf-bootstrapped` are still
+  sitting there while the interpreter fails to start or imports stale code from a
+  path that no longer exists. A real first handoff hit exactly this.
+  - **New `scripts/lib/nf-readiness.ps1`** (dot-sourced; reports only, never
+    acts) — one canonical **four-check launch-time probe**, run before *every*
+    launch attempt:
+    1. `python_exec` — the venv's `python.exe` actually executes
+       (`python.exe -I -c …`, from a temp cwd, hard timeout);
+    2. `import_hermes_cli` — `import hermes_cli` succeeds in that interpreter;
+    3. `module_in_checkout` — the resolved `hermes_cli.__file__` lives **under
+       this checkout**, not a different / old one;
+    4. `marker_repo_matches` — `.nf-bootstrapped`'s recorded `repo=` path equals
+       this checkout's actual path (canonicalized, `OrdinalIgnoreCase`).
+  - **New `scripts/nf-preflight.ps1`** — `north-forge.cmd` runs it before launch.
+    If every check passes → exit 0, the agent starts. If **any** check fails →
+    **silently rebuild the venv** via `bootstrap-north-forge.ps1` (`-Force` when a
+    venv is already present; the **data folder is never touched**), then re-probe.
+    No error dialog, no admin prompt, no user decision — the same "self-healing"
+    principle already used for the drive-letter fixes (`CHG-2026-09-07-012/013`).
+  - **Launcher-level log** — `nf-preflight.ps1` appends **one line per launch** to
+    `<parent>\<checkout-name>-launcher.log` (a sibling of the checkout, so it
+    survives a venv rebuild and lives outside the tree): timestamp, computer
+    name, drive + repo path, venv path, every check's `PASS`/`FAIL` (before and
+    after any rebuild), the recovery `action`, and the `result`. Written in a
+    `finally` via a self-contained `AppendAllText` helper that does **not** depend
+    on the readiness library or on Python — a broken interpreter cannot stop the
+    line from being written. Single-file rotation at ~1 MB. `north-forge.cmd`
+    still writes a crude fallback line itself if `nf-preflight.ps1` is missing.
+  - **`bootstrap-north-forge.ps1`** — its "already bootstrapped?" early-return now
+    runs the same `Test-NfVenvReady` probe instead of just `Test-Path hermes.exe
+    -and Test-Path .nf-bootstrapped`. A present-but-failing venv flips `$Force`
+    and falls through to the existing rebuild path (venv only; data untouched).
+    The `F-04` path-safety guard (`CHG-2026-09-07-015`) is unchanged and still
+    gates the rebuild.
+  - **`north-forge.cmd`** — the first-run `if not exist "…\hermes.exe"` gate is
+    replaced by the `nf-preflight.ps1` call; the bare existence check survives
+    only as the fallback when the preflight script itself is absent.
+  - Tests: **`tests/test_nf_preflight_readiness.py`** — 6 portable source-level
+    checks (probe names the four checks; `-I` + temp-cwd isolation; preflight
+    dot-sources the lib, rebuilds with `-Force`, never `Remove-Item`s venv/data,
+    writes the log in a `finally`; `north-forge.cmd` calls preflight before
+    launch; bootstrap early-return is probe-gated) + 4 Windows-only behavioural
+    checks, including **the actual regression**: a working venv whose *only*
+    defect is the marker's `repo=` pointing elsewhere → checks 1–3 `PASS`, check
+    4 `FAIL`, `Ready=False`; and a full foreign-machine venv (python base `home`
+    gone, marker → other path) driven through `nf-preflight.ps1` → it calls
+    bootstrap with `-Force`, writes `action=rebuild-venv` / `result=rebuild-ok`,
+    exit 0, and the data folder's canary file survives. `10 passed` +
+    `test_bootstrap_north_forge_path_safety.py` still `11 passed`. Verified the
+    real launcher end-to-end: `.\north-forge.cmd --version` probes green
+    (`action=none result=ready`) and starts the agent; the real
+    `bootstrap-north-forge.ps1` early-returns on the healthy sibling venv without
+    rebuilding.
+  - Paths: `scripts/lib/nf-readiness.ps1` (new), `scripts/nf-preflight.ps1`
+    (new), `north-forge.cmd`, `scripts/bootstrap-north-forge.ps1`,
+    `tests/test_nf_preflight_readiness.py` (new). Ref: `ERR-2026-09-07-006`,
+    Codex `F-05` / `R-03.3`. Run: RUN-2026-09-07-008.
+
 ## [NF-v0.5.3] — 2026-09-07 — hermes@233757037d (8 behind upstream/main)
 
 `RUN-2026-09-07-007`. Committed on `7139d96eb0` (`origin/main` tip after

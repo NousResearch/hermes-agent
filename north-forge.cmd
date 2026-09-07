@@ -2,7 +2,11 @@
 REM north-forge.cmd - double-click launcher. Bootstraps on first run, then starts `hermes`.
 REM Minimal, single-drive: venv + data are siblings of this checkout (see scripts\bootstrap-north-forge.ps1).
 REM Not the hardened install - that waits on DECISION-2026-09-06-003. Pass args straight through: north-forge.cmd gateway
-REM Every launch also self-heals two things against the CURRENT drive letter/path:
+REM Every launch also self-heals, against the CURRENT machine + drive letter/path:
+REM   - the run environment itself: a real readiness probe (does the venv's
+REM     python run? does it import hermes_cli from THIS checkout? does the
+REM     .nf-bootstrapped marker match?) + a silent venv rebuild if not - a venv
+REM     is not portable between machines  (ERR-2026-09-07-006 / CHG-2026-09-07-020)
 REM   - the North Forge CLI skin copy in HERMES_HOME\skins\  (CHG-2026-09-07-012)
 REM   - "<drive>:\Start North Forge.lnk", a drive-root double-click launcher  (CHG-2026-09-07-013)
 setlocal
@@ -12,15 +16,35 @@ for %%I in ("%REPO%")     do set "LEAF=%%~nxI"
 for %%I in ("%REPO%\..")  do set "PARENT=%%~fI"
 set "VENV=%PARENT%\%LEAF%-venv"
 set "DATA=%PARENT%\%LEAF%-data"
+set "PREFLIGHT=%REPO%\scripts\nf-preflight.ps1"
+set "LAUNCHLOG=%PARENT%\%LEAF%-launcher.log"
 
-if not exist "%VENV%\Scripts\hermes.exe" (
-  echo [north-forge] first run - bootstrapping ^(one time^)...
-  powershell -NoProfile -ExecutionPolicy Bypass -File "%REPO%\scripts\bootstrap-north-forge.ps1"
+if exist "%PREFLIGHT%" (
+  REM Readiness probe + silent self-heal. Writes ONE line to "%LAUNCHLOG%" per
+  REM launch BEFORE Python is ever started, so a broken interpreter cannot stop
+  REM the log line from existing. Rebuilds the venv - never the data folder - if
+  REM any check fails. Non-zero exit = not ready and the auto-repair did not fix it.
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%PREFLIGHT%" -RepoRoot "%REPO%" -VenvDir "%VENV%" -DataDir "%DATA%" -LogFile "%LAUNCHLOG%"
   if errorlevel 1 (
     echo.
-    echo [north-forge] bootstrap failed - see the output above.
+    echo [north-forge] the run environment is not ready and automatic repair failed.
+    echo [north-forge] see "%LAUNCHLOG%" and the output above.
     pause
     exit /b 1
+  )
+) else (
+  REM Fallback only if nf-preflight.ps1 is missing from the checkout: still leave
+  REM a launcher-log line, then degrade to the legacy first-run existence check.
+  >>"%LAUNCHLOG%" echo %DATE% %TIME% ^| host=%COMPUTERNAME% ^| repo=%REPO% ^| checks: nf-preflight.ps1=MISSING ^| action=legacy-existence-check
+  if not exist "%VENV%\Scripts\hermes.exe" (
+    echo [north-forge] first run - bootstrapping ^(one time^)...
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%REPO%\scripts\bootstrap-north-forge.ps1"
+    if errorlevel 1 (
+      echo.
+      echo [north-forge] bootstrap failed - see the output above.
+      pause
+      exit /b 1
+    )
   )
 )
 

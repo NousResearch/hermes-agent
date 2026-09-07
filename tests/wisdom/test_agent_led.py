@@ -116,7 +116,7 @@ def _review_json(name: str, content_hash: str, count: int = 5) -> str:
 def test_policy_defaults_and_local_override(monkeypatch):
     monkeypatch.setattr("hermes_wisdom.mediation.delivery_mode", lambda: "agent")
     policy = load_policy(local={})
-    assert policy.enabled is True
+    assert policy.enabled is False  # no authoritative organization policy
     assert policy.window_days == 7
     assert policy.min_aggregate_count == 3
     assert policy.dismiss_suppression_days == 30
@@ -128,14 +128,50 @@ def test_policy_defaults_and_local_override(monkeypatch):
     assert custom.source == "local_config"
 
 
-def test_policy_server_block_wins():
+@pytest.mark.parametrize("policy", [
+    AgentLedPolicy(max_candidates=0),
+    AgentLedPolicy(notification_defaults={"skill_ready_to_share": False}),
+])
+def test_weekly_org_policy_gate_runs_before_model_or_delivery(tmp_path, policy):
+    def unexpected(*args, **kwargs):
+        raise AssertionError("disabled recommendations must not call the model or sender")
+
+    result = run_weekly_review(
+        store=_store(tmp_path), policy=policy, model_call=unexpected,
+        sender=unexpected, force=True, state_path=tmp_path / "weekly.json",
+    )
+    assert result["ran"] is False
+    assert result["skipped_reason"] == "organization_notifications_disabled"
+    assert not (tmp_path / "weekly.json").exists()
+
+
+def test_policy_server_block_wins(monkeypatch):
+    from hermes_wisdom.client import AgentLedPolicyResponse
+
+    monkeypatch.setattr("hermes_wisdom.mediation.delivery_mode", lambda: "agent")
     class Client:
-        def org_policy(self):
-            return {"publicationPolicy": "open", "agentLed": {"window_days": 10}}
+        display_org_id = "org-1"
+
+        def agent_led_policy(self):
+            return AgentLedPolicyResponse(
+                org_id="org-1", usage_evidence_window_days=10,
+                min_aggregate_invocations=8, consecutive_day_usage_counts=False,
+                repeated_edits_count=False, max_recommendations_per_user_per_week=0,
+                publication_mode="moderated", install_popularity_threshold=20,
+                notification_defaults={"skill_ready_to_share": False, "teammate_published": True, "update_available": False},
+                manager_review_email_cadence="daily", not_now_suppression_days=60,
+                version=1, updated_by_user_id=None,
+            )
 
     policy = load_policy(client=Client(), local={"window_days": 5})
     assert policy.window_days == 10
     assert policy.source == "server_policy"
+    assert policy.enabled is True
+    assert policy.min_aggregate_count == 8
+    assert policy.max_candidates == 0
+    assert policy.dismiss_suppression_days == 60
+    assert policy.notification_defaults["skill_ready_to_share"] is False
+    assert policy.consecutive_day_usage_counts is False
 
 
 # ---------------------------------------------------------------------------

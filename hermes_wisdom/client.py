@@ -63,6 +63,30 @@ class WireModel(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class AgentLedNotificationDefaults(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    skill_ready_to_share: bool
+    teammate_published: bool
+    update_available: bool
+
+
+class AgentLedPolicyResponse(BaseModel):
+    model_config = ConfigDict(strict=True, extra="ignore")
+    org_id: str = Field(min_length=1)
+    usage_evidence_window_days: int = Field(ge=1, le=90)
+    min_aggregate_invocations: int = Field(ge=1, le=10_000)
+    consecutive_day_usage_counts: bool
+    repeated_edits_count: bool
+    max_recommendations_per_user_per_week: int = Field(ge=0, le=100)
+    publication_mode: Literal["open", "moderated", "managed"]
+    install_popularity_threshold: int = Field(ge=1, le=100_000)
+    notification_defaults: AgentLedNotificationDefaults
+    manager_review_email_cadence: Literal["immediate", "daily"]
+    not_now_suppression_days: int = Field(ge=1, le=365)
+    version: int = Field(ge=1)
+    updated_by_user_id: str | None
+
+
 class Draft(WireModel):
     id: str
     orgId: str
@@ -404,6 +428,12 @@ class WisdomClient:
         if "wisdom" not in (body.get("features") or []):
             raise WisdomAuthError("Gateway does not advertise Collective Wisdom")
         return body
+
+    def agent_led_policy(self) -> AgentLedPolicyResponse:
+        policy = self._request("GET", "agent-led/policy", model=AgentLedPolicyResponse)
+        if not self.display_org_id or policy.org_id != self.display_org_id:
+            raise WisdomError("Recommendation policy does not match the active organization")
+        return policy
 
     def register_identity(self, installation_id: str) -> dict[str, Any]:
         return self._request(

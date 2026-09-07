@@ -154,6 +154,9 @@ def run_weekly_review(
     if not effective.enabled:
         log["skipped_reason"] = "agent_led_disabled"
         return log
+    if not effective.notification_defaults.get("skill_ready_to_share", False) or effective.max_candidates == 0:
+        log["skipped_reason"] = "organization_notifications_disabled"
+        return log
     if not _signed_in(state):
         # Signed-out users get nothing; no deferred replay is queued.
         log["skipped_reason"] = "signed_out"

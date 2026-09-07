@@ -1,9 +1,7 @@
 """Policy values for agent-led sharing.
 
-Server-provided policy wins when the sync client exposes it; otherwise the
-local ``wisdom.agent_led`` config block applies, falling back to documented
-defaults. Every value is clamped so a malformed config cannot disable the
-safety-relevant floors.
+Organization limits are authoritative. Missing or invalid server policy defers
+proactive work; local defaults never bypass an unavailable policy service.
 """
 
 from __future__ import annotations
@@ -51,6 +49,11 @@ class AgentLedPolicy:
     delivery_retries: int = DEFAULT_DELIVERY_RETRIES
     delivery_backoff_seconds: float = DEFAULT_DELIVERY_BACKOFF_SECONDS
     recommendation_ttl_hours: int = DEFAULT_RECOMMENDATION_TTL_HOURS
+    consecutive_day_usage_counts: bool = True
+    repeated_edits_count: bool = True
+    notification_defaults: dict[str, bool] = field(default_factory=lambda: {
+        "skill_ready_to_share": True, "teammate_published": True, "update_available": True,
+    })
     source: str = "defaults"
     extras: dict[str, Any] = field(default_factory=dict)
 
@@ -67,6 +70,9 @@ class AgentLedPolicy:
             "delivery_retries": self.delivery_retries,
             "delivery_backoff_seconds": self.delivery_backoff_seconds,
             "recommendation_ttl_hours": self.recommendation_ttl_hours,
+            "consecutive_day_usage_counts": self.consecutive_day_usage_counts,
+            "repeated_edits_count": self.repeated_edits_count,
+            "notification_defaults": dict(self.notification_defaults),
             "source": self.source,
         }
 
@@ -122,38 +128,34 @@ def _local_config_block() -> Mapping[str, Any]:
     return block if isinstance(block, dict) else {}
 
 
-def _server_policy_block(client: Any) -> Mapping[str, Any]:
-    """Return the ``agentLed`` block of the org policy when the client exposes it.
-
-    The Gateway policy endpoint is admin-scoped today, so a 401/403 or a
-    missing method is expected for most members and is treated as "no server
-    policy". Only a dict-shaped ``agentLed``/``agent_led`` block is honored.
-    """
-    if client is None:
-        return {}
-    getter = getattr(client, "org_policy", None) or getattr(client, "policy", None)
-    if not callable(getter):
-        return {}
-    try:
-        body = getter()
-    except Exception as exc:
-        logger.debug("Agent-led policy: server policy unavailable (%s)", type(exc).__name__)
-        return {}
-    if not isinstance(body, dict):
-        return {}
-    block = body.get("agentLed", body.get("agent_led"))
-    return block if isinstance(block, dict) else {}
-
-
 def load_policy(*, client: Any = None, local: Mapping[str, Any] | None = None) -> AgentLedPolicy:
-    """Resolve the effective agent-led policy (defaults < local config < server)."""
+    """Read the member-scoped policy only after explicit rollout opt-in."""
     policy = AgentLedPolicy()
     local_block = local if local is not None else _local_config_block()
     policy = _apply(policy, local_block, source="local_config")
-    server_block = _server_policy_block(client)
-    policy = _apply(policy, server_block, source="server_policy")
     from ..mediation import delivery_mode
 
-    # Organization policy and legacy local flags cannot opt a profile into
-    # proactive model work. There is one user-visible rollout switch.
-    return replace(policy, enabled=policy.enabled and delivery_mode() == "agent")
+    if not policy.enabled or delivery_mode() != "agent":
+        return replace(policy, enabled=False)
+    try:
+        from ..client import AgentLedPolicyResponse
+
+        server = client.agent_led_policy()
+        server = AgentLedPolicyResponse.model_validate(server)
+        if not client.display_org_id or server.org_id != client.display_org_id:
+            raise ValueError("Recommendation policy organization mismatch")
+    except Exception as exc:
+        logger.debug("Agent-led policy unavailable (%s); deferring", type(exc).__name__)
+        return replace(policy, enabled=False, source="server_unavailable")
+    return replace(
+        policy,
+        window_days=server.usage_evidence_window_days,
+        min_aggregate_count=server.min_aggregate_invocations,
+        max_candidates=server.max_recommendations_per_user_per_week,
+        dismiss_suppression_days=server.not_now_suppression_days,
+        popular_install_threshold=server.install_popularity_threshold,
+        consecutive_day_usage_counts=server.consecutive_day_usage_counts,
+        repeated_edits_count=server.repeated_edits_count,
+        notification_defaults=server.notification_defaults.model_dump(),
+        source="server_policy",
+    )

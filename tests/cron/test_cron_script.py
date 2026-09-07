@@ -809,3 +809,41 @@ class TestScriptTimeoutTreeKill:
                     psutil.Process(gpid).kill()
                 except psutil.NoSuchProcess:
                     pass
+
+
+def test_script_argv_prefers_shared_bash_resolver_over_which(monkeypatch):
+    # Contract: _script_argv must prefer tools/environments/local._find_bash()
+    # over bare shutil.which("bash"), which can return WSL's bash on Windows
+    # (#46332 — WSL bash fails on Windows paths with exit 127).
+    from pathlib import Path
+
+    from cron import scheduler_script as sched_script
+    import tools.environments.local as local_env
+
+    monkeypatch.setattr(local_env, "_find_bash", lambda: "C:/Git/bin/bash.exe")
+    monkeypatch.setattr(
+        sched_script.shutil, "which", lambda *a, **k: "C:/Windows/System32/bash.EXE"
+    )
+    argv, _, err = sched_script._script_argv(Path("job.sh"))
+    assert err is None
+    assert argv[0] == "C:/Git/bin/bash.exe"
+
+
+def test_script_argv_falls_back_to_which_when_resolver_fails(monkeypatch):
+    # Contract: when the shared resolver raises (no Git Bash), _script_argv
+    # keeps the previous behaviour instead of failing closed.
+    from pathlib import Path
+
+    from cron import scheduler_script as sched_script
+    import tools.environments.local as local_env
+
+    def _boom():
+        raise RuntimeError("no git bash")
+
+    monkeypatch.setattr(local_env, "_find_bash", _boom)
+    monkeypatch.setattr(
+        sched_script.shutil, "which", lambda *a, **k: "/usr/bin/bash"
+    )
+    argv, _, err = sched_script._script_argv(Path("job.sh"))
+    assert err is None
+    assert argv[0] == "/usr/bin/bash"

@@ -298,8 +298,15 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
     shebang is deliberately NOT honoured (small, auditable surface): ``.sh``/``.bash`` → bash,
     else ``sys.executable`` (Windows uv-venv overlay gets the .pth bootstrap)."""
     if path.suffix.lower() in {".sh", ".bash"}:
-        # which() finds Git Bash on Windows; None there → clear error instead of a "[WinError 2]".
-        _bash = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
+        # Prefer the shared Windows-aware resolver: bare shutil.which("bash")
+        # can return WSL's bash on Windows, which fails on Windows paths
+        # (#46332). tools/environments/local.py already documents this.
+        try:
+            from tools.environments.local import _find_bash
+            _bash = _find_bash()
+        except Exception:
+            _bash = None
+        _bash = _bash or shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
         if _bash is None:
             return None, {}, (
                 f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "

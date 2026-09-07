@@ -228,3 +228,52 @@ class TestDisconnectCleanup:
         await adapter.disconnect()
         client.chat_stopStream.assert_awaited()
         assert not adapter._active_streams
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("chat_id", "thread_id", "dm_threads", "expected_thread"),
+    [
+        ("D1", None, False, None),
+        ("D1", "111.000", False, "111.000"),
+        ("D1", "222.000", True, "222.000"),
+        ("C1", "111.000", False, "111.000"),
+        ("C1", "222.000", False, "222.000"),
+    ],
+)
+async def test_flat_dm_session_setting_controls_progress_and_final_delivery(
+    chat_id, thread_id, dm_threads, expected_thread,
+):
+    from gateway.config import Platform
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+
+    adapter, client = _make_adapter({
+        "dm_top_level_threads_as_sessions": dm_threads, "reply_in_thread": True,
+    })
+    runner = object.__new__(GatewayRunner)
+    runner._adapter_for_source = lambda source: adapter
+    source = SessionSource(
+        platform=Platform.SLACK, chat_id=chat_id,
+        chat_type="dm" if chat_id.startswith("D") else "group",
+        thread_id=thread_id, user_id="U123",
+    )
+    progress_metadata, progress_reply_to, status_metadata = runner._run_agent_progress_threading(
+        source, "222.000", False,
+    )
+    assert (status_metadata or {}).get("thread_id") == expected_thread
+    progress = await adapter.send(chat_id, "Working", progress_reply_to, progress_metadata)
+    final = await adapter.send(
+        chat_id, "Done", "222.000", runner._thread_metadata_for_source(source, "222.000"),
+    )
+    assert progress.success and final.success
+    assert [call.kwargs.get("thread_ts") for call in client.chat_postMessage.await_args_list] == [
+        expected_thread, expected_thread,
+    ]
+    draft = await adapter.send_draft(chat_id, 42, "Draft", metadata=status_metadata)
+    if expected_thread is None:
+        assert not draft.success  # The consumer uses flat post/edit streaming instead.
+        client.chat_startStream.assert_not_awaited()
+    else:
+        assert draft.success
+        assert client.chat_startStream.await_args.kwargs["thread_ts"] == expected_thread

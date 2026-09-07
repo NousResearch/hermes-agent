@@ -2777,6 +2777,10 @@ class GatewayTurnMixin:
                     _progress_reply_in_thread = bool(
                         _mode_fn() if callable(_mode_fn) else _adapter.config.extra.get("reply_in_thread", True)
                     )
+                    _dm_threads_fn = getattr(_adapter, "_dm_top_level_threads_as_sessions", None)
+                    if (source.chat_id.startswith("D") and callable(_dm_threads_fn)
+                            and not _dm_threads_fn()):
+                        _progress_reply_in_thread = False
             except Exception:
                 _progress_reply_in_thread = True
         _progress_thread_id = _resolve_progress_thread_id(

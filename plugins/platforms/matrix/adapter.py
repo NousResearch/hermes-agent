@@ -49,6 +49,7 @@ except ImportError:
 
     EventType = type("_EventTypeStub", (), {  # type: ignore[misc,assignment]
         "ROOM_MESSAGE": "m.room.message", "REACTION": "m.reaction",
+        "TYPING": "m.typing",
         "ROOM_ENCRYPTED": "m.room.encrypted", "ROOM_NAME": "m.room.name"})
     PresenceState = type("_PresenceStateStub", (), {  # type: ignore[misc,assignment]
         "ONLINE": "online", "OFFLINE": "offline", "UNAVAILABLE": "unavailable"})
@@ -397,6 +398,18 @@ def _looks_like_transport_filename(text: str, mime_prefixes, exts: frozenset, re
 def _looks_like_matrix_media_filename(text: str) -> bool:
     """True when an m.audio/m.file/m.video body is just the uploaded filename (no caption)."""
     return _looks_like_transport_filename(text, ("audio/", "video/"), _MATRIX_MEDIA_FILENAME_EXTS, True)
+
+
+def _looks_like_matrix_voice_filename(text: str) -> bool:
+    """Recognize recordings sent as plain m.audio by some Matrix clients."""
+    candidate = str(text or "").strip()
+    if not candidate or Path(candidate).name != candidate:
+        return False
+    path = Path(candidate)
+    if path.stem.lower().replace("-", "_") != "voice_message":
+        return False
+    guessed_type, _ = mimetypes.guess_type(candidate)
+    return bool(guessed_type and guessed_type.startswith("audio/"))
 
 
 def _is_bare_media_filename(msgtype: str, body: str) -> bool:
@@ -833,6 +846,10 @@ class MatrixAdapter(BasePlatformAdapter):
             except re.error as exc:
                 logger.warning("Matrix: ignoring invalid MATRIX_IGNORE_USER_PATTERNS entry %r: %s", pattern, exc)
 
+    def conversation_user_id(self) -> str:
+        """Return the authenticated Matrix identity for mention ownership."""
+        return str(getattr(self._client, "mxid", "") or self._user_id or "")
+
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
         if not event_id:
@@ -1264,6 +1281,7 @@ class MatrixAdapter(BasePlatformAdapter):
         client.add_dispatcher(MembershipEventDispatcher)  # without this INVITE never fires
         client.add_event_handler(EventType.ROOM_MESSAGE, self._on_room_message, wait_sync=True)
         client.add_event_handler(EventType.REACTION, self._on_reaction, wait_sync=True)
+        client.add_event_handler(getattr(EventType, "TYPING", "m.typing"), self._on_typing, wait_sync=True)
         client.add_event_handler(IntEvt.INVITE, self._on_invite, wait_sync=True)
         self._startup_ts = time.time()
         self._reset_clock_skew_detector()  # a reconnect after an NTP fix starts clean
@@ -1972,7 +1990,14 @@ class MatrixAdapter(BasePlatformAdapter):
             guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id)
         if thread_id:
             self._threads.mark(thread_id)  # covers real roots and synthetic ones alike
-        self._background_read_receipt(room_id, event_id)
+        is_text_msgtype = source_content.get("msgtype") in ("m.text", "m.notice")
+        if not (
+            self.conversation_middleware().delays_messages
+            and is_text_msgtype
+            and not is_dm
+            and not is_mentioned
+        ):
+            self._background_read_receipt(room_id, event_id)
         return body, is_dm, chat_type, thread_id, display_name, source
 
     async def _extract_reply_context(
@@ -2000,6 +2025,11 @@ class MatrixAdapter(BasePlatformAdapter):
         if ctx is None:
             return None
         body, _is_dm, _chat_type, _thread_id, display_name, source = ctx
+        mentions_block = source_content.get("m.mentions") or {}
+        mention_user_ids = mentions_block.get("user_ids") if isinstance(mentions_block, dict) else None
+        is_mentioned = self._is_bot_mentioned(
+            source_content.get("body", body), source_content.get("formatted_body"), mention_user_ids
+        )
         body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name = (
             await self._extract_reply_context(room_id, body, relates_to))
         media_msgtype = extra.pop("media_msgtype", None)
@@ -2009,12 +2039,14 @@ class MatrixAdapter(BasePlatformAdapter):
             extra["message_type"] = MessageType.COMMAND if body.startswith("/") else MessageType.TEXT
         elif _is_bare_media_filename(media_msgtype, body):
             body = ""  # transport filename, not user text
+        metadata = dict(extra.pop("metadata", {}) or {})
+        metadata["conversation_mentioned"] = is_mentioned
         return MessageEvent(
             text=body, source=source, raw_message=source_content, message_id=event_id,
             reply_to_message_id=reply_to, reply_to_text=reply_to_text, reply_to_author_id=reply_to_author_id,
             reply_to_author_name=reply_to_author_name,
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
-            user_id=sender, user_name=display_name, **extra)
+            user_id=sender, user_name=display_name, metadata=metadata, **extra)
 
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
@@ -2026,7 +2058,9 @@ class MatrixAdapter(BasePlatformAdapter):
             room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to)
         if msg_event is None:
             return
-        if msg_event.message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
+        if self.conversation_middleware().delays_messages:
+            await self.handle_message(msg_event)
+        elif msg_event.message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
             self._enqueue_text_event(msg_event)
         else:
             await self.handle_message(msg_event)
@@ -2085,7 +2119,10 @@ class MatrixAdapter(BasePlatformAdapter):
         if msgtype == "m.image":
             return MessageType.PHOTO, event_mimetype or "image/png", False
         if msgtype == "m.audio":
-            is_voice = source_content.get("org.matrix.msc3245.voice") is not None
+            is_voice = (
+                source_content.get("org.matrix.msc3245.voice") is not None
+                or _looks_like_matrix_voice_filename(source_content.get("filename", ""))
+            )
             return (MessageType.VOICE if is_voice else MessageType.AUDIO), event_mimetype or "audio/ogg", is_voice
         if msgtype == "m.video":
             return MessageType.VIDEO, event_mimetype or "video/mp4", False
@@ -2234,6 +2271,21 @@ class MatrixAdapter(BasePlatformAdapter):
         if eyes_event_id:
             self._schedule_reaction_redaction(room_id, eyes_event_id, "processing complete")
         await self._send_reaction(room_id, msg_id, "\u2705" if outcome == ProcessingOutcome.SUCCESS else "\u274c")
+
+    async def _on_typing(self, event: Any) -> None:
+        """Forward peer typing as a room-level Groupchat coordination signal."""
+        middleware = self.conversation_middleware()
+        if not middleware.delays_messages:
+            return
+        room_id = str(getattr(event, "room_id", ""))
+        content = getattr(event, "content", None) or {}
+        users = content.get("user_ids", []) if isinstance(content, dict) else []
+        if not room_id or not users:
+            return
+        own_user_id = self.conversation_user_id()
+        if own_user_id and all(str(user) == own_user_id for user in users):
+            return
+        middleware.typing(room_id)
 
     async def _on_reaction(self, event: Any) -> None:
         sender = str(getattr(event, "sender", ""))

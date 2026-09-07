@@ -398,10 +398,10 @@ import {
   resolvePosixScriptHandoff,
   resolveStagedUpdaterBinary,
   resolveUpdateScriptHandoff,
-  windowsUpdatePrerequisiteError,
   sandboxFallbackFromEnv,
   spawnUpdaterProcess,
   stagedUpdaterSupportsPrewrittenMarker,
+  windowsUpdatePrerequisiteError,
   wrapHandoffForDetachedConsole
 } from './updater-process'
 import {
@@ -4052,8 +4052,10 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
 
     if (IS_WINDOWS && resolveUpdateScriptHandoff(updateRoot)) {
       const message = windowsUpdatePrerequisiteError(updateRoot)
+
       if (message) {
         emitUpdateProgress({ stage: 'error', message, percent: null })
+
         return { ok: false, error: message }
       }
     }

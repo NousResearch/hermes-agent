@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 from pathlib import Path
@@ -21,6 +22,7 @@ from engineering_evidence.receipts import (
 from engineering_evidence.workflow import create_evidence_children, evaluate_issue_to_pr_gate
 from engineering_evidence.scanner import build_codebase_snapshot
 from engineering_evidence.testing import build_test_discovery_receipt
+from engineering_evidence.cli import engineering_evidence_command
 
 
 def test_receipts_require_diagnostic_authority_and_exact_head() -> None:
@@ -81,6 +83,18 @@ def test_snapshot_records_exact_head_and_tracked_file_evidence(tmp_path: Path) -
     assert "ignored.tmp" not in receipt["tracked_files"]
     assert receipt["relevant_files"] == ["app.py"]
     assert receipt["authority"] == "diagnostic-only"
+
+
+def test_snapshot_cli_returns_json_error_for_non_repository(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    missing = tmp_path / "missing"
+    args = argparse.Namespace(engineering_evidence_action="snapshot", repo=missing, query="", output=None)
+
+    assert engineering_evidence_command(args) == 1
+
+    assert json.loads(capsys.readouterr().out) == {
+        "error": f"repository is not a directory: {missing.resolve()}",
+        "stored": False,
+    }
 
 
 def test_snapshot_bounds_unreadable_file_diagnostics(tmp_path: Path) -> None:

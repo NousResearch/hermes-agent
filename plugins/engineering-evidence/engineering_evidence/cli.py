@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -210,6 +211,12 @@ def engineering_evidence_command(args: argparse.Namespace) -> int:
             return 0
         print("Usage: hermes engineering-evidence {snapshot|validate|test-receipt|experience|experience-promote|experience-search|contract|correlate|pr-gate|kanban-attach|kanban-receipts|kanban-workflow}")
         return 2
-    except (OSError, ValueError, ReceiptValidationError, json.JSONDecodeError) as exc:
+    except (
+        OSError,
+        ValueError,
+        ReceiptValidationError,
+        json.JSONDecodeError,
+        subprocess.CalledProcessError,
+    ) as exc:
         print(json.dumps({"stored": False, "error": str(exc)}, sort_keys=True))
         return 1

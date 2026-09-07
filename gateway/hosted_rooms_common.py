@@ -16,6 +16,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
+from hermes_cli.sqlite_safe_read import connect_tracked
+
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 DbPath = Path | str
 
@@ -95,8 +97,9 @@ def clock(now: float | None) -> float:
 
 
 def open_sqlite(path: DbPath, *, timeout: float = 10) -> sqlite3.Connection:
-    """Row-factory connection with foreign keys on; no journal or schema work."""
-    conn = sqlite3.connect(path, timeout=timeout)
+    """Row-factory connection with foreign keys on; no journal or schema work. Tracked like ``connect``:
+    the store may have been quarantined between an ``is_file()`` check and this open."""
+    conn = connect_tracked(path, timeout=timeout)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
@@ -116,7 +119,13 @@ def connect(
     from hermes_state_wal import apply_wal_with_fallback
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=10)
+    # Registered with the in-process live-connection registry: ``SessionDB`` start-up byte-probes
+    # state.db for the zeroed signature and skips the probe only for connections it can see. A plain
+    # first open creates a 0-byte file that probe cannot tell from a zeroed store, so a concurrent
+    # start-up quarantines (renames) it out from under this connection and opens a fresh inode at
+    # the same path; both inodes then share the -wal/-shm sidecars and the second WAL opener
+    # truncates the -shm the first has mapped (SIGBUS on the next wal-index access).
+    conn = connect_tracked(path, timeout=10)
     conn.row_factory = sqlite3.Row
     try:
         for attempt in range(lock_retries):

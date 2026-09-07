@@ -1,27 +1,29 @@
-"""A live compression lock must delay a concurrent append, not destroy the turn.
+"""Appends flow freely during compression; the commit preserves them (#75316).
 
-``append_message`` refused immediately when another writer held the session's
-compression lock. The conversation loop turns that into
-``session_persistence_failed`` and tells the operator to check disk space and
-permissions, when in fact the store is healthy and busy for a few seconds.
+HISTORY: ``append_message`` used to refuse while another writer held the
+session's compression lock, with a short busy-wait (#75264 → #75083). That
+fenced ordinary transcript writes behind a lease whose real job is stopping
+two COMPRESSIONS colliding — turns died as ``session_persistence_failed``
+whenever a slow provider summary overlapped an incoming message (#74568,
+#77386), and a stale lock from a dead PID blocked writes for the full TTL.
 
-The write lock already gets a patience budget for exactly this reason (#74478).
-A compression hold is even more bounded, since the lock row carries its own
-``expires_at``, so the same budget applies here.
-
-The sibling condition, a compressor finding its own lease gone, is permanent
-and must still fail fast rather than spin out the whole budget.
+CURRENT CONTRACT (watermark commit): appends never check compression_locks.
+``archive_and_compact()`` takes a watermark captured at compression start and
+re-sequences every row that arrived after it (the concurrent tail) back into
+the live transcript, atomically, instead of archiving it with the snapshot.
+The commit itself is holder-fenced: a compression whose lease was lost cannot
+publish.
 """
 
 from __future__ import annotations
 
-import threading
 import time
 from pathlib import Path
 
 import pytest
 
-from hermes_state import CompressionSessionBusyError, SessionDB
+from hermes_state import SessionCompressionInProgressError, SessionDB
+from hermes_state_errors import CompressionSessionBusyError
 
 
 @pytest.fixture
@@ -31,89 +33,60 @@ def db(tmp_path: Path) -> SessionDB:
     return d
 
 
-def test_append_waits_out_a_live_compression_lock(db: SessionDB) -> None:
-    """The classic race: a steer lands while compression owns the session."""
-    assert db.try_acquire_compression_lock("sess1", "compressor") is True
+def test_append_is_never_blocked_by_a_foreign_compression_lock(db: SessionDB) -> None:
+    """The classic race: a steer lands while compression owns the session.
 
-    released = threading.Event()
-
-    def _release_soon():
-        time.sleep(0.3)
-        db.release_compression_lock("sess1", "compressor")
-        released.set()
-
-    t = threading.Thread(target=_release_soon, daemon=True)
-    t.start()
-    try:
-        started = time.monotonic()
-        # No compression_lock_holder: this is an ordinary turn writer.
-        db.append_message("sess1", role="user", content="steered mid-compression")
-        elapsed = time.monotonic() - started
-    finally:
-        t.join(timeout=5)
-
-    assert released.is_set(), "test bug: lock was never released"
-    assert elapsed >= 0.25, "append returned before the lock could clear"
-    rows = db.get_messages("sess1")
-    assert any(r["content"] == "steered mid-compression" for r in rows), (
-        "the message the user sent was lost"
-    )
-
-
-def test_append_still_gives_up_when_the_lock_never_clears(
-    db: SessionDB, monkeypatch
-) -> None:
-    """The wait is bounded: a lock that never clears is still refused.
-
-    The lease is a correctness boundary, so a genuinely long-running or wedged
-    compression must not end with a stale turn landing in the parent.
+    Old behavior: busy-wait then land (or die on timeout). New behavior: the
+    append lands IMMEDIATELY — the watermark commit is what protects it.
     """
-    monkeypatch.setattr(SessionDB, "_COMPRESSION_BUSY_WAIT_S", 0.5)
     assert db.try_acquire_compression_lock("sess1", "compressor") is True
 
     started = time.monotonic()
-    with pytest.raises(CompressionSessionBusyError):
-        db.append_message("sess1", role="user", content="never lands")
+    db.append_message("sess1", role="user", content="steered mid-compression")
     elapsed = time.monotonic() - started
 
-    assert elapsed >= 0.4, "gave up before spending the patience budget"
-    assert elapsed < 10, "did not give up within a bounded time"
+    assert elapsed < 0.5, "append must not wait on a compression lease"
+    rows = db.get_messages("sess1")
+    assert any(r["content"] == "steered mid-compression" for r in rows)
 
 
-def test_the_lock_owner_is_never_delayed_by_its_own_lock(db: SessionDB) -> None:
-    assert db.try_acquire_compression_lock("sess1", "compressor") is True
-
+def test_append_is_never_blocked_by_a_stale_dead_pid_lock(db: SessionDB) -> None:
+    """A crashed compressor's unexpired lock must not fence writes (#74568)."""
+    assert db.try_acquire_compression_lock(
+        "sess1", "pid-9999999-long-gone", ttl_seconds=3600
+    ) is True
     started = time.monotonic()
+    db.append_message("sess1", role="user", content="lands despite stale lock")
+    assert time.monotonic() - started < 0.5
+    rows = db.get_messages("sess1")
+    assert any(r["content"] == "lands despite stale lock" for r in rows)
+
+
+def test_the_lock_owner_append_still_works(db: SessionDB) -> None:
+    assert db.try_acquire_compression_lock("sess1", "compressor") is True
     db.append_message(
         "sess1",
         role="assistant",
         content="written by the compressor",
         compression_lock_holder="compressor",
     )
-    assert time.monotonic() - started < 0.2
+    rows = db.get_messages("sess1")
+    assert any(r["content"] == "written by the compressor" for r in rows)
 
 
 def test_transient_error_is_a_subclass_of_the_original(db: SessionDB) -> None:
     """Existing `except CompressionSessionBusyError` handlers must still catch."""
-    from hermes_state import SessionCompressionInProgressError
-
     assert issubclass(SessionCompressionInProgressError, CompressionSessionBusyError)
 
 
 def test_no_lock_means_no_delay(db: SessionDB) -> None:
     started = time.monotonic()
     db.append_message("sess1", role="user", content="uncontended")
-    assert time.monotonic() - started < 0.2
+    assert time.monotonic() - started < 0.5
 
 
 def test_a_lost_compression_lease_still_fails_fast(db: SessionDB) -> None:
-    """The other CompressionSessionBusyError case must NOT be retried.
-
-    ``publish_compression_child`` raises the same base class when the
-    compressor discovers its own lease is gone. That is permanent, so
-    retrying would burn the whole patience budget before failing anyway.
-    Only the transient subclass raised by ``append_message`` is retried.
-    """
+    """``publish_compression_child`` with a lost lease is permanent — no retry."""
     started = time.monotonic()
     with pytest.raises(CompressionSessionBusyError):
         db.publish_compression_child(

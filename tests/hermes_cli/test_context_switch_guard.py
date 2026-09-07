@@ -79,7 +79,7 @@ def test_custom_provider_context_avoids_false_shrink_warning(monkeypatch):
             "name": "qwen-token-plan",
             "base_url": "https://token-plan.example/compatible-mode/v1",
             "models": {
-                "qwen3.8-max-preview": {"context_length": 1_048_576},
+                "qwen3.9-max-preview": {"context_length": 1_048_576},
             },
         }
     ]
@@ -110,7 +110,7 @@ def test_custom_provider_context_avoids_false_shrink_warning(monkeypatch):
     )
     result = ModelSwitchResult(
         success=True,
-        new_model="qwen3.8-max-preview",
+        new_model="qwen3.9-max-preview",
         target_provider="qwen-token-plan",
         provider_changed=True,
         api_key="k",
@@ -131,7 +131,7 @@ def test_custom_provider_context_avoids_false_shrink_warning(monkeypatch):
     # Agent snapshot alone (classic CLI historically forgot to pass the kwarg).
     result2 = ModelSwitchResult(
         success=True,
-        new_model="qwen3.8-max-preview",
+        new_model="qwen3.9-max-preview",
         target_provider="qwen-token-plan",
         provider_changed=True,
         api_key="k",
@@ -156,7 +156,7 @@ def test_custom_provider_context_avoids_false_shrink_warning(monkeypatch):
     )
     result3 = ModelSwitchResult(
         success=True,
-        new_model="qwen3.8-max-preview",
+        new_model="qwen3.9-max-preview",
         target_provider="qwen-token-plan",
         provider_changed=True,
         api_key="k",

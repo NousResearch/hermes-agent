@@ -32,6 +32,7 @@ interface ModelVisibilityDialogProps {
   onOpenChange: (open: boolean) => void
   onOpenProviders: () => void
   open: boolean
+  ownerConnectionId?: string
   profile?: string
   sessionId?: string | null
 }
@@ -41,6 +42,7 @@ export function ModelVisibilityDialog({
   onOpenChange,
   onOpenProviders,
   open,
+  ownerConnectionId,
   profile = 'default',
   sessionId
 }: ModelVisibilityDialogProps) {
@@ -51,8 +53,8 @@ export function ModelVisibilityDialog({
   const collapsedProviders = useStore($collapsedProviders)
 
   const modelOptions = useQuery({
-    queryKey: modelOptionsQueryKey(profile, sessionId),
-    queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway: gw, sessionId }),
+    queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
+    queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway: gw, profile, sessionId }),
     enabled: open
   })
 
@@ -78,7 +80,7 @@ export function ModelVisibilityDialog({
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent className="max-w-xs gap-0 overflow-hidden p-0">
+      <DialogContent bodyClassName="gap-0 overflow-hidden p-0" className="max-w-xs">
         <DialogHeader className="px-3 pb-1 pt-3">
           <DialogTitle className="text-[0.8125rem]">{copy.title}</DialogTitle>
         </DialogHeader>

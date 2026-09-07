@@ -1,32 +1,10 @@
 """Blueprints: shareable plain-language automations layered on skills + cron.
 
-A "blueprint" is NOT a new object type. It is an ordinary skill (a SKILL.md the
-agent loads) that additionally declares an automation schedule in its
-frontmatter:
-
-    metadata:
-      hermes:
-        blueprint:
-          schedule: "0 9 * * *"     # presence of `blueprint:` marks it runnable
-          deliver: origin            # optional (default "origin")
-          prompt: "..."              # optional task instruction for the run
-          no_agent: false            # optional
-
-Because a blueprint is just a skill, it flows through the ENTIRE existing
-skills-hub pipeline for free — search, inspect, quarantine, security scan,
-install, lock-file provenance, audit log, taps, the centralized index, and
-`hermes skills publish` for sharing. No new source type, no new store, no new
-transport. This module is the thin bridge between that skill metadata and the
-existing cron `create_job()` API:
-
-  * ``parse_blueprint(skill_md_text)``  -> BlueprintSpec | None
-  * ``blueprint_spec_for_installed(name)`` -> BlueprintSpec | None
-  * ``create_blueprint_job(spec, ...)`` -> the created cron job dict
-  * ``export_blueprint(job, body)``      -> a shareable SKILL.md string
-
-The dev guide's "Extend, Don't Duplicate" rule is the whole design: the blueprint
-is a skill, the schedule is a cron job, sharing is the existing publish/tap/
-index path.
+A blueprint is NOT a new object type: it is an ordinary skill whose frontmatter declares
+``metadata.hermes.blueprint`` (``schedule`` required; optional ``deliver`` [default "origin"],
+``prompt``, ``no_agent``, ``model``, ``provider``, ``enabled_toolsets``), so it rides the whole
+skills-hub pipeline for free. This module only bridges that block to cron ``create_job()``,
+plus the inverse (``export_blueprint``) back to a SKILL.md.
 """
 
 from __future__ import annotations
@@ -38,16 +16,8 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-__all__ = [
-    "BlueprintSpec",
-    "parse_blueprint",
-    "blueprint_spec_for_installed",
-    "blueprint_to_job_spec",
-    "create_blueprint_job",
-    "register_blueprint_suggestion",
-    "export_blueprint",
-    "BlueprintError",
-]
+__all__ = ["BlueprintSpec", "parse_blueprint", "blueprint_spec_for_installed", "blueprint_to_job_spec",
+           "create_blueprint_job", "register_blueprint_suggestion", "export_blueprint", "BlueprintError"]
 
 
 class BlueprintError(ValueError):
@@ -74,18 +44,12 @@ def _split_frontmatter(text: str) -> Optional[Dict[str, Any]]:
     if not isinstance(text, str):
         return None
     stripped = text.lstrip("\ufeff").lstrip()  # BOM is not whitespace; strip explicitly
-    if not stripped.startswith("---"):
+    if not stripped.startswith("---") or (end := stripped.find("\n---", 3)) == -1:
         return None
-    # Find the closing fence after the opening one.
-    after_open = stripped[3:]
-    end = after_open.find("\n---")
-    if end == -1:
-        return None
-    fm_text = after_open[:end]
     try:
         import yaml
 
-        data = yaml.safe_load(fm_text)
+        data = yaml.safe_load(stripped[3:end])
     except Exception as e:  # pragma: no cover - malformed YAML
         logger.debug("blueprint: frontmatter YAML parse failed: %s", e)
         return None
@@ -95,15 +59,13 @@ def _split_frontmatter(text: str) -> Optional[Dict[str, Any]]:
 def parse_blueprint(skill_md_text: str) -> Optional[BlueprintSpec]:
     """Extract a BlueprintSpec from a SKILL.md string, or None if not a blueprint.
 
-    A skill is a blueprint iff ``metadata.hermes.blueprint`` is a mapping containing
-    a non-empty ``schedule``. Raises BlueprintError if the block exists but is
+    A skill is a blueprint iff ``metadata.hermes.blueprint`` is a mapping with a
+    non-empty ``schedule``. Raises BlueprintError if the block exists but is
     structurally invalid (so a typo surfaces instead of silently no-op'ing).
     """
     fm = _split_frontmatter(skill_md_text)
     if not fm:
         return None
-
-    name = str(fm.get("name", "")).strip()
 
     meta = fm.get("metadata")
     hermes = meta.get("hermes") if isinstance(meta, dict) else None
@@ -117,23 +79,16 @@ def parse_blueprint(skill_md_text: str) -> Optional[BlueprintSpec]:
     if not schedule:
         raise BlueprintError("blueprint.schedule is required and must be non-empty")
 
-    deliver = str(blueprint.get("deliver", "origin")).strip() or "origin"
-    prompt = blueprint.get("prompt")
-    if prompt is not None:
-        prompt = str(prompt)
-    no_agent = bool(blueprint.get("no_agent", False))
-    model = blueprint.get("model")
-    provider = blueprint.get("provider")
+    prompt, model, provider = blueprint.get("prompt"), blueprint.get("model"), blueprint.get("provider")
     toolsets = blueprint.get("enabled_toolsets")
     if toolsets is not None and not isinstance(toolsets, list):
         raise BlueprintError("blueprint.enabled_toolsets must be a list when present")
 
     return BlueprintSpec(
-        skill_name=name,
-        schedule=schedule,
-        deliver=deliver,
-        prompt=prompt,
-        no_agent=no_agent,
+        skill_name=str(fm.get("name", "")).strip(), schedule=schedule,
+        deliver=str(blueprint.get("deliver", "origin")).strip() or "origin",
+        prompt=str(prompt) if prompt is not None else None,
+        no_agent=bool(blueprint.get("no_agent", False)),
         model=str(model).strip() if model else None,
         provider=str(provider).strip() if provider else None,
         enabled_toolsets=[str(t) for t in toolsets] if toolsets else None,
@@ -142,87 +97,49 @@ def parse_blueprint(skill_md_text: str) -> Optional[BlueprintSpec]:
 
 
 def blueprint_spec_for_installed(skill_name: str) -> Optional[BlueprintSpec]:
-    """Locate an installed skill's SKILL.md and parse its blueprint block.
-
-    Searches the standard skills tree for ``<skill_name>/SKILL.md``. Returns
-    None if the skill isn't found or isn't a blueprint.
-    """
+    """Find ``<skill_name>/SKILL.md`` anywhere in the skills tree and parse its
+    blueprint block; None when not found or not a blueprint."""
     try:
         from tools.skills_hub import SKILLS_DIR
     except Exception:  # pragma: no cover - import guard
         return None
-
-    base = Path(SKILLS_DIR)
     # Skills live at skills/<category>/<name>/SKILL.md or skills/<name>/SKILL.md.
-    candidates = list(base.glob(f"**/{skill_name}/SKILL.md"))
-    for path in candidates:
+    for path in Path(SKILLS_DIR).glob(f"**/{skill_name}/SKILL.md"):
         try:
-            text = path.read_text(encoding="utf-8")
+            spec = parse_blueprint(path.read_text(encoding="utf-8"))
         except OSError:
             continue
-        spec = parse_blueprint(text)
         if spec is not None:
-            # Prefer the frontmatter name, fall back to the directory name.
-            if not spec.skill_name:
-                spec.skill_name = skill_name
+            spec.skill_name = spec.skill_name or skill_name  # frontmatter name wins over dir name
             return spec
     return None
 
 
-def blueprint_to_job_spec(
-    spec: BlueprintSpec,
-    *,
-    name: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Build the ``cron.jobs.create_job`` kwargs dict for a BlueprintSpec.
-
-    This is the single source of truth for translating a blueprint into a job.
-    Both the direct ``create_blueprint_job`` path and the suggestion path
-    (``register_blueprint_suggestion``) build on it, so a blueprint scheduled now and
-    a blueprint accepted from a suggestion produce an identical job.
-    """
+def blueprint_to_job_spec(spec: BlueprintSpec, *, name: Optional[str] = None) -> Dict[str, Any]:
+    """``cron.jobs.create_job`` kwargs for a spec — the single translation used by
+    both ``create_blueprint_job`` and the suggestion path so they never drift."""
     return {
-        "prompt": spec.prompt,
-        "schedule": spec.schedule,
-        "name": name or f"blueprint:{spec.skill_name}",
-        "deliver": spec.deliver,
-        "skills": [spec.skill_name] if spec.skill_name else None,
-        "model": spec.model,
-        "provider": spec.provider,
-        "enabled_toolsets": spec.enabled_toolsets,
+        "prompt": spec.prompt, "schedule": spec.schedule, "name": name or f"blueprint:{spec.skill_name}",
+        "deliver": spec.deliver, "skills": [spec.skill_name] if spec.skill_name else None,
+        "model": spec.model, "provider": spec.provider, "enabled_toolsets": spec.enabled_toolsets,
         "no_agent": spec.no_agent,
     }
 
 
-def create_blueprint_job(
-    spec: BlueprintSpec,
-    *,
-    origin: Optional[Dict[str, Any]] = None,
-    name: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Create the cron job described by a BlueprintSpec via the existing cron API.
-
-    The blueprint's skill is loaded before the run (cron ``skills=[name]``); the
-    optional ``prompt`` becomes the task instruction. Delivery, model, and
-    toolsets carry through. Returns the created job dict.
-    """
-    from cron.jobs import create_job
+def create_blueprint_job(spec: BlueprintSpec, *, origin: Optional[Dict[str, Any]] = None,
+                         name: Optional[str] = None) -> Dict[str, Any]:
+    """Create the cron job for a spec (skill preloaded via ``skills=[name]``); returns the job dict."""
+    from cron.scheduler import create_job_with_scheduler_registration
 
     job_spec = blueprint_to_job_spec(spec, name=name)
     if origin is not None:
         job_spec["origin"] = origin
-    return create_job(**job_spec)
+    return create_job_with_scheduler_registration(**job_spec)
 
 
 def register_blueprint_suggestion(spec: BlueprintSpec) -> Optional[Dict[str, Any]]:
-    """Turn an installed blueprint into a pending Suggested Cron Job.
-
-    Blueprints are source ``blueprint`` of the unified suggestion surface: installing
-    a skill that carries a ``blueprint:`` block does NOT auto-schedule it — it
-    registers a suggestion the user accepts (or dismisses) like any other.
-    Returns the suggestion record, or None if it was skipped (already
-    seen/dismissed, backlog full, etc.).
-    """
+    """Register an installed blueprint as a Suggested Cron Job (never auto-scheduled;
+    the user accepts or dismisses it). None when skipped (seen/dismissed/backlog full)."""
     if not spec.skill_name:
         return None
     try:
@@ -230,13 +147,10 @@ def register_blueprint_suggestion(spec: BlueprintSpec) -> Optional[Dict[str, Any
     except Exception:  # pragma: no cover - import guard
         return None
 
+    deliver = f", delivering to {spec.deliver}" if spec.deliver and spec.deliver != "origin" else ""
     return add_suggestion(
         title=f"Schedule '{spec.skill_name}'",
-        description=(
-            f"The '{spec.skill_name}' blueprint runs on schedule {spec.schedule}"
-            + (f", delivering to {spec.deliver}" if spec.deliver and spec.deliver != "origin" else "")
-            + "."
-        ),
+        description=f"The '{spec.skill_name}' blueprint runs on schedule {spec.schedule}{deliver}.",
         source="blueprint",
         job_spec=blueprint_to_job_spec(spec),
         dedup_key=f"blueprint:{spec.skill_name}:{spec.schedule}",
@@ -244,57 +158,32 @@ def register_blueprint_suggestion(spec: BlueprintSpec) -> Optional[Dict[str, Any
 
 
 def export_blueprint(job: Dict[str, Any], body: str, *, blueprint_name: Optional[str] = None) -> str:
-    """Render a shareable blueprint SKILL.md from an existing cron job dict.
-
-    The inverse of ``create_blueprint_job``: take a cron job a user already built
-    and emit a SKILL.md (with a ``metadata.hermes.blueprint`` block) they can hand
-    to ``hermes skills publish`` to share. ``body`` is the plain-language
-    description / instructions that become the SKILL.md body.
-    """
+    """Inverse of ``create_blueprint_job``: render a cron job as a SKILL.md (with a
+    ``metadata.hermes.blueprint`` block) ready for ``hermes skills publish``.
+    ``body`` becomes the SKILL.md body; its first line is the description."""
     import yaml
 
-    name = blueprint_name or job.get("name") or "shared-blueprint"
     # Sanitize to a valid skill identifier.
-    name = "".join(c if (c.isalnum() or c in "-_") else "-" for c in str(name).lower())
-    name = name.strip("-_") or "shared-blueprint"
+    name = str(blueprint_name or job.get("name") or "shared-blueprint").lower()
+    name = "".join(c if (c.isalnum() or c in "-_") else "-" for c in name).strip("-_") or "shared-blueprint"
 
-    schedule = job.get("schedule_display") or _schedule_to_string(job.get("schedule"))
-
-    blueprint_block: Dict[str, Any] = {"schedule": schedule}
-    deliver = job.get("deliver")
-    if deliver and deliver != "origin":
-        blueprint_block["deliver"] = deliver
+    block: Dict[str, Any] = {"schedule": job.get("schedule_display") or _schedule_to_string(job.get("schedule"))}
+    if job.get("deliver") and job["deliver"] != "origin":
+        block["deliver"] = job["deliver"]
     if job.get("prompt"):
-        blueprint_block["prompt"] = job["prompt"]
+        block["prompt"] = job["prompt"]
     if job.get("no_agent"):
-        blueprint_block["no_agent"] = True
-    if job.get("model"):
-        blueprint_block["model"] = job["model"]
-    if job.get("provider"):
-        blueprint_block["provider"] = job["provider"]
-    if job.get("enabled_toolsets"):
-        blueprint_block["enabled_toolsets"] = job["enabled_toolsets"]
+        block["no_agent"] = True
+    block.update({k: job[k] for k in ("model", "provider", "enabled_toolsets") if job.get(k)})
 
-    description = (
-        (body.strip().splitlines() or ["Shared automation blueprint."])[0][:200]
-        if body.strip()
-        else "Shared automation blueprint."
-    )
-
+    body = body.strip()
     frontmatter = {
-        "name": name,
-        "description": description,
-        "version": "1.0.0",
-        "license": "MIT",
-        "metadata": {
-            "hermes": {
-                "tags": ["blueprint", "automation"],
-                "blueprint": blueprint_block,
-            }
-        },
+        "name": name, "description": body.splitlines()[0][:200] if body else "Shared automation blueprint.",
+        "version": "1.0.0", "license": "MIT",
+        "metadata": {"hermes": {"tags": ["blueprint", "automation"], "blueprint": block}},
     }
     fm_yaml = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True).strip()
-    body_text = body.strip() or f"# {name}\n\nShared automation blueprint."
+    body_text = body or f"# {name}\n\nShared automation blueprint."
     return f"---\n{fm_yaml}\n---\n\n{body_text}\n"
 
 
@@ -307,18 +196,12 @@ def _schedule_to_string(schedule: Any) -> str:
         if kind == "cron" and schedule.get("expr"):
             return str(schedule["expr"])
         if kind == "interval":
-            # parse_schedule stores interval periods as "minutes"; tolerate a
-            # legacy/foreign "seconds" form too.
+            # parse_schedule stores interval periods as "minutes"; tolerate a legacy/foreign "seconds" form too.
             if schedule.get("minutes"):
                 mins = int(schedule["minutes"])
-                if mins % 60 == 0:
-                    return f"every {mins // 60}h"
-                return f"every {mins}m"
+                return f"every {mins // 60}h" if mins % 60 == 0 else f"every {mins}m"
             if schedule.get("seconds"):
                 secs = int(schedule["seconds"])
-                if secs % 3600 == 0:
-                    return f"every {secs // 3600}h"
-                if secs % 60 == 0:
-                    return f"every {secs // 60}m"
-                return f"every {secs}s"
+                return (f"every {secs // 3600}h" if secs % 3600 == 0
+                        else f"every {secs // 60}m" if secs % 60 == 0 else f"every {secs}s")
     return "0 9 * * *"  # safe daily fallback

@@ -1,8 +1,10 @@
 """Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
 
 import json
+import sqlite3
 import pytest
 import time
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from agent.context_compressor import (
@@ -10,6 +12,7 @@ from agent.context_compressor import (
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
     COMPRESSED_SUMMARY_METADATA_KEY,
+    _PRUNE_MIN_CHARS,
     _summarize_tool_result,
     _is_summary_access_or_quota_error,
 )
@@ -61,6 +64,174 @@ class TestSummarizeToolResultWebExtract:
         assert summary == "[web_extract] https://example.com/h (500 chars)"
 
 
+class TestSummarizeToolResultClarify:
+    def test_preserves_resolved_user_response_without_metadata(self):
+        content = json.dumps({
+            "question": "When should I deploy?",
+            "choices_offered": ["Friday", "Monday"],
+            "user_response": "Friday",
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == '[clarify] user responded: "Friday"'
+
+    def test_preserves_multi_select_user_response(self):
+        content = json.dumps({
+            "question": "Which checks should I run?",
+            "choices_offered": ["lint", "tests", "types"],
+            "user_response": ["lint", "tests"],
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == '[clarify] user responded: ["lint", "tests"]'
+
+    def test_long_response_is_bounded_and_prefixed_text_is_not_trusted(self):
+        content = json.dumps({
+            "question": "Describe the deployment constraints",
+            "choices_offered": None,
+            "user_response": "A" * 1_000,
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        # Strictly below the prune floor so a later prune pass can never
+        # re-summarize the preserved answer away (idempotency below).
+        assert len(summary) == _PRUNE_MIN_CHARS - 1
+        assert summary.startswith('[clarify] user responded: "AAA')
+        assert summary.endswith("...[truncated]")
+        assert (
+            _summarize_tool_result("clarify", "{}", summary)
+            == "[clarify] asked user a question"
+        )
+
+    def test_forged_response_prefix_does_not_expose_internal_content(self):
+        forged = "[clarify] user responded: internal error: secret diagnostic"
+
+        summary = _summarize_tool_result("clarify", "{}", forged)
+
+        assert summary == "[clarify] asked user a question"
+        assert "secret diagnostic" not in summary
+
+    def test_prefixed_lone_surrogate_is_rejected_and_sqlite_safe(self):
+        forged = "[clarify] user responded: " + "\ud83d" * 1_000
+
+        summary = _summarize_tool_result("clarify", "{}", forged)
+
+        assert summary == "[clarify] asked user a question"
+        assert summary.encode("utf-8")
+        with sqlite3.connect(":memory:") as connection:
+            connection.execute("CREATE TABLE messages (content TEXT)")
+            connection.execute("INSERT INTO messages VALUES (?)", (summary,))
+            assert connection.execute("SELECT content FROM messages").fetchone()[0] == summary
+
+    def test_unpaired_surrogates_are_safe_through_pruning_and_sqlite(self, compressor):
+        content = json.dumps({"user_response": "Привет 😀" + "\ud83d" * 1_000})
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "clarify-1",
+                        "type": "function",
+                        "function": {"name": "clarify", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "clarify-1", "content": content},
+            {"role": "user", "content": "recent request"},
+            {"role": "assistant", "content": "recent response"},
+        ]
+
+        pruned_messages, pruned_count = compressor._prune_old_tool_results(
+            messages, protect_tail_count=2
+        )
+        summary = pruned_messages[1]["content"]
+
+        assert pruned_count == 1
+        assert len(summary) <= _PRUNE_MIN_CHARS
+        assert summary.encode("utf-8")
+        assert "Привет 😀" in summary
+        assert "\\ud83d" in summary
+        with sqlite3.connect(":memory:") as connection:
+            connection.execute("CREATE TABLE messages (content TEXT)")
+            connection.execute("INSERT INTO messages VALUES (?)", (summary,))
+            assert connection.execute("SELECT content FROM messages").fetchone()[0] == summary
+
+        pruned_again, _ = compressor._prune_old_tool_results(
+            pruned_messages, protect_tail_count=2
+        )
+        assert pruned_again[1]["content"] == summary
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            json.dumps({"error": "Failed to get user input: internal details"}),
+            json.dumps({"question": "Q?", "user_response": ""}),
+            json.dumps({"question": "Q?", "user_response": {"internal": "value"}}),
+            "not json",
+        ],
+    )
+    def test_does_not_expose_unresolved_or_internal_content(self, content):
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == "[clarify] asked user a question"
+
+    @pytest.mark.parametrize(
+        "sentinel",
+        [
+            # cli.py clarify timeout callback
+            "The user did not provide a response within the time limit. "
+            "Use your best judgement to make the choice and proceed.",
+            # gateway/run.py timeout + delivery-failure paths
+            "[user did not respond within 15m]",
+            "[clarify prompt could not be delivered]",
+            # hermes_cli/oneshot.py no-user callback
+            "[oneshot mode: no user available. Pick the best option from "
+            "['a', 'b'] using your own judgment and continue.]",
+        ],
+    )
+    def test_non_response_sentinels_are_not_attributed_to_user(self, sentinel):
+        """Timeout/no-user sentinel prose must not be quoted as a user answer."""
+        content = json.dumps({
+            "question": "Deploy when?",
+            "choices_offered": ["Friday", "Monday"],
+            "user_response": sentinel,
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == "[clarify] asked user a question"
+
+    def test_multi_select_containing_sentinel_stays_generic(self):
+        content = json.dumps({
+            "user_response": ["lint", "[user did not respond within 15m]"],
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == "[clarify] asked user a question"
+
+    def test_live_oneshot_producer_is_recognized_as_sentinel(self):
+        """Producer→recognizer drift guard: run the REAL oneshot no-user
+        callback and assert its output is filtered. If the producer's wording
+        drifts away from _CLARIFY_NON_RESPONSE_PREFIXES, this fails."""
+        from hermes_cli.oneshot import _oneshot_clarify_callback
+
+        sentinels = (
+            _oneshot_clarify_callback("Deploy when?", choices=["a", "b"]),
+            _oneshot_clarify_callback(
+                "Deploy when?", choices=["a", "b"], multi_select=True
+            ),
+            _oneshot_clarify_callback("Deploy when?"),
+        )
+        for sentinel in sentinels:
+            content = json.dumps({"user_response": sentinel})
+
+            summary = _summarize_tool_result("clarify", "{}", content)
+
+            assert summary == "[clarify] asked user a question", sentinel
 
 
 class TestShouldCompress:
@@ -82,7 +253,6 @@ class TestShouldCompress:
 class TestUpdateFromResponse:
     def test_updates_fields(self, compressor):
         compressor.awaiting_real_usage_after_compression = True
-        compressor.last_compression_rough_tokens = 90_000
         compressor.update_from_response({
             "prompt_tokens": 5000,
             "completion_tokens": 1000,
@@ -91,22 +261,39 @@ class TestUpdateFromResponse:
         assert compressor.last_prompt_tokens == 5000
         assert compressor.last_completion_tokens == 1000
         assert compressor.last_real_prompt_tokens == 5000
-        assert compressor.last_rough_tokens_when_real_prompt_fit == 90_000
         assert compressor.awaiting_real_usage_after_compression is False
 
     def test_missing_fields_default_zero(self, compressor):
         compressor.update_from_response({})
         assert compressor.last_prompt_tokens == 0
 
-class TestPreflightDeferral:
 
-    def test_does_not_defer_when_rough_growth_is_large(self, compressor):
+class TestPreflightDeferral:
+    """A whole-context rough estimate over threshold waits ONE request for real usage; callers
+    never consult this for usage-anchored figures."""
+
+    def test_rough_estimate_defers_until_provider_prices_it(self, compressor):
+        """Real usage far under threshold, rough estimate far over (CJK / replay-blob overcount):
+        the provider's next reading decides, not the estimate."""
+        compressor.context_length = 200_000
         compressor.threshold_tokens = 85_000
         compressor.last_real_prompt_tokens = 50_000
-        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
+        assert compressor.should_defer_preflight_to_real_usage(100_000) is True
+        assert compressor.should_defer_preflight_to_real_usage(80_000) is False
 
-        assert compressor.should_defer_preflight_to_real_usage(100_000) is False
-
+    def test_never_defers_when_real_usage_cannot_arrive_or_is_already_over(self, compressor):
+        """Deferral is one request, never a disable: a provider that omits usage, a real reading
+        already over threshold, or a rough figure past the whole window all compress now."""
+        compressor.context_length = 100_000
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 90_000
+        assert compressor.should_defer_preflight_to_real_usage(95_000) is False
+        compressor.last_real_prompt_tokens = 50_000
+        assert compressor.should_defer_preflight_to_real_usage(150_000) is False
+        compressor.note_usage_less_response()
+        assert compressor.should_defer_preflight_to_real_usage(95_000) is False
+        compressor.update_from_response({"prompt_tokens": 50_000})
+        assert compressor.should_defer_preflight_to_real_usage(95_000) is True
 
     def test_defers_immediately_after_compaction_with_stale_real_prompt(self, compressor):
         """#36718: right after a compaction, last_real_prompt_tokens still holds
@@ -114,13 +301,24 @@ class TestPreflightDeferral:
         must force deferral so preflight doesn't fire a SECOND compaction before
         real post-compaction usage arrives."""
         compressor.threshold_tokens = 85_000
-        # Stale pre-compression value — would hit the `>= threshold => False`
-        # short-circuit and defeat deferral without the flag guard.
         compressor.last_real_prompt_tokens = 120_000
         compressor.awaiting_real_usage_after_compression = True
         assert compressor.should_defer_preflight_to_real_usage(95_000) is True
 
+    def test_native_checkpoint_defers_until_provider_usage_reanchors(self, compressor):
+        """A newly captured native checkpoint is opaque ciphertext whose serialized size can add
+        more than a million rough tokens; the local compressor waits one request for real usage."""
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 60_000
+        compressor.last_compression_rough_tokens = 40_000
 
+        compressor.note_native_compaction_checkpoint()
+
+        assert compressor.awaiting_real_usage_after_compression is True
+        assert compressor.last_compression_rough_tokens == 0
+        assert compressor.should_defer_preflight_to_real_usage(1_300_000) is True
+        compressor.update_from_response({"prompt_tokens": 65_000})
+        assert compressor.awaiting_real_usage_after_compression is False
 
 
 class TestCompress:
@@ -174,6 +372,31 @@ class TestCompress:
         t = ContextCompressor._compute_threshold_tokens(MINIMUM_CONTEXT_LENGTH, 0.50)
         assert t < MINIMUM_CONTEXT_LENGTH
         assert t == 54400  # 85% of 64000
+
+    def test_threshold_floor_capped_at_85_percent_of_window(self):
+        """The MINIMUM_CONTEXT_LENGTH floor must not consume the window's
+        output headroom. At context_length == 65,536 (a common local-model
+        window) the floored threshold used to pass through at 64,000 — 97.7%
+        of the window, ~1.5K tokens of output room — so pre-API compaction
+        effectively could not fire. Providers that silently truncate
+        over-window prompts instead of rejecting them (e.g. ollama's
+        OpenAI-compatible endpoint) never delivered the reactive
+        context-overflow backstop either: a live session rode into the window
+        ceiling and each length-continuation retry re-sent a window-filling
+        prompt (observed 65,120 -> 65,273 prompt tokens against 65,536,
+        leaving 263 output tokens) until the turn died with "Response
+        remained truncated after 4 continuation attempts". The floor is now
+        capped at 85% of the effective input budget whenever it is the
+        binding term."""
+        t = ContextCompressor._compute_threshold_tokens(65_536, 0.50)
+        assert t == int(65_536 * 0.85)  # 55,705
+        # Any window where the floor lands above 85% is capped the same way.
+        assert ContextCompressor._compute_threshold_tokens(70_000, 0.50) == 59_500
+        # Floor binding but at/under the 85% cap: unchanged.
+        assert ContextCompressor._compute_threshold_tokens(100_000, 0.50) == 64_000
+        # An explicit threshold_percent above 85% is user intent, not the
+        # floor — it is not capped.
+        assert ContextCompressor._compute_threshold_tokens(372_000, 0.90) == 334_800
 
 
 
@@ -452,7 +675,10 @@ class TestNonStringContent:
         mock_response.choices[0].message = "plain summary text"
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True)
+            # Pin legacy: this test asserts the raw coerced string terminates
+            # the summary, which lean mode's verbatim-user-quote appendix
+            # intentionally follows. Coercion is mode-independent.
+            c = ContextCompressor(model="test", quiet_mode=True, tail_mode="legacy")
 
         messages = [
             {"role": "user", "content": "do something"},
@@ -581,6 +807,19 @@ class TestAuthFailureAborts:
         )
         assert _is_summary_access_or_quota_error(err) is True
 
+    def test_unscoped_secret_read_is_terminal_access_failure(self):
+        # Multiplexed gateway: a credential read reached get_secret() from a
+        # worker thread without the profile scope. The summary model is
+        # unreachable until the spawn site is fixed — abort and preserve the
+        # session rather than truncating the middle window (#100849 bundle).
+        from agent.secret_scope import UnscopedSecretError
+
+        err = UnscopedSecretError(
+            "get_secret('SURPLUS_API_KEY') called with no profile secret scope "
+            "active while multiplexing is on."
+        )
+        assert _is_summary_access_or_quota_error(err) is True
+
 
 
 
@@ -682,7 +921,99 @@ class TestAuthFailureAborts:
         assert c._last_summary_network_failure is True
         assert c._last_summary_auth_failure is False
 
+    def test_generate_summary_flags_empty_content_failure(self):
+        """An empty-content response on the summary call flags
+        _last_summary_empty_content_failure (#94448)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        with patch(
+            "agent.context_compressor.call_llm",
+            return_value={"choices": [{"message": {"content": "   "}}]},
+        ):
+            result = c._generate_summary(self._msgs())
+        assert result is None
+        assert c._last_summary_empty_content_failure is True
+        assert c._last_summary_auth_failure is False
+        assert c._last_summary_network_failure is False
 
+    def test_empty_content_summary_aborts_compression_and_preserves_messages(self):
+        """Empty-content response from degraded provider aborts compression and
+        preserves original messages without dropping context (#94448)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = self._msgs(12)
+        with patch(
+            "agent.context_compressor.call_llm",
+            return_value={"choices": [{"message": {"content": ""}}]},
+        ):
+            result = c.compress(msgs, current_tokens=999999, force=True)
+
+        assert result == msgs
+        assert c._last_summary_empty_content_failure is True
+        assert c._last_compress_aborted is True
+        assert c._last_summary_fallback_used is False
+        assert c._last_summary_dropped_count == 0
+
+        # Cooldown re-entry must keep aborting, same as network/auth —
+        # _generate_summary() returns None from the cooldown early-return
+        # without re-asserting the flag, so compress() must still see it.
+        second = c.compress(msgs, current_tokens=999999)
+        assert second == msgs
+        assert c._last_compress_aborted is True
+        assert c._last_summary_fallback_used is False
+
+    def test_auxiliary_none_response_aborts_compression(self):
+        """Sibling shape (#94459, from #7264): the auxiliary boundary's own
+        terminal "None response" error is the same degraded-provider class
+        and must ABORT, not fall through to the destructive fallback."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = self._msgs(12)
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=RuntimeError("Auxiliary compression: LLM returned None response"),
+        ):
+            result = c.compress(msgs, current_tokens=999999, force=True)
+        assert result == msgs
+        assert c._last_compress_aborted is True
+        assert c._last_summary_empty_content_failure is True
+
+    def test_auxiliary_invalid_response_aborts_compression(self):
+        """Sibling shape (#94459, from #7264): malformed/missing
+        choices[0].message terminal error must ABORT the same way."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = self._msgs(12)
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=RuntimeError(
+                "Auxiliary compression: LLM returned invalid response "
+                "(type=str): 'oops'. Expected object with .choices[0].message "
+                "— check provider adapter or custom endpoint compatibility."
+            ),
+        ):
+            result = c.compress(msgs, current_tokens=999999, force=True)
+        assert result == msgs
+        assert c._last_compress_aborted is True
+        assert c._last_summary_empty_content_failure is True
 
 
 class TestSummaryFallbackToMainModel:
@@ -735,6 +1066,35 @@ class TestSummaryFallbackToMainModel:
         assert c._last_aux_model_failure_error is not None
         assert "404" in c._last_aux_model_failure_error
 
+    def test_empty_content_falls_back_to_main_and_succeeds(self):
+        """Aux model returns empty content -> falls back to main model -> succeeds (#94448)."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main model after empty aux"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="flaky-aux-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[
+                {"choices": [{"message": {"content": "   "}}]},
+                mock_ok,
+            ],
+        ) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert mock_call.call_args_list[0].kwargs.get("model") == "flaky-aux-model"
+        assert "model" not in mock_call.call_args_list[1].kwargs
+        assert result is not None
+        assert "summary via main model after empty aux" in result
+        assert c._last_aux_model_failure_model == "flaky-aux-model"
+        assert "empty content" in (c._last_aux_model_failure_error or "").lower()
 
     def test_no_fallback_when_summary_model_equals_main_model(self):
         """If the aux model IS the main model, there's nowhere to fall back
@@ -1677,7 +2037,9 @@ class TestUpdateModelBudgets:
         """tail_token_budget must change after switching to a different context length."""
         from unittest.mock import patch
         with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
-            comp = ContextCompressor("model-a", threshold_percent=0.50, quiet_mode=True)
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True, tail_mode="legacy",
+            )
         old_tail = comp.tail_token_budget
         old_max_summary = comp.max_summary_tokens
 
@@ -1690,10 +2052,74 @@ class TestUpdateModelBudgets:
         """Budgets should be proportional to context_length after update."""
         from unittest.mock import patch
         with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
-            comp = ContextCompressor("model-a", threshold_percent=0.50, quiet_mode=True)
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True, tail_mode="legacy",
+            )
         comp.update_model("model-b", context_length=10_000)
         assert comp.tail_token_budget == int(comp.threshold_tokens * comp.summary_target_ratio)
         assert comp.max_summary_tokens == min(int(10_000 * 0.05), 4000)
+
+    def test_default_mode_is_lean(self):
+        """#tail-default-flip: an unconfigured compressor uses the lean tail.
+
+        Behavior contract, not a snapshot: the default-constructed budget must
+        equal the lean clamp for the window, NOT the legacy threshold formula
+        (which on a 1M window would be ~100-170K tokens).
+        """
+        from unittest.mock import patch
+
+        from agent.context_compressor import (
+            LEAN_TAIL_CAP_TOKENS,
+            LEAN_TAIL_FLOOR_TOKENS,
+        )
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            comp = ContextCompressor("model-big", threshold_percent=0.85, quiet_mode=True)
+        assert comp.tail_mode == "lean"
+        expected = max(
+            LEAN_TAIL_FLOOR_TOKENS,
+            min(LEAN_TAIL_CAP_TOKENS, int(comp.context_length * 0.025)),
+        )
+        assert comp.tail_token_budget == expected
+        # The legacy hoard for this config would be far larger — prove the
+        # default no longer produces it.
+        assert comp.tail_token_budget < int(comp.threshold_tokens * comp.summary_target_ratio)
+
+    def test_update_model_preserves_lean_mode(self):
+        """update_model() must recompute the tail through the MODE-AWARE path.
+
+        Regression for the latent bug exposed by the default flip: the old
+        recompute assigned the legacy threshold formula directly, silently
+        reverting a lean compressor to the legacy hoard on every mid-session
+        model switch.
+        """
+        from unittest.mock import patch
+
+        from agent.context_compressor import (
+            LEAN_TAIL_CAP_TOKENS,
+            LEAN_TAIL_FLOOR_TOKENS,
+        )
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            comp = ContextCompressor("model-a", threshold_percent=0.85, quiet_mode=True)
+        comp.update_model("model-b", context_length=400_000)
+        expected = max(
+            LEAN_TAIL_FLOOR_TOKENS,
+            min(LEAN_TAIL_CAP_TOKENS, int(400_000 * 0.025)),
+        )
+        assert comp.tail_token_budget == expected
+        assert comp.tail_token_budget < int(comp.threshold_tokens * comp.summary_target_ratio)
+
+    def test_explicit_legacy_still_honored(self):
+        """tail_mode: legacy in config keeps the pre-flip behavior exactly."""
+        from unittest.mock import patch
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.85, quiet_mode=True, tail_mode="legacy",
+            )
+        assert comp.tail_mode == "legacy"
+        assert comp.tail_token_budget == int(comp.threshold_tokens * comp.summary_target_ratio)
 
 
 class TestUpdateModelResetsCalibration:
@@ -1713,7 +2139,6 @@ class TestUpdateModelResetsCalibration:
         # Simulate a large-model session that proved a prompt fit.
         comp.last_prompt_tokens = 120_000
         comp.last_real_prompt_tokens = 120_000
-        comp.last_rough_tokens_when_real_prompt_fit = 130_000
         comp.last_compression_rough_tokens = 130_000
         comp.awaiting_real_usage_after_compression = True
         comp._ineffective_compression_count = 2
@@ -1722,7 +2147,6 @@ class TestUpdateModelResetsCalibration:
 
         assert comp.last_prompt_tokens == 0
         assert comp.last_real_prompt_tokens == 0
-        assert comp.last_rough_tokens_when_real_prompt_fit == 0
         assert comp.last_compression_rough_tokens == 0
         assert comp.awaiting_real_usage_after_compression is False
         assert comp._ineffective_compression_count == 0
@@ -1732,15 +2156,14 @@ class TestUpdateModelResetsCalibration:
         preflight on the new smaller model."""
         comp = self._comp()
         comp.last_real_prompt_tokens = 50_000
-        comp.last_rough_tokens_when_real_prompt_fit = 90_000
         # Before switch, a modest rough growth would defer.
         comp.threshold_tokens = 85_000
         assert comp.should_defer_preflight_to_real_usage(93_000) is True
 
-        # After switching to a 65K model, the stale state is gone, so a rough
-        # estimate over the new threshold is NOT deferred — preflight will run.
+        # After switching to a 65K model the stale reading is gone; a rough estimate past the
+        # NEW window is a request certain to fail and is never deferred — preflight will run.
         comp.update_model("small-model", context_length=65_536)
-        assert comp.should_defer_preflight_to_real_usage(comp.threshold_tokens + 5_000) is False
+        assert comp.should_defer_preflight_to_real_usage(comp.context_length + 5_000) is False
 
 
 
@@ -1990,36 +2413,39 @@ class TestLazyContextResolution:
 
 
 class TestPreflightSentinelGuard:
-    """Regression for #36718: the preflight token-display seed in
-    run_conversation must NOT overwrite the -1 sentinel that
-    compress_context() sets immediately after compression.
+    """Regression guards for the preflight token-display seed
+    (ContextCompressor.maybe_seed_preflight_display_tokens, called from
+    build_turn_context).
 
-    The old guard `_preflight_tokens > (last_prompt_tokens or 0)` evaluated
-    `(-1 or 0)` -> -1 (truthy), so any positive preflight estimate was > -1
-    and clobbered the sentinel with a schema-inflated rough count, re-firing
-    compression on the next turn. The fix treats any negative value as
-    "no real usage yet" and skips the seed.
+    Policy: seed ONLY from the 0 state ("no reading yet", #34282 — the seed
+    keeps the status bar live when a provider reports no usage). Any
+    non-zero value is preserved: the -1 post-compression sentinel (#36718 —
+    compress_context parks it while awaiting real usage, and the seed must
+    not clobber it) AND any positive real provider reading (#81481 — the
+    rough estimate intentionally over-counts CJK / reasoning replay, so it
+    must never overwrite a real measurement).
     """
-
-    def _seed(self, last_prompt_tokens, preflight_tokens):
-        # Mirror the exact guard in agent/conversation_loop.py run_conversation.
-        _last = last_prompt_tokens
-        if _last >= 0 and preflight_tokens > _last:
-            return preflight_tokens  # would overwrite
-        return last_prompt_tokens   # preserved
 
     def test_sentinel_preserved_after_compression(self, compressor):
         compressor.last_prompt_tokens = -1
         # A large schema-inflated preflight estimate must NOT overwrite -1.
-        result = self._seed(compressor.last_prompt_tokens, 250_000)
-        assert result == -1
+        compressor.maybe_seed_preflight_display_tokens(250_000)
+        assert compressor.last_prompt_tokens == -1
 
-    def test_real_value_still_revises_upward(self, compressor):
-        compressor.last_prompt_tokens = 10_000
-        result = self._seed(compressor.last_prompt_tokens, 50_000)
-        assert result == 50_000
+    def test_zero_state_still_seeded(self, compressor):
+        # 0 means "no reading yet" — the seed keeps the status bar live when
+        # providers report no usage.
+        compressor.last_prompt_tokens = 0
+        compressor.maybe_seed_preflight_display_tokens(50_000)
+        assert compressor.last_prompt_tokens == 50_000
 
-
+    def test_real_provider_reading_wins_over_rough_estimate(self, compressor):
+        # Regression for the 492K-vs-685K display jump: a real provider
+        # reading must never be replaced by the schema/reasoning-inflated
+        # rough preflight estimate (#81481 class inflation).
+        compressor.last_prompt_tokens = 492_000
+        compressor.maybe_seed_preflight_display_tokens(685_344)
+        assert compressor.last_prompt_tokens == 492_000
 
 class TestTurnPairPreservation:
     """Causal Coupling guard (#22523): compaction must never orphan a user turn.
@@ -2150,8 +2576,16 @@ class TestSanitizerStripsOrphanedToolCalls:
         assert asst.get("content") == "(tool call removed)"
 
     def test_sanitizer_strips_orphaned_keeps_valid(self, compressor):
-        """When an assistant has both valid and orphaned tool_calls, only
-        the orphans are stripped.  #51218"""
+        """When a MID-LIST assistant has both valid and orphaned tool_calls,
+        only the orphans are stripped.  #51218
+
+        The shape must sit mid-list: the same shape at the TAIL is
+        indistinguishable from a partial multi-call batch whose remaining
+        results are still in flight, and the sanitizer now presumes in-flight
+        there (#79278) — preserving is safe because the pre-API chokepoint
+        injects stub results for genuinely unanswered calls, while stripping
+        a live call silently loses its late result.
+        """
         msgs = [
             {
                 "role": "assistant",
@@ -2162,6 +2596,8 @@ class TestSanitizerStripsOrphanedToolCalls:
                 ],
             },
             {"role": "tool", "tool_call_id": "tc_valid", "content": "file content"},
+            # Later turn: the chain above is settled history, not in flight.
+            {"role": "assistant", "content": "done"},
         ]
 
         sanitized = compressor._sanitize_tool_pairs(msgs)
@@ -2221,6 +2657,277 @@ class TestSanitizerStripsOrphanedToolCalls:
         asst = next(m for m in sanitized if m.get("role") == "assistant")
         assert not asst.get("tool_calls")
         # No stub tool messages (which would have call_id != id mismatch)
+
+    def test_sanitizer_keeps_valid_pair_matching_on_id_not_call_id(self, compressor):
+        """A genuinely matching Codex-format pair must survive when the
+        result's tool_call_id matches ``id`` rather than ``call_id`` (#58168
+        class). ``_get_tool_call_id``'s ``call_id || id`` precedence picks
+        ``call_id`` first, so building the known-id set from a single value
+        per tool_call misclassified this valid pair as orphaned on BOTH
+        sides — dropping the result AND stripping the tool_call, even though
+        neither was actually orphaned."""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "fc_777",
+                        "call_id": "call_777",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": "{}"},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "fc_777", "content": "result"},
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        asst = next(m for m in sanitized if m.get("role") == "assistant")
+        assert asst.get("tool_calls"), "valid tool_call must not be stripped"
+        assert asst["tool_calls"][0]["id"] == "fc_777"
+        tool_msgs = [m for m in sanitized if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1, "valid tool result must not be dropped as orphaned"
+        assert tool_msgs[0]["tool_call_id"] == "fc_777"
+
+    def test_sanitizer_still_drops_genuine_orphan_with_dual_ids(self, compressor):
+        """Negative control: registering both id and call_id must not
+        over-relax orphan detection. A genuinely orphaned tool_call (no
+        result matching either id variant) is still stripped, while a valid
+        dual-id pair in the same window survives. A trailing user turn keeps
+        the assistant message out of the in-flight protection window (#79278),
+        which intentionally preserves a still-pending trailing call."""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "fc_1",
+                        "call_id": "call_1",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": "{}"},
+                    },
+                    {
+                        "id": "fc_2",
+                        "call_id": "call_2",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": "{}"},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "result"},
+            {"role": "user", "content": "next question"},
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        asst = next(m for m in sanitized if m.get("role") == "assistant")
+        surviving_ids = {tc["id"] for tc in asst.get("tool_calls") or []}
+        assert surviving_ids == {"fc_1"}
+
+
+class TestSanitizerPreservesInFlightToolChain:
+    """Issue #79278: an in-flight tool call chain must survive compression.
+
+    When compression fires mid-chain — after the model emitted
+    ``assistant(tool_calls)`` but before tool_executor.py appended the matching
+    ``role="tool"`` result — the final message is a *pending* tool call, not an
+    orphan.  Stripping it (or replacing content with ``(tool call removed)``)
+    destroys the chain: when the executor later appends the real result,
+    repair_message_sequence drops it as an unmatched orphan and the completed
+    side effect and final synthesis are lost.  _sanitize_tool_pairs must exempt
+    the trailing in-flight call.
+    """
+
+    def test_trailing_inflight_tool_call_preserved(self, compressor):
+        """A trailing assistant tool_call with no result yet is pending, not
+        orphaned — preserve it verbatim.  #79278"""
+        msgs = [
+            {"role": "user", "content": "summarize"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "summarize", "arguments": "{}"}},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_2", "function": {"name": "finalize", "arguments": "{}"}},
+                ],
+            },
+            # in-flight: call_2 has been emitted but its tool result is not
+            # yet appended by tool_executor.py
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        # The trailing in-flight call must survive intact.
+        assert sanitized[-1]["role"] == "assistant"
+        assert len(sanitized[-1]["tool_calls"]) == 1
+        assert sanitized[-1]["tool_calls"][0]["id"] == "call_2"
+        assert sanitized[-1]["content"] != "(tool call removed)"
+
+    def test_inflight_result_arrives_after_compress(self, compressor):
+        """After compress() preserves the pending call, appending its tool
+        result leaves a well-formed chain — the side effect's result reaches
+        the model.  #79278"""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_2", "function": {"name": "finalize", "arguments": "{}"}},
+                ],
+            },
+        ]
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+        assert sanitized[-1]["tool_calls"][0]["id"] == "call_2"
+
+        # The executor appends the result after compress() returns.
+        sanitized.append(
+            {"role": "tool", "tool_call_id": "call_2", "content": "side effect done"}
+        )
+
+        # Chain now settled: the assistant call is matched, result survives.
+        surviving = {tc["id"] for m in sanitized if m["role"] == "assistant"
+                     for tc in (m.get("tool_calls") or [])}
+        assert "call_2" in surviving
+        results = [m for m in sanitized if m["role"] == "tool"]
+        assert len(results) == 1 and results[0]["tool_call_id"] == "call_2"
+
+    def test_inflight_preserved_while_true_orphan_still_stripped(self, compressor):
+        """Preserving the trailing in-flight call must not weaken the existing
+        orphan-stripping behavior for genuinely orphaned calls in the discarded
+        region.  #79278"""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_orphan", "function": {"name": "search", "arguments": "{}"}},
+                ],
+            },
+            {"role": "user", "content": "interim"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_pending", "function": {"name": "write", "arguments": "{}"}},
+                ],
+            },
+            # trailing in-flight call_pending
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        middle = [m for m in sanitized if m["role"] == "assistant" and m.get("tool_calls")]
+        # Only the trailing in-flight call survives.
+        assert len(middle) == 1
+        assert middle[0]["tool_calls"][0]["id"] == "call_pending"
+        # The genuine orphan at the head was still stripped.
+        assert not any(m.get("tool_calls") and m["tool_calls"][0]["id"] == "call_orphan"
+                       for m in sanitized)
+
+    def test_side_effect_final_result_returned_end_to_end(self, compressor):
+        """Issue #79278 end-to-end: an in-flight tool chain that triggers
+        compression must still deliver the completed side effect's result.
+
+        Reproduces the full executor flow:
+          1. the model emits ``assistant(tool_calls=call_2)`` while call_2 is
+             still IN-FLIGHT — tool_executor.py has not yet appended its
+             ``role="tool"`` result;
+          2. context compression fires and ``_sanitize_tool_pairs()`` runs on
+             a history whose tail is that pending call;
+          3. the side effect completes and the executor appends the ``tool``
+             result for call_2;
+          4. the next pre-call pass, ``repair_message_sequence()``, runs and
+             must NOT drop the completed result as an unmatched orphan.
+
+        On the old code, compression stripped the pending call_2 as an
+        "orphan"; when the result then arrived, repair_message_sequence
+        dropped it as unmatched — so the completed side effect's result and
+        the final synthesis built on it were both lost.  The fix preserves the
+        trailing in-flight call, so the chain closes and the result survives.
+        """
+        from agent.agent_runtime_helpers import repair_message_sequence
+
+        history = [
+            {"role": "user", "content": "Do the work and use the tools."},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "run_side_effect", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_1",
+             "content": "side effect completed"},
+            # in-flight: call_2 emitted, its result not yet appended
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_2", "type": "function",
+                 "function": {"name": "gather_final_result", "arguments": "{}"}}]},
+        ]
+
+        # Step 1: compression fires mid-chain.
+        compressed = compressor._sanitize_tool_pairs([dict(m) for m in history])
+
+        # The in-flight call must survive the compression pass (fix), not be
+        # stripped as an orphan (bug) — otherwise the chain is already broken.
+        assert compressed[-1]["role"] == "assistant"
+        assert [tc["id"] for tc in compressed[-1].get("tool_calls", [])] == ["call_2"]
+        assert compressed[-1].get("content") != "(tool call removed)"
+
+        # Step 2: the side effect completes; the executor appends its result.
+        messages = [dict(m) for m in compressed] + [
+            {"role": "tool", "tool_call_id": "call_2",
+             "content": "final computed result: 42"}
+        ]
+
+        # Step 3: the next pre-call sanitizer runs on the settled chain.
+        repair_message_sequence(None, messages)
+
+        # Step 4: the final result must still be returned — the assistant call
+        # and its completed tool result both survive, still paired.
+        assistant_ids = {
+            tc["id"]
+            for m in messages if m["role"] == "assistant"
+            for tc in (m.get("tool_calls") or [])
+        }
+        assert "call_2" in assistant_ids
+
+        results = [m for m in messages
+                   if m["role"] == "tool" and m.get("tool_call_id") == "call_2"]
+        assert len(results) == 1
+        assert "42" in results[0]["content"]
+
+    def test_partial_batch_inflight_calls_preserved(self, compressor):
+        """Multi-call batch snapshotted BETWEEN result appends: the executor
+        has appended tool(c1) but not yet tool(c2)/tool(c3), so the last
+        message is a tool result while c2/c3 are still pending.  The walk-back
+        must find the assistant behind the trailing results and preserve the
+        whole batch — stripping c2/c3 there loses their late results exactly
+        like the tail-is-assistant shape.  #79278 follow-up."""
+        msgs = [
+            {"role": "user", "content": "run the batch"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "function": {"name": "a", "arguments": "{}"}},
+                {"id": "c2", "function": {"name": "b", "arguments": "{}"}},
+                {"id": "c3", "function": {"name": "c", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": "done 1"},
+            # snapshot taken here: c2/c3 results not yet appended
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        batch = [m for m in sanitized if m.get("role") == "assistant"][-1]
+        assert [tc["id"] for tc in batch["tool_calls"]] == ["c1", "c2", "c3"]
+        # And the already-arrived result survives too.
+        assert any(
+            m.get("role") == "tool" and m.get("tool_call_id") == "c1"
+            for m in sanitized
+        )
 
 
 class TestCooldownReentryAbort:
@@ -2814,7 +3521,15 @@ class TestPreLlmFeasibilityCheck:
         """The target scenario from #60451: a tool-heavy transcript whose
         protected tail already holds most of the tokens, leaving a tiny
         middle window. The skip must fire and _generate_summary must not
-        be called."""
+        be called.
+
+        Pinned to legacy tail sizing: the scenario REQUIRES the big
+        payloads to sit inside the protected tail (legacy budget ≈ 17K on
+        this fixture). Under the lean default (10K clamp) the same
+        payloads fall into the compressible middle, so compression
+        correctly proceeds — that is desired behavior, not a skip case.
+        """
+        compressor.tail_mode = "legacy"
         compressor._ineffective_compression_count = 1
         msgs = [{"role": "system", "content": "system prompt"}]
         # Small middle: a few lightweight early exchanges.
@@ -2895,3 +3610,60 @@ class TestPreLlmFeasibilityCheck:
             feasibility_skip=compressor._last_feasibility_skip,
         )
         assert compressor._fallback_compression_streak == 1
+
+
+class TestSanitizeToolPairsWhitespace:
+    """_sanitize_tool_pairs must strip whitespace from tool_call_id before
+    comparing, matching the fix applied to agent_runtime_helpers.py in
+    commit fa3ab2ffd.  Without stripping, a valid tool result whose
+    tool_call_id has surrounding whitespace is misclassified as orphaned
+    and silently replaced with a [Result unavailable] stub.
+    """
+
+    def _make(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            return ContextCompressor(model="test/model", quiet_mode=True,
+                                     protect_first_n=2, protect_last_n=2)
+
+    def _assistant(self, call_id):
+        return {
+            "role": "assistant", "content": "",
+            "tool_calls": [{"id": call_id, "type": "function",
+                             "function": {"name": "f", "arguments": "{}"}}],
+        }
+
+    def test_leading_whitespace_on_result_id_preserved(self):
+        c = self._make()
+        msgs = [
+            self._assistant("call_abc"),
+            {"role": "tool", "tool_call_id": " call_abc", "content": "ok"},
+        ]
+        out = c._sanitize_tool_pairs(msgs)
+        tool_msgs = [m for m in out if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["content"] == "ok", "valid result must not be treated as orphaned"
+
+    def test_trailing_whitespace_on_result_id_preserved(self):
+        c = self._make()
+        msgs = [
+            self._assistant("call_xyz"),
+            {"role": "tool", "tool_call_id": "call_xyz  ", "content": "data"},
+        ]
+        out = c._sanitize_tool_pairs(msgs)
+        tool_msgs = [m for m in out if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["content"] == "data"
+
+    def test_truly_orphaned_still_removed(self):
+        """Whitespace-trimmed ID that still has no match must be removed.
+        The assistant's call_real has no matching result, so a stub is
+        inserted in its place — the original orphaned entry must be gone."""
+        c = self._make()
+        msgs = [
+            self._assistant("call_real"),
+            {"role": "tool", "tool_call_id": " call_orphan ", "content": "stale"},
+        ]
+        out = c._sanitize_tool_pairs(msgs)
+        tool_call_ids = [m.get("tool_call_id") for m in out if m.get("role") == "tool"]
+        assert "call_orphan" not in tool_call_ids, "genuinely orphaned result must be removed"
+        assert " call_orphan " not in tool_call_ids, "original whitespace form must also be gone"

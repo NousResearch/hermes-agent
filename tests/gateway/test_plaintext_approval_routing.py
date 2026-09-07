@@ -84,7 +84,8 @@ def _make_runner():
 
 def _register_blocking_approval(runner):
     """Register a real blocking approval entry for the runner's session."""
-    from tools.approval import _ApprovalEntry, _gateway_queues
+    from tools.approval import _gateway_queues
+    from tools.approval_gateway_wait import _ApprovalEntry
     source = _make_source()
     session_key = runner._session_key_for_source(source)
     entry = _ApprovalEntry({"command": "rm -rf /tmp/test"})

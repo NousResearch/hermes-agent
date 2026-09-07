@@ -8,6 +8,7 @@ import { atom } from 'nanostores'
 import type {
   DesktopUpdateApplyOptions,
   DesktopUpdateApplyResult,
+  DesktopUpdateBlocker,
   DesktopUpdateProgress,
   DesktopUpdateStage,
   DesktopUpdateStatus,
@@ -16,6 +17,8 @@ import type {
 import { checkHermesUpdate, getActionStatus, updateHermes } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { persistString, storedString } from '@/lib/storage'
+import { $connectionsRegistry, refreshConnectionsRegistry } from '@/store/connections'
+import { reconnectGateway } from '@/store/gateway-reconnect'
 import { dismissNotification, notify } from '@/store/notifications'
 import { $connection } from '@/store/session'
 import type { BackendUpdateCheckResponse } from '@/types/hermes'
@@ -29,6 +32,8 @@ export interface UpdateApplyState {
   /** When the stage is 'manual': the exact command the user should run
    *  (CLI install with no staged updater). */
   command: string | null
+  /** Structured update blockers used by the safe close-and-update confirmation. */
+  blockers?: readonly DesktopUpdateBlocker[] | null
   log: readonly { stage: DesktopUpdateStage; message: string; at: number }[]
 }
 
@@ -94,7 +99,9 @@ function isUpdateToastSnoozed(): boolean {
 // v3: requires approvals.mode config RPCs and session.info reconciliation.
 // v4: requires explicit Fast-off session creation and session-scoped Fast edits.
 // v5: requires raised WebSocket frame size for large one-shot file.attach.
-const REQUIRED_BACKEND_CONTRACT = 5
+// v6: requires key-addressed plugins.manage rows (keyless rows render
+//     read-only in Settings → Plugins).
+const REQUIRED_BACKEND_CONTRACT = 6
 const SKEW_TOAST_ID = 'backend-contract-skew'
 // The contract check runs on every session.resume (applyRuntimeInfo), so
 // without a snooze the warning re-popped on every thread the user opened, even
@@ -198,13 +205,21 @@ export function reportInstallMethodWarning(message: string | undefined): void {
  * Closing the toast — dismissing it or opening the updates window from it —
  * (re)starts the cooldown, so a busy upstream branch doesn't re-spam the user
  * on every new commit. The snooze is persisted, so it survives relaunches too.
+ *
+ * `target` is the target whose status produced this toast. The overlay has no
+ * target switcher, so a client-status toast that opened the backend overlay
+ * showed the user a machine they weren't told about, with no way back.
  */
-export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
+export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null, target: UpdateTarget = 'client') {
   if (!status || status.supported === false || status.error || !status.targetSha) {
     return
   }
 
-  if ((status.behind ?? 0) <= 0) {
+  const behind = typeof status.behind === 'number' ? status.behind : null
+
+  // behind === null means "update available, exact count unknown" (shallow
+  // clone). That still deserves the toast — just with count-free copy.
+  if ((behind ?? 0) <= 0 && !status.updateAvailable) {
     return
   }
 
@@ -216,28 +231,45 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
     return
   }
 
-  const behind = status.behind ?? 0
-
   notify({
     action: {
       label: translateNow('notifications.seeWhatsNew'),
       onClick: () => {
         snoozeUpdateToast()
-        openUpdatesWindow()
+        openUpdateOverlayFor(target)
       }
     },
     durationMs: 0,
     icon: 'gift',
     id: UPDATE_TOAST_ID,
     kind: 'info',
-    message: translateNow('notifications.updateReadyMessage', behind),
+    message:
+      behind !== null && behind > 0
+        ? translateNow('notifications.updateReadyMessage', behind)
+        : translateNow('notifications.updateReadyMessageUnknown'),
     onDismiss: () => snoozeUpdateToast(),
     title: translateNow('notifications.updateReadyTitle')
   })
 }
 
-export function openUpdatesWindow(): void {
-  openUpdateOverlayFor(isRemoteMode() ? 'backend' : 'client')
+/** The target a generic, surface-less update command acts on: the machine the
+ *  user is connected to. Surfaces that display one target's status must pass
+ *  that target explicitly instead of inheriting this. */
+function activeUpdateTarget(): UpdateTarget {
+  return isRemoteMode() ? 'backend' : 'client'
+}
+
+/**
+ * Open the updates overlay and kick off its check.
+ *
+ * Callers tied to a specific status surface pass its target; only genuinely
+ * generic entry points take the connection-mode default. The macOS "Check for
+ * Updates…" menu item is the former — it is the OS-standard affordance for
+ * updating *this app*, so in remote mode it checked the wrong machine and the
+ * Mac client silently drifted behind (#70266).
+ */
+export function openUpdatesWindow(target: UpdateTarget = activeUpdateTarget()): void {
+  openUpdateOverlayFor(target)
 }
 
 /**
@@ -246,26 +278,60 @@ export function openUpdatesWindow(): void {
  * renders ApplyingView once `applying` flips true), then kicks off the install.
  * Used by the "Update now" affordance on the About panel, which would otherwise
  * only be able to open the changelog overlay.
+ *
+ * Multi-target installs (remote mode / multi-connection registry) route
+ * through the everything-flow so "update" means every machine, not just the
+ * active target — the single-target ternary is what left remote-mode users
+ * updating the backend forever while the GUI itself went stale.
+ *
+ * An explicit `target` opts out of both: the caller is acting on one named
+ * machine's status and must not fan out to the others.
  */
-export function startActiveUpdate(): void {
-  const target: UpdateTarget = isRemoteMode() ? 'backend' : 'client'
-  $updateOverlayTarget.set(target)
+export function startActiveUpdate(target?: UpdateTarget): void {
+  if (!target && hasMultipleUpdateTargets()) {
+    $updateOverlayOpen.set(true)
+    void applyEverythingUpdate()
+
+    return
+  }
+
+  const effective = target ?? activeUpdateTarget()
+  $updateOverlayTarget.set(effective)
   $updateOverlayOpen.set(true)
-  void (target === 'backend' ? applyBackendUpdate() : applyUpdates())
+  void (effective === 'backend' ? applyBackendUpdate() : applyUpdates())
 }
 
 /**
  * Command-palette entry point. The About panel's "Update now" only renders once
  * we know an update is waiting; this row is always listed, so it also has to
  * handle "already current" — open the overlay for the active target and let its
- * check answer, and only apply when there's something to install.
+ * check answer, and only apply when there's something to install. On
+ * multi-target installs an update waiting on EITHER the client or the backend
+ * triggers the everything-flow.
  */
 export function requestActiveUpdate(): void {
-  const target: UpdateTarget = isRemoteMode() ? 'backend' : 'client'
+  if (hasMultipleUpdateTargets()) {
+    const clientStatus = $updateStatus.get()
+    const backendStatus = $backendUpdateStatus.get()
+
+    const anyBehind =
+      (clientStatus?.behind ?? 0) > 0 ||
+      clientStatus?.updateAvailable ||
+      (backendStatus?.behind ?? 0) > 0 ||
+      backendStatus?.updateAvailable
+
+    if (anyBehind) {
+      startActiveUpdate()
+
+      return
+    }
+  }
+
+  const target = activeUpdateTarget()
   const status = target === 'backend' ? $backendUpdateStatus.get() : $updateStatus.get()
 
   if ((status?.behind ?? 0) > 0 || status?.updateAvailable) {
-    startActiveUpdate()
+    startActiveUpdate(target)
 
     return
   }
@@ -330,7 +396,7 @@ export async function checkBackendUpdates(): Promise<DesktopUpdateStatus | null>
   try {
     const status = mapBackendCheck(await checkHermesUpdate(true))
     $backendUpdateStatus.set(status)
-    maybeNotifyUpdateAvailable(status)
+    maybeNotifyUpdateAvailable(status, 'backend')
 
     return status
   } catch (error) {
@@ -361,7 +427,7 @@ export async function checkUpdates(): Promise<DesktopUpdateStatus | null> {
   try {
     const status = await bridge.check()
     $updateStatus.set(status)
-    maybeNotifyUpdateAvailable(status)
+    maybeNotifyUpdateAvailable(status, 'client')
     void refreshDesktopVersion()
 
     return status
@@ -473,7 +539,8 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
           applying: false,
           stage: 'error',
           error: result?.error ?? 'apply-failed',
-          message: result?.message ?? translateNow('updates.errorBody')
+          message: result?.message ?? translateNow('updates.errorBody'),
+          blockers: result?.blockers ?? null
         })
       }
     }
@@ -487,30 +554,28 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
   }
 }
 
-const BACKEND_RETURN_POLL_MS = 1500
-const BACKEND_RETURN_MAX_ATTEMPTS = 40
-
-async function waitForBackendReturn(): Promise<boolean> {
-  for (let attempt = 0; attempt < BACKEND_RETURN_MAX_ATTEMPTS; attempt += 1) {
-    await new Promise(resolve => globalThis.setTimeout(resolve, BACKEND_RETURN_POLL_MS))
-
-    try {
-      await checkHermesUpdate()
-
-      return true
-    } catch {
-      continue
-    }
-  }
-
-  return false
-}
+const BACKEND_ACTION_POLL_MS = 1500
+const BACKEND_ACTION_MAX_MS = 6 * 60 * 1000
+const BACKEND_RETURN_MAX_MS = 4 * 60 * 1000
 
 function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
   if (returned) {
     $backendUpdateApply.set(IDLE)
     setUpdateOverlayOpen(false)
     void checkBackendUpdates()
+    // The update restarted the gateway process, which strands this window's
+    // WebSocket: over SSH/tailscale tunnels the old TCP connection often dies
+    // without a close event, so connectionState still reads 'open' while every
+    // RPC hangs — users force-quit the app to recover. Nudge the registered
+    // reconnect handler (forceReconnectNow), which retires the half-open
+    // socket and re-dials with a fresh ticket. Best-effort: local installs
+    // whose socket survived treat it as a cheap probe.
+    void reconnectGateway().catch(() => undefined)
+    // The backend caught up, but the CLIENT may still be behind — the exact
+    // gap that strands remote-mode users on an old GUI forever (every update
+    // affordance in remote mode targets the backend, so nothing ever told
+    // them the app itself was stale). Nudge with a one-click client update.
+    void maybeNudgeClientAfterBackendUpdate()
 
     return { ok: true, message: 'Backend update applied.' }
   }
@@ -547,7 +612,53 @@ function ingestBackendActionStatus(status: Awaited<ReturnType<typeof getActionSt
   })
 }
 
-export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
+function completedAfterRestart(
+  status: Awaited<ReturnType<typeof getActionStatus>>,
+  actionId: string | undefined
+): boolean {
+  return !!actionId && status.lines.some(line => line === `=== hermes-update completed ${actionId} ===`)
+}
+
+/** Whether the durable update receipt attached to the status proves the
+ *  outcome of THIS apply (#91277 bullet 3). Only a finished receipt whose
+ *  run started at-or-after we kicked the update off counts — an older
+ *  receipt describes a previous update, and a still-running one proves
+ *  nothing yet. The 60s slack absorbs client/backend clock skew. */
+function receiptProvesOutcome(status: Awaited<ReturnType<typeof getActionStatus>>, applyStartedAtMs: number): boolean {
+  const receipt = status.receipt
+
+  if (!receipt || !receipt.finished_at || !receipt.started_at) {
+    return false
+  }
+
+  if (receipt.outcome !== 'success' && receipt.outcome !== 'partial' && receipt.outcome !== 'failed') {
+    return false
+  }
+
+  const startedMs = Date.parse(receipt.started_at)
+
+  return Number.isFinite(startedMs) && startedMs >= applyStartedAtMs - 60_000
+}
+
+function legacyBackendReachedTarget(
+  status: BackendUpdateCheckResponse,
+  targetSha: string | undefined,
+  previousVersion: string | undefined
+): boolean {
+  if (status.behind === 0) {
+    return true
+  }
+
+  if (previousVersion && status.current_version !== previousVersion) {
+    return true
+  }
+
+  return !!targetSha && !!status.commits?.length && !status.commits.some(commit => commit.sha === targetSha)
+}
+
+let backendUpdateInFlight: Promise<DesktopUpdateApplyResult> | null = null
+
+async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
   dismissNotification(UPDATE_TOAST_ID)
   $backendUpdateApply.set({
     ...IDLE,
@@ -557,7 +668,15 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
   })
 
   try {
+    const previousStatus = $backendUpdateStatus.get()
+    const requestedTargetSha = previousStatus?.commits?.at(0)?.sha
+
+    const previousVersion = previousStatus?.targetSha?.startsWith('backend:')
+      ? previousStatus.targetSha.slice('backend:'.length)
+      : undefined
+
     const started = await updateHermes()
+    const applyStartedAtMs = Date.now()
 
     if (!started.ok) {
       const message = (started as { message?: string }).message || translateNow('updates.applyStatus.notAvailable')
@@ -575,41 +694,75 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
     })
 
     let last: Awaited<ReturnType<typeof getActionStatus>> | null = null
+    // Backups, dependency repair, and builds can legitimately take several
+    // minutes. Keep the generous cap only as a guard against a stuck action.
+    const actionDeadline = Date.now() + BACKEND_ACTION_MAX_MS
+    let deadline = actionDeadline
+    let reconnecting = false
 
-    for (let attempt = 0; attempt < 30; attempt += 1) {
-      await new Promise(resolve => globalThis.setTimeout(resolve, 1500))
+    while (Date.now() < deadline) {
+      await new Promise(resolve => globalThis.setTimeout(resolve, BACKEND_ACTION_POLL_MS))
 
       try {
-        last = await getActionStatus(started.name, 200)
+        last = await getActionStatus(started.name, 2000)
         ingestBackendActionStatus(last)
       } catch {
-        // The dashboard restarts mid-update, dropping this connection — expected, not a failure.
-        $backendUpdateApply.set({
-          ...$backendUpdateApply.get(),
-          applying: true,
-          stage: 'restart',
-          message: translateNow('updates.applyStatus.restarting')
-        })
+        if (!reconnecting) {
+          reconnecting = true
+          deadline = Date.now() + BACKEND_RETURN_MAX_MS
+          $backendUpdateApply.set({
+            ...$backendUpdateApply.get(),
+            applying: true,
+            stage: 'restart',
+            message: translateNow('updates.applyStatus.restarting')
+          })
+        }
 
-        return finishBackendApply(await waitForBackendReturn())
+        continue
       }
 
-      if (last && !last.running) {
+      if (last.running) {
+        if (reconnecting) {
+          reconnecting = false
+          deadline = actionDeadline
+          $backendUpdateApply.set({
+            ...$backendUpdateApply.get(),
+            applying: true,
+            stage: 'pull',
+            message: translateNow('updates.applyStatus.pulling')
+          })
+        }
+
+        continue
+      }
+
+      if (last.exit_code === 0 || (last.exit_code === null && completedAfterRestart(last, started.action_id))) {
+        return finishBackendApply(true)
+      }
+
+      // #91277 bullet 3: the backend now attaches the durable update
+      // receipt to the status. A receipt whose run STARTED after we kicked
+      // this update off is authoritative — read its outcome instead of
+      // inferring from log markers or timing out across the restart gap.
+      if (last.exit_code === null && receiptProvesOutcome(last, applyStartedAtMs)) {
+        return finishBackendApply(last.receipt!.outcome === 'success')
+      }
+
+      if (!started.action_id && last.exit_code === null) {
+        try {
+          const status = await checkHermesUpdate(true)
+
+          if (legacyBackendReachedTarget(status, requestedTargetSha, previousVersion)) {
+            return finishBackendApply(true)
+          }
+        } catch {
+          continue
+        }
+      }
+
+      if (last.exit_code !== null) {
         break
       }
-    }
-
-    const ok = !!last && (last.exit_code ?? 1) === 0
-
-    if (ok) {
-      $backendUpdateApply.set({
-        ...$backendUpdateApply.get(),
-        applying: true,
-        stage: 'restart',
-        message: translateNow('updates.applyStatus.restarting')
-      })
-
-      return finishBackendApply(await waitForBackendReturn())
     }
 
     $backendUpdateApply.set({
@@ -632,6 +785,177 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
     })
 
     return { ok: false, error: 'apply-failed', message }
+  }
+}
+
+export function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
+  if (backendUpdateInFlight) {
+    return backendUpdateInFlight
+  }
+
+  backendUpdateInFlight = runBackendUpdate().finally(() => {
+    backendUpdateInFlight = null
+  })
+
+  return backendUpdateInFlight
+}
+
+// ── Update everything: the client + every registered backend in one action ──
+//
+// Remote-mode installs update on two (or more) clocks: the GUI app on this
+// machine, the connected backend, and any other registered sources. Each has
+// its own updater, and before this flow existed every remote-mode affordance
+// targeted only the backend — so users "updated" and stayed on a stale GUI.
+// This orchestration drives all of them:
+//   1. The ACTIVE backend (remote mode) through the detailed-progress path.
+//   2. Every OTHER eligible registered connection via the Electron fan-out
+//      (cloud rows are platform-managed and report as skipped).
+//   3. The local client LAST — its apply relaunches or hands off the app, so
+//      it must not preempt the dispatches above.
+
+const CLIENT_BEHIND_TOAST_ID = 'client-update-after-backend'
+
+/** After a successful backend update, tell the user when the desktop app
+ *  itself is still behind, with a one-click client update. Silent when the
+ *  client is current, so aligned installs never see it. */
+async function maybeNudgeClientAfterBackendUpdate(): Promise<void> {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  const status = (await checkUpdates().catch(() => null)) ?? $updateStatus.get()
+
+  if (!status || status.error || (!status.updateAvailable && (status.behind ?? 0) <= 0)) {
+    return
+  }
+
+  notify({
+    action: {
+      label: translateNow('updates.clientAlsoBehindAction'),
+      onClick: () => {
+        dismissNotification(CLIENT_BEHIND_TOAST_ID)
+        $updateOverlayTarget.set('client')
+        $updateOverlayOpen.set(true)
+        void applyUpdates()
+      }
+    },
+    durationMs: 0,
+    id: CLIENT_BEHIND_TOAST_ID,
+    kind: 'warning',
+    message: translateNow('updates.clientAlsoBehindMessage'),
+    title: translateNow('updates.clientAlsoBehindTitle')
+  })
+}
+
+export interface UpdateEverythingState {
+  running: boolean
+}
+
+export const $updateEverything = atom<UpdateEverythingState>({ running: false })
+
+/** True when this install has more than one update target — a remote-mode
+ *  window (backend + client) or a multi-connection registry. Gates the
+ *  "Update everything" affordance so single-machine installs keep the
+ *  one-button experience. */
+export function hasMultipleUpdateTargets(): boolean {
+  return isRemoteMode() || ($connectionsRegistry.get()?.connections.length ?? 0) > 1
+}
+
+let updateEverythingInFlight: Promise<void> | null = null
+
+export function applyEverythingUpdate(): Promise<void> {
+  if (updateEverythingInFlight) {
+    return updateEverythingInFlight
+  }
+
+  updateEverythingInFlight = runEverythingUpdate().finally(() => {
+    updateEverythingInFlight = null
+  })
+
+  return updateEverythingInFlight
+}
+
+async function runEverythingUpdate(): Promise<void> {
+  $updateEverything.set({ running: true })
+
+  // Snapshot the client status before any leg runs: the backend leg's own
+  // post-update nudge re-checks the client and overwrites `$updateStatus`,
+  // including with an error row when the bridge is unreachable. Step 3 needs a
+  // pre-flow value to fall back on when its own live check can't answer.
+  const cachedClientStatus = $updateStatus.get()
+
+  try {
+    // 1. Active backend first (remote mode), with the detailed overlay flow.
+    //    Its own finish path re-checks and nudges, but the everything-flow
+    //    continues regardless of the outcome: one unreachable backend must
+    //    not strand the other machines or the client.
+    if (isRemoteMode()) {
+      $updateOverlayTarget.set('backend')
+
+      await applyBackendUpdate().catch(() => null)
+    }
+
+    // 2. Fan out to every OTHER eligible registered connection. The active
+    //    backend was just updated (excluded), and the local runtime updates
+    //    with the client in step 3 (excluded). No registry/bridge → skip.
+    const bridge = window.hermesDesktop?.connections
+    const registry = $connectionsRegistry.get() ?? (await refreshConnectionsRegistry().catch(() => null))
+    const excludeIds = ['local']
+    const activeConnectionId = $connection.get()?.connectionId
+
+    if (isRemoteMode() && activeConnectionId && !excludeIds.includes(activeConnectionId)) {
+      excludeIds.push(activeConnectionId)
+    }
+
+    const remaining = (registry?.connections ?? []).filter(connection => !excludeIds.includes(connection.id))
+
+    if (bridge?.updateAll && remaining.length > 0) {
+      try {
+        const { results } = await bridge.updateAll({ excludeIds })
+
+        for (const row of results) {
+          if (row.ok) {
+            notify({ title: row.label, message: row.detail || translateNow('updates.everythingDispatched') })
+          } else if (row.skipped) {
+            notify({
+              title: row.label,
+              message: row.detail || row.reason || translateNow('updates.everythingSkipped')
+            })
+          } else {
+            notify({
+              kind: 'warning',
+              title: row.label,
+              message: row.error || row.detail || translateNow('updates.everythingRowFailed')
+            })
+          }
+        }
+      } catch (error) {
+        notify({
+          kind: 'warning',
+          title: translateNow('updates.everythingFanoutFailedTitle'),
+          message: error instanceof Error ? error.message : String(error)
+        })
+      }
+    }
+
+    // 3. The client last — its apply relaunches or hands off the app, so it
+    //    must come after every dispatch above. Skipped when already current.
+    //    Re-check rather than trusting `$updateStatus`: the cached value can be
+    //    up to a poll interval (30 min) old and was captured BEFORE the backend
+    //    update above, so a cached `behind: 0` would skip the client leg and
+    //    leave the app stale — the exact failure this flow exists to prevent.
+    //    `checkUpdates()` resolves with an error-status rather than rejecting,
+    //    so fall back to the pre-flow snapshot when the live check can't answer.
+    const freshClientStatus = await checkUpdates().catch(() => null)
+    const clientStatus = freshClientStatus?.error ? cachedClientStatus : (freshClientStatus ?? cachedClientStatus)
+
+    if ((clientStatus?.behind ?? 0) > 0 || clientStatus?.updateAvailable) {
+      $updateOverlayTarget.set('client')
+      $updateOverlayOpen.set(true)
+      await applyUpdates()
+    }
+  } finally {
+    $updateEverything.set({ running: false })
   }
 }
 

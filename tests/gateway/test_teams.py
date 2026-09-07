@@ -4,7 +4,7 @@ import json
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -169,8 +169,18 @@ _ensure_teams_mock()
 _teams_mod = load_plugin_adapter("teams")
 
 _teams_mod.AIOHTTP_AVAILABLE = True
-# SDK import is deferred (#62935); bind mocked symbols the same way connect() does.
-assert _teams_mod.check_teams_requirements() is True
+# SDK import is deferred (#62935); bind mocked symbols the same way connect()
+# does, but skip the real lazy-installer so collection does not pip-install
+# microsoft-teams-apps.
+
+
+def _bind_mock_sdk(feature, importer, target_globals, **kwargs):
+    target_globals.update(importer())
+    return True
+
+
+with patch("tools.lazy_deps.ensure_and_bind", _bind_mock_sdk):
+    assert _teams_mod.check_teams_requirements() is True
 _teams_mod.TEAMS_SDK_AVAILABLE = True
 
 # Ensure SDK symbols that were None (import failed on Python <3.12) are
@@ -181,7 +191,7 @@ if _mt and _teams_mod.TypingActivityInput is None:
     _teams_mod.TypingActivityInput = _mt.TypingActivityInput
 
 TeamsAdapter = _teams_mod.TeamsAdapter
-TeamsSummaryWriter = _teams_mod.TeamsSummaryWriter
+from plugins.platforms.teams.summary_writer import TeamsSummaryWriter  # noqa: E402
 check_requirements = _teams_mod.check_requirements
 check_teams_requirements = _teams_mod.check_teams_requirements
 validate_config = _teams_mod.validate_config
@@ -299,6 +309,16 @@ class TestTeamsPluginRegistration:
         kwargs = ctx.register_platform.call_args[1]
         assert kwargs["name"] == "teams"
 
+    def test_register_splits_passive_probe_from_active_installer(self):
+        # check_fn is the PASSIVE probe (status displays call it freely);
+        # the ACTIVE lazy-installer rides on ensure_deps_fn, which
+        # create_adapter() invokes when the passive probe fails (#79812).
+        ctx = MagicMock()
+        register(ctx)
+        kwargs = ctx.register_platform.call_args[1]
+        assert kwargs["check_fn"] is check_requirements
+        assert kwargs["ensure_deps_fn"] is check_teams_requirements
+
     def test_register_auth_env_vars(self):
         ctx = MagicMock()
         register(ctx)
@@ -339,9 +359,11 @@ class TestTeamsConnect:
     @pytest.mark.anyio
     async def test_connect_fails_without_sdk(self, monkeypatch):
         monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", False)
+        monkeypatch.setattr(_teams_mod, "App", None)
+        monkeypatch.setattr(_teams_mod, "ClientOptions", None)
         # Simulate the SDK being unavailable AND not installable (offline /
         # locked-down env): the lazy-installer can't rebind the globals, so
-        # TEAMS_SDK_AVAILABLE stays False and connect() must fail.
+        # App stays None and connect() must fail without calling it.
         monkeypatch.setattr(
             "tools.lazy_deps.ensure_and_bind",
             lambda *_a, **_k: False,
@@ -351,6 +373,27 @@ class TestTeamsConnect:
         ))
         result = await adapter.connect()
         assert result is False
+
+    @pytest.mark.anyio
+    async def test_connect_fails_when_namespace_exists_but_app_unbound(self, monkeypatch):
+        """find_spec('microsoft_teams') can be true from sibling packages
+        without microsoft-teams-apps. connect() must not call App() while
+        it is still None — that was ``'NoneType' object is not callable``.
+        """
+        monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", True)
+        monkeypatch.setattr(_teams_mod, "App", None)
+        monkeypatch.setattr(_teams_mod, "ClientOptions", None)
+        monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", True)
+        monkeypatch.setattr(
+            "tools.lazy_deps.ensure_and_bind",
+            lambda *_a, **_k: False,
+        )
+        adapter = TeamsAdapter(_make_config(
+            client_id="id", client_secret="secret", tenant_id="tenant",
+        ))
+        result = await adapter.connect()
+        assert result is False
+        assert adapter._app is None
 
 
 # ---------------------------------------------------------------------------
@@ -586,6 +629,333 @@ class TestTeamsAttachmentClassification:
         event = adapter.handle_message.call_args[0][0]
         assert event.message_type == MessageType.DOCUMENT
         assert len(event.media_urls) == 2
+
+
+# ── Bot Framework connector attachments (pasted images) ──────────────────
+
+
+class TestTeamsBotFrameworkAttachments:
+    """Pasted/inline images arrive on smba.trafficmanager.net hosts and need
+    the bot's own bearer token (unlike SharePoint downloadUrls). These tests
+    pin the auth routing, the token cache, the attacker-host block, and the
+    failure fallbacks of that path."""
+
+    def _make_adapter(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+        return adapter
+
+    def _make_activity(self, attachments):
+        activity = MagicMock()
+        activity.text = "see attached"
+        activity.id = "activity-att-001"
+        activity.from_ = MagicMock()
+        activity.from_.id = "user-123"
+        activity.from_.aad_object_id = "aad-456"
+        activity.from_.name = "Test User"
+        activity.conversation = MagicMock()
+        activity.conversation.id = "19:abc@thread.v2"
+        activity.conversation.conversation_type = "personal"
+        activity.conversation.name = "Test Chat"
+        activity.conversation.tenant_id = "tenant-789"
+        activity.attachments = attachments
+        return activity
+
+    def _make_ctx(self, activity):
+        ctx = MagicMock()
+        ctx.activity = activity
+        return ctx
+
+    def _bf_image_attachment(self, url=None):
+        att = MagicMock()
+        att.content_type = "image/png"
+        att.content_url = url or "https://smba.trafficmanager.net/emea/b1/v3/attachments/0-abc/views/original"
+        att.name = "pasted.png"
+        return att
+
+    @pytest.mark.anyio
+    async def test_bf_url_predicate_exact_match_allowlist(self):
+        """Only exact allowlisted hosts on https default port may receive the
+        bot's bearer token — lookalikes, other schemes, and non-443 ports must
+        NOT (any Azure customer can register <name>.trafficmanager.net)."""
+        f = _teams_mod._is_botframework_attachment_url
+        assert f("https://smba.trafficmanager.net/emea/v3/attachments/x")
+        assert f("https://smba.infra.gov.teams.microsoft.us/amer/v3/attachments/x")
+        assert f("https://smba.trafficmanager.net:443/emea/v3/attachments/x")
+        # Attacker lookalikes / non-allowlisted / wrong scheme / wrong port
+        assert not f("https://evil-trafficmanager.net/steal")
+        assert not f("https://emea.smba.trafficmanager.net/v3/attachments/x")
+        assert not f("https://notbotframework.com/steal")
+        assert not f("https://trafficmanager.net.evil.com/steal")
+        assert not f("http://smba.trafficmanager.net/v3/attachments/x")
+        assert not f("https://smba.trafficmanager.net:444/v3/attachments/x")
+        assert not f("")
+        assert not f("https://sharepoint.com/x")
+
+    @pytest.mark.anyio
+    async def test_bf_image_routes_through_authenticated_fetch(self):
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"\x89PNG fake")
+        adapter._get_botframework_token = AsyncMock(return_value="tok")
+
+        async def fake_cache_media_bytes(data, **kwargs):
+            return SimpleNamespace(
+                path="/tmp/img.png", media_type="image/png", kind="image"
+            )
+
+        with patch.object(_teams_mod, "cache_media_bytes_async", fake_cache_media_bytes):
+            activity = self._make_activity([self._bf_image_attachment()])
+            await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert len(event.media_urls) == 1
+        assert event.media_types == ["image/png"]
+        # URL was fetched with auth (via _fetch_attachment_bytes, which the
+        # token routing test below exercises end-to-end)
+        adapter._fetch_attachment_bytes.assert_awaited_once_with(
+            "https://smba.trafficmanager.net/emea/b1/v3/attachments/0-abc/views/original"
+        )
+
+    @pytest.mark.anyio
+    async def test_non_bf_image_uses_generic_cache_helper(self):
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(side_effect=AssertionError("must not be called"))
+
+        async def fake_cache_image(url, *a, **kw):
+            return "/tmp/img.jpg"
+
+        with patch.object(_teams_mod, "cache_image_from_url", fake_cache_image):
+            activity = self._make_activity(
+                [self._bf_image_attachment(url="https://contoso.sharepoint.com/img.png")]
+            )
+            await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert len(event.media_urls) == 1
+        assert event.media_urls[0] == "/tmp/img.jpg"
+
+    @pytest.mark.anyio
+    async def test_fetch_attachment_bytes_sends_bearer_for_bf_host(self):
+        """End-to-end over _fetch_attachment_bytes: BF host → token acquired
+        and Authorization attached; non-BF host → no token call."""
+        adapter = self._make_adapter()
+        adapter._get_botframework_token = AsyncMock(return_value="the-token")
+
+        captured = {}
+
+        class _FakeStreamResponse:
+            def __init__(self):
+                self.headers = {}
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self):
+                yield b"\x89PNG fake"
+
+        class _FakeStreamCtx:
+            def __init__(self, response):
+                self._response = response
+
+            async def __aenter__(self):
+                return self._response
+
+            async def __aexit__(self, *a):
+                return None
+
+        class _FakeClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            def stream(self, method, url, headers=None):
+                captured["headers"] = headers or {}
+                return _FakeStreamCtx(_FakeStreamResponse())
+
+        with patch("tools.url_safety.create_ssrf_safe_async_client", lambda **kw: _FakeClient()), \
+             patch("tools.url_safety.is_safe_url", lambda url: True):
+            # BF host: bearer attached
+            data = await adapter._fetch_attachment_bytes("https://smba.trafficmanager.net/emea/v3/attachments/x")
+        assert captured["headers"].get("Authorization") == "Bearer the-token"
+        assert data == b"\x89PNG fake"
+
+        adapter._get_botframework_token = AsyncMock(return_value="the-token")
+        with patch("tools.url_safety.create_ssrf_safe_async_client", lambda **kw: _FakeClient()), \
+             patch("tools.url_safety.is_safe_url", lambda url: True):
+            # Attacker lookalike host: NO bearer (exact-match allowlist)
+            await adapter._fetch_attachment_bytes("https://evil-trafficmanager.net/steal")
+        assert "Authorization" not in captured["headers"], (
+            "bearer token must not be sent to attacker lookalike hosts"
+        )
+        adapter._get_botframework_token.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_token_refresh_is_serialized_under_lock(self):
+        """Two concurrent token fetches on a cold cache share ONE POST —
+        the lock prevents a token-endpoint stampede."""
+        import asyncio as _asyncio
+
+        adapter = self._make_adapter()
+        posts = []
+        release = _asyncio.Event()
+
+        class _TokenResp:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"access_token": "tok-1", "expires_in": 3600}
+
+        class _SlowTokenClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            async def post(self, url, data=None):
+                posts.append((url, dict(data or {})))
+                await release.wait()  # hold both callers at the STS door
+                return _TokenResp()
+
+        async def release_later():
+            await _asyncio.sleep(0.05)
+            release.set()
+
+        with patch("httpx.AsyncClient", _SlowTokenClient):
+            t1 = _asyncio.create_task(adapter._get_botframework_token())
+            t2 = _asyncio.create_task(adapter._get_botframework_token())
+            await release_later()
+            tok1, tok2 = await t1, await t2
+        assert tok1 == "tok-1" and tok2 == "tok-1"
+        assert len(posts) == 1, f"concurrent cold-cache fetches must share one POST, got {len(posts)}"
+
+    @pytest.mark.anyio
+    async def test_token_acquisition_and_cache_reuse(self):
+        adapter = self._make_adapter()
+
+        posts = []
+
+        class _TokenResp:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"access_token": "tok-1", "expires_in": 3600}
+
+        class _TokenClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            async def post(self, url, data=None):
+                posts.append((url, dict(data or {})))
+                return _TokenResp()
+
+        with patch("httpx.AsyncClient", _TokenClient):
+            tok1 = await adapter._get_botframework_token()
+            tok2 = await adapter._get_botframework_token()
+        assert tok1 == "tok-1" and tok2 == "tok-1"
+        assert len(posts) == 1, "second call must hit the cache"
+        assert posts[0][0] == "https://login.microsoftonline.com/tenant/oauth2/v2.0/token"
+        assert posts[0][1]["scope"] == "https://api.botframework.com/.default"
+        assert posts[0][1]["client_id"] == "bot-id"
+        assert posts[0][1]["client_secret"] == "secret"
+
+    @pytest.mark.anyio
+    async def test_token_acquisition_failure_degrades_to_unauthenticated_fetch(self):
+        """Token failure must not break the fetch: warning + fetch without
+        Authorization (same net behavior as the pre-fix path)."""
+        import httpx as _httpx
+
+        adapter = self._make_adapter()
+        adapter._get_botframework_token = AsyncMock(side_effect=ValueError("no creds"))
+
+        captured = {}
+
+        class _FakeStreamResponse:
+            def __init__(self):
+                self.headers = {}
+
+            def raise_for_status(self):
+                raise _httpx.HTTPStatusError(
+                    "401", request=MagicMock(), response=MagicMock(status_code=401)
+                )
+
+            async def aiter_bytes(self):
+                yield b""
+
+        class _FakeStreamCtx:
+            def __init__(self, response):
+                self._response = response
+
+            async def __aenter__(self):
+                return self._response
+
+            async def __aexit__(self, *a):
+                return None
+
+        class _FakeClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            def stream(self, method, url, headers=None):
+                captured["headers"] = headers or {}
+                return _FakeStreamCtx(_FakeStreamResponse())
+
+        with patch("tools.url_safety.create_ssrf_safe_async_client", lambda **kw: _FakeClient()), \
+             patch("tools.url_safety.is_safe_url", lambda url: True):
+            with pytest.raises(_httpx.HTTPStatusError):
+                await adapter._fetch_attachment_bytes("https://smba.trafficmanager.net/v3/attachments/x")
+        assert "Authorization" not in captured["headers"]
+
+    @pytest.mark.anyio
+    async def test_bf_image_invalid_bytes_logs_warning(self):
+        """Non-image bytes from the BF endpoint must not be silently dropped
+        — the else branch warns (regression guard for the silent-drop)."""
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"<html>error page</html>")
+
+        async def _no_media(*a, **kw):
+            return None
+
+        with patch.object(_teams_mod, "cache_media_bytes_async", _no_media):
+            with patch.object(_teams_mod.logger, "warning") as warn:
+                activity = self._make_activity([self._bf_image_attachment()])
+                await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls == []
+        assert warn.called, "silent drop of invalid BF image bytes must log a warning"
+        logged = " ".join(str(c) for c in warn.call_args_list)
+        assert "image validation" in logged or "failed image validation" in logged
 
 
 # ── _standalone_send (out-of-process cron delivery) ──────────────────────

@@ -76,6 +76,41 @@ def test_describer_writes_description_with_auto_true(profile_env, monkeypatch):
     assert meta["description_auto"] is True
 
 
+@pytest.fixture
+def registered_profile(profile_env, monkeypatch):
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+    return profile_env
+
+
+@pytest.mark.parametrize("raw", [
+    '{\n  "description": "Generalist agent that writes and debugs code, orchestrates autonomous sub-agents, and automates macOS/App',
+    '{\n  "desc',
+    '```json\n{\n  "description": "Generalist agent that writes and debugs cod',
+    '```JSON\n{\n  "description": "Generalist agent that writes and debugs cod',
+])
+def test_describer_refuses_json_shaped_reply_that_does_not_parse(registered_profile, raw):
+    """A reply that started as the requested JSON object but was cut off (#104067) is not prose:
+    it must be refused and leave profile.yaml untouched -- including behind an uppercase fence."""
+    profiles_mod.write_profile_meta(registered_profile, description="previous", description_auto=True)
+    before = (registered_profile / "profile.yaml").read_bytes()
+    with _patch_aux_client(raw), patch("agent.auxiliary_client.get_auxiliary_extra_body", return_value={}):
+        outcome = describer.describe_profile("myprof", overwrite=True)
+    assert outcome.ok is False
+    assert (registered_profile / "profile.yaml").read_bytes() == before
+
+
+def test_describer_still_accepts_plain_prose_fallback(registered_profile):
+    """A reply that never looked like JSON keeps the lenient one-paragraph prose fallback."""
+    with _patch_aux_client("Writes and debugs Python codebases.\n\nSecond paragraph is dropped."), \
+         patch("agent.auxiliary_client.get_auxiliary_extra_body", return_value={}):
+        outcome = describer.describe_profile("myprof")
+    assert outcome.ok, outcome.reason
+    assert outcome.description == "Writes and debugs Python codebases."
+    assert profiles_mod.read_profile_meta(registered_profile)["description"] == outcome.description
+
+
 def test_describer_refuses_to_overwrite_user_authored(profile_env, monkeypatch):
     profiles_mod.write_profile_meta(
         profile_env, description="curated", description_auto=False,

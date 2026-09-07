@@ -6,31 +6,11 @@ Covers the threading behavior control for multi-chunk replies:
 - "all": All chunks thread to original message
 """
 import os
-import sys
 from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
 
 from gateway.config import PlatformConfig, GatewayConfig, Platform, _apply_env_overrides, load_gateway_config
-
-
-def _ensure_telegram_mock():
-    """Mock the telegram package if it's not installed."""
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
-    mod = MagicMock()
-    mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    mod.constants.ChatType.GROUP = "group"
-    mod.constants.ChatType.SUPERGROUP = "supergroup"
-    mod.constants.ChatType.CHANNEL = "channel"
-    mod.constants.ChatType.PRIVATE = "private"
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, mod)
-
-
-_ensure_telegram_mock()
-
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
@@ -227,3 +207,105 @@ class TestDMTopicFallbackReplyToMode:
         call = adapter._bot.send_message.call_args_list[0]
         assert call.kwargs.get("reply_to_message_id") is None
 
+
+class TestDMTopicSyntheticSendRouting:
+    """Anchor-less synthetic sends must stay in the active DM topic lane.
+
+    Regression tests for https://github.com/NousResearch/hermes-agent/issues/87051:
+    after a gateway restart, /loop wakeups and background-process notifications
+    are injected as synthetic events with no reply anchor. The DM-topic
+    fallback's no-anchor branch routed them via Telegram's native
+    ``direct_messages_topic_id`` (or dropped the thread entirely), landing the
+    response in a different chat lane than the Hermes topic the session runs
+    in. The no-anchor branch must prefer the Hermes topic's
+    ``message_thread_id`` whenever it resolves.
+    """
+
+    def test_no_anchor_prefers_hermes_topic_thread_id(self):
+        """Synthetic send (no anchor) keeps message_thread_id of the topic."""
+        metadata = {
+            "thread_id": "42",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "20189",
+        }
+        result = TelegramAdapter._thread_kwargs_for_send(
+            "100", "42", metadata, reply_to_message_id=None,
+        )
+        assert result == {"message_thread_id": 42}
+
+    def test_no_anchor_no_direct_topic_keeps_thread_id(self):
+        """No anchor and no native DM-topic id: still route to the topic."""
+        metadata = {"thread_id": "42", "telegram_dm_topic_reply_fallback": True}
+        result = TelegramAdapter._thread_kwargs_for_send(
+            "100", "42", metadata, reply_to_message_id=None,
+        )
+        assert result == {"message_thread_id": 42}
+
+    def test_no_anchor_no_thread_falls_back_to_direct_topic_id(self):
+        """When no topic thread resolves, the native DM-topic route survives."""
+        metadata = {
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "20189",
+        }
+        result = TelegramAdapter._thread_kwargs_for_send(
+            "100", None, metadata, reply_to_message_id=None,
+        )
+        assert result == {
+            "message_thread_id": None,
+            "direct_messages_topic_id": 20189,
+        }
+
+    def test_no_anchor_plain_dm_omits_thread_id(self):
+        """Genuinely thread-less DM sends must not grow a thread id."""
+        metadata = {"telegram_dm_topic_reply_fallback": True}
+        result = TelegramAdapter._thread_kwargs_for_send(
+            "100", None, metadata, reply_to_message_id=None,
+        )
+        assert result == {}
+
+    def test_no_anchor_general_topic_omits_thread_id(self):
+        """The forum General topic ('1') still maps to no thread id on send."""
+        metadata = {
+            "thread_id": "1",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "20189",
+        }
+        result = TelegramAdapter._thread_kwargs_for_send(
+            "100", "1", metadata, reply_to_message_id=None,
+        )
+        assert result == {
+            "message_thread_id": None,
+            "direct_messages_topic_id": 20189,
+        }
+
+    def test_anchored_reply_unchanged(self):
+        """Live replies with an anchor keep the topic thread id (unchanged)."""
+        metadata = {
+            "thread_id": "42",
+            "telegram_dm_topic_reply_fallback": True,
+            "telegram_reply_to_message_id": "12345",
+        }
+        result = TelegramAdapter._thread_kwargs_for_send(
+            "100", "42", metadata, reply_to_message_id=12345,
+        )
+        assert result == {"message_thread_id": 42}
+
+    @pytest.mark.asyncio
+    async def test_send_synthetic_loop_wakeup_lands_in_topic(self, adapter_factory):
+        """send() for an anchor-less synthetic event delivers in-topic."""
+        adapter = adapter_factory()
+        adapter._bot = MagicMock()
+        adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1"]
+        metadata = {
+            "thread_id": "42",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "20189",
+        }
+
+        result = await adapter.send("12345", "loop wakeup reply", metadata=metadata)
+
+        assert result.success is True
+        call = adapter._bot.send_message.call_args_list[0]
+        assert call.kwargs.get("message_thread_id") == 42
+        assert call.kwargs.get("direct_messages_topic_id") is None

@@ -2,6 +2,7 @@
 /venv/
 /venv.old/
 /venv.stale.runtime-*/
+/bin/
 /.hermes-runtime/
 /_pycache/
 *.pyc*
@@ -31,6 +32,10 @@ __pycache__/model_tools.cpython-310.pyc
 __pycache__/web_tools.cpython-310.pyc
 logs/
 data/
+# Bundled community plugin index seed (shipped as package data) — the bare
+# `data/` pattern above would otherwise swallow it.
+!hermes_cli/data/
+!hermes_cli/data/plugin_index.json
 .pytest_cache/
 test_durations.json
 .pytest-cache/
@@ -87,12 +92,26 @@ apps/desktop/dist/
 apps/desktop/src/**/*.js
 apps/desktop/src/**/*.js.map
 apps/desktop/src/**/*.d.ts
+# EXCEPT bundled plain-ESM plugin entries (adopted SDK-consumer plugins,
+# e.g. hermes-bots): plugin.js IS the source, not tsc output. No .tsx
+# sibling exists, so the stale-shadow hazard above cannot apply.
+!apps/desktop/src/plugins/*/plugin.js
 !apps/desktop/src/global.d.ts
 !apps/desktop/src/vite-env.d.ts
+
+# Build/debug artifacts that must never be committed
+/log.txt
+/sqlite_leak_fix.png
+/*.png.bak
+*.tar.gz
+*.tgz
 apps/shared/src/**/*.js
 apps/shared/src/**/*.js.map
 apps/shared/src/**/*.d.ts
 apps/desktop/release/
+# stage-and-swap Desktop rebuild output (#86443); removed after the swap, but
+# a killed build must not leave the checkout dirty
+apps/desktop/.staging-*/
 *.tsbuildinfo
 
 # Web UI assets — synced from @nous-research/ui at build time via
@@ -145,6 +164,9 @@ docs/superpowers/*
 
 # Persistent dev sandbox dir (scripts/dev-sandbox.sh --persistent)
 .hermes-sandbox/
+# Sandbox dirs used by the install/update E2E (tests/install/). The suffix is
+# the route name, so each route gets its own tree and two can run at once.
+.hermes-sandbox-e2e*/
 
 # Interrupted-update breadcrumb + recovery lock written next to the shared venv
 # by `hermes update` / launch-time self-heal. Runtime state, never a code change
@@ -194,3 +216,7 @@ native/fts5_cjk/*.so
 # interrupted; consumed by launch-time recovery. Never commit it (was tracked
 # by accident via 3a69e34702, removed in the #72002 salvage).
 .lazy-refresh-incomplete
+.skills_prompt_snapshot.json
+
+# Disposable profile created by scripts/probe_active_session_exclusivity.py
+.probe-home/

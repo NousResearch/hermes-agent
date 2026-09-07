@@ -47,6 +47,41 @@ _ensure_discord_mock()
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
+@pytest.mark.asyncio
+async def test_send_rejects_whitespace_and_records_failed_final_reply(
+    caplog, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_MISSED_MESSAGE_BACKFILL", "true")
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    channel = SimpleNamespace(send=AsyncMock())
+    get_channel = MagicMock(return_value=channel)
+    adapter._client = SimpleNamespace(
+        get_channel=get_channel,
+        fetch_channel=AsyncMock(),
+    )
+    with caplog.at_level("WARNING"):
+        result = await adapter.send(
+            "555",
+            "  \n\t ",
+            reply_to="123",
+            metadata={"notify": True},
+        )
+
+    assert result.success is False
+    assert result.error == "Refusing to send empty message"
+    get_channel.assert_not_called()
+    channel.send.assert_not_awaited()
+    row = adapter._with_discord_recovery_db(
+        lambda conn: conn.execute(
+            "SELECT status, replied, outage_response, response_message_id "
+            "FROM discord_messages WHERE message_id='123'"
+        ).fetchone()
+    )
+    assert tuple(row) == ("failed", 0, 0, None)
+    assert "Dropped empty message to chat=555" in caplog.text
+
+
 def _voice_adapter(reference_obj, *, native_result=None, native_error=None):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
     ref_msg = SimpleNamespace(id=99, to_reference=MagicMock(return_value=reference_obj))
@@ -103,10 +138,15 @@ async def test_send_retries_without_reference_when_reply_target_is_deleted():
 
     assert result.success is True
     assert result.message_id == "1001"
-    assert channel.fetch_message.await_count == 1
+    # ids-only reference: the fetch is gone entirely — the retry happens
+    # on the send-side 10008, not a fetch failure
+    assert channel.fetch_message.await_count == 0
     assert channel.send.await_count == 3
-    ref_msg.to_reference.assert_called_once_with(fail_if_not_exists=False)
-    assert send_calls[0]["reference"] is reference_obj
+    # the reference is constructed from ids, not fetched + to_reference()
+    _discord_mod.MessageReference.assert_any_call(
+        message_id=99, channel_id=None, guild_id=None,
+        fail_if_not_exists=False)
+    assert send_calls[0]["reference"] is _discord_mod.MessageReference.return_value
     assert send_calls[1]["reference"] is None
     assert send_calls[2]["reference"] is None
 

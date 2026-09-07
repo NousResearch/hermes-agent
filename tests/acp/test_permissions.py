@@ -23,6 +23,7 @@ def _invoke_callback(
     outcome,
     *,
     allow_permanent=True,
+    allow_session=True,
     smart_denied=False,
     timeout=60.0,
     use_prompt_path=False,
@@ -46,6 +47,7 @@ def _invoke_callback(
                 "rm -rf /",
                 "dangerous command",
                 allow_permanent=allow_permanent,
+                allow_session=allow_session,
                 smart_denied=smart_denied,
                 approval_callback=cb,
             )
@@ -54,6 +56,7 @@ def _invoke_callback(
                 "rm -rf /",
                 "dangerous command",
                 allow_permanent=allow_permanent,
+                allow_session=allow_session,
                 smart_denied=smart_denied,
             )
 
@@ -96,6 +99,21 @@ class TestApprovalBridge:
             "deny_always",
         ]
 
+    def test_session_less_gate_offers_only_once_and_deny(self):
+        """allow_session=False collapses the editor menu to once/deny.
+
+        Hermes discards any scope broader than one operation for the
+        protected agent-instruction gate, so an editor that renders
+        "Allow for session" would re-prompt on the next write (#81887).
+        """
+        _, kwargs, _, _, _ = _invoke_callback(
+            AllowedOutcome(option_id="allow_once", outcome="selected"),
+            allow_permanent=False,
+            allow_session=False,
+        )
+
+        assert [option.option_id for option in kwargs["options"]] == ["allow_once", "deny"]
+
     def test_tool_call_ids_are_unique(self):
         _, first_kwargs, _, _, _ = _invoke_callback(
             AllowedOutcome(option_id="allow_once", outcome="selected"),
@@ -119,7 +137,7 @@ class TestApprovalBridge:
         assert result == "always"
 
 
-    def test_timeout_returns_deny_and_cancels_future(self):
+    def test_timeout_returns_timeout_and_cancels_future(self):
         loop = MagicMock(spec=asyncio.AbstractEventLoop)
         request_permission = AsyncMock(name="request_permission")
         future = MagicMock(spec=Future)
@@ -138,7 +156,9 @@ class TestApprovalBridge:
 
         scheduled["coro"].close()
 
-        assert result == "deny"
+        # A no-response expiry is classified as "timeout" (still blocked,
+        # fail-closed) so the agent isn't told the user explicitly refused.
+        assert result == "timeout"
         assert scheduled["loop"] is loop
         assert future.cancel.call_count == 1
 

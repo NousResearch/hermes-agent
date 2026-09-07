@@ -10,6 +10,7 @@ mocking git would just test the mock.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -671,4 +672,90 @@ class TestErrorSurfaces:
         staged = _make_staging_dir(profile_env, "bad", manifest=mf)
         with pytest.raises((ValueError, DistributionError)):
             plan_install(str(staged), tmp_path / "work")
+
+
+# ===========================================================================
+# Crash durability: write_manifest rewrites distribution.yaml in place
+# ===========================================================================
+
+
+class TestManifestCrashDurability:
+    """``write_manifest`` runs on every install and update of a shared profile.
+
+    ``read_manifest`` reports a missing-or-unparseable manifest as "this isn't
+    a distribution", so a truncated distribution.yaml silently demotes the
+    profile — update tracking and ``env_requires`` just stop existing, with no
+    error surfaced anywhere.
+    """
+
+    def test_previous_manifest_survives_an_interrupted_write(self, tmp_path):
+        import os
+
+        original = DistributionManifest(
+            name="keepme",
+            version="1.0.0",
+            description="the manifest already on disk",
+            env_requires=[EnvRequirement(name="FOO", description="foo")],
+        )
+        write_manifest(tmp_path, original)
+        on_disk = (tmp_path / "distribution.yaml").read_bytes()
+
+        def boom(fd):
+            raise OSError("simulated crash mid-write")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(os, "fsync", boom)
+            with pytest.raises(OSError):
+                write_manifest(
+                    tmp_path,
+                    DistributionManifest(name="replacement", version="2.0.0"),
+                )
+
+        # The old manifest must still be byte-identical and still parse.
+        assert (tmp_path / "distribution.yaml").read_bytes() == on_disk
+        parsed = read_manifest(tmp_path)
+        assert parsed is not None, "profile silently stopped being a distribution"
+        assert parsed.name == "keepme"
+        assert parsed.env_requires[0].name == "FOO"
+
+        # No temp file left behind next to the manifest.
+        assert list(tmp_path.glob("*.tmp")) == []
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX permission bits"
+    )
+    def test_existing_file_mode_is_preserved(self, tmp_path):
+        import os
+        import stat
+
+        write_manifest(tmp_path, DistributionManifest(name="modes", version="1.0.0"))
+        mf = tmp_path / "distribution.yaml"
+        os.chmod(mf, 0o644)
+
+        write_manifest(tmp_path, DistributionManifest(name="modes", version="2.0.0"))
+
+        mode = stat.S_IMODE(mf.stat().st_mode)
+        assert mode == 0o644, f"mode changed to {oct(mode)}"
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX permission bits"
+    )
+    def test_created_file_mode_is_not_tightened(self, tmp_path):
+        """A manifest this function *creates* must not land owner-only.
+
+        ``atomic_yaml_write`` only re-applies a mode it captured from an
+        existing file, so a fresh distribution.yaml would otherwise keep
+        ``tempfile.mkstemp``'s 0600. ``_materialize`` hits that path whenever a
+        distribution's explicit ``distribution_owned`` allowlist omits
+        distribution.yaml, so the staged copy never lands in the profile.
+        """
+        import stat
+
+        mf = tmp_path / "distribution.yaml"
+        assert not mf.exists()
+
+        write_manifest(tmp_path, DistributionManifest(name="fresh", version="1.0.0"))
+
+        mode = stat.S_IMODE(mf.stat().st_mode)
+        assert mode == 0o644, f"new manifest created as {oct(mode)}"
 

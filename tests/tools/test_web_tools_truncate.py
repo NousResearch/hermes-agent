@@ -6,18 +6,20 @@ _get_extract_char_limit, and the end-to-end web_extract_tool truncation behavior
 import asyncio
 import json
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 import tools.web_tools as wt
+from tools import web_tools_truncate
 
 
 class TestImageConversion:
     def test_markdown_base64_image_keeps_alt_drops_blob(self):
         blob = "A" * 5000
         text = f"before ![a cat]( data:image/png;base64,{blob}) after"
-        out = wt.convert_base64_images_to_links(text)
+        out = web_tools_truncate.convert_base64_images_to_links(text)
         assert "[IMAGE: a cat]" in out
         assert "base64" not in out
         assert blob not in out
@@ -26,16 +28,16 @@ class TestImageConversion:
 
     def test_bare_and_parenthesised_base64_become_placeholder(self):
         blob = "Z" * 3000
-        bare = wt.convert_base64_images_to_links(f"data:image/gif;base64,{blob}")
+        bare = web_tools_truncate.convert_base64_images_to_links(f"data:image/gif;base64,{blob}")
         assert bare == "[IMAGE]"
-        paren = wt.convert_base64_images_to_links(f"(data:image/gif;base64,{blob})")
+        paren = web_tools_truncate.convert_base64_images_to_links(f"(data:image/gif;base64,{blob})")
         assert paren == "[IMAGE]"
 
 
 class TestTruncation:
     def test_short_content_returned_whole(self):
         content = "# Title\n\nshort body\n"
-        out, truncated = wt._truncate_with_footer(content, "https://e.com", 15000)
+        out, truncated = web_tools_truncate._truncate_with_footer(content, "https://e.com", 15000)
         assert out == content
         assert truncated is False
 
@@ -43,13 +45,13 @@ class TestTruncation:
     def test_truncation_stores_full_text_readable(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         body = "UNIQUE_MIDDLE_MARKER\n" + ("\n".join(f"row {i}" for i in range(5000)))
-        out, truncated = wt._truncate_with_footer(body, "https://example.com/doc", 3000)
+        out, truncated = web_tools_truncate._truncate_with_footer(body, "https://example.com/doc", 3000)
         assert truncated is True
         # Extract the stored path from the footer and confirm full text is there.
         path_line = next(ln for ln in out.splitlines() if "Full text saved to:" in ln)
         stored_path = path_line.split("Full text saved to:", 1)[1].strip()
         assert os.path.exists(stored_path)
-        full = open(stored_path).read()
+        full = Path(stored_path).read_text(encoding="utf-8")
         assert "UNIQUE_MIDDLE_MARKER" in full
         assert "row 2500" in full  # the omitted-middle row is in the stored file
 
@@ -57,12 +59,12 @@ class TestTruncation:
 class TestCharLimitConfig:
     def test_default_when_unset(self):
         with patch("tools.web_tools._load_web_config", return_value={}):
-            assert wt._get_extract_char_limit() == wt.DEFAULT_EXTRACT_CHAR_LIMIT
+            assert web_tools_truncate._get_extract_char_limit() == web_tools_truncate.DEFAULT_EXTRACT_CHAR_LIMIT
 
 
     def test_bad_value_falls_back(self):
         with patch("tools.web_tools._load_web_config", return_value={"extract_char_limit": "nope"}):
-            assert wt._get_extract_char_limit() == wt.DEFAULT_EXTRACT_CHAR_LIMIT
+            assert web_tools_truncate._get_extract_char_limit() == web_tools_truncate.DEFAULT_EXTRACT_CHAR_LIMIT
 
 
 class TestEndToEnd:

@@ -1996,8 +1996,18 @@ def _inject_context_engine_tools(agent):
 def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
     # Ollama defaults num_ctx to 2048, so detect the max window and send num_ctx per request.
     # model.ollama_num_ctx overrides; model.context_length caps the detected value (VRAM).
+    # num_ctx is an Ollama-only concept: applying it to a non-Ollama runtime (e.g. a cloud
+    # model like DeepSeek-on-Nous) wrongly clamps the compressor window down to num_ctx. Gate
+    # the override on the runtime being an actual Ollama endpoint so cloud models keep their
+    # full resolved window.
     agent._ollama_num_ctx: int | None = None
-    _override = _model_cfg.get("ollama_num_ctx") if isinstance(_model_cfg, dict) else None
+    _override = None
+    _is_ollama_runtime = bool(
+        (str(getattr(agent, "provider", "") or "").lower() == "ollama")
+        or (agent.base_url and is_local_endpoint(agent.base_url))
+    )
+    if _is_ollama_runtime and isinstance(_model_cfg, dict):
+        _override = _model_cfg.get("ollama_num_ctx")
     if _override is not None:
         try:
             agent._ollama_num_ctx = int(_override)

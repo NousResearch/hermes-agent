@@ -24,6 +24,42 @@ def _registered_guard(enabled=True):
     return hooks["pre_tool_call"]
 
 
+def test_ci_completion_gate_registers_the_generic_completion_hook():
+    spec = spec_from_file_location("feedback_guard_entry_generic", Path(__file__).parents[1] / "__init__.py")
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    hooks = {}
+    ctx = SimpleNamespace(
+        get_config=lambda key, default=None: True if key == "enabled" else default,
+        register_cli_command=lambda **kwargs: None,
+        register_hook=lambda name, callback: hooks.setdefault(name, callback),
+    )
+
+    module.register(ctx)
+
+    assert "pre_kanban_complete" in hooks
+
+
+def test_generic_completion_hook_uses_its_task_id(tmp_path, monkeypatch):
+    spec = spec_from_file_location("feedback_guard_generic_task", Path(__file__).parents[1] / "__init__.py")
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    hooks = {}
+    ctx = SimpleNamespace(
+        get_config=lambda key, default=None: True if key == "enabled" else default,
+        register_cli_command=lambda **kwargs: None,
+        register_hook=lambda name, callback: hooks.setdefault(name, callback),
+    )
+    module.register(ctx)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "worker-task")
+    monkeypatch.setenv("HERMES_CONTROL_HOME", str(tmp_path))
+
+    result = hooks["pre_kanban_complete"](task_id="other-task")
+
+    assert result["action"] == "block"
+    assert not (tmp_path / "github-pr-feedback" / "ledger.sqlite3").exists()
+
+
 @pytest.mark.parametrize("case", ["none", "wrong_head", "wrong_base", "stale", "valid", "non_ci", "running", "failed"])
 def test_registered_ci_completion_gate_uses_durable_exact_dispatch(tmp_path, monkeypatch, case):
     from hermes_cli.plugins import get_pre_tool_call_block_message

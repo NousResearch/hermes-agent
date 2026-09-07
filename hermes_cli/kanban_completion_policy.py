@@ -6,14 +6,6 @@ class CompletionPolicyError(ValueError):
 
 
 def enforce_completion_policies(*, task_id, board, assignee, summary):
-    # Dispatched workers use independent assignee profiles.  Their completion
-    # boundary must still consult the control-plane feedback ledger even when
-    # that profile does not enable the feedback plugin.
-    from tools.kanban_feedback_guard import completion_block
-
-    if message := completion_block(task_id):
-        raise CompletionPolicyError(message)
-
     from hermes_cli.plugins import invoke_hook
 
     for result in invoke_hook(

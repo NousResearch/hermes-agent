@@ -230,14 +230,56 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
         _log.debug("opportunistic auto-archive skipped: %s", exc)
 
 
+def _skill_maintenance_idle_for(started_at: float) -> Optional[float]:
+    """Measure chat inactivity, not socket inactivity (Desktop stays connected)."""
+    import tui_gateway.server as gateway
+
+    with gateway._sessions_lock:
+        if any(session.get("running") for session in gateway._sessions.values()):
+            return None
+        last_active = max(
+            [started_at] + [float(session.get("last_active") or started_at)
+                            for session in gateway._sessions.values()])
+    return max(0.0, time.time() - last_active)
+
+
+def _maybe_run_skill_maintenance(started_at: float) -> None:
+    from hermes_constants import get_hermes_home
+    from hermes_cli.profiles import _check_gateway_running
+
+    # A live messaging gateway already owns these chores for this profile.
+    if _check_gateway_running(get_hermes_home()):
+        return
+
+    from agent.curator import maybe_run_curator
+    from tools.skills_sync_client import maybe_pull_skills
+    from tools.skills_sync_client_org import maybe_pull_org_skills
+
+    try:
+        idle_for = _skill_maintenance_idle_for(started_at)
+        if idle_for is not None:
+            maybe_run_curator(idle_for_seconds=idle_for)
+    except Exception as exc:
+        _log.debug("serve curator tick skipped: %s", exc)
+    for pull in (maybe_pull_skills, maybe_pull_org_skills):
+        try:
+            pull()
+        except Exception as exc:
+            _log.debug("serve skill sync tick skipped: %s", exc)
+
+
 async def _auto_archive_ticker_loop(
     interval_s: float = 3600.0, initial_delay_s: float = 90.0) -> None:
-    """Poll-rate timer for the auto-archive sweep (primary profile), so a
-    long-idle Desktop keeps sweeping without any ``/api/sessions`` request.
-    The real cadence is still owned by state_meta inside ``maybe_auto_archive``."""
+    """Poll maintenance for this serve profile, including Desktop-only installs.
+
+    Individual chores own their config/interval gates. Curator additionally uses
+    real chat inactivity; merely keeping a Desktop WebSocket open is not activity.
+    """
+    started_at = time.time()
 
     def _sweep() -> None:
         _maybe_auto_archive_for_profile(None)
+        _maybe_run_skill_maintenance(started_at)
 
     await asyncio.sleep(initial_delay_s)
     while True:

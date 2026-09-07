@@ -97,6 +97,52 @@ def _set_cron_session_title(session_db, session_id, base_title):
         return deduped
 
 
+def _record_no_agent_run_session(job: dict, *, output: str, success: bool) -> None:
+    """Persist a cron session so desktop Run History lists no_agent ticks.
+
+    no_agent short-circuits before SessionDB/AIAgent, so without this the
+    scheduled-jobs Run History panel freezes at the last agent-mode run.
+    Best-effort: never fail the job.
+    """
+    try:
+        from hermes_state import SessionDB
+    except Exception:
+        return
+    job_id = str(job.get("id") or "").strip()
+    if not job_id:
+        return
+    job_name = str(job.get("name") or job_id)
+    now = _hermes_now()
+    session_id = f"cron_{job_id}_{now.strftime('%Y%m%d_%H%M%S')}"
+    title_base = " ".join(job_name.split())[:60].strip() or f"cron {job_id}"
+    title = f"{title_base} · {now.strftime('%b %d %H:%M')}"
+    body = (output or "").strip() or ("(script failed)" if not success else "(empty)")
+    db = None
+    try:
+        db = SessionDB()
+        db.create_session(session_id, source="cron")
+        _set_cron_session_title(db, session_id, title)
+        db.append_message(
+            session_id,
+            role="user",
+            content=str(job.get("prompt") or job_name),
+        )
+        db.append_message(session_id, role="assistant", content=body)
+        db.end_session(session_id, "cron_complete" if success else "cron_failed")
+    except Exception:
+        logger.debug(
+            "Job '%s': failed to record no_agent run session",
+            job_id,
+            exc_info=True,
+        )
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+
 def _fallback_chain_phrase() -> str:
     """Fallback-chain clause for a provider-failure message: "exhausted" vs "none configured" (most
     installs). Fails open to the ambiguous wording if config can't be read — never crash delivery.
@@ -1290,6 +1336,7 @@ def _run_no_agent_job(
             f"{output}\n\n"
             f"Time: {now_iso}"
         )
+        _record_no_agent_run_session(job, output=alert, success=False)
         return False, f"{header}**Status:** script failed\n\n{output}\n", alert, output
 
     # wakeAgent=false is a silent signal, same as empty stdout.
@@ -1301,6 +1348,7 @@ def _run_no_agent_job(
         logger.info("Job '%s' (no_agent): empty stdout — silent run", job_id)
         return True, f"{header}**Status:** silent (empty output)\n", SILENT_MARKER, None
 
+    _record_no_agent_run_session(job, output=output, success=True)
     return True, f"{header}\n---\n\n{output}\n", output, None
 
 

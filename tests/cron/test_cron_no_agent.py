@@ -106,6 +106,16 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     assert "RAM 92% on host" in final_response
     assert "RAM 92% on host" in doc
 
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        runs = db.list_cron_job_runs(job["id"], limit=5)
+        assert len(runs) == 1
+        assert runs[0]["id"].startswith(f"cron_{job['id']}_")
+    finally:
+        db.close()
+
 
 def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):
     """Regression: a standalone cron tick process starts without home-channel

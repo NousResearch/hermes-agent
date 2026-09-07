@@ -67,18 +67,31 @@ class DialecticMixin:
     ) -> threading.Thread:
         """Start a background dialectic run that publishes into the pending-result slot. Only a
         non-empty result advances ``_last_dialectic_turn`` (so empty returns retry next turn) and
-        resets the empty streak; failures widen the backoff."""
+        resets the empty streak; failures widen the backoff.
+
+        ``_dialectic_generation`` is captured before the HTTP call(s) start and re-checked before
+        any shared state is touched, so a session switch (``on_session_switch``/``initialize``/
+        ``shutdown``) that lands while this thread is still in flight makes its result inert —
+        it can never be published into (and later consumed by) a different session, even when the
+        configured backend session key is pinned across the switch."""
+        generation = self._dialectic_generation
+
         def _run() -> None:
             try:
                 r = self._run_dialectic_depth(query, use_query_rewrite=use_query_rewrite)
             except Exception as exc:
                 logger.debug("Honcho %s failed: %s", log_label, exc)
-                self._note_dialectic_failure(exc)
+                if generation is self._dialectic_generation:
+                    self._note_dialectic_failure(exc)
+                return
+            if generation is not self._dialectic_generation:
+                logger.debug("Honcho %s result discarded: session changed while the fetch was in flight", log_label)
                 return
             if r and r.strip():
                 with self._prefetch_lock:
                     self._prefetch_result = r
                     self._prefetch_result_fired_at = fired_at
+                    self._prefetch_result_generation = generation
                 self._last_dialectic_turn = fired_at
                 self._dialectic_empty_streak = 0
             else:
@@ -91,10 +104,16 @@ class DialecticMixin:
         return thread
 
     def _consume_pending_dialectic(self) -> str:
-        """Pop the pending dialectic result, or "" when none is ready or it is stale."""
+        """Pop the pending dialectic result, or "" when none is ready, it is stale, or it was
+        fired for a session generation that no longer matches (a session switch happened after
+        it was published but before it was consumed)."""
         with self._prefetch_lock:
-            dialectic_result, fired_at = self._prefetch_result, self._prefetch_result_fired_at
-            self._prefetch_result, self._prefetch_result_fired_at = "", -999
+            dialectic_result, fired_at, generation = (
+                self._prefetch_result, self._prefetch_result_fired_at, self._prefetch_result_generation)
+            self._prefetch_result, self._prefetch_result_fired_at, self._prefetch_result_generation = "", -999, None
+        if dialectic_result and generation is not None and generation is not self._dialectic_generation:
+            logger.debug("Honcho pending dialectic discarded: session changed since it was fired")
+            return ""
         stale_limit = self._dialectic_cadence * self._STALE_RESULT_MULTIPLIER
         if dialectic_result and fired_at >= 0 and (self._turn_count - fired_at) > stale_limit:
             logger.debug("Honcho pending dialectic discarded as stale: fired_at=%d, turn=%d, limit=%d",

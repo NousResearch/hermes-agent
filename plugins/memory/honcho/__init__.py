@@ -112,6 +112,12 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         self._recall_mode = "hybrid"  # "context", "tools", or "hybrid"
         self._recall_sync = False
         self._recall_generation = object()
+        # Session-identity fence for the async dialectic prefetch (queue_prefetch/_spawn_dialectic).
+        # Unlike _recall_generation (bumped every turn for the synchronous recall_sync path),
+        # this must survive turn boundaries — a dialectic result fired on turn N is meant to be
+        # consumed on turn N+1..N+k — so it is bumped only on real session-identity changes
+        # (initialize/on_session_switch/shutdown), never on_turn_start.
+        self._dialectic_generation = object()
         self._recall_sync_thread: Optional[threading.Thread] = None
         self._recall_sync_lock = threading.Lock()
         # Base context cache — refreshed on context_cadence, not frozen.
@@ -133,6 +139,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         # result was fired at, and consecutive empty dialectic returns (drives backoff).
         self._prefetch_thread_started_at: float = 0.0
         self._prefetch_result_fired_at: int = -999
+        self._prefetch_result_generation: object | None = None
         self._dialectic_empty_streak: int = 0
 
         # Tools-only mode may defer session initialization until a tool call.
@@ -187,6 +194,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         """Configure recall settings and start (or defer) Honcho session creation."""
         self._recall_generation = object()
+        self._dialectic_generation = object()
         try:
             agent_context, platform = kwargs.get("agent_context", ""), kwargs.get("platform", "cli")
             if agent_context in {"cron", "flush"} or platform == "cron":
@@ -558,6 +566,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
     def on_session_switch(self, new_session_id: str, **kwargs) -> None:
         """Discard in-flight recall even when the configured backend session is pinned."""
         self._recall_generation = object()
+        self._dialectic_generation = object()
 
     # ----- Writes -----
 
@@ -807,6 +816,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
     def shutdown(self) -> None:
         self._recall_generation = object()
+        self._dialectic_generation = object()
         for t in (self._prefetch_thread, self._sync_thread, self._memwrite_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)

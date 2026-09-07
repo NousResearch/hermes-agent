@@ -428,6 +428,31 @@ export function liveSessionProjectId(session: SessionInfo, explicitProjects: Pro
   return repoRoot
 }
 
+/** The lane a row files under: its live project, or Home for detached (cwd-less) rows. */
+export function sessionBucketId(session: SessionInfo, explicitProjects: ProjectInfo[]): null | string {
+  return liveSessionProjectId(session, explicitProjects) ?? (isDetachedSession(session) ? NO_PROJECT_ID : null)
+}
+
+/**
+ * The ONE row-level project-filter rule the flat list and the project lanes
+ * narrow by. Detached (cwd-less) rows belong to the Home bucket
+ * (`NO_PROJECT_ID`, like the overview preview overlay) — filing them under
+ * `''` meant filtering to Home hid Home's own rows.
+ */
+export function sessionMatchesProjectFilter(
+  session: SessionInfo,
+  filter: readonly string[],
+  explicitProjects: ProjectInfo[]
+): boolean {
+  if (!filter.length) {
+    return true
+  }
+
+  const id = sessionBucketId(session, explicitProjects)
+
+  return id !== null && filter.includes(id)
+}
+
 /**
  * The color a session inherits from its owning project — the explicit project
  * whose folder is the longest prefix of the session's cwd/repo-root, when that
@@ -782,8 +807,7 @@ export function overlayLivePreviews(
       continue
     }
 
-    const projectId =
-      liveSessionProjectId(session, explicitProjects) ?? (isDetachedSession(session) ? NO_PROJECT_ID : null)
+    const projectId = sessionBucketId(session, explicitProjects)
 
     if (!projectId) {
       continue

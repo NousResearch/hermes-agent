@@ -77,7 +77,9 @@ def test_navigation_tradeoffs(tmp_path, monkeypatch, record_property, line_count
             else:
                 pytest.fail("pagination did not find the section")
         elif strategy == "known_keyword":
-            found = invoke("search_files", pattern="^## Acceptance$", limit=1)
+            # Ask for one spare result so the bounded native-rg transport can
+            # exit naturally after this single known match.
+            found = invoke("search_files", pattern="^## Acceptance$", limit=2)
             section = invoke(offset=found["matches"][0]["line"], limit=2)
             assert "Ready" in section["content"]
         else:

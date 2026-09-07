@@ -672,44 +672,29 @@ def _cmd_steer(rid, params, session, name, arg):
 
 
 def _cmd_goal(rid, params, session, name, arg):
-    sid_key, goals, err = _session_key_or_err(rid, session, "hermes_cli.goals", "goals")
-    if err:
-        return err
-    try:
-        max_turns = int((_load_cfg().get("goals") or {}).get("max_turns", 20) or 20)
-    except Exception:
-        max_turns = 20
-    mgr = goals.GoalManager(session_id=sid_key, default_max_turns=max_turns)
-    lower = arg.strip().lower()
-    if not lower or lower == "status":
-        return _exec_out(rid, mgr.status_line())
-    if lower == "pause":
-        state = mgr.pause(reason="user-paused")
-        return _exec_out(rid, "No goal set." if state is None else f"⏸ Goal paused: {state.goal}")
-    if lower == "resume":
-        state = mgr.resume()
-        if state is None:
-            return _exec_out(rid, "No goal to resume.")
-        # Resume must restart work: `exec` is display-only, so return a `send`; `display`
-        # keeps model-facing scaffolding out of the transcript.
-        if not (prompt := mgr.next_continuation_prompt()):
-            return _exec_out(rid, f"▶ Goal resumed: {state.goal}")
-        notice = f"▶ Goal resumed: {state.goal}\nContinuing now — taking the next step."
-        return _ok(rid, {"type": "send", "notice": notice, "message": prompt, "display": "/goal resume"})
-    if lower in {"clear", "stop", "done"}:
-        had = mgr.has_goal()
-        mgr.clear()
-        return _exec_out(rid, "✓ Goal cleared." if had else "No active goal.")
-    # Remaining text = new goal. Client renders `notice`, submits `message`; the post-turn judge takes over.
-    try:
-        state = mgr.set(arg)
-    except ValueError as exc:
-        return _err(rid, 4004, f"invalid goal: {exc}")
-    notice = (
-        f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"
-        "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
-        "Controls: /goal status · /goal pause · /goal resume · /goal clear")
-    return _ok(rid, {"type": "send", "notice": notice, "message": state.goal})
+    with _session_profile_runtime_scope(session or {}):
+        sid_key, goals, err = _session_key_or_err(rid, session, "hermes_cli.goals", "goals")
+        if err:
+            return err
+        try:
+            max_turns = int((_load_cfg().get("goals") or {}).get("max_turns", 20) or 20)
+        except Exception:
+            max_turns = 20
+        mgr = goals.GoalManager(session_id=sid_key, default_max_turns=max_turns)
+        from hermes_cli.goal_command import dispatch_goal_command
+        result = dispatch_goal_command(
+            mgr, arg, authorize_gate=lambda: None,
+            last_user_message=goals.last_user_message_from_db(sid_key),
+        )
+        if result.error:
+            return _err(rid, 4004, result.output)
+        if not result.prompt:
+            return _exec_out(rid, result.output)
+        payload = {"type": "send", "notice": result.output, "message": result.prompt}
+        if not result.kickoff:
+            payload["notice"] += "\nContinuing now — taking the next step."
+            payload["display"] = "/goal resume"
+        return _ok(rid, payload)
 
 
 def _cmd_loop(rid, params, session, name, arg):
@@ -810,7 +795,6 @@ _SLASH_BUILTINS = {
     "loop": _cmd_loop, "undo": _cmd_undo, "snapshot": _cmd_snapshot, "snap": _cmd_snapshot,
     "compress": _cmd_compress, "compact": _cmd_compress}
 
-
 @method("command.dispatch")
 def _(rid, params: dict) -> dict:
     name, arg = _resolve_name(params.get("name", "").lstrip("/")), params.get("arg", "")
@@ -821,6 +805,8 @@ def _(rid, params: dict) -> dict:
     for stage in filter(None, stages):
         res = stage(rid, params, session, name, arg)
         if res is not None:
+            if name in _SESSION_CONTROL_SLASHES and "error" not in res:
+                _publish_session_control_snapshot(params.get("session_id", ""), session)
             return res
     return _err(rid, 4018, f"not a quick/plugin/bundle/skill command: {name}")
 
@@ -876,6 +862,8 @@ def _(rid, params: dict) -> dict:
         payload = {"output": worker.run(cmd) or "(no output)"}
         if warning := _mirror_slash_side_effects(sid, session, cmd):
             payload["warning"] = warning
+        if base in _SESSION_CONTROL_SLASHES:
+            _publish_session_control_snapshot(sid, session)
         return _ok(rid, payload)
     except Exception as e:
         with contextlib.suppress(Exception):
@@ -1164,6 +1152,22 @@ def _(rid, params: dict) -> dict:
     enabled, tools}]}``"""
     servers = _tools_mod("hermes_cli.mcp_config")._get_mcp_servers()
     return _ok(rid, {"servers": [_mcp_summarize_server(name, cfg) for name, cfg in sorted(servers.items())]})
+
+
+@_mcp_rpc("status", required=())
+def _(rid, params: dict) -> dict:
+    """``{servers: [{name, transport, tools, connected, disabled, status}], checked_at}`` from cached
+    runtime state; never connects, probes, or starts auth. Under a multiplexer the runtime view is the
+    scoped profile's; otherwise it is shown only when ``profile`` is the launch profile."""
+    import time
+    hc = _tools_mod("hermes_constants")
+    configured = _tools_mod("hermes_cli.mcp_config")._get_mcp_servers()
+    include_runtime = (_tools_mod("agent.secret_scope").is_multiplex_active()
+                       or hc.hermes_home_key() == hc.hermes_home_key(hc.get_process_hermes_home()))
+    safe = ("name", "transport", "tools", "connected", "disabled", "status")
+    servers = _tools_mod("tools.mcp_tool_discovery").get_mcp_status(configured, include_runtime=include_runtime)
+    return _ok(rid, {"servers": [{k: e[k] for k in safe if k in e} for e in servers],
+                     "checked_at": int(time.time() * 1000)})
 
 
 @_mcp_rpc("add")

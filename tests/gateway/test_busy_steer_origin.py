@@ -14,7 +14,12 @@ from gateway.session import SessionSource
 @pytest.mark.parametrize("route", ["explicit", "priority", "normal", "redirect", "priority_redirect"])
 async def test_busy_injection_preserves_original_routing_fields(route):
     runner = GatewayRunner(config=GatewayConfig())
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat", thread_id="thread", user_id="user")
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="chat", thread_id="thread", user_id="user",
+        chat_type="group", scope_id="scope", profile="profile", parent_chat_id="parent",
+        chat_id_alt="chat-alt", user_id_alt="user-alt", prospective_thread_id="future-thread",
+        message_id="source-message",
+    )
     event = MessageEvent(text="/steer request" if route == "explicit" else "request", source=source, message_id="message")
 
     class Receiver:
@@ -42,6 +47,9 @@ async def test_busy_injection_preserves_original_routing_fields(route):
     assert {key: origin[key] for key in ("platform", "chat_id", "thread_id", "user_id", "message_id")} == {
         "platform": "telegram", "chat_id": "chat", "thread_id": "thread", "user_id": "user", "message_id": "message",
     }
+    for field in ("chat_type", "scope_id", "profile", "parent_chat_id", "chat_id_alt", "user_id_alt", "prospective_thread_id"):
+        assert origin[field] == getattr(source, field)
+    assert origin["source_message_id"] == source.message_id
     assert event.text == ("/steer request" if route == "explicit" else "request")
 
 

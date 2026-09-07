@@ -346,9 +346,11 @@ class GatewayBusySessionMixin:
         origin = {
             "platform": source.platform.value,
             **{key: getattr(source, key) for key in (
-                "chat_id", "thread_id", "chat_type", "user_id", "scope_id", "profile"
+                "chat_id", "thread_id", "chat_type", "user_id", "scope_id", "profile",
+                "parent_chat_id", "chat_id_alt", "user_id_alt", "prospective_thread_id",
             )},
             "message_id": event.message_id,
+            "source_message_id": source.message_id,
         }
         origin = {key: value for key, value in origin.items() if value not in (None, "")}
         # JSON preserves identifiers exactly (including colons/whitespace) instead of

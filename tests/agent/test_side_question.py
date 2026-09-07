@@ -1,5 +1,6 @@
 """Tests for agent/side_question.py — the /btw context-aware side question engine."""
 
+import logging
 from unittest.mock import patch
 
 from agent.side_question import (
@@ -191,6 +192,28 @@ class TestForkPath:
             out = answer_side_question("q?", [], parent_agent=object())
         assert out == "digest answer"
         oneshot.assert_called_once()
+
+    def test_fork_failure_log_omits_ephemeral_provider_echo(self, caplog):
+        marker = "Location: 1.0, 2.0"
+        caplog.set_level(logging.WARNING)
+        with patch(
+            "agent.side_question._answer_via_fork",
+            side_effect=RuntimeError(f"provider echoed {marker}"),
+        ), patch(
+            "agent.side_question._answer_via_oneshot", return_value="safe fallback"
+        ):
+            out = answer_side_question(
+                "q?",
+                [],
+                parent_agent=object(),
+                ephemeral_user_context=marker,
+            )
+
+        assert out == "safe fallback"
+        assert marker not in caplog.text
+        assert "1.0" not in caplog.text
+        assert "2.0" not in caplog.text
+        assert "ephemeral user context" in caplog.text
 
     def test_no_parent_agent_uses_oneshot(self):
         with patch("agent.side_question._answer_via_fork") as fork, patch(

@@ -195,12 +195,13 @@ def answer_side_question(
     if not question:
         raise ValueError("answer_side_question requires a non-empty question")
 
+    has_ephemeral_user_context = callable(ephemeral_user_context) or (
+        isinstance(ephemeral_user_context, str)
+        and bool(ephemeral_user_context.strip())
+    )
     if parent_agent is not None:
         try:
-            if callable(ephemeral_user_context) or (
-                isinstance(ephemeral_user_context, str)
-                and ephemeral_user_context.strip()
-            ):
+            if has_ephemeral_user_context:
                 answer = _answer_via_fork(
                     parent_agent,
                     question,
@@ -212,8 +213,21 @@ def answer_side_question(
             if answer:
                 return answer
             logger.warning("/btw fork returned an empty answer; falling back to one-shot")
-        except Exception:
-            logger.warning("/btw cache-parity fork failed; falling back to one-shot", exc_info=True)
+        except Exception as exc:
+            if has_ephemeral_user_context:
+                from agent import relay_llm
+
+                logger.warning(
+                    "/btw cache-parity fork failed; falling back to one-shot: %s",
+                    relay_llm.safe_provider_error_message(
+                        exc, contains_ephemeral_user_context=True
+                    ),
+                )
+            else:
+                logger.warning(
+                    "/btw cache-parity fork failed; falling back to one-shot",
+                    exc_info=True,
+                )
 
     oneshot_kwargs = {
         "main_runtime": main_runtime,
@@ -221,9 +235,6 @@ def answer_side_question(
         "temperature": temperature,
         "timeout": timeout,
     }
-    if callable(ephemeral_user_context) or (
-        isinstance(ephemeral_user_context, str)
-        and ephemeral_user_context.strip()
-    ):
+    if has_ephemeral_user_context:
         oneshot_kwargs["ephemeral_user_context"] = ephemeral_user_context
     return _answer_via_oneshot(question, history, **oneshot_kwargs)

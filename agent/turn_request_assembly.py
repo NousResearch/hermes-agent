@@ -33,8 +33,6 @@ class AssembledRequest:
     action: str
     api_messages: Any
     ephemeral_api_messages_base: Any
-    ephemeral_context_force_empty: Any
-    ephemeral_context_rebuild_count: Any
     tools_for_api: Any
     _moa_prepared_request: Any
     pending_moa_prepared_request: Any
@@ -291,6 +289,6 @@ def assemble_api_request(
         )
     return AssembledRequest(
         "fallthrough", api_messages, ephemeral_api_messages_base,
-        False, 0, tools_for_api, _moa_prepared_request,
+        tools_for_api, _moa_prepared_request,
         pending_moa_prepared_request, approx_tokens, request_pressure_tokens, approx_tokens * 4,
     )

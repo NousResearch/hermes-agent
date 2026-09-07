@@ -875,6 +875,142 @@ class TestWireInvariant:
         assert stale_answer not in retained
         assert volatile not in retained
 
+    def test_continuously_changing_context_falls_back_to_context_free_request(
+        self, wire_env
+    ):
+        """Three invalidated responses exhaust the turn-scoped rebuild cap."""
+        from agent import turn_response_intake
+
+        make_agent, handler, db, sid = wire_env
+        current = {"revision": 0}
+        original_normalize = turn_response_intake.normalize_response_for_agent
+
+        def current_context():
+            return (
+                "[Background Telegram location context]\n"
+                f"Latitude: 48.858{current['revision']}"
+            )
+
+        def normalize_and_advance(agent, response):
+            normalized = original_normalize(agent, response)
+            current["revision"] += 1
+            return normalized
+
+        agent = make_agent()
+        handler.response_queue.extend(
+            [_text_resp(f"stale answer {index}") for index in range(3)]
+            + [_text_resp("safe context-free answer")]
+        )
+
+        with patch.object(
+            turn_response_intake,
+            "normalize_response_for_agent",
+            side_effect=normalize_and_advance,
+        ):
+            result = agent.run_conversation(
+                "where am I?",
+                conversation_history=[],
+                task_id="volatile-continuous-updates",
+                ephemeral_user_context=current_context,
+            )
+
+        requests = _chat_requests(handler)
+        assert len(requests) == 4
+        for request in requests[:3]:
+            assert "[Background Telegram location context]" in json.dumps(request)
+        assert "[Background Telegram location context]" not in json.dumps(
+            requests[3]
+        )
+        assert result["final_response"] == "safe context-free answer"
+        retained = json.dumps(db.get_messages_as_conversation(sid))
+        assert "stale answer" not in retained
+        assert "[Background Telegram location context]" not in retained
+
+    def test_revocation_after_final_append_rolls_back_stale_response(
+        self, wire_env
+    ):
+        """A stop between in-memory append and durability rebuilds cleanly."""
+        from agent import turn_final_response
+
+        make_agent, handler, db, sid = wire_env
+        volatile = "[Background Telegram location context]\nLatitude: 48.8584"
+        stale_answer = "You are near latitude 48.8584"
+        current = {"value": volatile}
+        agent = make_agent()
+        original_append = turn_final_response.append_message
+
+        def append_then_revoke(messages, message):
+            original_append(messages, message)
+            if message.get("content") == stale_answer:
+                current["value"] = None
+
+        handler.response_queue.extend(
+            [_text_resp(stale_answer), _text_resp("Location sharing stopped.")]
+        )
+        with patch.object(
+            turn_final_response,
+            "append_message",
+            side_effect=append_then_revoke,
+        ):
+            result = agent.run_conversation(
+                "where am I?",
+                conversation_history=[],
+                task_id="volatile-revoked-after-final-append",
+                ephemeral_user_context=lambda: current["value"],
+            )
+
+        first, second = _chat_requests(handler)
+        assert volatile in _user_messages(first)[0]["content"]
+        assert volatile not in _user_messages(second)[0]["content"]
+        assert stale_answer not in json.dumps(second)
+        assert result["final_response"] == "Location sharing stopped."
+        retained = json.dumps(db.get_messages_as_conversation(sid))
+        assert stale_answer not in retained
+        assert volatile not in retained
+
+    def test_revocation_after_tool_append_rolls_back_stale_call(
+        self, wire_env
+    ):
+        """A stop before tool-call persistence removes the discarded call row."""
+        from agent import turn_tool_round
+
+        make_agent, handler, db, sid = wire_env
+        volatile = "[Background Telegram location context]\nLatitude: 48.8584"
+        stale_args = '{"file_path": "/tmp/near-48.8584"}'
+        current = {"value": volatile}
+        agent = make_agent()
+        original_append = turn_tool_round.append_message
+
+        def append_then_revoke(messages, message):
+            original_append(messages, message)
+            if message.get("tool_calls"):
+                current["value"] = None
+
+        handler.response_queue.extend(
+            [_tc_resp("read_file", stale_args), _text_resp("tool was skipped")]
+        )
+        with patch.object(
+            turn_tool_round,
+            "append_message",
+            side_effect=append_then_revoke,
+        ), patch("model_tools.handle_function_call") as physical_dispatch:
+            result = agent.run_conversation(
+                "where am I?",
+                conversation_history=[],
+                task_id="volatile-revoked-after-tool-append",
+                ephemeral_user_context=lambda: current["value"],
+            )
+
+        physical_dispatch.assert_not_called()
+        first, second = _chat_requests(handler)
+        assert volatile in _user_messages(first)[0]["content"]
+        assert volatile not in _user_messages(second)[0]["content"]
+        assert "near-48.8584" not in json.dumps(second)
+        assert result["final_response"] == "tool was skipped"
+        retained = json.dumps(db.get_messages_as_conversation(sid))
+        assert "near-48.8584" not in retained
+        assert volatile not in retained
+
     def test_revocation_after_tool_turn_persist_blocks_physical_dispatch(
         self, wire_env
     ):

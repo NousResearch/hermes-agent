@@ -1560,6 +1560,11 @@ def run_conversation(
         if _rs.action == "continue":
             continue
 
+        # Response intake and final/tool staging mutate the canonical in-memory
+        # list before their durability boundary. If volatile context is revoked
+        # in that window, restore the pre-response shape before rebuilding so
+        # no discarded provider output leaks into the next request or finalize.
+        adoption_messages_snapshot = list(s.messages)
         try:
             from agent import relay_llm
 
@@ -1586,6 +1591,7 @@ def run_conversation(
                 if _v.action == "continue":
                     continue
         except _EphemeralUserContextChanged:
+            s.messages[:] = adoption_messages_snapshot
             _arm_ephemeral_context_rebuild(s)
             continue
         except Exception as e:

@@ -816,6 +816,15 @@ class GatewaySlashCommandsMixin(
 
         async def _run_side_question() -> None:
             from agent.side_question import answer_side_question
+            initial_ephemeral_context = getattr(
+                event, "ephemeral_user_context", None
+            )
+            side_question_has_ephemeral_context = bool(
+                isinstance(initial_ephemeral_context, str)
+                and initial_ephemeral_context.strip()
+            ) or hasattr(
+                event, "_telegram_background_location_subject_key"
+            )
             try:
                 await self._refresh_event_ephemeral_user_context(event)
                 side_question_kwargs = {
@@ -829,6 +838,7 @@ class GatewaySlashCommandsMixin(
                     event, "ephemeral_user_context", None
                 )
                 if ephemeral_user_context_supplier is not None:
+                    side_question_has_ephemeral_context = True
                     side_question_kwargs["ephemeral_user_context"] = (
                         ephemeral_user_context_supplier
                     )
@@ -836,6 +846,7 @@ class GatewaySlashCommandsMixin(
                     isinstance(ephemeral_user_context, str)
                     and ephemeral_user_context.strip()
                 ):
+                    side_question_has_ephemeral_context = True
                     side_question_kwargs["ephemeral_user_context"] = (
                         ephemeral_user_context
                     )
@@ -844,8 +855,16 @@ class GatewaySlashCommandsMixin(
                     **side_question_kwargs)
                 reply = t("gateway.btw.answer", preview=preview, answer=answer or "")
             except Exception as e:
-                logger.warning("/btw side question failed: %s", e)
-                reply = t("gateway.btw.failed", preview=preview, error=str(e))
+                if side_question_has_ephemeral_context:
+                    from agent import relay_llm
+
+                    error = relay_llm.safe_provider_error_message(
+                        e, contains_ephemeral_user_context=True
+                    )
+                else:
+                    error = str(e)
+                logger.warning("/btw side question failed: %s", error)
+                reply = t("gateway.btw.failed", preview=preview, error=error)
             if adapter is not None:
                 await adapter.send(source.chat_id, reply, metadata=_thread_metadata)
 

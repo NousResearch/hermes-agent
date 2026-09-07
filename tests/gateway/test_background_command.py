@@ -443,6 +443,44 @@ class TestHandleBtwCommand:
         assert "ephemeral_user_context" not in mock_answer.call_args.kwargs
 
     @pytest.mark.asyncio
+    async def test_side_question_failure_omits_ephemeral_provider_echo(
+        self, caplog
+    ):
+        runner = _make_runner()
+        store = AsyncMock()
+        store.get_or_create_session.return_value = MagicMock(session_id="s1")
+        store.load_transcript.return_value = [
+            {"role": "user", "content": "where am I?"},
+            {"role": "assistant", "content": "checking"},
+        ]
+        store._store = runner.session_store
+        runner._async_session_store = store
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("test-model", {"api_key": "k"})
+        )
+        mock_adapter = AsyncMock()
+        runner._adapter_for_source = MagicMock(return_value=mock_adapter)
+        event = _make_event(text="/btw what is nearby?")
+        marker = "Location: 1.0, 2.0"
+        event.ephemeral_user_context = marker
+        caplog.set_level("WARNING")
+
+        with patch(
+            "agent.side_question.answer_side_question",
+            side_effect=RuntimeError(f"provider echoed {marker}"),
+        ):
+            await runner._handle_btw_command(event)
+            for task in list(runner._background_tasks):
+                await task
+
+        sent_text = mock_adapter.send.call_args.args[1]
+        retained = f"{caplog.text}\n{sent_text}"
+        assert marker not in retained
+        assert "1.0" not in retained
+        assert "2.0" not in retained
+        assert "ephemeral user context" in retained
+
+    @pytest.mark.asyncio
     async def test_no_credentials_reports_error(self):
         runner = _make_runner()
         store = AsyncMock()

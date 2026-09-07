@@ -126,6 +126,8 @@ def run_tool_round(
     try:
         relay_llm.run_provider_call_guard()
         _tool_turn_persisted = agent._flush_messages_to_session_db(messages, conversation_history)
+    except _EphemeralUserContextChanged:
+        raise
     except Exception as exc:
         _tool_turn_persisted = False
         from hermes_state import classify_persistence_error

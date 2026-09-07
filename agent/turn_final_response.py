@@ -59,6 +59,7 @@ def finish_text_response(
         _CODEX_ACK_CONTINUATION_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT, _join_truncated_parts
     )
     from agent import relay_llm
+    from agent.turn_api_call import _EphemeralUserContextChanged
 
     relay_llm.run_provider_call_guard()
 
@@ -240,6 +241,8 @@ def finish_text_response(
     try:
         relay_llm.run_provider_call_guard()
         agent._flush_messages_to_session_db(messages, conversation_history)
+    except _EphemeralUserContextChanged:
+        raise
     except Exception:
         logger.warning(
             "final text-turn flush failed (session=%s) — reply is "

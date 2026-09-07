@@ -41,7 +41,7 @@ export function TerminalInstance({
 }: TerminalInstanceProps) {
   const { t } = useI18n()
 
-  const { addSelectionToChat, hostRef, selection, selectionStyle, status } = useTerminalSession({
+  const { addSelectionToChat, hostRef, selection, selectionStyle, shellName, status } = useTerminalSession({
     id,
     cwd,
     active,
@@ -87,7 +87,12 @@ export function TerminalInstance({
       )}
       {/* Outer div paints the terminal inset; inner div is the xterm host so the
           canvas sizes to the content area and p-2 stays as terminal padding. */}
-      <div className={HOST_CLASS} ref={hostRef} />
+      <div
+        aria-label={`${shellName} terminal`}
+        className={HOST_CLASS}
+        ref={hostRef}
+        role="region"
+      />
     </div>
   )
 }
@@ -110,7 +115,12 @@ export function AgentTerminalInstance({ active, id, procId }: AgentTerminalInsta
       // routes ⌘W here and closes the focused agent tab (not a preview).
       data-terminal=""
     >
-      <div className={HOST_CLASS} ref={hostRef} />
+      <div
+        aria-label="Agent terminal output"
+        className={HOST_CLASS}
+        ref={hostRef}
+        role="region"
+      />
     </div>
   )
 }

@@ -70,6 +70,7 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
       lineHeight: 1.12,
       linkHandler: terminalLinkHandler,
       minimumContrastRatio: 4.5,
+      screenReaderMode: true,
       scrollback: 1000,
       theme: surfaceTheme()
     })

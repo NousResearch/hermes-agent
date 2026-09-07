@@ -407,7 +407,6 @@ import {
   markerPath,
   readLiveUpdateMarker,
   releaseUpdateMarkerIfOwnedBy,
-  transferUpdateMarkerIfOwnedBy,
   updateHandoffConflict,
   type UpdateMarkerClaim,
   writeUpdateMarker
@@ -496,8 +495,8 @@ import {
 import { installWindowsSystemCaTrust } from './windows-system-ca'
 import {
   applyWindowsUpdate,
-  authenticateRecoveryUpdaterHandoff,
   discardUpdateHandoffAck,
+  runRecoveryUpdaterHandoff,
   waitForAcknowledgedUpdaterClaim,
   windowsUpdateBlocksBackendStart,
   windowsUpdateIsBusy,
@@ -505,7 +504,7 @@ import {
 } from './windows-update-apply'
 import { type ForceReleaseHolder, formatHolderLine, runWindowsUpdateForceRelease } from './windows-update-force-release'
 import { forceReleaseHoldersFromScan } from './windows-update-holder-policy'
-import { requireUpdaterHandoff, runUpdaterHandoffTransaction, stopAndRecordPluginHost } from './windows-update-orchestration'
+import { requireUpdaterHandoff, stopAndRecordPluginHost } from './windows-update-orchestration'
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
@@ -4318,12 +4317,16 @@ async function handOffWindowsBootstrapRecoveryTransaction(reason) {
   const updaterStartedAfter = Math.floor(Date.now() / 1000)
   const dwellStartedAt = Date.now()
   const recoveryNonce = createUpdateHandoffNonce()
-  let createdAt: number | null = null
-  let repairTransferred = false
 
   discardUpdateHandoffAck(HERMES_HOME)
 
-  const handoff = await runUpdaterHandoffTransaction({
+  const handoff = await runRecoveryUpdaterHandoff({
+    hermesHome: HERMES_HOME,
+    nonce: recoveryNonce,
+    startedAfter: updaterStartedAfter,
+    // Present only on the full-repair path, where the Desktop holds the marker
+    // for gate continuity and hands it to the child after authentication.
+    repairClaim: fullRepair ? repairClaim ?? null : null,
     spawn: () => spawnUpdaterProcess(updater, updaterArgs, {
       cwd: HERMES_HOME,
       env: {
@@ -4336,40 +4339,10 @@ async function handOffWindowsBootstrapRecoveryTransaction(reason) {
       stdio: 'ignore'
     }),
     observe: child => observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS),
-    authenticate: async child => {
-      createdAt = Number.isInteger(child.pid) && isSpawnedUpdaterGenerationActive(child)
-        ? await captureSpawnedUpdaterCreatedAt(Number(child.pid))
-        : null
-
-      if (createdAt === null || !Number.isInteger(child.pid)) {return false}
-
-      // The marker transfer is a hand-over of the gate, NOT evidence. It used
-      // to run before authentication and then satisfy the very check that
-      // followed it (#B4); authenticate first, transfer only on success.
-      const authenticated = await authenticateRecoveryUpdaterHandoff({
-        hermesHome: HERMES_HOME,
-        nonce: recoveryNonce,
-        childPid: Number(child.pid),
-        childCreatedAt: createdAt,
-        desktopHoldsMarker: fullRepair,
-        startedAfter: updaterStartedAfter,
-        isChildGenerationActive: () => isSpawnedUpdaterGenerationActive(child)
-      })
-
-      if (!authenticated) {return false}
-
-      if (fullRepair) {
-        repairTransferred = Boolean(repairClaim) && await transferUpdateMarkerIfOwnedBy(
-          HERMES_HOME,
-          repairClaim!,
-          { pid: Number(child.pid), startedAt: createdAt }
-        )
-
-        if (!repairTransferred) {return false}
-      }
-
-      return true
-    },
+    childPid: child => (Number.isInteger(child.pid) ? Number(child.pid) : null),
+    captureCreatedAt: async (child, pid) =>
+      isSpawnedUpdaterGenerationActive(child) ? captureSpawnedUpdaterCreatedAt(pid) : null,
+    isChildGenerationActive: child => isSpawnedUpdaterGenerationActive(child),
     commit: () => {
       rememberLog(
         `[bootstrap] handed off ${reason} recovery to updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release app.asar`
@@ -4382,13 +4355,13 @@ async function handOffWindowsBootstrapRecoveryTransaction(reason) {
 
       return true
     },
-    restore: async child => {
+    restore: async ({ child, createdAt, markerTransferred }) => {
       if (child && createdAt !== null) {
         await terminateSpawnedUpdaterIfExact(child, createdAt)
       }
 
       if (repairClaim) {
-        if (repairTransferred && child && Number.isInteger(child.pid)) {
+        if (markerTransferred && child && Number.isInteger(child.pid)) {
           const liveCreatedAt = await queryWindowsProcessCreatedAt(Number(child.pid))
           const childExited = typeof child.exitCode === 'number' || typeof child.signalCode === 'string'
 
@@ -4396,7 +4369,7 @@ async function handOffWindowsBootstrapRecoveryTransaction(reason) {
             liveCreatedAt !== createdAt
 
           if (childExited || pidWasReused) {
-            releaseUpdateMarkerIfOwnedBy(HERMES_HOME, Number(child.pid), createdAt!)
+            releaseUpdateMarkerIfOwnedBy(HERMES_HOME, Number(child.pid), createdAt)
           }
         } else {
           releaseUpdateMarkerIfOwnedBy(HERMES_HOME, repairClaim.pid, repairClaim.startedAt)

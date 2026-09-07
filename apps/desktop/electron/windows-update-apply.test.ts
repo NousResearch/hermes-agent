@@ -8,6 +8,8 @@ import {
   applyWindowsUpdate,
   authenticateRecoveryUpdaterHandoff,
   readUpdateHandoffAck,
+  type RecoveryUpdaterHandoffDeps,
+  runRecoveryUpdaterHandoff,
   waitForAcknowledgedUpdaterClaim,
   type WindowsUpdateApplyDeps,
   windowsUpdateBlocksBackendStart,
@@ -492,4 +494,173 @@ test('bootstrap recovery rejects a child whose generation was never captured', a
     await authenticateRecoveryUpdaterHandoff(recoveryDeps({ childCreatedAt: null, readAck: () => ackFixture() })),
     false
   )
+})
+
+// ---------------------------------------------------------------------------
+// The recovery handoff transaction. authenticateRecoveryUpdaterHandoff above
+// decides whether the child is ours; this decides what the Desktop does with
+// that answer, and in which order.
+// ---------------------------------------------------------------------------
+
+type FakeChild = { pid: number | null }
+
+function handoffDeps(
+  trace: string[],
+  overrides: Partial<RecoveryUpdaterHandoffDeps<FakeChild, string>> = {}
+): RecoveryUpdaterHandoffDeps<FakeChild, string> {
+  return {
+    hermesHome: HOME,
+    nonce: NONCE,
+    startedAfter: 1_723_329_999,
+    repairClaim: CLAIM,
+    spawn: () => {
+      trace.push('spawn')
+
+      return { pid: 500 }
+    },
+    observe: async () => {
+      trace.push('observe')
+
+      return { ok: true }
+    },
+    childPid: child => child.pid,
+    captureCreatedAt: async () => {
+      trace.push('capture')
+
+      return 1_723_330_000
+    },
+    isChildGenerationActive: () => true,
+    commit: () => {
+      trace.push('commit')
+
+      return 'handed-off'
+    },
+    restore: ({ markerTransferred, createdAt }) => {
+      trace.push(`restore transferred=${markerTransferred} createdAt=${String(createdAt)}`)
+    },
+    authenticate: async () => {
+      trace.push('authenticate')
+
+      return true
+    },
+    transferMarker: async () => {
+      trace.push('transfer')
+
+      return true
+    },
+    authenticationError: 'The recovery updater did not acknowledge startup.',
+    ...overrides
+  }
+}
+
+test('the repair handoff authenticates before it hands over the marker', async () => {
+  const trace: string[] = []
+  const result = await runRecoveryUpdaterHandoff(handoffDeps(trace))
+
+  assert.deepEqual(result, { ok: true, value: 'handed-off' })
+  // #B4: the marker transfer used to run FIRST and then satisfy the check that
+  // followed it. capture -> authenticate -> transfer is the whole fix.
+  assert.deepEqual(
+    trace.filter(step => step !== 'observe'),
+    ['spawn', 'capture', 'authenticate', 'transfer', 'commit']
+  )
+})
+
+test('a child that fails authentication never receives the marker', async () => {
+  const trace: string[] = []
+
+  const refuse = async () => {
+    trace.push('authenticate')
+
+    return false
+  }
+
+  const result = await runRecoveryUpdaterHandoff(handoffDeps(trace, { authenticate: refuse }))
+
+  assert.equal(result.ok, false)
+  assert.equal(result.ok === false && result.error, 'update-handoff-unacknowledged')
+  assert.ok(!trace.includes('transfer'), 'the gate is never handed to an unauthenticated process')
+  assert.ok(!trace.includes('commit'))
+  assert.ok(trace.includes('restore transferred=false createdAt=1723330000'))
+})
+
+test('a refused marker transfer fails the handoff', async () => {
+  const trace: string[] = []
+
+  const refuse = async () => {
+    trace.push('transfer')
+
+    return false
+  }
+
+  const result = await runRecoveryUpdaterHandoff(handoffDeps(trace, { transferMarker: refuse }))
+
+  // The Desktop's claim did not move, so the child cannot be allowed to
+  // proceed as the update's owner.
+  assert.equal(result.ok, false)
+  assert.ok(!trace.includes('commit'))
+  assert.ok(trace.includes('restore transferred=false createdAt=1723330000'))
+})
+
+test('the gentle path never transfers a marker it does not hold', async () => {
+  const trace: string[] = []
+  const result = await runRecoveryUpdaterHandoff(handoffDeps(trace, { repairClaim: null }))
+
+  assert.deepEqual(result, { ok: true, value: 'handed-off' })
+  assert.ok(!trace.includes('transfer'), 'the staged updater claims the marker itself')
+})
+
+test('the repair flag follows the claim the Desktop actually holds', async () => {
+  const seen: boolean[] = []
+
+  const spy = {
+    authenticate: async (deps: { desktopHoldsMarker: boolean }) => {
+      seen.push(deps.desktopHoldsMarker)
+
+      return true
+    }
+  }
+
+  await runRecoveryUpdaterHandoff(handoffDeps([], { ...spy, repairClaim: CLAIM }))
+  await runRecoveryUpdaterHandoff(handoffDeps([], { ...spy, repairClaim: null }))
+
+  assert.deepEqual(seen, [true, false])
+})
+
+test('a child with no pid or no captured generation is refused before authentication', async () => {
+  const noPid: string[] = []
+
+  const withoutPid = await runRecoveryUpdaterHandoff(
+    handoffDeps(noPid, { spawn: () => ({ pid: null }) })
+  )
+
+  assert.equal(withoutPid.ok, false)
+  assert.ok(!noPid.includes('authenticate'))
+  assert.ok(noPid.includes('restore transferred=false createdAt=null'))
+
+  const noGeneration: string[] = []
+
+  const withoutGeneration = await runRecoveryUpdaterHandoff(
+    handoffDeps(noGeneration, { captureCreatedAt: async () => null })
+  )
+
+  assert.equal(withoutGeneration.ok, false)
+  assert.ok(!noGeneration.includes('authenticate'), 'an unread generation cannot be authenticated')
+})
+
+test('an updater that exits during the dwell is not a successful handoff', async () => {
+  const trace: string[] = []
+
+  const result = await runRecoveryUpdaterHandoff(
+    handoffDeps(trace, { observe: async () => ({ ok: false, message: 'updater exited' }) })
+  )
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: 'updater-spawn-failed',
+    message: 'updater exited'
+  })
+  assert.ok(!trace.includes('commit'))
+  // Authentication passed, so the marker did move; restore has to know that.
+  assert.ok(trace.includes('restore transferred=true createdAt=1723330000'))
 })

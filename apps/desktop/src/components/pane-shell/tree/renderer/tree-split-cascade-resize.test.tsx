@@ -208,6 +208,47 @@ describe('TreeSplit cascading expansion', () => {
     expect(row().weights).toEqual([5, 3])
   })
 
+  it('routes an outer seam into an unlocked sibling beside a local lock', () => {
+    disposers.push(
+      registry.register({ area: 'panes', data: { placement: 'right', width: '300px' }, id: 'review', render: () => null, title: 'Review' }),
+      registry.register({ area: 'panes', data: { placement: 'right', width: '200px' }, id: 'files', render: () => null, title: 'Files' }),
+      registry.register({ area: 'panes', data: { placement: 'bottom' }, id: 'terminal', render: () => null, title: 'Terminal' })
+    )
+
+    const topRail = split(
+      'row',
+      [group(['review'], { id: 'review-zone' }), group(['files'], { id: 'files-zone' })],
+      [1, 1],
+      'top-rail'
+    )
+    const rightRail = split('column', [topRail, group(['terminal'], { id: 'terminal-zone' })], [1, 1], 'right-rail')
+    const tree = split('row', [group(['chat'], { id: 'chat-zone' }), rightRail], [1, 1], 'root-row')
+
+    $layoutTree.set(tree)
+    $paneStates.set({
+      files: { open: true, widthOverride: 200 },
+      review: { open: true, widthLocked: true, widthOverride: 300 }
+    })
+
+    render(<TreeSplit node={tree} root rootRow />)
+
+    const container = globalThis.document.querySelector<HTMLElement>('[data-tree-split="root-row"]')!
+    const [chat, rightRailElement] = [...container.children] as HTMLElement[]
+    setWidth(container, 1000)
+    setWidth(chat, 500)
+    setWidth(rightRailElement, 500)
+    setWidth(globalThis.document.querySelector<HTMLElement>('[data-tree-group="review-zone"]')!, 300)
+    setWidth(globalThis.document.querySelector<HTMLElement>('[data-tree-group="files-zone"]')!, 200)
+
+    const rootSash = rightRailElement.querySelector<HTMLElement>(':scope > [role="separator"]')!
+    fireEvent.pointerDown(rootSash, { button: 0, clientX: 500, pointerId: 3, pointerType: 'mouse' })
+    fireEvent.pointerMove(window, { clientX: 560, pointerId: 3, pointerType: 'mouse' })
+    fireEvent.pointerUp(window, { clientX: 560, pointerId: 3, pointerType: 'mouse' })
+
+    expect($paneStates.get().review).toMatchObject({ widthLocked: true, widthOverride: 300 })
+    expect($paneStates.get().files).toMatchObject({ widthOverride: 140 })
+  })
+
   it('does not move a directly height-locked Terminal boundary', () => {
     disposers.push(
       registry.register({ area: 'panes', data: { placement: 'bottom' }, id: 'terminal', render: () => null, title: 'Terminal' })

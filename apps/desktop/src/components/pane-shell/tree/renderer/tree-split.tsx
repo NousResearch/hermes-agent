@@ -250,7 +250,7 @@ export function TreeSplit({
         const toolZone = allPaneIds(child).length > 0 && allPaneIds(child).every(isCollapsePane)
         const floor = toolZone ? COLLAPSED_ZONE_PX : MIN_PANE_PX
         const paneIds = zone ? shownPaneIds(zone, trackCtx) : allPaneIds(child).filter(id => !paneGone(id))
-        const lockKey = horizontal ? 'widthLocked' : 'heightLocked'
+        const locked = lockedSharedTrackSize(child, axis, trackCtx) !== null
 
         return {
           // EVERY shown pane of the zone: the zone's track is the max() of its
@@ -259,7 +259,7 @@ export function TreeSplit({
           // larger sibling's width.
           paneIds,
           fixed: Boolean(zone),
-          locked: paneIds.some(id => Boolean(overrides[id]?.[lockKey])),
+          locked,
           size: sizeOf(zoneEl ?? wrapper),
           min: toolZone ? floor : Math.max(floor, computedPx(horizontal ? cs.minWidth : cs.minHeight, 0)),
           max: computedPx(horizontal ? cs.maxWidth : cs.maxHeight, Number.POSITIVE_INFINITY),

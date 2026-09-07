@@ -151,6 +151,48 @@ describe('zone size locks', () => {
     expect(edgeFixedZone(sharedColumn, 'end', 'row', ctx)?.id).toBe('logs-zone')
   })
 
+  it('routes an outer seam past a locally locked edge pane to an unlocked sibling', () => {
+    const topRail = split(
+      'row',
+      [group(['review'], { id: 'review-zone' }), group(['files'], { id: 'files-zone' })],
+      [1, 1],
+      'top-rail'
+    )
+
+    const ctx = {
+      overrides: {
+        files: { widthOverride: 200 },
+        review: { widthLocked: true, widthOverride: 300 }
+      },
+      paneFor: (id: string) => ({ data: { width: id === 'review' ? '300px' : '200px' }, id }) as never,
+      paneGone: () => false
+    }
+
+    expect(edgeFixedZone(topRail, 'start', 'row', ctx)?.id).toBe('files-zone')
+  })
+
+  it('composes adjacent locks before comparing a shared cross-axis boundary', () => {
+    const topRail = split(
+      'row',
+      [group(['review'], { id: 'review-zone' }), group(['files'], { id: 'files-zone' })],
+      [1, 1],
+      'top-rail'
+    )
+    const rightColumn = split('column', [topRail, group(['terminal'], { id: 'terminal-zone' })], [1, 1], 'right-column')
+
+    const ctx = {
+      overrides: {
+        files: { widthLocked: true, widthOverride: 200 },
+        review: { widthLocked: true, widthOverride: 300 },
+        terminal: { widthLocked: true, widthOverride: 400 }
+      },
+      paneFor: (id: string) => ({ data: {}, id }) as never,
+      paneGone: () => false
+    }
+
+    expect(fixedTrackSize(rightColumn, 'row', ctx)).toBe('500px')
+  })
+
   it('keeps a shared row within the height locked by one child', () => {
     const sharedRow = split(
       'row',

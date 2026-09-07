@@ -234,7 +234,14 @@ interface LockedSharedTrackOwner {
   zone: GroupNode
 }
 
-/** The largest locked descendant that owns a boundary shared ACROSS `axis`. */
+/**
+ * Resolve a locked span along `axis`.
+ *
+ * Across the axis, one descendant lock owns the shared boundary and the
+ * largest one wins. Along the axis, adjacent tracks own separate pieces of the
+ * span, so the parent is fixed only when every visible child is locked; those
+ * compatible pieces compose by sum.
+ */
 function lockedSharedTrackOwner(node: LayoutNode, axis: 'row' | 'column', ctx: TrackContext): LockedSharedTrackOwner | null {
   if (node.type === 'group') {
     if (node.minimized) {
@@ -254,13 +261,21 @@ function lockedSharedTrackOwner(node: LayoutNode, axis: 'row' | 'column', ctx: T
     return sizes.length === 0 ? null : { size: Math.max(...sizes), zone: node }
   }
 
+  const visible = node.children.filter(child => !subtreeGone(child, ctx))
+  const owners = visible.map(child => lockedSharedTrackOwner(child, axis, ctx))
+
   if (node.orientation === axis) {
-    return null
+    if (owners.length === 0 || owners.some(owner => owner === null)) {
+      return null
+    }
+
+    const complete = owners as LockedSharedTrackOwner[]
+    const largest = complete.reduce((current, owner) => (owner.size > current.size ? owner : current))
+
+    return { size: complete.reduce((sum, owner) => sum + owner.size, 0), zone: largest.zone }
   }
 
-  return node.children
-    .filter(child => !subtreeGone(child, ctx))
-    .map(child => lockedSharedTrackOwner(child, axis, ctx))
+  return owners
     .filter((owner): owner is LockedSharedTrackOwner => owner !== null)
     .reduce<LockedSharedTrackOwner | null>((largest, owner) => (!largest || owner.size > largest.size ? owner : largest), null)
 }
@@ -418,9 +433,28 @@ export function edgeFixedZone(
   const visible = node.children.filter(child => !subtreeGone(child, ctx))
 
   if (node.orientation === axis) {
-    const child = edge === 'start' ? visible[0] : visible[visible.length - 1]
+    const ordered = edge === 'start' ? visible : [...visible].reverse()
+    let lockedFallback: GroupNode | null = null
 
-    return child ? edgeFixedZone(child, edge, axis, ctx) : null
+    // An outer seam may resize an unlocked sibling inside an along-axis run
+    // without changing the locked edge pane. Walk inward to find that capacity;
+    // only fall back to the locked edge when the complete span is immutable.
+    for (const child of ordered) {
+      const zone = edgeFixedZone(child, edge, axis, ctx)
+
+      if (!zone) {
+        continue
+      }
+
+      if (lockedSharedTrackOwner(zone, axis, ctx)) {
+        lockedFallback ??= zone
+        continue
+      }
+
+      return zone
+    }
+
+    return lockedFallback
   }
 
   // Cross-axis: every child touches the edge — the first fixed one owns it.

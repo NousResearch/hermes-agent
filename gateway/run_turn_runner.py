@@ -815,6 +815,10 @@ class TurnRunner:
                         initial_reply_to_id=ctx.event_message_id, run_still_current=ctx._run_still_current,
                     )
                     ctx.stream_consumer_holder[0] = stream_consumer
+                    # #105341: a consumer created only for interim commentary (text streaming off)
+                    # is never fed the final reply's deltas — mark it so the duplicate-risk
+                    # diagnostic in ``_run_agent_mark_streamed_delivery`` stays silent.
+                    stream_consumer.stream_deltas_enabled = want_stream_deltas
             except Exception as err:
                 logger.debug("Could not set up stream consumer: %s", err)
         # Deltas tee to the stream consumer (when text streaming is on) and to streaming TTS.

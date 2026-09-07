@@ -293,8 +293,10 @@ def _claim_with_orphan_recovery(
     claimed_at: datetime,
     stale_before: datetime,
     exact_dispatch_only: bool = False,
+    reopen_blocked_auto_dispatch: bool = False,
 ):
-    """Claim normally, or reclaim an exact dispatch whose card is gone/archived."""
+    """Claim normally, or reclaim an exact dispatch whose card is gone, archived,
+    or stranded in the blocked staging state used by auto-dispatch."""
 
     lease = ledger.claim(
         receipt,
@@ -319,16 +321,23 @@ def _claim_with_orphan_recovery(
         except RuntimeError:
             return None
         if (
-            exact_dispatch_only
-            and status == "blocked"
+            status == "blocked"
             and callable(task_details)
+            and (exact_dispatch_only or reopen_blocked_auto_dispatch)
         ):
             try:
                 details = task_details(board, binding.task_id)
             except RuntimeError:
                 return None
-            if _is_legacy_intake_task(details, receipt) or _is_reopenable_egress_failure(
-                details, receipt
+            if not isinstance(details, Mapping):
+                return None
+            if (
+                _is_legacy_intake_task(details, receipt)
+                or _is_reopenable_egress_failure(details, receipt)
+                or (
+                    reopen_blocked_auto_dispatch
+                    and _is_staged_auto_dispatch_task(details, receipt)
+                )
             ):
                 return ledger.reopen_legacy_exact_dispatch(
                     receipt,
@@ -413,6 +422,27 @@ def _is_reopenable_egress_failure(
             or "provider egress blocked: LLM egress blocked: base64_payload" in reason
         )
     return False
+
+
+def _is_staged_auto_dispatch_task(
+    details: Mapping[str, object], receipt: FeedbackReceipt
+) -> bool:
+    """Recognize a finalized repair card that never left its staging state."""
+    if details.get("status") != "blocked":
+        return False
+    idempotency_key = details.get("idempotency_key")
+    if not isinstance(idempotency_key, str) or not idempotency_key.startswith(
+        "github-pr-repair:v3:"
+    ):
+        return False
+    evidence = _legacy_task_evidence(details.get("body"))
+    return (
+        isinstance(evidence, Mapping)
+        and evidence.get("repository") == receipt.repository
+        and evidence.get("pr_number") == receipt.pr_number
+        and evidence.get("expected_head_sha") == receipt.head_sha
+        and evidence.get("report_only") is False
+    )
 
 
 def _legacy_task_evidence(body: object) -> Mapping[str, object] | None:

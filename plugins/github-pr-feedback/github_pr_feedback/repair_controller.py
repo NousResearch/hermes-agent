@@ -336,6 +336,7 @@ class RepairController:
                     owner=self._owner,
                     claimed_at=claimed_at,
                     stale_before=claimed_at - timedelta(minutes=15),
+                    reopen_blocked_auto_dispatch=self._policy.auto_dispatch,
                 )
                 if lease is None:
                     if (

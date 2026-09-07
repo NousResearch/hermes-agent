@@ -498,16 +498,24 @@ export function useMessageStream({
           return state
         }
 
-        const authoritativeText = renderMediaTags(text).trim()
+        // renderMediaTags/stripGeneratedImageEchoes no longer trim internally
+        // (#markdown-whitespace saga) so boundary whitespace the model
+        // actually sent — a blank line before a code fence, the gap an
+        // extracted generated-image echo leaves behind — survives into the
+        // bubble. Re-trimming here would silently reproduce that destructive
+        // stripping and make a live-streamed reply render differently than
+        // the same message re-hydrated from storage. Only USE .trim() to
+        // decide whether there is real (non-whitespace) content.
+        const authoritativeText = renderMediaTags(text)
 
-        if (!authoritativeText) {
+        if (!authoritativeText.trim()) {
           return state
         }
 
         const streamId = state.streamId
 
         const replaceTextPart = (parts: ChatMessagePart[]) => {
-          const visibleText = stripGeneratedImageEchoes(authoritativeText, generatedImageEchoSources(parts)).trim()
+          const visibleText = stripGeneratedImageEchoes(authoritativeText, generatedImageEchoSources(parts))
 
           return mergeFinalAssistantText(parts, visibleText, occurredAt)
         }
@@ -586,14 +594,23 @@ export function useMessageStream({
         }
 
         const streamId = state.streamId
-        const finalText = renderMediaTags(text).trim()
+        // renderMediaTags/stripGeneratedImageEchoes no longer trim internally
+        // (#markdown-whitespace saga) so boundary whitespace the model
+        // actually sent survives into the bubble. Re-trimming finalText here
+        // would silently reproduce that destructive stripping and make a
+        // live-streamed reply render differently than the same message
+        // re-hydrated from storage — keep the raw text and use `hasFinalText`
+        // (below) wherever the code only needs to know "is there real text",
+        // not the text itself.
+        const finalText = renderMediaTags(text)
+        const hasFinalText = Boolean(finalText.trim())
         // Structured failure from the terminal frame wins over the legacy text
         // heuristic ("Error: <provider detail>" texts don't match the regexes).
         const completionError = failure?.error ?? completionErrorText(finalText)
         // A partial failure's `text` is streamed output the user should keep,
         // not the error string — settle it like a normal reply AND mark the
         // bubble failed, instead of stripping the text.
-        const keepFailedPartialText = Boolean(failure?.partial && finalText)
+        const keepFailedPartialText = Boolean(failure?.partial && hasFinalText)
         const interimBoundaryPending = state.interimBoundaryPending
 
         // Wall-clock seconds this turn actually ran (message.start stamped
@@ -603,7 +620,7 @@ export function useMessageStream({
           : undefined
 
         const replaceTextPart = (parts: ChatMessagePart[]) => {
-          const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
+          const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts))
 
           return mergeFinalAssistantText(parts, visibleFinalText, occurredAt)
         }
@@ -673,12 +690,12 @@ export function useMessageStream({
             // text merge — replaces the interim's text with the full final.)
             const finalContinuesInterim = Boolean(
               existing.interim &&
-              finalText &&
+              hasFinalText &&
               existingText &&
               (finalText === existingText || finalText.startsWith(existingText) || existingText.startsWith(finalText))
             )
 
-            if (existing.pending || (!interimBoundaryPending && finalText && existingText === finalText)) {
+            if (existing.pending || (!interimBoundaryPending && hasFinalText && existingText === finalText)) {
               nextMessages = prev.map((message, messageIndex) =>
                 messageIndex === index ? completeMessage(message) : message
               )
@@ -708,10 +725,10 @@ export function useMessageStream({
               nextMessages = prev.map((message, messageIndex) =>
                 messageIndex === index ? completeMessage(message) : message
               )
-            } else if (finalText) {
+            } else if (hasFinalText) {
               nextMessages = [...prev, newAssistantFromCompletion()]
             }
-          } else if (finalText) {
+          } else if (hasFinalText) {
             nextMessages = [...prev, newAssistantFromCompletion()]
           }
         }
@@ -750,9 +767,9 @@ export function useMessageStream({
           // history — hydrate to catch up instead of leaving the transcript
           // blank until restart (#88036). A non-empty frame still settles
           // locally, so the user-tail guard keeps applying there.
-          (!unresolvedUserTail || !finalText) &&
-          !(localVisibleText && !finalText) &&
-          (state.adoptedRunningTurn || !state.sawAssistantPayload || !finalText)
+          (!unresolvedUserTail || !hasFinalText) &&
+          !(localVisibleText && !hasFinalText) &&
+          (state.adoptedRunningTurn || !state.sawAssistantPayload || !hasFinalText)
 
         return {
           ...state,

@@ -361,6 +361,20 @@ export const hu: Translations = {
 
   skills: {
     wisdom: {
+      notificationPreferences: {
+        title: "Értesítési beállítások",
+        scope: "Proaktív értesítései a szervezet klienseiben. A kézi böngészés és megosztás továbbra is elérhető.",
+        on: "Értesítések bekapcsolva",
+        muted: "Értesítések némítva",
+        day: "1 nap",
+        week: "1 hét",
+        month: "30 nap",
+        forever: "Határozatlan ideig",
+        pending: "Választása helyben mentve, szinkronizálásra vár.",
+        failed: "A szinkronizálás sikertelen. Új választás előtt frissítse a beállításokat.",
+        conflict: "A beállítás egy másik kliensen megváltozott. Frissítsen az ellenőrzéshez.",
+        expired: "A választás lejárt. Frissítse a beállításokat, és próbálja újra.",
+      },
       tab: 'Közösség',
       browseHub: 'Hub böngészése',
       title: 'Kollektív tudás',

@@ -422,6 +422,20 @@ export const en: Translations = {
 
   skills: {
     wisdom: {
+      notificationPreferences: {
+        title: "Notification settings",
+        scope: "Your proactive notifications across clients in this organization. Manual browsing and sharing remain available.",
+        on: "Notifications on",
+        muted: "Notifications muted",
+        day: "1 day",
+        week: "1 week",
+        month: "30 days",
+        forever: "Indefinitely",
+        pending: "Your choice is saved locally and waiting to sync.",
+        failed: "Sync failed. Refresh settings before choosing again.",
+        conflict: "Your preference changed on another client. Refresh to review it.",
+        expired: "This choice expired. Refresh settings to try again.",
+      },
       tab: 'Collective',
       browseHub: 'Browse hub',
       title: 'Collective Wisdom',

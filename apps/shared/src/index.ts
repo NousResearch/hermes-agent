@@ -112,3 +112,8 @@ export {
   type ResolveGatewayWsUrlDeps,
   type WebSocketAuthParam
 } from './websocket-url'
+export {
+  createWisdomMuteController, initialWisdomMuteState,
+  type WisdomMuteControl, type WisdomMuteCopy, type WisdomMuteDuration,
+  type WisdomMuteSnapshot, type WisdomMuteState, type WisdomMuteSync
+} from './wisdom-mute'

@@ -1235,6 +1235,20 @@ export const zhHant = defineLocale({
 
   skills: {
     collective: {
+      notificationPreferences: {
+        title: "通知設定",
+        scope: "管理此組織中跨用戶端的主動通知。手動瀏覽和分享仍可使用。",
+        on: "通知已開啟",
+        muted: "通知已靜音",
+        day: "1 天",
+        week: "1 週",
+        month: "30 天",
+        forever: "無限期",
+        pending: "選擇已儲存在本機，正在等待同步。",
+        failed: "同步失敗。請重新整理設定後重新選擇。",
+        conflict: "其他用戶端變更了偏好。請重新整理查看。",
+        expired: "此選擇已過期。請重新整理設定後再試。",
+      },
       title: '集體智慧',
       loading: '正在載入集體智慧…',
       unavailable: '集體智慧目前無法使用。',

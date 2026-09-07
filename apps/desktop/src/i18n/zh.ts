@@ -1582,6 +1582,20 @@ export const zh: Translations = {
 
   skills: {
     collective: {
+      notificationPreferences: {
+        title: "通知设置",
+        scope: "管理此组织中跨客户端的主动通知。手动浏览和分享仍可使用。",
+        on: "通知已开启",
+        muted: "通知已静音",
+        day: "1 天",
+        week: "1 周",
+        month: "30 天",
+        forever: "无限期",
+        pending: "选择已保存在本地，正在等待同步。",
+        failed: "同步失败。请刷新设置后重新选择。",
+        conflict: "其他客户端更改了偏好。请刷新查看。",
+        expired: "此选择已过期。请刷新设置后重试。",
+      },
       title: '集体智慧',
       loading: '正在加载集体智慧…',
       unavailable: '集体智慧暂不可用。',

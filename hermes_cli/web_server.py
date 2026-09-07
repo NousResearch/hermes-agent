@@ -1896,6 +1896,8 @@ from hermes_cli.web_models import (  # noqa: F401
     WisdomUninstallRequest,
     WisdomNotificationRequest,
     WisdomConsentRequest,
+    WisdomMutePrepareRequest,
+    WisdomMuteChooseRequest,
     DebugShareRequest,
     TTSSpeakRequest,
     TTSLeaseRequest,
@@ -15937,6 +15939,38 @@ async def get_wisdom_mediation(profile: Optional[str] = None):
     from hermes_wisdom.mediation import WisdomMediation
 
     return await _run_wisdom(profile, lambda service: WisdomMediation(service).activity())
+
+
+@app.get("/api/wisdom/mute")
+async def get_wisdom_mute(profile: Optional[str] = None):
+    from hermes_wisdom.preferences import WisdomPreferences
+
+    return await _run_wisdom(profile, lambda service: WisdomPreferences(service).native_mute_command())
+
+
+@app.post("/api/wisdom/mute/prepare")
+async def post_wisdom_mute_prepare(body: WisdomMutePrepareRequest):
+    def prepare(service):
+        from hermes_wisdom.preferences import WisdomPreferences
+
+        preferences = WisdomPreferences(service)
+        org = service.store.active_org_id()
+        control = preferences.prepare_mute_control(org)
+        return {**control, "organization_id": org, "sync": preferences.mute_status(org)}
+
+    return await _run_wisdom(body.profile, prepare)
+
+
+@app.post("/api/wisdom/mute/choose")
+async def post_wisdom_mute_choose(body: WisdomMuteChooseRequest):
+    def choose(service):
+        from hermes_wisdom.preferences import WisdomPreferences
+
+        preferences = WisdomPreferences(service)
+        preferences.choose_mute_control(service.store.active_org_id(), body.control_id, body.duration)
+        return preferences.native_mute_command()
+
+    return await _run_wisdom(body.profile, choose)
 
 
 @app.post("/api/wisdom/consent")

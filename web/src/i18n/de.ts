@@ -361,6 +361,20 @@ export const de: Translations = {
 
   skills: {
     wisdom: {
+      notificationPreferences: {
+        title: "Benachrichtigungseinstellungen",
+        scope: "Ihre proaktiven Benachrichtigungen auf allen Clients dieser Organisation. Manuelles Durchsuchen und Teilen bleiben verfügbar.",
+        on: "Benachrichtigungen an",
+        muted: "Benachrichtigungen stumm",
+        day: "1 Tag",
+        week: "1 Woche",
+        month: "30 Tage",
+        forever: "Unbefristet",
+        pending: "Ihre Auswahl ist lokal gespeichert und wartet auf Synchronisierung.",
+        failed: "Synchronisierung fehlgeschlagen. Aktualisieren Sie die Einstellungen vor einer neuen Auswahl.",
+        conflict: "Ihre Einstellung wurde auf einem anderen Client geändert. Zum Prüfen aktualisieren.",
+        expired: "Diese Auswahl ist abgelaufen. Aktualisieren Sie die Einstellungen und versuchen Sie es erneut.",
+      },
       tab: 'Kollektiv',
       browseHub: 'Hub durchsuchen',
       title: 'Kollektives Wissen',

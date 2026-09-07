@@ -361,6 +361,20 @@ export const af: Translations = {
 
   skills: {
     wisdom: {
+      notificationPreferences: {
+        title: "Kennisgewinginstellings",
+        scope: "Jou proaktiewe kennisgewings oor kliënte in hierdie organisasie. Handmatige blaai en deel bly beskikbaar.",
+        on: "Kennisgewings aan",
+        muted: "Kennisgewings gedemp",
+        day: "1 dag",
+        week: "1 week",
+        month: "30 dae",
+        forever: "Onbepaald",
+        pending: "Jou keuse is plaaslik gestoor en wag om te sinchroniseer.",
+        failed: "Sinchronisering het misluk. Verfris instellings voordat jy weer kies.",
+        conflict: "Jou voorkeur het op 'n ander kliënt verander. Verfris om dit na te gaan.",
+        expired: "Hierdie keuse het verval. Verfris instellings om weer te probeer.",
+      },
       tab: 'Kollektief',
       browseHub: 'Blaai deur Hub',
       title: 'Kollektiewe Wysheid',

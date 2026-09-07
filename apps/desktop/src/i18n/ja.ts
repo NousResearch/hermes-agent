@@ -1287,6 +1287,20 @@ export const ja = defineLocale({
 
   skills: {
     collective: {
+      notificationPreferences: {
+        title: "通知設定",
+        scope: "この組織の各クライアントで受け取る通知を管理します。手動での閲覧や共有は引き続き利用できます。",
+        on: "通知オン",
+        muted: "通知ミュート",
+        day: "1 日",
+        week: "1 週間",
+        month: "30 日",
+        forever: "無期限",
+        pending: "選択はローカルに保存され、同期待ちです。",
+        failed: "同期に失敗しました。設定を更新してから選び直してください。",
+        conflict: "別のクライアントで設定が変更されました。更新して確認してください。",
+        expired: "この選択は期限切れです。設定を更新して再試行してください。",
+      },
       title: 'コレクティブ・ウィズダム',
       loading: 'コレクティブ・ウィズダムを読み込み中…',
       unavailable: 'コレクティブ・ウィズダムは利用できません。',

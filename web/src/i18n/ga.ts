@@ -369,6 +369,20 @@ export const ga: Translations = {
 
   skills: {
     wisdom: {
+      notificationPreferences: {
+        title: "Socruithe fógraí",
+        scope: "Do chuid fógraí réamhghníomhacha ar chliaint na heagraíochta seo. Tá brabhsáil agus comhroinnt de láimh ar fáil fós.",
+        on: "Fógraí ar siúl",
+        muted: "Fógraí balbhaithe",
+        day: "1 lá",
+        week: "1 seachtain",
+        month: "30 lá",
+        forever: "Go ceann tréimhse éiginnte",
+        pending: "Sábháladh do rogha go háitiúil agus tá sí ag fanacht le sioncronú.",
+        failed: "Theip ar an sioncronú. Athnuaigh na socruithe sula roghnaíonn tú arís.",
+        conflict: "Athraíodh do rogha ar chliant eile. Athnuaigh chun í a sheiceáil.",
+        expired: "Tá an rogha seo imithe in éag. Athnuaigh na socruithe chun triail eile a bhaint as.",
+      },
       tab: 'Comhchoiteann',
       browseHub: 'Brabhsáil an Mol',
       title: 'Eagna Chomhchoiteann',

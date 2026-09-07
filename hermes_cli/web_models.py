@@ -408,6 +408,16 @@ class WisdomConsentRequest(BaseModel):
     profile: Optional[str] = None
 
 
+class WisdomMutePrepareRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    profile: Optional[str] = None
+
+
+class WisdomMuteChooseRequest(WisdomMutePrepareRequest):
+    control_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    duration: Optional[Literal["1_day", "1_week", "30_days", "forever"]]
+
+
 # --- from web_server.py (originally lines 3786-3792) ---
 
 

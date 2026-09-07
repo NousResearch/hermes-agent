@@ -362,6 +362,20 @@ export const es: Translations = {
 
   skills: {
     wisdom: {
+      notificationPreferences: {
+        title: "Ajustes de notificaciones",
+        scope: "Tus notificaciones proactivas en los clientes de esta organización. La consulta y el uso compartido manual siguen disponibles.",
+        on: "Notificaciones activadas",
+        muted: "Notificaciones silenciadas",
+        day: "1 día",
+        week: "1 semana",
+        month: "30 días",
+        forever: "Indefinidamente",
+        pending: "Tu elección se guardó localmente y está pendiente de sincronización.",
+        failed: "Error de sincronización. Actualiza los ajustes antes de volver a elegir.",
+        conflict: "Tu preferencia cambió en otro cliente. Actualiza para revisarla.",
+        expired: "Esta elección caducó. Actualiza los ajustes para reintentarlo.",
+      },
       tab: 'Colectivo',
       browseHub: 'Explorar Hub',
       title: 'Sabiduría colectiva',

@@ -361,6 +361,20 @@ export const tr: Translations = {
 
   skills: {
     wisdom: {
+      notificationPreferences: {
+        title: "Bildirim ayarları",
+        scope: "Bu kuruluştaki istemcilerde proaktif bildirimleriniz. Elle göz atma ve paylaşma kullanılabilir kalır.",
+        on: "Bildirimler açık",
+        muted: "Bildirimler sessizde",
+        day: "1 gün",
+        week: "1 hafta",
+        month: "30 gün",
+        forever: "Süresiz",
+        pending: "Seçiminiz yerel olarak kaydedildi ve eşitleme bekliyor.",
+        failed: "Eşitleme başarısız. Yeniden seçmeden önce ayarları yenileyin.",
+        conflict: "Tercihiniz başka bir istemcide değişti. İncelemek için yenileyin.",
+        expired: "Bu seçimin süresi doldu. Tekrar denemek için ayarları yenileyin.",
+      },
       tab: 'Kolektif',
       browseHub: 'Hub’a göz at',
       title: 'Kolektif Bilgelik',

@@ -1,3 +1,5 @@
+import type { WisdomMuteControl, WisdomMuteDuration, WisdomMuteSnapshot } from '@hermes/shared'
+
 import type { ActionResponse } from '@/types/hermes'
 
 import { capabilityScoped, type ProfileScope } from './client'
@@ -287,6 +289,12 @@ const request = <T>(path: string, profile?: ProfileScope, init?: { body?: unknow
   })
 
 export const getWisdomStatus = (profile?: ProfileScope): Promise<WisdomStatus> => request('/api/wisdom/status', profile)
+
+export const getWisdomMute = (profile?: ProfileScope): Promise<WisdomMuteSnapshot> => request('/api/wisdom/mute', profile)
+export const prepareWisdomMute = (profile?: ProfileScope): Promise<WisdomMuteControl> =>
+  request('/api/wisdom/mute/prepare', profile, { method: 'POST', body: {} })
+export const chooseWisdomMute = (controlId: string, duration: WisdomMuteDuration, profile?: ProfileScope): Promise<WisdomMuteSnapshot> =>
+  request('/api/wisdom/mute/choose', profile, { method: 'POST', body: { control_id: controlId, duration } })
 
 export const getWisdomMediation = (profile?: ProfileScope): Promise<WisdomMediationActivity> =>
   request('/api/wisdom/mediation', profile)

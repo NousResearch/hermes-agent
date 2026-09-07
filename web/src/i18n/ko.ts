@@ -360,6 +360,20 @@ export const ko: Translations = {
 
   skills: {
     wisdom: {
+      notificationPreferences: {
+        title: "알림 설정",
+        scope: "이 조직의 여러 클라이언트에서 받는 사전 알림입니다. 수동 탐색과 공유는 계속 사용할 수 있습니다.",
+        on: "알림 켜짐",
+        muted: "알림 음소거",
+        day: "1일",
+        week: "1주",
+        month: "30일",
+        forever: "무기한",
+        pending: "선택 사항이 로컬에 저장되어 동기화를 기다리고 있습니다.",
+        failed: "동기화에 실패했습니다. 설정을 새로 고친 후 다시 선택하세요.",
+        conflict: "다른 클라이언트에서 설정이 변경되었습니다. 새로 고쳐 확인하세요.",
+        expired: "선택 사항이 만료되었습니다. 설정을 새로 고쳐 다시 시도하세요.",
+      },
       tab: '컬렉티브',
       browseHub: 'Hub 둘러보기',
       title: '집단 지식',

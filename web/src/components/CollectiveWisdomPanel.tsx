@@ -22,6 +22,7 @@ import { Input } from '@nous-research/ui/ui/components/input'
 import { useI18n } from '@/i18n'
 import { WisdomFileEditor } from './WisdomFileEditor'
 import { WisdomAgentActivity } from './WisdomAgentActivity'
+import { WisdomNotificationSettings } from './WisdomNotificationSettings'
 import { WisdomSystemSpecificationEditor } from './WisdomManifestEditor'
 import { WisdomCheckBadge, WisdomReviewTables } from './WisdomChecks'
 import {
@@ -631,6 +632,7 @@ export function CollectiveWisdomPanel({ profile }: Props) {
   return (
     <section className="space-y-4" aria-label={copy.title}>
       <WisdomAgentActivity profile={profile} />
+      <WisdomNotificationSettings profile={profile} />
       <div className="flex flex-col gap-3 border border-border bg-muted/10 p-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="font-mondwest text-lg text-text-primary">{copy.title}</h2>

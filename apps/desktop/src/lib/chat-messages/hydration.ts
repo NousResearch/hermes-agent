@@ -166,7 +166,8 @@ function asyncResultBody(content: string): string | undefined {
 
   if (content.startsWith('[ASYNC DELEGATION')) {
     if (content.startsWith('[ASYNC DELEGATION BATCH COMPLETE')) {
-      bodies = content.split(/^--- [✓✗⚠] TASK [^\n]+ ---\r?\n/gm).slice(1)
+      // Task goals can span lines; stopping at a newline leaks the next goal and transcript footer.
+      bodies = content.split(/^--- [✓✗⚠] TASK \d+\/\d+(?:: [\s\S]*?)? {2}\(status=[^\n]*\) ---\r?\n/gm).slice(1)
     } else {
       const result = content.match(/^--- (?:RESULT|ERROR) ---\r?\n/m)
       bodies = result ? [content.slice(result.index! + result[0].length)] : []

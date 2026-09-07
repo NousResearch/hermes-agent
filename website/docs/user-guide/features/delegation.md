@@ -10,6 +10,21 @@ The `delegate_task` tool spawns child AIAgent instances with isolated context, i
 
 Top-level model calls run in the background automatically. Hermes returns a handle immediately so the conversation can continue, then posts the result back as a new message. An orchestrator subagent waits for its own workers so it can synthesize their results before returning.
 
+## Completion delivery
+
+Messaging gateways acknowledge background completions only after their adapter actually
+schedules the event or inserts it into the session's queue. Missing handlers, mismatched
+session routes, and full queues leave the completion pending for retry; these admission
+refusals do not consume the durable delivery-attempt budget. A successful admission suppresses
+repeat delivery within the running gateway, but is not proof that a model turn or outbound
+reply completed. Crash/restart delivery remains at least once, subject to the existing replay
+age limit; actual transport failures retain their bounded retry policy.
+
+An unavailable API-server route stays pending without repeated missing-route warnings.
+Malformed messaging routes still produce diagnostics. On the API server, an async delegation
+completion adds a durable timeline delivery row only: the client owns the next model turn.
+Setting background process notifications to `off` still drains pattern-watch events silently.
+
 ## Background process lifetime
 
 Background terminal processes belong to the agent that starts them. Closing a child during delegation teardown terminates its remaining processes, including work started in earlier turns, without stopping processes owned by the parent or sibling agents. Sharing a terminal environment does not transfer process ownership.

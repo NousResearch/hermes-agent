@@ -69,7 +69,11 @@ required. Notify-off drains these without waking. Transport failures are retried
 durable completion owners/transports do not spend delivery attempts. Profile-namespaced process
 events keep their owning adapter, including raw progress/final notices. Adapter acceptance is
 at-least-once admission, not proof that a model turn or final outbound reply completed. API-server
-async completions remain durable delivery rows, never autonomous new model turns.
+async completions remain durable delivery rows, never autonomous new model turns. Require the
+`admit_internal_event` receipt for completion/watch injection: a handler returning None is not
+acceptance. Refused admission refunds every claimed batch sibling without spending an attempt;
+actual delivery errors keep their bounded retry policy. Recognized raw API routes resolve after
+persisted messaging origins and defer quietly when unavailable; malformed routes still warn.
 
 Cron deliveries are NOT mirrored into the target gateway session — they land in their own cron
 session with a header/footer frame so the main conversation's role alternation stays intact

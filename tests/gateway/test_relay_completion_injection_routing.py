@@ -32,7 +32,11 @@ class _RelayAdapter:
 
     def __init__(self):
         self.handled = []
-        self.handle_message = AsyncMock(side_effect=self.handled.append)
+        self.handle_message = AsyncMock(side_effect=self._admit)
+
+    def _admit(self, event):
+        self.handled.append(event)
+        event._gateway_accepted = True
 
     def fronts_platform(self, platform):
         return platform == Platform.SLACK

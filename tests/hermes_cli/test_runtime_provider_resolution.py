@@ -160,6 +160,14 @@ def test_qwen_oauth_auto_fallthrough_on_auth_failure(monkeypatch):
     from hermes_cli.auth import AuthError
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "qwen-oauth")
+    # A real Qwen pool entry would correctly win before the singleton resolver
+    # and prevent this auth-failure branch from running. Force the empty-pool
+    # precondition that this test is specifically asserting.
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda _provider: SimpleNamespace(has_credentials=lambda: False),
+    )
     monkeypatch.setattr(
         rp,
         "resolve_qwen_runtime_credentials",

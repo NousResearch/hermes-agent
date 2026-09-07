@@ -1,0 +1,16 @@
+Failed to load plugin 'toolaria': No module named 'blobstore'
+Traceback (most recent call last):
+  File "<string>", line 2, in <module>
+  File "/tmp/KenseiAgent-baseline-98a/run_agent.py", line 281, in __init__
+    init_agent(self, **init_kwargs)
+  File "/tmp/KenseiAgent-baseline-98a/agent/agent_init.py", line 2313, in init_agent
+    _build_client(agent, api_key, base_url, fallback_model)
+  File "/tmp/KenseiAgent-baseline-98a/agent/agent_init.py", line 976, in _build_client
+    _init_openai_client(agent, api_key, base_url, fallback_model, _provider_timeout)
+  File "/tmp/KenseiAgent-baseline-98a/agent/agent_init.py", line 938, in _init_openai_client
+    client_kwargs = _routed_client_kwargs(agent, fallback_model, _provider_timeout)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/KenseiAgent-baseline-98a/agent/agent_init.py", line 893, in _routed_client_kwargs
+    raise RuntimeError(
+RuntimeError: No LLM provider configured. Run `hermes model` to select a provider, or run `hermes setup` for first-time configuration.
+baseline_aiagent_construction_exit=1

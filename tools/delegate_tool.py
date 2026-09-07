@@ -166,6 +166,7 @@ def _build_child_agent(
     override_api_mode: Optional[str] = None,
     override_request_overrides: Optional[Dict[str, Any]] = None,
     override_max_tokens: Optional[int] = None,
+    override_fallback_providers: Optional[Any] = None,
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
@@ -214,6 +215,7 @@ def _build_child_agent(
         override_base_url=override_base_url, override_api_key=override_api_key, override_api_mode=override_api_mode,
         override_max_tokens=override_max_tokens, override_acp_command=override_acp_command,
         override_acp_args=override_acp_args, isolate_profile_credentials=isolate_profile_credentials,
+        override_fallback_model=override_fallback_providers,
     )
     if override_request_overrides is not None:
         # honored whenever set, incl. the inherit branch where
@@ -490,6 +492,7 @@ def _build_children(
     _profile_api_key = _profile_cfg.get("api_key") or _profile_model_values.get("api_key") or _profile_credentials.get("api_key")
     _profile_api_mode = _profile_cfg.get("api_mode") or _profile_credentials.get("api_mode")
     _profile_request_overrides = _profile_cfg.get("request_overrides")
+    _profile_fallback_providers = _profile_cfg.get("fallback_providers")
     _profile_toolsets = (
         _profile_cfg.get("toolsets")
         or (loaded_profile_cfg or {}).get("toolsets")
@@ -513,6 +516,8 @@ def _build_children(
             overrides["override_api_mode"] = _profile_api_mode
         if isinstance(_profile_request_overrides, dict):
             overrides["override_request_overrides"] = dict(_profile_request_overrides)
+        if isinstance(_profile_fallback_providers, (list, dict)):
+            overrides["override_fallback_providers"] = _profile_fallback_providers
     _profile_home = _profile_home_for_content(profile, loaded_profile_cfg)
     children = []
     for i, t in enumerate(task_list):

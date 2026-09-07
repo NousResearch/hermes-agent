@@ -1,0 +1,39 @@
+................................................................F....... [ 80%]
+..................                                                       [100%]
+=================================== FAILURES ===================================
+___________ test_profile_fallback_chain_is_scoped_to_target_profile ____________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x793308ccbe10>
+
+    def test_profile_fallback_chain_is_scoped_to_target_profile(monkeypatch):
+        kwargs, _ = _build(
+            monkeypatch,
+            {
+                "name": "target-profile",
+                "config": {
+                    "fallback_providers": [
+                        {"provider": "target-provider", "model": "target-fallback"}
+                    ]
+                },
+                "soul_md": None,
+                "skills": [],
+            },
+        )
+>       assert kwargs.get("override_fallback_providers") == [
+            {"provider": "target-provider", "model": "target-fallback"}
+        ]
+E       AssertionError: assert None == [{'provider': 'target-provider', 'model': 'target-fallback'}]
+E        +  where None = <built-in method get of dict object at 0x793308cf1000>('override_fallback_providers')
+E        +    where <built-in method get of dict object at 0x793308cf1000> = {'task_index': 0, 'goal': 'profile task', 'context': 'task context', 'toolsets': [], ...}.get
+
+tests/tools/test_delegate_profile.py:148: AssertionError
+=============================== warnings summary ===============================
+agent/account_usage.py:11
+  /home/kensei/repos/KenseiAgent-worktrees/delegate-task-phase-7/agent/account_usage.py:11: HermesPluginCompatWarning: hermes plugin compat: `agent.anthropic_adapter.resolve_anthropic_token` moved to `agent.anthropic_credentials.resolve_anthropic_token`. The old path is kept only for external plugins and is removed on 2026-09-14; update your import.
+    from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/tools/test_delegate_profile.py::test_profile_fallback_chain_is_scoped_to_target_profile
+1 failed, 89 passed, 1 warning in 8.85s
+integrated_targeted_exit=1

@@ -1,0 +1,17 @@
+[2J[H[3J[?1049h[3J[2J[H[?1006l[?1003l[?1002l[?1000l[?1000h[?1002h[?1003h[?1006h[?2004h[?1004h]0;Hermes[?1006l[?1003l[?1002l[?1000l[?1049l[>4m[<u[?1004l[?2004l[?1006l[?1003l[?1002l[?1000l
+  ERROR  setRawMode EIO
+
+ node:tty:81:24
+
+ - ReadStream.setRawMode (node:tty:81:24)
+ - handleSetRawMode (dist/entry.js:59777:19)
+ -  (dist/entry.js:54228:9)
+ - commitHookEffectListMount (dist/entry.js:35280:30)
+ - commitLayoutEffectOnFiber (dist/entry.js:35536:26)
+ - recursivelyTraverseLayoutEffects (dist/entry.js:36185:13)
+ - commitLayoutEffectOnFiber (dist/entry.js:35594:13)
+ - recursivelyTraverseLayoutEffects (dist/entry.js:36185:13)
+ - commitLayoutEffectOnFiber (dist/entry.js:35535:13)
+ - recursivelyTraverseLayoutEffects (dist/entry.js:36185:13)
+[?2026h
+[?2026lhermes-tui lifecycle: received SIGTERM

@@ -1,0 +1,2 @@
+/home/kensei/repos/KenseiAgent-worktrees/delegate-task-phase-7/.venv/bin/python: No module named hermes_cli.__main__; 'hermes_cli' is a package and cannot be directly executed
+cli_help_exit=1

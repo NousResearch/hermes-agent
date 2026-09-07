@@ -250,10 +250,10 @@ import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import {
-  getInstallMutationSet,
-  type InstallResourceLocks,
-  probeInstallResourceLocks
-} from './install-mutation-set'
+  attributedInstallHolders,
+  isAnyInstallResourceLocked,
+  venvHermesShimPath
+} from './install-lock-probe'
 import { createIntroRevealWindowController } from './intro-reveal-window'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
@@ -497,10 +497,7 @@ import {
   probeWindowsRemote,
   terminateOwnedWindowsDashboardForUpdate
 } from './windows-remote-lifecycle'
-import {
-  listRestartManagerHoldersForResources,
-  RESTART_MANAGER_DEFAULT_TIMEOUT_MS
-} from './windows-restart-manager'
+import { RESTART_MANAGER_DEFAULT_TIMEOUT_MS } from './windows-restart-manager'
 import {
   alreadyHasNoSandbox,
   buildNoSandboxRelaunchArgs,
@@ -3522,100 +3519,6 @@ function repairMacUpdaterHelper(updater) {
   } catch (err) {
     rememberLog(`[updates] macOS updater helper signature repair skipped: ${err.message}`)
   }
-}
-
-// Path to the venv shim whose lock decides whether `hermes update` can write
-// fresh entry points. On Windows this is the file the running backend
-// `hermes.exe` holds open; on POSIX it's never mandatory-locked.
-function venvHermesShimPath(updateRoot) {
-  return IS_WINDOWS
-    ? path.join(updateRoot, 'venv', 'Scripts', 'hermes.exe')
-    : path.join(updateRoot, 'venv', 'bin', 'hermes')
-}
-
-// Best-effort lock probe mirroring the Rust updater's is_locked(): a running
-// .exe on Windows refuses an O_RDWR open with a sharing violation. On POSIX
-// this practically always succeeds (no mandatory locking), so it returns false
-// — correct, since the shim-contention brick is Windows-only.
-function isShimLocked(shimPath) {
-  if (!IS_WINDOWS) {
-    return false
-  }
-
-  let fd
-
-  try {
-    fd = fs.openSync(shimPath, 'r+')
-
-    return false
-  } catch (err) {
-    // ENOENT ⇒ not there ⇒ nothing locking it. Anything else (EBUSY/EPERM/
-    // EACCES) on Windows means a live handle holds it.
-    return err && err.code !== 'ENOENT'
-  } finally {
-    if (fd !== undefined) {
-      try {
-        fs.closeSync(fd)
-      } catch {
-        void 0
-      }
-    }
-  }
-}
-
-// The files the updater will replace or delete: every native module, DLL,
-// and executable under venv\. This is what pip/uv actually needs free. The
-// shim alone only proves the uv launcher is gone; the real interpreter runs
-// from .hermes-runtime and keeps site-packages .pyd files mapped without
-// touching hermes.exe, so a shim-only probe let the handoff proceed into the
-// July 2026 brotlicffi/_sodium.pyd half-updated venv.
-function installLockResources(updateRoot) {
-  return getInstallMutationSet(updateRoot)
-}
-
-// Exclusive-open probe over the mutation set, split into files only our
-// link can lock (definite) and uv-shared hard links that need per-process
-// attribution. Falls back to the shim probe on a checkout without a venv.
-function probeInstallLocks(updateRoot): InstallResourceLocks {
-  const resources = installLockResources(updateRoot)
-
-  if (resources.length === 0) {
-    const shim = venvHermesShimPath(updateRoot)
-
-    return { definite: isShimLocked(shim) ? [shim] : [], shared: [] }
-  }
-
-  return probeInstallResourceLocks(resources)
-}
-
-// Holders proven by the kernel: Restart Manager over the locked files, with
-// per-process module attribution for uv-shared files so a foreign venv that
-// maps the same wheel through its own hard link is never listed.
-async function attributedInstallHolders(
-  updateRoot,
-  timeoutMs = RESTART_MANAGER_DEFAULT_TIMEOUT_MS
-): Promise<ForceReleaseHolder[]> {
-  const locks = probeInstallLocks(updateRoot)
-
-  if (locks.definite.length === 0 && locks.shared.length === 0) {return []}
-
-  return listRestartManagerHoldersForResources(locks.definite, {
-    shared: locks.shared,
-    // Attribute against the venv, the only tree the sync rewrites: a process
-    // that maps runtime DLLs but no venv file is not a holder of this update.
-    attributionRoot: path.join(updateRoot, 'venv'),
-    timeoutMs
-  })
-}
-
-async function isAnyInstallResourceLocked(updateRoot): Promise<boolean> {
-  const locks = probeInstallLocks(updateRoot)
-
-  if (locks.definite.length > 0) {return true}
-
-  if (locks.shared.length === 0) {return false}
-
-  return (await attributedInstallHolders(updateRoot)).length > 0
 }
 
 // Kill only Hermes-OWNED venv daemons (the memory plugin's hindsight daemon:

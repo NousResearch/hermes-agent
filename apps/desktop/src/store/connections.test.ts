@@ -315,6 +315,25 @@ describe('selectConnection', () => {
     expect(ensureGatewayAgent).toHaveBeenCalledWith('local', 'research', expect.anything())
   })
 
+  it('remembers a local-pool profile pick without the registry-scoped stamp (#104785)', async () => {
+    setConnectionsRegistry(registry)
+    // selectProfile on This device takes the legacy `hermes:connection` IPC,
+    // whose resolved descriptor carries no registryScoped stamp; the active
+    // profile and the descriptor's profile still agree.
+    $connection.set({ connectionId: 'local', mode: 'local', profile: 'xiaolu' })
+    $activeGatewayProfile.set('xiaolu')
+    // Detour through a remote source, then switch back to This device.
+    $connection.set({ connectionId: 'homelab', mode: 'remote', profile: 'default', registryScoped: true })
+    $activeGatewayProfile.set('default')
+
+    await selectConnection('local')
+
+    // The local entry now tracks the profile the user actually runs, instead
+    // of the stale `default` recomputed at switch-back — which re-homed the
+    // user and tripped the "did not become active" toast.
+    expect(ensureGatewayAgent).toHaveBeenCalledWith('local', 'xiaolu', expect.anything())
+  })
+
   it('does not remember a migrated v1 routing alias as a backend profile', async () => {
     setConnectionsRegistry(registry)
     $connection.set({ connectionId: 'homelab', mode: 'remote' })

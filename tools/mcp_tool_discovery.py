@@ -157,7 +157,9 @@ def _ensure_lazy_server_connected(server_name: str) -> bool:
         _loop._run_on_mcp_loop(lambda: _discover_and_register_server(server_name, config),
                                timeout=float(connect_timeout) + 30.0)
     except BaseException as exc:
-        logger.warning("Lazy MCP connect failed for '%s': %s", server_name, _note_connect_failure(server_name, exc))
+        values = tuple(_config._load_mcp_server_env(config).values())
+        logger.warning("Lazy MCP connect failed for '%s': %s", server_name,
+                       _note_connect_failure(server_name, exc, values))
         return False
     _note_connect_success(server_name)
     with _core._lock:

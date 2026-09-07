@@ -679,6 +679,23 @@ def _convert_system_content(content: Any) -> Any:
     ]
 
 
+def _merge_system_segments(segments: List[Any]) -> Any:
+    """Fold multiple converted system segments into one Anthropic ``system`` value: plain strings
+    join with a blank line; any block-list segment (cache_control present) forces the block-list
+    form, wrapping plain strings as text blocks. Breakpoints stay on their original blocks, so a
+    cached prefix is unaffected by segments appended after it (e.g. an ``llm_request`` middleware
+    note) — and vice versa, the earlier segments survive instead of being overwritten."""
+    if all(isinstance(seg, str) for seg in segments):
+        return "\n\n".join(segments)
+    blocks: List[Dict[str, Any]] = []
+    for seg in segments:
+        if isinstance(seg, list):
+            blocks.extend(b for b in seg if isinstance(b, dict))
+        else:
+            blocks.append({"type": "text", "text": seg if isinstance(seg, str) else str(seg)})
+    return blocks
+
+
 def convert_messages_to_anthropic(
     messages: List[Dict], base_url: str | None = None, model: str | None = None
 ) -> Tuple[Optional[Any], List[Dict]]:
@@ -688,11 +705,14 @@ def convert_messages_to_anthropic(
     (proprietary, they 400 on them); Kimi-family endpoints/models keep unsigned
     reasoning_content-derived blocks, which Kimi requires even when empty."""
     system = None
+    system_segments: List[Any] = []
     result: List[Dict[str, Any]] = []
     for m in messages:
         role = m.get("role", "user")
         if role == "system":
-            system = _convert_system_content(m.get("content", ""))
+            converted = _convert_system_content(m.get("content", ""))
+            if converted:
+                system_segments.append(converted)
         elif role == "assistant":
             result.append(_convert_assistant_message(m))
         elif role == "tool":
@@ -705,4 +725,6 @@ def convert_messages_to_anthropic(
     _manage_thinking_signatures(result, base_url, model)
     _evict_old_screenshots(result)
     _scrub_blank_text_blocks(result)
+    if system_segments:
+        system = system_segments[0] if len(system_segments) == 1 else _merge_system_segments(system_segments)
     return system, result

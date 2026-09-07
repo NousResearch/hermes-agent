@@ -282,7 +282,7 @@ export const BackgroundResumeNotice: FC = () => {
     return null
   }
 
-  const label = resume.activity ?? t.assistant.thread.resumeWhenBackgroundDone(resume.count)
+  const label = t.assistant.thread.resumeWhenBackgroundDone(resume.count)
 
   return (
     <div
@@ -292,7 +292,9 @@ export const BackgroundResumeNotice: FC = () => {
       role="status"
     >
       <Codicon className="text-muted-foreground/55" name="sync" size="0.75rem" />
-      <span className="shimmer min-w-0 truncate">{label}</span>
+      <span className="min-w-0 truncate" title={resume.activity ?? undefined}>
+        {label}
+      </span>
     </div>
   )
 }

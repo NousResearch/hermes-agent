@@ -27,7 +27,7 @@ import {
   toggleWorkspaceNodeCollapsed
 } from '@/store/layout'
 import { sessionPinId } from '@/store/session'
-import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
+import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
 
 import { SidebarDateDivider, SidebarSectionMeta } from './chrome'
 import { mergeVisibleReorder, orderRowsWithinGroups, reorderableRowIds } from './order'
@@ -396,7 +396,11 @@ export function SidebarSessionsSection({
         : grouping === 'status'
           ? groupEntriesByStatus(
               displayEntries,
-              entry => hasLiveTurn(dotStates[entry.session.id] ?? 'idle'),
+              entry => {
+                const bucket = sessionStatusBucket(dotStates[entry.session.id])
+
+                return bucket === 'working' || bucket === 'needs-input'
+              },
               statusDividerLabels
             )
           : toSessionRows(displayEntries)

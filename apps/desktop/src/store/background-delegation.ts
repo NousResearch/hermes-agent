@@ -4,9 +4,8 @@ import { $activeSessionId, $busy } from './session'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
 
 export interface BackgroundResume {
-  /** Latest live activity from the primary child (its newest stream line), or
-   *  null when nothing readable has arrived yet — the UI then falls back to the
-   *  generic "will resume" copy. */
+  /** Latest live activity from the primary child, for on-demand detail without
+   *  replacing the notice's explicit background-resume label. */
   activity: string | null
   /** Running/queued background children for the active session. */
   count: number
@@ -20,9 +19,9 @@ const RUNNING = (s: SubagentProgress) => s.status === 'running' || s.status === 
  * A top-level `delegate_task` always runs in the background: the parent turn
  * ends (`$busy` -> false) while the subagent keeps running, and its result
  * re-enters the conversation as a fresh turn when it finishes. During that
- * window the app is genuinely idle but work is still happening elsewhere, so we
- * surface a calm, shimmering status line (its latest activity, or a generic
- * "will resume" fallback) instead of a spinner that reads as "stuck."
+ * window the parent is idle but its work is not finished. Surface an explicit
+ * "will resume" status, with child activity available on demand, rather than
+ * presenting the child's thinking as if the parent were still running.
  *
  * Null while `$busy`: an active turn already owns the main loader, and subagents
  * spawned inside a running turn (synchronous orchestrator children) are part of

@@ -474,14 +474,14 @@ def test_runner_session_db_follows_the_active_profile_scope(multiplex_homes):
 # ---------------------------------------------------------------------------
 
 
-def _expiry_finalized_flag(db_path: Path, session_id: str):
-    """Read one session's expiry_finalized flag, or None when the row is absent."""
+def _session_end_reason(db_path: Path, session_id: str):
+    """Read the durable explicit boundary from the owning profile database."""
     if not db_path.exists():
         return None
     conn = sqlite3.connect(str(db_path))
     try:
         row = conn.execute(
-            "SELECT expiry_finalized FROM sessions WHERE id = ?", (session_id,)
+            "SELECT end_reason FROM sessions WHERE id = ?", (session_id,)
         ).fetchone()
         return None if row is None else row[0]
     except sqlite3.OperationalError:
@@ -528,12 +528,8 @@ def test_scoped_inbound_turn_lands_in_profile_store(multiplex_homes):
     assert _session_ids(root / "state.db") == set()
 
 
-def test_unscoped_background_finalize_reaches_the_key_owner_store(multiplex_homes):
-    """Background work carries no scope but owns every profile's keys.
-
-    Background lifecycle work must resolve the routing key owner profile,
-    not the default profile database.
-    """
+def test_unscoped_explicit_reset_reaches_the_key_owner_store(multiplex_homes):
+    """Explicit lifecycle work follows the routing key, not the ambient scope."""
     root, profile = multiplex_homes
     store = _multiplex_store(root)
 
@@ -543,10 +539,12 @@ def test_unscoped_background_finalize_reaches_the_key_owner_store(multiplex_home
     finally:
         reset_hermes_home_override(token)
 
-    # No scope installed — exactly how the watcher calls this.
-    store.set_expiry_finalized(entry)
+    # No ambient profile scope: the key must still own both sides of the reset.
+    replacement = store.reset_session(entry.session_key)
 
-    assert _expiry_finalized_flag(profile / "state.db", entry.session_id) == 1
+    assert replacement.session_id != entry.session_id
+    assert _session_end_reason(profile / "state.db", entry.session_id) == "session_reset"
+    assert _session_ids(profile / "state.db") == {entry.session_id, replacement.session_id}
     assert _session_ids(root / "state.db") == set()
 
 

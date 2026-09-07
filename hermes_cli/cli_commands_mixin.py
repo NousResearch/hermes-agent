@@ -2247,6 +2247,13 @@ class CLICommandsMixin:
         agent = getattr(self, "agent", None)
         if agent is None:
             return _cp(_dim_line('Nothing to refine yet — send a message first.'))
+        if getattr(agent, "ephemeral", False):
+            _cp(
+                "  🕵 Temporary chat — /refine is off. Nothing from this "
+                "conversation is saved to memory or skills. Run /temp off "
+                "first if you want it reviewed."
+            )
+            return
         snapshot = list(getattr(self, "conversation_history", None) or [])
         if not snapshot:
             return _cp(_dim_line('Nothing to refine yet — the conversation is empty.'))

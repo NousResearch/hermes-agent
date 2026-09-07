@@ -292,6 +292,12 @@ class GatewayGoalCommandsMixin:
         _quick_key, agent, error = self._idle_cached_agent_or_error(event, "refine")
         if error:
             return error
+        if getattr(agent, "ephemeral", False):
+            return (
+                "🕵 Temporary chat — /refine is off. Nothing from this "
+                "conversation is saved to memory or skills. Send /temp off "
+                "first if you want it reviewed."
+            )
         snapshot = list(getattr(agent, "_session_messages", None) or [])
         if not snapshot:
             return "Nothing to refine yet — the conversation is empty."

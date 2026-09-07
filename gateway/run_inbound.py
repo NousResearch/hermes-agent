@@ -1224,10 +1224,6 @@ class GatewayInboundMixin:
                     "please resend shortly."
                 )
 
-        handled, response = await self._maybe_handle_stale_override_notice(event, _quick_key)
-        if handled:
-            return response
-
         # Claim this session before any await: many awaits sit between here and _run_agent
         # registering the real AIAgent; without this sentinel a second message during any of them
         # passes the "already running" guard and spins up a duplicate agent for the same session.
@@ -1245,6 +1241,24 @@ class GatewayInboundMixin:
         _claim_state.turn.started_ts = time.time()
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
+
+        # Notice I/O must own the sentinel too: another message must queue while
+        # metadata or the picker transport is pending. A stop can revoke this claim.
+        notice_passed = False
+        try:
+            handled, response = await self._maybe_handle_stale_override_notice(event, _quick_key)
+            if handled:
+                return response
+            if (
+                not self._is_session_run_current(_quick_key, _run_generation)
+                or not self._is_session_running(_quick_key)
+            ):
+                return None
+            notice_passed = True
+        finally:
+            if not notice_passed:
+                self._release_running_agent_state(_quick_key, run_generation=_run_generation)
+                self._release_turn_lease(_quick_key, _run_generation)
 
         try:
             try:

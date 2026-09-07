@@ -676,7 +676,16 @@ def ensure_hermes_home():
         _secure_dir(home)
         for subdir in _HERMES_HOME_SUBDIRS:
             d = home / subdir
-            d.mkdir(parents=True, exist_ok=True)
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+            except FileExistsError:
+                # A directory symlink whose target is temporarily unavailable
+                # (for example, a not-yet-mounted external volume) exists at
+                # the path but is not considered a directory by pathlib.
+                # Preserve that configured link instead of trying to replace
+                # it or failing every config load with FileExistsError.
+                if subdir != "sessions" or not d.is_symlink():
+                    raise
             _secure_dir(d)
         _ensure_default_soul_md(home)
 

@@ -55,6 +55,26 @@ class TestGetHermesHome:
 
 class TestEnsureHermesHome:
 
+    def test_existing_sessions_directory_is_idempotent(self, tmp_path):
+        (tmp_path / "sessions").mkdir()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            ensure_hermes_home()
+
+        assert (tmp_path / "sessions").is_dir()
+
+    @pytest.mark.skipif(os.name == "nt", reason="Symlink creation requires privileges on Windows")
+    def test_preserves_dangling_sessions_directory_symlink(self, tmp_path):
+        sessions = tmp_path / "sessions"
+        target = tmp_path / "unmounted-volume" / "sessions"
+        sessions.symlink_to(target, target_is_directory=True)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            ensure_hermes_home()
+
+        assert sessions.is_symlink()
+        assert sessions.readlink() == target
+
     def test_creates_default_soul_md_if_missing(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             ensure_hermes_home()

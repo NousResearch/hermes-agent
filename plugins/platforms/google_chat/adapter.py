@@ -921,9 +921,23 @@ class GoogleChatAdapter(BasePlatformAdapter):
             user_id=(sender_email or sender_name), user_name=sender.get("displayName") or sender_email or sender_name,
             thread_id=session_thread_id, user_id_alt=(sender_name or None),
         )
+        quote_metadata = msg.get("quotedMessageMetadata")
+        quote_snapshot = (
+            quote_metadata.get("quotedMessageSnapshot") if isinstance(quote_metadata, dict) else None
+        )
+        quoted_message_id = quote_metadata.get("name") if isinstance(quote_metadata, dict) else None
+        quoted_text = quote_snapshot.get("text") if isinstance(quote_snapshot, dict) else None
+        quoted_author = quote_snapshot.get("sender") if isinstance(quote_snapshot, dict) else None
         return MessageEvent(
             text=text, message_type=message_type, source=source, raw_message=msg, message_id=msg.get("name") or None,
             media_urls=media_urls, media_types=media_types,
+            reply_to_message_id=(
+                quoted_message_id
+                if isinstance(quoted_message_id, str) and quoted_message_id.strip()
+                else None
+            ),
+            reply_to_text=quoted_text.strip() if isinstance(quoted_text, str) and quoted_text.strip() else None,
+            reply_to_author_name=quoted_author.strip() if isinstance(quoted_author, str) and quoted_author.strip() else None,
         )
 
     async def _download_attachment(self, attachment: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:

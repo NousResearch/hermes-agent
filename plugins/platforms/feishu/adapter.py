@@ -2486,6 +2486,21 @@ class FeishuAdapter(BasePlatformAdapter):
         extra = getattr(getattr(self, "config", None), "extra", None) or {}  # tests build bare adapters
         return resolve_channel_prompt(extra, chat_id, parent_id)
 
+    def _dm_top_level_threads_as_sessions(self) -> bool:
+        """Whether Feishu DM quoted-reply threads become their own sessions.
+
+        Feishu assigns a thread/root_id to every quoted reply in a DM; by default
+        each becomes its own session. Set
+        ``platforms.feishu.extra.dm_top_level_threads_as_sessions: false`` to fold
+        all DM messages (quoted replies included) into one continuous session per
+        DM chat (mirrors Slack's flag of the same name).
+        """
+        extra = getattr(getattr(self, "config", None), "extra", None) or {}  # tests build bare adapters
+        raw = extra.get("dm_top_level_threads_as_sessions")
+        if raw is None:
+            return True
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
     async def _process_inbound_message(
         self, *, data: Any, message: Any, sender_id: Any, chat_type: str, message_id: str, is_bot: bool = False,
     ) -> None:
@@ -2504,6 +2519,12 @@ class FeishuAdapter(BasePlatformAdapter):
                 text = f"{hint}\n\n{text}" if text else hint
 
         thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+        # Fold quoted-reply threads in DMs into the single DM session when configured
+        # (mirrors Slack's dm_top_level_threads_as_sessions). Feishu assigns a
+        # thread/root_id to every quoted reply, which by default fragments one DM
+        # chat into many Hermes sessions.
+        if chat_type == "p2p" and not self._dm_top_level_threads_as_sessions():
+            thread_id = None
         reply_to_message_id = (
             getattr(message, "parent_id", None) or getattr(message, "upper_message_id", None)
             or getattr(message, "root_id", None) or None

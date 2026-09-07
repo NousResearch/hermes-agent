@@ -2501,6 +2501,51 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         self.assertIn("@Alice review the spec with Alice", event.text)
         self.assertNotIn("@Hermes @Alice", event.text)
 
+    def _dm_message(self, thread_id="omt-thread", root_id=None):
+        return SimpleNamespace(
+            content=json.dumps({"text": "quoted reply in dm"}),
+            message_type="text",
+            message_id="m_dm",
+            mentions=[],
+            chat_id="oc_dm_chat",
+            parent_id="om_parent",
+            upper_message_id=None,
+            thread_id=thread_id,
+            root_id=root_id,
+        )
+
+    def _run_dm(self, adapter, message):
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=""),
+                chat_type="p2p",
+                message_id="m_dm",
+            )
+        )
+        return adapter.build_source.call_args.kwargs["thread_id"]
+
+    def test_dm_quoted_reply_keeps_thread_by_default(self):
+        adapter = self._build_adapter()
+        adapter._resolve_source_chat_type = Mock(return_value="p2p")
+        message = self._dm_message()
+        thread_id = self._run_dm(adapter, message)
+        # Default: each DM quoted-reply thread becomes its own session.
+        self.assertEqual(thread_id, "omt-thread")
+
+    def test_dm_quoted_reply_folds_into_one_session_when_disabled(self):
+        from gateway.config import PlatformConfig
+
+        adapter = self._build_adapter()
+        adapter._resolve_source_chat_type = Mock(return_value="p2p")
+        adapter.config = PlatformConfig(extra={"dm_top_level_threads_as_sessions": False})
+        message = self._dm_message(thread_id="omt-thread", root_id="omt-thread")
+        thread_id = self._run_dm(adapter, message)
+        # Flag off: the whole DM chat is one continuous session; reply context is kept.
+        self.assertIsNone(thread_id)
+        self.assertEqual(adapter.build_source.call_args.kwargs["chat_id"], "oc_dm_chat")
+
 
 class TestChatLockEviction(unittest.TestCase):
     """_get_chat_lock is LRU-bounded so _chat_locks cannot grow unbounded."""

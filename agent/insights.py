@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional
 
 from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, format_cost_label, format_duration_compact, has_known_pricing
 
+from agent.usage_window import get_usage_window_coverage, get_window_usage_rows
+
 _TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
 _SKILL_TOOLS = {"skill_view", "skill_manage"}
 
@@ -178,18 +180,20 @@ class InsightsEngine:
         if callable(flush):
             flush()
         sessions = self._get_sessions(cutoff, source)
+        usage_rows = self._get_model_usage(cutoff, source)
+        usage_coverage = get_usage_window_coverage(self._conn, cutoff, usage_rows=usage_rows)
         tool_usage = self._get_tool_usage(cutoff, source)
         skill_usage = self._get_skill_usage(cutoff, source)
         message_stats = self._get_message_stats(cutoff, source)
-        if not sessions:
-            return {"days": days, "source_filter": source, "empty": True, "overview": {}, "models": [], "platforms": [], "tools": [],
+        if not sessions and not usage_rows:
+            return {"usage_coverage": usage_coverage, "days": days, "source_filter": source, "empty": True, "overview": {}, "models": [], "platforms": [], "tools": [],
                     "skills": self._compute_skill_breakdown([]), "activity": {}, "top_sessions": []}
-        models = self._compute_model_breakdown(sessions, cutoff, source)
+        models = self._compute_model_breakdown(sessions, cutoff, source, usage_rows=usage_rows)
         return {
-            "days": days, "source_filter": source, "empty": False, "generated_at": time.time(),
-            "overview": self._compute_overview(sessions, message_stats, models),
+            "days": days, "source_filter": source, "empty": False, "generated_at": time.time(), "usage_coverage": usage_coverage,
+            "overview": self._compute_overview(sessions, message_stats, models, usage_rows=usage_rows),
             "models": models,
-            "platforms": self._compute_platform_breakdown(sessions),
+            "platforms": self._compute_platform_breakdown(sessions, usage_rows=usage_rows),
             "tools": self._compute_tool_breakdown(tool_usage),
             "skills": self._compute_skill_breakdown(skill_usage),
             "activity": self._compute_activity_patterns(sessions),
@@ -251,41 +255,59 @@ class InsightsEngine:
         return dict(rows[0]) if rows else {"total_messages": 0, "user_messages": 0, "assistant_messages": 0, "tool_messages": 0}
 
     def _get_model_usage(self, cutoff: float, source: str = None) -> List[Dict]:
-        """Per-model usage rows; [] when the table is missing (older DB) so the caller falls back to the per-session aggregate."""
-        try:
-            return [dict(row) for row in self._query("_GET_MODEL_USAGE", cutoff, source)]
-        except sqlite3.OperationalError:
-            return []
+        """Fetch exact event deltas plus non-overlapping legacy fallback."""
+        return get_window_usage_rows(self._conn, cutoff, source)
 
     # -------------------------------------------------------------- Compute
 
-    def _compute_overview(self, sessions: List[Dict], message_stats: Dict, models: Optional[List[Dict]] = None) -> Dict:
+    def _compute_overview(
+        self,
+        sessions: List[Dict],
+        message_stats: Dict,
+        models: Optional[List[Dict]] = None,
+        *,
+        usage_rows: Optional[List[Dict]] = None,
+    ) -> Dict:
         # Per-model breakdown includes auxiliary usage rows (vision/compression/
         # titles) plus reconciled residuals, while session counters carry
-        # main-loop usage only — sum the breakdown when available so overview
-        # totals match the per-model table and aux spend isn't undercounted.
-        rows = models or sessions
+        # main-loop usage only. Use the exact usage rows for token/cost/session
+        # accounting so a long-lived session's recent event is not discarded.
+        accounting_rows = usage_rows if usage_rows is not None else sessions
+        rows = models or accounting_rows
         total_input, total_output, total_cache_read, total_cache_write = (sum(int(r.get(k) or 0) for r in rows) for k in _TOKEN_KEYS)
         total_tokens = total_input + total_output + total_cache_read + total_cache_write
+        # Message/tool/activity metrics intentionally retain their started-at
+        # session semantics; usage-session denominators below do not.
         total_tool_calls = sum(s.get("tool_call_count") or 0 for s in sessions)
         total_messages = sum(s.get("message_count") or 0 for s in sessions)
         total_cost = actual_cost = 0.0
         models_with_pricing, models_without_pricing, status_counts = set(), set(), Counter()
-        for s in sessions:
-            model = s.get("model") or ""
-            estimated, status = _estimate_cost(s)
+        session_statuses: Dict[Any, str] = {}
+        status_priority = {"unknown": 0, "included": 1, "estimated": 2}
+        for row in accounting_rows:
+            model = row.get("model") or ""
+            estimated, status = _estimate_cost(row)
             total_cost += estimated
-            actual_cost += s.get("actual_cost_usd") or 0.0
-            status_counts[status] += 1
-            known = has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url"))
+            actual_cost += float(row.get("actual_cost_usd") or 0.0)
+            session_id = row.get("session_id") or row.get("id")
+            if session_id:
+                previous = session_statuses.get(session_id)
+                if previous is None or status_priority.get(status, 0) > status_priority.get(previous, 0):
+                    session_statuses[session_id] = status
+            known = has_known_pricing(model, row.get("billing_provider"), row.get("billing_base_url"))
             (models_with_pricing if known else models_without_pricing).add(_short_model(model))
+        status_counts.update(session_statuses.values())
         if models:
             total_cost = sum(float(m.get("cost") or 0.0) for m in models)
         # Guard against negative durations from clock drift.
         durations = [s["ended_at"] - s["started_at"] for s in sessions
                      if s.get("started_at") and s.get("ended_at") and s["ended_at"] > s["started_at"]]
         started = [s["started_at"] for s in sessions if s.get("started_at")]
-        n = len(sessions)
+        usage_session_ids = {row.get("session_id") or row.get("id") for row in accounting_rows}
+        usage_session_ids.discard(None)
+        usage_session_ids.discard("")
+        n = len(usage_session_ids)
+        started_n = len(sessions)
         return {
             "total_sessions": n, "total_messages": total_messages, "total_tool_calls": total_tool_calls,
             "total_input_tokens": total_input, "total_output_tokens": total_output,
@@ -293,8 +315,8 @@ class InsightsEngine:
             "total_tokens": total_tokens, "estimated_cost": total_cost, "actual_cost": actual_cost,
             "total_hours": sum(durations) / 3600 if durations else 0,
             "avg_session_duration": sum(durations) / len(durations) if durations else 0,
-            "avg_messages_per_session": total_messages / n if sessions else 0,
-            "avg_tokens_per_session": total_tokens / n if sessions else 0,
+            "avg_messages_per_session": total_messages / started_n if started_n else 0,
+            "avg_tokens_per_session": total_tokens / n if n else 0,
             "user_messages": message_stats.get("user_messages") or 0,
             "assistant_messages": message_stats.get("assistant_messages") or 0,
             "tool_messages": message_stats.get("tool_messages") or 0,
@@ -306,7 +328,7 @@ class InsightsEngine:
             "included_cost_sessions": status_counts["included"],
         }
 
-    def _compute_model_breakdown(self, sessions: List[Dict], cutoff: float, source: str = None) -> List[Dict]:
+    def _compute_model_breakdown(self, sessions: List[Dict], cutoff: float, source: str = None, *, usage_rows: Optional[List[Dict]] = None) -> List[Dict]:
         """Tokens/cost per model from session_model_usage, so a session that
         switched models via ``/model`` splits across every model it used.
         Sessions without per-model rows (pre-table data) fall back to their
@@ -334,8 +356,11 @@ class InsightsEngine:
             d["actual_cost"] += float(actual_cost or 0.0)
             d["cost_status"] = status
             d["has_pricing"] = has_known_pricing(model, provider or None, base_url) or d.get("has_pricing", False)
+        if usage_rows is None:
+            usage_rows = self._get_model_usage(cutoff, source)
+        event_session_ids = {r["session_id"] for r in usage_rows if r.get("usage_origin") == "event"}
         usage_totals = defaultdict(lambda: dict.fromkeys(count_keys, 0) | {"estimated_cost_usd": 0.0, "actual_cost_usd": 0.0})
-        for r in self._get_model_usage(cutoff, source):
+        for r in usage_rows:
             totals: Dict[str, Any] = usage_totals[r["session_id"]]
             counts = {key: r[key] or 0 for key in count_keys}
             for key in count_keys:
@@ -349,6 +374,8 @@ class InsightsEngine:
         # interrupted migrations, and absolute cumulative updates without
         # double-counting already-attributed route deltas.
         for s in sessions:
+            if s["id"] in event_session_ids:
+                continue
             totals = usage_totals[s["id"]]
             residual = {k: max(0, (s.get(k) or 0) - totals[k]) for k in _TOKEN_KEYS + ("api_call_count",)}
             residual["reasoning_tokens"] = 0
@@ -367,17 +394,33 @@ class InsightsEngine:
                   for model, data in model_data.items()]
         return sorted(result, key=lambda x: (x["total_tokens"], x["sessions"]), reverse=True)
 
-    def _compute_platform_breakdown(self, sessions: List[Dict]) -> List[Dict]:
-        platform_data = defaultdict(lambda: {"sessions": 0, "messages": 0, **dict.fromkeys(_TOKEN_KEYS, 0), "total_tokens": 0, "tool_calls": 0})
-        for s in sessions:
-            d = platform_data[s.get("source") or "unknown"]
-            d["sessions"] += 1
-            d["messages"] += s.get("message_count") or 0
-            for k in _TOKEN_KEYS:
-                d[k] += s.get(k) or 0
-                d["total_tokens"] += s.get(k) or 0
-            d["tool_calls"] += s.get("tool_call_count") or 0
-        return sorted(({"platform": platform, **data} for platform, data in platform_data.items()), key=lambda x: x["sessions"], reverse=True)
+    def _compute_platform_breakdown(
+        self,
+        sessions: List[Dict],
+        *,
+        usage_rows: Optional[List[Dict]] = None,
+    ) -> List[Dict]:
+        # Platform token/session totals follow the same event window as the
+        # overview. Message and tool counts remain started-at session metrics.
+        accounting_rows = sessions if usage_rows is None else usage_rows
+        platform_data = defaultdict(lambda: {"_sessions": set(), "messages": 0, **dict.fromkeys(_TOKEN_KEYS, 0), "total_tokens": 0, "tool_calls": 0})
+        for row in accounting_rows:
+            d = platform_data[row.get("source") or "unknown"]
+            session_id = row.get("session_id") or row.get("id")
+            if session_id:
+                d["_sessions"].add(session_id)
+            for key in _TOKEN_KEYS:
+                d[key] += row.get(key) or 0
+                d["total_tokens"] += row.get(key) or 0
+        for session in sessions:
+            d = platform_data[session.get("source") or "unknown"]
+            d["messages"] += session.get("message_count") or 0
+            d["tool_calls"] += session.get("tool_call_count") or 0
+        result = []
+        for platform, data in platform_data.items():
+            data["sessions"] = len(data.pop("_sessions"))
+            result.append({"platform": platform, **data})
+        return sorted(result, key=lambda x: x["sessions"], reverse=True)
 
     def _compute_tool_breakdown(self, tool_usage: List[Dict]) -> List[Dict]:
         """Ranked tool list with percentages."""
@@ -421,8 +464,10 @@ class InsightsEngine:
             for prev, cur in zip(dates, dates[1:]):
                 current_streak = current_streak + 1 if (cur - prev).days == 1 else 1
                 max_streak = max(max_streak, current_streak)
-        return {"by_day": day_breakdown, "by_hour": hour_breakdown, "busiest_day": max(day_breakdown, key=lambda x: x["count"]),
-                "busiest_hour": max(hour_breakdown, key=lambda x: x["count"]), "active_days": len(daily_counts), "max_streak": max_streak}
+        return {"by_day": day_breakdown, "by_hour": hour_breakdown,
+                "busiest_day": max(day_breakdown, key=lambda x: x["count"]) if daily_counts else None,
+                "busiest_hour": max(hour_breakdown, key=lambda x: x["count"]) if daily_counts else None,
+                "active_days": len(daily_counts), "max_streak": max_streak}
 
     _TOP_METRICS = (
         ("Most messages", lambda s: s.get("message_count") or 0, "{} msgs"),
@@ -432,6 +477,8 @@ class InsightsEngine:
 
     def _compute_top_sessions(self, sessions: List[Dict]) -> List[Dict]:
         """Notable sessions (longest, most messages, most tokens, most tool calls)."""
+        if not sessions:
+            return []
         top = []
         timed = [s for s in sessions if s.get("started_at") and s.get("ended_at")]
         if timed:

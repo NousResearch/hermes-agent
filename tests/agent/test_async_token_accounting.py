@@ -53,6 +53,16 @@ def _model_usage(db, session_id):
     return [dict(r) for r in rows]
 
 
+def _usage_events(db, session_id):
+    with db._lock:
+        rows = db._conn.execute(
+            "SELECT recorded_at, model, input_tokens, output_tokens, api_call_count "
+            "FROM session_model_usage_events WHERE session_id = ? ORDER BY id",
+            (session_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 # =========================================================================
 # Ordering
 # =========================================================================
@@ -106,6 +116,13 @@ class TestOrdering:
         assert totals["input_tokens"] == 507
         assert totals["output_tokens"] == 50
         assert totals["api_call_count"] == 4
+
+        # The exact-window ledger records only real positive deltas. The
+        # absolute overwrite contributes the residual after the first event,
+        # and the final incremental update contributes one more row.
+        events = _usage_events(db, "s-abs")
+        assert [row["input_tokens"] for row in events] == [100, 400, 7]
+        assert [row["api_call_count"] for row in events] == [1, 2, 1]
 
 
 # =========================================================================
@@ -165,6 +182,44 @@ class TestCoalescing:
         assert len(usage) == 1
         assert usage[0]["input_tokens"] == n
         assert usage[0]["api_call_count"] == n
+        event_rows = _usage_events(db, "s-c")
+        assert len(event_rows) == n
+        assert sum(row["input_tokens"] for row in event_rows) == n
+        assert sum(row["api_call_count"] for row in event_rows) == n
+
+    def test_coalescing_preserves_each_enqueue_timestamp(self, db):
+        """The optimization must not collapse exact event time semantics."""
+        db.create_session("s-time", "test")
+        db._apply_token_batch([
+            (
+                "s-time",
+                dict(
+                    input_tokens=3,
+                    api_call_count=1,
+                    model="m1",
+                    billing_provider="p1",
+                    _usage_recorded_at=1_700_000_001.0,
+                ),
+            ),
+            (
+                "s-time",
+                dict(
+                    input_tokens=4,
+                    api_call_count=1,
+                    model="m1",
+                    billing_provider="p1",
+                    _usage_recorded_at=1_700_000_009.0,
+                ),
+            ),
+        ])
+
+        events = _usage_events(db, "s-time")
+        assert [row["recorded_at"] for row in events] == [
+            1_700_000_001.0,
+            1_700_000_009.0,
+        ]
+        assert [row["input_tokens"] for row in events] == [3, 4]
+        assert _totals(db, "s-time")["input_tokens"] == 7
 
     def test_coalesced_apply_equals_sequential_apply(self, db, tmp_path):
         """Applying a coalesced batch produces byte-identical session and
@@ -536,7 +591,11 @@ class TestCoalesceFieldContract:
             set(db._TOKEN_DELTA_SUM_FIELDS)
             | set(db._TOKEN_DELTA_COST_FIELDS)
             | set(db._TOKEN_DELTA_ROUTE_FIELDS)
-            | {"absolute"}  # control flag: absolute deltas never merge
+            | {
+                "absolute",  # control flag: absolute deltas never merge
+                "_usage_recorded_at",
+                "_usage_event_deltas",
+            }
         )
 
         unclassified = params - classified
@@ -547,7 +606,11 @@ class TestCoalesceFieldContract:
             f"control-flag set in this test) — unclassified kwargs are "
             f"silently dropped from merged deltas."
         )
-        phantom = classified - params - {"absolute"}
+        phantom = classified - params - {
+            "absolute",
+            "_usage_recorded_at",
+            "_usage_event_deltas",
+        }
         assert not phantom, (
             f"coalescing field lists reference kwargs update_token_counts "
             f"no longer accepts: {sorted(phantom)}"

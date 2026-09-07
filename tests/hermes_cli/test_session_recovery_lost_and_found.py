@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from hermes_state import SessionDB
-from hermes_cli import session_recovery
+from hermes_cli import session_lost_and_found, session_recovery
 from hermes_cli.session_lost_and_found import (
     STUB_TITLE_PREFIX,
     classify_lost_and_found_row,
@@ -41,6 +41,46 @@ from hermes_cli.session_lost_and_found import find_sqlite3_cli
 # .recover needs a sqlite3 shell built with sqlite_dbpage — PATH presence
 # alone is not enough (Ubuntu CI ships a build without it).
 HAVE_SQLITE3_CLI = find_sqlite3_cli() is not None
+
+
+def test_direct_table_copy_preserves_timestamped_usage_events(
+    tmp_path: Path,
+) -> None:
+    """Rows attributed by .recover must include the exact usage ledger."""
+    source = tmp_path / "direct-source.db"
+    destination = tmp_path / "direct-destination.db"
+
+    db = SessionDB(db_path=source)
+    try:
+        db.create_session("direct-usage-session", "cli")
+        db.update_token_counts(
+            "direct-usage-session",
+            model="test/model",
+            input_tokens=3,
+            cache_read_tokens=30,
+            api_call_count=1,
+        )
+    finally:
+        db.close()
+    SessionDB(db_path=destination).close()
+
+    source_conn = sqlite3.connect(str(source), isolation_level=None)
+    destination_conn = sqlite3.connect(str(destination), isolation_level=None)
+    try:
+        destination_conn.execute("PRAGMA foreign_keys=OFF")
+        copied = session_lost_and_found._copy_direct_tables(
+            source_conn, destination_conn
+        )
+        event = destination_conn.execute(
+            "SELECT session_id, input_tokens, cache_read_tokens, api_call_count "
+            "FROM session_model_usage_events"
+        ).fetchone()
+    finally:
+        source_conn.close()
+        destination_conn.close()
+
+    assert copied["session_model_usage_events"] == 1
+    assert event == ("direct-usage-session", 3, 30, 1)
 
 
 # ── physical corruption helpers ─────────────────────────────────────────────

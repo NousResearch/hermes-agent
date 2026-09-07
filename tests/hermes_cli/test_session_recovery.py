@@ -12,8 +12,9 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_state
+from agent.usage_window import get_usage_window_coverage
 from hermes_state import SessionDB
-from hermes_state_common import FTS_STORAGE_VERSION, SCHEMA_VERSION
+from hermes_state_common import FTS_STORAGE_VERSION, SCHEMA_VERSION, USAGE_EVENTS_COVERAGE_START_KEY
 from hermes_cli import session_recovery
 from hermes_cli.session_recovery import (
     SessionRecoverySafetyError,
@@ -299,6 +300,330 @@ def _corrupt_table_root(path: Path, root_page: int) -> None:
     # a fully failed sessions copy while leaving the messages b-tree intact.
     data[header_offset + 3 : header_offset + 5] = b"\xff\xff"
     path.write_bytes(data)
+
+
+def test_recovery_preserves_timestamped_usage_events(tmp_path: Path) -> None:
+    """The exact rolling-window ledger is canonical recovery data."""
+    source = tmp_path / "usage-events-source.db"
+    output = tmp_path / "usage-events-recovered.db"
+
+    db = SessionDB(db_path=source)
+    try:
+        db.create_session("usage-event-session", "cli")
+        db.update_token_counts(
+            "usage-event-session",
+            model="test/model",
+            billing_provider="test-provider",
+            input_tokens=10,
+            cache_read_tokens=90,
+            api_call_count=1,
+        )
+        db._conn.execute(
+            "UPDATE state_meta SET value = ? WHERE key = ?",
+            ("1234567890", USAGE_EVENTS_COVERAGE_START_KEY),
+        )
+        expected = dict(
+            db._conn.execute(
+                "SELECT session_id, recorded_at, model, input_tokens, "
+                "cache_read_tokens, api_call_count "
+                "FROM session_model_usage_events"
+            ).fetchone()
+        )
+    finally:
+        db.close()
+
+    report = recover_session_database(source, output, work_dir=tmp_path)
+
+    copied = report["copy"]["session_model_usage_events"]
+    assert copied["status"] == "complete"
+    assert copied["copied_rows"] == 1
+    assert report["copy"]["sessions"]["status"] == "complete"
+    conn = sqlite3.connect(str(output))
+    try:
+        conn.row_factory = sqlite3.Row
+        recovered = dict(
+            conn.execute(
+                "SELECT session_id, recorded_at, model, input_tokens, "
+                "cache_read_tokens, api_call_count "
+                "FROM session_model_usage_events"
+            ).fetchone()
+        )
+        coverage = conn.execute(
+            "SELECT value FROM state_meta WHERE key = ?",
+            (USAGE_EVENTS_COVERAGE_START_KEY,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert recovered == expected
+    assert coverage is not None
+    assert coverage[0] == "1234567890"
+    for _ in range(2):
+        reopened = SessionDB(db_path=output)
+        try:
+            preserved = reopened._conn.execute(
+                "SELECT value FROM state_meta WHERE key = ?",
+                (USAGE_EVENTS_COVERAGE_START_KEY,),
+            ).fetchone()
+        finally:
+            reopened.close()
+        assert preserved is not None
+        assert preserved[0] == "1234567890"
+
+
+def test_partial_recovery_invalidates_coverage_when_parent_sessions_are_missing(
+    tmp_path: Path,
+) -> None:
+    """A complete event copy is not exact coverage once parent sessions are gone.
+
+    ``get_window_usage_rows()`` inner-joins sessions. If a session row is
+    missing — and reconstruction cannot rebuild it — copied events become
+    unusable after orphan cleanup while the event table still reports
+    complete. Incomplete parent recovery (placeholder reconstruction)
+    is the same honesty failure even when the join later succeeds.
+    """
+    source = tmp_path / "partial-usage-parents.db"
+    output = tmp_path / "partial-usage-parents-recovered.db"
+
+    db = SessionDB(db_path=source)
+    try:
+        db.create_session("kept-session", "cli")
+        db.update_token_counts(
+            "kept-session",
+            model="test/model",
+            input_tokens=5,
+            api_call_count=1,
+        )
+        db.create_session("lost-parent", "cli")
+        db.update_token_counts(
+            "lost-parent",
+            model="test/model",
+            input_tokens=7,
+            api_call_count=1,
+        )
+        db.create_session("doomed-session", "cli")
+        db.append_message("doomed-session", "user", "surviving transcript")
+        db.update_token_counts(
+            "doomed-session",
+            model="test/model",
+            input_tokens=3,
+            api_call_count=1,
+        )
+        db._conn.execute(
+            "UPDATE state_meta SET value = ? WHERE key = ?",
+            ("1234567890", USAGE_EVENTS_COVERAGE_START_KEY),
+        )
+        db._conn.commit()
+    finally:
+        db.close()
+
+    conn = sqlite3.connect(str(source), isolation_level=None)
+    try:
+        conn.execute(
+            "DELETE FROM sessions WHERE id IN ('lost-parent', 'doomed-session')"
+        )
+    finally:
+        conn.close()
+
+    report = recover_session_database(
+        source,
+        output,
+        work_dir=tmp_path,
+        allow_partial=True,
+    )
+
+    events = report["copy"]["session_model_usage_events"]
+    assert events["status"] == "complete"
+    assert events["copied_rows"] == 3
+    assert report["copy"]["sessions"]["status"] == "complete"
+    cleanup = report["orphan_cleanup"]
+    assert cleanup["sessions_reconstructed"] == 1
+    assert cleanup["session_model_usage_events_removed"] == 1
+
+    verify = sqlite3.connect(str(output))
+    try:
+        usable = verify.execute(
+            "SELECT COUNT(*) FROM session_model_usage_events AS events "
+            "INNER JOIN sessions ON sessions.id = events.session_id"
+        ).fetchone()[0]
+        usable_ids = {
+            row[0]
+            for row in verify.execute(
+                "SELECT events.session_id "
+                "FROM session_model_usage_events AS events "
+                "INNER JOIN sessions ON sessions.id = events.session_id"
+            )
+        }
+        min_surviving = verify.execute(
+            "SELECT MIN(events.recorded_at) FROM session_model_usage_events AS events "
+            "INNER JOIN sessions ON sessions.id = events.session_id"
+        ).fetchone()[0]
+        historical_cutoff = float(min_surviving)
+        coverage = get_usage_window_coverage(verify, historical_cutoff)
+    finally:
+        verify.close()
+    assert usable == 2
+    assert usable < events["copied_rows"]
+    assert usable_ids == {"kept-session", "doomed-session"}
+    assert coverage["coverage_start"] is not None
+    assert coverage["coverage_start"] > historical_cutoff
+    assert coverage["window_complete"] is False
+    for _ in range(2):
+        reopened = SessionDB(db_path=output)
+        try:
+            after = get_usage_window_coverage(reopened._conn, historical_cutoff)
+        finally:
+            reopened.close()
+        assert after["coverage_start"] == coverage["coverage_start"]
+        assert after["window_complete"] is False
+
+    post = SessionDB(db_path=output)
+    try:
+        post.create_session("post-recovery", "cli")
+        post.update_token_counts(
+            "post-recovery",
+            model="test/model",
+            input_tokens=1,
+            api_call_count=1,
+        )
+        fresh = get_usage_window_coverage(post._conn, after["coverage_start"])
+    finally:
+        post.close()
+    assert fresh["window_complete"] is True
+    assert fresh["coverage_start"] == coverage["coverage_start"]
+
+
+def test_partial_recovery_historical_window_stays_incomplete_across_sessiondb_reopens(
+    tmp_path: Path,
+) -> None:
+    """Incomplete recovery must not become exact after a normal SessionDB reopen.
+
+    Parent counterexample: survivor event=100, lost-parent event=300, old
+    marker=50, cutoff=200. Deleting the coverage key lets schema init recreate
+    it from MIN(event)=100 and report window_complete=True over a known gap.
+    """
+    source = tmp_path / "reopen-source.db"
+    output = tmp_path / "reopen-recovered.db"
+    survivor_at, lost_at, old_marker, cutoff = 100.0, 300.0, 50.0, 200.0
+
+    db = SessionDB(db_path=source)
+    try:
+        db.create_session("survivor", "cli")
+        db.update_token_counts(
+            "survivor",
+            model="test/model",
+            input_tokens=5,
+            api_call_count=1,
+        )
+        db.create_session("lost-parent", "cli")
+        db.update_token_counts(
+            "lost-parent",
+            model="test/model",
+            input_tokens=7,
+            api_call_count=1,
+        )
+        db._conn.execute(
+            "UPDATE session_model_usage_events SET recorded_at = ? WHERE session_id = ?",
+            (survivor_at, "survivor"),
+        )
+        db._conn.execute(
+            "UPDATE session_model_usage_events SET recorded_at = ? WHERE session_id = ?",
+            (lost_at, "lost-parent"),
+        )
+        db._conn.execute(
+            "UPDATE state_meta SET value = ? WHERE key = ?",
+            (str(old_marker), USAGE_EVENTS_COVERAGE_START_KEY),
+        )
+        db._conn.commit()
+    finally:
+        db.close()
+
+    conn = sqlite3.connect(str(source), isolation_level=None)
+    try:
+        conn.execute("DELETE FROM sessions WHERE id = 'lost-parent'")
+    finally:
+        conn.close()
+
+    report = recover_session_database(
+        source,
+        output,
+        work_dir=tmp_path,
+        allow_partial=True,
+    )
+    assert report["copy"]["session_model_usage_events"]["status"] == "complete"
+    assert report["orphan_cleanup"]["session_model_usage_events_removed"] == 1
+
+    raw = sqlite3.connect(str(output))
+    try:
+        before = get_usage_window_coverage(raw, cutoff)
+        remaining = raw.execute(
+            "SELECT session_id, recorded_at FROM session_model_usage_events "
+            "ORDER BY recorded_at"
+        ).fetchall()
+    finally:
+        raw.close()
+    assert remaining == [("survivor", survivor_at)]
+    assert before["window_complete"] is False
+    assert before["coverage_start"] is not None
+    assert before["coverage_start"] > cutoff
+    assert before["coverage_start"] != survivor_at
+    assert before["coverage_start"] != old_marker
+
+    last = before
+    for _ in range(2):
+        reopened = SessionDB(db_path=output)
+        try:
+            last = get_usage_window_coverage(reopened._conn, cutoff)
+            marker = reopened._conn.execute(
+                "SELECT value FROM state_meta WHERE key = ?",
+                (USAGE_EVENTS_COVERAGE_START_KEY,),
+            ).fetchone()
+        finally:
+            reopened.close()
+        assert last["window_complete"] is False
+        assert last["coverage_start"] == before["coverage_start"]
+        assert marker is not None
+        assert float(marker[0]) == before["coverage_start"]
+        assert last["coverage_start"] != survivor_at
+
+    live = SessionDB(db_path=output)
+    try:
+        live.create_session("fresh", "cli")
+        live.update_token_counts(
+            "fresh",
+            model="test/model",
+            input_tokens=1,
+            api_call_count=1,
+        )
+        fresh = get_usage_window_coverage(live._conn, last["coverage_start"])
+    finally:
+        live.close()
+    assert fresh["window_complete"] is True
+    assert fresh["coverage_start"] == before["coverage_start"]
+
+
+def test_partial_orphan_cleanup_reports_usage_event_removal(tmp_path: Path) -> None:
+    """Orphan event rows are cleaned and reported like lifetime usage rows."""
+    db_path = tmp_path / "orphan-usage-event.db"
+    SessionDB(db_path=db_path).close()
+
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            "INSERT INTO session_model_usage_events "
+            "(session_id, recorded_at, model, input_tokens) VALUES (?, ?, ?, ?)",
+            ("missing-session", 123.0, "test/model", 7),
+        )
+        cleanup = session_recovery._cleanup_partial_orphans(conn)
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM session_model_usage_events"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert cleanup["session_model_usage_events_removed"] == 1
+    assert cleanup["total_removed_or_relinked"] >= 1
+    assert remaining == 0
 
 
 def test_snapshot_blocks_connections_opened_during_the_copy(

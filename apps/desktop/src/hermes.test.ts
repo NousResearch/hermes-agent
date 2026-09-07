@@ -30,6 +30,7 @@ import {
   setApiRequestConnection,
   setApiRequestProfile,
   speakText,
+  STARTUP_REQUEST_TIMEOUT_MS,
   transcribeAudio,
   triggerCronJob
 } from './hermes'
@@ -178,17 +179,19 @@ describe('Hermes REST helpers', () => {
     )
   })
 
-  it('does not stamp ambient profile onto unscoped helpers', async () => {
+  it('pins profile-list reads only when explicitly scoped, without changing unscoped requests', async () => {
+    setApiRequestConnection('remote-a')
     setApiRequestProfile('iris')
 
     await getProfiles()
+    await getProfiles({ connectionId: 'remote-b', profile: 'scout' })
+    await getProfiles({ connectionId: 'local', profile: 'default' })
 
-    expect(api).toHaveBeenCalledWith(
-      expect.objectContaining({
-        path: '/api/profiles'
-      })
-    )
-    expect(api.mock.calls[0][0]).not.toHaveProperty('profile')
+    expect(api.mock.calls).toEqual([
+      [{ connectionId: 'remote-a', path: '/api/profiles', timeoutMs: STARTUP_REQUEST_TIMEOUT_MS }],
+      [{ connectionId: 'remote-b', profile: 'scout', path: '/api/profiles', timeoutMs: STARTUP_REQUEST_TIMEOUT_MS }],
+      [{ connectionId: 'local', profile: 'default', path: '/api/profiles', timeoutMs: STARTUP_REQUEST_TIMEOUT_MS }]
+    ])
   })
 
   it('preserves ambient and explicit-local ownership for session and profile requests', async () => {

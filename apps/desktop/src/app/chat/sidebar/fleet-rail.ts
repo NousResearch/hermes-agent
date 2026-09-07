@@ -1,5 +1,6 @@
 import type { DesktopAgentRoster, DesktopConnectionKind, DesktopRegistryConnection } from '@/global'
 import { sortConnectionsForDisplay } from '@/lib/connection-display'
+import type { ProfileInfo } from '@/types/hermes'
 
 // Pure grouping for the fleet profile rail: which gateways sit "at rest"
 // beside the active one, and which agents each of them carries. Kept free of
@@ -51,11 +52,13 @@ const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'bas
 export function buildRestGroups({
   activeConnectionId,
   connections,
+  profilesByConnection,
   roster
 }: {
   activeConnectionId: null | string
   connections: readonly DesktopRegistryConnection[]
   roster: DesktopAgentRoster | null
+  profilesByConnection?: ReadonlyMap<string, ProfileInfo[]>
 }): FleetGroup[] {
   const groups: FleetGroup[] = []
 
@@ -82,7 +85,16 @@ export function buildRestGroups({
 
     const defaultRow = rows.find(row => row.profile === DEFAULT_PROFILE)
 
-    const named = rows
+    const cached = profilesByConnection?.get(connection.id)
+
+    const profiles = cached
+      ? cached.map(profile => ({
+          profile: profile.name,
+          handle: rows.find(row => row.profile === profile.name)?.handle
+        }))
+      : rows
+
+    const named = profiles
       .filter(row => row.profile !== DEFAULT_PROFILE)
       .map(row => toAgent(row.profile, row.handle))
       .sort((left, right) => collator.compare(left.profile, right.profile))

@@ -928,7 +928,7 @@ Start-Sleep -Seconds 20
 
         const result = await runPowerShellWithHardBoundary(
           buildHoldTargetJobScript(rootPid, rootCreatedAt, writerPid, writerCreatedAt),
-          5_000,
+          90_000,
           undefined,
           undefined,
           { startWatcher: injectedWatcher.startWatcher }
@@ -1587,7 +1587,11 @@ Start-Sleep -Seconds 30
               writerPid,
               phaseMarker
             ),
-            5_000,
+            // Large on purpose: the arm ends by ABORTING at the checkpoint, so
+            // the budget only has to outlast PowerShell start-up, the Add-Type
+            // compile and one process snapshot. At 5 s a loaded host killed the
+            // child before it ever published the checkpoint marker.
+            90_000,
             controller.signal
           )
           const markerReady = await waitForFile(phaseMarker, LIVE_STATE_TIMEOUT_MS)

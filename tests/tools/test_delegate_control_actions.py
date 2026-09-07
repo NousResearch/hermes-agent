@@ -11,6 +11,8 @@ backgrounded) and never consume the per-turn subagent spawn cap.
 import json
 import weakref
 
+import pytest
+
 from tools.delegate_tool import (
     _handle_control_action,
     _is_descendant_of,
@@ -638,48 +640,73 @@ def test_child_completion_with_collapsed_container_task_id_suppressed(monkeypatc
     assert reg.completion_queue.qsize() == 0
 
 
-def test_spawn_local_stamps_owner_task_id_and_event_carries_it(monkeypatch):
+@pytest.fixture
+def notification_child(tmp_path):
+    """Pipe-mode children have DEVNULL stdin; release through a real file."""
+    import sys
+
+    gate = tmp_path / "release"
+    script = tmp_path / "child.py"
+    script.write_text(
+        "import pathlib, sys, time\n"
+        "gate = pathlib.Path(sys.argv[1])\n"
+        "deadline = time.monotonic() + 15\n"
+        "while not gate.exists():\n"
+        "    if time.monotonic() > deadline: raise TimeoutError('gate not released')\n"
+        "    time.sleep(0.01)\n"
+        "print('notification-child-finished')\n",
+        encoding="utf-8",
+    )
+    try:
+        yield f'"{sys.executable}" "{script}" "{gate}"', gate
+    finally:
+        gate.touch()
+
+
+def test_spawn_local_stamps_owner_task_id_and_event_carries_it(monkeypatch, notification_child):
     """spawn_local(owner_task_id=...) survives to the completion event, so a
     real subagent-spawned process (collapsed task_id) is suppressed on
     drain. Exercises the actual spawn -> _move_to_finished -> drain path."""
-    import sys
-
     import hermes_cli.config as _cfg
     from tools.process_registry import ProcessRegistry
 
     monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
     reg = ProcessRegistry()
+    command, gate = notification_child
     session = reg.spawn_local(
-        command=f'"{sys.executable}" -c "input(); print(\'owner-stamp-e2e\')"',
+        command=command,
         task_id="default",
         owner_task_id="sa-9-supp0006",
     )
     session.notify_on_complete = True
     assert session.owner_task_id == "sa-9-supp0006"
     # Do not let a fast child exit before notification admission is configured.
-    reg.write_stdin(session.id, "release\n")
+    gate.touch()
     event = reg.completion_queue.get(timeout=15)
+    assert event["exit_code"] == 0
+    assert "notification-child-finished" in event["output"]
     reg.completion_queue.put(event)
     assert reg.drain_notifications() == []
 
 
-def test_spawn_local_without_owner_defaults_to_task_id(monkeypatch):
+def test_spawn_local_without_owner_defaults_to_task_id(monkeypatch, notification_child):
     """Backward compat: callers that don't pass owner_task_id behave exactly
     as before (owner falls back to task_id; parent-owned still delivers)."""
-    import sys
-
     import hermes_cli.config as _cfg
     from tools.process_registry import ProcessRegistry
 
     monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
     reg = ProcessRegistry()
+    command, gate = notification_child
     session = reg.spawn_local(
-        command=f'"{sys.executable}" -c "input(); print(\'parent-e2e\')"', task_id="default",
+        command=command, task_id="default",
     )
     session.notify_on_complete = True
     assert session.owner_task_id == "default"
-    reg.write_stdin(session.id, "release\n")
+    gate.touch()
     event = reg.completion_queue.get(timeout=15)
+    assert event["exit_code"] == 0
+    assert "notification-child-finished" in event["output"]
     reg.completion_queue.put(event)
     results = reg.drain_notifications()
     assert len(results) == 1

@@ -77,6 +77,7 @@ def add_notify_sub(
     notifier_profile: Optional[str] = None,
     delivery_mode: Optional[str] = None,
     delivery_metadata: Optional[Mapping[str, Any]] = None,
+    allow_nested: bool = False,
 ) -> None:
     """Register a gateway source wanting terminal-state notifications for
     ``task_id``; idempotent on (task, platform, chat, thread).
@@ -96,7 +97,7 @@ def add_notify_sub(
     insert_mode = valid_mode or ("notify+wake" if platform == "api_server" else "notify")
     metadata_json = _encode_notify_delivery_metadata(delivery_metadata)
     key = _sub_key(task_id, platform, chat_id, thread_id)
-    with _kb.write_txn(conn):
+    with _kb.write_txn(conn, allow_nested=allow_nested):
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs

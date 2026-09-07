@@ -723,6 +723,17 @@ DEFAULT_CONFIG = {
         },
         "memory_query_rewrite": _aux(8, reasoning_effort=False),
         "tts_audio_tags": _aux(30),
+        # Short, tool-free classifier used by explicitly opted-in specialist
+        # task routing. Invalid/unavailable results always fall back to chat.
+        "specialist_router": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 12,
+            "extra_body": {},
+            "reasoning_effort": "none",
+        },
         # Kanban: triage_specifier expands a Triage one-liner into a spec (cheap model OK);
         # kanban_decomposer emits a JSON graph of child tasks (more tokens).
         "triage_specifier": _aux(120),
@@ -1406,6 +1417,27 @@ DEFAULT_CONFIG = {
         # require_mention); limit = max messages scanned.
         "history_backfill": True,
         "history_backfill_limit": 50,
+        # Disabled by default. When enabled, only high-confidence bounded
+        # task requests create a subscribed Kanban card; all other messages
+        # retain the ordinary chat path.
+        "specialist_routing": {
+            "enabled": False,
+            "confidence_threshold": 0.80,
+            "timeout_seconds": 12,
+            "profiles": {
+                "task-orchestrator": "broad actionable work needing planning and verification",
+                "patch-steward": "narrow corrective patches with regression evidence",
+                "acceptance-verifier": "acceptance evidence and release-gate verification",
+                "safety-reviewer": "security, privacy, and operational boundary review",
+                "data-quality-auditor": "data quality, freshness, and provenance review",
+                "execution-boundary-auditor": "side-effect boundary verification",
+                "dependency-health-sentinel": "dependency and tooling health",
+                "learning-steward": "governed learning and memory maintenance",
+                "ux-auditor": "operator experience and interface evidence",
+                "research-scout": "read-only research and evidence gathering",
+                "performance-sentinel": "performance and latency diagnostics",
+            },
+        },
         # Replay messages missed while offline, after reconnect/startup.
         "missed_message_backfill": {
             "enabled": False,

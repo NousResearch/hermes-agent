@@ -28,7 +28,7 @@ def _kbn():
 # "status" covers dashboard drag-drop and `_set_status_direct()`.
 # ``review_requested`` wakes the origin like a block but is not one;
 # the task is not archived so later review cycles keep notifying.
-TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
+TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested", "decomposed")
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
 _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
@@ -248,6 +248,37 @@ def _clip(ev: Any, key: str, fmt: str, limit: int) -> str:
     return fmt.format(str(value)[:limit]) if value else ""
 
 
+def _fmt_gave_up(ev: Any, n) -> tuple:
+    """Render the actual circuit-breaker cause instead of assuming spawn failures."""
+    payload = ev.payload or {}
+    trigger = str(payload.get("trigger_outcome") or "")
+    error = str(payload.get("error") or "")[:200]
+    if trigger == "timed_out" and payload.get("budget_used") is not None:
+        used = payload["budget_used"]
+        maximum = payload.get("budget_max", "?")
+        return (
+            f"✖ {n.head} gave up: iteration budget exhausted "
+            f"({used}/{maximum}) after repeated attempts",
+            None,
+            None,
+        )
+    if trigger == "spawn_failed":
+        reason = "after repeated spawn failures"
+    elif trigger:
+        reason = f"after repeated {trigger} failures"
+    else:
+        reason = "after repeated worker failures"
+    suffix = f"\n{error}" if error else ""
+    return f"✖ {n.head} gave up {reason}{suffix}", None, None
+
+
+def _fmt_decomposed(ev: Any, n) -> tuple:
+    child_ids = (ev.payload or {}).get("child_ids", [])
+    count = len(child_ids) if isinstance(child_ids, list) else 0
+    plural = "s" if count != 1 else ""
+    return f"🧭 {n.board_tag}Kanban {n.task_id} planned {count} coordinated worker{plural}", None, None
+
+
 _NL = "\n{}"
 
 
@@ -300,9 +331,7 @@ def _fmt_changes_requested(ev, n) -> tuple:
 _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "completed": _fmt_completed,
     "blocked": lambda ev, n: (f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None),
-    "gave_up": lambda ev, n: (
-        f"✖ {n.head} gave up after repeated spawn failures{_clip(ev, 'error', _NL, 200)}", None, None,
-    ),
+    "gave_up": _fmt_gave_up,
     "crashed": lambda ev, n: (f"✖ {n.head} worker crashed (pid gone); dispatcher will retry", None, None),
     "timed_out": lambda ev, n: (
         f"⏱ {n.head} timed out (max_runtime={int(_payload(ev, 'limit_seconds') or 0)}s); will retry", None, None,
@@ -310,6 +339,7 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "status": lambda ev, n: (f"🔄 {n.head} → {_payload(ev, 'status') or ''}", None, None),
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,
+    "decomposed": _fmt_decomposed,
     # Re-blocked for the same cause past the limit and routed to `triage` for a
     # human. It emits no blocked/status event, so ping loudly here.
     "block_loop_detected": lambda ev, n: (

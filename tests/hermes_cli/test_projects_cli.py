@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import argparse
 
 import pytest
@@ -57,5 +59,27 @@ def test_rename_and_archive(tmp_path):
         assert len(pdb.list_projects(conn)) == 1
 
 
+def test_bound_board_metadata_keeps_project_identity(monkeypatch):
+    from hermes_cli import kanban_db as kb
+
+    captured = {}
+    monkeypatch.setattr(kb, "_normalize_board_slug", lambda value: value)
+    monkeypatch.setattr(kb, "board_exists", lambda value: True)
+    monkeypatch.setattr(
+        kb,
+        "write_board_metadata",
+        lambda slug, **values: captured.update(slug=slug, **values),
+    )
+
+    projects_cmd._sync_board_default_workdir(
+        SimpleNamespace(id="p_example", primary_path="/repo/example"),
+        "project-board",
+    )
+
+    assert captured == {
+        "slug": "project-board",
+        "default_workdir": "/repo/example",
+        "project_id": "p_example",
+    }
 
 

@@ -5,7 +5,32 @@ vi.mock('@/hermes', () => ({
   saveHermesConfig: vi.fn(async () => undefined)
 }))
 
-import { $voiceStopPhrase, applyVoiceStopPhraseFromConfig } from './voice-prefs'
+import { saveHermesConfig } from '@/hermes'
+
+import { $autoSpeakReplies, $voiceStopPhrase, applyAutoSpeakFromConfig, applyVoiceStopPhraseFromConfig, setAutoSpeakReplies } from './voice-prefs'
+
+it('keeps the desktop toggle local across config refreshes', async () => {
+  localStorage.clear()
+  $autoSpeakReplies.set(false)
+  vi.mocked(saveHermesConfig).mockClear()
+  await setAutoSpeakReplies(true)
+  applyAutoSpeakFromConfig({ voice: { auto_tts: false } })
+  expect($autoSpeakReplies.get()).toBe(true)
+  expect(saveHermesConfig).not.toHaveBeenCalled()
+  expect(localStorage.getItem('hermes.desktop.autoSpeakReplies')).toBe('true')
+})
+
+it('migrates the legacy preference once, not on every refresh', () => {
+  for (const enabled of [false, true]) {
+    localStorage.clear()
+    applyAutoSpeakFromConfig(null)
+    expect(localStorage.getItem('hermes.desktop.autoSpeakReplies')).toBeNull()
+    applyAutoSpeakFromConfig({ voice: { auto_tts: enabled } })
+    applyAutoSpeakFromConfig({ voice: { auto_tts: !enabled } })
+    expect($autoSpeakReplies.get()).toBe(enabled)
+    expect(localStorage.getItem('hermes.desktop.autoSpeakReplies')).toBe(String(enabled))
+  }
+})
 
 describe('applyVoiceStopPhraseFromConfig', () => {
   it('defaults to "stop" when the key is absent (backend default applies)', () => {

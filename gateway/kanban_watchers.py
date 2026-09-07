@@ -131,6 +131,39 @@ class GatewayKanbanWatchersMixin:
         """Undo a claimed notification cursor after send failure."""
         self._kanban_sub_op(board, "rewind_notify_cursor", sub, claimed_cursor=claimed_cursor, old_cursor=old_cursor)
 
+    def _kanban_claim_review(self, task_id: str, claimer: str, board: Optional[str] = None) -> Optional[int]:
+        """Sync helper (runs in to_thread): claim a review card for the woken interactive reviewer.
+
+        Calls :func:`kanban_db.claim_review_task` for the gateway-woken session and
+        returns the newly-created review run id, or ``None`` when another session
+        already owns the run (headless auto-dispatch) or the card left ``review``.
+        """
+        from hermes_cli import kanban_db_connect as _kbc
+        from hermes_cli import kanban_db as _kb
+        conn = _kbc.connect(board=board)
+        try:
+            claimed = _kb.claim_review_task(conn, task_id, claimer=claimer)
+            if claimed is None:
+                return None
+            return claimed.current_run_id
+        finally:
+            conn.close()
+
+    def _kanban_note_review_dedup(self, task_id: str, board: Optional[str] = None) -> bool:
+        """Sync helper (runs in to_thread): record a suppressed duplicate review wake.
+
+        Returns True when a live run already owns the review card (so the notifier
+        logs ``review_deduped`` and skips the interactive wake); False when the card
+        merely left ``review`` (e.g. a parent reopened it) and no dedup event applies.
+        """
+        from hermes_cli import kanban_db_connect as _kbc
+        from hermes_cli import kanban_db as _kb
+        conn = _kbc.connect(board=board)
+        try:
+            return _kb.note_review_deduped(conn, task_id)
+        finally:
+            conn.close()
+
     async def _deliver_kanban_artifacts(self, *, adapter, chat_id: str, metadata: dict, event_payload: Optional[dict], task) -> None:
         """Upload artifact files referenced by a completed kanban task.
 

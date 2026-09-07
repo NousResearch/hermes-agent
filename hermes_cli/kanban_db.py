@@ -2230,6 +2230,38 @@ def claim_review_task(
         return get_task(conn, task_id)
 
 
+def note_review_deduped(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Record a gateway-side suppressed duplicate review wake; True when a live run owns the card.
+
+    Mirror of :func:`kanban_db_dispatch._note_review_deduped` but callable
+    without a ``DispatchResult``. Called by the notifier when
+    ``claim_review_task`` returns ``None`` for a card it was about to wake an
+    interactive reviewer for: distinguishes the dedupe case — ``status=running``
+    with a live ``current_run_id``, meaning another session already owns the
+    review run — from a parent-reopened dependency wait (``status=todo``).
+    Emits a ``review_deduped`` event + log so the suppression is observable
+    instead of a silent skip. Exactly one session acts on a card in review.
+    """
+    post = conn.execute(
+        "SELECT status, current_run_id FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if post is None or post["status"] != "running" or not post["current_run_id"]:
+        return False
+    live = int(post["current_run_id"])
+    _log.warning(
+        "kanban notifier: review task %s already claimed by another session "
+        "(run %s); suppressing duplicate review wake (recorded as "
+        "review_deduped) — exactly one session acts on a card in review",
+        task_id, live,
+    )
+    with write_txn(conn):
+        _append_event(
+            conn, task_id, "review_deduped",
+            {"run_id": live, "suppressed": "duplicate_review_wake"},
+        )
+    return True
+
+
 def _retry_status_for_run(
     conn: sqlite3.Connection, task_id: str, run_id: Optional[int] = None,
 ) -> str:

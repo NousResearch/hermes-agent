@@ -748,3 +748,131 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )
+
+
+# ---------------------------------------------------------------------------
+# review_requested claim-before-wake (#19534 sibling): the gateway notifier must
+# claim the card for the interactive reviewer it is about to wake, so exactly one
+# session acts on a card in review. A card a headless dispatcher already claimed
+# must not wake a second reviewer.
+# ---------------------------------------------------------------------------
+
+
+def _unseen_review_requested_for(tid, chat_id):
+    conn = kbc.connect()
+    try:
+        _, events = kbn.unseen_events_for_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id=chat_id,
+            kinds=["review_requested"],
+        )
+        return events
+    finally:
+        conn.close()
+
+
+def test_review_requested_claims_card_then_wakes_one_reviewer_who_completes_without_force(
+    tmp_path, monkeypatch,
+):
+    """A review handoff claims the card for the interactive reviewer before waking.
+
+    The claim is the gateway half of the #19534 review-dedup gate: it turns the
+    card into ``running`` with a fresh review run, so the dispatcher's headless
+    auto-dispatch is suppressed (it sees a live run) and the woken reviewer
+    completes with that run as ``expected_run_id`` — no ``force=True``.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "review-claim.db"))
+    kb.init_db()
+    tid = _review_handoff_task()
+
+    conn = kbc.connect()
+    try:
+        awaiting = kb.get_task(conn, tid)
+        assert awaiting is not None and awaiting.status == "review"
+        assert awaiting.current_run_id is None
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    # Exactly one reviewer is woken (the passive ping also still lands).
+    assert len(adapter.sent) == 1
+    assert "ready for review" in adapter.sent[0]["text"]
+    assert len(adapter.handled) == 1
+
+    # The notifier claimed the card for the interactive session before waking,
+    # so the card is no longer awaiting a reviewer.
+    conn = kbc.connect()
+    try:
+        claimed = kb.get_task(conn, tid)
+        assert claimed is not None and claimed.status == "running"
+        assert claimed.current_run_id is not None
+    finally:
+        conn.close()
+
+    # The woken reviewer completes WITHOUT force: as an env-scoped session it
+    # resolves its own live run as expected_run_id — exactly like the
+    # gateway-woken interactive reviewer in the #19534 flow.
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    conn = kbc.connect()
+    try:
+        from tools.kanban_tools import _resolve_expected_run_id
+
+        expected = _resolve_expected_run_id(kb, conn, tid)
+        assert expected is not None and expected == claimed.current_run_id
+        assert kb.complete_task(
+            conn, tid, summary="approved", expected_run_id=expected,
+        )
+        assert kb.get_task(conn, tid).status == "done"
+    finally:
+        conn.close()
+
+
+def test_duplicate_review_dispatch_is_suppressed_and_logged(
+    tmp_path, monkeypatch,
+):
+    """A review already claimed by a headless worker is not re-woken.
+
+    If a dispatcher-spawned headless reviewer already owns the review run, the
+    gateway notifier records a ``review_deduped`` event and skips the interactive
+    wake — it must NOT wake a second reviewer, and it must not steal the claim.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "review-dedup.db"))
+    kb.init_db()
+    tid = _review_handoff_task()
+
+    # Another session (the headless auto-dispatch) already claimed the review.
+    conn = kbc.connect()
+    try:
+        assert kb.claim_review_task(conn, tid, claimer="headless-dispatch") is not None
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    # No second reviewer is woken.
+    assert adapter.handled == [], (
+        "a review already claimed by another session must not wake a second reviewer"
+    )
+
+    conn = kbc.connect()
+    try:
+        # The suppression is observable as a review_deduped event, and the card
+        # stays owned by the headless run — the notifier did not steal the claim.
+        dedup = [e for e in kb.list_events(conn, tid) if e.kind == "review_deduped"][-1]
+        assert dedup.payload["suppressed"] == "duplicate_review_wake"
+        held = kb.get_task(conn, tid)
+        assert held is not None and held.status == "running"
+        assert held.claim_lock == "headless-dispatch"
+        # The review_requested event is consumed (cursor advanced) so it is not
+        # redelivered every tick.
+        assert _unseen_review_requested_for(tid, "chat-1") == []
+    finally:
+        conn.close()

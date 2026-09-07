@@ -402,6 +402,10 @@ class _KanbanNotification:
         # Worker handoff carried into the synthetic wake turn so the woken
         # creator doesn't re-decompose work already on the board.
         self.wake_handoff = self.wake_review_detail = self.session_key = self.synth = ""
+        # Set when a review_requested wake claims the card for THIS interactive
+        # reviewer: the run id reserved so the woken reviewer completes with that
+        # expected_run_id (no `force=True`). None until a claim is attempted.
+        self.review_run_id: Optional[int] = None
         self.plat: Any = None
         self.adapter: Any = None
         self.is_push_adapter = True
@@ -481,6 +485,35 @@ class _KanbanNotification:
         if self.wake_review_detail:
             synth += "\n" + t("gateway.kanban.wake.review_detail", reason=self.wake_review_detail)
         self.synth = synth + "\n\n" + t("gateway.kanban.wake.guidance")
+
+    async def _claim_review_wake(self) -> bool:
+        """Claim the card for THIS interactive reviewer before waking; True when claimed.
+
+        A ``review_requested`` wake must reserve the review run for the session
+        being woken, so exactly one session acts on a card in review: the
+        dispatcher's headless auto-dispatch sees the card as ``running`` and is
+        suppressed by the ``claim_review_task`` CAS once a live run is claimed.
+        On success the woken reviewer completes with that run as
+        ``expected_run_id`` (no ``force=True``). When another session already
+        owns the run (or the card left ``review``), record a ``review_deduped``
+        notice (only for the live-run case) and return False so the caller does
+        NOT wake a second reviewer.
+        """
+        claimer = self.session_key or "interactive"
+        claimed_run_id = await _to_thread_process_service(
+            self.runner._kanban_claim_review, self.task_id, claimer, self.board_slug,
+        )
+        if claimed_run_id is not None:
+            self.review_run_id = int(claimed_run_id)
+            logger.info(
+                "kanban notifier: claimed review run %s for interactive reviewer of %s",
+                self.review_run_id, self.task_id,
+            )
+            return True
+        await _to_thread_process_service(
+            self.runner._kanban_note_review_dedup, self.task_id, self.board_slug,
+        )
+        return False
 
     def _log_woke(self) -> None:
         logger.info("kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
@@ -607,6 +640,18 @@ class _KanbanNotification:
         self.build_wake_text()
         wake_kinds, is_push = self.wake_kinds, self.is_push_adapter
         from gateway.wake import WakeNotAccepted
+
+        # A review_requested wake must claim the card for THIS interactive
+        # reviewer before waking, so exactly one session acts on a card in
+        # review (the dispatcher's headless auto-dispatch sees a live run and is
+        # suppressed by the CAS). If another session already owns the run, record
+        # a review_deduped notice and do NOT wake a second reviewer.
+        if "review_requested" in wake_kinds and not await self._claim_review_wake():
+            logger.info(
+                "kanban notifier: review task %s already claimed by another session; "
+                "suppressing interactive review wake", self.task_id,
+            )
+            wake_kinds = wake_kinds - {"review_requested"}
 
         # A requested wake is required even when its passive ping already landed.
         if wake_kinds:

@@ -115,6 +115,47 @@ New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
     "repo=$RepoRoot`nbootstrapped=$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss zzz'))`n",
     (New-Object System.Text.UTF8Encoding($false)))
 
+# --- North Forge CLI skin -------------------------------------
+# Ship skins\north-forge.yaml into HERMES_HOME\skins\ and make it the active skin
+# on a fresh install - this is what swaps the stock Hermes launch splash for North
+# Forge's own mark (DECISION-2026-09-07-001 / CHG-2026-09-07-012; banner.py is
+# untouched - hermes_cli/banner.py already prefers skin.banner_logo/banner_hero).
+# north-forge.cmd re-copies the file on every launch; this block only runs at
+# bootstrap and will NOT override a skin the operator has since chosen.
+try {
+    $skinSrc = Join-Path $RepoRoot 'skins\north-forge.yaml'
+    if (Test-Path -LiteralPath $skinSrc) {
+        $skinDstDir = Join-Path $DataDir 'skins'
+        New-Item -ItemType Directory -Path $skinDstDir -Force | Out-Null
+        Copy-Item -LiteralPath $skinSrc -Destination (Join-Path $skinDstDir 'north-forge.yaml') -Force
+        if (Test-Path -LiteralPath $hermes) {
+            $env:HERMES_HOME = $DataDir
+            $curSkin = (& $hermes config get display.skin 2>$null | Out-String).Trim()
+            if (-not $curSkin -or @('default', 'none', 'null') -contains $curSkin.ToLower()) {
+                & $hermes config set display.skin north-forge | Out-Null
+                Write-Host "  skin : north-forge  (set as active skin)"
+            } else {
+                Write-Host "  skin : north-forge available; kept your display.skin = '$curSkin'"
+            }
+        }
+    } else {
+        Write-Host "  skin : skins\north-forge.yaml not in checkout - skipped"
+    }
+} catch {
+    Write-Warning "North Forge skin seed skipped: $($_.Exception.Message)"
+}
+
+# --- drive-root launcher --------------------------------------
+# Write "<drive>:\Start North Forge.lnk" now so a freshly-bootstrapped drive has a
+# double-click entry point beside the checkout folder (CHG-2026-09-07-013).
+# north-forge.cmd also refreshes it on every launch (drive-letter self-heal).
+try {
+    $mk = Join-Path $RepoRoot 'scripts\make-drive-root-shortcut.ps1'
+    if (Test-Path -LiteralPath $mk) { & $mk -RepoRoot $RepoRoot }
+} catch {
+    Write-Warning "drive-root shortcut skipped: $($_.Exception.Message)"
+}
+
 # --- verify -----------------------------------------------------
 $env:HERMES_HOME = $DataDir
 $ver = (& $pyExe -c "import hermes_cli; print('import ok')" 2>&1 | Out-String).Trim()

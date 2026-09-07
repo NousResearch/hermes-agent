@@ -46,6 +46,11 @@ Thumbs.db
 ehthumbs.db
 [Dd]esktop.ini
 $RECYCLE.BIN/
+# Self-healing drive-root launcher that north-forge.cmd regenerates at the drive
+# root on every run (scripts/make-drive-root-shortcut.ps1). Normally written
+# OUTSIDE the checkout; this guard only bites if the checkout itself sits at the
+# drive root. Not a tracked artifact — CHG-2026-09-07-013.
+/Start North Forge.lnk
 # Test/mock artifacts some Windows test runs materialise into the working tree
 # (AUDIT-2026-09-06-002 F-02 / ERR-2026-09-06-005):
 #   MagicMock/         - unittest.mock leak: code that str()s a MagicMock into a path

@@ -8,6 +8,131 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.5.0] — 2026-09-07 — hermes@233757037d (6 behind upstream/main)
+
+`RUN-2026-09-07-004`. Committed on `c4e88d2ab6` (the `origin/main` tip — the
+owner's `Merge branch 'NousResearch:main'` that landed mid-run, +15 commits of
+upstream `agent/` + `hermes_cli/` model/pricing/codex changes and their tests).
+This run's commit was written on the old base then **rebased clean onto that tip**
+(zero conflicts; none of the 15 commits touch any file this run changed). Three
+drive-native / onboarding changes plus the ledger record of two owner decisions.
+**MINOR** — adds new North-Forge capability (a CLI skin, a self-healing drive-root
+launcher) on top of upstream; no engine code touched (`hermes_cli/banner.py` etc.
+unchanged beyond their existing one-line identity diffs).
+
+Prompted by: the owner followed `README.md` and landed on the upstream `iex/irm`
+one-liner (stock Hermes) instead of the drive-native `north-forge.cmd` path.
+
+### Changed
+
+- **CHG-2026-09-07-011** — `README.md` **Quick Install** rewritten so the
+  drive-native path is impossible to miss. Before: the section opened with the
+  Linux `curl … | bash` one-liner, then a `### Windows (native, PowerShell)`
+  subsection whose *only* instruction was `iex (irm …install.ps1)` — the stock
+  Hermes installer. `north-forge.cmd` was **not mentioned anywhere in Quick
+  Install**. After:
+  - A lead paragraph states there are two ways and that running *this fork* means
+    the drive-native launcher.
+  - First subsection **“Windows — run North Forge from the drive (recommended)”**:
+    `git clone` → double-click **`north-forge.cmd`**; explains the sibling
+    venv + `HERMES_HOME` on the same drive, nothing on the host, and that you get
+    the identity / ledger / CLI skin the stock installer does not set up.
+  - A `---` rule + a blunt “Everything below installs **stock Hermes Agent, not
+    North Forge**” banner, then the two stock installers under
+    **“Stock Hermes — …”** headings; the Windows one is titled
+    **“Stock Hermes — Windows (installs stock Hermes, not North Forge)”** with a
+    callout blockquote repeating that and pointing back up.
+  - No install *command* changed; the one-liners still point at
+    `hermes-agent.nousresearch.com` (BRANDING.md category 3). This adds a
+    North-Forge-owned path above them and labels the upstream ones — consistent
+    with BRANDING.md category 1 (“README … install steps … stay”, but the fork’s
+    own run-path is North Forge’s to document).
+  - Re `DECISION-2026-09-06-003` (drive-native vs machine-local install, OPEN):
+    this documents the **minimal drive-native path that already shipped**
+    (`CHG-2026-09-07-005`) as the recommended way to run the fork, matching that
+    entry’s standing provisional lean toward A. It does **not** ratify the
+    decision or touch the blocked hardened form (seal / dual-volume / certify) —
+    and it was an explicit owner instruction this run.
+  - Paths: `README.md`. Ref: — (owner report); `DECISION-2026-09-06-003`.
+    Run: RUN-2026-09-07-004.
+
+### Added
+
+- **CHG-2026-09-07-012** — **North Forge CLI skin** — swaps the stock Hermes
+  launch splash (the `⚕` caduceus hero + `HERMES-AGENT` wordmark from
+  `hermes_cli/banner.py`) for North Forge’s own mark, **without editing
+  `banner.py`**. Implements `DECISION-2026-09-07-001` (owner chose the skin route
+  over a `banner.py` edit or “leave as-is”).
+  - New tracked file **`skins/north-forge.yaml`** — `name: north-forge`, a full
+    North-Forge `branding` block (agent name, welcome, goodbye, response label
+    ` ⚒ North Forge `, help header), and `banner_logo` (“NORTH FORGE” in the
+    same ANSI-Shadow block style as the built-in god-skins, gold→bronze) +
+    `banner_hero` (an anvil-and-sparks motif, 28×11). Colors / spinner /
+    `tool_prefix` are inherited from the built-in `default` skin via
+    `skin_engine.py` `_build_skin_config` — this is an identity swap, not a
+    re-theme.
+  - `hermes_cli/skin_engine.py` already loads user skins from
+    `HERMES_HOME/skins/*.yaml` and `hermes_cli/banner.py` already prefers
+    `skin.banner_logo` / `skin.banner_hero` over its constants — so **zero engine
+    files change**. Verified end-to-end against the drive venv:
+    `init_skin_from_config({'display':{'skin':'north-forge'}})` →
+    `get_active_skin().banner_logo` is the NF art; the `⚕`/`HERMES` constants are
+    no longer reachable on that path. Rich parses both art blocks with no
+    `MarkupError`; every line is a constant display width (logo 89, hero 28).
+  - Activation: `scripts/bootstrap-north-forge.ps1` copies the skin into
+    `HERMES_HOME/skins/` on first bootstrap and runs
+    `hermes config set display.skin north-forge` **only if the operator has not
+    already chosen a skin** (guarded on the current `display.skin` being unset /
+    `default`). `north-forge.cmd` re-copies the file on every launch so a
+    `git pull` that updates the art takes effect without a re-bootstrap.
+  - Tests: `tests/hermes_cli/test_banner.py`, `test_skin_engine.py`,
+    `test_skin_palettes.py`, `tests/test_cli_skin_integration.py`,
+    `tests/hermes_cli/test_config.py`, `test_startup_fast_guards.py`,
+    `tests/gateway/test_version_command.py`, `tests/agent/test_prompt_builder.py`
+    — **all green** (via `uv run --extra dev pytest`; 250 passed / 1 skipped
+    across the set).
+  - Paths: `skins/north-forge.yaml` (new), `scripts/bootstrap-north-forge.ps1`,
+    `north-forge.cmd`. Ref: `DECISION-2026-09-07-001`. Run: RUN-2026-09-07-004.
+
+- **CHG-2026-09-07-013** — **Self-healing drive-root launcher.** New
+  `scripts/make-drive-root-shortcut.ps1` (re)writes **`<drive root>\Start North
+  Forge.lnk`** — a double-click launcher that sits beside the checkout folder at
+  the root of whatever drive letter Windows currently assigned. Target =
+  `<repo>\north-forge.cmd`, `WorkingDirectory` = `<repo>`, `IconLocation` =
+  `<repo>\assets\icons\north-forge.ico,0` (falls back to the default icon if the
+  `.ico` is absent). `north-forge.cmd` calls it **best-effort on every launch**
+  (`>nul 2>&1`, exit code ignored — a failure never blocks the agent starting)
+  and `bootstrap-north-forge.ps1` calls it once at the end of a fresh bootstrap.
+  Because it is rewritten from scratch each run against the path the checkout is
+  at *now*, a drive re-letter (`E:` → `F:` …) can never leave a stale pointer —
+  the same principle as the `ERR-2026-09-07-001` venv/cache drive-letter fix.
+  - Not tracked in git — it is created outside the checkout (at the drive root).
+    `.gitignore` gains `/Start North Forge.lnk` as a guard for the edge case
+    where the checkout itself is the drive root.
+  - Tested (see also `D:\logs\DRIVE-NATIVE-ONBOARDING_2026-09-07.md`): generated
+    against `D:\north-forge-agent` → `.lnk` resolves to a real target + real
+    icon; **drive-letter change simulated** by pointing `-RepoRoot` at a copy of
+    the checkout under a different root — the regenerated `.lnk` correctly
+    repoints to the new location; idempotent re-run; `-Quiet` honored;
+    `GetPathRoot('D:\north-forge-agent') → 'D:\'` confirms the default link
+    location. A real Disk-Management letter reassignment was **not** performed
+    (needs admin + is disruptive) — the path-substitution test exercises the same
+    code path.
+  - Paths: `scripts/make-drive-root-shortcut.ps1` (new), `north-forge.cmd`,
+    `scripts/bootstrap-north-forge.ps1`, `.gitignore`. Ref: `ERR-2026-09-07-001`
+    (shared principle). Run: RUN-2026-09-07-004.
+
+- **CHG-2026-09-07-014** — Ledger: recorded two owner decisions taken this run.
+  `DECISION-2026-09-07-001` (splash art) opened **and** resolved DECIDED —
+  “swap via a North Forge skin”, implemented by `CHG-2026-09-07-012`.
+  `ERR-2026-09-07-002` (upstream Windows `pytest` collection defect) closed
+  **ACCEPTED-RISK** — owner’s call: no local `conftest.py` shim, rely on Linux CI
+  + targeted Windows runs; revisit if upstream fixes it or a full local Windows
+  `pytest` run becomes necessary. No code change for the ERR closure.
+  - Paths: `logs/ledger/decisions/DECISION-LOG.md`,
+    `logs/ledger/errors/ERROR-LOG.md`, `logs/ledger/INDEX.md`. Ref:
+    `DECISION-2026-09-07-001`, `ERR-2026-09-07-002`. Run: RUN-2026-09-07-004.
+
 ## [NF-v0.4.2] — 2026-09-07 — hermes@a7198a8855 (0 behind upstream/main)
 
 Mechanical `upstream/main` sync (`RUN-2026-09-07-003`, step 4 of the consolidated

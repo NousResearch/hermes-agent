@@ -39,15 +39,63 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenR
 
 ## Quick Install
 
-### Linux, macOS, WSL2, Termux
+North Forge runs two ways, and the difference matters. **To run _this fork_ — with
+its identity, its project ledger under [`logs/ledger/`](logs/ledger/), and its CLI
+skin — use the drive-native launcher immediately below.** The upstream one-liners
+further down (`curl … | bash`, `iex (irm …)`) install **stock Hermes Agent**, not
+North Forge; reach for those only if plain Hermes is what you want.
+
+### Windows — run North Forge from the drive (recommended)
+
+**This is the way to run North Forge.** It runs *in place* from wherever the repo
+folder sits — a USB stick, an external SSD, any local folder. The Python venv and
+the agent's data directory (`HERMES_HOME`) are created as **siblings of the
+checkout, on the same drive**; nothing is written to `%LOCALAPPDATA%` or anywhere
+else on the host, so you can unplug the drive and carry it to another machine.
+You get the North Forge identity, the project ledger under [`logs/ledger/`](logs/ledger/),
+and the North Forge CLI skin — none of which the stock Hermes installer below sets up.
+
+1. Get the repo onto the drive — clone it, or copy a folder you were handed:
+
+   ```powershell
+   git clone https://github.com/kwalker7631/north-forge-agent.git
+   ```
+
+2. Double-click **`north-forge.cmd`** in the repo root (or run it from a terminal).
+   The first run bootstraps the venv + data folder once (~1 minute); every run
+   after starts the agent immediately. Arguments pass straight through:
+
+   ```powershell
+   .\north-forge.cmd            # start chatting
+   .\north-forge.cmd gateway    # run the messaging gateway instead
+   ```
+
+Requires **Python 3.11+** (or [`uv`](https://docs.astral.sh/uv/), which fetches
+its own) and **PowerShell 5.1+** on `PATH`. What the first run does is spelled out
+in [`scripts/bootstrap-north-forge.ps1`](scripts/bootstrap-north-forge.ps1).
+Linux/macOS drive-native launch is not wired yet — on those platforms use the
+stock-Hermes installer below.
+
+---
+
+Everything below installs **stock Hermes Agent, not North Forge** — a machine-local
+install with no fork identity, no [`logs/ledger/`](logs/ledger/), and no North
+Forge CLI skin. Use it only if plain Hermes is what you want.
+
+### Stock Hermes — Linux, macOS, WSL2, Termux
 
 ```bash
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
-### Windows (native, PowerShell)
+### Stock Hermes — Windows (installs stock Hermes, not North Forge)
 
-> **Heads up:** Native Windows runs Hermes without WSL — CLI, gateway, TUI, and tools all work natively. If you'd rather use WSL2, the Linux/macOS one-liner above works there too. Found a bug? Please [file issues](https://github.com/NousResearch/hermes-agent/issues).
+> **This is upstream's installer, not North Forge.** `iex (irm …install.ps1)`
+> installs **stock Hermes Agent** into `%LOCALAPPDATA%\hermes` — a machine-local,
+> host-integrated install. It does **not** give you this fork: no North Forge
+> identity, no [`logs/ledger/`](logs/ledger/), no `north-forge.cmd` launcher, no
+> North Forge CLI skin. Reach for it only if you specifically want plain Hermes;
+> to run **this fork**, use the drive-native path above.
 
 Run this in PowerShell:
 
@@ -55,15 +103,18 @@ Run this in PowerShell:
 iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
+Native Windows runs Hermes without WSL — CLI, gateway, TUI, and tools all work
+natively. Found a bug in the engine? Please [file issues](https://github.com/NousResearch/hermes-agent/issues).
+
 The installer handles everything: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **and a portable Git Bash** (MinGit, unpacked to `%LOCALAPPDATA%\hermes\git` — no admin required, completely isolated from any system Git install). Hermes uses this bundled Git Bash to run shell commands.
 
 If you already have Git installed, the installer detects it and uses that instead. Otherwise a ~45MB MinGit download is all you need — it won't touch or interfere with any system Git.
 
 > **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
 >
-> **Windows:** Native Windows is fully supported — the PowerShell one-liner above installs everything. If you'd rather use WSL2, the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.
+> **WSL2:** the Linux/macOS one-liner above works there too — it installs under `~/.hermes` as on Linux. (Native Windows stock installs live under `%LOCALAPPDATA%\hermes`.)
 
-After installation:
+After a stock-Hermes install:
 
 ```bash
 source ~/.bashrc    # reload shell (or: source ~/.zshrc)

@@ -88,6 +88,57 @@ gains a `Superseded-by:` / `Supersedes:` link.
 
 ## Resolved
 
+### DECISION-2026-09-07-001 — Splash art — keep the stock Hermes launch mark, or swap it?
+
+- **Opened:** 2026-09-07 · **Base:** hermes@233757037d (6 behind upstream/main) — committed on `c4e88d2ab6`
+- **Run:** RUN-2026-09-07-004 (opened and decided the same run)
+- **Id note:** first `DECISION-` dated 2026-09-07, so `-001` per the daily-reset
+  rule in [`README.md`](../README.md) § Naming. Unrelated to the `2026-09-06`-dated
+  `-002` / `-003` (whose dates were pinned by owner call for continuity with the
+  rebrand batch).
+- **Source:** carried since `RUN-2026-09-07-003` — the `INDEX.md` "Latest run" row
+  recorded the `⚕ NOUS HERMES` launch splash as **"left open for the owner (not
+  defaulted)"**. Raised again by the owner this run alongside the drive-native
+  onboarding fixes, now that final brand art exists under `assets/icons/`.
+- **Confidence:** Confirmed Fact — verified in the checkout that
+  `hermes_cli/banner.py` `HERMES_CADUCEUS` (the `⚕` braille hero) and
+  `HERMES_AGENT_LOGO` (the `HERMES-AGENT` wordmark) are **byte-identical to
+  `upstream/main`**; NF's only diff to that file is the one-line
+  `format_banner_version_label()` label. `banner.py` already prefers
+  `skin.banner_hero` / `skin.banner_logo` over those constants
+  (`banner.py:855`, `:916`).
+- **Supersedes:** —
+- **The call:** the CLI shows upstream's `⚕` caduceus + `HERMES-AGENT` wordmark at
+  every `hermes` / `north-forge.cmd` launch. Leave it, or replace it with North
+  Forge's own mark?
+- **Options:**
+  - **A — Leave as-is.** Consistent with "engine used unmodified"; the ASCII
+    startup art is not in `BRANDING.md`'s North-Forge-owned list;
+    `assets/icons/splash-alt.png` is already earmarked for a future *graphical*
+    loading screen. Zero change.
+  - **B — Edit `banner.py`.** Replace the `HERMES_AGENT_LOGO` constant (and maybe
+    the caduceus) with North Forge art. Small text swap, but a permanent
+    multi-line diff on a hot upstream file — merge-conflict risk on every rebase.
+  - **C — Swap via a North Forge skin.** Ship `skins/north-forge.yaml` with
+    `banner_logo` / `banner_hero`; `banner.py` stays byte-identical to upstream
+    except its existing one-liner. Slightly more than a "text swap" (new skin
+    file + activation wiring) but zero added engine drift. The repo's brand PNGs
+    can't render in a terminal, so the art is new Rich-markup ASCII either way.
+- **Leaning at open:** C.
+- **Decided:** 2026-09-07 (`RUN-2026-09-07-004`) — chose **C (swap via a North
+  Forge skin)**, owner-selected. Implemented by **`CHG-2026-09-07-012`**: new
+  tracked `skins/north-forge.yaml` (`banner_logo` "NORTH FORGE" ANSI-Shadow +
+  `banner_hero` anvil/sparks + full North-Forge `branding`; colors/spinner
+  inherited from the built-in `default` skin). `scripts/bootstrap-north-forge.ps1`
+  seeds it into `HERMES_HOME/skins/` and sets `display.skin=north-forge` on a
+  fresh bootstrap (never overriding an operator's own skin choice);
+  `north-forge.cmd` re-copies it every launch. `hermes_cli/banner.py` and
+  `hermes_cli/skin_engine.py` are **unchanged**. Verified end-to-end against the
+  drive venv — the activated skin drives the banner and the `⚕`/`HERMES`
+  constants are no longer reached on that path.
+- **Owner:** Kenneth C. Walker Jr.
+- **Status:** DECIDED
+
 ### DECISION-2026-09-06-001 — Fork identity — rebrand vs thin downstream?
 
 - **Opened:** 2026-09-06 · **Base:** hermes@693641aa8b (0 behind upstream/main)
@@ -145,3 +196,4 @@ gains a `Superseded-by:` / `Supersedes:` link.
 | DECISION-2026-09-06-001 | 2026-09-06 | Fork identity | Rebrand vs thin downstream? | DECIDED — B (full rebrand), landed `NF-v0.2.0` (CHG-2026-09-06-020..024) | 2026-09-06 |
 | DECISION-2026-09-06-002 | 2026-09-06 | Repo hygiene | Keep or delete the attic clone? | OPEN — leaning A (delete) | — |
 | DECISION-2026-09-06-003 | 2026-09-07 | Install model | Drive-native run-in-place vs machine-local managed install? | OPEN — leaning A (drive-native); hardened form (seal / dual-volume / certify) awaits ratification | — |
+| DECISION-2026-09-07-001 | 2026-09-07 | Branding | Keep the stock Hermes launch splash, or swap it? | DECIDED — C (swap via a North Forge skin), landed `CHG-2026-09-07-012` (`skins/north-forge.yaml`; `banner.py` untouched) | 2026-09-07 |

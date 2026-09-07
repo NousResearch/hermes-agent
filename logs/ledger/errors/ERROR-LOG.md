@@ -55,10 +55,14 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
   4. On a fresh clone, run `sh .githooks/install` to re-arm the guard.
 - **Do NOT** run `git clean -x`/`-X` in this repo — it would delete `.env`.
 
+---
+
+## Resolved
+
 ### ERR-2026-09-07-002 — LOW — Upstream test suite fails collection on Windows
 
 - **Opened:** 2026-09-07 · **Base:** hermes@a7198a8855 (0 behind upstream/main)
-- **Run:** RUN-2026-09-07-003
+- **Run:** RUN-2026-09-07-003 (opened) · RUN-2026-09-07-004 (accepted)
 - **Source:** post-rebase test run for `CHG-2026-09-07-010` (the `upstream/main`
   sync). Already flagged informally in the `RUN-2026-09-07-002` handoff note
   (`IDENTITY-RUNTIME_2026-09-07.md`, "two pre-existing Windows test issues") at the
@@ -90,18 +94,25 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
   `CHG-2026-09-07-010`).
 - **Impact:** an unfiltered `pytest` on Windows can't collect. Targeted runs
   (`pytest <file>::<node>`) and non-Windows CI are unaffected. Low.
-- **Options for the owner (not defaulted this run):**
+- **Options considered:**
   1. Carry a small local test-compat shim (e.g. a `conftest.py` `getattr(os,
      "geteuid", lambda: -1)` fallback, or `--ignore` the offending files on Windows)
      — keeps a full local Windows run possible, adds fork drift on every merge.
   2. Wait for upstream to fix it; rely on Linux CI + targeted Windows runs meanwhile.
   3. Report upstream.
-- **Status:** OPEN — documented so the `D:`→`E:` test-bed flow isn't surprised by it;
-  no NF code change made. Owner to pick an option.
-
----
-
-## Resolved
+- **Resolved (ACCEPTED-RISK):** 2026-09-07 (`RUN-2026-09-07-004`) — owner decision:
+  **accept as-is, option 2.** No local `conftest.py` shim and no `--ignore` list is
+  added — that would put fork drift on `tests/` (a surface NF otherwise keeps
+  byte-identical to upstream) on every merge, to paper over a defect that is
+  upstream's to fix. North Forge relies on upstream's Linux CI plus targeted
+  Windows runs (`pytest <file>::<node>`), which are unaffected. **Revisit trigger:**
+  upstream fixes the eager-`skipif` pattern (drop this note), *or* a full
+  unfiltered local Windows `pytest` run becomes necessary for NF work (then add the
+  minimal `conftest.py` `getattr` shim under a new `CHG-`). Reporting upstream
+  (option 3) is encouraged but not tracked here. Recorded by `CHG-2026-09-07-014`;
+  no code change.
+- **Status:** ACCEPTED-RISK (owner, `RUN-2026-09-07-004`). Pre-existing upstream
+  Windows-portability defect; NF touches none of the affected files.
 
 ### ERR-2026-09-06-002 — MEDIUM — Fork identity / version drift
 
@@ -220,4 +231,4 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
 | ERR-2026-09-06-004 | 2026-09-06 | LOW | Repo hygiene | Stray `%SystemDrive%` Windows cache tree in root (recurred; guard held) | RESOLVED | CHG-2026-09-06-009 / -012 |
 | ERR-2026-09-06-005 | 2026-09-06 | LOW | Repo hygiene | pytest/mock artifacts (`MagicMock/`, `C:Users…`, `logs.zip`) in working tree | RESOLVED | CHG-2026-09-06-011 / -012 |
 | ERR-2026-09-07-001 | 2026-09-07 | LOW | Bootstrap tooling | `bootstrap-north-forge.ps1` let uv cache sit on `C:` while venv built on the checkout drive → cross-volume full-copy, ~6.5 min first run | RESOLVED | CHG-2026-09-07-008 |
-| ERR-2026-09-07-002 | 2026-09-07 | LOW | Upstream test compat | Upstream test files call `os.geteuid()` in an eager `skipif` decorator arg → `pytest tests/` aborts at collection on Windows. Pre-existing upstream, pulled in by the `CHG-2026-09-07-010` sync; NF touches none of the files; targeted runs green | OPEN | — (owner to pick: local shim / wait upstream) |
+| ERR-2026-09-07-002 | 2026-09-07 | LOW | Upstream test compat | Upstream test files call `os.geteuid()` in an eager `skipif` decorator arg → `pytest tests/` aborts at collection on Windows. Pre-existing upstream, pulled in by the `CHG-2026-09-07-010` sync; NF touches none of the files; targeted runs green | ACCEPTED-RISK | CHG-2026-09-07-014 (owner: accept as-is, no shim; rely on Linux CI + targeted runs; revisit if upstream fixes or a full local Windows run is needed) |

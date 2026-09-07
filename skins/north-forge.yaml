@@ -1,0 +1,49 @@
+# North Forge — the fork's own CLI skin.
+#
+# Purpose: replace the stock Hermes launch splash (the ⚕ caduceus hero +
+# "HERMES-AGENT" wordmark from hermes_cli/banner.py) with North Forge's own mark,
+# WITHOUT editing banner.py — the engine is used unmodified. banner.py already
+# reads `skin.banner_logo` / `skin.banner_hero` and falls back to its built-in
+# constants only when they are empty, so a skin is the whole mechanism.
+#
+# Everything not set here (colors, spinner, tool_prefix) is inherited from the
+# built-in `default` skin via hermes_cli/skin_engine.py `_build_skin_config`, so
+# this is a text/identity swap, not a re-theme.
+#
+# Ships tracked in the repo at skins/north-forge.yaml. north-forge.cmd copies it
+# into HERMES_HOME/skins/ on every launch (self-healing); the first bootstrap
+# points `display.skin` at it. Decision: DECISION-2026-09-07-001. Change: CHG-2026-09-07-012.
+
+name: north-forge
+description: "North Forge — the fork's forge-gold identity (default skin for drive-native installs)"
+
+branding:
+  agent_name: "North Forge"
+  welcome: "Welcome to North Forge. Type your message, or /help for commands."
+  goodbye: "Forged and filed. ⚒"
+  response_label: " ⚒ North Forge "
+  prompt_symbol: "❯"
+  help_header: "(⚒) Available Commands"
+
+# "NORTH FORGE" — ANSI Shadow, gold→bronze gradient matching assets/banner.png.
+banner_logo: |-
+  [bold #FFD700]███╗   ██╗ ██████╗ ██████╗ ████████╗██╗  ██╗   ███████╗ ██████╗ ██████╗  ██████╗ ███████╗[/]
+  [bold #FFD700]████╗  ██║██╔═══██╗██╔══██╗╚══██╔══╝██║  ██║   ██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝[/]
+  [#FFBF00]██╔██╗ ██║██║   ██║██████╔╝   ██║   ███████║   █████╗  ██║   ██║██████╔╝██║  ███╗█████╗  [/]
+  [#FFBF00]██║╚██╗██║██║   ██║██╔══██╗   ██║   ██╔══██║   ██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝  [/]
+  [#CD7F32]██║ ╚████║╚██████╔╝██║  ██║   ██║   ██║  ██║   ██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗[/]
+  [#CD7F32]╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝   ╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝[/]
+
+# Anvil + sparks hero, replacing the caduceus.
+banner_hero: |-
+  [#FFD700]         ·   *   ·          [/]
+  [#FFBF00]          \  |  /           [/]
+  [#FFBF00]       ▁▁▁▁▁▁▁▁▁▁▁▁▁▁       [/]
+  [#FFA500]     ▟██████████████████▙   [/]
+  [#FF8C00]     ▜██████████████████▛   [/]
+  [#CD7F32]          ▐████████▌        [/]
+  [#CD7F32]          ▐████████▌        [/]
+  [#B8860B]        ▗████████████▖      [/]
+  [#B8860B]        ▟██████████████▙    [/]
+  [#8B5A2B]       ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔     [/]
+  [dim #7A5C33]         north forge        [/]

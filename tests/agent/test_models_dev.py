@@ -1144,8 +1144,8 @@ class TestModelOverrides:
     def test_model_info_override_for_unknown_model(self):
         """Canonical-schema override provides metadata for an unknown model.
 
-        Same key space as every other consumer — context_window,
-        max_output_tokens, supports_* — NOT the internal catalog shape.
+        Context and capabilities remain configurable; a legacy output override
+        cannot displace the unknown-model metadata fallback.
         """
         overrides = {
             "custom:my-vllm": {
@@ -1161,10 +1161,13 @@ class TestModelOverrides:
         with self._setup_overrides(overrides), \
              patch("agent.models_dev.fetch_models_dev", return_value={}):
             info = get_model_info("custom:my-vllm", "my-llava-model")
+            del overrides["custom:my-vllm"]["my-llava-model"]["max_output_tokens"]
+            uncapped_info = get_model_info("custom:my-vllm", "my-llava-model")
         assert info is not None
         assert info.family == "llava"
         assert info.context_window == 8192
-        assert info.max_output == 0
+        assert uncapped_info is not None
+        assert info.max_output == uncapped_info.max_output > 0
         assert info.tool_call is True
         assert info.reasoning is False
 

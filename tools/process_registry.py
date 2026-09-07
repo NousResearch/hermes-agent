@@ -785,13 +785,15 @@ class ProcessRegistry(ProcessCheckpointMixin):
         return env
 
     def _track_started(self, session: ProcessSession, reader_target, reader_name: str, extra_args=()) -> None:
-        """Register before starting the reader: an already-exited child can finish immediately."""
+        """Register before the reader can publish completion, even for an exited child."""
         reader = threading.Thread(target=reader_target, args=(session, *extra_args), daemon=True, name=reader_name)
         session._reader_thread = reader
         with self._lock:
             self._prune_if_needed()
+            # Completion takes this lock too. Starting here also leaves no
+            # ghost entry if the interpreter cannot start another thread.
+            reader.start()
             self._running[session.id] = session
-        reader.start()
         self._write_checkpoint()
 
     def _spawn_local_pty(self, session: ProcessSession, safe_command: str, env_vars: dict) -> ProcessSession:

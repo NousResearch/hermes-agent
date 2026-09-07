@@ -741,6 +741,21 @@ class _ChildRun:
             else:
                 entry["stale_paths"] = mod_paths
 
+    def account_background_processes(self, entry: Dict[str, Any]) -> None:
+        """Name the child's background processes on the result BEFORE ``cleanup`` kills them: handed-off ones now
+        belong to the parent (their completion lands in the parent's chat); anything else still running is about to be
+        terminated, and the parent must hear that from the runtime rather than trust a child's "watcher running"."""
+        handed = list(getattr(self.child, "_handed_off_processes", None) or [])
+        if handed:
+            entry["handed_off_processes"] = handed
+        with _quiet(None):
+            from tools.process_registry import process_registry
+            leftover = process_registry.running_owned_by(self.child_task_id)
+            if leftover:
+                entry["orphaned_processes"] = [
+                    {"session_id": s.id, "command": s.command[:200], "runtime_seconds": round(time.time() - s.started_at)}
+                    for s in leftover]
+
     def emit_complete(self, result: Dict[str, Any], entry: Dict[str, Any], duration: float) -> None:
         """Fire ``subagent.complete`` with the per-branch observability payload (tokens, cost, files touched,
         tool-output tail); every field is optional and degrades gracefully on the client."""

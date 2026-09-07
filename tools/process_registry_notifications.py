@@ -212,7 +212,24 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
             lines.append(f"(no summary — status={r_status}" + (f": {r_error}" if r_error else "") + ")")
         if r.get("live_transcript"):
             lines.append(f"Full live transcript (complete tool/assistant trace): {r['live_transcript']}")
+        lines += _process_accounting_lines(r)
     return "\n".join(lines)
+
+
+def _process_accounting_lines(r: dict) -> list:
+    """Runtime-truth lines about a child's background processes: what it handed to you (you own it now, its
+    completion lands here) and what it left running (terminated at teardown — never trust a child's "watcher running")."""
+    lines = []
+    for h in r.get("handed_off_processes") or []:
+        lines.append(f"Handed off to you: {h.get('session_id')} ({h.get('command', '')[:120]}) — {h.get('note', '')}. "
+                     "You own it now; its completion notice will arrive here.")
+    orphans = r.get("orphaned_processes") or []
+    if orphans:
+        lines.append(f"Child left {len(orphans)} background process(es) running that were TERMINATED with it "
+                     "(subagent process notices never reach you): "
+                     + "; ".join(f"{o.get('session_id')} `{o.get('command', '')[:100]}` ({o.get('runtime_seconds')}s)" for o in orphans)
+                     + ". Re-launch in this session anything you still need.")
+    return lines
 
 
 def _format_async_delegation(evt: dict) -> str:
@@ -331,6 +348,8 @@ def format_process_notification(evt: dict) -> "str | None":
         return _format_async_delegation(evt)
     _sid, _cmd = evt.get("session_id", "unknown"), evt.get("command", "unknown")
     _attribution = _delegation_attribution_line(evt)
+    if evt.get("handoff_note"):
+        _attribution = f"Handed off to you by a subagent before it finished. Purpose: {evt['handoff_note']}"
     attribution = f"{_attribution}\n" if _attribution else ""
     if evt_type == "watch_match":
         _sup = evt.get("suppressed", 0)

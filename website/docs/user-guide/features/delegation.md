@@ -189,6 +189,16 @@ delegation:
   surface_child_process_notifications: true   # default: false
 ```
 
+### Handing a process to the parent
+
+A subagent's background processes are also **killed when the subagent finishes**, so a CI watcher or build a child starts with `notify=true` never reports to anyone. The child's `terminal` result says so (`notify_on_complete: false` plus a `subagent_note`), and the child has three honest options before it finishes:
+
+- **wait** — `process_manage(action="wait", session_id=...)` and report the result itself;
+- **kill** — `process_manage(action="kill", ...)`;
+- **hand off** — `process_manage(action="handoff", session_id=..., data="<one sentence: what it is for>")`. The runtime transfers ownership to the parent under the registry lock (up to 3 per child; only a running process the child owns is accepted, anything else is a tool error). The parent's completion notice then arrives in the parent chat with `Handed off to you by a subagent… Purpose: …`, and the parent can poll/log/kill it like its own.
+
+Whatever the child neither waited on, killed, nor handed off is named on its result (`orphaned_processes`) and in the parent's delegation notice as terminated, so the parent hears from the runtime, never from the child's prose, that "the watcher is running" is no longer true. For CI watchers the better pattern is still: the child returns the fact (PR number, SHA) and the parent launches its own watcher.
+
 ## Model Override
 
 You can configure a different model for subagents via `config.yaml` — useful for delegating simple tasks to cheaper/faster models:

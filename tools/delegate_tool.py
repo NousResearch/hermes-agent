@@ -332,6 +332,7 @@ def _run_single_child(
         duration = run.elapsed()
         entry = _build_result_entry(child, result, task_index, duration, schema)
         run.append_sibling_write_reminder(entry)
+        run.account_background_processes(entry)
         run.emit_complete(result, entry, duration)
         return run.attach_worktree(entry)
     except Exception as exc:

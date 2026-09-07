@@ -88,14 +88,11 @@ _backend_permission_modes: Dict[str, str] = {}
 # The lock object also identifies the ownership generation: detaching invalidates starters and waiters.
 _backend_start_locks: Dict[str, threading.Lock] = {}
 _AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str], bool] = {}  # process-scoped: (provider, model) → bool
-# Approval state keyed by session_id so a gateway serving concurrent sessions can't leak one run's
-# "always approve" into another; callers without a session_id share "".
-# Falls back to a shared "" bucket for callers that don't pass a session_id (e.g. the classic single-run
-# CLI). Values: _session_auto_approve[sid] -> bool   ("always_approve everything") _always_allow[sid]
-# -> set of (action, delivery_mode) scope keys See NousResearch/hermes-agent#67052 gap 4.
+# Approval authority uses the same profile-qualified owner as the backend cache.
+# Callers without a session_id share only their profile's empty-session bucket.
 _approval_lock = threading.Lock()
-_session_auto_approve: Dict[str, bool] = {}   # sid -> "always_approve everything"
-_always_allow: Dict[str, set] = {}            # sid -> set of (action, delivery_mode) scope keys
+_session_auto_approve: Dict[str, bool] = {}   # owner -> "always_approve everything"
+_always_allow: Dict[str, set] = {}            # owner -> set of (action, delivery_mode) scope keys
 _escalation_warned: set = set()               # sids already warned that a bypass widened the driver mode
 
 def _cua_permission_mode(session_id: str) -> str:
@@ -239,7 +236,7 @@ def release_computer_use_session(session_id: str) -> bool:
     with _backend_lock:
         backend, call_lock = _detach_locked(owner)
     with _approval_lock:
-        _session_auto_approve.pop(sid, None), _always_allow.pop(sid, None)
+        _session_auto_approve.pop(owner, None), _always_allow.pop(owner, None)
     if backend is None:
         return False
     _stop_backend(backend, call_lock,
@@ -326,17 +323,18 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         return json.dumps({"error": f"{action} failed: {e}"})
 
 def _request_approval(action: str, args: Dict[str, Any], session_id: str = "") -> Optional[str]:
-    """None if approved, else a JSON error string. Scoped by (action, delivery_mode) AND session_id: foreground
+    """None if approved, else a JSON error string. Scoped by (action, delivery_mode) AND backend owner: foreground
     delivery is a visible focus change, so a background ``approve_session`` must NOT cover it; the blanket
     ``always_approve`` does. No CLI approval wired -> default allow (gateway approval runs one layer out).
 
     ``always_approve`` (the blanket "auto-approve everything" unlock) still covers foreground, since the
-    user explicitly opted into unattended operation. State is keyed on session_id so concurrent runs don't
+    user explicitly opted into unattended operation. State is keyed on profile and session so concurrent runs don't
     leak unlocks into one another. See #67052.
     """
     scope_key = (action, "foreground" if args.get("delivery_mode") == "foreground" else "background")
+    owner = _backend_owner_key(session_id)
     with _approval_lock:
-        if _session_auto_approve.get(session_id) or scope_key in _always_allow.get(session_id, set()):
+        if _session_auto_approve.get(owner) or scope_key in _always_allow.get(owner, set()):
             return None
     if (cb := _approval_callback) is None:
         return None
@@ -347,9 +345,9 @@ def _request_approval(action: str, args: Dict[str, Any], session_id: str = "") -
         verdict = "deny"
     if verdict in ("approve_session", "always_approve"):
         with _approval_lock:
-            _always_allow.setdefault(session_id, set()).add(scope_key)
+            _always_allow.setdefault(owner, set()).add(scope_key)
             if verdict == "always_approve":
-                _session_auto_approve[session_id] = True
+                _session_auto_approve[owner] = True
     if verdict in ("approve_once", "approve_session", "always_approve"):
         return None
     return json.dumps({"error": ("approval prompt timed out — the user did not respond. Silence is not consent; "

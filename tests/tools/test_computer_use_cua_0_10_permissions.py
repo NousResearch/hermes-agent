@@ -144,15 +144,15 @@ def test_release_seam_stops_backend_and_clears_session_state():
     computer_use._backends[ksa] = backend
     computer_use._backend_call_locks[ksa] = computer_use.threading.RLock()
     computer_use._backend_permission_modes[ksa] = "unrestricted"
-    computer_use._session_auto_approve["session-a"] = True
-    computer_use._always_allow["session-a"] = {("click", "background")}
+    computer_use._session_auto_approve[ksa] = True
+    computer_use._always_allow[ksa] = {("click", "background")}
 
     assert computer_use.release_computer_use_session("session-a") is True
     assert computer_use.release_computer_use_session("session-a") is False
     backend.stop.assert_called_once_with()
     assert ksa not in computer_use._backend_permission_modes
-    assert "session-a" not in computer_use._session_auto_approve
-    assert "session-a" not in computer_use._always_allow
+    assert ksa not in computer_use._session_auto_approve
+    assert ksa not in computer_use._always_allow
 
 
 def test_yolo_toggle_immediately_releases_mode_dependent_backend():

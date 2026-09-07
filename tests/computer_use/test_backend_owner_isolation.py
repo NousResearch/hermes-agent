@@ -177,6 +177,42 @@ def test_release_fences_inflight_start_before_same_owner_reacquires(monkeypatch)
         assert replacement.stopped
 
 
+@pytest.mark.parametrize("grant", ["approve_session", "always_approve"])
+def test_approval_grants_and_release_are_profile_qualified(monkeypatch, tmp_path, grant):
+    from tools.computer_use import tool as computer_use
+
+    profile_a, profile_b = tmp_path / "profile-a", tmp_path / "profile-b"
+    profile_a.mkdir()
+    profile_b.mkdir()
+    session_id = "same-session"
+    args = {"action": "click", "x": 1, "y": 1}
+    prompts = []
+
+    def approve(action, args, summary):
+        prompts.append(action)
+        return grant
+
+    monkeypatch.setattr(computer_use, "_approval_callback", approve)
+    monkeypatch.setenv("HERMES_HOME", str(profile_a))
+    assert computer_use._request_approval("click", args, session_id) is None
+    assert computer_use._request_approval("click", args, session_id) is None
+    assert prompts == ["click"]
+
+    monkeypatch.setenv("HERMES_HOME", str(profile_b))
+    assert computer_use._request_approval("click", args, session_id) is None
+    assert prompts == ["click", "click"]
+    computer_use.release_computer_use_session(session_id)  # no backend is required to clear a grant
+    assert computer_use._request_approval("click", args, session_id) is None
+    assert prompts == ["click", "click", "click"]
+
+    monkeypatch.setenv("HERMES_HOME", str(profile_a))
+    assert computer_use._request_approval("click", args, session_id) is None
+    assert prompts == ["click", "click", "click"]  # B's release preserved A's grant
+    computer_use.release_computer_use_session(session_id)
+    assert computer_use._request_approval("click", args, session_id) is None
+    assert prompts == ["click", "click", "click", "click"]
+
+
 def test_slow_start_for_one_owner_does_not_pin_unrelated_owner(monkeypatch):
     """Finding 3: while owner A's backend.start() is blocked (slow remote
     handshake), owner B must still be able to create, look up, and release

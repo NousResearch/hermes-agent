@@ -258,8 +258,8 @@ def test_release_seam_stops_exact_backend_and_clears_session_state():
         ka: computer_use.threading.RLock(),
         kb: computer_use.threading.RLock(),
     })
-    computer_use._session_auto_approve["conversation-a"] = True
-    computer_use._always_allow["conversation-a"] = {
+    computer_use._session_auto_approve[ka] = True
+    computer_use._always_allow[ka] = {
         ("click", "background"),
     }
 
@@ -270,8 +270,8 @@ def test_release_seam_stops_exact_backend_and_clears_session_state():
     second.stop.assert_not_called()
     assert ka not in computer_use._backends
     assert ka not in computer_use._backend_call_locks
-    assert "conversation-a" not in computer_use._session_auto_approve
-    assert "conversation-a" not in computer_use._always_allow
+    assert ka not in computer_use._session_auto_approve
+    assert ka not in computer_use._always_allow
     assert computer_use._backends[kb] is second
 
 
@@ -283,12 +283,12 @@ def test_release_seam_evicts_state_even_when_backend_stop_fails():
     kf = computer_use._backend_owner_key("failed-run")
     computer_use._backends[kf] = backend
     computer_use._backend_call_locks[kf] = computer_use.threading.RLock()
-    computer_use._session_auto_approve["failed-run"] = True
+    computer_use._session_auto_approve[kf] = True
 
     assert computer_use.release_computer_use_session("failed-run") is True
     assert kf not in computer_use._backends
     assert kf not in computer_use._backend_call_locks
-    assert "failed-run" not in computer_use._session_auto_approve
+    assert kf not in computer_use._session_auto_approve
 
 
 def test_release_seam_waits_for_in_flight_action_before_stopping_backend():

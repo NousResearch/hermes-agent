@@ -260,7 +260,7 @@ class ChronosTrajectoryDebugger:
             "frames": {fid: f.to_dict() for fid, f in self.frames.items()},
         }
         try:
-            self.state_file.write_text(json.dumps(data, indent=2), "utf-8")
+            self.state_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
         except Exception as exc:
             logger.error("Failed to save Chronos DAG: %s", exc)
 
@@ -269,7 +269,7 @@ class ChronosTrajectoryDebugger:
         if not self.state_file.exists():
             return
         try:
-            data = json.loads(self.state_file.read_text("utf-8"))
+            data = json.loads(self.state_file.read_text(encoding="utf-8"))
             self.session_id = data.get("session_id", self.session_id)
             self.active_branch = data.get("active_branch", "main")
             self.current_frame_id = data.get("current_frame_id")

@@ -394,7 +394,7 @@ def _preview_delegate_task(args: dict, max_len: int) -> str | None:
 def _preview_process_manage(args: dict, _max_len: int) -> str | None:
     action, sid, data, timeout_val = (args.get(k) for k in ("action", "session_id", "data", "timeout"))
     parts = [str(action) if action else "", str(sid)[:16] if sid else "",
-             f'"{_oneline(str(data)[:20])}"' if data else "", f"{timeout_val}s" if timeout_val and action == "wait" else ""]
+             f'"{_oneline(str(data)[:20])}"' if data else "", f"timeout={timeout_val}s" if timeout_val and action == "wait" else ""]
     return " ".join(p for p in parts if p) or None
 
 

@@ -245,6 +245,10 @@ start_ui() {
   fi
   { [ -f "$html" ] && [ -n "$py" ] && [ -n "$browser" ]; } || { log "shim: no renderer; skipping UI"; return; }
 
+  UI_PROFILE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hermes-update-ui-XXXXXXXX")" || {
+    log "shim: could not allocate a browser profile; skipping UI"
+    return
+  }
   publish_stage ""
   # The Desktop's final teardown targets the updater process group.  Put both
   # UI processes in their own sessions so neither the HTTP server nor a Chrome
@@ -267,7 +271,6 @@ start_ui() {
   [ -n "$port" ] || { kill -9 "$UI_SERVER_PID" 2>/dev/null; UI_SERVER_PID=""; return; }
 
   # Throwaway profile: new window/process we own; user's browser untouched.
-  UI_PROFILE_DIR="${TMPDIR:-/tmp}/hermes-update-ui-$$"
   "$py" -c 'import os, signal, sys; os.setsid(); signal.signal(signal.SIGTERM, signal.SIG_DFL); os.execv(sys.argv[1], sys.argv[1:])' \
     "$browser" --app="http://127.0.0.1:$port/" --user-data-dir="$UI_PROFILE_DIR" \
     --no-first-run --no-default-browser-check --window-size=280,320 >/dev/null 2>&1 &

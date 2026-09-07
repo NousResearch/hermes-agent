@@ -249,6 +249,34 @@ describe('TreeSplit cascading expansion', () => {
     expect($paneStates.get().files).toMatchObject({ widthOverride: 140 })
   })
 
+  it('never stretches a locked uncapped track as the all-fixed absorber', () => {
+    disposers.push(
+      registry.register({ area: 'panes', data: { placement: 'right', width: '200px' }, id: 'review', render: () => null, title: 'Review' }),
+      registry.register({ area: 'panes', data: { placement: 'right', width: '200px' }, id: 'files', render: () => null, title: 'Files' })
+    )
+
+    const tree = split(
+      'row',
+      [group(['review'], { id: 'review-zone' }), group(['files'], { id: 'files-zone' })],
+      [1, 1],
+      'fixed-row'
+    )
+
+    $layoutTree.set(tree)
+    $paneStates.set({
+      files: { open: true, widthLocked: true, widthOverride: 200 },
+      review: { open: true, widthOverride: 200 }
+    })
+
+    render(<TreeSplit node={tree} root rootRow />)
+
+    const container = globalThis.document.querySelector<HTMLElement>('[data-tree-split="fixed-row"]')!
+    const [review, files] = [...container.children] as HTMLElement[]
+
+    expect(review.style.flex).toBe('1 1 200px')
+    expect(files.style.flex).toBe('0 1 200px')
+  })
+
   it('does not move a directly height-locked Terminal boundary', () => {
     disposers.push(
       registry.register({ area: 'panes', data: { placement: 'bottom' }, id: 'terminal', render: () => null, title: 'Terminal' })

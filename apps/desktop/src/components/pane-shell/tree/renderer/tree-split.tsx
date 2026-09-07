@@ -703,14 +703,14 @@ export function TreeSplit({
   // that bounded slack; never stretch an explicitly locked track to do it.
   const fillsLockedBoundary = Boolean(lockedBoundaries?.[axis])
 
-  const boundedAbsorberIndex = fillsLockedBoundary
-    ? [...growable].reverse().find(i => lockedSharedTrackSize(tracks[i].child, axis, trackCtx) === null) ?? -1
-    : -1
+  const unlockedGrowable = growable.filter(i => lockedSharedTrackSize(tracks[i].child, axis, trackCtx) === null)
+
+  const boundedAbsorberIndex = fillsLockedBoundary ? ([...unlockedGrowable].reverse()[0] ?? -1) : -1
 
   const absorberIndex = allFixed
     ? fillsLockedBoundary
       ? boundedAbsorberIndex
-      : allFixedAbsorberIndex(growable, i => (horizontal ? tracks[i].sizing?.maxWidth : tracks[i].sizing?.maxHeight))
+      : allFixedAbsorberIndex(unlockedGrowable, i => (horizontal ? tracks[i].sizing?.maxWidth : tracks[i].sizing?.maxHeight))
     : -1
 
   // Weights are RATIOS, but CSS flex-grow is absolute: a run whose grows sum

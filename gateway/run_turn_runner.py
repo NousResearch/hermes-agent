@@ -1484,9 +1484,13 @@ class TurnRunner:
                 stream_consumer.finish()
         # The outer gateway starts the consumer only after this method returns and the
         # persistence result has been accepted.  This prevents preview frames from
-        # escaping before the canonical transcript is durable.  Empty successful turns
-        # also release the task; only failed turns remain fail-closed.
-        if ctx.stream_release_event is not None and isinstance(result, dict) and not result.get("failed"):
+        # escaping before the canonical transcript is durable.  Results without a
+        # complete final response remain fail-closed, including interrupted and empty turns.
+        if (
+            ctx.stream_release_event is not None
+            and _final_for_stream is not None
+            and result.get("persistence_confirmed", True)
+        ):
             ctx.stream_release_event.set()
 
     def _restore_telegram_thread_id_after_split(self, agent_session_id) -> None:

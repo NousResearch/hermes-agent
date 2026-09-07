@@ -410,14 +410,16 @@ def _ensure_codex_session(agent) -> None:
     )
 
 
-def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> None:
+def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> bool:
     """Splice the projected messages into ``messages`` and flush them to the session DB.
 
     Bypasses conversation_loop's per-step _persist_session(); the flush dedups via _DB_PERSISTED_MARKER so
     only the new codex rows are written. The agent stays the sole persister (agent_persisted=True): a
     gateway re-write would re-INSERT the user turn."""
+    if getattr(agent, "_session_db", None) is None:
+        return False
     if not turn.projected_messages:
-        return
+        return True
     from agent.message_metadata import append_message
     projected_messages = turn.projected_messages
     # Turn-start persistence owns the accepted input. Codex's leading user item
@@ -429,17 +431,15 @@ def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> 
         projected_messages = projected_messages[1:]
     for projected_message in projected_messages:
         append_message(messages, projected_message)
-    if getattr(agent, "_session_db", None) is None:
-        return
     flush_ok = False
     try:
         flush_ok = agent._flush_messages_to_session_db(messages)
     except Exception:
         logger.warning("codex app-server projected-message flush failed", exc_info=True)
     if flush_ok is False:
-        # Output already streamed and agent_persisted cannot flip to False: surface the gap loudly.
         logger.warning("codex app-server turn was delivered but could NOT be persisted to the session DB "
                        "(session=%s) — this turn will be missing after restart/resume", getattr(agent, "session_id", None))
+    return bool(flush_ok)
 
 
 def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_user_message: Any,
@@ -492,14 +492,18 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     if getattr(turn, "should_retire", False):
         logger.warning("codex app-server session retired (turn error: %s)", turn.error)
         _close_codex_session(agent)
-    _persist_projected_messages(agent, turn, messages)
+    persistence_ok = _persist_projected_messages(agent, turn, messages)
     usage_result = _finish_codex_turn(
         agent, turn, messages, original_user_message=original_user_message, should_review_memory=should_review_memory,
     )
+    completed = not turn.interrupted and turn.error is None and persistence_ok
     return _turn_result(
-        interrupt, messages, api_calls=1, completed=not turn.interrupted and turn.error is None, error=turn.error,
-        # We flushed the projected rows ourselves (agent_persisted); the gateway must skip its own DB write.
-        final_response=turn.final_text, agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id,
+        interrupt, messages, api_calls=1, completed=completed,
+        error=turn.error or (None if persistence_ok else "canonical transcript persistence failed"),
+        failed=not persistence_ok,
+        # Only a confirmed flush lets the gateway skip its own DB write or release external delivery.
+        final_response=turn.final_text if persistence_ok else "", agent_persisted=persistence_ok,
+        persistence_confirmed=persistence_ok, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id,
         **usage_result,
     )
 

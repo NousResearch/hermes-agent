@@ -484,7 +484,8 @@ def _write_tools_filter(name: str, mode: str, values: Optional[List[str]]) -> No
     """Persist ``mcp_servers.<name>.tools.<mode>`` (``include``/``exclude``), clearing the other
     mode; ``values=None`` drops the whole tools block (no filter)."""
     cfg = load_config()
-    servers = cfg.setdefault("mcp_servers", {})
+    from hermes_cli.mcp_config import _ensure_mcp_servers_dict
+    servers = _ensure_mcp_servers_dict(cfg)
     server_entry = servers.get(name) or {}
     if values is None:
         server_entry.pop("tools", None)

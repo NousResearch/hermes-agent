@@ -2752,6 +2752,29 @@ class TestSessionDbOffEventLoop:
             assert data["session"]["model"] is None
 
 
+class TestSessionResponsePreservesSharedReadState:
+    """``_session_response`` is the single client-facing projection for the
+    session API surface (list / get / create / PATCH). The API server already
+    ACCEPTS ``unread`` on PATCH (it calls ``db.set_session_read``), so dropping
+    it on the way back out breaks the shared read-state contract with every
+    non-desktop client: they can write the watermark but never read it, so they
+    fall back to device-local unread heuristics and disagree with Desktop.
+    """
+
+    def test_projection_preserves_unread(self):
+        """Whatever ``list_sessions_rich`` computes (it stamps ``unread`` on
+        every row via ``session_unread``) must survive the safe-keys projection,
+        for both a read (False) and an unread (True) row."""
+        for unread in (False, True):
+            row = {
+                "id": "s1", "source": "api_server", "title": "chat",
+                "message_count": 3, "last_active": 1234.5,
+                "pinned": 0, "archived": 0, "hidden": 0, "unread": unread,
+            }
+            payload = APIServerAdapter._session_response(row)
+            assert payload["unread"] is unread
+
+
 # ---------------------------------------------------------------------------
 # _api_key_passes_startup_guard — fail-closed on an unverifiable key
 # ---------------------------------------------------------------------------

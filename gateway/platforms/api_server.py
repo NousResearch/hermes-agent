@@ -2674,7 +2674,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "message_count", "tool_call_count", "input_tokens", "output_tokens",
             "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "estimated_cost_usd",
             "actual_cost_usd", "api_call_count", "parent_session_id", "last_active", "preview",
-            "_lineage_root_id", "pinned", "archived", "hidden")
+            "_lineage_root_id", "pinned", "archived", "hidden", "unread")
         payload = {key: session.get(key) for key in safe_keys if key in session}
         # SQLite stores the flags as 0/1.
         payload.update(

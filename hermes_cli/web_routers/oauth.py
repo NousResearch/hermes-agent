@@ -5,6 +5,7 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 """
 
 import asyncio
+import contextlib
 import logging
 import os
 import secrets
@@ -17,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_oauth import (
-    _external_process_cli_command, _minimax_poller, _nous_poller, _oauth_profile_name, _oauth_sessions, _oauth_sessions_lock, _truncate_token, _xai_device_poller,
+    _external_process_cli_command, _minimax_poller, _nous_plain_poller, _nous_promotion_poller, _oauth_profile_name, _oauth_sessions, _oauth_sessions_lock, _truncate_token, _xai_device_poller,
 )
 from hermes_cli.web_models import OAuthSubmitBody
 from hermes_cli.web_routers._common import scoped_to_thread
@@ -88,6 +89,12 @@ def _new_oauth_session(provider_id: str, flow: str, profile: Optional[str] = Non
     with _oauth_sessions_lock:
         _oauth_sessions[sid] = sess
     return sid, sess
+
+
+def _drop_oauth_session(sid: str) -> None:
+    """Forget a session that never got started, so the dashboard does not poll a corpse forever."""
+    with _oauth_sessions_lock:
+        _oauth_sessions.pop(sid, None)
 
 
 def _start_poller(target, sid: str, prefix: str = "oauth-poll") -> None:
@@ -324,50 +331,86 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
 
 
 async def _start_nous_device_code(profile: Optional[str]) -> Dict[str, Any]:
-    """Start a Nous sign-in. Over a free-tier identity (``nous.guest`` on) the same start also registers
-    the connector transfer with the account service, so the browser leg is that transfer's consent
-    page and its code, and the poller waits for the transfer before the token grant. Without one it is
-    the plain device-code flow."""
+    """Start a Nous sign-in. Over a free-tier identity (``nous.guest`` on) the whole sign-in is the
+    shared ``anon_auth.run_sign_in`` flow: this route creates the generator, pulls its first state
+    (the transfer's consent link and code) and hands that to the UI, then the poller drains the rest.
+    Without a free-tier identity it is the plain device-code flow."""
     from hermes_cli import anon_auth
     from hermes_cli.auth import PROVIDER_REGISTRY, _request_device_code
-    from hermes_cli.web_server_profiles import _profile_scope
+    from hermes_cli.web_server_profiles import _config_profile_scope, _profile_scope
     pconfig = PROVIDER_REGISTRY["nous"]
     portal_base_url = (
         os.getenv("HERMES_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL") or pconfig.portal_base_url
     ).rstrip("/")
     with _profile_scope(_oauth_profile_name(profile)):
         guest = anon_auth.current_nous_state() if anon_auth.guest_enabled() else None
-    anon_token = str(guest.get("anon_token") or "") if anon_auth.is_guest_state(guest) else ""
 
-    def _start(client):
-        device = _request_device_code(
-            client=client, portal_base_url=portal_base_url, client_id=pconfig.client_id, scope=pconfig.scope)
-        if not anon_token:
-            return device, None
-        intent = anon_auth.register_promotion_intent(
-            client, portal_base_url, anon_token, user_code=str(device["user_code"]),
-            device_code=str(device["device_code"]))
-        return device, intent
+    if not anon_auth.is_guest_state(guest):
+        device_data = await _httpx_call(lambda client: _request_device_code(
+            client=client, portal_base_url=portal_base_url, client_id=pconfig.client_id,
+            scope=pconfig.scope))
+        expires_in, interval = int(device_data["expires_in"]), int(device_data["interval"])
+        fields = dict(
+            device_code=str(device_data["device_code"]), portal_base_url=portal_base_url,
+            client_id=pconfig.client_id, scope=pconfig.scope,
+            interval=interval, expires_at=time.time() + expires_in)
+        return _device_session_started(
+            "nous", profile, _nous_plain_poller, fields, str(device_data["user_code"]),
+            str(device_data["verification_uri_complete"]), expires_in, interval)
 
-    device_data, intent = await _httpx_call(_start)
-    user_code = str(device_data["user_code"])
-    verification_url = str(device_data["verification_uri_complete"])
-    expires_in, interval = int(device_data["expires_in"]), int(device_data["interval"])
-    fields = dict(
-        device_code=str(device_data["device_code"]), portal_base_url=portal_base_url,
-        client_id=pconfig.client_id, scope=pconfig.scope)
-    if intent is not None:
-        claim_url = str(intent.get("claim_url") or "")
-        if claim_url.startswith("/"):
-            claim_url = f"{portal_base_url}{claim_url}"
-        user_code = str(intent["claim_code"])
-        verification_url = claim_url or verification_url
-        expires_in = min(expires_in, int(intent.get("expires_in") or expires_in))
-        interval = int(intent.get("interval") or interval)
-        fields["claim_code"] = user_code
-    fields.update(interval=interval, expires_at=time.time() + expires_in)
-    return _device_session_started(
-        "nous", profile, _nous_poller, fields, user_code, verification_url, expires_in, interval)
+    # The session is registered BEFORE the generator exists, so a cancel landing in the start
+    # window is already visible to the flow's own cancel check and persist guard.
+    sid, sess = _new_oauth_session("nous", "device_code", profile=profile)
+
+    def _cancelled() -> bool:
+        with _oauth_sessions_lock:
+            return bool(sess.get("cancelled"))
+
+    @contextlib.contextmanager
+    def _persist_guard():
+        # The desktop's guarantee: the final cancellation check and the save share one lock.
+        with _oauth_sessions_lock:
+            if sess.get("cancelled"):
+                sess["status"] = "cancelled"
+                yield False
+            else:
+                yield True
+
+    gen = anon_auth.run_sign_in(
+        timeout_seconds=15.0,
+        cancelled=_cancelled,
+        # A DELETE from this machine means "not here": nothing is persisted and the install
+        # re-mints a free tier on next use.
+        cancel_wins_after_promotion=True,
+        persist_guard=_persist_guard,
+        # Config + auth store only, so the light contextvar scope -- never the skills-module one,
+        # whose process-global lock would be held across the whole wait.
+        scope=lambda: _config_profile_scope(_oauth_profile_name(profile)),
+    )
+    try:
+        first = await _httpx_call(lambda _client: next(gen))
+    except Exception:
+        with contextlib.suppress(Exception):
+            gen.close()
+        _drop_oauth_session(sid)
+        raise
+    if getattr(first, "kind", "") != "code":     # already signed in, or the free tier is unavailable
+        with contextlib.suppress(Exception):
+            gen.close()
+        _drop_oauth_session(sid)
+        raise HTTPException(400, detail=first.copy_terminal)
+    with _oauth_sessions_lock:
+        # ``device_code`` stays present because other routes read it; the generator owns the real one.
+        sess.update(dict(
+            portal_base_url=portal_base_url, client_id=pconfig.client_id, scope=pconfig.scope,
+            device_code="", claim_code=first.code, interval=first.interval,
+            expires_at=time.time() + first.expires_in, _sign_in=gen))
+    _start_poller(_nous_promotion_poller, sid)   # last: nothing observes `sess` before it is complete
+    return {
+        "session_id": sid, "flow": "device_code", "user_code": first.code,
+        "verification_url": first.link, "expires_in": first.expires_in,
+        "poll_interval": first.interval,
+    }
 
 
 async def _start_codex_device_code(profile: Optional[str]) -> Dict[str, Any]:

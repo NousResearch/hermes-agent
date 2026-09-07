@@ -92,7 +92,7 @@ def test_a_sign_in_cancelled_while_waiting_never_persists_the_account(portal, fr
     guest = anon_auth.ensure_portal_identity(blocking=True)
     release = threading.Event()
 
-    def _wait_until_released(client, portal_base_url, claim_code, *, expires_in, interval):
+    def _wait_until_released(client, portal_base_url, claim_code, *, expires_in, interval, cancelled=None):
         release.wait(10)
         return {"status": "completed", "user_id": "nas_user:9", "account_email": EMAIL}
     monkeypatch.setattr(anon_auth, "wait_for_promotion", _wait_until_released)

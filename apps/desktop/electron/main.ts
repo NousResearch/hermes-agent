@@ -418,6 +418,7 @@ import {
   windowOpacityOptions
 } from './translucency'
 import { branchTipApiUrl, cacheIsFresh, compareApiUrl, githubRepoSlug, parseCompare } from './update-api-check'
+import { isValidUpdateBranchRef, updateBranchRefPattern } from './update-branch-ref'
 import { waitForLocalBackendClearance, waitForUpdateClearance } from './update-gate'
 import {
   acquireUpdateMarker,
@@ -429,7 +430,6 @@ import {
   type UpdateMarkerClaim,
   writeUpdateMarker
 } from './update-marker'
-import { isValidUpdateBranchRef, updateBranchRefPattern } from './update-branch-ref'
 import { runWindowsUpdatePreflight, type UpdatePreflightOutcome } from './update-preflight'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {

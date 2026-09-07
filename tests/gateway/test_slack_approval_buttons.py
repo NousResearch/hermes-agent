@@ -515,16 +515,30 @@ class TestSessionKeyChatType:
         This is the exact bug that the old ``hardcoded "group"`` code caused:
         the lookup builds ``group:…`` while the real session is ``dm:…``.
         """
+        from gateway.session import SessionEntry
+
         adapter = _make_adapter()
         mock_store = MagicMock()
-        mock_store._entries = {
-            "agent:main:slack:dm:D0DMCHANNEL:2000.0": MagicMock()
-        }
+        session_key = "agent:main:slack:dm:D0DMCHANNEL:2000.0"
+        mock_store._entries = {session_key: SessionEntry.from_dict({
+            "session_key": session_key,
+            "session_id": "slack-dm-thread-session",
+            "created_at": "2024-01-01T00:00:00",
+            "updated_at": "2024-01-01T00:00:00",
+        })}
         mock_store._ensure_loaded = MagicMock()
         mock_store.config = MagicMock()
         mock_store.config.group_sessions_per_user = True
         mock_store.config.thread_sessions_per_user = False
         adapter._session_store = mock_store
+
+        # The same entry must be active with the event's correct DM type.
+        assert adapter._has_active_session_for_thread(
+            channel_id="D0DMCHANNEL",
+            thread_ts="2000.0",
+            user_id="U_USER",
+            chat_type="dm",
+        )
 
         # Default chat_type="group" should NOT find the DM session
         result = adapter._has_active_session_for_thread(

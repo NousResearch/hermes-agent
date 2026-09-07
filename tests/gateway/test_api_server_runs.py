@@ -1628,6 +1628,58 @@ class TestRunIdempotency:
         assert bind.call_args.kwargs["wake_capable"] == "1"
 
     @pytest.mark.asyncio
+    async def test_caller_supplied_history_with_session_id_is_not_wake_capable(
+        self, adapter, tmp_path
+    ):
+        """#98619: an explicit session_id plus non-empty caller-supplied
+        conversation_history skips the SessionDB load, so the run's continuation
+        path never consumes a SessionDB delivery row (async completion persists
+        to SessionDB only) and must NOT be granted wake authority — same
+        default-deny contract as previous_response_id continuations."""
+        _use_idempotency_db(adapter, tmp_path / "idem.db")
+        mock_db = MagicMock()
+        mock_db.resolve_resume_session_id.side_effect = lambda sid: sid
+        adapter._session_db = mock_db
+        caller_history = [
+            {"role": "user", "content": "caller turn"},
+            {"role": "assistant", "content": "caller reply"},
+        ]
+        bind = MagicMock(return_value=[])
+        history_load = AsyncMock(return_value=[])
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_bind_api_server_session", new=bind),
+                patch.object(adapter, "_conversation_history_for_session", new=history_load),
+                patch.object(adapter, "_create_agent") as create,
+            ):
+                agent = MagicMock()
+                agent.run_conversation.return_value = {"final_response": "done"}
+                agent.session_prompt_tokens = agent.session_completion_tokens = (
+                    agent.session_total_tokens
+                ) = 0
+                create.return_value = agent
+                response = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "hello",
+                        "session_id": "client-held-session",
+                        "conversation_history": caller_history,
+                    },
+                )
+                assert response.status == 202
+                for _ in range(40):
+                    if bind.called:
+                        break
+                    await asyncio.sleep(0.05)
+        assert bind.call_args.kwargs["wake_capable"] == ""
+        history_load.assert_not_called()
+        assert (
+            agent.run_conversation.call_args.kwargs["conversation_history"]
+            == caller_history
+        )
+
+    @pytest.mark.asyncio
     async def test_compressed_parent_delivery_row_lands_on_live_tip(
         self, adapter, tmp_path
     ):

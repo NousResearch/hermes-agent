@@ -319,7 +319,9 @@ class _RunLaunch:
     user_message: str
     conversation_history: List[Dict[str, str]]
     # #98619: only continuation paths that reload session history may grant wake authority —
-    # a previous_response_id continuation consumes its ResponseStore snapshot instead.
+    # a previous_response_id continuation consumes its ResponseStore snapshot instead, and a
+    # caller-supplied conversation_history is authoritative for the turn; neither consumes a
+    # SessionDB delivery row, so both stay default-denied.
     wake_capable: bool
     agent_kwargs: dict  # ``_create_agent`` keyword arguments (prompt, model overrides, route, room policy)
     request_profile: Any
@@ -455,7 +457,10 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     # same-key run's context (#98619).  previous_response_id continuations keep their
     # ResponseStore snapshot as history (they cannot consume a SessionDB delivery row and are
     # accordingly denied wake capability in _run_agent_sync); the fresh run_id fallback has
-    # nothing persisted to load yet.
+    # nothing persisted to load yet.  Wake authority is fixed here, before the load can
+    # overwrite ``conversation_history``: a caller-supplied history is authoritative for this
+    # turn, never consumes the SessionDB delivery row, and is denied on the same contract.
+    wake_capable = not previous_response_id and not conversation_history
     if not conversation_history and selected_session_id and not previous_response_id:
         conversation_history = await self._conversation_history_for_session(str(selected_session_id))
     q = self._run_streams[run_id] = asyncio.Queue()
@@ -476,7 +481,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         self._run_idempotency_ids.add(run_id)
     launch = _RunLaunch(
         self, run_id, q, session_id, gateway_session_key, _declared_selected, user_message,
-        conversation_history, not previous_response_id,
+        conversation_history, wake_capable,
         agent_kwargs=dict(
             ephemeral_system_prompt=instructions, session_id=session_id, gateway_session_key=gateway_session_key,
             route=route, room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
@@ -526,7 +531,9 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                 # SessionDB in _handle_runs), or the run_id fallback the client can post back
                 # as body.session_id.  A previous_response_id continuation consumes its
                 # ResponseStore snapshot instead and can never see a SessionDB delivery row,
-                # so it stays default-denied until a merge contract exists for that chain.
+                # so it stays default-denied until a merge contract exists for that chain;
+                # likewise a caller-supplied conversation_history is authoritative for the
+                # turn and never reads the delivery row, so it is denied the same way.
                 wake_capable="1" if run.wake_capable else "")
             if session_tokens:
                 resets.append((session_tokens, clear_session_vars))

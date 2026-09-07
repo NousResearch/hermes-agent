@@ -9,6 +9,7 @@ import argparse
 import json
 import socket
 import sys
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -96,14 +97,18 @@ from run_agent import AIAgent  # noqa: E402
 
 
 def prepared(sync):
-    cfg = HonchoClientConfig(base_url=f"http://127.0.0.1:{server.server_port}", workspace_id="probe",
-                             timeout=2, context_tokens=1200, save_messages=False, query_rewrite=False)
-    cfg.recall_sync = sync
+    p = HonchoMemoryProvider()
+    with tempfile.TemporaryDirectory() as home:
+        p.save_config({"baseUrl": f"http://127.0.0.1:{server.server_port}", "workspace": "probe",
+                       "timeout": 2, "contextTokens": 1200, "saveMessages": False,
+                       "queryRewrite": False, "recallSync": True,
+                       "hosts": {"hermes": {"recallSync": sync}}}, home)
+        cfg = HonchoClientConfig.from_global_config(host="hermes", config_path=Path(home) / "honcho.json")
+    assert cfg.recall_sync is sync
     manager = HonchoSessionManager(config=cfg, context_tokens=1200)
     manager._cache["ongoing"] = HonchoSession("ongoing", "user", "assistant", "ongoing")
-    p = HonchoMemoryProvider()
     p._config, p._manager, p._session_key, p._session_initialized = cfg, manager, "ongoing", True
-    p._recall_sync = sync
+    p._recall_sync = cfg.recall_sync
     p._dialectic_cadence = 100
     p._last_dialectic_turn = 0
     mm = MemoryManager(external_prefetch_timeout=3)

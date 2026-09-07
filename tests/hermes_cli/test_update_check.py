@@ -271,5 +271,77 @@ def test_check_for_updates_does_not_cache_none(tmp_path, monkeypatch):
     assert not cache_file.exists(), "None result must not be cached"
 
 
+def test_format_update_notice_diverged_is_not_a_tip_count():
+    from hermes_cli.banner import UPDATE_DIVERGED, _format_update_notice
+
+    line = _format_update_notice(UPDATE_DIVERGED)
+    assert "diverged" in line.lower()
+    assert "commits behind" not in line
+    assert "commit behind" not in line
+
+
+def test_format_update_notice_positive_behind_still_counts():
+    from hermes_cli.banner import _format_update_notice
+
+    line = _format_update_notice(3)
+    assert "3 commits behind" in line
+
+
+def test_fast_version_diverged_does_not_print_up_to_date(capsys, monkeypatch):
+    from hermes_cli.banner import UPDATE_DIVERGED
+    from hermes_cli._startup_fast import print_fast_version_info
+
+    monkeypatch.setattr(
+        "hermes_cli.banner.check_for_updates", lambda **kw: UPDATE_DIVERGED
+    )
+    print_fast_version_info(check_updates=True)
+    out = capsys.readouterr().out.lower()
+    assert "diverged" in out
+    assert "up to date" not in out
+
+
+def test_diverged_with_positive_behind_returns_diverged(tmp_path, monkeypatch):
+    from hermes_cli.banner import UPDATE_DIVERGED, _check_via_local_git
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+
+    monkeypatch.setattr(
+        "hermes_cli.banner._git_stdout",
+        lambda args, cwd=None, **kw: (
+            "https://github.com/NousResearch/hermes-agent.git"
+            if list(args)[:2] == ["remote", "get-url"]
+            else "false" if "--is-shallow-repository" in list(args) else ""
+        ),
+    )
+    monkeypatch.setattr("hermes_cli.banner._quiet", lambda fn, default=None: True)
+    monkeypatch.setattr("hermes_cli.banner._git_count", lambda args, cwd: 1)
+    monkeypatch.setattr("hermes_cli.banner._git_ok", lambda args, **kw: False)
+    assert _check_via_local_git(repo) == UPDATE_DIVERGED
+
+
+def test_diverged_with_zero_behind_returns_diverged(tmp_path, monkeypatch):
+    from hermes_cli.banner import UPDATE_DIVERGED, _check_via_local_git
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+
+    monkeypatch.setattr(
+        "hermes_cli.banner._git_stdout",
+        lambda args, cwd=None, **kw: (
+            "https://github.com/NousResearch/hermes-agent.git"
+            if list(args)[:2] == ["remote", "get-url"]
+            else "false" if "--is-shallow-repository" in list(args) else ""
+        ),
+    )
+    monkeypatch.setattr("hermes_cli.banner._quiet", lambda fn, default=None: True)
+    monkeypatch.setattr("hermes_cli.banner._git_count", lambda args, cwd: 0)
+    monkeypatch.setattr("hermes_cli.banner._git_ok", lambda args, **kw: False)
+    assert _check_via_local_git(repo) == UPDATE_DIVERGED
+
+
+
 
 

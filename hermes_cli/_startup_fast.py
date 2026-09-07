@@ -164,12 +164,18 @@ def print_fast_version_info(*, check_updates: bool = True) -> None:
     # Synchronous update status — bounded by check_for_updates' own subprocess/network timeouts
     # and its 6-hour cache; any failure prints nothing.
     try:
-        from hermes_cli.banner import UPDATE_AVAILABLE_NO_COUNT, check_for_updates
+        from hermes_cli.banner import UPDATE_AVAILABLE_NO_COUNT, UPDATE_DIVERGED, check_for_updates
         from hermes_cli.config import recommended_update_command
 
         behind = check_for_updates(passive=True)
         if behind == UPDATE_AVAILABLE_NO_COUNT:
             print(f"Update available — run '{recommended_update_command()}'")
+        elif behind == UPDATE_DIVERGED:
+            print(
+                "Update available: branch diverged from origin/main "
+                "(not a fast-forward) — review WIP before "
+                f"'{recommended_update_command()}' (checks out main / may stash)"
+            )
         elif behind and behind > 0:
             commits_word = "commit" if behind == 1 else "commits"
             print(f"Update available: {behind} {commits_word} behind — run '{recommended_update_command()}'")

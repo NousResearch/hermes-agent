@@ -130,6 +130,8 @@ _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600  # avoid repeated git fetches
 
 # Returned when an update is known to exist but commits can't be counted (e.g. nix builds).
 UPDATE_AVAILABLE_NO_COUNT = -1
+# HEAD and origin/main have diverged (neither is an ancestor). Not a fast-forward count (#68484).
+UPDATE_DIVERGED = -2
 
 _UPSTREAM_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
 _OFFICIAL_REPO_CANONICAL = "github.com/nousresearch/hermes-agent"
@@ -312,6 +314,13 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
             or _git_stdout(["rev-parse", "origin/main"], cwd=repo_dir))
         return _tips_behind(head_rev, target_rev)
     behind = _git_count(["rev-list", "--count", "HEAD..origin/main"], cwd=repo_dir)
+    if fetch_ok and behind is not None:
+        head_anc = _git_ok(["merge-base", "--is-ancestor", "HEAD", "origin/main"], cwd=repo_dir)
+        main_anc = _git_ok(["merge-base", "--is-ancestor", "origin/main", "HEAD"], cwd=repo_dir)
+        if not head_anc and not main_anc:
+            return UPDATE_DIVERGED
+        if behind > 0 and not head_anc:
+            return UPDATE_DIVERGED
     return behind if fetch_ok or (behind is not None and behind > 0) else None
 
 
@@ -484,6 +493,12 @@ def get_update_result(timeout: float = 0.5) -> Optional[int]:
 def _format_update_notice(behind: int) -> str:
     """Render the update warning line for a non-zero ``behind`` result."""
     from hermes_cli.config import get_managed_update_command, recommended_update_command
+    if behind == UPDATE_DIVERGED:
+        return (
+            "[bold yellow]⚠ branch diverged from origin/main[/]"
+            f"[dim yellow] — not a fast-forward; review before "
+            f"[bold]{recommended_update_command()}[/bold] "
+            "(switches to main / may stash WIP)[/]")
     if behind > 0:
         return (
             f"[bold yellow]⚠ {behind} {_plural(behind, 'commit')} behind[/]"

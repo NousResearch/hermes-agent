@@ -67,6 +67,23 @@ class CredentialPoolAdminMixin:
                 self._current_id = None
             return removed
 
+    def move_entry(self, credential_id: str, priority: int) -> Optional[PooledCredential]:
+        """Place an entry at a clamped zero-based position and persist contiguous priorities."""
+        from agent.credential_pool import _normalize_pool_priorities
+
+        with self._lock:
+            entry = self._find(lambda e: e.id == credential_id)
+            if entry is None:
+                return None
+            others = [e for e in self._entries if e.id != credential_id]
+            others.insert(max(0, min(int(priority), len(others))), entry)
+            entries = [replace(e, priority=p) for p, e in enumerate(others)]
+            # Apply load-time ordering now so the reported position survives reload.
+            _normalize_pool_priorities(self.provider, entries)
+            self._entries = sorted(entries, key=lambda e: e.priority)
+            self._persist()
+            return self._find(lambda e: e.id == credential_id)
+
     def resolve_target(self, target: Any) -> Tuple[Optional[int], Optional[PooledCredential], Optional[str]]:
         raw = str(target or "").strip()
         if not raw:

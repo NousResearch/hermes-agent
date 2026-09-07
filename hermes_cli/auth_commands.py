@@ -349,6 +349,14 @@ def auth_add_command(args) -> None:
     if not is_custom:
         _unsuppress_provider_sources(provider)
 
+    wanted_priority = getattr(args, "priority", None)
+    before = {entry.id for entry in pool.entries()}
+    _add_credential(args, provider, pool, requested_type)
+    if wanted_priority is not None:
+        _place_added_credential(provider, before, int(wanted_priority))
+
+
+def _add_credential(args, provider: str, pool, requested_type: str) -> None:
     if requested_type == AUTH_TYPE_API_KEY:
         _add_api_key_credential(args, provider, pool)
         return
@@ -377,6 +385,64 @@ def auth_add_command(args) -> None:
     if spec.activate_first and first_credential:
         auth_mod.mark_provider_active_if_unset(provider)
     print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+
+
+def _place_added_credential(provider: str, before_ids: set, priority: int) -> None:
+    """Move the credential `auth add` just created to *priority*.
+
+    Every add path (api key, OAuth spec, Nous) persists through the pool, so the
+    new row is the one id that was not there before the add. Reloading rather
+    than reusing the add's pool object keeps this correct for paths that write
+    their own store.
+    """
+    pool = load_pool(provider)
+    entries = pool.entries()
+    added = [entry for entry in entries if entry.id not in before_ids]
+    if len(added) == 1:
+        target = added[0]
+    elif not added and len(entries) == 1:
+        # The add updated the sole existing row in place (a repeat Nous login).
+        target = entries[0]
+    else:
+        # The credential was saved; only the placement is unresolved, so do not fail.
+        print(f"note: could not identify the credential just added to {provider}; set its "
+              f"priority with `hermes auth priority {provider} <target> {priority}`.",
+              file=sys.stderr)
+        return
+    moved = pool.move_entry(target.id, priority)
+    _report_priority(provider, pool, moved, priority, "Placed", "at")
+
+
+def _report_priority(provider: str, pool, moved, requested: int, verb: str, prep: str) -> None:
+    """Print the effective priority and say why it differs from the request, if it does."""
+    print(f'{verb} {provider} credential "{moved.label}" {prep} priority {moved.priority} '
+          f"(#{moved.priority + 1} in `hermes auth list {provider}`)")
+    size = len(pool.entries())
+    if moved.priority != requested:
+        if requested < 0 or requested >= size:
+            reason = f"the pool has {size} credentials, so it was clamped"
+        else:
+            reason = "anthropic keeps manually added credentials ahead of seeded ones"
+        print(f"note: requested priority {requested}; effective priority is {moved.priority} "
+              f"because {reason}.", file=sys.stderr)
+    strategy = get_pool_strategy(provider)
+    if strategy != STRATEGY_FILL_FIRST:
+        print(f"note: {provider} uses the {strategy} strategy; priority only orders "
+              f"fill_first selection.", file=sys.stderr)
+
+
+def auth_priority_command(args) -> None:
+    """`hermes auth priority <provider> <target> <priority>`: reorder one pooled credential."""
+    provider = _normalize_provider(getattr(args, "provider", ""))
+    pool = load_pool(provider)
+    index, matched, error = pool.resolve_target(getattr(args, "target", None))
+    if matched is None or index is None:
+        raise SystemExit(f"{error} Provider: {provider}.")
+    requested = int(getattr(args, "priority"))
+    moved = pool.move_entry(matched.id, requested)
+    if moved is None:
+        raise SystemExit(f'No credential matching "{getattr(args, "target", None)}" for provider {provider}.')
+    _report_priority(provider, pool, moved, requested, "Set", "to")
 
 
 def auth_list_command(args) -> None:
@@ -665,7 +731,8 @@ def _interactive_strategy() -> None:
 
 _AUTH_ACTIONS = {
     "add": auth_add_command, "list": auth_list_command, "remove": auth_remove_command,
-    "reset": auth_reset_command, "status": auth_status_command, "logout": auth_logout_command,
+    "reset": auth_reset_command, "priority": auth_priority_command, "status": auth_status_command,
+    "logout": auth_logout_command,
     "spotify": auth_spotify_command}
 
 

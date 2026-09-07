@@ -116,6 +116,8 @@ Type [1/2]:
 | `hermes auth add <provider>` | Add a credential (prompts for type and key) |
 | `hermes auth add <provider> --type api-key --api-key <key>` | Add an API key non-interactively |
 | `hermes auth add <provider> --type oauth` | Add an OAuth credential via browser login |
+| `hermes auth add <provider> --priority 0` | Add a credential and place it first in the `fill_first` order |
+| `hermes auth priority <provider> <target> <n>` | Move a credential to priority `n` (0 = tried first); the rest are renumbered |
 | `hermes auth remove <provider> <index>` | Remove credential by 1-based index |
 | `hermes auth reset <provider>` | Clear all cooldowns/exhaustion status |
 | `hermes auth reset <provider> <target>` | Clear the cooldown on one credential by index, id, or label |
@@ -132,7 +134,7 @@ credential_pool_strategies:
 
 | Strategy | Behavior |
 |----------|----------|
-| `fill_first` (default) | Use the first healthy key until it's exhausted, then move to the next |
+| `fill_first` (default) | Use the first healthy key until it's exhausted, then move to the next; order is each credential's `priority` (`hermes auth priority` changes it) |
 | `round_robin` | Cycle through keys evenly, rotating after each selection |
 | `least_used` | Always pick the key with the lowest request count |
 | `random` | Random selection among healthy keys |

@@ -55,6 +55,94 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
   4. On a fresh clone, run `sh .githooks/install` to re-arm the guard.
 - **Do NOT** run `git clean -x`/`-X` in this repo — it would delete `.env`.
 
+### ERR-2026-09-07-004 — HIGH — Ledger completeness check compares dates, not RUN IDs
+
+- **Opened:** 2026-09-07 · **Base:** hermes@233757037d (6 behind upstream/main)
+- **Run:** RUN-2026-09-07-006
+- **Source:** Codex audit **F-02** (see `logs/CODEX-AUDIT-2026-09-07.md`).
+- **Confidence:** Confirmed Fact (Codex read the code; not independently re-run this session).
+- **What:** `scripts/collect-logs.sh` (~lines 183–203) and the equivalent
+  PowerShell logic prove only *"a report exists dated ≥ the newest ledger ID's
+  date."* They take the newest date embedded in any top-level report filename and
+  compare it to the newest date in any ledger ID. One unrelated same-day report
+  makes every run that day look covered; a report can also omit its `RUN-` id
+  entirely and still satisfy the check. The deliberately off-date decision id
+  (`DECISION-2026-09-06-003`, opened 2026-09-07) shows date ≠ run identity.
+- **Impact:** the collector does **not** close the evidence gap it was built for —
+  it detects "no report of at least this date," not "every run has a report."
+- **Fix sketch (not done — R-01):** make completeness *relational* — a required
+  `Run:` / `Covers:` header on each report, a `logs/ledger/reports/REPORT-MANIFEST`
+  (basename, sha256, run id, covered ids), both collectors extract every `RUN-*`
+  touched since the last handoff and match against report headers/manifest
+  (missing run ⇒ **FAIL**, not WARN), reject unresolved `[[name]]` links, add
+  parity tests (two runs one date, one report ⇒ flagged).
+- **Status:** OPEN — logged for scheduling; no change this run.
+
+### ERR-2026-09-07-005 — HIGH — `.githooks/content-scan` whitespace-path bypass
+
+- **Opened:** 2026-09-07 · **Base:** hermes@233757037d (6 behind upstream/main)
+- **Run:** RUN-2026-09-07-006
+- **Source:** Codex audit **F-03** — reproduced by Codex in a scratch repo.
+- **Confidence:** Confirmed Fact (Codex reproduced with a real `ghp_`-shaped
+  token; not re-reproduced this session).
+- **What:** in `.githooks/content-scan` (~lines 80–85) the changed-path list is
+  captured as newline text and expanded **unquoted** into `_scan`. A legal path
+  like `dir/file name.txt` word-splits into two non-existent pathspecs, so the
+  blob is never scanned. `content-scan --commits` returned exit 0 / "clean" for a
+  planted GitHub token in such a file. Both the pre-push hook and the
+  `nf-secret-scan.yml` CI job use this mode, so an ordinary filename with a space
+  defeats the content gate. The six existing scanner self-tests miss whitespace,
+  tabs, leading `-`, and NUL/newline paths.
+- **Impact:** live gap in an advertised security mechanism — a secret in a
+  space-containing filename passes both local and CI content scanning.
+- **Fix sketch (not done — R-02):** stop storing paths in shell vars — use
+  `git diff-tree -z` + a NUL-safe loop, scan one exact path at a time
+  (`git grep … -- "$path"`) or scan by blob OID; add whitespace / tab / leading-`-` /
+  Unicode / rename coverage to `.githooks/tests/run.sh`.
+- **Status:** OPEN — **queued as the next fix** after this batch (owner priority).
+
+### ERR-2026-09-07-006 — MEDIUM — Bootstrap readiness marker is not validated
+
+- **Opened:** 2026-09-07 · **Base:** hermes@233757037d (6 behind upstream/main)
+- **Run:** RUN-2026-09-07-006
+- **Source:** Codex audit **F-05**.
+- **Confidence:** Confirmed Fact (code inspection).
+- **What:** `.nf-bootstrapped` records `repo=<path>`, but the bootstrap
+  early-return and `north-forge.cmd` only test that the marker and `hermes.exe`
+  *exist*. Neither checks that the editable install still points at the current
+  checkout. A renamed checkout, a copied launcher, or a reused sibling venv can
+  silently run code from a different/old repository — likeliest on portable
+  drives whose folder name or letter changes.
+- **Impact:** confusing stale-code execution; no data loss.
+- **Fix sketch (not done — R-03 step 3):** parse `.nf-bootstrapped`; verify its
+  `repo=` equals the current `$RepoRoot`, that `hermes.exe` belongs to the
+  selected venv, and that `import hermes_cli` resolves under the current repo;
+  offer a safe rebuild when it doesn't.
+- **Status:** OPEN — logged for scheduling; no change this run.
+
+### ERR-2026-09-07-007 — MEDIUM — Secret defenses narrower than "credential protection" implies
+
+- **Opened:** 2026-09-07 · **Base:** hermes@233757037d (6 behind upstream/main)
+- **Run:** RUN-2026-09-07-006
+- **Source:** Codex audit **F-09** (residual scope beyond the `ERR-2026-09-07-005`
+  bypass).
+- **Confidence:** Confirmed Fact for implemented coverage; Field-Reasoned for
+  residual exposure likelihood.
+- **What:** the secret controls work but are narrow — commit scanning recognizes
+  only selected AWS / GitHub / Slack token shapes; filename blocking is
+  essentially `.env`-family only (`credentials.json`, `id_rsa`, `*.pfx`, `*.p12`,
+  service-account JSON, arbitrary token exports are not uniformly blocked);
+  `.gitignore` is not a security boundary and `git add -f` bypasses it; the
+  handoff redactor skips binary/large files; both hooks yield to `--no-verify`
+  (CI must stay authoritative).
+- **Impact:** "credential protection" oversells the current net; several common
+  secret-bearing file types can be staged without a hook objecting.
+- **Fix sketch (not done — R-02 steps 4–5):** add a maintained pinned CI scanner
+  (e.g. Gitleaks) for broad provider coverage alongside the fast local hook; add
+  filename policy for private-key / container formats with line-scoped, reviewed
+  allowlists; emit `file:line` + rule name, never the secret text.
+- **Status:** OPEN — logged for scheduling; no change this run.
+
 ---
 
 ## Resolved
@@ -270,3 +358,7 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
 | ERR-2026-09-07-001 | 2026-09-07 | LOW | Bootstrap tooling | `bootstrap-north-forge.ps1` let uv cache sit on `C:` while venv built on the checkout drive → cross-volume full-copy, ~6.5 min first run | RESOLVED | CHG-2026-09-07-008 |
 | ERR-2026-09-07-002 | 2026-09-07 | LOW | Upstream test compat | Upstream test files call `os.geteuid()` in an eager `skipif` decorator arg → `pytest tests/` aborts at collection on Windows. Pre-existing upstream, pulled in by the `CHG-2026-09-07-010` sync; NF touches none of the files; targeted runs green | ACCEPTED-RISK | CHG-2026-09-07-014 (owner: accept as-is, no shim; rely on Linux CI + targeted runs; revisit if upstream fixes or a full local Windows run is needed) |
 | ERR-2026-09-07-003 | 2026-09-07 | HIGH | Bootstrap tooling | Codex F-04 (data-loss): `bootstrap-north-forge.ps1` path guard rejected venv/data *inside* the repo but not *equal to* it → `-VenvDir <repo>` + `-Force` runs `Remove-Item -Recurse` on the checkout. Default `north-forge.cmd` path unaffected (no `-VenvDir` passed). Canonicalize + reject equal/inside/contains for venv AND data | RESOLVED | CHG-2026-09-07-015 (+ `tests/test_bootstrap_north_forge_path_safety.py`) |
+| ERR-2026-09-07-004 | 2026-09-07 | HIGH | Ledger tooling | Codex F-02: `collect-logs.{sh,ps1}` completeness check compares newest report-filename *date* to newest ledger-ID date, not `RUN-` id to report. One same-day report covers every run that day; run id can be absent entirely | OPEN | — (R-01: RUN-to-report manifest + FAIL on missing run) |
+| ERR-2026-09-07-005 | 2026-09-07 | HIGH | Secret scanning | Codex F-03 (reproduced): `.githooks/content-scan` expands changed paths unquoted → a filename with a space word-splits into non-existent pathspecs; a planted `ghp_` token in `dir/file name.txt` passed `--commits` clean. Pre-push + CI both affected | OPEN | — **queued next** (R-02: `git diff-tree -z` NUL-safe loop / scan by blob OID; whitespace test coverage) |
+| ERR-2026-09-07-006 | 2026-09-07 | MEDIUM | Bootstrap tooling | Codex F-05: `.nf-bootstrapped` / `north-forge.cmd` only check the marker + `hermes.exe` exist, never that the editable install points at the current checkout → renamed/copied checkout can launch stale code | OPEN | — (R-03.3: verify marker `repo=` == `$RepoRoot`, venv owns `hermes.exe`, `import hermes_cli` resolves in-repo) |
+| ERR-2026-09-07-007 | 2026-09-07 | MEDIUM | Secret scanning | Codex F-09: coverage is narrow — 3 provider token shapes only; filename block is `.env`-family only (`credentials.json` / `id_rsa` / `*.pfx` / SA-JSON unblocked); redactor skips binary/large; `--no-verify` bypasses hooks | OPEN | — (R-02.4/5: pinned maintained CI scanner + private-key/container filename policy) |

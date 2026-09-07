@@ -106,9 +106,12 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 Native Windows runs Hermes without WSL — CLI, gateway, TUI, and tools all work
 natively. Found a bug in the engine? Please [file issues](https://github.com/NousResearch/hermes-agent/issues).
 
-The installer handles everything: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **and a portable Git Bash** (MinGit, unpacked to `%LOCALAPPDATA%\hermes\git` — no admin required, completely isolated from any system Git install). Hermes uses this bundled Git Bash to run shell commands.
-
-If you already have Git installed, the installer detects it and uses that instead. Otherwise a ~45MB MinGit download is all you need — it won't touch or interfere with any system Git.
+The installer sets up its own uv, Python 3.11, Node.js, ripgrep, ffmpeg, and — if
+you don't already have Git — a self-contained Git it manages itself, with no admin
+rights and no changes to any system Git install. For the current prerequisites and
+exactly what gets downloaded, see the upstream
+[install guide](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart)
+(these details change with upstream, so they're not duplicated here).
 
 > **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
 >

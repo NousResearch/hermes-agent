@@ -17,6 +17,36 @@ gains a `Superseded-by:` / `Supersedes:` link.
 
 ## Open
 
+### DECISION-2026-09-07-002 — Rebrand-claim wording — "engine used unmodified" / "full rebrand"
+
+- **Opened:** 2026-09-07 · **Base:** hermes@233757037d (6 behind upstream/main)
+- **Run:** RUN-2026-09-07-006
+- **Source:** Codex audit **F-07** (see `logs/CODEX-AUDIT-2026-09-07.md`).
+- **Confidence:** Confirmed Fact — the phrases and the counter-examples are
+  verified in the tree.
+- **Supersedes:** —
+- **The call:** two `README.md` / `BRANDING.md` claims are broader than the code:
+  1. *"engine used unmodified"* — fork commits do modify application files
+     (`agent/prompt_builder.py`, `cli.py`, `hermes_cli/**`). Accurate would be
+     *"core behavior retained; identity entry points patched."*
+  2. *"full rebrand"* — true only under `BRANDING.md`'s narrow ownership taxonomy;
+     it is not a full operator journey while some visible CLI strings (interactive
+     welcome, chat subparser description) still say Hermes and (pre-`CHG-011`)
+     Quick Install installed upstream. Those may be deliberate compatibility
+     surfaces, but the boundary should be stated plainly.
+- **Options:**
+  - **A — Tighten the wording.** Replace the two phrases with the precise form
+    above; add one sentence in `BRANDING.md` naming the deliberately-Hermes
+    visible surfaces. No identifier churn.
+  - **B — Leave as-is.** Defensible under `BRANDING.md`'s stated taxonomy; the
+    detailed category tables already qualify it. Cost: an operator reading only
+    the headline claims is mildly misled.
+- **Leaning:** A (cheap, honest, no code risk) — **not yet done**; logged for
+  scheduling.
+- **Blocking:** nothing.
+- **Owner:** Kenneth C. Walker Jr.
+- **Status:** OPEN
+
 ### DECISION-2026-09-06-003 — Install model — drive-native run-in-place vs machine-local managed install?
 
 - **Opened:** 2026-09-07 · **Base:** hermes@693641aa8b (0 behind upstream/main)
@@ -136,6 +166,12 @@ gains a `Superseded-by:` / `Supersedes:` link.
   `hermes_cli/skin_engine.py` are **unchanged**. Verified end-to-end against the
   drive venv — the activated skin drives the banner and the `⚕`/`HERMES`
   constants are no longer reached on that path.
+- **Reaffirmed:** 2026-09-07 (`RUN-2026-09-07-006`). A mid-stream instruction in
+  the `RUN-2026-09-07-005` batch floated deferring this and reverting the skin
+  swap; that reversal was **never executed** (RUN-005 shipped only the F-04 fix),
+  and the owner's follow-up confirmed **keep the shipped swap — stays DECIDED
+  (C), not DEFERRED**. No code change; the `RUN-2026-09-07-005` INDEX hedge notes
+  about a "pending deferral" were corrected.
 - **Owner:** Kenneth C. Walker Jr.
 - **Status:** DECIDED
 
@@ -196,4 +232,5 @@ gains a `Superseded-by:` / `Supersedes:` link.
 | DECISION-2026-09-06-001 | 2026-09-06 | Fork identity | Rebrand vs thin downstream? | DECIDED — B (full rebrand), landed `NF-v0.2.0` (CHG-2026-09-06-020..024) | 2026-09-06 |
 | DECISION-2026-09-06-002 | 2026-09-06 | Repo hygiene | Keep or delete the attic clone? | OPEN — leaning A (delete) | — |
 | DECISION-2026-09-06-003 | 2026-09-07 | Install model | Drive-native run-in-place vs machine-local managed install? | OPEN — leaning A (drive-native); hardened form (seal / dual-volume / certify) awaits ratification | — |
-| DECISION-2026-09-07-001 | 2026-09-07 | Branding | Keep the stock Hermes launch splash, or swap it? | DECIDED — C (swap via a North Forge skin), landed `CHG-2026-09-07-012` (`skins/north-forge.yaml`; `banner.py` untouched) | 2026-09-07 |
+| DECISION-2026-09-07-001 | 2026-09-07 | Branding | Keep the stock Hermes launch splash, or swap it? | DECIDED — C (swap via a North Forge skin), landed `CHG-2026-09-07-012`; reaffirmed `RUN-2026-09-07-006` (deferral floated then withdrawn, never executed) | 2026-09-07 |
+| DECISION-2026-09-07-002 | 2026-09-07 | Branding wording | "engine used unmodified" / "full rebrand" broader than the code (Codex F-07) | OPEN — leaning A (tighten wording, no identifier churn); logged only | — |

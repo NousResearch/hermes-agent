@@ -8,6 +8,65 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.5.2] — 2026-09-07 — hermes@233757037d (8 behind upstream/main)
+
+`RUN-2026-09-07-006`. Committed on `f8e9070942` (`origin/main` tip after
+`NF-v0.5.1`). **PATCH** — two cheap doc/CI fixes from the Codex audit
+(`logs/CODEX-AUDIT-2026-09-07.md`, `F-08` / `F-10`) plus ledger back-logging of
+the audit's five remaining findings. **No behavioural code change.** The audit's
+`F-04` (fixed, `NF-v0.5.1`) and `F-06` (addressed, `NF-v0.5.0`) are annotated
+resolved inline in the audit file.
+
+### Changed
+
+- **CHG-2026-09-07-016** — `README.md`: removed the stale MinGit prose from the
+  stock-Hermes Windows block (Codex **F-08** / R-04.4). Dropped the specific
+  "MinGit … unpacked to `%LOCALAPPDATA%\hermes\git`" / "~45MB MinGit download" /
+  "detects it and uses that instead" detail — upstream's installer now prefers
+  PortableGit and uses MinGit only as an arch fallback, so the copied prose was
+  already wrong and will keep drifting. Replaced with a one-line pointer to the
+  upstream [install guide](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart),
+  keeping only the stable reassurances (no admin, no system-Git changes). Paths:
+  `README.md`. Ref: Codex `F-08`. Run: RUN-2026-09-07-006.
+
+### Security
+
+- **CHG-2026-09-07-017** — `.github/workflows/nf-secret-scan.yml`: pinned
+  `actions/checkout@v4` → `actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2`
+  (Codex **F-10** / R-02.3). `CONTRIBUTING.md` line 891 requires
+  `uses: owner/action@<sha>  # vX.Y.Z` for GitHub Actions; every other workflow in
+  the repo already uses exactly this SHA + comment. The bare `@v4` tag in the
+  newly-added fork workflow was the only violation. Paths:
+  `.github/workflows/nf-secret-scan.yml`. Ref: Codex `F-10`. Run: RUN-2026-09-07-006.
+
+### Ledger
+
+- **CHG-2026-09-07-018** — back-logged the Codex audit's five remaining findings
+  for future scheduling — **no implementation this run**:
+  - `ERR-2026-09-07-004` (HIGH) — `F-02`: `collect-logs.{sh,ps1}` completeness
+    check is date-based, not `RUN-`-id-based. Fix sketch R-01.
+  - `ERR-2026-09-07-005` (HIGH) — `F-03`: `.githooks/content-scan`
+    whitespace-path bypass (reproduced by Codex — a token in `dir/file name.txt`
+    passes clean, pre-push **and** CI). Fix sketch R-02. **Marked queued-next.**
+  - `ERR-2026-09-07-006` (MEDIUM) — `F-05`: bootstrap readiness marker
+    (`.nf-bootstrapped`) never validated against the current checkout → stale-code
+    launch. Fix sketch R-03.3.
+  - `ERR-2026-09-07-007` (MEDIUM) — `F-09`: secret coverage narrower than
+    "credential protection" implies (3 token shapes; `.env`-only filename block).
+    Fix sketch R-02.4/5.
+  - `DECISION-2026-09-07-002` (MEDIUM) — `F-07`: "engine used unmodified" /
+    "full rebrand" wording broader than the code; leaning A (tighten wording, no
+    identifier churn).
+  - Also: reaffirmed `DECISION-2026-09-07-001` **DECIDED** (splash-art skin swap
+    stays — a deferral floated in the `RUN-2026-09-07-005` batch was withdrawn and
+    was never executed; corrected the RUN-005 INDEX hedge notes). Removed a stray
+    `hermes_cli/CODEX-AUDIT-2026-09-07.md` (misplaced copy in a source dir;
+    untracked, not committed — the ignored `logs/CODEX-AUDIT-2026-09-07.md` copy
+    is the one that stays).
+  - Paths: `logs/ledger/errors/ERROR-LOG.md`,
+    `logs/ledger/decisions/DECISION-LOG.md`, `logs/ledger/INDEX.md`. Ref: Codex
+    `F-02`/`F-03`/`F-05`/`F-07`/`F-09`. Run: RUN-2026-09-07-006.
+
 ## [NF-v0.5.1] — 2026-09-07 — hermes@233757037d (6 behind upstream/main)
 
 `RUN-2026-09-07-005`. Committed on `8e4ea037c7` (`origin/main` tip after

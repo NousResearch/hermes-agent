@@ -1,0 +1,470 @@
+FFFF..FFF..FFFF.F.FFFFF.F..s.........................                    [100%]
+=================================== FAILURES ===================================
+_________ test_per_model_entry_overlays_flat_routing_for_current_model _________
+
+routing_cfg = {'provider_routing': {'sort': 'price', 'models': {'openai/gpt-6-astra': {'only': ['openai']}, 'anthropic/claude-fable-...r': {'ignore': ['slow-provider'], 'order': ['fast-provider'], 'require_parameters': True, 'data_collection': 'deny'}}}}
+
+    def test_per_model_entry_overlays_flat_routing_for_current_model(routing_cfg):
+>       assert cch._provider_preferences_for_agent(_agent("openai/gpt-6-astra")) == {
+            "only": ["openai"],
+            "sort": "price",
+        }
+E       AssertionError: assert {'sort': 'price'} == {'only': ['op...ort': 'price'}
+E         
+E         Omitting 1 identical items, use -vv to show
+E         Right contains 1 more item:
+E         {'only': ['openai']}
+E         Use -v to get more diff
+
+tests/agent/test_per_model_provider_routing.py:56: AssertionError
+______ test_per_model_overlay_is_partial_and_preserves_unset_flat_values _______
+
+routing_cfg = {'provider_routing': {'sort': 'price', 'models': {'openai/gpt-6-astra': {'only': ['openai']}, 'anthropic/claude-fable-...r': {'ignore': ['slow-provider'], 'order': ['fast-provider'], 'require_parameters': True, 'data_collection': 'deny'}}}}
+
+    def test_per_model_overlay_is_partial_and_preserves_unset_flat_values(routing_cfg):
+        agent = _agent(
+            "qwen/qwen3-coder",
+            providers_allowed=["flat-provider"],
+            providers_ignored=["flat-ignore"],
+            providers_order=["flat-order"],
+            provider_sort="latency",
+            provider_require_parameters=False,
+            provider_data_collection="allow",
+        )
+>       assert cch._provider_preferences_for_agent(agent) == {
+            "only": ["flat-provider"],
+            "ignore": ["slow-provider"],
+            "order": ["fast-provider"],
+            "sort": "latency",
+            "require_parameters": True,
+            "data_collection": "deny",
+        }
+E       AssertionError: assert {'only': ['fl...latency', ...} == {'only': ['fl...latency', ...}
+E         
+E         Omitting 2 identical items, use -vv to show
+E         Differing items:
+E         {'data_collection': 'allow'} != {'data_collection': 'deny'}
+E         {'ignore': ['flat-ignore']} != {'ignore': ['slow-provider']}
+E         {'order': ['flat-order']} != {'order': ['fast-provider']}
+E         Right contains 1 more item:
+E         {'require_parameters': True}
+E         Use -v to get more diff
+
+tests/agent/test_per_model_provider_routing.py:79: AssertionError
+____ test_model_matching_tolerates_openrouter_prefix_and_spelling_variants _____
+
+routing_cfg = {'provider_routing': {'sort': 'price', 'models': {'openai/gpt-6-astra': {'only': ['openai']}, 'anthropic/claude-fable-...r': {'ignore': ['slow-provider'], 'order': ['fast-provider'], 'require_parameters': True, 'data_collection': 'deny'}}}}
+
+    def test_model_matching_tolerates_openrouter_prefix_and_spelling_variants(routing_cfg):
+        agent = _agent("openrouter/openai/gpt-6-astra", providers_allowed=["parent-provider"])
+>       assert cch._provider_preferences_for_agent(agent)["only"] == ["openai"]
+E       AssertionError: assert ['parent-provider'] == ['openai']
+E         
+E         At index 0 diff: 'parent-provider' != 'openai'
+E         Use -v to get more diff
+
+tests/agent/test_per_model_provider_routing.py:91: AssertionError
+____ test_delegated_target_profile_routing_does_not_leak_parent_model_rules ____
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x70b69f8e9890>
+
+    def test_delegated_target_profile_routing_does_not_leak_parent_model_rules(monkeypatch):
+        import hermes_cli.config as config_mod
+    
+        monkeypatch.setattr(
+            config_mod,
+            "load_config_readonly",
+            lambda: {"provider_routing": {"models": {"shared/model": {"only": ["target"]}}}},
+        )
+        parent = _agent("shared/model", providers_allowed=["parent"])
+>       assert cch._provider_preferences_for_agent(parent)["only"] == ["target"]
+E       AssertionError: assert ['parent'] == ['target']
+E         
+E         At index 0 diff: 'parent' != 'target'
+E         Use -v to get more diff
+
+tests/agent/test_per_model_provider_routing.py:105: AssertionError
+__ test_direct_and_nous_portal_requests_do_not_receive_openrouter_preferences __
+
+    def test_direct_and_nous_portal_requests_do_not_receive_openrouter_preferences():
+        for provider in ("anthropic", "nous", "nous-portal", "nousresearch"):
+            agent = _agent("openai/gpt-6-astra", provider=provider, providers_allowed=["openai"])
+            prefs = cch._provider_preferences_for_agent(agent)
+>           assert prefs == {}, f"OpenRouter routing leaked into direct provider {provider}"
+E           AssertionError: OpenRouter routing leaked into direct provider anthropic
+E           assert {'only': ['op...ort': 'price'} == {}
+E             
+E             Left contains 2 more items:
+E             {'only': ['openai'], 'sort': 'price'}
+E             Use -v to get more diff
+
+tests/agent/test_per_model_provider_routing.py:136: AssertionError
+__________ test_batch_handle_exposes_task_indexes_and_delivery_groups __________
+
+    def test_batch_handle_exposes_task_indexes_and_delivery_groups():
+        tasks = [
+            {"goal": "fast independent", "group": None},
+            {"goal": "same group one", "group": "research"},
+            {"goal": "same group two", "group": "research"},
+        ]
+        payload = dispatch._dispatched_payload(
+            {"delegation_id": "deleg_phase1"},
+            [task["goal"] for task in tasks],
+            [_child(i) for i in range(len(tasks))],
+            [],
+        )
+>       assert payload["task_indexes"] == [0, 1, 2]
+               ^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'task_indexes'
+
+tests/tools/test_delegate_completion_units.py:48: KeyError
+__________ test_grouping_is_delivery_coordination_not_execution_order __________
+
+    def test_grouping_is_delivery_coordination_not_execution_order():
+        tasks = [
+            {"goal": "slow grouped", "group": "research"},
+            {"goal": "fast unrelated", "group": None},
+            {"goal": "fast grouped", "group": "research"},
+        ]
+        batch = _batch(tasks)
+        assert [task.get("group") for task in batch.task_list] == ["research", None, "research"]
+>       assert getattr(batch, "completion_order_independent", False) is True
+E       AssertionError: assert False is True
+E        +  where False = getattr(_Batch(task_list=[{'goal': 'slow grouped', 'group': 'research'}, {'goal': 'fast unrelated', 'group': None}, {'goal': '..., verify_rubric=None, synthesize=False, synthesis_prompt=None, profile=None, profile_content=None, max_iterations=None), 'completion_order_independent', False)
+
+tests/tools/test_delegate_completion_units.py:60: AssertionError
+____ test_partial_child_persistence_and_failed_child_notice_are_first_class ____
+
+    def test_partial_child_persistence_and_failed_child_notice_are_first_class():
+>       assert callable(getattr(ad, "record_unit_child", None))
+E       AssertionError: assert False
+E        +  where False = callable(None)
+E        +    where None = getattr(ad, 'record_unit_child', None)
+
+tests/tools/test_delegate_completion_units.py:116: AssertionError
+_____ test_target_profile_scope_applies_profile_tools_not_parent_defaults ______
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x70b69d507a90>
+
+    def test_target_profile_scope_applies_profile_tools_not_parent_defaults(monkeypatch):
+        seen = []
+    
+        def fake_builder(**kwargs):
+            seen.append(kwargs)
+            return SimpleNamespace()
+    
+        monkeypatch.setattr(dt, "_build_child_preserving_parent_tools", fake_builder)
+        children, error = dt._build_children(
+            [{"goal": "use target profile", "context": "task"}],
+            [None],
+            _creds(),
+            top_role="leaf",
+            max_iterations=1,
+            parent_agent=SimpleNamespace(),
+            live_deleg_id=None,
+            live_writers=[],
+            profile="target-profile",
+            profile_content={
+                "name": "target-profile",
+                "config": {"model": {"default": "target-model"}, "provider": "target-provider"},
+                "soul_md": "target identity",
+                "skills": ["target-toolset"],
+            },
+        )
+        assert error is None
+        assert children
+        assert seen[0]["model"] == "target-model"
+>       assert seen[0]["toolsets"] == ["target-toolset"]
+E       AssertionError: assert None == ['target-toolset']
+
+tests/tools/test_delegate_profile_runtime_scope.py:51: AssertionError
+________ test_target_profile_credentials_are_not_inherited_from_parent _________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x70b69d52ff90>
+
+    def test_target_profile_credentials_are_not_inherited_from_parent(monkeypatch):
+        seen = []
+    
+        def fake_builder(**kwargs):
+            seen.append(kwargs)
+            return SimpleNamespace()
+    
+        monkeypatch.setattr(dt, "_build_child_preserving_parent_tools", fake_builder)
+        children, error = dt._build_children(
+            [{"goal": "use target secret", "context": None}],
+            [None],
+            _creds(),
+            top_role="leaf",
+            max_iterations=1,
+            parent_agent=SimpleNamespace(),
+            live_deleg_id=None,
+            live_writers=[],
+            profile="target-profile",
+            profile_content={
+                "name": "target-profile",
+                "config": {
+                    "provider": "target-provider",
+                    "credentials": {"api_key": "target-secret"},
+                },
+                "soul_md": None,
+                "skills": [],
+            },
+        )
+        assert error is None
+        assert children
+>       assert seen[0]["override_api_key"] == "target-secret"
+E       AssertionError: assert 'parent-secret' == 'target-secret'
+E         
+E         - target-secret
+E         ? ^  -
+E         + parent-secret
+E         ? ^   +
+
+tests/tools/test_delegate_profile_runtime_scope.py:85: AssertionError
+_____________ test_profile_scope_is_isolated_per_concurrent_child ______________
+
+    def test_profile_scope_is_isolated_per_concurrent_child():
+>       assert callable(getattr(dt, "build_profile_runtime_scope", None))
+E       AssertionError: assert False
+E        +  where False = callable(None)
+E        +    where None = getattr(dt, 'build_profile_runtime_scope', None)
+
+tests/tools/test_delegate_profile_runtime_scope.py:90: AssertionError
+_________ TestProfileParameter.test_build_child_agent_accepts_profile __________
+
+self = <tests.tools.test_delegate_profile.TestProfileParameter object at 0x70b69f9902d0>
+
+    def test_build_child_agent_accepts_profile(self):
+        """_build_child_agent accepts the new profile and profile_content params."""
+        parent = _make_mock_parent()
+    
+>       child = _build_child_agent(
+            task_index=0,
+            goal="Test task",
+            context=None,
+            toolsets=None,
+            model=None,
+            max_iterations=30,
+            task_count=1,
+            parent_agent=parent,
+            profile="octacon",
+            profile_content={
+                "name": "octacon",
+                "config": {
+                    "model": {"default": "glm-5.1", "provider": "ollama-cloud"},
+                    "toolsets": ["hermes-cli", "kanban"],
+                    "skills": {"always_skills": ["test-driven-development"]},
+                },
+                "soul_md": "# Octacon\n\nYou are octacon, the coding lead.",
+                "skills": ["test-driven-development"],
+            },
+        )
+E       TypeError: _build_child_agent() got an unexpected keyword argument 'profile'
+
+tests/tools/test_delegate_profile.py:90: TypeError
+___________ TestProfileParameter.test_profile_model_overrides_parent ___________
+
+self = <tests.tools.test_delegate_profile.TestProfileParameter object at 0x70b69f990990>
+
+    def test_profile_model_overrides_parent(self):
+        """Profile's model should be used instead of parent's when no explicit model given."""
+        parent = _make_mock_parent()
+    
+>       child = _build_child_agent(
+            task_index=0,
+            goal="Test",
+            context=None,
+            toolsets=None,
+            model=None,  # No explicit model — profile's model should win over parent
+            max_iterations=30,
+            task_count=1,
+            parent_agent=parent,
+            profile="octacon",
+            profile_content={
+                "name": "octacon",
+                "config": {
+                    "model": {"default": "glm-5.1", "provider": "ollama-cloud"},
+                    "toolsets": ["hermes-cli", "kanban"],
+                    "skills": {"always_skills": []},
+                },
+                "soul_md": "# Octacon",
+                "skills": [],
+            },
+        )
+E       TypeError: _build_child_agent() got an unexpected keyword argument 'profile'
+
+tests/tools/test_delegate_profile.py:162: TypeError
+__________ TestProfileParameter.test_explicit_model_wins_over_profile __________
+
+self = <tests.tools.test_delegate_profile.TestProfileParameter object at 0x70b69f990c10>
+
+    def test_explicit_model_wins_over_profile(self):
+        """Explicit model parameter should override profile's model."""
+        parent = _make_mock_parent()
+    
+>       child = _build_child_agent(
+            task_index=0,
+            goal="Test",
+            context=None,
+            toolsets=None,
+            model="deepseek-v4-flash",  # Explicit — should win over profile
+            max_iterations=30,
+            task_count=1,
+            parent_agent=parent,
+            profile="octacon",
+            profile_content={
+                "name": "octacon",
+                "config": {
+                    "model": {"default": "glm-5.1", "provider": "ollama-cloud"},
+                    "toolsets": ["hermes-cli", "kanban"],
+                    "skills": {"always_skills": []},
+                },
+                "soul_md": "# Octacon",
+                "skills": [],
+            },
+        )
+E       TypeError: _build_child_agent() got an unexpected keyword argument 'profile'
+
+tests/tools/test_delegate_profile.py:190: TypeError
+_____ TestProfileParameter.test_profile_model_wins_over_delegation_config ______
+
+self = <tests.tools.test_delegate_profile.TestProfileParameter object at 0x70b69f990d90>
+
+    def test_profile_model_wins_over_delegation_config(self):
+        """Profile's model should win when delegation config has a different model.
+        This simulates the parent's delegation config (deepseek-v4-flash) being
+        overridden by the profile's model (glm-5.1)."""
+        parent = _make_mock_parent()
+        # Parent's delegation config would set model=deepseek-v4-flash
+    
+>       child = _build_child_agent(
+            task_index=0,
+            goal="Test",
+            context=None,
+            toolsets=None,
+            model=None,  # No explicit model — simulates delegation config value
+            max_iterations=30,
+            task_count=1,
+            parent_agent=parent,
+            profile="octacon",
+            profile_content={
+                "name": "octacon",
+                "config": {
+                    "model": {"default": "glm-5.1", "provider": "ollama-cloud"},
+                    "toolsets": ["hermes-cli", "kanban"],
+                    "skills": {"always_skills": []},
+                },
+                "soul_md": "# Octacon",
+                "skills": [],
+            },
+        )
+E       TypeError: _build_child_agent() got an unexpected keyword argument 'profile'
+
+tests/tools/test_delegate_profile.py:221: TypeError
+______ TestProfileParameter.test_profile_toolsets_intersected_with_parent ______
+
+self = <tests.tools.test_delegate_profile.TestProfileParameter object at 0x70b69f9911d0>
+
+    def test_profile_toolsets_intersected_with_parent(self):
+        """Profile toolsets should be intersected with parent's — subagent can't gain tools parent lacks."""
+        parent = _make_mock_parent()
+        # Parent has: terminal, file, web, kanban, hermes-cli
+    
+>       child = _build_child_agent(
+            task_index=0,
+            goal="Test",
+            context=None,
+            toolsets=None,  # No explicit toolsets — profile's should be used
+            model=None,
+            max_iterations=30,
+            task_count=1,
+            parent_agent=parent,
+            profile="remii",
+            profile_content={
+                "name": "remii",
+                "config": {
+                    "model": {"default": "deepseek-v4-flash", "provider": "ollama-cloud"},
+                    "toolsets": ["hermes-cli", "kanban", "web", "browser"],
+                    "skills": {"always_skills": []},
+                },
+                "soul_md": "# Remii",
+                "skills": [],
+            },
+        )
+E       TypeError: _build_child_agent() got an unexpected keyword argument 'profile'
+
+tests/tools/test_delegate_profile.py:250: TypeError
+___________ TestProfileParameter.test_profile_fallback_chain_loaded ____________
+
+self = <tests.tools.test_delegate_profile.TestProfileParameter object at 0x70b69f992090>
+
+    def test_profile_fallback_chain_loaded(self):
+        """Profile's fallback_providers should be used as the child's fallback chain."""
+        parent = _make_mock_parent()
+    
+>       child = _build_child_agent(
+            task_index=0,
+            goal="Test",
+            context=None,
+            toolsets=None,
+            model=None,
+            max_iterations=30,
+            task_count=1,
+            parent_agent=parent,
+            profile="octacon",
+            profile_content={
+                "name": "octacon",
+                "config": {
+                    "model": {"default": "glm-5.1", "provider": "ollama-cloud"},
+                    "toolsets": ["hermes-cli", "kanban"],
+                    "fallback_providers": [
+                        {"provider": "ollama-cloud", "model": "deepseek-v4-pro"},
+                    ],
+                    "skills": {"always_skills": []},
+                },
+                "soul_md": "# Octacon",
+                "skills": [],
+            },
+        )
+E       TypeError: _build_child_agent() got an unexpected keyword argument 'profile'
+
+tests/tools/test_delegate_profile.py:281: TypeError
+____________ TestProfileParameter.test_schema_has_profile_parameter ____________
+
+self = <tests.tools.test_delegate_profile.TestProfileParameter object at 0x70b69f9921d0>
+
+    def test_schema_has_profile_parameter(self):
+        """The delegate_task tool schema should include the profile parameter."""
+        from tools.delegate_tool import DELEGATE_TASK_SCHEMA
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+>       assert "profile" in props
+E       assert 'profile' in {'tasks': {'type': 'array', 'minItems': 1, 'items': {'type': 'object', 'properties': {'goal': {'type': 'string', 'desc... action='steer': the course correction, appended to the child's next tool result mid-run. Be directive and specific."}}
+
+tests/tools/test_delegate_profile.py:330: AssertionError
+=============================== warnings summary ===============================
+tests/tools/test_async_delegation.py::test_gateway_formatter_renders_async_block
+  /home/kensei/repos/KenseiAgent-worktrees/delegate-task-phase-1/agent/account_usage.py:11: HermesPluginCompatWarning: hermes plugin compat: `agent.anthropic_adapter.resolve_anthropic_token` moved to `agent.anthropic_credentials.resolve_anthropic_token`. The old path is kept only for external plugins and is removed on 2026-09-14; update your import.
+    from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/agent/test_per_model_provider_routing.py::test_per_model_entry_overlays_flat_routing_for_current_model
+FAILED tests/agent/test_per_model_provider_routing.py::test_per_model_overlay_is_partial_and_preserves_unset_flat_values
+FAILED tests/agent/test_per_model_provider_routing.py::test_model_matching_tolerates_openrouter_prefix_and_spelling_variants
+FAILED tests/agent/test_per_model_provider_routing.py::test_delegated_target_profile_routing_does_not_leak_parent_model_rules
+FAILED tests/agent/test_per_model_provider_routing.py::test_direct_and_nous_portal_requests_do_not_receive_openrouter_preferences
+FAILED tests/tools/test_delegate_completion_units.py::test_batch_handle_exposes_task_indexes_and_delivery_groups
+FAILED tests/tools/test_delegate_completion_units.py::test_grouping_is_delivery_coordination_not_execution_order
+FAILED tests/tools/test_delegate_completion_units.py::test_partial_child_persistence_and_failed_child_notice_are_first_class
+FAILED tests/tools/test_delegate_profile_runtime_scope.py::test_target_profile_scope_applies_profile_tools_not_parent_defaults
+FAILED tests/tools/test_delegate_profile_runtime_scope.py::test_target_profile_credentials_are_not_inherited_from_parent
+FAILED tests/tools/test_delegate_profile_runtime_scope.py::test_profile_scope_is_isolated_per_concurrent_child
+FAILED tests/tools/test_delegate_profile.py::TestProfileParameter::test_build_child_agent_accepts_profile
+FAILED tests/tools/test_delegate_profile.py::TestProfileParameter::test_profile_model_overrides_parent
+FAILED tests/tools/test_delegate_profile.py::TestProfileParameter::test_explicit_model_wins_over_profile
+FAILED tests/tools/test_delegate_profile.py::TestProfileParameter::test_profile_model_wins_over_delegation_config
+FAILED tests/tools/test_delegate_profile.py::TestProfileParameter::test_profile_toolsets_intersected_with_parent
+FAILED tests/tools/test_delegate_profile.py::TestProfileParameter::test_profile_fallback_chain_loaded
+FAILED tests/tools/test_delegate_profile.py::TestProfileParameter::test_schema_has_profile_parameter
+18 failed, 34 passed, 1 skipped, 1 warning in 11.20s
+red_exit=1

@@ -170,7 +170,7 @@ class TestInjectInternalMessage:
         # Register profile adapter so the strict resolution works
         skillrx_tg = _FakeTelegramAdapter()
         runner._profile_adapters["skillrx"] = {Platform.TELEGRAM: skillrx_tg}
-        
+
         await runner.inject_internal_message(
             profile="skillrx",
             platform=Platform.TELEGRAM,
@@ -331,7 +331,7 @@ class TestInjectInternalMessageSteerMode:
         # Register profile adapter so strict resolution passes
         skillrx_tg = _FakeTelegramAdapter()
         runner._profile_adapters["skillrx"] = {Platform.TELEGRAM: skillrx_tg}
-        
+
         agent = _FakeRunningAgent()
         # Simulate a running agent by populating _running_agents with the
         # session key that _session_key_for_source will produce.
@@ -387,7 +387,7 @@ class TestInjectInternalMessageSteerMode:
         runner = _make_runner()
         skillrx_tg = _FakeTelegramAdapter()
         runner._profile_adapters["skillrx"] = {Platform.TELEGRAM: skillrx_tg}
-        
+
         agent = _FakeRunningAgent(steer_result=False)
         source = SessionSource(
             platform=Platform.TELEGRAM,
@@ -420,7 +420,7 @@ class TestInjectInternalMessageSteerMode:
         runner = _make_runner()
         skillrx_tg = _FakeTelegramAdapter()
         runner._profile_adapters["skillrx"] = {Platform.TELEGRAM: skillrx_tg}
-        
+
         agent = _FakeRunningAgent()
         source = SessionSource(
             platform=Platform.TELEGRAM,
@@ -452,7 +452,7 @@ class TestInjectInternalMessageSteerMode:
         runner = _make_runner()
         skillrx_tg = _FakeTelegramAdapter()
         runner._profile_adapters["skillrx"] = {Platform.TELEGRAM: skillrx_tg}
-        
+
         agent = _FakeRunningAgent()
         source = SessionSource(
             platform=Platform.TELEGRAM,

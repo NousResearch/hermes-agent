@@ -113,9 +113,11 @@ def connect(
     from the journal-mode pragma is retried (it may ignore the busy timeout while another
     first opener initializes the DB, especially on Windows).
     """
+    from hermes_cli.sqlite_runtime import ensure_safe_sqlite_writer
     from hermes_state_wal import apply_wal_with_fallback
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_safe_sqlite_writer()
     conn = sqlite3.connect(path, timeout=10)
     conn.row_factory = sqlite3.Row
     try:

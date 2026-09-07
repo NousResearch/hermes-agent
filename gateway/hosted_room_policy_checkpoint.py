@@ -110,8 +110,10 @@ class HostedRoomPolicyCheckpoint:
                 conn.execute(ddl)
 
     def _connect(self) -> sqlite3.Connection:
+        from hermes_cli.sqlite_runtime import ensure_safe_sqlite_writer
         from hermes_state_wal import apply_wal_with_fallback
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_safe_sqlite_writer()
         conn = sqlite3.connect(self.db_path, timeout=10)
         conn.row_factory = sqlite3.Row
         apply_wal_with_fallback(conn, db_label="state.db (room policy checkpoint)")

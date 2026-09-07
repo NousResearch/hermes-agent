@@ -110,6 +110,24 @@ def test_shared_state_direct_writers_refuse_vulnerable_runtime(
     assert async_delegation.get_durable_delegation("missing") is None
 
 
+def test_hosted_room_state_writers_refuse_vulnerable_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import hermes_cli.sqlite_runtime as runtime
+    from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
+    from gateway.hosted_rooms_common import connect
+
+    monkeypatch.setattr(runtime, "is_sqlite_wal_reset_vulnerable", lambda _version: True)
+    state_path = tmp_path / "state.db"
+
+    with pytest.raises(RuntimeError, match="vulnerable SQLite runtime"):
+        connect(state_path, db_label="state.db", ready=lambda _conn: True, initialize=lambda _conn: None)
+    with pytest.raises(RuntimeError, match="vulnerable SQLite runtime"):
+        HostedRoomPolicyCheckpoint(state_path)
+    assert not state_path.exists()
+
+
 @pytest.mark.skipif(os.name == "nt", reason="uses a POSIX executable probe stub")
 def test_probe_uses_child_payload_and_sanitizes_python_environment(
     tmp_path: Path,

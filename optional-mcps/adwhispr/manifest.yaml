@@ -1,1 +1,48 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
 
+name: adwhispr
+description: Research any brand's Meta and TikTok ads, clone the winners for your own brand, and launch campaigns on Meta, Google, and TikTok.
+source: https://adwhispr.com/integrations/hermes-agent
+
+# AdWhispr ships a remote MCP server with native OAuth 2.1 (PKCE + Dynamic
+# Client Registration, RFC 8414 metadata, RFC 9728 resource metadata) over
+# Streamable HTTP. Nothing to install locally.
+transport:
+  type: http
+  url: https://adwhispr.com/api/mcp
+
+auth:
+  type: oauth
+  # Native MCP OAuth (case 1). The MCP client triggers the browser flow on the
+  # first probe / first connect.
+
+# Tool selection at install time:
+# 47 tools across research (search_ads, get_brand_ads, find_competitors,
+# research_keywords), creative (clone_ad, clone_video_ad, generate_brief) and
+# execution (connect_ad_account, launch_meta_ad, launch_search_campaign,
+# launch_tiktok_campaign, get_account_performance). `default_enabled` is left
+# unset so the checklist starts fully checked and users prune.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - adwhispr
+    - facebook ads
+    - meta ads
+    - ad library
+    - competitor ads
+    - google ads
+    - tiktok ads
+  hosts:
+    - adwhispr.com
+    - facebook.com/ads/library
+
+post_install: |
+  On first connection, Hermes will open a browser to sign in to AdWhispr
+  (free account, no card). After auth, restart your Hermes session so the
+  AdWhispr tools are loaded.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure adwhispr

@@ -428,12 +428,12 @@ export function useGatewayBoot({
             })
           }
 
-          scheduleReconnect()
+          scheduleReconnect(manual)
         }
       }
     }
 
-    function scheduleReconnect() {
+    function scheduleReconnect(manual?: { profile: string; activationEpoch: number }) {
       if (cancelled || reconnecting || reconnectTimer !== null || gatewayOpen() || $gatewaySwitching.get()) {
         return
       }
@@ -446,7 +446,7 @@ export function useGatewayBoot({
       reconnectAttempt += 1
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null
-        void attemptReconnect()
+        void attemptReconnect(manual)
       }, delay)
     }
 

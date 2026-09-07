@@ -1356,6 +1356,7 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     const revalidated = deferred<{ ok: boolean; rebuilt: boolean }>()
     desktop.revalidateConnection.mockReturnValue(revalidated.promise)
+    FakeWebSocket.mode = 'fail'
 
     await act(async () => {
       const reconnect = reconnectGateway()
@@ -1369,16 +1370,18 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
       await reconnect
     })
 
-    expect(desktop.revalidateConnection).toHaveBeenCalledOnce()
+    FakeWebSocket.mode = 'open'
+    await advanceBackoff()
+    expect(desktop.revalidateConnection).toHaveBeenCalledTimes(2)
     // The manual reconnect dials the WINDOW-owned primary backend (no profile
     // arg) — same contract as the sleep/wake reconnect: passing the active
     // profile would retarget the primary socket after a live profile swap.
     const lastCall = desktop.getConnection.mock.calls.at(-1) ?? []
     expect(lastCall.length === 0 || lastCall[0] == null || lastCall[0] === '').toBe(true)
-    expect(desktop.getGatewayWsUrl).toHaveBeenCalledTimes(2)
+    expect(desktop.getGatewayWsUrl).toHaveBeenCalledTimes(3)
     expect(oldPrimary.readyState).toBe(FakeWebSocket.CLOSED)
     expect(backgroundSocket.readyState).toBe(FakeWebSocket.OPEN)
-    expect(FakeWebSocket.instances).toHaveLength(3)
+    expect(FakeWebSocket.instances).toHaveLength(4)
     expect($sessionTiles.get()[0]).not.toHaveProperty('runtimeId')
     expect($sessionTiles.get()[1].runtimeId).toBe('runtime-writer')
     expect($busy.get()).toBe(true)

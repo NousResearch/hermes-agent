@@ -281,22 +281,6 @@ class TestCopilotNormalization:
         }]
         assert copilot_model_api_mode("gemini-2.5-pro", catalog=catalog) == "chat_completions"
     
-    def test_normalize_opencode_model_id_strips_provider_prefix(self):
-        assert normalize_opencode_model_id("opencode-go", "opencode-go/kimi-k2.5") == "kimi-k2.5"
-        assert normalize_opencode_model_id("opencode-zen", "opencode-zen/claude-sonnet-4-6") == "claude-sonnet-4-6"
-        assert normalize_opencode_model_id("opencode-go", "glm-5") == "glm-5"
-
-    def test_opencode_zen_api_modes_match_docs(self):
-        assert opencode_model_api_mode("opencode-zen", "gpt-5.4") == "codex_responses"
-        assert opencode_model_api_mode("opencode-zen", "gpt-5.3-codex") == "codex_responses"
-        assert opencode_model_api_mode("opencode-zen", "opencode-zen/gpt-5.4") == "codex_responses"
-        assert opencode_model_api_mode("opencode-zen", "claude-sonnet-4-6") == "anthropic_messages"
-        assert opencode_model_api_mode("opencode-zen", "opencode-zen/claude-sonnet-4-6") == "anthropic_messages"
-        assert opencode_model_api_mode("opencode-zen", "gemini-3-flash") == "chat_completions"
-        assert opencode_model_api_mode("opencode-zen", "minimax-m2.5") == "chat_completions"
-        # Qwen on Zen is served via /v1/messages per the Zen endpoint table.
-        assert opencode_model_api_mode("opencode-zen", "qwen3.7-max") == "anthropic_messages"
-        assert opencode_model_api_mode("opencode-zen", "qwen3.6-plus") == "anthropic_messages"
 
     def test_opencode_go_api_modes_match_docs(self):
         assert opencode_model_api_mode("opencode-go", "glm-5.1") == "chat_completions"

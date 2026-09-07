@@ -1,214 +1,140 @@
-"""Bug 1 regression: copilot transport must follow the active model, not the stale default.
+"""Exercise production gateway routing, with credentials and catalog supplied locally."""
 
-These tests verify that _resolve_runtime_agent_kwargs_for_provider and its
-callers (rehydration, channel override, fallback chain) correctly thread
-target_model through to the underlying resolve_runtime_provider, and that
-model-only channel overrides on a copilot default trigger re-resolution.
-
-The critical discipline: **spy that the helper RECEIVES target_model** (not
-just mock its return), because a dropped thread passes green with return-only
-mocking.
-"""
-from unittest.mock import patch, MagicMock
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
 import gateway.run as gateway_run
+from gateway.config import Platform
+from gateway.session import SessionSource
+from hermes_cli import runtime_provider
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+@pytest.fixture
+def copilot_runtime(monkeypatch):
+    config = {"provider": "copilot", "default": "gpt-5.5", "api_mode": "codex_responses"}
+    monkeypatch.setattr(runtime_provider, "_get_model_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "test-copilot-token")
+    monkeypatch.setattr("hermes_cli.models.fetch_github_model_catalog", lambda **kwargs: [
+        {"id": "claude-sonnet-4.6", "supported_endpoints": ["/chat/completions", "/v1/messages"]},
+        {"id": "gpt-5.5", "supported_endpoints": ["/responses"]},
+    ])
+    return config
 
-def _fake_resolve_for_provider(provider, target_model=None):
-    """Return a plausible runtime dict, recording what we received."""
-    mode = "anthropic_messages" if "claude" in (target_model or "") else "codex_responses"
-    return {
-        "api_key": "gho_test",
-        "base_url": None,
-        "provider": provider,
-        "api_mode": mode,
-        "command": None,
-        "args": [],
-        "credential_pool": None,
+
+def make_runner():
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner.session_store = None
+    runner.config = SimpleNamespace()
+    runner._session_model_overrides = {}
+    return runner
+
+
+@pytest.mark.parametrize("channel_provider", [None, "copilot"])
+@pytest.mark.parametrize("default,saved,target,expected", [
+    ("gpt-5.5", "codex_responses", "claude-sonnet-4.6", "anthropic_messages"),
+    ("claude-sonnet-4.6", "anthropic_messages", "gpt-5.5", "codex_responses"),
+])
+def test_channel_target_reaches_runtime_resolver(
+    monkeypatch, copilot_runtime, channel_provider, default, saved, target, expected,
+):
+    copilot_runtime.update(default=default, api_mode=saved)
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda cfg: default)
+    monkeypatch.setattr(gateway_run, "_get_channel_override", lambda *a, **kw: SimpleNamespace(
+        model=target, provider=channel_provider,
+    ))
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="test-channel")
+    model, runtime = make_runner()._resolve_session_agent_runtime(source=source, user_config={})
+    assert model == target
+    assert runtime["provider"] == "copilot"
+    assert runtime["api_mode"] == expected
+    assert runtime["api_key"] == "test-copilot-token"
+
+
+def test_model_only_non_copilot_channel_keeps_runtime(monkeypatch):
+    original = {"provider": "openai", "api_mode": "codex_responses", "api_key": "test-key"}
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda cfg: "gpt-4o")
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: dict(original))
+    monkeypatch.setattr(gateway_run, "_get_channel_override", lambda *a, **kw: SimpleNamespace(
+        model="gpt-5.5", provider=None,
+    ))
+    resolver = Mock(side_effect=AssertionError("Non-Copilot model-only override must not re-resolve"))
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs_for_provider", resolver)
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="test-channel")
+    model, runtime = make_runner()._resolve_session_agent_runtime(source=source, user_config={})
+    assert model == "gpt-5.5"
+    assert runtime == original
+    resolver.assert_not_called()
+
+
+@pytest.mark.parametrize("target,expected", [
+    ("claude-sonnet-4.6", "anthropic_messages"), ("gpt-5.5", "codex_responses"),
+])
+def test_rehydrated_session_routes_persisted_model(monkeypatch, copilot_runtime, target, expected):
+    copilot_runtime.update(default="gpt-5.5" if target.startswith("claude") else "claude-sonnet-4.6",
+                           api_mode="codex_responses" if target.startswith("claude") else "anthropic_messages")
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda cfg: copilot_runtime["default"])
+    runner = make_runner()
+    runner.session_store = SimpleNamespace(get_model_override=lambda key: {
+        "provider": "copilot", "model": target, "base_url": None,
+    })
+    model, runtime = runner._resolve_session_agent_runtime(session_key="restored-session", user_config={})
+    assert model == target
+    assert runtime["api_mode"] == expected
+    assert runtime["api_key"] == "test-copilot-token"
+
+
+def test_rehydration_preserves_runtime_metadata(monkeypatch):
+    pool = object()
+    resolved = {
+        "provider": "copilot", "requested_provider": "copilot", "api_key": "test-key",
+        "api_mode": "anthropic_messages", "base_url": "https://api.githubcopilot.com",
+        "credential_pool": pool, "max_output_tokens": 4096,
+        "capabilities": {"vision": True}, "request_overrides": {"temperature": 0.2},
     }
+    resolver = Mock(return_value=resolved)
+    monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", resolver)
+    runner = make_runner()
+    runner.session_store = SimpleNamespace(get_model_override=lambda key: {
+        "provider": "copilot", "model": "claude-sonnet-4.6", "base_url": None,
+    })
+    runner._rehydrate_session_model_override("restored-session")
+    override = runner._session_model_override("restored-session")
+    resolver.assert_called_once_with(requested="copilot", target_model="claude-sonnet-4.6")
+    assert override["credential_pool"] is pool
+    assert override["max_tokens"] == 4096
+    assert override["capabilities"] == {"vision": True}
+    assert override["request_overrides"] == {"temperature": 0.2}
+    assert override["requested_provider"] == "copilot"
+    assert override["base_url"] == resolved["base_url"]
 
 
-# ---------------------------------------------------------------------------
-# Edit 4: rehydration threads persisted model
-# ---------------------------------------------------------------------------
-
-class TestRehydrationThreadsModel:
-    """_rehydrate_session_model_override must pass target_model=persisted model."""
-
-    def test_rehydrate_copilot_override_derives_from_persisted_model(self, monkeypatch):
-        seen_calls = []
-
-        def spy_resolve(provider, target_model=None):
-            seen_calls.append({"provider": provider, "target_model": target_model})
-            return _fake_resolve_for_provider(provider, target_model)
-
-        monkeypatch.setattr(
-            gateway_run,
-            "_resolve_runtime_agent_kwargs_for_provider",
-            spy_resolve,
-        )
-
-        # Build a minimal runner with just enough state
-        runner = object.__new__(gateway_run.GatewayRunner)
-        runner._session_model_overrides = {}
-        runner.logger = MagicMock()
-
-        # Mock session_store to return a persisted override
-        persisted = {"model": "claude-sonnet-4.6", "provider": "copilot", "base_url": None}
-        mock_store = MagicMock()
-        mock_store.get_model_override = MagicMock(return_value=persisted)
-        runner.session_store = mock_store
-
-        runner._rehydrate_session_model_override("test-session-key")
-
-        assert len(seen_calls) == 1
-        assert seen_calls[0]["provider"] == "copilot"
-        assert seen_calls[0]["target_model"] == "claude-sonnet-4.6", (
-            "Rehydration must thread the persisted model as target_model"
-        )
-        override = runner._session_model_overrides["test-session-key"]
-        assert override["api_mode"] == "anthropic_messages"
+def test_fallback_entry_model_reaches_real_resolver(monkeypatch, copilot_runtime):
+    monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: {
+        "fallback_providers": [{"provider": "copilot", "model": "claude-sonnet-4.6"}],
+    })
+    runtime = gateway_run._try_resolve_fallback_provider()
+    assert runtime["model"] == "claude-sonnet-4.6"
+    assert runtime["api_mode"] == "anthropic_messages"
+    assert runtime["provider"] == "copilot"
 
 
-# ---------------------------------------------------------------------------
-# Edit 5: channel override - model-only on copilot re-resolves
-# ---------------------------------------------------------------------------
+def test_primary_auth_failure_routes_fallback_model(monkeypatch, copilot_runtime):
+    from hermes_cli.auth import AuthError
 
-class TestChannelModelOnlyOverride:
-    """Model-only channel override on copilot default must re-resolve transport."""
+    real_resolve = runtime_provider.resolve_runtime_provider
 
-    def test_model_only_channel_copilot_rederives(self, monkeypatch):
-        """ch.model set, ch.provider absent, default provider copilot -> re-resolve."""
-        seen_calls = []
+    def fail_primary(**kwargs):
+        if not kwargs.get("requested"):
+            raise AuthError("Test primary credentials unavailable")
+        return real_resolve(**kwargs)
 
-        def spy_resolve(provider, target_model=None):
-            seen_calls.append({"provider": provider, "target_model": target_model})
-            return _fake_resolve_for_provider(provider, target_model)
-
-        monkeypatch.setattr(
-            gateway_run,
-            "_resolve_runtime_agent_kwargs_for_provider",
-            spy_resolve,
-        )
-
-        # Simulate: runtime_kwargs already resolved with provider=copilot
-        runtime_kwargs = {
-            "provider": "copilot",
-            "api_key": "gho_test",
-            "api_mode": "codex_responses",  # stale: GPT default
-        }
-
-        # Simulate channel override with model only (no provider)
-        ch = SimpleNamespace(model="claude-sonnet-4.6", provider=None)
-
-        # Execute the channel logic inline (mirrors gateway/run.py:3866-3884)
-        model = "gpt-5.5"  # the default model
-        if ch:
-            if ch.model:
-                model = ch.model
-            if ch.provider:
-                runtime_kwargs = spy_resolve(ch.provider, target_model=model)
-                ch_runtime_model = runtime_kwargs.pop("model", None)
-                if ch_runtime_model and not ch.model:
-                    model = ch_runtime_model
-            elif ch.model and runtime_kwargs.get("provider") == "copilot":
-                runtime_kwargs = spy_resolve("copilot", target_model=model)
-
-        assert len(seen_calls) == 1
-        assert seen_calls[0]["target_model"] == "claude-sonnet-4.6"
-        assert runtime_kwargs["api_mode"] == "anthropic_messages"
-
-    def test_model_only_channel_non_copilot_no_reresolve(self, monkeypatch):
-        """Model-only channel on a non-copilot provider must NOT re-resolve."""
-        seen_calls = []
-
-        def spy_resolve(provider, target_model=None):
-            seen_calls.append({"provider": provider, "target_model": target_model})
-            return _fake_resolve_for_provider(provider, target_model)
-
-        monkeypatch.setattr(
-            gateway_run,
-            "_resolve_runtime_agent_kwargs_for_provider",
-            spy_resolve,
-        )
-
-        runtime_kwargs = {
-            "provider": "openai",
-            "api_key": "sk-test",
-            "api_mode": "responses",
-        }
-
-        ch = SimpleNamespace(model="gpt-5.5", provider=None)
-        model = "gpt-4o"
-        if ch:
-            if ch.model:
-                model = ch.model
-            if ch.provider:
-                runtime_kwargs = spy_resolve(ch.provider, target_model=model)
-            elif ch.model and runtime_kwargs.get("provider") == "copilot":
-                runtime_kwargs = spy_resolve("copilot", target_model=model)
-
-        # Non-copilot: no re-resolution happened
-        assert len(seen_calls) == 0, (
-            "Model-only channel on non-copilot provider must NOT trigger re-resolution"
-        )
-        # Original runtime_kwargs preserved
-        assert runtime_kwargs["provider"] == "openai"
-
-
-# ---------------------------------------------------------------------------
-# Edit 6: fallback chain threads entry model
-# ---------------------------------------------------------------------------
-
-class TestFallbackChainThreadsModel:
-    """Fallback chain must pass target_model=entry['model'] to resolve_runtime_provider."""
-
-    def test_fallback_entry_model_threaded(self, monkeypatch):
-        seen_calls = []
-
-        def spy_resolve(requested=None, explicit_base_url=None, explicit_api_key=None, target_model=None):
-            seen_calls.append({
-                "requested": requested,
-                "target_model": target_model,
-            })
-            return {
-                "provider": requested or "copilot",
-                "api_key": explicit_api_key or "gho_test",
-                "base_url": explicit_base_url,
-                "api_mode": "anthropic_messages" if "claude" in (target_model or "") else "codex_responses",
-                "model": target_model,
-                "credential_pool": None,
-                "command": None,
-                "args": [],
-            }
-
-        monkeypatch.setattr(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
-            spy_resolve,
-        )
-
-        # Simulate the fallback resolution inline
-        entry = {"provider": "copilot", "model": "claude-sonnet-4.6", "base_url": None}
-        explicit_api_key = "gho_fallback_key"
-
-        # This mirrors gateway/run.py:1995-1999 after our edit
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        runtime = resolve_runtime_provider(
-            requested=entry.get("provider"),
-            explicit_base_url=entry.get("base_url"),
-            explicit_api_key=explicit_api_key,
-            target_model=entry.get("model"),
-        )
-
-        assert len(seen_calls) == 1
-        assert seen_calls[0]["target_model"] == "claude-sonnet-4.6", (
-            "Fallback chain must thread entry['model'] as target_model"
-        )
-        assert runtime["api_mode"] == "anthropic_messages"
+    monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", fail_primary)
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda cfg: "gpt-5.5")
+    monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: {
+        "fallback_providers": [{"provider": "copilot", "model": "claude-sonnet-4.6"}],
+    })
+    model, runtime = make_runner()._resolve_session_agent_runtime(user_config={})
+    assert model == "claude-sonnet-4.6"
+    assert runtime["api_mode"] == "anthropic_messages"

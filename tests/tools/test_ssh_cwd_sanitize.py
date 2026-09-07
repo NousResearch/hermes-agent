@@ -284,3 +284,138 @@ class TestMeasuredBugDoesNotReachExecute(TestOverrideCwdSanitizedForSSH):
                 f"Host cwd reached the peer's shell as {got!r}. "
                 "`cd` fails there and the command returns 126 before it runs."
             )
+
+
+class TestFileToolsCwdSanitizedForSSH:
+    """The *fourth* path: tools/file_tools.py builds its own environment.
+
+    It does not route through ``_resolve_command_cwd``, so guarding the three
+    terminal paths leaves it open.  It also reads BOTH leak sources -- the
+    registered override and the session record -- so a file tool arriving
+    before any terminal command in a fresh process is enough: the reviewer
+    measured one ``read_file`` executing four times in a host cwd.
+    """
+
+    def _build_env_and_capture_cwd(self, monkeypatch, override_cwd, config_cwd="~"):
+        import tools.file_tools as ft
+
+        captured = {}
+
+        config = {
+            "env_type": "ssh",
+            "ssh_host": "m5", "ssh_user": "ftfuture", "ssh_port": 22, "ssh_key": "",
+            "docker_image": "", "singularity_image": "", "modal_image": "",
+            "daytona_image": "",
+            "cwd": config_cwd, "host_cwd": None, "timeout": 180,
+            "lifetime_seconds": 300, "container_cpu": 1, "container_memory": 5120,
+            "container_disk": 51200, "container_persistent": True,
+            "docker_volumes": [], "docker_env": {}, "docker_extra_args": [],
+            "docker_mount_cwd_to_workspace": False, "docker_run_as_host_user": False,
+            "docker_forward_env": [], "docker_network": True, "modal_mode": "auto",
+        }
+
+        class _DummyEnv:
+            cwd = config_cwd
+
+            def execute(self, *a, **k):
+                captured.setdefault("execute_cwds", []).append(k.get("cwd"))
+                return {"output": "", "exit_code": 0}
+
+        def fake_create_environment(env_type, image, cwd, timeout, **kwargs):
+            captured["create_cwd"] = cwd
+            return _DummyEnv()
+
+        monkeypatch.setattr(tt, "_get_env_config", lambda: config)
+        monkeypatch.setattr(tt, "_create_environment", fake_create_environment)
+        monkeypatch.setattr(tt, "_start_cleanup_thread", lambda: None)
+        monkeypatch.setattr(tt, "_active_environments", {})
+        monkeypatch.setattr(tt, "_last_activity", {})
+
+        task_id = "sess-filetools-ssh"
+        tt.register_task_env_overrides(task_id, {"cwd": override_cwd})
+        try:
+            ft._get_file_ops(task_id)
+        finally:
+            tt.clear_task_env_overrides(task_id)
+            tt.clear_session_cwd(task_id)
+            tt._active_environments.pop(task_id, None)
+            tt._active_environments.pop("default", None)
+        return captured
+
+    def test_host_override_does_not_reach_the_peer(self, monkeypatch):
+        cap = self._build_env_and_capture_cwd(
+            monkeypatch,
+            r"D:\hermes\kanban\boards\hermes-multinode\workspaces\t_27e56ac3",
+        )
+        assert cap["create_cwd"] == "~", (
+            f"file_tools built an ssh environment in {cap['create_cwd']!r}. "
+            "Every command it runs would die in `cd` with 126."
+        )
+
+    def test_remote_override_is_preserved(self, monkeypatch):
+        cap = self._build_env_and_capture_cwd(monkeypatch, "/Users/ftfuture/work")
+        assert cap["create_cwd"] == "/Users/ftfuture/work"
+
+
+class TestCodeExecutionCwdSanitizedForSSH:
+    """The *fifth* path: tools/code_execution_tool.py, which had no guard at all.
+
+    Not even the container one.  The container case is only accidentally safe
+    (a CWD-only override collapses to the shared ``default`` id and is not
+    found); an isolation key keeps the raw id and the host path flows through.
+    This branch fixes the ssh half only -- see the comment at the call site.
+    """
+
+    def _build_env_and_capture_cwd(self, monkeypatch, override_cwd, config_cwd="~"):
+        import tools.code_execution_tool as cet
+
+        captured = {}
+        config = {
+            "env_type": "ssh",
+            "ssh_host": "m5", "ssh_user": "ftfuture", "ssh_port": 22, "ssh_key": "",
+            "docker_image": "", "singularity_image": "", "modal_image": "",
+            "daytona_image": "",
+            "cwd": config_cwd, "timeout": 180, "lifetime_seconds": 300,
+            "container_cpu": 1, "container_memory": 5120, "container_disk": 51200,
+            "container_persistent": True, "docker_volumes": [],
+            "docker_run_as_host_user": False, "docker_network": True,
+            "modal_mode": "auto",
+        }
+
+        class _DummyEnv:
+            cwd = config_cwd
+
+        def fake_create_environment(env_type, image, cwd, timeout, **kwargs):
+            captured["create_cwd"] = cwd
+            return _DummyEnv()
+
+        monkeypatch.setattr(tt, "_get_env_config", lambda: config)
+        monkeypatch.setattr(tt, "_create_environment", fake_create_environment)
+        monkeypatch.setattr(tt, "_start_cleanup_thread", lambda: None)
+        monkeypatch.setattr(tt, "_active_environments", {})
+        monkeypatch.setattr(tt, "_last_activity", {})
+
+        # An isolation key keeps the RAW task id, which is what makes the
+        # override reachable here at all.
+        task_id = "sess-codeexec-ssh"
+        tt.register_task_env_overrides(
+            task_id, {"cwd": override_cwd, "env_type": "ssh"}
+        )
+        try:
+            cet._get_or_create_env(task_id)
+        finally:
+            tt.clear_task_env_overrides(task_id)
+            tt.clear_session_cwd(task_id)
+            tt._active_environments.pop(task_id, None)
+            tt._active_environments.pop("default", None)
+        return captured
+
+    def test_host_override_does_not_reach_the_peer(self, monkeypatch):
+        cap = self._build_env_and_capture_cwd(
+            monkeypatch, r"D:\hermes\kanban\workspaces\t_27e56ac3"
+        )
+        assert cap["create_cwd"] == "~"
+
+    def test_remote_override_is_preserved(self, monkeypatch):
+        cap = self._build_env_and_capture_cwd(monkeypatch, "/Users/ftfuture/work")
+        assert cap["create_cwd"] == "/Users/ftfuture/work"

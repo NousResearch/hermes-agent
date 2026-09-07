@@ -947,6 +947,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         _creation_locks_lock,
         _resolve_container_task_id,
         _is_unusable_container_cwd,
+        _is_unusable_ssh_cwd,
         _CONTAINER_BACKENDS,
     )
     import time
@@ -1037,6 +1038,24 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                         "Ignoring host/relative cwd override %r for %s backend "
                         "(won't exist in sandbox). Using %r instead.",
                         cwd, env_type, config["cwd"],
+                    )
+                cwd = config["cwd"]
+            elif env_type == "ssh" and _is_unusable_ssh_cwd(cwd):
+                # Same guard, other backend. ssh is not in _CONTAINER_BACKENDS,
+                # so both sources read above -- the registered override and the
+                # session record -- reached the peer unchecked. There the cost
+                # is not an empty search result but a shell that dies in `cd`:
+                # `cd -- 'D:\...' || exit 126` before the tool's command runs.
+                # A file tool arriving before any terminal command in a fresh
+                # process was enough: one read_file executed four times in a
+                # host cwd. terminal_tool guards its own three paths; this is
+                # the fourth, and file_tools does not route through
+                # _resolve_command_cwd, so it needs its own.
+                if cwd != config["cwd"]:
+                    logger.info(
+                        "Ignoring host cwd override %r for ssh backend "
+                        "(won't resolve on the peer). Using %r instead.",
+                        cwd, config["cwd"],
                     )
                 cwd = config["cwd"]
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])

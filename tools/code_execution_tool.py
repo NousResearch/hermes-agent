@@ -716,6 +716,7 @@ def _get_or_create_env(task_id: str):
         _get_env_config, _last_activity, _start_cleanup_thread,
         _creation_locks, _creation_locks_lock, _task_env_overrides,
         _resolve_container_task_id,
+        _is_unusable_ssh_cwd,
     )
 
     effective_task_id = _resolve_container_task_id(task_id)
@@ -754,6 +755,29 @@ def _get_or_create_env(task_id: str):
             image = ""
 
         cwd = overrides.get("cwd") or config["cwd"]
+        if env_type == "ssh" and _is_unusable_ssh_cwd(cwd):
+            # A registered cwd override is a Hermes-host path; on ssh it is
+            # resolved by a shell on the peer, where `cd` fails and the command
+            # returns 126 before it runs. terminal_tool and file_tools guard
+            # their own cwd paths; this is the fifth, and it had no guard at
+            # all -- not even the container one.
+            #
+            # The container case here is only *accidentally* safe: a CWD-only
+            # override collapses to the shared "default" id and is not found.
+            # Add an isolation key (env_type/*_image, as RL and benchmark
+            # harnesses do) and the raw id survives, so the same host path
+            # reaches _create_environment. That half, and switching this lookup
+            # to resolve_task_overrides(), change container behaviour and are
+            # deliberately left to the follow-up card (t_e4c0a0b2); this branch
+            # is scoped to the ssh leak and leaves every other backend byte for
+            # byte as it was.
+            if cwd != config["cwd"]:
+                logger.info(
+                    "Ignoring host cwd override %r for ssh backend "
+                    "(won't resolve on the peer). Using %r instead.",
+                    cwd, config["cwd"],
+                )
+            cwd = config["cwd"]
 
         container_config = None
         if env_type in {"docker", "singularity", "modal", "daytona"}:

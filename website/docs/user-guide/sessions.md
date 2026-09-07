@@ -551,7 +551,10 @@ Archived sessions are skipped by default; pass `--include-archived` to
 delete them too.
 
 :::info
-Pruning only deletes **ended** sessions (sessions that have been explicitly ended or auto-reset). Active sessions are never pruned.
+Ordinary filtered prune only deletes **ended** sessions (sessions that have
+been explicitly ended or auto-reset). The narrow `--never-active` maintenance
+mode instead removes old keyed gateway rows with no messages or recorded
+activity; pinned and archived rows are excluded.
 :::
 
 ### Bulk-Archive Sessions
@@ -560,6 +563,11 @@ If you want sessions out of your listings without deleting anything,
 `hermes sessions archive` takes the same filters as `prune` but soft-hides
 matching sessions instead (sets the same archived flag as archiving a single
 session from the Desktop/Dashboard UI — messages and search stay intact):
+
+Unlike prune and filtered export, archive matches both ended and unended
+sessions. Archiving an unended session does not end or reset it; the
+conversation can continue while the session remains hidden. The preview shows
+the ended and unended match counts before confirmation.
 
 ```bash
 # Archive everything from the last 5 hours (e.g. 75 CI smoke-test sessions)

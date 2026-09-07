@@ -208,11 +208,29 @@ class SessionMaintenanceMixin:
             filters["last_active_before"] = time.time() - (older_than_days * 86400)
         return self._prune_filter_where(source=source, **filters)
 
-    def list_prune_candidates(self, older_than_days: Optional[float] = None, source: str = None,
-                              **filters) -> List[Dict[str, Any]]:
-        """Dry-run: sessions a matching prune/archive would touch, oldest first (``older_than_days``
-        = inactivity threshold: latest message, else ``started_at``)."""
+    def _list_session_candidates(
+        self,
+        older_than_days: Optional[float] = None,
+        source: str = None,
+        *,
+        include_unended: bool,
+        **filters,
+    ) -> List[Dict[str, Any]]:
+        """Return sessions matching a lifecycle-aware filter, oldest first.
+
+        ``include_unended`` is reserved for reversible archive selection.
+        Destructive prune and filtered export keep the ended-session guard.
+        """
         where, params = self._prune_where(older_than_days, source, filters)
+        if include_unended:
+            ended_guard = "s.ended_at IS NOT NULL"
+            if not where.startswith(ended_guard):
+                raise RuntimeError("prune filter lost its ended-session safety guard")
+            where = where[len(ended_guard):].lstrip()
+            if where.startswith("AND "):
+                where = where[4:]
+            if not where:
+                where = "1"
         return [dict(row) for row in self._read_all(
             f"""SELECT s.id, s.source, s.title, s.model, s.started_at,
                            COALESCE(
@@ -223,6 +241,27 @@ class SessionMaintenanceMixin:
                            s.ended_at, s.message_count, s.archived
                     FROM sessions s WHERE {where}
                     ORDER BY last_active ASC, s.started_at ASC""", params)]
+
+    def list_prune_candidates(self, older_than_days: Optional[float] = None, source: str = None,
+                              **filters) -> List[Dict[str, Any]]:
+        """Return ended sessions matching a prune/export filter, without writes."""
+        return self._list_session_candidates(
+            older_than_days=older_than_days,
+            source=source,
+            include_unended=False,
+            **filters,
+        )
+
+    def list_archive_candidates(self, older_than_days: Optional[float] = None, source: str = None,
+                                **filters) -> List[Dict[str, Any]]:
+        """Return ended and unended sessions matching a reversible archive."""
+        filters.setdefault("archived", False)
+        return self._list_session_candidates(
+            older_than_days=older_than_days,
+            source=source,
+            include_unended=True,
+            **filters,
+        )
 
     def count_prune_matches(self, older_than_days: Optional[float] = None, source: str = None,
                             **filters) -> int:

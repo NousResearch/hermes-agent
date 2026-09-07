@@ -1572,9 +1572,11 @@ class SessionSessionsMixin:
         self, older_than_days: Optional[float] = None, source: str = None, **filters,
     ) -> int:
         """Bulk soft-hide with prune_sessions' filter surface, via set_session_archived so each lineage
-        flips as a unit; idempotent. Returns matches."""
-        filters.setdefault("archived", False)
-        rows = self.list_prune_candidates(older_than_days=older_than_days, source=source, **filters)
+        flips as a unit; idempotent. Includes unended sessions because archive is reversible. Returns
+        matches."""
+        rows = self.list_archive_candidates(
+            older_than_days=older_than_days, source=source, **filters
+        )
         for row in rows:
             self.set_session_archived(row["id"], True)
         return len(rows)

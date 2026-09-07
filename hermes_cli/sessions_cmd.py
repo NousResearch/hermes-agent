@@ -593,7 +593,15 @@ def _note_pinned_skipped(db, filters, action):
     """Tell the user how many pinned rows bulk prune/archive spared (pin = durable keep; only
     `prune --include-pinned` opts in, archive always spares them)."""
     _base = {k: v for k, v in filters.items() if k != "include_pinned"}
-    with_pinned, without = (int(db.count_prune_matches(**_base, include_pinned=flag)) for flag in (True, False))
+    if action == "archive":
+        list_candidates = db.list_archive_candidates
+        with_pinned = len(list_candidates(**_base, include_pinned=True))
+        without = len(list_candidates(**_base, include_pinned=False))
+    else:
+        with_pinned, without = (
+            int(db.count_prune_matches(**_base, include_pinned=flag))
+            for flag in (True, False)
+        )
     skipped = max(with_pinned - without, 0)
     if not skipped:
         return
@@ -623,16 +631,17 @@ def _cmd_prune_or_archive(db, args, action):
         print(f"Error: {e}")
         return 1
     if not prune and not any(v for k, v in filters.items() if k != "older_than_days"):
-        print("Refusing to archive every ended session: pass at least one "
+        print("Refusing to archive every session: pass at least one "
               "filter (e.g. --newer-than 5h, --source cli, --title codex).")
         return
 
     # Prune skips archived rows unless --include-archived; archive only targets not-yet-archived rows.
     filters["archived"] = None if prune and getattr(args, "include_archived", False) else False
     filters["include_pinned"] = getattr(args, "include_pinned", False)
+    list_candidates = db.list_prune_candidates if prune else db.list_archive_candidates
     if not filters["include_pinned"]:
         _note_pinned_skipped(db, filters, action)
-    candidates = db.list_prune_candidates(**filters)
+    candidates = list_candidates(**filters)
     # Archive expands each row to its compression lineage (may include open continuations), so a
     # direct-open count would misdescribe its effect.
     skipped_open = db.count_open_prune_matches(**filters) if prune else 0
@@ -649,9 +658,13 @@ def _cmd_prune_or_archive(db, args, action):
         f"oldest activity {format_epoch(candidates[0].get('last_active'))}, "
         f"newest activity {format_epoch(candidates[-1].get('last_active'))}"
     )
+    _lifecycle = ""
+    if not prune:
+        _unended = sum(s.get("ended_at") is None for s in candidates)
+        _lifecycle = f"; {_unended} unended, {len(candidates) - _unended} ended"
     if args.dry_run or not args.yes:
         shown = candidates if args.dry_run else candidates[:15]
-        print(f"{len(candidates)} session(s) match ({describe_filters(filters)}; {_span}):")
+        print(f"{len(candidates)} session(s) match ({describe_filters(filters)}{_lifecycle}; {_span}):")
         for s in shown:
             model = (s.get("model") or "-").split("/")[-1][:24]
             print(f"  {s['id']}  {format_epoch(s.get('last_active')):<17} {s['source']:<10} {model:<24} "

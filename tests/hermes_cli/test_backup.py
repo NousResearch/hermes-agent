@@ -2,10 +2,12 @@
 
 import json
 import os
+import shutil
 import sqlite3
 import stat
 import zipfile
 from argparse import Namespace
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1610,6 +1612,156 @@ class TestQuickSnapshotProjectsKanban:
         copy = hermes_home / "state-snapshots" / snap_id / "kanban" / "boards" / "work" / "kanban.db"
         rows = sqlite3.connect(str(copy)).execute("SELECT * FROM tasks").fetchall()
         assert rows == [("w1", "ship")]
+
+    def test_board_snapshot_excludes_sidecars_and_captures_open_wal(self, hermes_home, tmp_path):
+        """The quick-snapshot tree is exactly its manifest, with every board DB WAL-safe."""
+        from hermes_cli.backup import (
+            _SQLITE_SIDECAR_SUFFIXES,
+            _quick_snapshot_candidates,
+            create_quick_snapshot,
+        )
+
+        rollback_board = hermes_home / "kanban" / "boards" / "rollback"
+        rollback_board.mkdir(parents=True)
+        rollback_db = rollback_board / "kanban.db"
+        with closing(sqlite3.connect(rollback_db)) as conn:
+            assert conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0] == "delete"
+            conn.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, data TEXT)")
+            conn.execute("INSERT INTO tasks VALUES ('r1', 'rollback-row')")
+            conn.commit()
+        (rollback_board / "board.json").write_text('{"name": "Rollback board"}\n')
+        for suffix in _SQLITE_SIDECAR_SUFFIXES:
+            (rollback_board / f"kanban{suffix}").write_bytes(f"junk:{suffix}".encode())
+
+        wal_board = hermes_home / "kanban" / "boards" / "live-wal"
+        wal_board.mkdir(parents=True)
+        wal_db = wal_board / "kanban.db"
+        with closing(sqlite3.connect(wal_db)) as conn:
+            conn.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, data TEXT)")
+            conn.commit()
+
+        sentinel = "committed-only-in-open-wal"
+        writer = sqlite3.connect(wal_db)
+        try:
+            assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+            writer.execute("PRAGMA wal_autocheckpoint=0")
+            writer.execute("INSERT INTO tasks VALUES ('wal-sentinel', ?)", (sentinel,))
+            writer.commit()
+            assert writer.execute(
+                "SELECT data FROM tasks WHERE id = 'wal-sentinel'"
+            ).fetchone() == (sentinel,)
+            wal_path = wal_db.with_name("kanban.db-wal")
+            assert wal_path.is_file() and wal_path.stat().st_size > 0
+
+            main_only_dir = tmp_path / "main-only"
+            main_only_dir.mkdir()
+            main_only_db = main_only_dir / "kanban.db"
+            shutil.copy2(wal_db, main_only_db)
+            with closing(sqlite3.connect(main_only_db)) as conn:
+                assert conn.execute(
+                    "SELECT data FROM tasks WHERE id = 'wal-sentinel'"
+                ).fetchone() is None
+
+            candidates = {
+                rel: src for src, rel, _in_dir in _quick_snapshot_candidates(hermes_home)
+            }
+            assert "kanban/boards/rollback/kanban.db" in candidates
+            assert "kanban/boards/rollback/board.json" in candidates
+            assert not any(Path(rel).name.endswith(_SQLITE_SIDECAR_SUFFIXES) for rel in candidates)
+
+            snap_id = create_quick_snapshot(hermes_home=hermes_home)
+            assert snap_id is not None
+            snap_dir = hermes_home / "state-snapshots" / snap_id
+            assert snap_dir.is_dir()
+            manifest = json.loads((snap_dir / "manifest.json").read_text())
+            manifest_files = manifest["files"]
+            published_files = {
+                path.relative_to(snap_dir).as_posix(): path.stat().st_size
+                for path in snap_dir.rglob("*")
+                if path.is_file() and path != snap_dir / "manifest.json"
+            }
+            assert manifest_files == published_files
+            assert published_files == manifest_files
+            assert not any(
+                Path(rel).name.endswith(_SQLITE_SIDECAR_SUFFIXES)
+                for rel in manifest_files
+            )
+            assert not any(
+                Path(rel).name.endswith(_SQLITE_SIDECAR_SUFFIXES)
+                for rel in published_files
+            )
+            assert "kanban/boards/live-wal/kanban.db" not in manifest["failed_dbs"]
+
+            snapshot_only_dir = tmp_path / "snapshot-only"
+            snapshot_only_dir.mkdir()
+            snapshot_only_db = snapshot_only_dir / "kanban.db"
+            shutil.copy2(snap_dir / "kanban" / "boards" / "live-wal" / "kanban.db", snapshot_only_db)
+            with closing(sqlite3.connect(snapshot_only_db)) as conn:
+                assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+                assert conn.execute(
+                    "SELECT data FROM tasks WHERE id = 'wal-sentinel'"
+                ).fetchone() == (sentinel,)
+        finally:
+            writer.close()
+
+    def test_legacy_snapshot_restore_skips_sidecars_after_traversal_validation(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Old sidecars stay quarantined while unsafe manifest paths are still rejected."""
+        import hermes_cli.backup as backup_mod
+
+        home = tmp_path / "restore-home"
+        snap_dir = home / "state-snapshots" / "legacy"
+        board_rel = Path("kanban/boards/legacy/kanban.db")
+        snapshot_db = snap_dir / board_rel
+        snapshot_db.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(snapshot_db)) as conn:
+            conn.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, data TEXT)")
+            conn.execute("INSERT INTO tasks VALUES ('legacy', 'restored')")
+            conn.commit()
+
+        files = {board_rel.as_posix(): snapshot_db.stat().st_size}
+        sidecar_rels = []
+        for suffix in backup_mod._SQLITE_SIDECAR_SUFFIXES:
+            sidecar_rel = board_rel.parent / "legacy-sidecars" / f"kanban{suffix}"
+            sidecar = snap_dir / sidecar_rel
+            sidecar.parent.mkdir(parents=True, exist_ok=True)
+            sidecar.write_bytes(f"legacy-junk:{suffix}".encode())
+            files[sidecar_rel.as_posix()] = sidecar.stat().st_size
+            sidecar_rels.append(sidecar_rel)
+        unsafe_rel = "../escape.txt"
+        (snap_dir.parent / "escape.txt").write_text("must-not-restore")
+        files[unsafe_rel] = len("must-not-restore")
+        (snap_dir / "manifest.json").write_text(json.dumps({
+            "id": "legacy",
+            "timestamp": "20260907-120000",
+            "label": None,
+            "file_count": len(files),
+            "total_size": sum(files.values()),
+            "files": files,
+            "failed_dbs": [],
+            "oversized_skipped": [],
+        }))
+
+        safe_restore_calls = []
+        real_safe_restore = backup_mod._safe_restore_db
+
+        def record_safe_restore(src, dst):
+            safe_restore_calls.append((src, dst))
+            return real_safe_restore(src, dst)
+
+        monkeypatch.setattr(backup_mod, "_safe_restore_db", record_safe_restore)
+        with caplog.at_level("ERROR"):
+            assert backup_mod.restore_quick_snapshot("legacy", hermes_home=home) is True
+
+        restored_db = home / board_rel
+        assert safe_restore_calls == [(snapshot_db, restored_db)]
+        with closing(sqlite3.connect(restored_db)) as conn:
+            assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+            assert conn.execute("SELECT id, data FROM tasks").fetchall() == [("legacy", "restored")]
+        assert not any((home / sidecar_rel).exists() for sidecar_rel in sidecar_rels)
+        assert "Manifest path traversal blocked: ../escape.txt" in caplog.text
+        assert not (home.parent / "escape.txt").exists()
 
 
 class TestPreUpdateBackup:

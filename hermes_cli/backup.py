@@ -1090,8 +1090,12 @@ def _quick_snapshot_candidates(home: Path):
                 sub_rel = sub.relative_to(home).as_posix()
                 if "/workspaces/" in f"/{sub_rel}/" or "/attachments/" in f"/{sub_rel}/":
                     continue
+                if sub.name.endswith(_SQLITE_SIDECAR_SUFFIXES):
+                    continue
                 yield sub, sub_rel, True
         elif src.is_file():
+            if src.name.endswith(_SQLITE_SIDECAR_SUFFIXES):
+                continue
             yield src, rel, False
 
 
@@ -1251,6 +1255,8 @@ def restore_quick_snapshot(snapshot_id: str, hermes_home: Optional[Path] = None)
         dst = home / rel
         if not (_is_within(src, snap_res) and _is_within(dst, home_res)):
             logger.error("Manifest path traversal blocked: %s", rel)
+            continue
+        if src.name.endswith(_SQLITE_SIDECAR_SUFFIXES):
             continue
         if not src.exists():
             continue

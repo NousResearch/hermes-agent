@@ -297,17 +297,21 @@ def _leftover_pausable_gateway_pids(matches: list[tuple[int, str, str]]) -> list
     """PIDs from *matches* when EVERY remaining venv holder is a pausable gateway, else ``None`` (keep refusing).
 
     A gateway respawned inside the pause->guard window (or via an unmapped spawn path) still holds ``.pyd`` files.
-    Uses the Desktop preflight's ``_is_pausable_gateway`` so exemption and tolerance cannot drift; live argv is
-    re-read via psutil when possible since the scan may hold only a cmdline prefix."""
-    from hermes_cli._scan_venv_blockers import _is_pausable_gateway
+    Uses ``gateway.status.looks_like_gateway_runtime_command_line`` — the SAME matcher as
+    ``update_cmd._classify_concurrent_instance`` (see the INVARIANT on that function), and the same set
+    ``_discover_windows_gateways`` pauses, since ``find_gateway_pids`` scans with ``include_restart_managers=True``
+    on Windows. Live argv is re-read via psutil when possible since the scan may hold only a cmdline prefix, and it
+    is joined with ``subprocess.list2cmdline`` (not ``" ".join``) so an install path containing a space survives the
+    matcher's quote-aware re-tokenization."""
+    from gateway.status import looks_like_gateway_runtime_command_line
     psutil = _psutil()
     pids: list[int] = []
     for pid, _name, cmdline in matches:
         argv = cmdline
         if psutil is not None:
             with suppress(Exception):
-                argv = " ".join(psutil.Process(int(pid)).cmdline()) or cmdline
-        if not _is_pausable_gateway(argv):
+                argv = subprocess.list2cmdline(psutil.Process(int(pid)).cmdline() or []) or cmdline
+        if not looks_like_gateway_runtime_command_line(argv):
             return None
         pids.append(int(pid))
     return pids

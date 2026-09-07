@@ -395,22 +395,14 @@ def _run_post_turn_followups(
             session_key=session.get("session_key", ""),
             owns_event=lambda e: _session_owns_notification_event(sid, session, e),
             skip_poll_observed=False)
-        for index, (_evt, synth) in enumerate(drained):
-            with session["history_lock"]:
-                if session.get("running"):
-                    for pending_evt, _pending_synth in drained[index:]:
-                        process_registry.completion_queue.put(pending_evt)
-                    break
-                session["running"] = True
-            from tools.async_delegation import (
-                claim_event_delivery, complete_event_delivery, release_event_delivery)
-            _claim = claim_event_delivery(_evt, "tui-post-turn")
-            if _claim is None:
-                continue
-            _dispatch_followup_turn(
-                rid, sid, session, synth, "completion notification dispatch",
-                on_done=lambda: complete_event_delivery(_evt, _claim),
-                on_error=lambda: release_event_delivery(_evt, _claim))
+        from tools.process_registry_notifications import format_process_notification
+        deferred = []
+        _notif_handle_ready(
+            sid, session, [event for event, _text in drained],
+            session.setdefault("_notification_emitted", set()), process_registry,
+            format_process_notification, deferred)
+        for event in deferred:
+            process_registry.completion_queue.put(event)
     except Exception as _drain_exc:
         _hook_failure("completion queue drain", _drain_exc)
 

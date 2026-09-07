@@ -1,11 +1,4 @@
-"""#104893: a systemd-launched gateway must adopt its own user bus at boot.
-
-A *system*-level unit (``/etc/systemd/system``, ``User=<someone>``) is exec'd with
-neither ``XDG_RUNTIME_DIR`` nor ``DBUS_SESSION_BUS_ADDRESS``, and a process environment
-is fixed at exec time.  ``systemd-run --user`` is the seam every restart-safe cron and
-Kanban worker crosses, and it fails closed by design — so on a headless service install
-every agent-driven scheduled job died at dispatch, even once the user manager was up.
-"""
+"""#104893: a gateway started by a system-level systemd unit adopts its own user bus at boot."""
 
 import os
 
@@ -77,7 +70,7 @@ def test_absent_user_bus_is_never_fabricated(monkeypatch):
     _fake_user_bus(monkeypatch, present=False)
     _service_manager_env(monkeypatch)
 
-    gw._adopt_user_bus_when_started_by_systemd()
+    gw._ensure_user_systemd_env()
 
     assert "XDG_RUNTIME_DIR" not in os.environ
     assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ

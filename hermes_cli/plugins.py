@@ -1774,9 +1774,18 @@ def _get_pre_tool_call_directive_details(
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
 ) -> _PreToolCallDirective:
     """Check ``pre_tool_call`` hooks for ``{"action": "block", "message"}`` (veto; message becomes
-    the tool result) or ``{"action": "approve", "message", "rule_key"?}`` (escalate ANY tool to the
-    human-approval gate; ``rule_key`` picks the ``[a]lways`` allowlist grain). First valid directive
-    wins; irrelevant returns are ignored."""
+    the tool result), ``{"action": "approve", "message", "rule_key"?}`` (escalate ANY tool to the
+    human-approval gate; ``rule_key`` picks the ``[a]lways`` allowlist grain), or
+    ``{"action": "require_exact_action", "message", "rule_key"?}`` (escalate to the non-bypassable
+    exact-action gate in :mod:`tools.approval_exact_action`, bound to the FINAL dispatched args —
+    see that module's docstring for why ``approve`` alone cannot give this guarantee). First valid
+    directive wins; irrelevant returns are ignored.
+
+    A winning ``require_exact_action`` keeps scanning the REMAINING hook results for ``modify``
+    directives after it (below), so its approval is always computed against the true final args
+    regardless of hook registration order. ``block``/``approve`` intentionally keep the historical
+    stop-at-first-match behavior unchanged — see ``TestPreToolCallModify.test_modify_after_block_is_invisible``
+    and the sibling tests for ``approve``."""
     allowed = getattr(_thread_tool_whitelist, "allowed", None)
     if allowed is not None and tool_name not in allowed:
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
@@ -1787,8 +1796,15 @@ def _get_pre_tool_call_directive_details(
         task_id=task_id, session_id=session_id, tool_call_id=tool_call_id, turn_id=turn_id,
         api_request_id=api_request_id, middleware_trace=list(middleware_trace or []),
     )
+
+    def _merge_modify(current: Optional[Dict[str, Any]], result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        partial = result.get("args")
+        if not isinstance(partial, dict) or not partial:
+            return current
+        return {**(current if current is not None else (args if isinstance(args, dict) else {})), **partial}
+
     modified_args: Optional[Dict[str, Any]] = None
-    for result in hook_results:
+    for index, result in enumerate(hook_results):
         if not isinstance(result, dict):
             continue
         action = result.get("action")
@@ -1796,20 +1812,25 @@ def _get_pre_tool_call_directive_details(
         # so modify directives are visible even when a later hook blocks. Each modify directive
         # shallow-merges its keys into one accumulated dict built from the original args.
         if action == "modify":
-            partial = result.get("args")
-            if isinstance(partial, dict) and partial:
-                modified_args = {**(modified_args if modified_args is not None else
-                                    (args if isinstance(args, dict) else {})), **partial}
+            modified_args = _merge_modify(modified_args, result)
             continue
-        if action not in ("block", "approve"):
+        if action not in ("block", "approve", "require_exact_action"):
             continue
         message = result.get("message")
         message = message if isinstance(message, str) and message else None
-        # A block directive requires a message (it becomes the tool result); approve's is optional.
-        if action == "block" and not message:
+        # block and require_exact_action both require a message (block's becomes the tool result;
+        # require_exact_action's is the human-facing summary); approve's is optional.
+        if action in ("block", "require_exact_action") and not message:
             continue
-        rule_key = result.get("rule_key") if action == "approve" else None
+        rule_key = result.get("rule_key") if action in ("approve", "require_exact_action") else None
         rule_key = (rule_key.strip() or None) if isinstance(rule_key, str) else None
+        if action == "require_exact_action":
+            # A high-assurance approval must bind to the FINAL dispatch args: keep collecting
+            # modify directives from the rest of the hook list so a hook registered after this
+            # one cannot make the human approve one action and dispatch a different one.
+            for later in hook_results[index + 1:]:
+                if isinstance(later, dict) and later.get("action") == "modify":
+                    modified_args = _merge_modify(modified_args, later)
         return _PreToolCallDirective(action=action, message=message, rule_key=rule_key, modified_args=modified_args)
     return _PreToolCallDirective(modified_args=modified_args)
 
@@ -1841,23 +1862,32 @@ def resolve_pre_tool_block(
 
 def _resolve_block_from_details(
     details: "_PreToolCallDirective", tool_name: str, *, turn_id: str = "", tool_call_id: str = "",
-    session_id: str = "",
+    session_id: str = "", final_args: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     """The ONE place for the fail-closed approval logic: ``block`` blocks with its message; an
-    ``approve`` whose gate errors, denies, or times out is blocked; anything else proceeds."""
+    ``approve``/``require_exact_action`` whose gate errors, denies, or times out is blocked;
+    anything else proceeds. ``require_exact_action`` additionally binds the human decision to
+    ``final_args`` — the args that will actually dispatch — via
+    :func:`tools.approval_exact_action.request_exact_action_approval`."""
     if details.action == "block":
         return details.message
-    if details.action != "approve":
+    if details.action not in ("approve", "require_exact_action"):
         return None
     try:
-        from tools.approval import request_tool_approval
         from tools.approval_context import reset_current_observability_context, set_current_observability_context
         approval_tokens = None
         with suppress(Exception):
             approval_tokens = set_current_observability_context(
                 turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id)
         try:
-            result = request_tool_approval(tool_name, details.message or "", rule_key=details.rule_key or tool_name)
+            if details.action == "require_exact_action":
+                from tools.approval_exact_action import request_exact_action_approval
+                result = request_exact_action_approval(
+                    tool_name, details.message or "", final_args if isinstance(final_args, dict) else {},
+                    rule_key=details.rule_key or "", tool_call_id=tool_call_id)
+            else:
+                from tools.approval import request_tool_approval
+                result = request_tool_approval(tool_name, details.message or "", rule_key=details.rule_key or tool_name)
         finally:
             if approval_tokens is not None:
                 with suppress(Exception):
@@ -1875,10 +1905,13 @@ def _dispatch_pre_tool_call_hooks(
     tool_name: str, args: Optional[Dict[str, Any]], **hook_kwargs: Any
 ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
     """Invoke ``pre_tool_call`` hooks once; return ``(block_message, modified_args)`` — the resolved
-    block/approve message (``None`` to proceed) and merged ``modify`` args (``None`` if none)."""
+    block/approve/require_exact_action message (``None`` to proceed) and merged ``modify`` args
+    (``None`` if none)."""
     details = _get_pre_tool_call_directive_details(tool_name, args, **hook_kwargs)
+    final_args = details.modified_args if details.modified_args is not None else (args if isinstance(args, dict) else {})
     block_msg = _resolve_block_from_details(
-        details, tool_name, **{k: hook_kwargs.get(k, "") for k in ("turn_id", "tool_call_id", "session_id")})
+        details, tool_name, final_args=final_args,
+        **{k: hook_kwargs.get(k, "") for k in ("turn_id", "tool_call_id", "session_id")})
     return (block_msg, details.modified_args)
 
 

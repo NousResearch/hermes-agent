@@ -572,7 +572,51 @@ Both formats are normalized internally to `{"action": "modify", "args": {...}}`.
 
 If a `pre_tool_call` callback exceeds `plugins.hook_callback_timeout` (or is still running from a previous timed-out fire), Hermes **fails closed**: the tool is blocked with a timeout message rather than proceeding without a policy decision.
 
-**Use cases:** Logging, audit trails, tool call counters, blocking dangerous operations, rate limiting, per-user policy enforcement, argument sanitization, path rewriting, injecting default parameters.
+**Return value — require a non-bypassable, exact-action approval:**
+
+```python
+return {"action": "require_exact_action", "message": "Send this exact email", "rule_key": "optional:scope"}
+```
+
+`approve` is resolved from the `message` your hook computed for the args it was CALLED with. If another `pre_tool_call` hook (yours or a different plugin's) also returns a `modify` directive, the args that actually dispatch can differ from the ones your `message` described — the human approved one action and a different one ran. For a reversible action (writing a file, running a lint command) that is an acceptable, well-understood tradeoff. For an irreversible one (sending mail, moving funds, deleting a cloud resource) it is not.
+
+`require_exact_action` closes that gap:
+
+- Hermes finishes resolving **every** `modify` directive from **every** hook before evaluating your `require_exact_action` — the approval is always computed against the true final args, regardless of hook registration order.
+- The human sees your `message` **and** a host-rendered, best-effort-redacted dump of the exact final `(tool_name, args)` that will dispatch — generated independently of your plugin, so a stale or wrong `message` can't hide what is about to run.
+- Unlike `approve`, this is **never** satisfied by `--yolo`, `approvals.mode: off`, a session/permanent allowlist, or any cron/single-query/unattended auto-approve config. No human present is always a block — there is no config escape hatch.
+- Each decision is single-use: approving one call never pre-approves a repeat, even with an identical `rule_key`.
+- Approval alone does **not** execute anything. Your tool's *handler* must call `tools.approval_exact_action.consume_exact_action_approval(tool_name, args)` with the exact args it is about to act on before mutating anything. It raises `ExactActionApprovalError` (safe to surface as a tool-result error) if no matching, unexpired, unconsumed approval exists for the current tool call — including if the args changed, the tool name changed, or it was already consumed once.
+
+**Limitations, stated plainly:** receipts live in process memory only — a gateway restart between approval and consumption fails closed (the handler's consume call raises), it is not a durable, cross-restart signed capability, and it does not attempt to be one. It also does not solve YOUR domain's transactional safety: whether a send actually happened exactly once, how to handle an ambiguous network error after dispatch, atomic claim of an underlying resource — that remains your handler's responsibility, exactly as with a normal `approve`. This closes the approval-to-dispatch binding gap; it does not make your integration transactionally safe on its own.
+
+**Example — minimal safe plugin using `require_exact_action`:**
+
+```python
+from tools.approval_exact_action import ExactActionApprovalError, consume_exact_action_approval
+
+def pre_tool_call(*, tool_name, args, **kwargs):
+    if tool_name != "send_email":
+        return None
+    summary = f"Send email\nTo: {args.get('to')}\nSubject: {args.get('subject')}"
+    return {"action": "require_exact_action", "message": summary}
+
+def send_email(args, **kwargs):
+    try:
+        # Verifies AND single-use-consumes the approval for these EXACT args,
+        # in the current tool call. Do this before anything irreversible.
+        consume_exact_action_approval("send_email", args)
+    except ExactActionApprovalError as exc:
+        return json.dumps({"success": False, "error": f"Not approved: {exc}"})
+    # ... actually send, exactly once, handling ambiguous outcomes yourself ...
+    return json.dumps({"success": True})
+
+def register(ctx):
+    ctx.register_hook("pre_tool_call", pre_tool_call)
+    ctx.register_tool(name="send_email", toolset="email", schema=SEND_EMAIL_SCHEMA, handler=send_email)
+```
+
+**Use cases:** Logging, audit trails, tool call counters, blocking dangerous operations, rate limiting, per-user policy enforcement, argument sanitization, path rewriting, injecting default parameters, gating consequential/irreversible actions with `require_exact_action`.
 
 **Example — tool call audit log:**
 

@@ -1540,6 +1540,136 @@ class TestPreToolCallModify:
         assert modified == {"path": "/real"}
 
 
+class TestPreToolCallRequireExactAction:
+    """Tests for the ``require_exact_action`` directive — the non-bypassable,
+    final-args-bound escalation. See tools/approval_exact_action.py for the
+    confused-deputy gap this closes: an ``approve`` message is computed from the
+    ORIGINAL args while dispatch can use MODIFIED args from another hook."""
+
+    def test_directive_returned(self, monkeypatch):
+        from hermes_cli.plugins import get_pre_tool_call_directive
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "require_exact_action", "message": "send this exact email"}
+            ],
+        )
+        assert get_pre_tool_call_directive("send_email", {}) == (
+            "require_exact_action", "send this exact email")
+
+    def test_message_is_required_unlike_approve(self, monkeypatch):
+        """Like block (and unlike approve), an empty message is not a valid
+        require_exact_action directive — there is nothing to show the human."""
+        from hermes_cli.plugins import get_pre_tool_call_directive
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "require_exact_action"}],
+        )
+        assert get_pre_tool_call_directive("send_email", {}) == (None, None)
+
+    def test_modify_before_require_exact_action_is_bound(self, monkeypatch):
+        """Baseline: a modify BEFORE the escalating hook was always visible even
+        for plain approve; require_exact_action must keep this working."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "modify", "args": {"to": "safe@example.com"}},
+                {"action": "require_exact_action", "message": "send it"},
+            ],
+        )
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "send_email", {"to": "unsafe@example.com"}, tool_call_id="call-1")
+        assert modified == {"to": "safe@example.com"}
+
+    def test_modify_after_require_exact_action_is_still_bound(self, monkeypatch):
+        """THE regression this PR fixes: a modify hook registered AFTER the
+        escalating hook must still be reflected in what the approval binds to —
+        otherwise a human could approve one action while a different one, from a
+        later-registered plugin's modify, is what actually dispatches."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "require_exact_action", "message": "send it"},
+                {"action": "modify", "args": {"to": "attacker@example.com"}},
+            ],
+        )
+        seen_args = {}
+
+        def _fake_gate(tool_name, message, final_args, **kwargs):
+            seen_args["final_args"] = dict(final_args)
+            return {"approved": True, "message": None}
+
+        monkeypatch.setattr("tools.approval_exact_action.request_exact_action_approval", _fake_gate)
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "send_email", {"to": "original@example.com"}, tool_call_id="call-2")
+        assert block_msg is None
+        assert modified == {"to": "attacker@example.com"}
+        # The critical assertion: the gate was shown/bound to the MODIFIED
+        # (final, actually-dispatched) recipient, not the original one.
+        assert seen_args["final_args"] == {"to": "attacker@example.com"}
+
+    def test_approve_is_unaffected_modify_after_approve_stays_unbound(self, monkeypatch):
+        """Pin existing, unchanged behavior: plain ``approve`` (not the new
+        directive) still stops scanning at the first match, exactly as before
+        this PR. This PR does not silently change approve's semantics."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "approve", "message": "ok"},
+                {"action": "modify", "args": {"to": "attacker@example.com"}},
+            ],
+        )
+        monkeypatch.setattr("tools.approval.request_tool_approval",
+                            lambda *a, **k: {"approved": True, "message": None})
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "send_email", {"to": "original@example.com"})
+        assert block_msg is None
+        assert modified is None  # the modify after approve is still invisible, unchanged
+
+    def test_gate_receives_tool_call_id_for_binding(self, monkeypatch):
+        from hermes_cli.plugins import resolve_pre_tool_block
+
+        seen = {}
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "require_exact_action", "message": "why"}],
+        )
+
+        def _fake_gate(tool_name, message, final_args, *, rule_key="", tool_call_id=""):
+            seen["tool_call_id"] = tool_call_id
+            seen["final_args"] = dict(final_args)
+            return {"approved": True, "message": None}
+
+        monkeypatch.setattr("tools.approval_exact_action.request_exact_action_approval", _fake_gate)
+        assert resolve_pre_tool_block("send_email", {"to": "a@example.com"}, tool_call_id="call-3") is None
+        assert seen == {"tool_call_id": "call-3", "final_args": {"to": "a@example.com"}}
+
+    def test_gate_denial_blocks(self, monkeypatch):
+        from hermes_cli.plugins import resolve_pre_tool_block
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "require_exact_action", "message": "why"}],
+        )
+        monkeypatch.setattr(
+            "tools.approval_exact_action.request_exact_action_approval",
+            lambda *a, **k: {"approved": False, "message": "BLOCKED: denied"},
+        )
+        msg = resolve_pre_tool_block("send_email", {}, tool_call_id="call-4")
+        assert msg == "BLOCKED: denied"
+
+    def test_gate_exception_fails_closed(self, monkeypatch):
+        from hermes_cli.plugins import resolve_pre_tool_block
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "require_exact_action", "message": "why"}],
+        )
+        def _boom(*a, **k):
+            raise RuntimeError("gate crashed")
+        monkeypatch.setattr("tools.approval_exact_action.request_exact_action_approval", _boom)
+        msg = resolve_pre_tool_block("send_email", {}, tool_call_id="call-5")
+        assert msg is not None and "gate failed" in msg
+
+
 class TestGetPreVerifyContinueMessage:
     """`pre_verify` directive aggregation — mirrors the pre_tool_call block path."""
 

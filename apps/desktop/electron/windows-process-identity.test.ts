@@ -68,7 +68,7 @@ describe('queryWindowsProcessCreatedAt', () => {
 })
 
 describe('createCachedWindowsProcessCreateTimeProbe', () => {
-  it('returns unknown while querying, then exposes a short-lived exact result', async () => {
+  it('is pending while querying, then exposes a short-lived exact result', async () => {
     let now = 1_000
     let resolveQuery!: (value: number | null) => void
     let calls = 0
@@ -85,16 +85,32 @@ describe('createCachedWindowsProcessCreateTimeProbe', () => {
       }
     })
 
-    assert.equal(probe(42), null)
-    assert.equal(probe(42), null)
+    assert.equal(probe(42), undefined, 'a cold miss has established nothing yet')
+    assert.equal(probe(42), undefined)
     assert.equal(calls, 1)
     resolveQuery(1_723_330_000)
     await new Promise(resolve => setImmediate(resolve))
     assert.equal(probe(42), 1_723_330_000)
 
     now += 251
-    assert.equal(probe(42), null)
+    assert.equal(probe(42), undefined, 'an expired entry is being refreshed, not disproven')
     assert.equal(calls, 2)
+  })
+
+  // The distinction is load-bearing. update-marker.ts reclaims an overdue owner
+  // the probe SETTLED on without proving, and must never reclaim one it has not
+  // asked about yet. While both answered `null`, the first read of any overdue
+  // claim reclaimed a proven-live updater's marker and admitted a second
+  // updater over the same install.
+  it('separates "not asked yet" from "asked and could not prove it"', async () => {
+    const probe = createCachedWindowsProcessCreateTimeProbe({ now: () => 1_000, query: async () => null })
+
+    assert.equal(probe(42), undefined, 'unsettled')
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(probe(42), null, 'settled without a value')
+    // A pid that cannot exist needs no query at all: that IS the settled answer.
+    assert.equal(probe(0), null)
+    assert.equal(probe(-1), null)
   })
 
   it('retains a resolved identity across the production one-second marker poll', async () => {
@@ -105,7 +121,7 @@ describe('createCachedWindowsProcessCreateTimeProbe', () => {
       query: async () => 1_723_330_000
     })
 
-    assert.equal(probe(42), null)
+    assert.equal(probe(42), undefined)
     await new Promise(resolve => setImmediate(resolve))
     now += 1_000
     assert.equal(probe(42), 1_723_330_000)
@@ -129,7 +145,7 @@ describe('createCachedWindowsProcessCreateTimeProbe', () => {
     // 300 > the 256 production cap, so the earliest PIDs must have been evicted
     // even though none of them expired.
     for (let pid = 1; pid <= 300; pid += 1) {
-      assert.equal(probe(pid), null)
+      assert.equal(probe(pid), undefined)
     }
 
     await new Promise(resolve => setImmediate(resolve))
@@ -137,7 +153,7 @@ describe('createCachedWindowsProcessCreateTimeProbe', () => {
     assert.equal(probe(300), 1_723_330_300, 'the newest identity stays cached')
     assert.equal(calls.get(300), 1, 'a retained identity is never re-queried')
 
-    assert.equal(probe(1), null, 'the oldest identity was evicted, so it reads unknown again')
+    assert.equal(probe(1), undefined, 'the oldest identity was evicted, so it is unsettled again')
     assert.equal(calls.get(1), 2, 'an evicted identity is re-queried from the OS')
   })
 })

@@ -35,6 +35,8 @@ export { transferUpdateMarkerIfOwnedBy } from './windows-update-marker'
 // creation time is unprovable (`unknown` — a live pid that may just be a
 // recycled number) expires here, as upstream main does today; without that a
 // single recycled pid wedges every future update and the MCP bridge forever.
+// An owner whose probe has merely not answered yet (`unknown-pending`) is NOT
+// unprovable and never expires here — see PidIdentityStatus.
 export const UPDATE_MARKER_MAX_AGE_MS = 20 * 60 * 1000
 export const UPDATE_MARKER_CLOCK_SKEW_MS = 5 * 1000
 
@@ -45,8 +47,26 @@ export const UPDATE_MARKER_CLOCK_SKEW_MS = 5 * 1000
 // reclaim with an exact-content CAS, so a real write in flight always wins.
 export const UPDATE_MARKER_DWELL_MS = 2 * 1000
 
+/**
+ * Identity source for a live pid. `undefined` means the source has not settled
+ * yet (the production probe is asynchronous); `null` means it settled without
+ * proof. See createCachedWindowsProcessCreateTimeProbe.
+ */
 export type ProcessCreateTimeProbe = (pid: number) => number | null | undefined
-export type PidIdentityStatus = 'matching' | 'stale' | 'unknown'
+/**
+ * `unknown` and `unknown-pending` are different claims about the world.
+ *
+ * `unknown` — the identity source answered and could not prove the owner. That
+ * is a live pid we may never be able to attribute, so it expires at the age
+ * ceiling; without that one recycled pid wedges every future update.
+ *
+ * `unknown-pending` — nothing has been established yet, because the probe is
+ * asynchronous and its first (cold) answer lands after the read that started
+ * it. Treating that silence as `unknown` reclaimed a PROVEN-live updater's
+ * marker on the first read of any overdue claim and admitted a second updater
+ * over the same tree, so a pending probe is treated as live and never expires.
+ */
+export type PidIdentityStatus = 'matching' | 'stale' | 'unknown' | 'unknown-pending'
 export type UpdateMarkerBlockedReason = 'unreadable' | 'malformed' | 'future' | 'cleanup-race'
 
 export interface UpdateMarkerClaim {
@@ -130,6 +150,8 @@ export function probePidIdentity(
     }
   }
 
+  // No identity source at all is a settled answer: nothing here will ever
+  // prove this owner, so the age ceiling has to be what recovers the marker.
   if (!getProcessCreatedAt) {
     return 'unknown'
   }
@@ -140,6 +162,12 @@ export function probePidIdentity(
     createdAt = getProcessCreatedAt(pid)
   } catch {
     return 'unknown'
+  }
+
+  // The probe has not answered yet. Nothing is known, so nothing may be
+  // concluded — least of all that this live owner has expired.
+  if (createdAt === undefined) {
+    return 'unknown-pending'
   }
 
   if (!Number.isFinite(createdAt) || Number(createdAt) <= 0) {
@@ -457,8 +485,10 @@ export function readLiveUpdateMarker(
     const overdue = ageMs > maxAgeMs
 
     // `stale` is a proven-dead or proven-recycled pid. `unknown` is a live pid
-    // we could not tie to this claim; it holds the gate until the age ceiling
-    // and is then reclaimed, which is what keeps a marker recoverable at all.
+    // the identity source ANSWERED about and could not tie to this claim; it
+    // holds the gate until the age ceiling and is then reclaimed, which is what
+    // keeps a marker recoverable at all. `unknown-pending` is not an answer —
+    // the probe has not settled — so it is treated as live at every age.
     if (!bridge && (identity === 'stale' || (identity === 'unknown' && overdue))) {
       if (removeMarkerIfExact(file, String(raw)) === 'unresolved') {
         return blockedMarker(file, 'cleanup-race')

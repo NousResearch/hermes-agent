@@ -534,6 +534,7 @@ class TestCodexOAuthContextLength:
             "gpt-5.6-sol-2026-07-09",  # dated snapshot via gpt-5.6 family prefix
             "gpt-5.4",
             "gpt-daybreak-blue-latest",  # Sol alias; exact verified slug
+            "gpt-6-astra",  # 900,901 input tokens accepted live 2026-09-07; ~940K rejected
         ],
     )
     def test_900k_variant_slug_bumped_to_live_verified_900k(self, slug):
@@ -691,6 +692,7 @@ class TestCodexOAuthContextLength:
         ("gpt-5.6-luna-900k",             True,  900_000, "gpt-5.6-luna"),
         ("gpt-5.4-900k",                  True,  900_000, "gpt-5.4"),
         ("gpt-daybreak-blue-latest-900k", True,  900_000, "gpt-daybreak-blue-latest"),
+        ("gpt-6-astra-900k",              True,  900_000, "gpt-6-astra"),
         # dated snapshot of a routable 5.6 base
         ("gpt-5.6-sol-2026-07-09-900k",   True,  900_000, "gpt-5.6-sol-2026-07-09"),
         # vendor-namespaced variant (display/aux callers) resolves too
@@ -698,6 +700,8 @@ class TestCodexOAuthContextLength:
         # -pro slugs are not routable on Codex OAuth: never a valid variant,
         # never stripped (fails honestly at the API instead)
         ("gpt-5.6-sol-pro-900k",          False, 272_000, "gpt-5.6-sol-pro-900k"),
+        # not verified above 272K on Codex OAuth: no variant until probed
+        ("gpt-6-astra-pro-900k",          False, 272_000, "gpt-6-astra-pro-900k"),
         # genuine 272K enforcers get no variant
         ("gpt-5.5-900k",                  False, 272_000, "gpt-5.5-900k"),
         ("gpt-5.4-mini-900k",             False, 272_000, "gpt-5.4-mini-900k"),

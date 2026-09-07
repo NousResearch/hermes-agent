@@ -406,7 +406,9 @@ class TestRealBrowserIsolationE2E:
         from tools.browser_tool_session import _run_browser_command, _get_session_info
         from tools.browser_tool_install import _find_agent_browser
 
-        if not _find_agent_browser():
+        try:
+            _find_agent_browser()
+        except FileNotFoundError:
             pytest.skip("agent-browser binary not available for real browser E2E")
 
         monkeypatch.setenv("TMPDIR", str(tmp_path))

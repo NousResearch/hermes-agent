@@ -64,6 +64,34 @@ def _valid_credential_pair(api_key: Any, base_url: Any) -> bool:
     return bool(isinstance(api_key, str) and api_key.strip() and isinstance(base_url, str) and base_url.strip())
 
 
+def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb_base_url: str, fb_api_mode: str) -> None:
+    """Install the fallback client(s) in place, honoring request_timeout_seconds (None = SDK default)."""
+    timeout = get_provider_request_timeout(fb_provider, fb_model)
+    if fb_api_mode == "anthropic_messages":
+        from agent.anthropic_adapter import build_anthropic_client
+        from agent.anthropic_credentials import resolve_anthropic_token, _is_oauth_token
+        is_anthropic = fb_provider == "anthropic"
+        effective_key = fb_client.api_key or (resolve_anthropic_token() if is_anthropic else None) or ""
+        agent.api_key = agent._anthropic_api_key = effective_key
+        agent._anthropic_base_url = fb_base_url
+        agent._anthropic_client = build_anthropic_client(effective_key, fb_base_url, timeout=timeout)
+        agent._is_anthropic_oauth = _is_oauth_token(effective_key) if is_anthropic else False
+        agent.client, agent._client_kwargs = None, {}
+        return
+    agent.api_key = fb_client.api_key
+    agent.client = fb_client
+    # Keep provider headers resolve_provider_client() baked into fb_client (SDK: _custom_headers), else
+    # later request-client rebuilds drop them and User-Agent-sentinel providers (Kimi Coding) 403.
+    fb_headers = getattr(fb_client, "_custom_headers", None) or getattr(fb_client, "default_headers", None)
+    agent._client_kwargs = {"api_key": fb_client.api_key, "base_url": fb_base_url}
+    if fb_headers:
+        agent._client_kwargs["default_headers"] = dict(fb_headers)
+    if timeout is not None:
+        agent._client_kwargs["timeout"] = timeout
+        # Rebuild now so the timeout applies to the very next request, not only after a rotation rebuild.
+        agent._replace_primary_openai_client(reason="fallback_timeout_apply")
+
+
 class ClientLifecycleMixin:
     def _close_task_resources(self, task_id: str) -> None:
         """Release task resources without treating a shared environment as process ownership."""

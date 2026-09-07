@@ -4893,8 +4893,8 @@ def _telegram_auto_setup(token_var: str) -> tuple[bool, object]:
     result = auto_setup_telegram_bot_result()
     if result and is_valid_telegram_bot_token(result.token):
         save_env_value(token_var, result.token)
-        acknowledge_saved_setup(result)
-        print_success("  Saved TELEGRAM_BOT_TOKEN")
+        acknowledge_saved_setup(result, token_var=token_var)
+        print_success(f"  Saved {token_var}")
         return True, result.owner_user_id
     if result:
         print_warning("  Automatic setup returned an invalid Telegram token.")

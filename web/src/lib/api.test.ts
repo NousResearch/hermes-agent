@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api, fetchJSON, setManagementProfile } from "./api";
+import { isTerminalTelegramOnboardingError } from "./telegram-onboarding";
 
 const reloadMocks = vi.hoisted(() => ({
   attemptDashboardTokenReloadOnce: vi.fn(() => false),
@@ -199,4 +200,14 @@ describe("api OAuth helpers", () => {
       "/api/providers/oauth/sessions/oauth-session?profile=worker",
     ]);
   });
+});
+
+
+it.each([404, 410, 502])("classifies Telegram failures by HTTP status %s rather than message contents", async status => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response("upstream diagnostic 410", { status })));
+  const error = await api.getTelegramOnboardingStatus("pair-example").catch(error => error);
+  expect(error).toBeInstanceOf(Error);
+  expect(error.status).toBe(status);
+  expect(isTerminalTelegramOnboardingError(error)).toBe(status === 404 || status === 410);
+  expect(isTerminalTelegramOnboardingError(new Error("network error 404"))).toBe(false);
 });

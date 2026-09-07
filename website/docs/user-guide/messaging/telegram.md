@@ -17,8 +17,10 @@ bot** in the setup conversation, then return to Hermes to save the configuration
 Your numeric Telegram user ID is filled in automatically as the allowed user.
 
 Creation, confirmation in Telegram, and saving in the dashboard each have a
-30-minute window. Reloading the dashboard or restarting its server preserves an
-unfinished setup. A failed save restores the previous Telegram settings and lets
+30-minute window. An unfinished setup can resume in the same browser tab after a
+reload or dashboard-server restart. A new tab or browser does not discover the
+previous setup; start a fresh QR setup there, or use manual setup for an existing
+bot. A failed save restores the previous Telegram settings and lets
 you retry or cancel; an expired setup lets you start again. Cancelling removes the
 temporary pairing credentials. It does not delete a bot already created in Telegram;
 you can manage that bot there or use its token for manual setup below.

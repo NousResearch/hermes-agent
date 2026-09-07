@@ -1,8 +1,8 @@
 import type { TelegramOnboardingStartResponse } from './api'
 
 export function isTerminalTelegramOnboardingError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
-  return /\b(404|410)\b/.test(message)
+  if (typeof error !== 'object' || error === null || !('status' in error)) return false
+  return error.status === 404 || error.status === 410
 }
 
 export function readTelegramSetup(key: string): TelegramOnboardingStartResponse | null {

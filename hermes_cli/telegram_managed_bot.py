@@ -143,11 +143,13 @@ def finish_pairing(api_url: str | None, pairing: TelegramPairing, *, saved: bool
         return False
 
 
-def acknowledge_saved_setup(result: TelegramBotSetupResult | None) -> None:
+def acknowledge_saved_setup(
+    result: TelegramBotSetupResult | None, token_var: str = "TELEGRAM_BOT_TOKEN",
+) -> None:
     """Called only after the caller has saved the token to the profile's .env."""
     if result and result.pairing:
         from hermes_cli.config import load_env
-        if load_env().get("TELEGRAM_BOT_TOKEN") != result.token:
+        if load_env().get(token_var) != result.token:
             return  # managed/read-only config writers may refuse without raising
         if not finish_pairing(result.api_url, result.pairing, saved=True):
             print("  Telegram is saved. Temporary setup credentials will expire automatically.")
@@ -166,8 +168,6 @@ def poll_for_setup_result(
         try:  # transport/JSON errors count as 'not ready yet'
             if result := poll_pairing_result_once(api_url, pairing):
                 return result
-        except TelegramPairingExpired:
-            return None
         except (httpx.HTTPError, ValueError):
             pass
         time.sleep(interval)
@@ -209,9 +209,16 @@ def auto_setup_telegram_bot_result(
     result = None
     try:
         result = poll_for_setup_result(resolved_api_url, pairing, poll_timeout, POLL_INTERVAL, on_tick=spin)
+    except TelegramPairingExpired:
+        print("\r  ✗ This Telegram setup expired, was cancelled, or was replaced.\n"
+              "    Start a fresh QR setup, or connect an existing bot with its token.")
+        return None
     finally:
         if result is None:
-            finish_pairing(resolved_api_url, pairing, saved=False)
+            try:
+                finish_pairing(resolved_api_url, pairing, saved=False)
+            except KeyboardInterrupt:
+                pass  # A second Ctrl-C must not interrupt cleanup with a traceback.
     if result:
         sys.stdout.write("\r  ✓ Bot created successfully!                              \n")
         sys.stdout.flush()
@@ -227,8 +234,6 @@ def auto_setup_telegram_bot_result(
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
 # The whole block is removed by reverting the commit that added it.
-import secrets  # noqa: F401,E402
-import urllib.parse  # noqa: F401,E402
 import secrets  # noqa: F401,E402
 import urllib.parse  # noqa: F401,E402
 

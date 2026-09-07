@@ -27,7 +27,7 @@ from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path, redact_key
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _restart_gateway_after
 from hermes_cli.web_server_messaging import (
-    _WhatsAppOnboardingSession, _messaging_platform_catalog, _telegram_onboarding_error_message, _whatsapp_onboarding_payload, _whatsapp_onboarding_sessions,
+    _WhatsAppOnboardingSession, _messaging_platform_catalog, _whatsapp_onboarding_payload, _whatsapp_onboarding_sessions,
 )
 from hermes_cli.web_routers._common import http_failure
 from hermes_cli import telegram_onboarding_store as telegram_store
@@ -602,7 +602,6 @@ async def cancel_whatsapp_onboarding(pairing_id: str):
 
 # ── Telegram QR onboarding ─────────────────────────────────────
 
-_TELEGRAM_SESSION_NOT_FOUND = "Telegram setup session was not found. Start a new setup."
 _TELEGRAM_INCOMPLETE_RESPONSE = "Telegram setup service returned an incomplete response."
 
 
@@ -633,7 +632,7 @@ def _telegram_ready_payload(record) -> dict[str, Any]:
 def start_telegram_onboarding(body: TelegramOnboardingStart, profile: Optional[str] = None):
     with _config_profile_scope(profile), telegram_store.lock:
         telegram_store.prune()
-        payload = _telegram_onboarding_request_sync("POST", "/v1/telegram/pairings", body={"bot_name": (body.bot_name or "Hermes Agent").strip()})
+        payload = _telegram_onboarding_request_sync("POST", "/v1/telegram/pairings", body={"bot_name": (body.bot_name or "Hermes Agent").strip() or "Hermes Agent"})
         fields = {key: str(payload.get(key) or "").strip() for key in (
             "pairing_id", "poll_token", "expires_at", "deep_link", "qr_payload", "suggested_username")}
         if not all(fields[key] for key in ("pairing_id", "poll_token", "expires_at", "deep_link")):

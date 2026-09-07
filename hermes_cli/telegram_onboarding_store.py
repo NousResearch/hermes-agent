@@ -89,7 +89,9 @@ def save_configuration(bot_token: str, allowed_ids: list[str], commit) -> None:
         raw_before = cfg.require_readable_config_before_write()
         if cfg.is_managed() or cfg.managed_scope.is_key_managed("platforms.telegram.enabled"):
             raise ValueError("Telegram configuration is managed by your administrator.")
-        platform_before = deepcopy(raw_before.get("platforms", {}).get("telegram", {}))
+        platforms_before = deepcopy(raw_before.get("platforms"))
+        telegram_before = platforms_before.get("telegram") if isinstance(platforms_before, dict) else None
+        platform_before = telegram_before if isinstance(telegram_before, dict) else {}
         values = {"TELEGRAM_BOT_TOKEN": bot_token, "TELEGRAM_ALLOWED_USERS": ",".join(allowed_ids)}
         changed: list[str] = []
         enabled_attempted = False
@@ -101,7 +103,9 @@ def save_configuration(bot_token: str, allowed_ids: list[str], commit) -> None:
                     raise ValueError(f"{key} is managed and cannot be changed here.")
             enabled_attempted = True
             raw = cfg.require_readable_config_before_write()
-            raw.setdefault("platforms", {}).setdefault("telegram", {})["enabled"] = True
+            # Edit the raw document so unrelated defaults and env-ref templates
+            # remain intact, while normalizing null/scalar platform sections.
+            cfg._ensure_dict(cfg._ensure_dict(raw, "platforms"), "telegram")["enabled"] = True
             cfg.atomic_config_write(cfg.get_config_path(), raw)
             commit()
         except Exception:
@@ -115,15 +119,22 @@ def save_configuration(bot_token: str, allowed_ids: list[str], commit) -> None:
             # A writer can fail after replacing the file. Restore enabled even if it
             # raised before returning, but never replace unrelated platform settings.
             raw = cfg.require_readable_config_before_write()
-            telegram = raw.get("platforms", {}).get("telegram", {})
-            if enabled_attempted and telegram.get("enabled") is True and platform_before.get("enabled") is not True:
+            platforms = raw.get("platforms")
+            telegram = platforms.get("telegram") if isinstance(platforms, dict) else None
+            if enabled_attempted and isinstance(telegram, dict) and telegram.get("enabled") is True and platform_before.get("enabled") is not True:
                 if "enabled" in platform_before:
                     telegram["enabled"] = platform_before["enabled"]
                 else:
                     telegram.pop("enabled", None)
                 if not telegram:
-                    raw.get("platforms", {}).pop("telegram", None)
-                if raw.get("platforms") == {} and "platforms" not in raw_before:
-                    raw.pop("platforms", None)
+                    if isinstance(platforms_before, dict) and "telegram" in platforms_before:
+                        platforms["telegram"] = deepcopy(telegram_before)
+                    else:
+                        platforms.pop("telegram", None)
+                if not platforms and not isinstance(platforms_before, dict):
+                    if "platforms" in raw_before:
+                        raw["platforms"] = platforms_before
+                    else:
+                        raw.pop("platforms", None)
                 atomic_yaml_write(cfg.get_config_path(), raw)
             raise

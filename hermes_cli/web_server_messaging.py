@@ -5,7 +5,6 @@ and Telegram onboarding state.
 import logging
 import os
 import subprocess
-import threading
 from dataclasses import dataclass
 from fastapi import HTTPException
 from pathlib import Path

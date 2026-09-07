@@ -89,7 +89,7 @@ it('uses the ready deadline and detected numeric owner after a reload, then rese
     await vi.advanceTimersByTimeAsync(1500)
   })
   expect(container.textContent).toContain('@renamed_bot')
-  calls.apply.mockRejectedValue(new Error('404: Telegram setup session was not found'))
+  calls.apply.mockRejectedValue(Object.assign(new Error('Telegram setup session was not found'), { status: 404 }))
   await click('Save and restart')
   expect(calls.apply).toHaveBeenCalledWith('pair-example', { allowed_user_ids: ['42'] })
   expect(button('Create with QR').disabled).toBe(false)
@@ -116,7 +116,7 @@ it('returns to a fresh setup when ready confirmation expires or a pending sessio
   })
   expect(button('Create with QR').disabled).toBe(false)
   expect(container.textContent).toContain('confirmation expired')
-  calls.poll.mockRejectedValue(new Error('404: Telegram setup session was not found'))
+  calls.poll.mockRejectedValue(Object.assign(new Error('Telegram setup session was not found'), { status: 404 }))
   await click('Create with QR')
   await act(async () => {
     await vi.advanceTimersByTimeAsync(1500)

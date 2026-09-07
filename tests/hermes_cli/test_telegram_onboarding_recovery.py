@@ -1,5 +1,6 @@
 """Exercise the real dashboard router, HTTP client and profile-local files."""
 import json
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -31,12 +32,13 @@ def onboarding(tmp_path, monkeypatch):
             self.wfile.write(json.dumps(payload).encode())
 
         def do_POST(self):
-            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
             if self.path.endswith("/ack"):
                 assert self.headers["Authorization"] == "Bearer poll-secret"
                 state["acks"] += 1
                 self.respond({"ok": True}, 502 if state["fail_ack"] else 200)
             else:
+                state["bot_name"] = body.get("bot_name")
                 state["counter"] += 1
                 self.respond({"pairing_id": f"pair-{state['counter']}", "poll_token": "poll-secret",
                               "expires_at": datetime.fromtimestamp(time.time()+2, timezone.utc).isoformat(),
@@ -85,7 +87,8 @@ def test_ready_survives_creation_expiry_and_restart_then_save_is_retryable(onboa
     assert ready.status_code == 200
     assert ready.json()["owner_user_id"] == "42"
     assert datetime.fromisoformat(ready.json()["expires_at"]).timestamp() > time.time()+1700
-    assert store.record_path(start["pairing_id"]).stat().st_mode & 0o777 == 0o600
+    if os.name == "posix":
+        assert store.record_path(start["pairing_id"]).stat().st_mode & 0o777 == 0o600
     assert "token" not in ready.json()
     state["fail_ack"] = True
     first = client.post(endpoint+"/apply", json={"allowed_user_ids": ["42"]})
@@ -161,3 +164,61 @@ def test_failed_save_restores_previous_settings_and_leaves_retryable_pairing(onb
     assert client.get(endpoint).json()["status"] == "ready"
     assert client.post(endpoint+"/apply", json={"allowed_user_ids":["42"]}).status_code == 200
     assert cfg.load_env()["TELEGRAM_ALLOWED_USERS"] == "42"
+
+
+@pytest.mark.parametrize("bot_name", [" ", "\t\n", "  My Agent  "])
+def test_start_sends_a_nonempty_trimmed_bot_name(onboarding, bot_name):
+    client, _, state = onboarding
+    response = client.post("/api/messaging/telegram/onboarding/start", json={"bot_name": bot_name})
+    assert response.status_code == 200
+    assert state["bot_name"] == (bot_name.strip() or "Hermes Agent")
+
+
+@pytest.mark.parametrize("platforms", [None, "disabled", [], {"telegram": None}, {"telegram": "disabled"}])
+@pytest.mark.parametrize("fail_receipt", [False, True])
+def test_non_mapping_platform_config_saves_or_rolls_back_without_losing_raw_fields(onboarding, monkeypatch, platforms, fail_receipt):
+    from hermes_cli import telegram_onboarding_store as store
+    from utils import atomic_yaml_write
+
+    client, home, _ = onboarding
+    before = {"platforms": platforms, "model": {"api_key": "${EXISTING_KEY}"}, "unrelated": "keep"}
+    atomic_yaml_write(home / "config.yaml", before)
+    start = client.post("/api/messaging/telegram/onboarding/start", json={}).json()
+    endpoint = f"/api/messaging/telegram/onboarding/{start['pairing_id']}"
+    assert client.get(endpoint).status_code == 200
+    if fail_receipt:
+        monkeypatch.setattr(store, "save", lambda *args: (_ for _ in ()).throw(OSError("receipt failed")))
+    result = client.post(endpoint+"/apply", json={"allowed_user_ids": ["42"]})
+    after = cfg.require_readable_config_before_write()
+    if fail_receipt:
+        assert result.status_code == 500
+        assert after == before
+        assert "TELEGRAM_BOT_TOKEN" not in cfg.load_env()
+    else:
+        assert result.status_code == 200, result.text
+        assert after["platforms"]["telegram"]["enabled"] is True
+        assert after["model"] == before["model"]
+        assert after["unrelated"] == before["unrelated"]
+
+
+def test_cli_retired_pairing_explains_fresh_start_and_cancels(onboarding, capsys):
+    from hermes_cli.telegram_managed_bot import auto_setup_telegram_bot_result
+
+    _, _, state = onboarding
+    state["status"] = "cancelled"
+    assert auto_setup_telegram_bot_result() is None
+    output = capsys.readouterr().out
+    assert "Start a fresh QR setup" in output
+    assert "Timed out" not in output
+    assert state["cancelled"] == ["/v1/telegram/pairings/pair-1"]
+
+
+def test_gateway_acknowledges_the_token_key_it_actually_saved(onboarding, monkeypatch):
+    from hermes_cli import gateway
+
+    _, _, state = onboarding
+    monkeypatch.setattr(gateway, "prompt", lambda *a, **kw: "1")
+    assert gateway._telegram_auto_setup("TEST_TELEGRAM_TOKEN") == (True, 42)
+    assert cfg.load_env()["TEST_TELEGRAM_TOKEN"] == "123456:" + "A"*35
+    assert "TELEGRAM_BOT_TOKEN" not in cfg.load_env()
+    assert state["acks"] == 1

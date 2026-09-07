@@ -181,7 +181,7 @@ export async function fetchJSON<T>(
   }
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
-    throw new Error(`${res.status}: ${text}`);
+    throw Object.assign(new Error(`${res.status}: ${text}`), { status: res.status });
   }
   return res.json();
 }

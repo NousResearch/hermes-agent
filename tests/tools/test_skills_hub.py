@@ -522,7 +522,12 @@ class TestCheckForSkillUpdates:
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
 
-    def test_reports_update_when_remote_hash_differs(self):
+    def test_reports_update_when_remote_hash_differs(self, tmp_path, monkeypatch):
+        import tools.skills_hub as hub
+        skills_dir = tmp_path / "skills"
+        (skills_dir / "demo-skill").mkdir(parents=True)
+        monkeypatch.setattr(hub, "SKILLS_DIR", skills_dir)
+
         lock = MagicMock()
         lock.list_installed.return_value = [{
             "name": "demo-skill",
@@ -547,6 +552,85 @@ class TestCheckForSkillUpdates:
         assert len(results) == 1
         assert results[0]["name"] == "demo-skill"
         assert results[0]["status"] == "update_available"
+
+    def test_orphaned_entry_reported_without_remote_fetch(self, tmp_path, monkeypatch):
+        """A lock-file entry whose install directory no longer exists is
+        reported ``orphaned`` without paying the remote fetch cost (#104291)."""
+        import tools.skills_hub as hub
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        monkeypatch.setattr(hub, "SKILLS_DIR", skills_dir)
+
+        lock = MagicMock()
+        lock.list_installed.return_value = [{
+            "name": "demo-skill",
+            "source": "github",
+            "identifier": "owner/repo/demo-skill",
+            "content_hash": "hash",
+            "install_path": "demo-skill",  # never created on disk
+        }]
+
+        source = MagicMock()
+        source.source_id.return_value = "github"
+
+        results = check_for_skill_updates(lock=lock, sources=[source])
+
+        assert len(results) == 1
+        assert results[0]["status"] == "orphaned"
+        assert "bundle" not in results[0]
+        source.fetch.assert_not_called()
+
+    def test_unresolvable_install_path_keeps_fetch_behavior(self, tmp_path, monkeypatch):
+        """Entries whose install_path cannot resolve (empty/unsafe) keep the
+        pre-existing fetch behavior — only a resolvable-but-missing directory
+        counts as orphaned."""
+        import tools.skills_hub as hub
+        monkeypatch.setattr(hub, "SKILLS_DIR", tmp_path / "skills")
+
+        lock = MagicMock()
+        lock.list_installed.return_value = [{
+            "name": "demo-skill",
+            "source": "github",
+            "identifier": "owner/repo/demo-skill",
+            "content_hash": "oldhash",
+            "install_path": "",
+        }]
+
+        source = MagicMock()
+        source.source_id.return_value = "github"
+        source.fetch.return_value = SkillBundle(
+            name="demo-skill",
+            files={"SKILL.md": "new content"},
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+
+        results = check_for_skill_updates(lock=lock, sources=[source])
+
+        assert len(results) == 1
+        assert results[0]["status"] == "update_available"
+        source.fetch.assert_called_once()
+
+    def test_hanging_fetch_is_abandoned_after_timeout(self):
+        """A fetch that outlives its wall-clock bound degrades to no bundle
+        quickly instead of stalling the whole update run (#104291)."""
+        from tools.skills_hub_install import _fetch_bundle_bounded
+
+        class _HangingSource:
+            def source_id(self):
+                return "github"
+
+            def fetch(self, identifier):
+                time.sleep(10)
+                raise AssertionError("fetch should have been abandoned")
+
+        started = time.monotonic()
+        bundle = _fetch_bundle_bounded(_HangingSource(), "owner/repo/demo-skill", timeout=0.2)
+        elapsed = time.monotonic() - started
+
+        assert bundle is None
+        assert elapsed < 5.0
 
 class TestCreateSourceRouter:
 

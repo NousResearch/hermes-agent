@@ -808,6 +808,10 @@ def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> N
     c.print(table)
     update_count = sum(1 for entry in results if entry.get("status") == "update_available")
     c.print(f"[dim]{update_count} update(s) available across {len(results)} checked skill(s)[/]\n")
+    orphaned = [entry.get("name", "") for entry in results if entry.get("status") == "orphaned"]
+    if orphaned:
+        c.print(f"[yellow]Orphaned:[/] {', '.join(orphaned)} — lock-file entries whose local "
+                "directory is gone. Remove them with: hermes skills uninstall <name>\n")
 
 
 def _has_local_edits(installed: dict) -> bool:

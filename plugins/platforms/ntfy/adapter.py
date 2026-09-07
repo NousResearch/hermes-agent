@@ -67,6 +67,9 @@ MAX_ACTIONS = 3
 #: answer an approval without opening an app.
 _ACTION_TYPES = ("view", "broadcast", "http")
 
+#: Values ntfy accepts for ``X-Priority`` (docs.ntfy.sh/publish/#message-priority).
+_PRIORITIES = ("1", "2", "3", "4", "5", "min", "low", "default", "high", "max", "urgent")
+
 
 def _sanitize_header_value(value: str) -> str:
     """Strip CR/LF from a header value.
@@ -88,6 +91,16 @@ def _quote_action_value(value: str) -> str:
     single quotes (') if the value itself contains commas or semicolons." An
     unquoted comma in a label silently becomes the start of the next parameter,
     which is how a JSON body loses half its fields.
+
+    **ntfy documents no escape sequence**, so a value containing BOTH quote
+    characters cannot be quoted losslessly. An earlier version of this function
+    emitted ``\\"`` for that case. That was inventing protocol: the publish docs
+    describe quoting and say nothing about backslashes, so the receiver may well
+    take the backslash literally and end the value at the next bare quote —
+    turning a rare label into a silently misparsed action. Dropping the inner
+    double quotes is lossy in the same way ``_sanitize_header_value`` is lossy
+    about newlines, and for the same reason: a slightly odd label beats an
+    action the server parses wrongly.
     """
     v = _sanitize_header_value(value)
     if not any(c in v for c in (",", ";", '"', "'")):
@@ -96,8 +109,8 @@ def _quote_action_value(value: str) -> str:
         return f'"{v}"'
     if "'" not in v:
         return f"'{v}'"
-    # Both quote characters present: double-quote and escape the inner doubles.
-    return '"' + v.replace('"', '\\"') + '"'
+    logger.warning("ntfy: action value contains both quote characters; dropping the double quotes")
+    return '"' + v.replace('"', "") + '"'
 
 
 def _build_actions_header(actions: Any) -> str:
@@ -128,10 +141,17 @@ def _build_actions_header(actions: Any) -> str:
             val = a[key]
             val = str(val).lower() if isinstance(val, bool) else str(val)
             parts.append(f"{key}={_quote_action_value(val)}")
-        for hk, hv in (a.get("headers") or {}).items():
-            parts.append(f"headers.{_sanitize_header_value(str(hk))}={_quote_action_value(str(hv))}")
-        for ek, ev in (a.get("extras") or {}).items():
-            parts.append(f"extras.{_sanitize_header_value(str(ek))}={_quote_action_value(str(ev))}")
+        # `or {}` guards None but NOT a wrong type: `["a"].items()` raises
+        # AttributeError, and this function's whole contract is that it never
+        # raises inside the send path — a degraded notification is a nuisance,
+        # an exception here is a missed alert. isinstance is what actually
+        # closes that hole.
+        for prefix in ("headers", "extras"):
+            mapping = a.get(prefix)
+            if not isinstance(mapping, dict):
+                continue
+            for mk, mv in mapping.items():
+                parts.append(f"{prefix}.{_sanitize_header_value(str(mk))}={_quote_action_value(str(mv))}")
         rendered.append(", ".join(parts))
         if len(rendered) == MAX_ACTIONS:
             # ntfy drops the rest silently; say so once rather than let a caller
@@ -166,7 +186,15 @@ def _publish_headers(
     if title:
         headers["X-Title"] = _sanitize_header_value(str(title))
     if priority:
-        headers["X-Priority"] = _sanitize_header_value(str(priority))
+        # Bounded to the documented set. ntfy does not document what it does
+        # with an unknown priority, and the failure mode that matters here is
+        # the request being rejected outright — which costs the notification.
+        # An unusable value is dropped so the message still goes out.
+        p = _sanitize_header_value(str(priority)).lower()
+        if p in _PRIORITIES:
+            headers["X-Priority"] = p
+        else:
+            logger.warning("ntfy: ignoring unrecognised priority %r", priority)
     if click:
         # Deep link. Any URI a phone can route — https://, or an app scheme such
         # as perch:// — so a notification lands on the exact screen it is about.

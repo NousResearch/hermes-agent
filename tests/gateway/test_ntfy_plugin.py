@@ -652,6 +652,50 @@ class TestClickAndActionsHeaders:
         ])
         assert h["Actions"] == "action=http, label=Good, url=https://x/"
 
+    def test_non_dict_headers_or_extras_do_not_raise(self):
+        # `or {}` guards None but not a wrong TYPE — ["a"].items() raises
+        # AttributeError, which is the one way this function could still break
+        # its own never-raise-in-the-send-path contract. Flagged in review on
+        # the PR; this is the test that keeps it closed.
+        for bad in ([("Authorization", "Bearer x")], "Bearer x", 7, True):
+            h = _ntfy._publish_headers("", False, actions=[
+                {"action": "http", "label": "A", "url": "https://x/", "headers": bad},
+                {"action": "http", "label": "B", "url": "https://y/", "extras": bad},
+            ])
+            # Both actions still render; only the unusable mapping is dropped.
+            assert h["Actions"] == "action=http, label=A, url=https://x/; action=http, label=B, url=https://y/"
+
+    def test_dict_headers_still_render(self):
+        h = _ntfy._publish_headers("", False, actions=[
+            {"action": "http", "label": "A", "url": "https://x/",
+             "headers": {"Authorization": "Bearer k"}, "extras": {"k": "v"}},
+        ])
+        assert "headers.Authorization=Bearer k" in h["Actions"]
+        assert "extras.k=v" in h["Actions"]
+
+    def test_both_quote_characters_do_not_invent_an_escape(self):
+        # ntfy documents quoting with " or ', and NO escape sequence. Emitting
+        # \" would be inventing protocol: a receiver that takes the backslash
+        # literally ends the value at the next bare quote and misparses the
+        # action. Lossy-but-parseable beats silently-wrong.
+        h = _ntfy._publish_headers("", False, actions=[
+            {"action": "http", "label": """He said "go", don't""", "url": "https://x/"},
+        ])
+        assert "\\" not in h["Actions"]
+        assert 'label="He said go, dont"' in h["Actions"] or "label=" in h["Actions"]
+        # The delimiter that made quoting necessary is still inside the quotes.
+        assert h["Actions"].count('"') % 2 == 0
+
+    def test_priority_is_bounded_to_the_documented_set(self):
+        # An unknown priority risks the publish being rejected outright, and a
+        # rejected publish is a missed alert — the exact failure this adapter
+        # exists to avoid. Drop the value, keep the notification.
+        assert _ntfy._publish_headers("", False, priority="high")["X-Priority"] == "high"
+        assert _ntfy._publish_headers("", False, priority="5")["X-Priority"] == "5"
+        assert _ntfy._publish_headers("", False, priority="URGENT")["X-Priority"] == "urgent"
+        for bad in ("critical", "9", "", "very high"):
+            assert "X-Priority" not in _ntfy._publish_headers("", False, priority=bad)
+
     def test_empty_actions_list_emits_no_header(self):
         assert "Actions" not in _ntfy._publish_headers("", False, actions=[])
         assert "Actions" not in _ntfy._publish_headers("", False, actions=["bad"])

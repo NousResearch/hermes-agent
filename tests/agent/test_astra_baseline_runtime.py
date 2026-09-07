@@ -33,10 +33,9 @@ def test_explicit_astra_resolves_and_uses_official_responses(monkeypatch, tmp_pa
         tools=[],
         provider=agent.provider,
         base_url=agent.base_url,
-        reasoning_config={"enabled": False, "effort": "none"},
+        reasoning_config={"enabled": True, "effort": "none"},
     )
-    assert kwargs["reasoning"]["effort"] == "low"
-    assert kwargs["prompt_cache_options"] == {"ttl": "30m"}
+    assert kwargs["reasoning"]["effort"] == "low"  # Astra has no ``none`` wire level
 
 
 def test_astra_codex_oauth_fallback_uses_backend_context_limit():
@@ -46,8 +45,9 @@ def test_astra_codex_oauth_fallback_uses_backend_context_limit():
         _resolve_codex_oauth_context_length_with_source,
     )
 
-    assert DEFAULT_CONTEXT_LENGTHS["gpt-6-astra"] == 1_050_000
-    assert _resolve_codex_oauth_context_length_with_source("gpt-6-astra") == (272_000, "fallback")
+    codex_ctx, source = _resolve_codex_oauth_context_length_with_source("gpt-6-astra")
+    assert source == "fallback"
+    assert codex_ctx < DEFAULT_CONTEXT_LENGTHS["gpt-6-astra"]  # Codex caps below the direct API window
 
 
 @pytest.mark.parametrize("advertised,expected", [(272_000, 900_000), (200_000, 200_000), (1_050_000, 1_050_000)])

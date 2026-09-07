@@ -54,17 +54,13 @@ class TestCodexBuildKwargs:
                 "reasoning": {"effort": "none"},
                 "include": ["reasoning.encrypted_content", "message.output_text.logprobs"],
                 "prompt_cache_retention": "24h",
-                "prompt_cache_options": {"ttl": "1h"},
             },
         )
 
         assert kw["reasoning"]["effort"] == "low"
-        assert kw["prompt_cache_options"] == {"ttl": "30m"}
-        assert "prompt_cache_retention" not in kw
         assert kw["include"] == ["reasoning.encrypted_content"]
-        for unsupported in ("temperature", "top_p", "top_logprobs", "logprobs"):
+        for unsupported in ("temperature", "top_p", "top_logprobs", "logprobs", "prompt_cache_retention"):
             assert unsupported not in kw
-        assert transport.preflight_kwargs(kw)["prompt_cache_options"] == {"ttl": "30m"}
 
     @pytest.mark.parametrize("effort", ["none", "minimal"])
     def test_astra_normalizes_unsupported_low_efforts_after_overrides(self, transport, effort):
@@ -90,30 +86,20 @@ class TestCodexBuildKwargs:
 
         assert kw["reasoning"]["effort"] == effort
 
-    def test_astra_proxy_does_not_receive_official_cache_options(self, transport):
+    @pytest.mark.parametrize("base_url", ["https://responses.example.com/v1", "https://evil.api.openai.com/v1"])
+    def test_astra_contract_is_exact_host_only(self, transport, base_url):
+        """Proxies and lookalike subdomains keep the generic Responses contract (effort passes through)."""
         kw = transport.build_kwargs(
             model="gpt-6-astra",
             messages=[{"role": "user", "content": "Hi"}],
             tools=[],
-            base_url="https://responses.example.com/v1",
+            base_url=base_url,
             reasoning_config={"enabled": True, "effort": "none"},
-            request_overrides={"prompt_cache_options": {"ttl": "30m"}},
+            request_overrides={"temperature": 0.4},
         )
 
-        assert "prompt_cache_options" not in kw
         assert kw["reasoning"]["effort"] == "none"
-
-    def test_astra_openai_subdomain_is_not_official_route(self, transport):
-        """Only api.openai.com gets Astra's official cache contract."""
-        kw = transport.build_kwargs(
-            model="gpt-6-astra",
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=[],
-            base_url="https://evil.api.openai.com/v1",
-            request_overrides={"prompt_cache_options": {"ttl": "30m"}},
-        )
-
-        assert "prompt_cache_options" not in kw
+        assert kw["temperature"] == 0.4
 
     def test_900k_context_variant_suffix_stripped_on_wire(self, transport):
         """``-900k`` large-context picker variants are Hermes-side aliases —

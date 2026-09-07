@@ -835,3 +835,60 @@ class TestResolveOperatorSkillDemotions:
         assert "must be a string or list" in caplog.text
         assert "meaningless" in caplog.text
 
+    def test_default_config_empty_lists_are_noop(self):
+        """DEFAULT_CONFIG lists the keys so `hermes config` shows them; empty
+        lists must parse identically to unset, not as a pin."""
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        from agent.system_prompt import resolve_operator_skill_demotions as r
+        assert r(DEFAULT_CONFIG["skills"]) == (frozenset(), False, frozenset())
+
+    def test_config_yaml_star_reaches_the_rendered_index(self, monkeypatch, tmp_path):
+        """The live bug: keys in config.yaml and a parser that works, but
+        `_skills_prompt` never forwarded them, so the index stayed full.
+
+        Drive the real path: HERMES_HOME config.yaml → load_config_readonly →
+        resolve_operator_skill_demotions → build_skills_system_prompt. Do not
+        mock the builder.
+        """
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        from agent.system_prompt import _skills_prompt
+        from hermes_cli import config as cfg_mod
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "skills:\n"
+            "  compact_categories: '*'\n"
+            "  keep_full_categories:\n"
+            "    - hermes\n"
+        )
+        for cat, name, desc in [
+            ("hermes", "hermes-core-customization", "Patch Hermes core safely"),
+            ("pixiv", "pixiv", "Search pixiv artworks"),
+        ]:
+            d = home / "skills" / cat / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {desc}\n---\n"
+            )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        cfg_mod._LOAD_CONFIG_CACHE.clear()
+        cfg_mod._RAW_CONFIG_CACHE.clear()
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        monkeypatch.setattr(
+            "agent.coding_context.coding_compact_skill_categories",
+            lambda **_kwargs: frozenset(),
+        )
+        agent = _make_agent(
+            valid_tool_names=["skills_list", "skill_view"],
+            platform="cli",
+            _session_db=SimpleNamespace(db_path=str(home / "state.db")),
+        )
+        out = _skills_prompt(agent)
+        assert "Patch Hermes core safely" in out
+        assert "Search pixiv artworks" not in out
+        assert "pixiv" in out
+        assert "[names only]" in out
+        assert "skills.compact_categories config" in out
+        assert "outside the current coding context" not in out
+

@@ -148,6 +148,13 @@ def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
 
 
 class PluginDispatchMixin:
+    _hooks: Dict[str, List[Callable]]
+    _hook_running_callbacks: Dict[tuple, Set[object]]
+    _hook_timed_out_callbacks: Dict[tuple, Set[object]]
+    _hook_timeout_suppressed_until: Dict[tuple, float]
+    _hook_timeout_lock: Any
+    _hook_timeout_suppression_seconds: float
+
     @staticmethod
     def _invoke_hook_callback(callback: Callable, payload: Dict[str, Any]) -> Any:
         """Invoke a hook while withholding additive fields from narrow legacy callbacks."""
@@ -202,22 +209,22 @@ class PluginDispatchMixin:
         self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float
     ) -> Any:
         """Run one callback on a daemon worker with a wall-clock cap; ``_HOOK_SKIPPED`` when
-        suppressed, still running, or timed out (worker abandoned, never joined). Exceptions
-        propagate."""
+        previously timed out or timed out now (worker abandoned, never joined). Exceptions
+        propagate. Healthy concurrent calls run independently."""
         callback_name = getattr(cb, "__name__", repr(cb))
         callback_key = (hook_name, id(cb))
         token = object()
         with self._hook_timeout_lock:
             suppressed_until = self._hook_timeout_suppressed_until.get(callback_key)
-            running = callback_key in self._hook_running_callbacks
-            if (suppressed_until is not None and suppressed_until > time.monotonic()) or running:
+            timed_out = bool(self._hook_timed_out_callbacks.get(callback_key))
+            if (suppressed_until is not None and suppressed_until > time.monotonic()) or timed_out:
                 logger.warning(
-                    "Hook '%s' callback %s skipped after previous "
-                    "timeout or while still running", hook_name, callback_name)
+                    "Hook '%s' callback %s skipped after a real timeout",
+                    hook_name, callback_name)
                 return _HOOK_SKIPPED
             if suppressed_until is not None:
                 self._hook_timeout_suppressed_until.pop(callback_key, None)
-            self._hook_running_callbacks[callback_key] = token
+            self._hook_running_callbacks.setdefault(callback_key, set()).add(token)
 
         context = contextvars.copy_context()
         done = threading.Event()
@@ -231,8 +238,16 @@ class PluginDispatchMixin:
                 failure["exc"] = exc
             finally:
                 with self._hook_timeout_lock:
-                    if self._hook_running_callbacks.get(callback_key) is token:
-                        self._hook_running_callbacks.pop(callback_key, None)
+                    running_tokens = self._hook_running_callbacks.get(callback_key)
+                    if running_tokens is not None:
+                        running_tokens.discard(token)
+                        if not running_tokens:
+                            self._hook_running_callbacks.pop(callback_key, None)
+                    timed_out_tokens = self._hook_timed_out_callbacks.get(callback_key)
+                    if timed_out_tokens is not None:
+                        timed_out_tokens.discard(token)
+                        if not timed_out_tokens:
+                            self._hook_timed_out_callbacks.pop(callback_key, None)
                 done.set()
 
         thread = threading.Thread(target=_runner, name=f"hermes-hook-{callback_name}"[:40], daemon=True)
@@ -242,6 +257,10 @@ class PluginDispatchMixin:
                 # See #6622.
                 self._hook_timeout_suppressed_until[callback_key] = (
                     time.monotonic() + self._hook_timeout_suppression_seconds)
+                # The worker can finish between done.wait() and this lock
+                # acquisition. Mark it timed out only while genuinely live.
+                if token in self._hook_running_callbacks.get(callback_key, set()):
+                    self._hook_timed_out_callbacks.setdefault(callback_key, set()).add(token)
             logger.warning(
                 "Hook '%s' callback %s timed out after %gs — skipping", hook_name, callback_name, timeout)
             return _HOOK_SKIPPED

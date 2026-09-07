@@ -169,5 +169,4 @@ describe('list session-scroll restore', () => {
     // resulting reader position. Here the abandoned target must not return.
     expect(vp.scrollTop).not.toBe(2000 - CLIENT_H - 800)
   })
-
 })

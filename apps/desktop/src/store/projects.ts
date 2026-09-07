@@ -536,8 +536,11 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
 
     return res.project ?? null
   } catch (error) {
-    if (generation !== projectSessionsRefreshGeneration || profile !== projectProfile() ||
-        (context && !stillOnProjectsContext(context))) {
+    if (
+      generation !== projectSessionsRefreshGeneration ||
+      profile !== projectProfile() ||
+      (context && !stillOnProjectsContext(context))
+    ) {
       return null
     }
 

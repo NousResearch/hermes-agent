@@ -12,11 +12,11 @@ Master pointer for the project ledger. Newest first. Rules: [`README.md`](./READ
 | Coordinate | Value | As of |
 | --- | --- | --- |
 | Upstream base | `hermes@693641aa8b` (**0 behind** `upstream/main`) | 2026-09-06 |
-| North-Forge version | `NF-v0.1.2` (`NF-v0.1.1` pushed; `v0.1.2` local, see CHANGELOG) | 2026-09-06 |
+| North-Forge version | `NF-v0.2.0` (rebrand; local only — `NF-v0.1.1` is the last pushed) | 2026-09-06 |
 | Ledger schema | `v2` | 2026-09-06 |
-| Latest run | `RUN-2026-09-06-001` — ledger-schema v2 additions | 2026-09-06 |
+| Latest run | `RUN-2026-09-06-002` — fork rebrand, `NF-v0.2.0` (`CHG-2026-09-06-020..024`) | 2026-09-06 |
 | First fork commits | `NF-v0.1.0` + `NF-v0.1.1` on `origin/main` (`CHG-2026-09-06-010`); fork synced to upstream (`CHG-2026-09-06-014`) | 2026-09-06 |
-| Fork identity | decided **full rebrand** (`DECISION-2026-09-06-001`), not yet implemented — `NF-v0.2.0` pending | 2026-09-06 |
+| Fork identity | **full rebrand implemented** — `NF-v0.2.0` (`CHG-2026-09-06-020..024`); `DECISION-2026-09-06-001` DECIDED. Local only, not pushed. | 2026-09-06 |
 
 ## Audits
 
@@ -35,8 +35,13 @@ Master pointer for the project ledger. Newest first. Rules: [`README.md`](./READ
 
 | ID | Area | Question | State |
 | --- | --- | --- | --- |
-| [DECISION-2026-09-06-001](./decisions/DECISION-LOG.md#decision-2026-09-06-001--fork-identity--rebrand-vs-thin-downstream) | Fork identity | Rebrand vs thin downstream? | Leaning **B (full rebrand)**, chosen 2026-09-06 — not yet implemented; blocks `NF-v0.2.0` |
 | [DECISION-2026-09-06-002](./decisions/DECISION-LOG.md#decision-2026-09-06-002--attic-clone--keep-or-delete-it) | Repo hygiene | Keep or delete the attic clone (~869 MB)? | Leaning **A (delete)** — `origin/main` now carries the work; disk only |
+
+## Resolved decisions
+
+| ID | Area | Question | Outcome |
+| --- | --- | --- | --- |
+| [DECISION-2026-09-06-001](./decisions/DECISION-LOG.md#decision-2026-09-06-001--fork-identity--rebrand-vs-thin-downstream) | Fork identity | Rebrand vs thin downstream? | **DECIDED** — B (full rebrand), implemented `RUN-2026-09-06-002` / `NF-v0.2.0` (`CHG-2026-09-06-020..024`). `pyproject.toml` distribution name kept as `hermes-agent` per the entry's carve-out. |
 
 ## Resolved incidents
 

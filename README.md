@@ -1,22 +1,23 @@
-<p align="center">
-  <img src="assets/banner.png" alt="Hermes Agent" width="100%">
-</p>
+# North Forge
 
-# Hermes Agent ☤
 <p align="center">
-  <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> | <a href="https://hermes-agent.nousresearch.com/">Hermes Desktop</a>
+  A generic, brandable AI-agent chassis on top of the <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> engine by Nous Research.
 </p>
 <p align="center">
-  <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
+  <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Engine%20docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Engine documentation"></a>
   <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
-  <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
-  <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
+  <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Engine%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Engine by Nous Research"></a>
   <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
   <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/Lang-اردو-green?style=for-the-badge" alt="اردو"></a>
   <a href="README.es.md"><img src="https://img.shields.io/badge/Lang-Español-orange?style=for-the-badge" alt="Español"></a>
 </p>
 
-**The self-improving AI agent built by [Nous Research](https://nousresearch.com).** It's the only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
+**North Forge is an AI agent you can make your own.** It is [Hermes Agent](https://hermes-agent.nousresearch.com/) — the self-improving agent engine by [Nous Research](https://nousresearch.com) — carrying a North Forge identity, voice, and workflow: its own `SOUL.md`, its own conventions, nothing tied to a single industry. The engine underneath is used unmodified, so whatever Hermes Agent does, North Forge does.
+
+The engine brings a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
+
+North Forge is a fork of [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent), kept rebased on upstream and used here unmodified; the engine — agent loop, memory, skills, model providers, terminal and messaging interfaces — is Nous Research's work, MIT-licensed. What North Forge adds is identity and workflow: this README, `SOUL.md`, packaging metadata, and the project ledger under [`logs/ledger/`](logs/ledger/). Both copyright lines are in [`LICENSE`](LICENSE). Maintained by Kenneth C. Walker Jr.; fork and identity issues → <https://github.com/kwalker7631/north-forge-agent/issues>, engine issues → the upstream project.
 
 Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenRouter, OpenAI, your own endpoint, and [many others](https://hermes-agent.nousresearch.com/docs/integrations/providers). Switch with `hermes model` — no code changes, no lock-in.
 
@@ -259,6 +260,6 @@ scripts/run_tests.sh
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). Copyright © 2025 Nous Research (Hermes Agent engine) and © 2026 Kenneth C. Walker Jr. (North Forge).
 
-Built by [Nous Research](https://nousresearch.com).
+North Forge is built on [Hermes Agent](https://hermes-agent.nousresearch.com/) by [Nous Research](https://nousresearch.com).

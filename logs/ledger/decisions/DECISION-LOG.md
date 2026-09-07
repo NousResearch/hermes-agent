@@ -17,42 +17,6 @@ gains a `Superseded-by:` / `Supersedes:` link.
 
 ## Open
 
-### DECISION-2026-09-06-001 — Fork identity — rebrand vs thin downstream?
-
-- **Opened:** 2026-09-06 · **Base:** hermes@693641aa8b (0 behind upstream/main)
-- **Run:** RUN-2026-09-06-001
-- **Source:** `AUDIT-2026-09-06-001` §6 (full README review) and F-06 / F-08
-- **Confidence:** Confirmed Fact — the branding state is verified (every `README*.md`,
-  `SOUL.md`, `LICENSE`, `package.json`, `pyproject.toml` field is still upstream's);
-  the *choice* between the two shapes is what is open.
-- **Supersedes:** the identity half of `ERR-2026-09-06-002` (migrated here — the
-  version-drift half of that ERR was a real fault and stays in `ERROR-LOG.md`,
-  RESOLVED by `CHG-2026-09-06-014`).
-- **The call:** does north-forge present as its own product, or stay a
-  lightly-marked fork kept rebased on `NousResearch/hermes-agent`?
-- **Options:**
-  - **A — Thin downstream:** add a short north-forge note atop `README.md` + a
-    root `CLAUDE.md` (provenance + what north-forge adds + the ledger workflow);
-    leave `SOUL.md` / `package.json` / `pyproject.toml` as upstream's. Cheapest
-    upstream merges forever; north-forge stays visibly a downstream user.
-  - **B — Full rebrand:** rewrite the top of `README.md`, `SOUL.md` persona, the
-    `name` / `repository` / `homepage` fields in `package.json` and
-    `pyproject.toml`, add the maintainer's copyright line alongside Nous's in
-    `LICENSE` (MIT — Nous's line stays). More friction on every future
-    `upstream/main` merge; north-forge reads as its own project.
-- **Leaning:** **B (full rebrand)** — selected by the maintainer on 2026-09-06.
-  Not yet implemented (the drafting pass was interrupted). The Python
-  *distribution* name (`pyproject.toml` `name = "hermes-agent"`) is expected to
-  stay as-is even under B: it is never published (`setup.py` blocks wheel builds),
-  it is referenced ~19× by self-extras and pinned in `uv.lock` / the installed
-  `.venv`, and renaming it is blast-radius with no outward benefit.
-- **Blocking:** `NF-v0.2.0` (the changelog reserves `NF-v0.2.0` for the first
-  identity commit). Nothing else.
-- **Owner:** Kenneth C. Walker Jr.
-- **Status:** OPEN — direction chosen (B, full rebrand, 2026-09-06); implementation
-  and `NF-v0.2.0` still pending. Moves to Resolved / DECIDED when the rebrand
-  commit lands.
-
 ### DECISION-2026-09-06-002 — Attic clone — keep or delete it?
 
 - **Opened:** 2026-09-06 · **Base:** hermes@693641aa8b (0 behind upstream/main)
@@ -81,7 +45,47 @@ gains a `Superseded-by:` / `Supersedes:` link.
 
 ## Resolved
 
-*(none yet)*
+### DECISION-2026-09-06-001 — Fork identity — rebrand vs thin downstream?
+
+- **Opened:** 2026-09-06 · **Base:** hermes@693641aa8b (0 behind upstream/main)
+- **Run:** RUN-2026-09-06-001 (opened) · RUN-2026-09-06-002 (implemented)
+- **Source:** `AUDIT-2026-09-06-001` §6 (full README review) and F-06 / F-08
+- **Confidence:** Confirmed Fact — the branding state is verified (every `README*.md`,
+  `SOUL.md`, `LICENSE`, `package.json`, `pyproject.toml` field is still upstream's);
+  the *choice* between the two shapes is what is open.
+- **Supersedes:** the identity half of `ERR-2026-09-06-002` (migrated here — the
+  version-drift half of that ERR was a real fault and stays in `ERROR-LOG.md`,
+  RESOLVED by `CHG-2026-09-06-014`).
+- **The call:** does north-forge present as its own product, or stay a
+  lightly-marked fork kept rebased on `NousResearch/hermes-agent`?
+- **Options:**
+  - **A — Thin downstream:** add a short north-forge note atop `README.md` + a
+    root `CLAUDE.md` (provenance + what north-forge adds + the ledger workflow);
+    leave `SOUL.md` / `package.json` / `pyproject.toml` as upstream's. Cheapest
+    upstream merges forever; north-forge stays visibly a downstream user.
+  - **B — Full rebrand:** rewrite the top of `README.md`, `SOUL.md` persona, the
+    `name` / `repository` / `homepage` fields in `package.json` and
+    `pyproject.toml`, add the maintainer's copyright line alongside Nous's in
+    `LICENSE` (MIT — Nous's line stays). More friction on every future
+    `upstream/main` merge; north-forge reads as its own project.
+- **Leaning:** **B (full rebrand)** — selected by the maintainer on 2026-09-06.
+- **Blocking:** `NF-v0.2.0` (the changelog reserves `NF-v0.2.0` for the first
+  identity commit). Nothing else.
+- **Owner:** Kenneth C. Walker Jr.
+- **Decided:** 2026-09-06 — chose **B (full rebrand)**. Implemented in one
+  branding-only commit under `RUN-2026-09-06-002`: `README.md` top-level identity
+  rewritten, `SOUL.md` re-voiced to North Forge's established persona,
+  `package.json` `name` / `repository` / `homepage` / `bugs` repointed to
+  `kwalker7631/north-forge-agent` (+ `package-lock.json` root-name sync),
+  `pyproject.toml` gained `[project.urls]`, `LICENSE` gained the maintainer's
+  copyright line alongside Nous Research's. Per the carve-out in this entry, the
+  `pyproject.toml` **distribution name `hermes-agent` was left unchanged** (never
+  published, ~19× internal refs, pinned in `uv.lock`). No application code, no
+  `.env`, no attic-clone change — agent behaviour identical before and after.
+  Cut `NF-v0.2.0` (MAJOR). Committed locally, **not pushed** (held for review).
+  Implementing changes: `CHG-2026-09-06-020`, `CHG-2026-09-06-021`,
+  `CHG-2026-09-06-022`, `CHG-2026-09-06-023`, `CHG-2026-09-06-024`.
+- **Status:** DECIDED
 
 ---
 
@@ -89,5 +93,5 @@ gains a `Superseded-by:` / `Supersedes:` link.
 
 | ID | Date | Area | Question | Status | Decided |
 | --- | --- | --- | --- | --- | --- |
-| DECISION-2026-09-06-001 | 2026-09-06 | Fork identity | Rebrand vs thin downstream? | OPEN — leaning B (full rebrand), not yet landed | — |
+| DECISION-2026-09-06-001 | 2026-09-06 | Fork identity | Rebrand vs thin downstream? | DECIDED — B (full rebrand), landed `NF-v0.2.0` (CHG-2026-09-06-020..024) | 2026-09-06 |
 | DECISION-2026-09-06-002 | 2026-09-06 | Repo hygiene | Keep or delete the attic clone? | OPEN — leaning A (delete) | — |

@@ -8,6 +8,93 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.2.0] — 2026-09-06 — hermes@693641aa8b (0 behind upstream/main)
+
+First fork-identity commit — **`DECISION-2026-09-06-001` Option B (full rebrand)**,
+implemented. **MAJOR** bump per the version table ("incompatible change to the
+fork's shape — rebrand"): the repo now presents as **North Forge**, a generic,
+brandable agent chassis on the Hermes Agent engine, not as Hermes Agent itself.
+Branding / identity only — no application code, no `.env`, no attic-clone change.
+Agent behaviour is identical before and after: the repo-root `SOUL.md` is an
+example file read by no test / installer / packaging path, and the persona code
+constants (`agent/prompt_builder.py`, `hermes_cli/default_soul.py`) were not
+touched. All entries in this block are `RUN-2026-09-06-002`. **Committed locally;
+not pushed** — held for review before going public, same as the last hardening
+commit.
+
+### Changed
+
+- **CHG-2026-09-06-020** — `README.md`: rewrote the top-level identity. H1
+  (`Hermes Agent ☤` → `North Forge`), centre tagline, shields, and the lead
+  description now present North Forge as its own project built on the Hermes
+  Agent engine by Nous Research; added a one-paragraph provenance note (fork of
+  `NousResearch/hermes-agent`, kept rebased, engine used unmodified, maintainer
+  Kenneth C. Walker Jr., fork-issue URL) and both copyright lines in the License
+  footer. The upstream banner image (`assets/banner.png`, alt "Hermes Agent") is
+  no longer referenced. All mechanics — install one-liners, `hermes …` commands,
+  `hermes-agent.nousresearch.com/docs` links, feature table, Contributing,
+  Community — left verbatim. Paths: `README.md`. Ref: `DECISION-2026-09-06-001`.
+  Run: RUN-2026-09-06-002.
+- **CHG-2026-09-06-021** — `SOUL.md`: replaced the upstream default persona with
+  North Forge's own voice (finalised 2026-09-06 from owner-supplied text, before
+  any push; the intermediate draft in this commit's first local revision was
+  never published). First person ("I'm North Forge"), written for field
+  technicians and sales reps: plain words, short sentences, no corporate filler,
+  no fake enthusiasm, no "I apologize for the confusion" — own a mistake and fix
+  it. Matches the user's register (terse ↔ chatty ↔ formal) rather than imposing
+  one fixed personality; honest about what it does not know ("here's what I know,
+  here's what I'm not sure of, here's what would confirm it"); does not talk down
+  and does not assume unseen expertise; direct out of respect for the reader's
+  time, flags risk and faster paths up front. No Kyocera / Blacksmith / mode
+  scaffolding — this is the industry-generic chassis file. Repo-root example file
+  only — not read by any test, installer, or packaging path (installers seed
+  `$HERMES_HOME/SOUL.md` from `hermes_cli/default_soul.py`, untouched), so it
+  diverges from the `DEFAULT_SOUL_MD` / `DEFAULT_AGENT_IDENTITY` code constants by
+  design, with zero functional effect. Paths: `SOUL.md`. Ref:
+  `DECISION-2026-09-06-001`. Run: RUN-2026-09-06-002.
+- **CHG-2026-09-06-022** — `package.json`: `name` `hermes-agent` →
+  `north-forge-agent`; `repository.url`, `homepage`, and `bugs.url` repointed
+  from `NousResearch/Hermes-Agent` to `kwalker7631/north-forge-agent`. Root
+  `name` in `package-lock.json` synced to match (2 lines: `.name` and
+  `.packages[""].name`) — identity mirror only, no dependency-tree change, so
+  `npm ci` stays consistent with the manifest. Root package is `"private": true`
+  and never published; workspace package names (`hermes-tui`, `hermes`,
+  `@hermes/root-tests`) left as-is — internal build ids, same blast-radius
+  rationale as the pyproject distribution name. Paths: `package.json`,
+  `package-lock.json`. Ref: `DECISION-2026-09-06-001`. Run: RUN-2026-09-06-002.
+- **CHG-2026-09-06-023** — `pyproject.toml`: added `[project.urls]` (`Homepage` +
+  `Repository` → `kwalker7631/north-forge-agent`). The Python **distribution name
+  deliberately stays `hermes-agent`** per `DECISION-2026-09-06-001`: never
+  published (`setup.py` blocks wheel builds), referenced ~19× by the
+  self-referential `hermes-agent[...]` extras, and pinned in `uv.lock` / the
+  installed `.venv` — renaming it is blast radius with no outward benefit.
+  `authors = [{ name = "Nous Research" }]` also left as-is (engine authorship;
+  outside the decision's enumerated fields — attribution is carried by
+  `LICENSE`). Paths: `pyproject.toml`. Ref: `DECISION-2026-09-06-001`. Run:
+  RUN-2026-09-06-002.
+
+### Added
+
+- **CHG-2026-09-06-024** — `LICENSE`: added `Copyright (c) 2026 Kenneth C. Walker
+  Jr.` beneath the existing `Copyright (c) 2025 Nous Research` line. MIT — both
+  attributions coexist; Nous Research's line and the permission / warranty body
+  are unchanged. Paths: `LICENSE`. Ref: `DECISION-2026-09-06-001`. Run:
+  RUN-2026-09-06-002.
+
+### Unchanged (called out)
+
+- **`pyproject.toml` `name = "hermes-agent"`** — NOT renamed (see
+  CHG-2026-09-06-023). This is the explicit carve-out in `DECISION-2026-09-06-001`
+  Option B.
+- **Application code, `.env`, the attic clone, `docker/SOUL.md`, the translated
+  `README.zh-CN.md` / `README.es.md` / `README.ur-pk.md` files, workspace
+  `package.json` names** — untouched.
+- **`agent/prompt_builder.py` / `hermes_cli/default_soul.py`** — the persona code
+  constants are upstream's and stay upstream's; only the repo-root `SOUL.md`
+  example file carries the North Forge voice.
+
+---
+
 ## [NF-v0.1.2] — 2026-09-06 — hermes@693641aa8b (0 behind upstream/main)
 
 `ledger-schema v1 → v2`. Ledger-tooling only — no application code, no `.env`, no

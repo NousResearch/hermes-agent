@@ -306,7 +306,7 @@ def check_for_skill_updates(
         try:
             install_dir = _resolve_lock_install_path(
                 entry.get("install_path", ""), entry.get("name", "skill"))
-            orphaned = not install_dir.exists()
+            orphaned = not install_dir.is_dir()
         except ValueError:
             orphaned = False  # unresolvable entries keep the pre-existing fetch behavior
         if orphaned:

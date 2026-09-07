@@ -971,7 +971,7 @@ def build_api_messages(
         # (strict OpenAI backends reject unknown keys); _row_id is the durable row id
         # from _rows_to_conversation and only chat-completions strips underscore keys.
         _api_content = api_msg.pop("api_content", None)
-        for key in ("display_kind", "display_metadata", "_row_id"):
+        for key in ("display_kind", "display_metadata", "_row_id", "_db_persisted"):
             api_msg.pop(key, None)
 
         # Inject ephemeral context (memory prefetch + pre_llm_call user hooks)

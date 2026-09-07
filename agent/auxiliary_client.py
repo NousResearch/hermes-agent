@@ -112,7 +112,7 @@ from agent.model_metadata import (
     strip_codex_context_variant_suffix as _strip_codex_ctx_variant,
 )
 from hermes_cli.config import get_hermes_home
-from hermes_cli.route_identity import normalize_route_base_url
+from agent.auxiliary_health import _custom_health_base_url, _unhealthy_cache_key
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
@@ -2899,33 +2899,6 @@ def _normalize_chain_label(provider: str) -> str:
         return ""
     p = str(provider).strip().lower()
     return _AUX_UNHEALTHY_LABEL_ALIASES.get(p, p)
-
-
-def _unhealthy_cache_key(provider: str, base_url: Optional[str] = None) -> Any:
-    """Provider-wide key, or endpoint-specific key for an explicit custom endpoint."""
-    label = _normalize_chain_label(provider)
-    endpoint = normalize_route_base_url(_custom_health_base_url(provider, base_url))
-    if endpoint:
-        return "custom-endpoint", endpoint
-    return label
-
-
-def _custom_health_base_url(provider: str, explicit_base_url: Optional[str] = None) -> str:
-    """Return the concrete custom endpoint used to scope health and failed-route checks."""
-    explicit = str(explicit_base_url or "").strip()
-    label = _normalize_chain_label(provider)
-    if label == "local/custom":
-        return explicit or _current_custom_base_url()
-    if label.startswith("custom:") and explicit:
-        return explicit
-    with contextlib.suppress(ImportError):
-        from hermes_cli.runtime_provider import _get_named_custom_provider, _resolves_to_custom
-        if _resolves_to_custom(label):
-            return explicit or _current_custom_base_url()
-        entry = _get_named_custom_provider(provider)
-        if entry:
-            return explicit or str(entry.get("base_url") or "").strip()
-    return ""
 
 
 def _mark_provider_unhealthy(
@@ -6867,7 +6840,11 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     # separate custom URLs can carry separate credentials (or no billing relationship at all).
     _chain_failed_model = None if reason in ("auth error", "payment error") else route.final_model
     from agent.backend_identity import FailureScope
-    _chain_failure_scope = FailureScope.ENDPOINT if reason == "payment error" else None
+    _chain_failure_scope = (
+        FailureScope.ENDPOINT
+        if reason == "payment error" and _custom_health_base_url(resolved_provider, route.base_info)
+        else None
+    )
     fb_client, fb_model, fb_label = _try_configured_fallback_chain(
         task, resolved_provider or "auto", reason=reason, failed_model=_chain_failed_model,
         failed_base_url=route.base_info, failure_scope=_chain_failure_scope)

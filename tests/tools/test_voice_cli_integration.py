@@ -1,6 +1,7 @@
 """Tests for CLI voice mode integration -- markdown stripping, voice state
 management, TTS/STT wiring, barge-in and the full-duplex listener."""
 
+import json
 import queue
 import threading
 from types import SimpleNamespace
@@ -45,7 +46,7 @@ def _make_voice_cli(**overrides):
 # Markdown stripping — import real function from tts_tool
 # ============================================================================
 
-from tools.tts_tool import _strip_markdown_for_tts
+from tools.tts_text_normalize import _strip_markdown_for_tts
 
 
 class TestMarkdownStripping:
@@ -287,21 +288,28 @@ class TestVoiceSpeakResponseReal:
     @patch("cli.os.makedirs")
     @patch("tools.voice_mode.play_audio_file")
     @patch("tools.tts_tool.text_to_speech_tool")
-    def test_play_audio_prefers_requested_mp3_over_returned_ogg(
+    def test_play_audio_uses_returned_file_paths(
         self, mock_tts, mock_play, _mkd, _isf, _gsz, _unl, _cp
     ):
         def fake_tts(**kwargs):
             mp3_path = kwargs["output_path"]
             ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
-            return f'{{"success": true, "file_path": "{ogg_path}"}}'
+            # The tool result is authoritative — file_paths drives playback
+            return json.dumps({
+                "success": True,
+                "file_path": ogg_path,
+                "file_paths": [ogg_path],
+            })
 
         mock_tts.side_effect = fake_tts
 
         cli = _make_voice_cli(_voice_tts=True)
         cli._voice_speak_response("Hello world")
 
-        requested_path = mock_tts.call_args.kwargs["output_path"]
-        mock_play.assert_called_once_with(requested_path)
+        # Should play the returned OGG path, not the requested MP3 path
+        mock_play.assert_called_once_with(
+            mock_tts.call_args.kwargs["output_path"].rsplit(".", 1)[0] + ".ogg"
+        )
 
 
 class TestVoiceStopAndTranscribeReal:
@@ -622,7 +630,7 @@ class TestTypedVoiceStop:
         # Hermetic: don't let a dev machine's voice.stop_phrases config
         # change which utterances count as a stop phrase.
         monkeypatch.setattr(
-            "tools.voice_mode._load_voice_stop_phrases", lambda: ("stop",)
+            "tools.voice_mode_transcript._load_voice_stop_phrases", lambda: ("stop",)
         )
 
     def test_typed_stop_ends_voice_chat_when_voice_on(self):

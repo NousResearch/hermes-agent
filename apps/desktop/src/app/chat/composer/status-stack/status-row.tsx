@@ -114,7 +114,15 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
   return (
     <Fragment>
       <StatusRow
-        leading={leadingGlyph(item, s)}
+        leading={
+          item.depth ? (
+            <span className="flex items-center" style={{ paddingLeft: `${Math.min(item.depth, 4) * 0.8}rem` }}>
+              {leadingGlyph(item, s)}
+            </span>
+          ) : (
+            leadingGlyph(item, s)
+          )
+        }
         onActivate={onActivate}
         trailing={
           action ? (
@@ -140,7 +148,7 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
       >
         <span
           className={cn(
-            'min-w-0 max-w-[18rem] truncate text-[0.73rem] leading-4',
+            'min-w-0 flex-1 truncate text-[0.73rem] leading-4',
             failed
               ? 'text-destructive/90'
               : item.todoStatus && item.todoStatus !== 'in_progress'

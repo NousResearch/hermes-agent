@@ -4,6 +4,7 @@ description: Set up Actual Computer (actual.inc) inference in Hermes.
 version: 2.0.0
 author: shl0ms + Hermes Agent
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [actual, actual-inc, provider, local-inference, relay, gguf, setup]

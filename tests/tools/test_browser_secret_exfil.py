@@ -32,9 +32,9 @@ class TestBrowserSecretExfil:
         """Cloud browser providers must not receive opaque token query params."""
         from tools.browser_tool import browser_navigate
 
-        with patch("tools.browser_tool._is_local_backend", return_value=False), \
+        with patch("tools.browser_tool_cloud._is_local_backend", return_value=False), \
              patch("tools.browser_tool._navigation_session_key", return_value="default"), \
-             patch("tools.browser_tool._run_browser_command") as mock_run:
+             patch("tools.browser_tool_session._run_browser_command") as mock_run:
             result = browser_navigate("https://example.com/callback?token=opaque-oauth-code")
 
         parsed = json.loads(result)
@@ -48,9 +48,9 @@ class TestBrowserSecretExfil:
         from tools.browser_tool import browser_navigate
 
         mock_result = {"success": True, "data": {"title": "ok", "url": "https://example.com/callback?token=opaque-oauth-code"}}
-        with patch("tools.browser_tool._run_browser_command", return_value=mock_result), \
-             patch("tools.browser_tool._get_session_info", return_value={"_first_nav": False}), \
-             patch("tools.browser_tool._is_local_backend", return_value=True):
+        with patch("tools.browser_tool_session._run_browser_command", return_value=mock_result), \
+             patch("tools.browser_tool_session._get_session_info", return_value={"_first_nav": False}), \
+             patch("tools.browser_tool_cloud._is_local_backend", return_value=True):
             result = browser_navigate("https://example.com/callback?token=opaque-oauth-code")
 
         parsed = json.loads(result)
@@ -62,9 +62,9 @@ class TestBrowserSecretExfil:
         # Patch the actual browser command — we only care that the secret
         # check doesn't block a clean URL, not that Chrome starts in CI.
         mock_result = {"success": True, "data": {"title": "ok", "url": "https://github.com/NousResearch/hermes-agent"}}
-        with patch("tools.browser_tool._run_browser_command", return_value=mock_result), \
-             patch("tools.browser_tool._get_session_info", return_value={"_first_nav": False}), \
-             patch("tools.browser_tool._is_local_backend", return_value=True):
+        with patch("tools.browser_tool_session._run_browser_command", return_value=mock_result), \
+             patch("tools.browser_tool_session._get_session_info", return_value={"_first_nav": False}), \
+             patch("tools.browser_tool_cloud._is_local_backend", return_value=True):
             result = browser_navigate("https://github.com/NousResearch/hermes-agent")
         parsed = json.loads(result)
         # Should NOT be blocked by secret detection
@@ -80,9 +80,9 @@ class TestBrowserSecretExfil:
                 captured["url"] = args[0]
             return {"success": True, "data": {"title": "ok", "url": args[0]}}
 
-        with patch("tools.browser_tool._run_browser_command", side_effect=mock_run), \
-             patch("tools.browser_tool._get_session_info", return_value={"_first_nav": False}), \
-             patch("tools.browser_tool._is_local_backend", return_value=True):
+        with patch("tools.browser_tool_session._run_browser_command", side_effect=mock_run), \
+             patch("tools.browser_tool_session._get_session_info", return_value={"_first_nav": False}), \
+             patch("tools.browser_tool_cloud._is_local_backend", return_value=True):
             result = browser_navigate("https://wttr.in/Köln")
 
         parsed = json.loads(result)
@@ -199,65 +199,39 @@ class TestWebExtractSecretExfil:
 
 
 class TestBrowserSnapshotRedaction:
-    """Verify secrets in page snapshots are redacted before auxiliary LLM calls."""
+    """Verify secrets in stored/truncated page snapshots are redacted.
 
-    def test_extract_relevant_content_redacts_secrets(self):
-        """Snapshot containing secrets should be redacted before call_llm."""
-        from tools.browser_tool import _extract_relevant_content
+    The old LLM summarization path (_extract_relevant_content) is gone —
+    oversized snapshots always truncate-and-store. The security boundary is
+    now the stored file (force-redacted in _store_full_snapshot) and the
+    returned view (_redact_browser_output at the call sites).
+    """
 
-        # Build a snapshot with a fake Anthropic-style key embedded
+    def test_stored_snapshot_redacts_secrets(self):
+        """Secrets in a snapshot must be masked in the stored full-text file."""
+        from pathlib import Path
+        from tools.browser_tool_snapshot import _store_full_snapshot
+
         fake_key = "sk-" + "FAKESECRETVALUE1234567890ABCDEF"
         snapshot_with_secret = (
             "heading: Dashboard Settings\n"
             f"text: API Key: {fake_key}\n"
             "button [ref=e5]: Save\n"
         )
-
-        captured_prompts = []
-
-        def mock_call_llm(**kwargs):
-            prompt = kwargs["messages"][0]["content"]
-            captured_prompts.append(prompt)
-            mock_resp = MagicMock()
-            mock_resp.choices = [MagicMock()]
-            mock_resp.choices[0].message.content = "Dashboard with save button [ref=e5]"
-            return mock_resp
-
-        with patch("tools.browser_tool.call_llm", mock_call_llm):
-            _extract_relevant_content(snapshot_with_secret, "check settings")
-
-        assert len(captured_prompts) == 1
-        # The middle portion of the key must not appear in the prompt
-        assert "FAKESECRETVALUE1234567890" not in captured_prompts[0]
+        stored = _store_full_snapshot(snapshot_with_secret)
+        assert stored is not None
+        content = Path(stored).read_text(encoding="utf-8")
+        assert "FAKESECRETVALUE1234567890" not in content
         # Non-secret content should survive
-        assert "Dashboard" in captured_prompts[0]
-        assert "ref=e5" in captured_prompts[0]
+        assert "Dashboard" in content
+        assert "ref=e5" in content
 
-    def test_extract_relevant_content_no_task_redacts_secrets(self):
-        """Snapshot without user_task should also redact secrets."""
-        from tools.browser_tool import _extract_relevant_content
+    def test_no_llm_summarization_entry_points(self):
+        """The auxiliary-LLM snapshot path must not exist anymore."""
+        import tools.browser_tool as bt
 
-        fake_key = "sk-" + "ANOTHERFAKEKEY99887766554433"
-        snapshot_with_secret = (
-            f"text: OPENAI_API_KEY={fake_key}\n"
-            "link [ref=e2]: Home\n"
-        )
-
-        captured_prompts = []
-
-        def mock_call_llm(**kwargs):
-            prompt = kwargs["messages"][0]["content"]
-            captured_prompts.append(prompt)
-            mock_resp = MagicMock()
-            mock_resp.choices = [MagicMock()]
-            mock_resp.choices[0].message.content = "Page with home link [ref=e2]"
-            return mock_resp
-
-        with patch("tools.browser_tool.call_llm", mock_call_llm):
-            _extract_relevant_content(snapshot_with_secret)
-
-        assert len(captured_prompts) == 1
-        assert "ANOTHERFAKEKEY99887766" not in captured_prompts[0]
+        assert not hasattr(bt, "_extract_relevant_content")
+        assert not hasattr(bt, "_get_extraction_model")
 
 
 class TestCamofoxAnnotationRedaction:
@@ -301,7 +275,8 @@ class TestBrowserSupervisorRedaction:
     """Verify supervisor dialog snapshots redact page-originated secrets."""
 
     def test_pending_and_recent_dialog_messages_redacted(self):
-        from tools.browser_supervisor import DialogRecord, PendingDialog, SupervisorSnapshot
+        from tools.browser_supervisor import SupervisorSnapshot
+        from tools.browser_supervisor_dialogs import DialogRecord, PendingDialog
 
         fake_key = "sk-" + "SUPERVISORDIALOGSECRET1234567890"
         snapshot = SupervisorSnapshot(
@@ -322,7 +297,6 @@ class TestBrowserSupervisorRedaction:
                 closed_by="agent",
             ),),
             frame_tree={"top": {"frame_id": "f1", "url": "about:blank", "origin": "null", "is_oopif": False}},
-            console_errors=(),
             active=True,
             cdp_url="ws://example.invalid/devtools/browser/mock",
             task_id="test",

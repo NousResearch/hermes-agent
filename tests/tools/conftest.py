@@ -13,6 +13,63 @@ from unittest.mock import patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_host_browser_use_cli():
+    """Keep the host's browser-use/uvx install out of tests.
+
+    Browser Use mode is default-on when the CLI is runnable, so a developer
+    machine with uvx on PATH would silently flip every built-in-browser test
+    into CLI mode. Pin discovery to "not installed"; tests that exercise the
+    CLI path monkeypatch ``bu_cli._find_cli`` themselves.
+    """
+    try:
+        import tools.browser_use_cli as bu_cli
+    except Exception:
+        yield
+        return
+    # Keep a handle to the real discovery function so TestFindCli (and any
+    # test that wants genuine PATH probing) can restore it explicitly.
+    if not hasattr(bu_cli, "_find_cli_unpatched"):
+        bu_cli._find_cli_unpatched = bu_cli._find_cli
+    with patch.object(bu_cli, "_find_cli", lambda: None):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _materialize_mcp_sdk_symbols():
+    """Materialize the lazily-imported MCP SDK before each tools test.
+
+    ``tools/mcp_tool.py`` defers the ~260ms ``mcp`` SDK import until first
+    real use (CLI startup perf). Tests in this directory patch SDK symbols
+    (``ClientSession``, ``stdio_client``, ``_MCP_HTTP_AVAILABLE``, ...) on
+    the module and expect the pre-lazy eager-import world: symbols bound,
+    availability flags reflecting the installed SDK. Ensure that state up
+    front so ``mock.patch`` sees real originals and ``_ensure_mcp_sdk()``
+    can never clobber a patched flag mid-test (it no-ops once attempted).
+    """
+    try:
+        from tools import mcp_tool
+        mcp_tool._ensure_mcp_sdk()
+    except Exception:
+        pass
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _clear_web_result_cache():
+    """Reset the web_search TTL memo between tests.
+
+    The memo is module-global state in tools/web_result_cache.py; without
+    this, a test that exercised web_search_tool leaves a cached response
+    that a later test with the same query would receive instead of its own
+    mocked provider result.
+    """
+    from tools.web_result_cache import search_memo
+    search_memo.clear()
+    yield
+    search_memo.clear()
+
+
 def register_all_web_providers():
     """Register all bundled web-search providers into the global registry.
 
@@ -25,8 +82,10 @@ def register_all_web_providers():
     from plugins.web.exa.provider import ExaWebSearchProvider
     from plugins.web.firecrawl.provider import FirecrawlWebSearchProvider
     from plugins.web.parallel.provider import ParallelWebSearchProvider
-    from plugins.web.searxng.provider import SearXNGWebSearchProvider
+    from plugins.web.keenable.provider import KeenableWebSearchProvider
     from plugins.web.tavily.provider import TavilyWebSearchProvider
+    from plugins.web.perplexity.provider import PerplexityWebSearchProvider
+    from plugins.web.searxng.provider import SearXNGWebSearchProvider
     from plugins.web.xai.provider import XAIWebSearchProvider
 
     _reset_for_tests()
@@ -36,8 +95,10 @@ def register_all_web_providers():
         ExaWebSearchProvider,
         FirecrawlWebSearchProvider,
         ParallelWebSearchProvider,
-        SearXNGWebSearchProvider,
+        KeenableWebSearchProvider,
         TavilyWebSearchProvider,
+        PerplexityWebSearchProvider,
+        SearXNGWebSearchProvider,
         XAIWebSearchProvider,
     ):
         register_provider(cls())

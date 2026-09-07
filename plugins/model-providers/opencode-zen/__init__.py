@@ -1,145 +1,119 @@
 """OpenCode provider profiles (Zen + Go).
 
-Both use per-model api_mode routing:
-  - OpenCode Zen: Claude → anthropic_messages, GPT-5/Codex → codex_responses,
-    everything else → chat_completions (this profile)
-  - OpenCode Go: MiniMax → anthropic_messages, GLM/Kimi → chat_completions
-    (this profile)
+Both route api_mode per model in core; these profiles carry the
+chat_completions reasoning translations (GLM-5.2, Kimi K2, DeepSeek, Ox Alpha).
 """
-
-from __future__ import annotations
 
 from typing import Any
 
+from agent import reasoning_effort as re_
+from hermes_cli import __version__ as _HERMES_VERSION
 from providers import register_provider
 from providers.base import ProviderProfile
 
+# Attribution headers (same values as OpenRouter / Vercel / Fireworks); via
+# default_headers so they survive model switches and credential rotation.
+_ATTRIBUTION_HEADERS = {
+    "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+    "X-Title": "Hermes Agent",
+    "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+}
+
 
 def _flat_model_name(model: str | None) -> str:
-    """Return the bare OpenCode model ID, tolerating aggregator prefixes."""
+    """Bare OpenCode model ID, tolerating aggregator prefixes."""
     return (model or "").strip().rsplit("/", 1)[-1].lower()
-
-
-def _is_kimi_k2_model(model: str | None) -> bool:
-    return _flat_model_name(model).startswith("kimi-k2")
 
 
 def _is_deepseek_thinking_model(model: str | None) -> bool:
     m = _flat_model_name(model)
-    if m.startswith("deepseek-v") and not m.startswith("deepseek-v3"):
-        return True
-    return m == "deepseek-reasoner"
+    return (m.startswith("deepseek-v") and not m.startswith("deepseek-v3")) or m == "deepseek-reasoner"
 
 
 def _is_glm_5_2_model(model: str | None) -> bool:
-    """Detect GLM-5.2 across alias spellings (glm-5.2 / glm-5-2 / glm-5p2)."""
+    """GLM-5.2 across alias spellings (glm-5.2 / glm-5-2 / glm-5p2)."""
     m = _flat_model_name(model)
     return any(token in m for token in ("glm-5.2", "glm-5-2", "glm-5p2"))
+
+
+def _requested_effort(reasoning_config: dict | None) -> str | None:
+    """Normalized effort when reasoning is enabled and an effort is set, else None."""
+    effort = re_.requested_effort(reasoning_config)
+    return None if effort == "none" else effort
+
+
+def _thinking_toggle_extras(
+    reasoning_config: dict | None, efforts, overrides=None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Moonshot/DeepSeek wire shape: extra_body.thinking XOR top-level reasoning_effort
+    (sending both is an HTTP 400)."""
+    if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
+        return {"thinking": {"type": "disabled"}}, {}
+    clamped = re_.clamp_effort(_requested_effort(reasoning_config), efforts, overrides)
+    if clamped in efforts:
+        return {}, {"reasoning_effort": clamped}
+    return {"thinking": {"type": "enabled"}}, {}
 
 
 class OpenCodeGoProfile(ProviderProfile):
     """OpenCode Go - model-specific reasoning controls."""
 
-    # Per-model completion-token cap. The opencode-go relay's default is
-    # too large for mimo-v2.5-pro — it sends max_tokens=262144 but Xiaomi
-    # only supports 131072 completion tokens and 400s the request.
-    # Setting an explicit cap here prevents the relay default from being
-    # applied. Keys are normalized via _flat_model_name().
-    _MODEL_MAX_TOKENS: dict[str, int] = {
-        "mimo-v2.5-pro": 131072,
-    }
+    # The relay's default max_tokens (262144) exceeds what Xiaomi accepts for
+    # mimo-v2.5-pro and 400s; keys are normalized via _flat_model_name().
+    _MODEL_MAX_TOKENS: dict[str, int] = {"mimo-v2.5-pro": 131072}
 
     def get_max_tokens(self, model: str | None) -> int | None:
         cap = self._MODEL_MAX_TOKENS.get(_flat_model_name(model))
-        if cap is not None:
-            return cap
-        return self.default_max_tokens
+        return self.default_max_tokens if cap is None else cap
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        extra_body: dict[str, Any] = {}
-        top_level: dict[str, Any] = {}
-
         if _is_glm_5_2_model(model):
-            # GLM-5.2 on OpenCode Go uses its native OpenAI-compatible
-            # reasoning_effort knob, which has exactly two enabled levels:
-            # high and max. Map Hermes' richer scale onto those; leave the
-            # server default alone when reasoning is disabled or unset.
+            # Native reasoning_effort knob (high/max); server default when unset/disabled.
+            effort = _requested_effort(reasoning_config)
+            if effort is None:
+                return {}, {}
+            clamped = re_.clamp_effort(effort, re_.GLM52_EFFORTS, re_.GLM52_OVERRIDES)
+            return {}, {"reasoning_effort": clamped if clamped in re_.GLM52_EFFORTS else "high"}
+        if _flat_model_name(model).startswith("kimi-k2"):
             if not isinstance(reasoning_config, dict):
-                return extra_body, top_level
-            if reasoning_config.get("enabled") is False:
-                return extra_body, top_level
-            effort = (reasoning_config.get("effort") or "").strip().lower()
-            if not effort or effort == "none":
-                return extra_body, top_level
-            top_level["reasoning_effort"] = "max" if effort in {"xhigh", "max", "ultra"} else "high"
-            return extra_body, top_level
-
-        if _is_kimi_k2_model(model):
-            # Kimi K2 on OpenCode Go uses Moonshot's native wire shape:
-            # extra_body.thinking (binary toggle) + top-level reasoning_effort
-            # (low|medium|high). Mirrors the KimiProfile (api.moonshot.ai/v1).
-            if not isinstance(reasoning_config, dict):
-                # No config → leave server defaults alone.
-                return extra_body, top_level
-
-            enabled = reasoning_config.get("enabled") is not False
-            if not enabled:
-                extra_body["thinking"] = {"type": "disabled"}
-                return extra_body, top_level
-
-            effort = (reasoning_config.get("effort") or "").strip().lower()
-            if effort in {"xhigh", "max", "ultra"}:
-                top_level["reasoning_effort"] = "high"
-            elif effort in {"low", "medium", "high"}:
-                top_level["reasoning_effort"] = effort
-
-            # Avoid "cannot specify both 'thinking' and 'reasoning_effort'" HTTP 400:
-            # only send extra_body["thinking"] when no reasoning_effort is set.
-            if "reasoning_effort" not in top_level:
-                extra_body["thinking"] = {"type": "enabled"}
-            return extra_body, top_level
-
-        if not _is_deepseek_thinking_model(model):
-            return extra_body, top_level
-
-        enabled = True
-        if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
-            enabled = False
-
-        if not enabled:
-            extra_body["thinking"] = {"type": "disabled"}
-            return extra_body, top_level
-
-        if isinstance(reasoning_config, dict):
-            effort = (reasoning_config.get("effort") or "").strip().lower()
-            if effort in {"xhigh", "max", "ultra"}:
-                top_level["reasoning_effort"] = "max"
-            elif effort in {"low", "medium", "high"}:
-                top_level["reasoning_effort"] = effort
-
-        # Avoid "cannot specify both 'thinking' and 'reasoning_effort'" HTTP 400:
-        # only send extra_body["thinking"] when no reasoning_effort is set.
-        if "reasoning_effort" not in top_level:
-            extra_body["thinking"] = {"type": "enabled"}
-
-        return extra_body, top_level
+                return {}, {}
+            return _thinking_toggle_extras(reasoning_config, re_.KIMI_K2_EFFORTS)
+        if _is_deepseek_thinking_model(model):
+            return _thinking_toggle_extras(reasoning_config, re_.DEEPSEEK_V4_EFFORTS, re_.DEEPSEEK_V4_OVERRIDES)
+        return {}, {}
 
 
-opencode_zen = ProviderProfile(
-    name="opencode-zen",
-    aliases=("opencode", "opencode_zen", "zen"),
-    env_vars=("OPENCODE_ZEN_API_KEY",),
-    base_url="https://opencode.ai/zen/v1",
+def _build_ox_alpha_reasoning_extras(
+    reasoning_config: dict | None, model: str | None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Ox Alpha (x-preview-f-free) reasoning_effort translation, shared with the
+    opencode-free profile (low/high/max only; anything else 400s)."""
+    if _flat_model_name(model) != "x-preview-f-free":
+        return {}, {}
+    clamped = re_.clamp_effort(_requested_effort(reasoning_config), re_.OX_ALPHA_EFFORTS, re_.OX_ALPHA_OVERRIDES)
+    return ({}, {"reasoning_effort": clamped}) if clamped in re_.OX_ALPHA_EFFORTS else ({}, {})
+
+
+class OpenCodeZenProfile(ProviderProfile):
+    """OpenCode Zen - model-specific reasoning controls."""
+
+    def build_api_kwargs_extras(
+        self, *, reasoning_config: dict | None = None, model: str | None = None, **context
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        return _build_ox_alpha_reasoning_extras(reasoning_config, model)
+
+
+opencode_zen = OpenCodeZenProfile(
+    name="opencode-zen", aliases=("opencode", "opencode_zen", "zen"), env_vars=("OPENCODE_ZEN_API_KEY",),
+    base_url="https://opencode.ai/zen/v1", default_headers=dict(_ATTRIBUTION_HEADERS),
     default_aux_model="gemini-3-flash",
 )
 
 opencode_go = OpenCodeGoProfile(
-    name="opencode-go",
-    aliases=("opencode_go", "go", "opencode-go-sub"),
-    env_vars=("OPENCODE_GO_API_KEY",),
-    base_url="https://opencode.ai/zen/go/v1",
+    name="opencode-go", aliases=("opencode_go", "go", "opencode-go-sub"), env_vars=("OPENCODE_GO_API_KEY",),
+    base_url="https://opencode.ai/zen/go/v1", default_headers=dict(_ATTRIBUTION_HEADERS),
     default_aux_model="glm-5",
 )
 

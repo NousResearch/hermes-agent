@@ -104,6 +104,30 @@ const baseProps = {
   voiceLabel: ''
 }
 
+describe('StatusRule session title', () => {
+  it('pins the named session at the far-right edge instead of the cwd label', () => {
+    const element = StatusRule({
+      ...baseProps,
+      sessionTitle: 'weekly-digest'
+    })
+
+    const rendered = textContent(element)
+    const title = findElementWithText(element, 'weekly-digest')
+
+    expect(rendered).toContain('weekly-digest')
+    expect(rendered).not.toContain('~/repo')
+    // Regression for issue #82465: a raw, full-saturation accent-hue
+    // background (e.g. #FFBF00 on DARK_SEEDS) paired with statusFg (a
+    // near-white tone never designed to sit on it) rendered at roughly a
+    // 1.5-2:1 contrast ratio -- unreadable. No background fill at all;
+    // the accent color goes on the text instead, matching the theme's
+    // own convention that a raw accent hue is never used as a solid
+    // fill elsewhere (fills are always softened, e.g. activeRow).
+    expect(title?.props.backgroundColor).toBeUndefined()
+    expect(title?.props.color).toBe(DEFAULT_THEME.color.accent)
+  })
+})
+
 describe('StatusRule background-subagent indicator', () => {
   it('renders ⛓ N on a wide terminal when subagents are running', () => {
     const element = StatusRule({
@@ -465,5 +489,61 @@ describe('StatusRule idle-since read-out', () => {
     })
 
     expect(findComponentByName(element, 'IdleSince')).toBeNull()
+  })
+})
+
+describe('StatusRule perf read-outs (cache hit / latency / tps)', () => {
+  const perfUsage = {
+    ...baseProps.usage,
+    avg_latency_s: 3.2,
+    avg_tps: 50.4,
+    cache_hit_pct: 87,
+    calls: 4,
+    input: 1000,
+    output: 500
+  }
+
+  it('renders all three segments on a wide terminal', () => {
+    const element = StatusRule({ ...baseProps, cols: 160, usage: perfUsage })
+    const rendered = textContent(element)
+
+    expect(rendered).toContain('◎ 87%')
+    expect(rendered).toContain('◷ 3.2s')
+    expect(rendered).toContain('↑ 50 t/s')
+  })
+
+  it('self-hides when the server omits the keys', () => {
+    const element = StatusRule({ ...baseProps, cols: 160 })
+    const rendered = textContent(element)
+
+    expect(rendered).not.toContain('◎')
+    expect(rendered).not.toContain('◷')
+    expect(rendered).not.toContain('t/s')
+  })
+
+  it('honors the display.status_bar.fields visibility filter', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 160,
+      statusBarFields: new Set(['model', 'context_pct', 'cache_hit']),
+      usage: perfUsage
+    })
+
+    const rendered = textContent(element)
+
+    expect(rendered).toContain('◎ 87%')
+    expect(rendered).not.toContain('◷')
+    expect(rendered).not.toContain('t/s')
+  })
+
+  it('hides the session title badge when the fields filter omits title', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 160,
+      sessionTitle: 'weekly-digest',
+      statusBarFields: new Set(['model', 'context_pct'])
+    })
+
+    expect(textContent(element)).not.toContain('weekly-digest')
   })
 })

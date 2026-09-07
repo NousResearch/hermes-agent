@@ -94,8 +94,9 @@ export function repoStatusForCwd(cwd?: null | string): ReadableAtom<HermesRepoSt
  * Is this path a git repo? This function reads the probe cache, and probes on
  * demand when the cache has no entry for the path. Use it to validate any repo
  * that was picked out of candidate FOLDERS: a path in a project row is not
- * evidence that git can branch from it. False on a remote backend, because
- * there is no local git truth to probe.
+ * evidence that git can branch from it. On a remote gateway the probe is
+ * backend-routed (`desktopGit()` returns the REST mirror), so a VPS path is
+ * judged by the VPS's git — not by this machine's filesystem (#81724).
  */
 export async function isGitRepoPath(cwd: string): Promise<boolean> {
   const key = normalizeCwd(cwd)

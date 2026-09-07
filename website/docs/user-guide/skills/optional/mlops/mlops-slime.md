@@ -1,12 +1,12 @@
 ---
-title: "Slime Rl Training — RL post-training for LLMs with Megatron and SGLang"
-sidebar_label: "Slime Rl Training"
+title: "Slime — RL post-training for LLMs with Megatron and SGLang"
+sidebar_label: "Slime"
 description: "RL post-training for LLMs with Megatron and SGLang"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
-# Slime Rl Training
+# Slime
 
 RL post-training for LLMs with Megatron and SGLang.
 
@@ -15,7 +15,7 @@ RL post-training for LLMs with Megatron and SGLang.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/slime` |
-| Path | `optional-skills/mlops/slime` |
+| Path | `optional-skills/mlops\slime` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
 | License | MIT |

@@ -40,6 +40,24 @@ export const prepareSubmission = (display: string, tokens: ComposerToken[]) => (
   text: expandTokens(tokens)(display)
 })
 
+/**
+ * Split a slash submission into the two things it has to be at once.
+ *
+ * A slash command's argument is ordinary user text, so a collapsed paste in it
+ * must resolve BEFORE the command runs — otherwise `/pr-triage [[ … [412 lines]
+ * … ]]` hands the skill the label and the agent faithfully reports that the
+ * paste is truncated. The transcript still shows the compact form, because a
+ * 412-line paste inlined into the scrollback is exactly what collapsing it was
+ * for.
+ *
+ * Image tokens stay as labels: the gateway already holds those files in
+ * `attached_images` and splices them in at submit.
+ */
+export const prepareSlashSubmission = (display: string, tokens: ComposerToken[]) => ({
+  command: expandPasteTokens(tokens)(display),
+  display
+})
+
 export const shouldInterpolateSubmission = (display: string) => hasInterpolation(display)
 
 export function useSubmission(opts: UseSubmissionOptions) {
@@ -79,7 +97,13 @@ export function useSubmission(opts: UseSubmissionOptions) {
   }, [composerState.input, composerState.inputBuf])
 
   const send = useCallback(
-    (text: string, showUserMessage = true, displayText?: string, expandOverride?: (value: string) => string) => {
+    (
+      text: string,
+      showUserMessage = true,
+      displayText?: string,
+      expandOverride?: (value: string) => string,
+      submitOpts: { skipDetectDrop?: boolean } = {}
+    ) => {
       // Read tokens off the ref, not render state: a paste immediately followed
       // by Enter submits before React has re-rendered with the new token.
       const expand = expandOverride ?? expandTokens(composerRefs.tokensRef.current)
@@ -95,7 +119,8 @@ export function useSubmission(opts: UseSubmissionOptions) {
           sys
         },
         showUserMessage,
-        displayText
+        displayText,
+        submitOpts
       )
     },
     [appendMessage, composerActions, composerRefs, gw, setLastUserMsg, sys]
@@ -238,22 +263,23 @@ export function useSubmission(opts: UseSubmissionOptions) {
       const submissionTokens = [...composerRefs.tokensRef.current]
       const submission = prepareSubmission(full, submissionTokens)
       const toHistory = submission.text
-      const queuePayload = expandPasteTokens(submissionTokens)(full)
 
       if (looksLikeSlashCommand(full)) {
-        appendMessage({ kind: 'slash', role: 'system', text: full })
+        const slash = prepareSlashSubmission(full, submissionTokens)
+
+        appendMessage({ kind: 'slash', role: 'system', text: slash.display })
         composerActions.pushHistory(toHistory)
 
         const parsed = parseSlashCommand(full)
 
         const queued =
-          parsed.name === 'queue' || parsed.name === 'q' ? queueItemFromSlash(full, queuePayload) : undefined
+          parsed.name === 'queue' || parsed.name === 'q' ? queueItemFromSlash(slash.display, slash.command) : undefined
 
         if (queued) {
           composerActions.enqueue(queued.text, queued.display)
           sys(`queued: "${queued.display.slice(0, 50)}${queued.display.length > 50 ? '…' : ''}"`)
         } else {
-          slashRef.current(full)
+          slashRef.current(slash.command)
         }
 
         composerActions.clearIn()
@@ -384,7 +410,22 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
   submitRef.current = submit
 
-  return { dispatchSubmission, send, sendQueued, submit }
+  // Literal submission: route text straight to the prompt pipeline, skipping
+  // slash-command routing, `!` shell dispatch, [[token]] expansion, and
+  // $(...) interpolation. Startup `-q` queries use this — they're arbitrary
+  // launcher/script text, and one-shot mode already treats them literally.
+  const submitLiteral = useCallback(
+    (value: string) => {
+      if (!value.trim()) {
+        return
+      }
+
+      send(value, true, value, v => v, { skipDetectDrop: true })
+    },
+    [send]
+  )
+
+  return { dispatchSubmission, send, sendQueued, submit, submitLiteral }
 }
 
 export interface UseSubmissionOptions {

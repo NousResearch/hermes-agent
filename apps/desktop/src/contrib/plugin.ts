@@ -21,7 +21,8 @@ import { registry } from './registry'
 import type { Contribution } from './types'
 
 export type { PluginRestOptions } from '@/hermes'
-export type { PluginNativeNotificationInput } from '@/store/native-notifications'
+export type { HermesOpenTarget } from '@/lib/hermes-open-target'
+export type { PluginNativeNotificationInput, PluginNotificationAction } from '@/store/native-notifications'
 
 /** A contribution as a plugin author writes it — provenance + id scoping are
  *  the host's job, so those fields are off-limits here. */
@@ -44,7 +45,9 @@ export interface PluginOs {
   /** Native OS notification (Electron), attributed to this plugin. Gated by
    *  Settings ▸ Notifications ▸ "Plugin notifications" and fires only while
    *  the user is away from Hermes — use `host.notify` for the in-app toast.
-   *  Throttled per plugin; reserve it for genuinely notable events. */
+   *  Throttled per plugin; reserve it for genuinely notable events.
+   *  Supports `icon`, `activate` (e.g. `hermes://index-network/intent/1`),
+   *  action buttons, and renderer `onActivate` / `onAction` callbacks. */
   notify: (input: PluginNativeNotificationInput) => void
   /** Open a URL with the OS default handler (browser, mail client, custom
    *  schemes like `spotify:`). Resolves false when the shell can't. */
@@ -52,8 +55,21 @@ export interface PluginOs {
   /** Reveal a path in the OS file manager (Finder / Explorer). Resolves
    *  false when unavailable. */
   revealPath: (path: string) => Promise<boolean>
+  /** Native save dialog. Resolves the chosen path, or null on cancel /
+   *  when unavailable. The path is on the BACKEND's filesystem, so hand it
+   *  to a `rest` call rather than trying to write it from the renderer. */
+  pickSavePath: (options?: PluginFileDialogOptions) => Promise<null | string>
+  /** Native open dialog, single file. Resolves the chosen path, or null on
+   *  cancel / when unavailable. */
+  pickOpenPath: (options?: PluginFileDialogOptions) => Promise<null | string>
   /** Write text to the system clipboard. Resolves false when unavailable. */
   writeClipboard: (text: string) => Promise<boolean>
+}
+
+export interface PluginFileDialogOptions {
+  defaultPath?: string
+  filters?: Array<{ extensions: string[]; name: string }>
+  title?: string
 }
 
 export interface PluginContext {
@@ -93,6 +109,8 @@ export interface HermesPlugin {
   id: string
   /** Human name for settings / about UI. */
   name?: string
+  /** One-liner for the settings inventory (what the plugin adds). */
+  description?: string
   /** Registers on load when the user hasn't chosen (default true). Set false
    *  for opt-in plugins: they inventory in Settings ▸ Plugins, off until the
    *  user flips the switch. */
@@ -141,6 +159,21 @@ function createPluginOs(pluginId: string): PluginOs {
     }
   }
 
+  // Same shape as `attempt`, for the pickers that answer with a path.
+  const attemptPath = async (run: (bridge: NonNullable<typeof window.hermesDesktop>) => Promise<null | string>) => {
+    const bridge = typeof window === 'undefined' ? undefined : window.hermesDesktop
+
+    if (!bridge) {
+      return null
+    }
+
+    try {
+      return await run(bridge)
+    } catch {
+      return null
+    }
+  }
+
   return {
     notify: input => dispatchPluginNativeNotification(pluginId, input),
     openExternal: url =>
@@ -149,6 +182,13 @@ function createPluginOs(pluginId: string): PluginOs {
 
         return true
       }),
+    pickOpenPath: options =>
+      attemptPath(async bridge => {
+        const picked = await bridge.selectPaths?.({ ...options, multiple: false })
+
+        return picked?.[0] ?? null
+      }),
+    pickSavePath: options => attemptPath(async bridge => (await bridge.selectSavePath?.(options)) ?? null),
     revealPath: path => attempt(async bridge => (bridge.revealPath ? bridge.revealPath(path) : false)),
     writeClipboard: text => attempt(bridge => bridge.writeClipboard(text))
   }

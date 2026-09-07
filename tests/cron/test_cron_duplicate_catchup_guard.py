@@ -137,3 +137,30 @@ def test_distant_rollback_is_not_suppressed(monkeypatch, tmp_path):
     fired = _evaluate_due_job(job, _scan(job), run_claim_ttl=900.0)
 
     assert fired is True, "a distant rollback must not be suppressed by a later completion"
+
+
+def test_late_catchup_claim_within_grace_is_suppressed(monkeypatch, tmp_path):
+    """The gateway was down past the scheduled instant: the occurrence is
+    claimed and completes 30 minutes late — inside the daily job's 2h catch-up
+    grace but far beyond the 300s ticker slack. The stale re-armed
+    next_run_at must still be suppressed (PR #104323 review, late-claim
+    variant)."""
+    job = _job(_STALE)
+    _completed_execution(job["id"], _STALE + timedelta(minutes=30))
+
+    fired = _evaluate_due_job(job, _scan(job), run_claim_ttl=900.0)
+
+    assert fired is False, "a late-but-legitimate catch-up claim is still this occurrence"
+    assert job["next_run_at"] != _iso(_STALE), "next_run_at must be re-anchored forward"
+
+
+def test_claim_beyond_grace_still_fails_open(monkeypatch, tmp_path):
+    """A completion claimed beyond the job's catch-up grace is indeterminate
+    (no legitimate claim lands there): the guard fails open rather than
+    over-suppressing."""
+    job = _job(_STALE)
+    _completed_execution(job["id"], _STALE + timedelta(hours=3))  # grace is 2h for daily
+
+    fired = _evaluate_due_job(job, _scan(job), run_claim_ttl=900.0)
+
+    assert fired is True, "beyond-grace claims stay fail-open"

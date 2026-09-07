@@ -2803,7 +2803,7 @@ def _reanchor_stale_cron(d: _DueJob) -> bool:
     return False
 
 
-def _already_completed_occurrence(d: _DueJob) -> bool:
+def _already_completed_occurrence(d: _DueJob, grace: int) -> bool:
     """True when the occurrence at ``next_run`` already ran to completion.
 
     Guard for the recurring fast-forward: a stale ``next_run_at`` can be a
@@ -2812,10 +2812,13 @@ def _already_completed_occurrence(d: _DueJob) -> bool:
     dispatch stamp's ``scheduled_at`` being string-exact with the stored
     ``next_run_at`` (the scheduler's own dispatch-stamp discipline — a
     deliberately re-armed ``next_run_at`` is always a fresh timestamp), and by
-    the latest ledger row being a completion claimed within a tight window of
-    the scheduled instant (a bare ``>=`` would over-suppress a genuinely
-    missed round when ``next_run_at`` rolls back many rounds). Fails open on
-    any ledger/parse error so the scheduler is never wedged (#104312).
+    the latest ledger row being a completion claimed within the occurrence's
+    claim window. That window is wider than ticker slack on the late side: a
+    gateway that was down claims its catch-up occurrence minutes — up to
+    ``grace`` — after the scheduled instant, and that late claim is still this
+    occurrence (±300s alone let the late-claim variant of the same race
+    re-fire; PR #104323 review). Fails open on any ledger/parse error so the
+    scheduler is never wedged (#104312).
     """
     ld = d.job.get("last_dispatch")
     if not isinstance(ld, dict):
@@ -2834,7 +2837,8 @@ def _already_completed_occurrence(d: _DueJob) -> bool:
     if claimed_dt is None:
         return False
     tol = timedelta(seconds=_LATE_DISPATCH_TOLERANCE_SECONDS)
-    return (d.next_run_dt - tol) <= claimed_dt <= (d.next_run_dt + tol)
+    return (d.next_run_dt - tol) <= claimed_dt <= (
+        d.next_run_dt + timedelta(seconds=max(grace, _LATE_DISPATCH_TOLERANCE_SECONDS)))
 
 
 def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> None:
@@ -2954,7 +2958,7 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
         # #104312: a stale next_run_at can be a past instant that ALREADY ran
         # (process-handoff write race) — fast-forwarding would re-fire it. If
         # this exact occurrence completed, re-anchor and skip the tick.
-        if _already_completed_occurrence(d):
+        if _already_completed_occurrence(d, grace):
             new_next = d.recompute_next()
             if new_next:
                 logger.info(

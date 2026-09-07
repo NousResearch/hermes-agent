@@ -166,6 +166,17 @@ def _create_local_session(task_id: str, allow_real_profile: bool = True) -> Dict
     ``allow_real_profile=False``: the user's cookie jar must not reach an arbitrary
     internal host the model chose.
     """
+    bare_task_id = _bt._bare_task_id_for_session_key(task_id)
+    is_ephemeral = False
+    try:
+        from agent.session_policy import is_session_ephemeral
+        is_ephemeral = is_session_ephemeral(bare_task_id) or is_session_ephemeral(task_id)
+    except Exception:
+        pass
+
+    if is_ephemeral:
+        allow_real_profile = False
+
     if allow_real_profile:
         cdp_url, err = _real_profile._real_profile_cdp()
         if err:
@@ -180,8 +191,8 @@ def _create_local_session(task_id: str, allow_real_profile: bool = True) -> Dict
     if _bt._is_browser_use_cli_mode() and _lp._using_lightpanda_engine():
         return _create_lightpanda_session(task_id)
 
-    info = _session_record("h", None, {"local": True})
-    _bt.logger.info("Created local browser session %s for task %s", info["session_name"], task_id)
+    info = _session_record("h", None, {"local": True, "ephemeral": is_ephemeral})
+    _bt.logger.info("Created local browser session %s for task %s (ephemeral=%s)", info["session_name"], task_id, is_ephemeral)
     return info
 
 
@@ -235,7 +246,7 @@ def _create_cloud_session_or_fallback(task_id: str, provider) -> Dict[str, Any]:
             session_info = _create_local_session(task_id)
         except Exception as local_error:
             raise RuntimeError(f"Cloud provider {provider_name} failed ({e}) and local "
-                               f"fallback also failed ({local_error})") from e
+                                f"fallback also failed ({local_error})") from e
         if isinstance(session_info, dict):  # mark degraded for observability
             session_info = {**session_info, "fallback_from_cloud": True, "fallback_reason": str(e),
                             "fallback_provider": provider_name}
@@ -245,7 +256,28 @@ def _create_cloud_session_or_fallback(task_id: str, provider) -> Dict[str, Any]:
 def _create_session_for_key(task_id: str, force_local: bool) -> Dict[str, Any]:
     """Fresh session for ``task_id`` (runs OUTSIDE the lock: cloud mode makes a network call).
     Precedence: CDP override > hybrid local sidecar (never real-profile) > cloud > local."""
+    bare_task_id = _bt._bare_task_id_for_session_key(task_id)
+    is_ephemeral = False
+    try:
+        from agent.session_policy import is_session_ephemeral
+        is_ephemeral = is_session_ephemeral(bare_task_id) or is_session_ephemeral(task_id)
+    except Exception:
+        pass
+
     cdp_override = _cdp._get_cdp_override()
+    if is_ephemeral:
+        if cdp_override:
+            raise RuntimeError(
+                "CDP override cannot be used in a temporary chat: external CDP connections bypass "
+                "isolated temporary session cleanup. Start a normal chat (/new) to use custom CDP."
+            )
+        if _cloud._use_real_profile():
+            raise RuntimeError(
+                "Real-profile browsing cannot be used in a temporary chat: real profile data contains "
+                "persistent user cookies and history. Start a normal chat (/new) to use real profile."
+            )
+        return _create_local_session(task_id, allow_real_profile=False)
+
     if cdp_override and not force_local:
         return _create_cdp_session(task_id, cdp_override)
     if force_local:

@@ -55,6 +55,12 @@ def extension_controller_available(action: str) -> bool:
         session_id, principal_id, transport_family = identity = _bound_identity()
         if not all(identity):
             return False
+        try:
+            from agent.session_policy import is_session_ephemeral
+            if session_id and is_session_ephemeral(session_id):
+                return False
+        except Exception:
+            pass
         broker = get_browser_control_broker()
         scope = broker.scope_for_session(session_id=session_id, principal_id=principal_id, transport_family=transport_family)
         return scope is not None and broker.select(scope, action) is not None
@@ -75,6 +81,23 @@ def route_browser_tool(
     called exactly once when the feature is off or no server-bound identity
     exists; once a controller is selected its result/exception is final.
     """
+    target_session = session_id or task_id
+    is_ephemeral = False
+    if target_session:
+        try:
+            from agent.session_policy import is_session_ephemeral
+            from tools.browser_tool import _bare_task_id_for_session_key
+            bare = _bare_task_id_for_session_key(target_session)
+            is_ephemeral = is_session_ephemeral(bare) or is_session_ephemeral(target_session)
+        except Exception:
+            pass
+
+    if is_ephemeral and enabled and (str(principal_id or "").strip() or str(transport_family or "").strip()):
+        raise _controller_unavailable(
+            "Browser extension attach cannot be used in a temporary chat: attached browser extensions "
+            "share persistent browser state. Start a normal chat (/new) to use extension control."
+        )
+
     if not enabled or not str(principal_id or "").strip() or not str(transport_family or "").strip():
         return fallback()
 

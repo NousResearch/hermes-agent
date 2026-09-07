@@ -138,7 +138,10 @@ async def test_secondary_profile_busy_mode_controls_live_busy_behavior(
         agent.steer.assert_not_called()
         agent.interrupt.assert_not_called()
     elif expected_action == "steer":
-        agent.steer.assert_called_once_with("follow up")
+        agent.steer.assert_called_once()
+        injected = agent.steer.call_args.args[0]
+        assert injected.endswith("follow up")
+        assert '"chat_id": "chat-1"' in injected
         agent.interrupt.assert_not_called()
     else:
         agent.steer.assert_not_called()
@@ -174,7 +177,10 @@ async def test_secondary_profile_busy_mode_controls_priority_path(
         agent.steer.assert_not_called()
         assert adapter._pending_messages[session_key] is event
     else:
-        agent.steer.assert_called_once_with("follow up")
+        agent.steer.assert_called_once()
+        injected = agent.steer.call_args.args[0]
+        assert injected.endswith("follow up")
+        assert '"chat_id": "chat-1"' in injected
         assert session_key not in adapter._pending_messages
 
 
@@ -320,7 +326,10 @@ async def test_secondary_adapter_busy_guard_stamps_profile_before_resolving_mode
     await adapter.handle_message(event)
 
     assert event.source.profile == "research"
-    agent.steer.assert_called_once_with("follow up")
+    agent.steer.assert_called_once()
+    injected = agent.steer.call_args.args[0]
+    assert injected.endswith("follow up")
+    assert '"chat_id": "chat-1"' in injected
     agent.interrupt.assert_not_called()
 
 

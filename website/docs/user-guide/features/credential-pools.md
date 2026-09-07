@@ -118,6 +118,7 @@ Type [1/2]:
 | `hermes auth add <provider> --type oauth` | Add an OAuth credential via browser login |
 | `hermes auth remove <provider> <index>` | Remove credential by 1-based index |
 | `hermes auth reset <provider>` | Clear all cooldowns/exhaustion status |
+| `hermes auth reset <provider> <target>` | Clear the cooldown on one credential by index, id, or label |
 
 ## Rotation Strategies
 

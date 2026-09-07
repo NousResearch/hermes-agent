@@ -446,9 +446,19 @@ def auth_remove_command(args) -> None:
 
 def auth_reset_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
+    target = getattr(args, "target", None)
     pool = load_pool(provider)
-    count = pool.reset_statuses()
-    print(f"Reset status on {count} {provider} credentials")
+    if target is None or not str(target).strip():
+        count = pool.reset_statuses()
+        print(f"Reset status on {count} {provider} credentials")
+        return
+    index, matched, error = pool.resolve_target(target)
+    if matched is None or index is None:
+        raise SystemExit(f"{error} Provider: {provider}.")
+    cleared = pool.reset_status(matched.id)
+    if cleared is None:
+        raise SystemExit(f'No credential matching "{target}" for provider {provider}.')
+    print(f"Reset status on {provider} credential #{index} ({cleared.label})")
 
 
 def auth_status_command(args) -> None:

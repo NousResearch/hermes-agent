@@ -25,6 +25,33 @@ pytest.importorskip("numpy")
 
 
 class TestSentenceChunker:
+    @pytest.mark.parametrize("first_min_len", [None, 1, 6])
+    @pytest.mark.parametrize("split_at", range(6))
+    def test_first_threshold_ends_at_first_nonempty_emission(self, first_min_len, split_at):
+        c = ts.SentenceChunker(first_min_len=first_min_len)
+        assert c.feed("<think>private</think>") == []
+        assert c.flush() == []  # An empty flush must not consume the first-sentence override.
+        opener = "Yes. "
+        opening = c.feed(opener[:split_at]) + c.feed(opener[split_at:])
+        assert opening == ([opener] if first_min_len == 1 else [])
+        assert c.feed("OK. ") == []  # Later short sentences still batch normally.
+        rest = c.feed("This is the longer sentence. Tail")
+        assert rest == ["OK. This is the longer sentence. " if opening else
+                        "Yes. OK. This is the longer sentence. "]
+        assert c.flush() == ["Tail"]
+        assert c.flush() == []
+        assert "".join(opening + rest + ["Tail"]) == "Yes. OK. This is the longer sentence. Tail"
+
+        # Several sentences in one delta obey the same first-only rule.
+        batched = ts.SentenceChunker(first_min_len=first_min_len)
+        assert batched.feed("Yes. OK. This is the longer sentence. ") == opening + rest
+
+        # An idle flush of a nonempty tail counts as the first emitted sentence.
+        idle = ts.SentenceChunker(first_min_len=first_min_len)
+        assert idle.feed("Hi") == []
+        assert idle.flush() == ["Hi"]
+        assert idle.feed("OK. ") == []
+
     def test_cuts_sentence_the_moment_its_boundary_arrives(self):
         c = ts.SentenceChunker()
         assert c.feed("This is the first full") == []
@@ -461,7 +488,8 @@ def test_streamer_tempfile_fallback_after_reinit_exhausted(monkeypatch):
     sys.platform == "darwin",
     reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
 )
-def test_hybrid_first_sentence_streamed_individually(monkeypatch):
+@pytest.mark.parametrize("first_min_chars", [None, 1])
+def test_hybrid_first_sentence_streamed_individually(monkeypatch, first_min_chars):
     """The first sentence must get its own stream() call for low TTFA."""
     from tools import tts_tool
     from tools.tts_tool_speaker import stream_tts_to_speaker
@@ -480,7 +508,10 @@ def test_hybrid_first_sentence_streamed_individually(monkeypatch):
             yield b"\x00\x00" * 10
 
     sd, out = _sd_mock()
-    q = _drain_queue(["This is the first complete sentence."])
+    text = "This is the first complete sentence." if first_min_chars is None else "Yes. OK. This is the next full sentence."
+    config = {} if first_min_chars is None else {"streaming": {"first_sentence_min_chars": first_min_chars}}
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: config)
+    q = _drain_queue([text])
     stop, done = threading.Event(), threading.Event()
 
     with patch("tools.tts_streaming.resolve_streaming_provider",
@@ -488,9 +519,8 @@ def test_hybrid_first_sentence_streamed_individually(monkeypatch):
          patch.object(tts_tool, "_import_sounddevice", return_value=sd):
         stream_tts_to_speaker(q, stop, done)
 
-    assert len(stream_calls) == 1, (
-        f"single sentence should trigger 1 stream() call, got {stream_calls}"
-    )
+    assert stream_calls == ([text] if first_min_chars is None else
+                            ["Yes.", "OK. This is the next full sentence."])
     assert done.is_set()
 
 

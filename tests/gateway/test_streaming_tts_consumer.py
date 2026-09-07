@@ -20,6 +20,43 @@ from gateway.streaming_tts_consumer import StreamingTTSConsumer
 from tools.tts_streaming import SentenceChunker
 
 
+@pytest.mark.parametrize("value", [None, 1, 6, 20, 0, -1, True, "1", 1.5, float("inf")])
+def test_profile_first_sentence_threshold_preserves_later_batching(value, tmp_path, monkeypatch):
+    import yaml
+    from tools.tts_tool import _load_tts_config
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+        "tts": {"streaming": {"first_sentence_min_chars": value}},
+    }))
+    calls = []
+
+    class TrackingStreamer(FakeStreamer):
+        def stream(self, text):
+            calls.append(text)
+            yield from super().stream(text)
+
+    monkeypatch.setattr("tools.tts_streaming.resolve_streaming_provider", lambda cfg: TrackingStreamer())
+
+    async def run(loop):
+        adapter = FakeVoiceAdapter()
+        consumer = StreamingTTSConsumer(adapter, "chat", _load_tts_config(), loop)
+        consumer.on_delta("Yes. ")
+        tuned = type(value) is int and value == 1
+        assert consumer._queue.qsize() == (1 if tuned else 0)
+        consumer.on_delta("OK. This is the longer sentence. Tail")
+        consumer.start()
+        consumer.finish()
+        assert await consumer.wait_complete()
+        expected = (["Yes.", "OK. This is the longer sentence."] if tuned else
+                    ["Yes. OK. This is the longer sentence."])
+        assert calls == expected + ["Tail"]
+        assert adapter.finish_count == 1
+        assert consumer.completed and not consumer.partial
+
+    _run_test(run)
+
+
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------

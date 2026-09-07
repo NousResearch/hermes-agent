@@ -28,6 +28,7 @@ import {
   SESSION_WATCHDOG_TIMEOUT_MS,
   setSessionStalled
 } from '@/store/session-states'
+import type { SessionInfo } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../types'
 import type { GatewayRequester } from '../types'
@@ -48,6 +49,18 @@ export function resolveActiveTranscriptSession(storedSessionId: string): ActiveT
   const ownerRoute = getSessionOwnerHint(storedSessionId)
 
   return ownerRoute ? { ownerRoute, profile: ownerRoute.profile } : undefined
+}
+
+/** The live tip and compression-lineage root can name the same conversation. */
+function storedIdsAliasSameSession(a: string, b: string): boolean {
+  if (a === b) {
+    return true
+  }
+
+  const aliases = (rows: readonly Pick<SessionInfo, '_lineage_root_id' | 'id'>[]) =>
+    rows.some(row => sessionMatchesStoredId(row, a) && sessionMatchesStoredId(row, b))
+
+  return aliases(ownerLookupSessionRows())
 }
 
 export interface ActiveTranscriptRefreshDeps {
@@ -384,17 +397,25 @@ export function rehydrateLiveSessionStatuses(
 
   for (const session of response.sessions ?? []) {
     const runtimeSessionId = session.id?.trim()
-    const storedSessionId = session.session_key?.trim()
+    const snapshotStoredSessionId = session.session_key?.trim()
     const needsInput = session.status === 'waiting'
     const working = session.status === 'working' || needsInput
 
-    if (!runtimeSessionId || !storedSessionId) {
+    if (!runtimeSessionId || !snapshotStoredSessionId) {
       continue
     }
 
     seen.add(runtimeSessionId)
 
     const existing = $sessionStates.get()[runtimeSessionId]
+
+    // active_list can retain the runtime's launch-time root while session.info
+    // and the renderer already use its compressed tip. Republishing that alias
+    // on every poll emits false rotations and repeatedly re-homes the chat.
+    const storedSessionId =
+      existing?.storedSessionId && storedIdsAliasSameSession(existing.storedSessionId, snapshotStoredSessionId)
+        ? existing.storedSessionId
+        : snapshotStoredSessionId
 
     // A turn we just submitted is not yet running as far as the backend is
     // concerned, so the snapshot honestly reports it idle — but the local

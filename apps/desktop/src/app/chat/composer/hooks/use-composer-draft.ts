@@ -40,8 +40,10 @@ import {
 } from '../focus'
 import { type InlineRefInput, insertInlineRefsIntoEditor } from '../inline-refs'
 import {
+  caretOffsetInEditor,
   composerPlainText,
   normalizeComposerEditorDom,
+  placeCaretAtOffset,
   placeCaretEnd,
   REF_RE,
   renderComposerContents
@@ -135,19 +137,26 @@ export function useComposerDraft({
   }, [])
 
   // The single write path for programmatic draft mutations: mirror → AUI state →
-  // repaint the editor (caret to end). Repaints even while focused — inserts /
-  // restores run mid-focus, and the runtime sync only repaints an unfocused
-  // editor — so the visible text never lags the store.
+  // Repaint even while focused so inserts/restores never lag the store. A
+  // background restore must not rewrite identical DOM or move a live caret;
+  // explicit inserts still place the caret at the end.
   const paintDraft = useCallback(
-    (next: string, focus = true) => {
+    (next: string, focus = true, preserveCaret = false) => {
       draftRef.current = next
       setComposerText(next)
 
       const editor = editorRef.current
 
-      if (editor) {
+      if (editor && sanitizeComposerInput(composerPlainText(editor)) !== next) {
+        const caret = preserveCaret && document.activeElement === editor ? caretOffsetInEditor(editor) : null
+
         renderComposerContents(editor, next, { trailingCommitted: true })
-        placeCaretEnd(editor)
+
+        if (caret === null) {
+          placeCaretEnd(editor)
+        } else {
+          placeCaretAtOffset(editor, Math.min(caret, next.length))
+        }
       }
 
       if (focus) {
@@ -254,7 +263,7 @@ export function useComposerDraft({
     }
 
     attachmentScope.$attachments.set(cloneAttachments(attachments))
-    paintDraft(text, false)
+    paintDraft(text, false, true)
   }
 
   const clearDraft = useCallback(() => {

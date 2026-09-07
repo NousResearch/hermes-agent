@@ -7,6 +7,7 @@ import { LanguageSwitcher } from '@/components/language-switcher'
 import { Button } from '@/components/ui/button'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import type { DesktopMarketplaceSearchItem } from '@/global'
+import { saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
@@ -17,6 +18,7 @@ import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
+import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
@@ -46,6 +48,7 @@ import {
   TRANSLUCENCY_STEP,
   TRANSLUCENCY_SUPPORTED
 } from '@/store/translucency'
+import { $userBubbleTransparency, setUserBubbleTransparency } from '@/store/user-bubble-transparency'
 import { $vibeHeartsEnabled, setVibeHeartsEnabled } from '@/store/vibe-hearts-enabled'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
 import { getBaseColors, useTheme } from '@/themes/context'
@@ -53,12 +56,56 @@ import { installVscodeThemeFromMarketplace } from '@/themes/install'
 import type { DesktopTheme } from '@/themes/types'
 import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/user-themes'
 
+import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
+
 import { MODE_OPTIONS } from './constants'
+import { setNested } from './helpers'
 import { PetSettings } from './pet-settings'
 import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
 import { APPEARANCE_SETTING_IDS } from './settings-search'
 import { TerminalFontSetting } from './terminal-font-setting'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
+
+// display.resume_last_session lives in the backend config record (shared with
+// config.yaml and the cold-start restore in use-desktop-integrations), not a
+// renderer store. Saves write through the shared react-query cache so the
+// restore gate sees the new value on the next launch.
+function ResumeLastSessionSetting() {
+  const { t } = useI18n()
+  const a = t.settings.appearance
+  const configQuery = useHermesConfigRecord()
+  const config = configQuery.data
+  const checked = (config?.display as { resume_last_session?: unknown } | undefined)?.resume_last_session !== false
+
+  const update = (on: boolean) => {
+    if (!config) {
+      return
+    }
+
+    const next = setNested(config, 'display.resume_last_session', on)
+    setHermesConfigCache(next)
+    void saveHermesConfig(next)
+      .then(result => {
+        if (!result.ok) {
+          throw new Error(t.settings.config.autosaveFailed)
+        }
+      })
+      .catch(error => {
+        setHermesConfigCache(config)
+        notifyError(error, t.settings.config.autosaveFailed)
+      })
+  }
+
+  return (
+    <ToggleRow
+      checked={checked}
+      description={a.resumeLastSessionDesc}
+      disabled={!config}
+      label={a.resumeLastSessionTitle}
+      onChange={update}
+    />
+  )
+}
 
 function ThemePreview({ name, mode }: { name: string; mode: 'light' | 'dark' }) {
   // Preview in the *current* mode: the dark palette in Dark, and the light
@@ -356,6 +403,7 @@ export function AppearanceSettings() {
   const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
   const translucency = useStore($translucency)
   const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
+  const userBubbleTransparency = useStore($userBubbleTransparency)
   const reactionsEnabled = useStore($reactionsEnabled)
   const tipsEnabled = useStore($tipsEnabled)
   const toursEnabled = useStore($toursEnabled)
@@ -699,6 +747,24 @@ export function AppearanceSettings() {
 
           <ListRow
             action={
+              // Same peek as the window lever: the bubble being tuned sits
+              // behind this overlay, so the overlay ghosts while the hand is
+              // on the slider.
+              <div className="flex items-center gap-3" data-translucency-peek-scope="">
+                <TranslucencySlider
+                  label={a.userBubbleTitle}
+                  onChange={setUserBubbleTransparency}
+                  value={userBubbleTransparency}
+                />
+              </div>
+            }
+            description={a.userBubbleDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.userBubble)}
+            title={a.userBubbleTitle}
+          />
+
+          <ListRow
+            action={
               <SegmentedControl
                 onChange={id => {
                   triggerHaptic('selection')
@@ -741,6 +807,8 @@ export function AppearanceSettings() {
             label={a.composerPopoutTitle}
             onChange={setComposerPopoutGesturesEnabled}
           />
+
+          <ResumeLastSessionSetting />
 
           <ListRow
             action={

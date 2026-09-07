@@ -24,7 +24,21 @@ import {
   sideloadLocalModel
 } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { Check, CheckCircle2, Cpu, Download, Eject, FolderOpen, Loader2, Monitor, Package, Search, StopFilled, Trash2, Zap } from '@/lib/icons'
+import {
+  Check,
+  CheckCircle2,
+  Cpu,
+  Download,
+  Eject,
+  FolderOpen,
+  Loader2,
+  Monitor,
+  Package,
+  Search,
+  StopFilled,
+  Trash2,
+  Zap
+} from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
   $localRuntimeJobs,
@@ -251,9 +265,7 @@ export function LocalModelsSettings() {
   const navigate = useNavigate()
   const seenQuickstarts = useRef(new Set<string>())
 
-  const runningQuickstart = jobs.find(
-    j => j.kind === 'quickstart' && j.status === 'running'
-  )
+  const runningQuickstart = jobs.find(j => j.kind === 'quickstart' && j.status === 'running')
 
   useEffect(() => {
     // Event detection, not value mirroring: the ref only remembers which
@@ -298,11 +310,7 @@ export function LocalModelsSettings() {
     // Stage rail derived from the job phase: engine -> model -> finish.
     const phase = qJob?.phase ?? ''
 
-    const stageIndex = ['starting-server', 'setting-default'].includes(phase)
-      ? 2
-      : phase === 'downloading'
-        ? 1
-        : 0
+    const stageIndex = ['starting-server', 'setting-default'].includes(phase) ? 2 : phase === 'downloading' ? 1 : 0
 
     const stages = [copy.quickstartStageEngine, copy.quickstartStageModel, copy.quickstartStageFinish]
 
@@ -334,9 +342,7 @@ export function LocalModelsSettings() {
 
             {qJob ? (
               <>
-                <p className="mt-2 min-h-10 text-[0.8rem] leading-5 text-muted-foreground">
-                  {liveDetail}
-                </p>
+                <p className="mt-2 min-h-10 text-[0.8rem] leading-5 text-muted-foreground">{liveDetail}</p>
 
                 <div className="mt-5">
                   <ProgressBar percent={qJob.percent} />
@@ -397,8 +403,7 @@ export function LocalModelsSettings() {
 
   // Up to date = the authority (status) says the configured tag is what's
   // serving. Shown whenever true — not only right after an update.
-  const updateApplied =
-    status.runtime_installed && !status.update_available && status.tag === status.configured_tag
+  const updateApplied = status.runtime_installed && !status.update_available && status.tag === status.configured_tag
 
   return (
     <SettingsContent>
@@ -511,9 +516,7 @@ export function LocalModelsSettings() {
           />
         )}
 
-        {lastError?.kind === 'runtime-install' && (
-          <p className="text-[0.75rem] text-destructive">{lastError.error}</p>
-        )}
+        {lastError?.kind === 'runtime-install' && <p className="text-[0.75rem] text-destructive">{lastError.error}</p>}
       </SettingsSection>
 
       {/* ── This machine ── */}
@@ -571,13 +574,7 @@ export function LocalModelsSettings() {
                   model.downloaded ? (
                     <div className="flex items-center justify-end gap-2">
                       {isLoaded && livePlacement && (
-                        <Tip
-                          label={
-                            livePlacement.spilled
-                              ? copy.placementSpilledTip
-                              : copy.placementResidentTip
-                          }
-                        >
+                        <Tip label={livePlacement.spilled ? copy.placementSpilledTip : copy.placementResidentTip}>
                           <Pill tone={livePlacement.spilled ? 'warn' : 'success'}>
                             <Cpu className="mr-1 size-3" />
                             {livePlacement.granted_window_label ?? livePlacement.window_label ?? ''}
@@ -701,8 +698,9 @@ export function LocalModelsSettings() {
                           model, so a spilled full window goes gray. Anything
                           starting below its native window gets one quiet
                           'Up to' pill instead of a start/grow pair. */}
-                      {model.fits && model.start_window_label && (
-                        model.start_window && model.start_window >= model.native_context ? (
+                      {model.fits &&
+                        model.start_window_label &&
+                        (model.start_window && model.start_window >= model.native_context ? (
                           <Tip label={copy.pillFullContextTip}>
                             <Pill tone={model.spilled ? 'muted' : 'success'}>
                               {copy.pillFullContext(model.native_context_label)}
@@ -712,12 +710,9 @@ export function LocalModelsSettings() {
                           <Tip label={copy.pillGrowsTip}>
                             <Pill>{copy.pillUpTo(model.native_context_label)}</Pill>
                           </Tip>
-                        )
-                      )}
+                        ))}
 
-                      {!model.fits && (
-                        <Pill>{copy.pillUpTo(model.native_context_label)}</Pill>
-                      )}
+                      {!model.fits && <Pill>{copy.pillUpTo(model.native_context_label)}</Pill>}
 
                       {model.vision && <Pill>{copy.pillVision}</Pill>}
                     </span>
@@ -758,9 +753,7 @@ export function LocalModelsSettings() {
               const isLoadingNow = residency === 'loading'
               const livePlacement = status.placement?.[m.id]
 
-              const aJob = jobs.find(
-                j => j.kind === 'model-activate' && j.status === 'running' && j.model_id === m.id
-              )
+              const aJob = jobs.find(j => j.kind === 'model-activate' && j.status === 'running' && j.model_id === m.id)
 
               const anyActivateRunning = jobs.some(j => j.kind === 'model-activate' && j.status === 'running')
 
@@ -769,9 +762,7 @@ export function LocalModelsSettings() {
                   action={
                     <div className="flex items-center justify-end gap-2">
                       {isLoaded && livePlacement && (
-                        <Tip
-                          label={livePlacement.spilled ? copy.placementSpilledTip : copy.placementResidentTip}
-                        >
+                        <Tip label={livePlacement.spilled ? copy.placementSpilledTip : copy.placementResidentTip}>
                           <Pill tone={livePlacement.spilled ? 'warn' : 'success'}>
                             <Cpu className="mr-1 size-3" />
                             {livePlacement.granted_window_label ?? livePlacement.window_label ?? ''}
@@ -840,9 +831,7 @@ export function LocalModelsSettings() {
             })}
         </div>
 
-        {lastError?.kind === 'model-download' && (
-          <p className="text-[0.75rem] text-destructive">{lastError.error}</p>
-        )}
+        {lastError?.kind === 'model-download' && <p className="text-[0.75rem] text-destructive">{lastError.error}</p>}
       </SettingsSection>
 
       <BrowseSection onChanged={refresh} />
@@ -1099,7 +1088,9 @@ function BrowseSection({ onChanged }: { onChanged: () => void }) {
                                   : copy.browseFitUnknown}
                           </Pill>
 
-                          <span className="shrink-0 text-[0.7rem] text-muted-foreground">{gbLabel(group.total_bytes)}</span>
+                          <span className="shrink-0 text-[0.7rem] text-muted-foreground">
+                            {gbLabel(group.total_bytes)}
+                          </span>
                         </span>
                       )}
                     </div>

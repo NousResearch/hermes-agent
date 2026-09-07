@@ -18,12 +18,14 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // Launch-flag fact: the app was started with --local, so the renderer may
   // show the local-models surfaces. Static for the window's lifetime.
   localModelsEnabled: launchFlags?.localModels === true,
-  getConnection: profile => ipcRenderer.invoke('hermes:connection', profile),
+  getConnection: (profile, opts) => ipcRenderer.invoke('hermes:connection', profile, opts),
   // Registry-scoped backend resolution: { connectionId, profile } → descriptor.
   getConnectionFor: payload => ipcRenderer.invoke('hermes:connection:for', payload),
   getProfileRoutes: profiles => ipcRenderer.invoke('hermes:plugin-profile-routes', profiles),
   revalidateConnection: () => ipcRenderer.invoke('hermes:connection:revalidate'),
   touchBackend: profile => ipcRenderer.invoke('hermes:backend:touch', profile),
+  getPoolLimits: () => ipcRenderer.invoke('hermes:pool-limits:get'),
+  setPoolLimits: limits => ipcRenderer.invoke('hermes:pool-limits:set', limits),
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
   // Registry-scoped fresh WS URL: { connectionId, profile } → result shape of
   // getGatewayWsUrl, minted against that connection's backend.
@@ -491,6 +493,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     return () => ipcRenderer.removeListener('hermes:bootstrap:event', listener)
   },
   getVersion: () => ipcRenderer.invoke('hermes:version'),
+  relaunchApp: () => ipcRenderer.invoke('hermes:app:relaunch'),
   getRemoteDisplayReason: () => ipcRenderer.invoke('hermes:get-remote-display-reason'),
   uninstall: {
     summary: () => ipcRenderer.invoke('hermes:uninstall:summary'),

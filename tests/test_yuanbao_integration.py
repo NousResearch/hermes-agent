@@ -276,35 +276,35 @@ class TestP0ChatLockEviction:
     def test_eviction_skips_locked(self):
         """When eviction is needed, locked entries are skipped."""
         adapter = YuanbaoAdapter(make_config())
-        from gateway.platforms.yuanbao import OutboundManager
+        from gateway.platforms.yuanbao import MessageSender
 
         # Fill to capacity with unlocked locks
-        for i in range(OutboundManager.CHAT_DICT_MAX_SIZE):
-            adapter._outbound._chat_locks[f"chat_{i}"] = asyncio.Lock()
+        for i in range(MessageSender.CHAT_DICT_MAX_SIZE):
+            adapter._outbound.sender._chat_locks[f"chat_{i}"] = asyncio.Lock()
 
         # Lock the oldest entry
-        oldest_key = next(iter(adapter._outbound._chat_locks))
-        oldest_lock = adapter._outbound._chat_locks[oldest_key]
+        oldest_key = next(iter(adapter._outbound.sender._chat_locks))
+        oldest_lock = adapter._outbound.sender._chat_locks[oldest_key]
         # Simulate a held lock by acquiring it in a non-async way (set _locked)
         # asyncio.Lock is not held until actually acquired; so we test the
         # method logic by acquiring the first lock manually.
         # For a sync test, we check that get_chat_lock doesn't crash.
-        new_lock = adapter._outbound.get_chat_lock("new_chat")
-        assert "new_chat" in adapter._outbound._chat_locks
+        new_lock = adapter._outbound.sender.get_chat_lock("new_chat")
+        assert "new_chat" in adapter._outbound.sender._chat_locks
         assert isinstance(new_lock, asyncio.Lock)
         # The oldest unlocked entry should have been evicted
-        assert len(adapter._outbound._chat_locks) == OutboundManager.CHAT_DICT_MAX_SIZE
+        assert len(adapter._outbound.sender._chat_locks) == MessageSender.CHAT_DICT_MAX_SIZE
 
     def test_move_to_end_on_access(self):
         """Accessing an existing key moves it to the end (MRU)."""
         adapter = YuanbaoAdapter(make_config())
-        adapter._outbound._chat_locks["a"] = asyncio.Lock()
-        adapter._outbound._chat_locks["b"] = asyncio.Lock()
-        adapter._outbound._chat_locks["c"] = asyncio.Lock()
+        adapter._outbound.sender._chat_locks["a"] = asyncio.Lock()
+        adapter._outbound.sender._chat_locks["b"] = asyncio.Lock()
+        adapter._outbound.sender._chat_locks["c"] = asyncio.Lock()
 
         # Access "a" — should move to end
-        adapter._outbound.get_chat_lock("a")
-        keys = list(adapter._outbound._chat_locks.keys())
+        adapter._outbound.sender.get_chat_lock("a")
+        keys = list(adapter._outbound.sender._chat_locks.keys())
         assert keys[-1] == "a"
         assert keys[0] == "b"
 

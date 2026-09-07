@@ -68,7 +68,7 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
     """Install the fallback client(s) in place, honoring request_timeout_seconds (None = SDK default)."""
     timeout = get_provider_request_timeout(fb_provider, fb_model)
     # The SDK exposes an empty/stale api_key when a rotating source is installed.
-    key_provider = getattr(fb_client, "_api_key_provider", None)
+    key_provider = vars(fb_client).get("_api_key_provider")
     credential = key_provider if callable(key_provider) else fb_client.api_key
     if fb_api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client

@@ -3109,6 +3109,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             ),
             None,
         )
+        current_assignment_summary = (
+            newest_assignment_summary(messages, current_assignment_idx, call_id_to_tool)
+            if current_assignment_idx is not None else None
+        )
         rounds_seen = 0
         protected: set[int] = set()
         prev_idx = None
@@ -3126,9 +3130,12 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             if (
                 msg.get("role") != "tool"
                 or i in protected
-                or i == current_assignment_idx
                 or not isinstance(content, str)
             ):
+                continue
+            if i == current_assignment_idx:
+                if current_assignment_summary is not None:
+                    result[i] = _rewritten(msg, current_assignment_summary)
                 continue
             if len(content) < _LEAN_TAIL_DEMOTE_MIN_CHARS or SKILL_PRUNED_MARKER_PREFIX in content or _is_summary_stub(content):
                 continue

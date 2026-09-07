@@ -349,9 +349,7 @@ export function ProvidersSettings({
   view
 }: ProvidersSettingsProps) {
   const { t } = useI18n()
-  // Shared settings "Applies to" scope: read + edit the selected profile's
-  // env store instead of the active one. Undefined → active profile.
-  // See https://github.com/NousResearch/hermes-agent/issues/103993
+  // Match the shared Settings target for credential reads and writes.
   const scopeProfile = useStore($settingsRequestProfile)
   const { rowProps, vars } = useEnvCredentials(scopeProfile)
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([])
@@ -530,7 +528,6 @@ export function ProvidersSettings({
 
   return (
     <SettingsContent>
-      <SettingsProfileScope className="mb-5" />
       <OAuthPicker
         disconnecting={disconnecting}
         onDisconnect={provider => void handleDisconnect(provider)}

@@ -9,13 +9,15 @@ import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 const listOAuthProviders = vi.fn()
 const disconnectOAuthProvider = vi.fn()
 const getEnvVars = vi.fn()
+const setEnvVar = vi.fn()
 const startManualProviderOAuth = vi.fn()
 const startManualLocalEndpoint = vi.fn()
 const onboarding = atom({ manual: false })
 
 vi.mock('@/hermes', () => ({
   disconnectOAuthProvider: (providerId: string) => disconnectOAuthProvider(providerId),
-  getEnvVars: () => getEnvVars(),
+  getEnvVars: (profile?: string) => getEnvVars(profile),
+  setEnvVar: (key: string, value: string, profile?: string) => setEnvVar(key, value, profile),
   listOAuthProviders: () => listOAuthProviders()
 }))
 
@@ -93,6 +95,33 @@ async function renderProvidersSettings() {
 }
 
 describe('ProvidersSettings', () => {
+  it('reads and saves API keys for the shared Settings target and reloads when it changes', async () => {
+    const { $settingsScopeOverride } = await import('@/store/settings-scope')
+    const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
+    $activeGatewayProfile.set('profile-a')
+    $settingsScopeOverride.set('profile-b')
+    $profiles.set([{ name: 'profile-a' }, { name: 'profile-b' }] as never)
+    getEnvVars.mockResolvedValue({ WIDGET_API_KEY: keyVar({ provider: 'widget', provider_label: 'Widget' }) })
+    const { ProvidersSettings } = await import('./providers-settings')
+    try {
+      render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+      await screen.findByText('Widget')
+      expect(getEnvVars).toHaveBeenLastCalledWith('profile-b')
+      expect(screen.getByText('Applies to')).toBeTruthy()
+      const input = document.querySelector('input[type="password"]')!
+      fireEvent.focus(input)
+      fireEvent.change(input, { target: { value: 'fixture-key' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(setEnvVar).toHaveBeenCalledWith('WIDGET_API_KEY', 'fixture-key', 'profile-b'))
+      fireEvent.click(screen.getByRole('button', { name: 'profile-a' }))
+      await waitFor(() => expect(getEnvVars).toHaveBeenLastCalledWith(undefined))
+    } finally {
+      cleanup()
+      $settingsScopeOverride.set(null)
+      $activeGatewayProfile.set('default')
+      $profiles.set([])
+    }
+  })
   it('disconnects a connected provider account and refreshes the accounts list', async () => {
     await renderProvidersSettings()
 

@@ -28,11 +28,11 @@ def test_new_session_persists_only_when_content_exists(tmp_path):
 def test_existing_empty_history_still_updates_metadata(tmp_path):
     db = SessionDB(tmp_path / "state.db")
     manager = SessionManager(db=db, agent_factory=lambda: SimpleNamespace(model="fixture"))
-    state = manager.create_session(cwd=str(tmp_path))
-    # A genuine agent creates the row before its first model reply. An old,
-    # unprompted ACP client may also still own its row: source is not liveness.
-    if db.get_session(state.session_id) is None:
-        db.create_session(session_id=state.session_id, source="acp", model="original")
+    # An old, unprompted ACP client may still own its row: source is not liveness.
+    db.create_session(session_id="existing", source="acp", model="original")
+    state = manager.get_session("existing")
+    assert state is not None
+    assert not state.history
     state.model = "selected-model"
     manager.update_cwd(state.session_id, str(tmp_path / "selected"))
     row = db.get_session(state.session_id)

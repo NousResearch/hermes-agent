@@ -75,7 +75,7 @@ def main():
     env.update(HOME=str(home), HERMES_HOME=str(hermes), PYTHONPATH=os.pathsep.join([str(repo), os.environ.get('PYTHONPATH', '')]),
                HERMES_ACP_SKIP_CONFIGURED_MCP='1', OPENAI_API_KEY='local-fixture-key',
                OPENAI_BASE_URL=f'http://127.0.0.1:{server.server_port}/v1')
-    stderr = open(str(args.output) + '.stderr', 'w')
+    stderr = open(str(args.output) + '.stderr', 'w', encoding='utf-8')
     proc = subprocess.Popen([sys.executable, '-m', 'acp_adapter'], cwd=repo, env=env,
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True)
     received = queue.Queue()
@@ -133,7 +133,7 @@ def main():
         stderr.close()
         server.shutdown()
         result.update(wire=wire, model_requests=requests)
-        Path(args.output).write_text(json.dumps(result, indent=2))
+        Path(args.output).write_text(json.dumps(result, indent=2), encoding='utf-8')
     print(json.dumps({k: v for k, v in result.items() if k not in ('wire', 'model_requests', 'messages')}, indent=2))
 
 

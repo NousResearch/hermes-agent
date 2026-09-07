@@ -294,25 +294,7 @@ class SessionManager:
         try:
             if db.get_session(state.session_id) is None:
                 if not state.history:
-                    # Defer row creation until the session has actually exchanged
-                    # something. ACP clients open a session BEFORE knowing whether a
-                    # prompt is coming, and some open one purely to interrogate the
-                    # agent: bb's model discovery spawns a throwaway `hermes acp`,
-                    # sends initialize + session/new, reads the model catalog off the
-                    # response, and kills the process without ever prompting. Its
-                    # cache TTL is 60s, so an open editor re-probes on a ~10-15 minute
-                    # cadence and every probe used to leave a message_count=0 shell in
-                    # state.db, indistinguishable from a real chat in the session list
-                    # and unreapable by `hermes sessions prune` (these rows never end,
-                    # so ended_at stays NULL and prune skips them).
-                    #
-                    # Nothing is lost for a genuine conversation: AIAgent's
-                    # _ensure_db_session() creates the row on the first turn and the
-                    # post-prompt save_session() lands the ACP metadata on top.
-                    #
-                    # Gate on state.history rather than message_count so fork_session,
-                    # which deep-copies a non-empty history into a fresh id, still
-                    # persists immediately.
+                    # Empty editor probes stay ephemeral; copied fork history persists.
                     return
                 db.create_session(session_id=state.session_id, source="acp", model=model_str,
                                   model_config={"cwd": state.cwd})

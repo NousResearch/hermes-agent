@@ -168,9 +168,9 @@ def _build_sandbox_env(env_type, *, image, cwd, timeout, cc, task_id, **_):
     return cls()(**kwargs)
 
 
-_build_singularity_env = functools.partial(_build_sandbox_env, "singularity")
-_build_daytona_env = functools.partial(_build_sandbox_env, "daytona")
-_build_vercel_env = functools.partial(_build_sandbox_env, "vercel_sandbox")
+_build_singularity_env = functools.partial(_build_sandbox_env, env_type="singularity")
+_build_daytona_env = functools.partial(_build_sandbox_env, env_type="daytona")
+_build_vercel_env = functools.partial(_build_sandbox_env, env_type="vercel_sandbox")
 
 
 def _build_ssh_env(*, cwd, timeout, ssh_config, probe_only=False, **_):

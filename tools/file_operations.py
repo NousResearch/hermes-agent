@@ -167,6 +167,28 @@ def _split_segments(output: str, sentinel: str) -> list[str]:
     return output.split(sentinel + "\n")
 
 
+_SHA256_LINE = re.compile(r"^([0-9a-fA-F]{64})(?:\s|$)", re.MULTILINE)
+
+
+def _parse_sha256_digest(output: str) -> Optional[str]:
+    """Extract the digest from ``sha256sum`` output, or None if there isn't one.
+
+    The executor merges stderr into the same stream as stdout (process_registry
+    spawns with ``stderr=subprocess.STDOUT``), and ``2>/dev/null`` on the command
+    does not help: shell-initialization diagnostics are emitted before the
+    command's own redirection applies. So this stream can legitimately start with
+    lines like ``shell-init: error retrieving current directory: getcwd: ...``.
+
+    Taking the first whitespace token of the stream therefore yielded
+    ``shell-init:`` as the "digest" and fabricated a hash mismatch on a write that
+    had in fact persisted correctly. Match a real 64-hex digest anchored at the
+    start of a line instead. Noise is prepended, and sha256sum prints one line per
+    file, so the last match is the digest line.
+    """
+    matches = _SHA256_LINE.findall(output or "")
+    return matches[-1].lower() if matches else None
+
+
 class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     """File operations over any terminal backend exposing ``execute(command, cwd)``
     returning ``{"output": str, "returncode": int}``.
@@ -1193,7 +1215,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         try:
             hash_result = self._exec(f"sha256sum {self._escape_shell_arg(path)} 2>/dev/null")
             if hash_result.exit_code == 0 and hash_result.stdout.strip():
-                disk_sha = hash_result.stdout.strip().split()[0]
+                disk_sha = _parse_sha256_digest(hash_result.stdout)
+                if disk_sha is None:
+                    # Unparsable output is "could not verify", never "mismatch".
+                    # Claiming a mismatch here would tell the model a good write
+                    # failed and send it into a retry loop. See _parse_sha256_digest.
+                    return None, None
                 if disk_sha != hashlib.sha256(content_bytes).hexdigest():
                     return False, WriteResult(error=(
                         f"Post-write verification failed for {path}: on-disk "

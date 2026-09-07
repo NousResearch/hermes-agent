@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from contextlib import suppress
@@ -369,7 +370,18 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         v if isinstance(v, dict) else None for v in (
             (body.get("hosted_room_dispatch"), body.get("_room_execution_policy"))
             if isinstance(body, dict) else (None, None)))
+    requested_run_id = body.get("run_id")
+    if requested_run_id is not None and (
+        not isinstance(requested_run_id, str)
+        or re.fullmatch(r"run_[0-9a-f]{32}", requested_run_id) is None
+    ):
+        return _json_error(_openai_error, "Invalid client run_id", status=400)
+    # Deployed thin gateways retry a client-generated run_id without an
+    # Idempotency-Key header. Use the same durable, profile-scoped admission
+    # contract as modern clients so a lost 202 cannot create duplicate work.
     idempotency_key = request.headers.get("Idempotency-Key", "").strip()
+    if requested_run_id and not idempotency_key:
+        idempotency_key = "legacy-run:" + requested_run_id
     if len(idempotency_key) > 255 or any(ord(ch) < 33 or ord(ch) > 126 for ch in idempotency_key):
         return _json_error(
             _openai_error, "Idempotency-Key must be 1-255 visible ASCII characters",
@@ -418,7 +430,11 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         return limited
     if not conversation_history and session_id and not previous_response_id:
         conversation_history = await self._conversation_history_for_session(str(session_id))
-    run_id = f"run_{uuid.uuid4().hex}"
+    run_id = requested_run_id or f"run_{uuid.uuid4().hex}"
+    if requested_run_id and run_id in self._run_owners:
+        return _json_error(
+            _openai_error, "Client run_id is already reserved",
+            code="idempotency_key_conflict", status=409)
     self._run_owners[run_id] = self._run_idempotency_scope(request)
     # Same precedence as /v1/responses: body session_id > response chain > X-Hermes-Session-Key
     # conversation > run_id (which would otherwise re-key every affinity surface per run).

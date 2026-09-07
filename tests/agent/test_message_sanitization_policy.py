@@ -89,6 +89,27 @@ class TestCoalesceToolCallId:
 # ---------------------------------------------------------------------------
 
 class TestUniquifyToolCallIds:
+    def test_normalized_responses_repair_is_consistent_and_idempotent(self):
+        from agent.transports.types import ToolCall
+
+        calls = [
+            ToolCall(id=key, name="t", arguments=str(index), provider_data={
+                "call_id": key, "response_item_id": f"fc_{index}", "opaque": index,
+            })
+            for index, key in enumerate(("call_x", "call_x_d2", "call_x"))
+        ]
+        untouched = [dict(call.provider_data) for call in calls[:2]]
+        uniquify_tool_call_ids(calls)
+        effective = [coalesce_tool_call_id(call) for call in calls]
+        assert effective == ["call_x", "call_x_d2", "call_x_d3"]
+        assert [call.id for call in calls] == effective
+        assert [call.provider_data for call in calls[:2]] == untouched
+        assert [call.response_item_id for call in calls] == [f"fc_{i}" for i in range(3)]
+        assert [call.provider_data["opaque"] for call in calls] == list(range(3))
+        assert [call.arguments for call in calls] == [str(i) for i in range(3)]
+        uniquify_tool_call_ids(calls)
+        assert [coalesce_tool_call_id(call) for call in calls] == effective
+
     def test_no_duplicates_untouched(self):
         tcs = [
             {"id": "a", "function": {"name": "f", "arguments": "{}"}},

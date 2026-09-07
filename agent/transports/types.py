@@ -36,7 +36,17 @@ class ToolCall:
     def _pd(self, key: str) -> Any:
         return (self.provider_data or {}).get(key)
 
-    call_id = property(lambda self: self._pd("call_id"))
+    @property
+    def call_id(self) -> str | None:
+        return self._pd("call_id")
+
+    @call_id.setter
+    def call_id(self, value: str | None) -> None:
+        self.provider_data = {
+            **(self.provider_data or {}),
+            "call_id": value,
+        }
+
     response_item_id = property(lambda self: self._pd("response_item_id"))
     # Gemini thought_signature; must be replayed on later calls or the API returns HTTP 400.
     extra_content = property(lambda self: self._pd("extra_content"))

@@ -36,6 +36,7 @@ from .client_delivery import (
     receipt_projection,
 )
 from .delivery import DeliveryReceipt
+from .client_outcome import ClientOperationOutcome, ClientOperationResponse
 
 logger = logging.getLogger(__name__)
 
@@ -535,6 +536,27 @@ class WisdomClient:
     def _preference_org(self, response):
         if not self.display_org_id or response.org_id != self.display_org_id:
             raise WisdomError("Preference does not match the active organization")
+        return response
+
+    def report_operation_outcome(self, event_id: str, outcome: dict) -> ClientOperationResponse:
+        """Sync a persisted local journal result. Never apply, publish or grant consent."""
+        identity = self._delivery_identity()
+        try:
+            TypeAdapter(Identifier).validate_python(event_id, strict=True)
+            report = ClientOperationOutcome.model_validate(outcome)
+        except ValidationError as exc:
+            raise WisdomValidationError("Invalid operation outcome") from exc
+        response = self._request(
+            "POST", f"agent-led/deliveries/{quote(event_id, safe='')}/outcomes",
+            model=ClientOperationResponse, json_body=report.model_dump(mode="json"),
+        )
+        if (
+            self._delivery_identity() != identity
+            or (response.org_id, response.recipient_user_id) != identity
+            or response.event_id != event_id
+            or response.outcome != report
+        ):
+            raise WisdomError("Operation outcome response does not match the request")
         return response
 
     def suppress_recommendation(self, key: str) -> WisdomSuppressionResponse:

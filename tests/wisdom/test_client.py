@@ -118,6 +118,85 @@ def test_delivery_claim_is_minimal_and_does_not_upload_private_metadata():
     assert len(c.session.calls) == 1
 
 
+def operation_client():
+    report = {"request_id": str(uuid4()), "operation_key": "sha256:" + "a" * 64,
+        "operation": "install", "state": "completed"}
+    body = {"org_id": "o1", "recipient_user_id": "u1", "event_id": "e1", "outcome": report,
+        "attestation": "client_reported", "duplicate": False}
+    c = client(Response(200, body))
+    c.identity = {"owner": "u1", "claims": {"org_id": "o1"}}
+    return c, body, report
+
+
+def test_operation_outcome_sends_only_typed_metadata_and_replays_same_identity():
+    c, body, report = operation_client()
+    result = c.report_operation_outcome("e1", report)
+    assert result.attestation == "client_reported"
+    assert c.session.calls[0][2]["json"] == report
+    assert c.session.calls[0][1].endswith("/agent-led/deliveries/e1/outcomes")
+    c.session.response = Response(200, {**body, "duplicate": True})
+    assert c.report_operation_outcome("e1", report).duplicate is True
+    assert c.session.calls[1][2]["json"] == report
+
+
+@pytest.mark.parametrize("patch", [
+    {"state": "queued"}, {"operation": "share"}, {"state": "verified"},
+    {"operation_key": "local-consent-secret"}, {"description": "private-skill-description"},
+    {"receipt": "local-consent-token"}, {"user_id": "override"}, {"request_id": "bad"},
+])
+def test_operation_outcome_refuses_invalid_or_private_fields_before_http(patch):
+    c, _, report = operation_client()
+    with pytest.raises(WisdomValidationError):
+        c.report_operation_outcome("e1", {**report, **patch})
+    assert c.session.calls == []
+
+
+@pytest.mark.parametrize("field,value", [
+    ("org_id", "other"), ("recipient_user_id", "other"), ("event_id", "other"),
+    ("outcome", {"request_id": str(uuid4()), "operation_key": "sha256:" + "a" * 64,
+        "operation": "install", "state": "completed"}),
+])
+def test_operation_outcome_rejects_misbound_responses(field, value):
+    c, body, report = operation_client()
+    c.session.response = Response(200, {**body, field: value})
+    with pytest.raises(WisdomError, match="does not match"):
+        c.report_operation_outcome("e1", report)
+
+
+def test_operation_outcome_rechecks_account_after_request():
+    c, _, report = operation_client()
+    original = c.session.request
+
+    def change_identity(*args, **kwargs):
+        c.identity["owner"] = "other"
+        return original(*args, **kwargs)
+
+    c.session.request = change_identity
+    with pytest.raises(WisdomError, match="does not match"):
+        c.report_operation_outcome("e1", report)
+
+
+@pytest.mark.parametrize("patch", [{"attestation": "verified"}, {"duplicate": 1}, {"advice": "unexpected"}])
+def test_operation_outcome_rejects_untrusted_response_claims(patch):
+    c, body, report = operation_client()
+    c.session.response = Response(200, {**body, **patch})
+    with pytest.raises(WisdomError, match="schema validation"):
+        c.report_operation_outcome("e1", report)
+
+
+@pytest.mark.parametrize("operation,state", [
+    ("share", "queued"), ("share", "failed"), ("publish", "completed"),
+    ("install", "completed"), ("update", "completed"), ("update", "needs_review"),
+    ("install", "stale"), ("publish", "expired"),
+])
+def test_operation_outcome_preserves_exact_result_without_implying_verification(operation, state):
+    c, body, report = operation_client()
+    report = {**report, "operation": operation, "state": state}
+    c.session.response = Response(200, {**body, "outcome": report})
+    result = c.report_operation_outcome("e1", report)
+    assert result.outcome.model_dump() == report
+
+
 @pytest.mark.parametrize("field,value", [
     ("org_id", "other-org"), ("recipient_user_id", "other-user"),
     ("request_id", str(uuid4())),

@@ -67,6 +67,30 @@ Field notes:
 
 Cache location: `~/.hermes/cache/model_catalog.json`.
 
+## Machine-readable discovery
+
+External integrations can inspect the normalized provider catalogs without opening the
+interactive picker or reading Hermes configuration files:
+
+```bash
+hermes models --json
+hermes models --json --provider openai-api
+hermes models --json --provider openai-api --offline
+hermes models --json --provider openai-api --refresh
+```
+
+The default and `--offline` forms never make network requests. The default uses fresh provider
+cache entries and otherwise falls back to bundled catalogs; `--offline` may also return an expired
+cache entry marked `"stale": true`. A live refresh is opt-in, requires one registered
+`--provider`, and updates only that provider's cache entry. `--refresh` and `--offline` cannot be
+combined.
+
+Stdout is exactly one JSON document with `schema_version`, `request`, `providers`, and `errors`.
+Each provider reports `source` as `live`, `cache`, or `catalog`; errors use stable codes and omit
+credentials, endpoint details, account data, and raw provider responses. Exit codes are `0` for a
+usable response (including fallback warnings), `2` for invalid arguments or provider ids, `3` when
+the selected provider has no usable result, and `4` for an unexpected internal failure.
+
 ## Config
 
 ```yaml

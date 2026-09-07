@@ -362,15 +362,14 @@ def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
 
 def _scan_mcp_tree(path: Path, label: str) -> None:
     """Run the optional external static scanner and enforce its configured policy."""
-    from tools.skillevaluator_scan import (external_surface_enabled, format_tier1_report,
-                                           run_tier1_scan, should_allow_tier1)
-    if not external_surface_enabled("mcp"):
+    from tools.skillevaluator_scan import evaluate_external_surface, format_tier1_report
+    evaluation = evaluate_external_surface(path, "mcp")
+    if evaluation is None:
         return
-    report = run_tier1_scan(path)
+    report, allowed, reason = evaluation
     if report.available:
         for line in format_tier1_report(report).splitlines():
             _say(f"  {line}", Colors.DIM)
-    allowed, reason = should_allow_tier1(report)
     if not allowed:
         raise CatalogError(f"External security scan blocked MCP '{label}': {reason}")
 

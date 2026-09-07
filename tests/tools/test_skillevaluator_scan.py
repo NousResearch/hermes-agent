@@ -19,8 +19,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tools.skillevaluator_scan import (  # noqa: E402
     SECRETS_CLASS_CHECKS,
+    TIER1_CHECKS,
     Tier1Finding,
     Tier1Report,
+    _config_bool,
+    _merge_security_report,
     _parse_report,
     _parse_skillspector_report,
     format_tier1_report,
@@ -182,22 +185,39 @@ class TestParseSkillSpectorReport:
         assert finding.line == 9
         assert finding.scanner == "skillspector"
 
+    def test_merge_deduplicates_identical_findings(self):
+        finding = Tier1Finding(
+            check="SC-1", validator="security", severity="high",
+            message="same", file="SKILL.md", line=4, scanner="skillspector",
+        )
+        base = Tier1Report(available=True, passed=False, findings=[finding])
+        security = Tier1Report(
+            available=True, passed=False, findings=[finding], scanner="skillspector",
+        )
+        merged = _merge_security_report(base, security)
+        assert merged.findings == [finding]
+
 
 class TestRunTier1Scan:
+    def test_skillevaluator_does_not_repeat_security_scan(self):
+        assert "security" not in TIER1_CHECKS.split(",")
+
     def test_scanner_missing_degrades(self, tmp_path):
         with mock.patch("tools.skillevaluator_scan.shutil.which", return_value=None):
             report = run_tier1_scan(tmp_path)
         assert not report.available
         assert report.findings == []
 
-    def test_scanner_timeout_degrades_without_resetting_budget(self, tmp_path):
+    def test_scanner_timeout_preserves_budget_for_direct_security(self, tmp_path):
         with mock.patch("tools.skillevaluator_scan.shutil.which", return_value="/usr/bin/skillevaluator"), \
              mock.patch("tools.skillevaluator_scan.subprocess.run",
                         side_effect=subprocess.TimeoutExpired(cmd="x", timeout=1)) as runner:
-            report = run_tier1_scan(tmp_path)
+            report = run_tier1_scan(tmp_path, timeout=12)
         assert not report.available
         assert "timed out" in report.error
-        assert runner.call_count == 1
+        assert runner.call_count == 2
+        assert runner.call_args_list[0].kwargs["timeout"] == 4
+        assert runner.call_args_list[1].kwargs["timeout"] <= 12
 
     def test_scanner_launch_failure_degrades(self, tmp_path):
         with mock.patch("tools.skillevaluator_scan.shutil.which", return_value="/usr/bin/skillevaluator"), \
@@ -217,8 +237,16 @@ class TestRunTier1Scan:
         payload = _report_json([_finding("emails")])
 
         def fake_run(cmd, **kwargs):
-            outdir = Path(cmd[cmd.index("-o") + 1])
-            (outdir / "skillevaluator-output-1.json").write_text(json.dumps(payload))
+            if cmd[0] == "skillevaluator":
+                outdir = Path(cmd[cmd.index("-o") + 1])
+                (outdir / "skillevaluator-output-1.json").write_text(json.dumps(payload))
+            else:
+                report_file = Path(cmd[cmd.index("--output") + 1])
+                report_file.write_text(json.dumps({
+                    "risk_assessment": {"score": 0, "severity": "LOW"},
+                    "analysis_completeness": {"is_complete": True},
+                    "issues": [],
+                }))
             return subprocess.CompletedProcess(cmd, 1, "", "")
 
         with mock.patch("tools.skillevaluator_scan.shutil.which", return_value="/usr/bin/skillevaluator"), \
@@ -314,6 +342,20 @@ class TestFormatReport:
 
 
 class TestConfigGate:
+    def test_config_bool_handles_false_like_strings(self):
+        assert not _config_bool("false", default=True)
+        assert not _config_bool("off", default=True)
+        assert _config_bool("true")
+        assert _config_bool(None, default=True)
+
+    def test_fail_on_incomplete_string_false_stays_fail_open(self):
+        report = Tier1Report(available=False)
+        allowed, _ = should_allow_tier1(
+            report,
+            config={"mode": "block_high", "fail_on_incomplete": "false"},
+        )
+        assert allowed
+
     def test_default_enabled(self):
         with mock.patch("hermes_cli.config.load_config", return_value={}):
             assert tier1_advisory_enabled()

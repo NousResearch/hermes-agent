@@ -485,13 +485,8 @@ class TestInstall:
             )],
         )
         monkeypatch.setattr(
-            "tools.skillevaluator_scan.external_surface_enabled",
-            lambda surface: surface == "mcp",
-        )
-        monkeypatch.setattr("tools.skillevaluator_scan.run_tier1_scan", lambda path: report)
-        monkeypatch.setattr(
-            "tools.skillevaluator_scan.should_allow_tier1",
-            lambda result: (False, "critical external finding"),
+            "tools.skillevaluator_scan.evaluate_external_surface",
+            lambda path, surface: (report, False, "critical external finding"),
         )
 
         with pytest.raises(mc.CatalogError, match="External security scan"):

@@ -235,10 +235,6 @@ class TestInstallIntegration:
         plugins_dir = tmp_path / "installed"
         plugins_dir.mkdir()
         monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
-        monkeypatch.setattr(
-            "tools.skillevaluator_scan.external_surface_enabled",
-            lambda surface: surface == "plugins",
-        )
         report = Tier1Report(
             available=True,
             passed=False,
@@ -248,10 +244,9 @@ class TestInstallIntegration:
                 message="Unpinned dependency", scanner="skillspector",
             )],
         )
-        monkeypatch.setattr("tools.skillevaluator_scan.run_tier1_scan", lambda path: report)
         monkeypatch.setattr(
-            "tools.skillevaluator_scan.should_allow_tier1",
-            lambda result: (False, "high external finding"),
+            "tools.skillevaluator_scan.evaluate_external_surface",
+            lambda path, surface: (report, False, "high external finding"),
         )
 
         with pytest.raises(pc.PluginScanBlocked, match="external"):

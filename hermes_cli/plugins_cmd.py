@@ -156,18 +156,19 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
                 scan_result=result)
         logger.info("plugin scan passed for %s: %s", plugin_dir.name, reason)
 
-    from tools.skillevaluator_scan import (external_surface_enabled, format_tier1_report,
-                                           run_tier1_scan, should_allow_tier1)
-    if external_surface_enabled("plugins"):
-        external = run_tier1_scan(plugin_dir)
+    from tools.skillevaluator_scan import evaluate_external_surface, format_tier1_report
+    external_evaluation = evaluate_external_surface(plugin_dir, "plugins")
+    if external_evaluation is not None:
+        external, external_allowed, external_reason = external_evaluation
         if external.available:
-            logger.info("external plugin scan for %s:\n%s", plugin_dir.name,
-                        format_tier1_report(external))
-        external_allowed, external_reason = should_allow_tier1(external)
+            formatted = format_tier1_report(external)
+            logger.info("external plugin scan for %s:\n%s", plugin_dir.name, formatted)
+        else:
+            formatted = ""
         if not external_allowed:
             raise PluginScanBlocked(
                 f"External security scan blocked plugin install: {external_reason}\n\n"
-                f"{format_tier1_report(external)}",
+                f"{formatted}",
                 scan_result=external,
             )
     return result

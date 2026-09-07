@@ -15,6 +15,7 @@ import logging
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List
@@ -23,9 +24,10 @@ logger = logging.getLogger(__name__)
 
 SCANNER_BIN = "skillevaluator"
 SKILLSPECTOR_BIN = "skillspector"
-# Keyless, deterministic checks (schema/quality are index-pipeline hygiene, not install-time signal). `security`
-# invokes NVIDIA SkillSpector (static rules, no LLM); when absent it reports status="incomplete".
-TIER1_CHECKS = "pii,unicode,lint,license,security"
+# Keyless deterministic hygiene checks. Security is run once, directly through
+# SkillSpector, because SkillEvaluator v0.1.0 rejects valid SkillSpector v2.11
+# metadata and otherwise causes an immediate duplicate scan.
+TIER1_CHECKS = "pii,unicode,lint,license"
 SCAN_TIMEOUT_SECONDS = 120
 
 # pii_patterns.yaml categories indicating a possible REAL credential (not PII hygiene) — the only prompt-worthy ones.
@@ -89,22 +91,38 @@ class Tier1Report:
         return [f for f in self.findings if f.is_secrets_class]
 
 
+_FALSE_STRINGS = frozenset({"false", "0", "no", "off"})
+_TRUE_STRINGS = frozenset({"true", "1", "yes", "on"})
+
+
+def _config_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _FALSE_STRINGS:
+            return False
+        if normalized in _TRUE_STRINGS:
+            return True
+        return default
+    return bool(value)
+
+
 def tier1_advisory_enabled() -> bool:
     """``skills.tier1_advisory`` (default True; safe because the scan is a no-op without the binary)."""
     try:
         from hermes_cli.config import load_config
         skills_cfg = load_config().get("skills") or {}
         value = skills_cfg.get("tier1_advisory", True) if isinstance(skills_cfg, dict) else True
-        return value.strip().lower() not in ("false", "0", "no", "off") if isinstance(value, str) else bool(value)
+        return _config_bool(value, default=True)
     except Exception:
         return True
 
 
 def _external_scanner_config() -> dict:
     try:
-        from hermes_cli.config import load_config
-        security = load_config().get("security") or {}
-        scanner = security.get("external_scanner") or {} if isinstance(security, dict) else {}
+        from hermes_cli.config import cfg_get, load_config
+        scanner = cfg_get(load_config(), "security", "external_scanner", default={})
         return scanner if isinstance(scanner, dict) else {}
     except Exception:
         return {}
@@ -115,20 +133,19 @@ def external_surface_enabled(surface: str) -> bool:
     key = {"plugins": "scan_plugins", "mcp": "scan_mcp"}.get(surface, "")
     if not key:
         return False
-    value = _external_scanner_config().get(key, False)
-    return value.strip().lower() not in ("false", "0", "no", "off") if isinstance(value, str) else bool(value)
+    return _config_bool(_external_scanner_config().get(key), default=False)
 
 
-def should_allow_tier1(report: Tier1Report) -> tuple[bool, str]:
+def should_allow_tier1(report: Tier1Report, config: dict | None = None) -> tuple[bool, str]:
     """Evaluate operator policy while keeping report-only as the safe default.
 
     ``block_high`` blocks only unsuppressed high/critical findings. SkillSpector
     applies the configured baseline before this point. Missing or incomplete
     scanners remain advisory unless ``fail_on_incomplete`` is explicitly true.
     """
-    config = _external_scanner_config()
+    config = config if isinstance(config, dict) else _external_scanner_config()
     mode = str(config.get("mode") or "report").strip().lower()
-    fail_on_incomplete = bool(config.get("fail_on_incomplete", False))
+    fail_on_incomplete = _config_bool(config.get("fail_on_incomplete"), default=False)
     if mode != "block_high":
         return True, "External scanner is report-only"
     if not report.available:
@@ -214,12 +231,13 @@ def _parse_skillspector_report(report: dict) -> Tier1Report:
     )
 
 
-def _configured_baseline() -> str:
+def _configured_baseline(config: dict | None = None) -> str:
     """Return the operator-controlled SkillSpector baseline path, if configured."""
-    return str(_external_scanner_config().get("baseline", "")).strip()
+    config = config if isinstance(config, dict) else _external_scanner_config()
+    return str(config.get("baseline", "")).strip()
 
 
-def _run_skillspector(skill_dir: Path, timeout: int) -> Tier1Report:
+def _run_skillspector(skill_dir: Path, timeout: int, *, baseline: str | None = None) -> Tier1Report:
     unavailable = lambda why: Tier1Report(available=False, error=why, scanner="skillspector")  # noqa: E731
     if shutil.which(SKILLSPECTOR_BIN) is None:
         return unavailable("SkillSpector not on PATH")
@@ -227,7 +245,7 @@ def _run_skillspector(skill_dir: Path, timeout: int) -> Tier1Report:
         report_file = Path(outdir) / "report.json"
         cmd = [SKILLSPECTOR_BIN, "scan", str(skill_dir), "--no-llm", "--format", "json",
                "--output", str(report_file)]
-        baseline = _configured_baseline()
+        baseline = _configured_baseline() if baseline is None else baseline
         if baseline:
             cmd.extend(["--baseline", baseline, "--show-suppressed"])
         try:
@@ -248,10 +266,19 @@ def _run_skillspector(skill_dir: Path, timeout: int) -> Tier1Report:
 
 
 def _merge_security_report(base: Tier1Report, security: Tier1Report) -> Tier1Report:
-    """Merge a native SkillSpector result into SkillEvaluator's partial report."""
+    """Merge distinct hygiene and security results, deduplicating defensively."""
     incomplete = [name for name in base.incomplete_checks if name != "Security Scan"]
     incomplete.extend(name for name in security.incomplete_checks if name not in incomplete)
-    findings = [*base.findings, *security.findings]
+    if not security.available and "SkillSpector security" not in incomplete:
+        incomplete.append("SkillSpector security")
+    findings: List[Tier1Finding] = []
+    seen = set()
+    for finding in [*base.findings, *security.findings]:
+        key = (finding.scanner, finding.check, finding.severity, finding.file,
+               finding.line, finding.message)
+        if key not in seen:
+            findings.append(finding)
+            seen.add(key)
     return Tier1Report(
         available=base.available or security.available,
         passed=base.passed and security.passed and not findings,
@@ -262,41 +289,76 @@ def _merge_security_report(base: Tier1Report, security: Tier1Report) -> Tier1Rep
         risk_score=security.risk_score,
         risk_severity=security.risk_severity,
         recommendation=security.recommendation,
-        analysis_complete=security.analysis_complete,
+        analysis_complete=security.available and security.analysis_complete,
         llm_used=security.llm_used,
         suppressed_count=security.suppressed_count,
     )
 
 
 def run_tier1_scan(skill_dir: Path, timeout: int = SCAN_TIMEOUT_SECONDS) -> Tier1Report:
-    """Run SkillEvaluator Tier 1 over one skill dir; any failure returns ``available=False``, never raises."""
+    """Run distinct hygiene and static-security checks within one total budget."""
     unavailable = lambda why: Tier1Report(available=False, error=why)  # noqa: E731
-    if shutil.which(SCANNER_BIN) is None:
-        return _run_skillspector(skill_dir, timeout)
-    with tempfile.TemporaryDirectory(prefix="se-tier1-") as outdir:
-        try:
-            subprocess.run([SCANNER_BIN, "validate", str(skill_dir), "--checks", TIER1_CHECKS, "--no-dedup",
-                            "-r", "json", "-o", outdir], capture_output=True, text=True, encoding="utf-8", errors="replace",
-                           stdin=subprocess.DEVNULL, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            return unavailable(f"scan timed out after {timeout}s")
-        except OSError as exc:
-            fallback = _run_skillspector(skill_dir, timeout)
-            return fallback if fallback.available else unavailable(f"scanner failed to launch: {exc}")
-        if not (reports := sorted(Path(outdir).glob("skillevaluator-output-*.json"))):
-            return _run_skillspector(skill_dir, timeout)
-        try:
-            parsed = json.loads(reports[-1].read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
-            return unavailable(f"unparseable report: {exc}")
-        if not isinstance(parsed, dict):
-            return unavailable("unexpected report shape")
-        report = _parse_report(parsed)
-        if "Security Scan" in report.incomplete_checks:
-            security = _run_skillspector(skill_dir, timeout)
-            if security.available:
-                return _merge_security_report(report, security)
-        return report
+    config = _external_scanner_config()
+    budget = max(1, int(timeout))
+    deadline = time.monotonic() + budget
+    hygiene = unavailable("SkillEvaluator not on PATH")
+
+    if shutil.which(SCANNER_BIN) is not None:
+        # Reserve most of the total budget for the security scan, which is the
+        # install-time enforcement signal. Hygiene checks are advisory.
+        evaluator_timeout = max(1, min(30, budget // 3))
+        with tempfile.TemporaryDirectory(prefix="se-tier1-") as outdir:
+            try:
+                subprocess.run(
+                    [SCANNER_BIN, "validate", str(skill_dir), "--checks", TIER1_CHECKS,
+                     "--no-dedup", "-r", "json", "-o", outdir],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    stdin=subprocess.DEVNULL, timeout=evaluator_timeout,
+                )
+            except subprocess.TimeoutExpired:
+                hygiene = unavailable(f"SkillEvaluator timed out after {evaluator_timeout}s")
+            except OSError as exc:
+                hygiene = unavailable(f"SkillEvaluator failed to launch: {exc}")
+            else:
+                reports = sorted(Path(outdir).glob("skillevaluator-output-*.json"))
+                if not reports:
+                    hygiene = unavailable("SkillEvaluator produced no JSON report")
+                else:
+                    try:
+                        parsed = json.loads(reports[-1].read_text(encoding="utf-8"))
+                    except (json.JSONDecodeError, OSError) as exc:
+                        hygiene = unavailable(f"unparseable SkillEvaluator report: {exc}")
+                    else:
+                        hygiene = _parse_report(parsed) if isinstance(parsed, dict) else unavailable(
+                            "unexpected SkillEvaluator report shape")
+
+    remaining = int(deadline - time.monotonic())
+    security = (_run_skillspector(
+        skill_dir, max(1, remaining), baseline=_configured_baseline(config),
+    ) if remaining > 0 else Tier1Report(
+        available=False, error=f"total scan budget exhausted after {budget}s",
+        scanner="skillspector", analysis_complete=False,
+    ))
+    if hygiene.available:
+        return _merge_security_report(hygiene, security)
+    if security.available:
+        return security
+    return unavailable("; ".join(part for part in (hygiene.error, security.error) if part))
+
+
+def evaluate_external_surface(path: Path, surface: str) -> tuple[Tier1Report, bool, str] | None:
+    """Scan a plugin or MCP tree once and evaluate policy from one config snapshot."""
+    key = {"plugins": "scan_plugins", "mcp": "scan_mcp"}.get(surface)
+    config = _external_scanner_config()
+    if not key or not _config_bool(config.get(key), default=False):
+        return None
+    try:
+        timeout = max(1, int(config.get("scan_timeout_seconds", SCAN_TIMEOUT_SECONDS)))
+    except (TypeError, ValueError):
+        timeout = SCAN_TIMEOUT_SECONDS
+    report = _run_skillspector(path, timeout, baseline=_configured_baseline(config))
+    allowed, reason = should_allow_tier1(report, config=config)
+    return report, allowed, reason
 
 
 def format_tier1_report(report: Tier1Report, limit: int = 10) -> str:

@@ -100,7 +100,8 @@ def test_obsolete_orphan_cannot_replace_new_detachment(monkeypatch, phase):
     assert timers == [old, newest]
 
 
-def test_orphan_interrupt_claim_clears_when_session_leaves_detached_state(monkeypatch):
+@pytest.mark.parametrize("transition", ["retire", "redetach"])
+def test_orphan_interrupt_claim_clears_when_session_leaves_detached_state(monkeypatch, transition):
     timers = []
 
     class Timer:
@@ -129,6 +130,17 @@ def test_orphan_interrupt_claim_clears_when_session_leaves_detached_state(monkey
     assert session["_client_gone_interrupt_requested"]
 
     session["transport"] = object()
+    if transition == "redetach":
+        # The bypass writer disconnects before the old settlement can retire.
+        assert server._close_sessions_for_transport(session["transport"]) == (0, 1)
+        timers[2].callback()
+        assert session["_client_gone_interrupt_requested"]
+        assert session["_client_gone_interrupt_polls"] == 1
+        replacement = server._pending_ws_reaps[sid]
+        timers[1].callback()
+        assert server._pending_ws_reaps[sid] is replacement
+        assert session["_client_gone_interrupt_requested"]
+        return
     timers[1].callback()
 
     assert "_client_gone_interrupt_requested" not in session

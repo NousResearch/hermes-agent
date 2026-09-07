@@ -623,6 +623,7 @@ def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect
                 else:
                     current["transport"] = _detached_ws_transport
                     current.pop("_client_gone_interrupt_requested", None)
+                    current.pop("_client_gone_interrupt_polls", None)
                     should_schedule_reap = True
                     # Register before releasing the detachment claim: an old disconnect
                     # must not arm its first timer over a reconnect's newer detachment.

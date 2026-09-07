@@ -1,30 +1,221 @@
-"""Regression tests for the profile-qualified backend cache and the
-start()-outside-the-lock dispatcher (#104080 review findings 1 and 3).
+"""Backend and approval ownership must isolate profile/session pairs without
+serializing unrelated owners behind startup or resurrecting released authority.
 
-Finding 1: backend caches keyed by bare session_id let profile B reuse
-profile A's live backend under ``gateway.multiplex_profiles``. Keys are now
-``hermes_home_key():session_id`` — a different profile home must get a
-different backend for the same session id, and releasing one must not stop
-the other.
-
-Finding 3: ``backend.start()`` ran inside the process-global ``_backend_lock``,
-so one slow remote handshake (up to ~35 s) pinned every other session's
-lifecycle operations. start() now runs under a per-owner single-flight lock
-outside the cache lock — an in-flight start for one owner must not block
-another owner's create, lookup, or release.
-
-Both tests use ``monkeypatch``-ed home keys (the same primitive
-``hermes_constants.reset_hermes_home_key_cache`` clears) rather than moving
-real directories on disk. ``_new_backend`` is patched via ``*args`` so the
-same tests work on main (``permission_mode``) and the provider-seam branch
-(``sid, permission_mode``).
+Collision and empty-session probes use real context-local homes; the collision
+pair names need no on-disk profiles because backend construction is substituted.
 """
 
+import json
 import threading
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+
+@contextmanager
+def _profile(home):
+    token = set_hermes_home_override(home)
+    try:
+        yield
+    finally:
+        reset_hermes_home_override(token)
+
+
+@pytest.mark.parametrize("grant", ["approve_session", "always_approve"])
+@pytest.mark.parametrize("release_index", [0, 1])
+def test_collision_pair_grants_do_not_cross(monkeypatch, grant, release_index):
+    from tools.computer_use import tool as cu
+    from tools.computer_use_tool import registry
+
+    owners = [("/tmp/astra-owner", "segment:session"),
+              ("/tmp/astra-owner:segment", "session")]
+    prompts = []
+    monkeypatch.setattr(cu, "_new_backend", lambda mode: cu._NoopBackend())
+
+    def approve(*args):
+        prompts.append(args[0])
+        return grant
+
+    monkeypatch.setattr(cu, "_approval_callback", approve)
+
+    def click(index):
+        home, sid = owners[index]
+        with _profile(home):
+            result = registry.dispatch("computer_use", {"action": "click", "x": 1, "y": 1}, session_id=sid)
+            assert "error" not in json.loads(result)
+
+    click(0)
+    click(0)
+    click(1)
+    assert prompts == ["click", "click"]
+    with _profile(owners[release_index][0]):
+        assert cu.release_computer_use_session(owners[release_index][1])
+    click(1 - release_index)
+    assert prompts == ["click", "click"]
+    click(release_index)
+    assert prompts == ["click", "click", "click"]
+
+
+@pytest.mark.parametrize("release_index", [0, 1])
+def test_collision_pair_backends_do_not_cross(monkeypatch, release_index):
+    from tools.computer_use import tool as cu
+
+    owners = [("/tmp/astra-owner", "segment:session"),
+              ("/tmp/astra-owner:segment", "session")]
+    monkeypatch.setattr(cu, "_new_backend", _InstantBackend)
+    backends = []
+    for home, sid in owners:
+        with _profile(home):
+            backends.append(cu._get_backend(sid))
+    assert backends[0] is not backends[1]
+    with _profile(owners[release_index][0]):
+        assert cu.release_computer_use_session(owners[release_index][1])
+    assert backends[release_index].stopped
+    assert not backends[1 - release_index].stopped
+    home, sid = owners[1 - release_index]
+    with _profile(home):
+        assert cu._get_backend(sid) is backends[1 - release_index]
+
+
+def test_trailing_colon_release_does_not_enter_empty_session(monkeypatch, tmp_path):
+    from tools.computer_use import tool as cu
+
+    monkeypatch.setattr(cu, "_new_backend", _InstantBackend)
+    with _profile(tmp_path / "a"):
+        backend = cu._get_backend("named-session:")
+    with _profile(tmp_path / "b"):
+        assert cu.release_computer_use_session("x:") is False
+    assert not backend.stopped
+    with _profile(tmp_path / "a"):
+        assert cu._get_backend("named-session:") is backend
+
+
+def test_empty_session_acquisition_is_profile_local(monkeypatch, tmp_path):
+    from tools.computer_use import tool as cu
+
+    monkeypatch.setattr(cu, "_new_backend", _InstantBackend)
+    with _profile(tmp_path / "a"):
+        backend_a = cu._get_backend("")
+    with _profile(tmp_path / "b"):
+        backend_b = cu._get_backend("")
+        assert backend_b is not backend_a
+        assert cu.release_computer_use_session("")
+    assert backend_b.stopped
+    assert not backend_a.stopped
+    with _profile(tmp_path / "a"):
+        assert cu._get_backend("") is backend_a
+
+
+def test_release_fences_mode_replacement_teardown(monkeypatch):
+    from tools.computer_use import tool as cu
+
+    stopping, finish_stop = threading.Event(), threading.Event()
+
+    class BlockingStop(_InstantBackend):
+        def stop(self):
+            stopping.set()
+            assert finish_stop.wait(5)
+            super().stop()
+
+    created = []
+
+    def create(mode):
+        backend = BlockingStop(mode) if not created else _InstantBackend(mode)
+        created.append(backend)
+        return backend
+
+    mode = ["standard"]
+    monkeypatch.setattr(cu, "_cua_permission_mode", lambda sid: mode[0])
+    monkeypatch.setattr(cu, "_new_backend", create)
+    cu._get_backend("mode-owner")
+    mode[0] = "unrestricted"
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        lookup = pool.submit(cu._get_backend, "mode-owner")
+        try:
+            assert stopping.wait(5)
+            released = cu.release_computer_use_session("mode-owner")
+        finally:
+            finish_stop.set()
+        with pytest.raises(RuntimeError, match="released"):
+            lookup.result(timeout=5)
+    assert released is True
+    assert len(created) == 1
+    assert cu._backend_owner_key("mode-owner") not in cu._backends
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])
+@pytest.mark.parametrize("release_during_start", [False, True])
+def test_failed_start_cleans_generation_and_candidate(monkeypatch, error_type, release_during_start):
+    from tools.computer_use import tool as cu
+
+    started, finish = threading.Event(), threading.Event()
+
+    class FailingStart(_InstantBackend):
+        def start(self):
+            started.set()
+            assert finish.wait(5)
+            raise error_type("startup failed")
+
+    candidate = FailingStart()
+    monkeypatch.setattr(cu, "_new_backend", lambda mode: candidate)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        lookup = pool.submit(cu._get_backend, "failed-owner")
+        try:
+            assert started.wait(5)
+            if release_during_start:
+                cu.release_computer_use_session("failed-owner")
+        finally:
+            finish.set()
+        with pytest.raises(error_type, match="startup failed"):
+            lookup.result(timeout=5)
+    owner = cu._backend_owner_key("failed-owner")
+    assert candidate.stopped
+    assert owner not in cu._backend_start_locks
+    assert owner not in cu._backends
+
+
+def test_queued_waiter_keeps_revoked_generation(monkeypatch):
+    from tools.computer_use import tool as cu
+
+    waiting = threading.Event()
+
+    class ObservedLock:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.entries = 0
+
+        def __enter__(self):
+            self.entries += 1
+            if self.entries == 2:
+                waiting.set()
+            self.lock.acquire()
+
+        def __exit__(self, *args):
+            self.lock.release()
+
+    stale, replacement = _SlowStartBackend(), _InstantBackend()
+    backends = iter((stale, replacement))
+    monkeypatch.setattr(cu, "_new_backend", lambda mode: next(backends))
+    cu._backend_start_locks[cu._backend_owner_key("queued-owner")] = ObservedLock()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        starter = pool.submit(cu._get_backend, "queued-owner")
+        try:
+            assert stale.started.wait(5)
+            waiter = pool.submit(cu._get_backend, "queued-owner")
+            assert waiting.wait(5)
+            cu.release_computer_use_session("queued-owner")
+            assert cu._get_backend("queued-owner") is replacement
+        finally:
+            stale.release.set()
+        for lookup in (starter, waiter):
+            with pytest.raises(RuntimeError, match="released"):
+                lookup.result(timeout=5)
+    assert stale.stopped
+    assert not replacement.stopped
 
 
 @pytest.fixture(autouse=True)

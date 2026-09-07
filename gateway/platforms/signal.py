@@ -457,6 +457,14 @@ class SignalAdapter(BasePlatformAdapter):
         quote_data = data_message.get("quote") or {}
         reply_to_id = str(quote_data.get("id")) if quote_data.get("id") else None
         reply_to_author = self._extract_quote_author(quote_data)
+        # quote.id IS the quoted message's send time (ms since epoch) — the only age source
+        # Signal offers; converted here so the reply anchor can render it.
+        reply_to_ts = None
+        if quote_data.get("id"):
+            with suppress(ValueError, OSError, OverflowError):
+                reply_to_ts = datetime.fromtimestamp(
+                    int(quote_data["id"]) / 1000, tz=timezone.utc
+                )
         attachments_data = data_message.get("attachments", [])
         media_urls, media_types = [], []
         if attachments_data and not getattr(self, "ignore_attachments", False):
@@ -488,6 +496,7 @@ class SignalAdapter(BasePlatformAdapter):
             media_types=media_types, timestamp=timestamp,
             raw_message={"sender": sender, "timestamp_ms": ts_ms, "quote": quote_data if quote_data else None},
             reply_to_message_id=reply_to_id, reply_to_text=quote_data.get("text"),
+            reply_to_timestamp=reply_to_ts,
             reply_to_author_id=reply_to_author,
             reply_to_author_name=quote_data.get("authorName") or quote_data.get("authorProfileName"),
             reply_to_is_own_message=self._quote_references_own_message(reply_to_id, reply_to_author),

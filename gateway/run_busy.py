@@ -843,6 +843,7 @@ class GatewayBusySessionMixin:
                 media_types=list(getattr(event, "media_types", []) or []),
                 media_text_inlined=list(getattr(event, "media_text_inlined", []) or []),
                 reply_to_message_id=event.reply_to_message_id, reply_to_text=event.reply_to_text,
+                reply_to_timestamp=getattr(event, "reply_to_timestamp", None),
                 reply_to_author_id=event.reply_to_author_id,
                 reply_to_author_name=event.reply_to_author_name,
                 reply_to_is_own_message=event.reply_to_is_own_message, auto_skill=event.auto_skill,

@@ -1546,6 +1546,10 @@ class MessageEvent:
     media_text_inlined: List[Optional[bool]] = field(default_factory=list)
     reply_to_message_id: Optional[str] = None
     reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
+    # Send time of the replied-to message when the platform provides it (Telegram reply target
+    # date, Discord referenced-message created_at, Signal quote timestamp). Lets the reply
+    # anchor render an age so the model can tell a stale reference from the previous line.
+    reply_to_timestamp: Optional[datetime] = None
     reply_to_author_id: Optional[str] = None
     reply_to_author_name: Optional[str] = None
     reply_to_is_own_message: bool = False  # True when the user replied to this bot/assistant's message

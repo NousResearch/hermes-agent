@@ -805,7 +805,25 @@ export const ja = defineLocale({
       imported: '設定をインポートしました',
       invalidJson: '設定 JSON が無効です',
       keepAwakeTitle: 'コンピューターをスリープさせない',
-      keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。'
+      keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。',
+      previewUblockTitle: 'Preview で uBlock Origin Lite を有効化',
+      previewUblockDescription:
+        '公式 GitHub リリースから uBlock Origin Lite をダウンロードし、Preview のみで広告とトラッカーをブロックします。ダウンロードは後で使えるようローカルに保持されます。',
+      previewUblockDownloading: 'uBlock Origin Lite をダウンロードして有効化しています…',
+      previewUblockFailure: 'Preview のコンテンツブロック設定を更新できませんでした。',
+      previewUblock: {
+        checkingCache: 'キャッシュ済みリリースを確認中…',
+        downloading: 'uBlock Origin Lite をダウンロード中…',
+        extracting: 'リリースを展開中…',
+        loading: 'Preview 拡張機能を読み込み中…',
+        preparing: 'Electron の互換性を準備中…',
+        validating: 'コンテンツブロックをテスト中…',
+        verifying: '公式リリースを検証中…',
+        enabled: version => '有効 · ' + version,
+        transferred: amount => amount + ' 転送済み',
+        downloadProgress: 'uBlock Origin Lite のダウンロード進捗',
+        retry: '再試行'
+      }
     },
     quickEntry: {
       enabledTitle: 'クイック入力',
@@ -2986,7 +3004,12 @@ export const ja = defineLocale({
       openDevTools: 'プレビュー DevTools を開く',
       goBack: '戻る',
       goForward: '進む',
+      ublockDashboard: 'uBlock Origin Lite は有効です — コントロールを開く',
       reload: 'ページを再読み込み',
+      ublockPopup: 'uBlock Origin Lite のコントロールを開く',
+      ublockPopupBlockedRequests: count => `uBlock Origin Lite のコントロールを開く — このページで${count}件をブロック`,
+      ublockPopupFailed: 'uBlock のコントロールを開けませんでした',
+      ublockPopupRetry: 'uBlock のコントロールを再試行',
       address: 'アドレス',
       addressPlaceholder: 'アドレスを入力',
       blankPageBody: '上のアドレス欄に入力するか、Hermes にページを開くよう頼んでください。',

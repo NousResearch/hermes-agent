@@ -43,7 +43,7 @@ await build({
   outfile: mainOut,
   external,
   banner: {
-    js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);",
+    js: "import { createRequire as createNodeRequire } from 'module'; const require = createNodeRequire(import.meta.url);",
   },
   define,
   logLevel: 'info',

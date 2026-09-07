@@ -288,6 +288,26 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   openPreviewInBrowser: url => ipcRenderer.invoke('hermes:openPreviewInBrowser', url),
   reachPreviewUrl: url => ipcRenderer.invoke('hermes:preview:reach', url),
   setActiveConnectionRoute: route => ipcRenderer.send('hermes:connection:active-route', route),
+  previewUblock: {
+    getState: () => ipcRenderer.invoke('hermes:preview-ublock:get'),
+    onState: (callback: (state: unknown) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state)
+      ipcRenderer.on('hermes:preview-ublock:state', listener)
+
+      return () => ipcRenderer.removeListener('hermes:preview-ublock:state', listener)
+    },
+    registerGuest: (webContentsId: number) => ipcRenderer.invoke('hermes:preview-ublock:guest-register', webContentsId),
+    unregisterGuest: (webContentsId: number) =>
+      ipcRenderer.invoke('hermes:preview-ublock:guest-unregister', webContentsId),
+    onBlockedRequestCount: (callback: (update: unknown) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, update: unknown) => callback(update)
+      ipcRenderer.on('hermes:preview-ublock:blocked-request-count', listener)
+
+      return () => ipcRenderer.removeListener('hermes:preview-ublock:blocked-request-count', listener)
+    },
+    openPopup: () => ipcRenderer.invoke('hermes:preview-ublock:open-popup'),
+    setEnabled: (enabled: boolean) => ipcRenderer.invoke('hermes:preview-ublock:set-enabled', enabled)
+  },
   fetchLinkTitle: url => ipcRenderer.invoke('hermes:fetchLinkTitle', url),
   resolveFavicon: url => ipcRenderer.invoke('hermes:resolveFavicon', url),
   sanitizeWorkspaceCwd: cwd => ipcRenderer.invoke('hermes:workspace:sanitize', cwd),

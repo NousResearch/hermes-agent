@@ -92,6 +92,18 @@ describe('PreviewBrowserBar', () => {
     expect(address(rendered)).toBeTruthy()
   })
 
+  it.each([
+    [1, 'Open uBlock Origin Lite controls — 1 blocked request on this page', '1'],
+    [127, 'Open uBlock Origin Lite controls — 127 blocked requests on this page', '99+']
+  ])('shows the blocked-request badge and accessible count label for %s', (count, label, badge) => {
+    const rendered = render(
+      <PreviewBrowserBar {...baseProps} blockedRequestCount={count} onOpenUblockPopup={vi.fn()} />
+    )
+
+    expect(rendered.getByRole('button', { name: label })).toBeTruthy()
+    expect(rendered.getByRole('button', { name: label }).textContent).toContain(badge)
+  })
+
   it('renders the Annotate control and a blue Commenting status while the mode is on', () => {
     const onToggleAnnotate = vi.fn()
     const rendered = render(<PreviewBrowserBar {...baseProps} annotateMode onToggleAnnotate={onToggleAnnotate} />)
@@ -371,5 +383,46 @@ describe('PreviewBrowserBar', () => {
     fireEvent.click(rendered.getByRole('button', { name: 'Pop in' }))
 
     expect(onPopIn).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the popup and dashboard actions separate', async () => {
+    const onOpenUblockPopup = vi.fn().mockResolvedValue(undefined)
+    const onOpenUblockDashboard = vi.fn()
+    const rendered = render(
+      <PreviewBrowserBar
+        {...baseProps}
+        onOpenUblockDashboard={onOpenUblockDashboard}
+        onOpenUblockPopup={onOpenUblockPopup}
+      />
+    )
+
+    expect(rendered.getByRole('button', { name: 'uBlock Origin Lite is enabled — open controls' })).toBeTruthy()
+    expect(rendered.getByRole('button', { name: 'Open uBlock Origin Lite controls' })).toBeTruthy()
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Open uBlock Origin Lite controls' }))
+    fireEvent.click(rendered.getByRole('button', { name: 'uBlock Origin Lite is enabled — open controls' }))
+
+    await waitFor(() => expect(onOpenUblockPopup).toHaveBeenCalledOnce())
+    expect(onOpenUblockDashboard).toHaveBeenCalledOnce()
+  })
+
+  it('opens the popup without changing the current Preview address', async () => {
+    const onOpenUblockPopup = vi.fn().mockResolvedValue(undefined)
+    const rendered = render(<PreviewBrowserBar {...baseProps} onOpenUblockPopup={onOpenUblockPopup} />)
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Open uBlock Origin Lite controls' }))
+
+    await waitFor(() => expect(onOpenUblockPopup).toHaveBeenCalledOnce())
+    expect(address(rendered).value).toBe('https://example.com')
+  })
+
+  it('shows a localized retry state when opening the popup is rejected', async () => {
+    const onOpenUblockPopup = vi.fn().mockRejectedValue(new Error('native failure'))
+    render(<PreviewBrowserBar {...baseProps} onOpenUblockPopup={onOpenUblockPopup} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open uBlock Origin Lite controls' }))
+
+    await waitFor(() => expect(screen.getByText('Could not open uBlock controls')).toBeTruthy())
+    expect(screen.getByRole('button', { name: 'Retry uBlock controls' })).toBeTruthy()
   })
 })

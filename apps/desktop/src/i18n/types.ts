@@ -645,6 +645,23 @@ export interface Translations {
       keepAwakeDesc: string
       disableF12Title: string
       disableF12Desc: string
+      previewUblockTitle: string
+      previewUblockDescription: string
+      previewUblockDownloading: string
+      previewUblockFailure: string
+      previewUblock: {
+        checkingCache: string
+        downloading: string
+        extracting: string
+        loading: string
+        preparing: string
+        validating: string
+        verifying: string
+        enabled: (version: string) => string
+        transferred: (amount: string) => string
+        downloadProgress: string
+        retry: string
+      }
       attachmentSizeTitle: string
       attachmentSizeDesc: string
       attachmentSizeUnit: string
@@ -2918,6 +2935,11 @@ export interface Translations {
       goBack: string
       goForward: string
       reload: string
+      ublockDashboard: string
+      ublockPopup: string
+      ublockPopupBlockedRequests: (count: number) => string
+      ublockPopupFailed: string
+      ublockPopupRetry: string
       address: string
       addressPlaceholder: string
       blankPageBody: string

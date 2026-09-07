@@ -25,6 +25,7 @@ import { ANNOTATE_BLUE } from '@/lib/preview-annotate'
 import { cn } from '@/lib/utils'
 
 interface PreviewBrowserBarProps {
+  blockedRequestCount?: number
   annotateMode?: boolean
   canGoBack: boolean
   canGoForward: boolean
@@ -32,6 +33,8 @@ interface PreviewBrowserBarProps {
   consoleOpen: boolean
   devToolsOpen: boolean
   loading: boolean
+  onOpenUblockDashboard?: () => void
+  onOpenUblockPopup?: () => Promise<void> | void
   onBack: () => void
   onFlushComments?: () => void
   onForward: () => void
@@ -94,6 +97,7 @@ export function normalizePreviewAddress(value: string): null | string {
 }
 
 export function PreviewBrowserBar({
+  blockedRequestCount = 0,
   annotateMode = false,
   canGoBack,
   canGoForward,
@@ -101,6 +105,8 @@ export function PreviewBrowserBar({
   consoleOpen,
   devToolsOpen,
   loading,
+  onOpenUblockDashboard,
+  onOpenUblockPopup,
   onBack,
   onFlushComments,
   onForward,
@@ -123,10 +129,14 @@ export function PreviewBrowserBar({
   // dropped the field straight back to `url` — the page you were LEAVING —
   // so every navigation flashed the old address before the new one arrived.
   const [pending, setPending] = useState<null | string>(null)
+  const [ublockPopupBusy, setUblockPopupBusy] = useState(false)
+  const [ublockPopupFailed, setUblockPopupFailed] = useState(false)
   // Only while the user is typing: a page that navigates itself is never the
   // user's mistake to flag.
   const invalid = draft !== null && draft.trim().length > 0 && !normalizePreviewAddress(draft)
   const shown = draft ?? pending ?? url
+  const blockedCount = Number.isFinite(blockedRequestCount) ? Math.max(0, Math.floor(blockedRequestCount)) : 0
+  const blockedBadge = blockedCount > 99 ? '99+' : String(blockedCount)
 
   // The page moved (or a redirect landed somewhere else entirely), so the real
   // address supersedes what we asked for.
@@ -142,6 +152,19 @@ export function PreviewBrowserBar({
     setDraft(null)
     setPending(address)
     onNavigate(address)
+  }
+
+  const openUblockPopup = () => {
+    if (!onOpenUblockPopup || ublockPopupBusy) {
+      return
+    }
+
+    setUblockPopupBusy(true)
+    setUblockPopupFailed(false)
+    void Promise.resolve()
+      .then(() => onOpenUblockPopup())
+      .catch(() => setUblockPopupFailed(true))
+      .finally(() => setUblockPopupBusy(false))
   }
 
   return (
@@ -163,6 +186,44 @@ export function PreviewBrowserBar({
         label={copy.reload}
         onSelect={onReload}
       />
+      {onOpenUblockDashboard && (
+        <PaneStripGlyph
+          icon={<Codicon name="settings-gear" size="0.8125rem" />}
+          label={copy.ublockDashboard}
+          onSelect={onOpenUblockDashboard}
+        />
+      )}
+      {onOpenUblockPopup && (
+        <PaneStripGlyph
+          disabled={ublockPopupBusy}
+          icon={
+            <span className="relative inline-flex">
+              <Codicon name="shield" size="0.8125rem" spinning={ublockPopupBusy} />
+              {blockedCount > 0 && (
+                <span
+                  aria-hidden="true"
+                  className="absolute -right-2.5 -top-2 min-w-3 rounded-full bg-primary px-0.5 text-center text-[0.5rem] leading-3 text-primary-foreground"
+                >
+                  {blockedBadge}
+                </span>
+              )}
+            </span>
+          }
+          label={
+            ublockPopupFailed
+              ? copy.ublockPopupRetry
+              : blockedCount > 0
+                ? copy.ublockPopupBlockedRequests(blockedCount)
+                : copy.ublockPopup
+          }
+          onSelect={openUblockPopup}
+        />
+      )}
+      {ublockPopupFailed && (
+        <span aria-live="polite" className="max-w-40 truncate text-[0.6875rem] text-destructive">
+          {copy.ublockPopupFailed}
+        </span>
+      )}
       {/* The copy control lives INSIDE the field, on its right edge — the
           same pre-faded inline icon code blocks use, not a toolbar button.
           It copies what the field shows: on a remote gateway, that is the

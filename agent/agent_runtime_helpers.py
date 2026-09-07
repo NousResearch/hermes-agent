@@ -1211,6 +1211,9 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
     parts: List[str] = []
 
     def _add(text) -> None:
+        from agent.message_content import flatten_message_text
+
+        text = flatten_message_text(text, sep="")
         if text and text not in parts:
             parts.append(text)
     _add(getattr(assistant_message, "reasoning", None))

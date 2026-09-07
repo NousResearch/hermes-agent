@@ -42,6 +42,27 @@ _ARCHIVE_ACTIVE_SQL = "UPDATE messages SET active = 0, compacted = 1 WHERE sessi
 _INVALID = object()  # _json_or sentinel where the fallback must be distinguishable from JSON null
 
 
+def _ensure_session_row(conn, session_id: str) -> None:
+    """Ensure the session parent row exists to satisfy foreign key constraints.
+
+    A missing row (deleted by cleanup or never created after a transient
+    create_session failure) would otherwise raise FOREIGN KEY constraint
+    failed and abort the whole turn or batch flush. Stamped with
+    source='self-healed' so maintenance tooling can identify and filter it.
+    """
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO sessions (id, source, started_at) "
+        "VALUES (?, 'self-healed', ?)",
+        (session_id, time.time()),
+    )
+    if cur.rowcount > 0:
+        logger.warning(
+            "Self-healed missing parent session row for session_id=%s (source='self-healed')",
+            session_id,
+        )
+
+
+
 def _json_or(raw: Any, fallback: Any, warning: str) -> Any:
     """``json.loads(raw)``; on failure log *warning* and return *fallback*."""
     try:
@@ -283,6 +304,8 @@ class SessionMessagesMixin:
         def _do(conn):
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
+            # FK self-heal: ensure the session parent row exists.
+            _ensure_session_row(conn, session_id)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
             self._bump_session_counters(conn, session_id, 1, _tool_calls_count(tool_calls), unit=True)
             return msg_id
@@ -306,6 +329,8 @@ class SessionMessagesMixin:
         def _do(conn):
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
+            # FK self-heal: same guarantee as append_message for batch flush.
+            _ensure_session_row(conn, session_id)
             from agent.transcript_repair import resolve_and_repair_transcript_batch
             inserted_rows = resolve_and_repair_transcript_batch(conn, session_id, messages,
                 encode_content_fn=self._encode_content, decode_content_fn=self._decode_content)

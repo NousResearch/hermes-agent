@@ -79,7 +79,8 @@ import {
   openTileGatewayScopes,
   reconcileBusyStatesOnReconnect,
   recordSessionEventScope,
-  resetTileRuntimeBindings
+  resetTileRuntimeBindings,
+  workingSessionScopes
 } from '@/store/session-states'
 import { windowProfileOverride } from '@/store/windows'
 import type { RpcEvent } from '@/types/hermes'
@@ -944,10 +945,13 @@ export function useGatewayBoot({
 
     // Keep live pool backends alive while this window is open (the main process
     // can't observe the direct renderer↔backend WS). No-op for the primary.
-    const keepaliveTimer = setInterval(() => {
-      touchActiveGatewayBackend()
-      touchSecondaryGateways()
-    }, 60_000)
+    const touchKeptGatewayBackends = () => {
+      const streamingScopes = workingSessionScopes()
+      touchActiveGatewayBackend(streamingScopes)
+      touchSecondaryGateways(streamingScopes)
+    }
+
+    const keepaliveTimer = setInterval(touchKeptGatewayBackends, 60_000)
 
     // Bound concurrency cost to consumers: keep a background socket while its
     // profile has a running (working) or blocked (needs-input) session, OR an
@@ -982,7 +986,13 @@ export function useGatewayBoot({
       pruneSecondaryGateways(keep)
     }
 
-    const offWorking = $workingSessionIds.subscribe(() => recomputeKeptGateways())
+    const offWorking = $workingSessionIds.subscribe(() => {
+      recomputeKeptGateways()
+      // Protect a stream as soon as its busy state lands; waiting for the next
+      // minute heartbeat leaves a cap-eviction race at turn start.
+      touchKeptGatewayBackends()
+    })
+
     const offAttention = $attentionSessionIds.subscribe(() => recomputeKeptGateways())
     const offActiveSession = $activeSessionId.subscribe(() => recomputeKeptGateways())
     const offSessionTiles = $sessionTiles.subscribe(() => recomputeKeptGateways())

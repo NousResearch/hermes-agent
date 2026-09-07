@@ -16,15 +16,17 @@
 
 export interface PoolEvictionEntry {
   lastActiveAt?: null | number
+  lastStreamingAt?: null | number
   process?: unknown
 }
 
 /**
  * Pick which pool keys the LRU cap should evict so that at most `keep`
  * SPAWNED backends remain. Only entries with a live child process count
- * toward the cap or are eligible for cap eviction, and — as before — only
- * entries idle beyond `freshMs` may be evicted (an actively kept-alive pool
- * may exceed the soft cap rather than kill a running session).
+ * toward the cap or are eligible for cap eviction. A renderer keepalive only
+ * proves that a socket is open; only recent streaming activity protects a
+ * child from cap eviction. If every child is streaming, the pool may remain
+ * over cap rather than terminate active work.
  */
 export function selectPoolEvictions<K>(
   entries: Iterable<[K, PoolEvictionEntry]>,
@@ -39,7 +41,7 @@ export function selectPoolEvictions<K>(
   }
 
   const evictable = spawned
-    .filter(([, entry]) => now - (entry.lastActiveAt || 0) > freshMs)
+    .filter(([, entry]) => now - (entry.lastStreamingAt || 0) > freshMs)
     .sort((a, b) => (a[1].lastActiveAt || 0) - (b[1].lastActiveAt || 0))
 
   let removable = spawned.length - Math.max(0, keep)

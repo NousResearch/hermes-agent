@@ -114,9 +114,10 @@ test('stopAll stops every pooled backend and resolves after all exits', async ()
 })
 
 test('a respawn can await the in-flight stop before reusing the key', async () => {
-  const { addChild, exitResolvers, stopper } = harness()
+  const { addChild, exitResolvers, pool, stopper } = harness()
   const child = addChild('selena')
   const order: string[] = []
+  const replacement: Child = { exited: false, killed: false }
 
   void stopper.stop('selena')
 
@@ -127,6 +128,7 @@ test('a respawn can await the in-flight stop before reusing the key', async () =
       await dying
     }
 
+    pool.set('selena', { process: replacement })
     order.push('spawn')
   })()
 
@@ -135,4 +137,5 @@ test('a respawn can await the in-flight stop before reusing the key', async () =
   await respawn
 
   assert.deepEqual(order, ['exit-signal', 'spawn'])
+  assert.equal(pool.get('selena')?.process, replacement)
 })

@@ -51,7 +51,7 @@ declare global {
       revalidateConnection: () => Promise<{ ok: boolean; rebuilt: boolean }>
       // Keepalive: mark a pool profile backend as recently used so the idle
       // reaper spares it while its chat is active.
-      touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
+      touchBackend: (profile?: string | null, options?: { streaming?: boolean }) => Promise<{ ok: boolean }>
       // Pool sizing (Settings → Advanced): device-local, live-applied by the
       // main process. get resolves the limits currently in force; set applies
       // (and persists) new ones, evicting/reaping to converge immediately.

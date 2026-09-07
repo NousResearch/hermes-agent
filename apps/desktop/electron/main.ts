@@ -1583,10 +1583,9 @@ function setPoolLimits(raw) {
   return { ...poolLimits }
 }
 
-// A backend touched within this window has a live renderer socket (the keepalive
-// pings every 60s for every open profile). LRU eviction must spare these — a
-// concurrent multi-profile session keeps several backends "fresh" at once, and
-// killing one to honor the soft cap would abort a running agent.
+// A backend streaming within this window must be spared from cap eviction. A
+// renderer keepalive only proves that its socket is open; treating that as work
+// made every profile ever opened permanently exempt from the cap (#105239).
 //
 // The window is intentionally MUCH wider than the 60s ping cadence:
 //   * 1 missed ping    = +60s of apparent silence
@@ -11515,6 +11514,7 @@ async function ensureBackend(profile, opts: { spawnPriority?: LocalBackendSpawnP
     token: null,
     connectionPromise: null,
     lastActiveAt: Date.now(),
+    lastStreamingAt: null,
     remoteBaseUrl: null,
     releaseLocalBackendSlot: null,
     localBackendSlotKey: null,
@@ -11690,6 +11690,7 @@ async function ensureRegistryBackend(
       token: null,
       connectionPromise: null,
       lastActiveAt: Date.now(),
+      lastStreamingAt: null,
       remoteBaseUrl: null,
       releaseLocalBackendSlot: null,
       localBackendSlotKey: null,
@@ -12381,12 +12382,16 @@ async function stopRegistryConnectionBackends(connectionId) {
 // Mark a pool profile as recently used so the idle reaper spares it. The
 // renderer calls this when it opens a profile's chat WS and periodically while
 // streaming, since the main process can't see the direct renderer↔backend WS.
-function touchPoolBackend(profile) {
+function touchPoolBackend(profile, options: { streaming?: boolean } = {}) {
   for (const key of poolTouchKeys(profile)) {
     const entry = backendPool.get(key)
 
     if (entry) {
       entry.lastActiveAt = Date.now()
+
+      if (options.streaming) {
+        entry.lastStreamingAt = entry.lastActiveAt
+      }
 
       return
     }
@@ -12394,9 +12399,10 @@ function touchPoolBackend(profile) {
 }
 
 // Evict least-recently-used SPAWNED pool backends until at most `keep` remain —
-// but only ever evict backends without a live renderer socket (stale beyond the
-// keepalive window). When every backend is actively kept alive we let the pool
-// exceed the soft cap rather than kill a running session. Process-less
+// but only ever evict backends without recent streaming activity. An open idle
+// renderer socket is eligible immediately, restoring the configured memory
+// bound; when every backend is streaming we wait rather than kill active work.
+// Process-less
 // descriptor entries (remote/cloud registry sources, per-profile remote
 // overrides — `entry.process === null`) are excluded from the cap entirely:
 // they hold no local process, so counting them used to let a roster refresh
@@ -15002,8 +15008,8 @@ function revalidateSuspectPoolAfterResume() {
   )
 }
 
-ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
-  touchPoolBackend(profile)
+ipcMain.handle('hermes:backend:touch', async (_event, profile, options) => {
+  touchPoolBackend(profile, options)
 
   return { ok: true }
 })

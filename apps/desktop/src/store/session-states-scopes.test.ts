@@ -9,7 +9,8 @@ import {
   liveSessionScopes,
   openTileGatewayScopes,
   publishSessionState,
-  recordSessionEventScope
+  recordSessionEventScope,
+  workingSessionScopes
 } from '@/store/session-states'
 
 /**
@@ -31,6 +32,15 @@ beforeEach(() => {
 })
 
 describe('liveSessionScopes', () => {
+  it('reports only actively working scopes for backend stream protection', () => {
+    recordSessionEventScope({ connectionId: 'homelab', profile: 'worker', session_id: 'running' })
+    recordSessionEventScope({ connectionId: 'homelab', profile: 'reviewer', session_id: 'blocked' })
+    publishSessionState('running', state({ busy: true }))
+    publishSessionState('blocked', state({ busy: false, needsInput: true }))
+
+    expect(workingSessionScopes()).toEqual(new Set(['conn:homelab::worker']))
+  })
+
   it('maps a registry-tagged busy session to its composite scope', () => {
     recordSessionEventScope({ connectionId: 'homelab', profile: 'default', session_id: 'rt-1' })
     publishSessionState('rt-1', state({ busy: true }))

@@ -153,6 +153,29 @@ export function liveSessionScopes(): Set<string> {
   return scopes
 }
 
+/** Backend scopes with a turn actively running. Needs-input sessions still
+ * retain their socket, but they are safe cap-eviction candidates because no
+ * stream is in flight and foregrounding transparently re-ensures the backend. */
+export function workingSessionScopes(): Set<string> {
+  const scopes = new Set<string>()
+
+  for (const [runtimeId, state] of Object.entries($sessionStates.get())) {
+    if (!state?.busy) {
+      continue
+    }
+
+    const owner = sessionOwnerByRuntimeId.get(runtimeId)
+
+    if (typeof owner === 'string') {
+      scopes.add(normalizeProfileKey(owner))
+    } else if (owner) {
+      scopes.add(registryBackendScopeKey(owner.connectionId, owner.profile))
+    }
+  }
+
+  return scopes
+}
+
 // ── Owner hold across the create → foreground gap ───────────────────────────
 // A routed session.create returns a stored id on the owner's socket, but the
 // surface that will PIN that socket (the selected primary thread, or a tile)

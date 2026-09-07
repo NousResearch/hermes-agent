@@ -11,14 +11,18 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { selectPoolEvictions } from './pool-eviction'
+import { type PoolEvictionEntry, selectPoolEvictions } from './pool-eviction'
 
 const NOW = 1_000_000
 // Mirrors main.ts POOL_KEEPALIVE_FRESH_MS (4 minutes — see #95189).
 const FRESH_MS = 4 * 60_000
 
 /** A spawned local backend entry (has a child process). */
-const spawned = (idleMs: number) => ({ process: { pid: 123 }, lastActiveAt: NOW - idleMs })
+const spawned = (idleMs: number, streamedMs: number | null = null): PoolEvictionEntry => ({
+  process: { pid: 123 },
+  lastActiveAt: NOW - idleMs,
+  lastStreamingAt: streamedMs === null ? null : NOW - streamedMs
+})
 
 /** A process-less remote/cloud descriptor entry. */
 const descriptor = (idleMs: number) => ({ process: null, lastActiveAt: NOW - idleMs })
@@ -51,14 +55,35 @@ test('spawned backends over the cap are still LRU-evicted', () => {
   assert.deepEqual(selectPoolEvictions(entries, 2, NOW, FRESH_MS), ['a'])
 })
 
-test('fresh spawned backends are spared even over the cap', () => {
+test('recent renderer keepalives do not pin idle spawned backends over the cap', () => {
   const entries: [string, ReturnType<typeof spawned>][] = [
     ['a', spawned(1_000)],
     ['b', spawned(2_000)],
     ['c', spawned(3_000)]
   ]
 
-  // All within the keepalive window → the pool may exceed the soft cap.
+  // An open renderer socket is not evidence of a running turn. The two least
+  // recently used idle children must make room even though keepalive touched
+  // every socket moments ago.
+  assert.deepEqual(selectPoolEvictions(entries, 1, NOW, FRESH_MS), ['c', 'b'])
+})
+
+test('recent streaming activity protects a spawned backend from cap eviction', () => {
+  const entries: [string, ReturnType<typeof spawned>][] = [
+    ['streaming', spawned(3_000, 2_000)],
+    ['idle-a', spawned(2_000)],
+    ['idle-b', spawned(1_000)]
+  ]
+
+  assert.deepEqual(selectPoolEvictions(entries, 1, NOW, FRESH_MS), ['idle-a', 'idle-b'])
+})
+
+test('all-streaming pools stay over cap rather than terminate active work', () => {
+  const entries: [string, ReturnType<typeof spawned>][] = [
+    ['a', spawned(3_000, 2_000)],
+    ['b', spawned(2_000, 1_000)]
+  ]
+
   assert.deepEqual(selectPoolEvictions(entries, 1, NOW, FRESH_MS), [])
 })
 
@@ -100,7 +125,7 @@ test('descriptor-only pools never evict', () => {
 // without evicting an active backend. Truly stale backends (multiple lapses,
 // minutes idle) are still evicted as before.
 
-test('#95189: one missed keepalive ping must NOT make the most-recently-touched backend evictable', () => {
+test('#95189: one missed streaming ping must NOT make an active backend evictable', () => {
   // Renderer's keepalive cadence is 60s. With the old freshMs=90s window,
   // a backend last touched 95s ago — i.e. exactly ONE missed/delayed ping —
   // was eligible for LRU eviction even though it had been actively
@@ -112,8 +137,8 @@ test('#95189: one missed keepalive ping must NOT make the most-recently-touched 
   // extra cycle — killing an active backend is far worse than briefly
   // exceeding the soft cap.
   const entries: [string, ReturnType<typeof spawned>][] = [
-    ['active', spawned(95_000)], // 1 missed ping on a 60s cadence
-    ['fresher', spawned(2_000)] // touched recently — must NOT be evicted
+    ['active', spawned(95_000, 95_000)], // 1 missed ping on a 60s cadence
+    ['fresher', spawned(2_000, 2_000)] // streaming recently — must NOT be evicted
   ]
 
   // keep=1 → pool over cap by one. Active backend must be spared; the cap
@@ -122,7 +147,7 @@ test('#95189: one missed keepalive ping must NOT make the most-recently-touched 
   assert.deepEqual(selectPoolEvictions(entries, 1, NOW, FRESH_MS), [])
 })
 
-test('#95189: two missed keepalive pings (2-min IPC stall) must NOT evict an active backend', () => {
+test('#95189: two missed streaming pings (2-min IPC stall) must NOT evict an active backend', () => {
   // The reported symptom: gateways exited ~80–90s after start with a clean
   // disconnect (no stderr), recurring every ~2 min. Reproduce the boundary:
   // 125s of silence = just over two missed pings at 60s. A backend in this
@@ -132,9 +157,9 @@ test('#95189: two missed keepalive pings (2-min IPC stall) must NOT evict an act
   // The other entries are all FRESH (well within the keepalive window), so
   // no eviction is correct even before any cap considerations.
   const entries: [string, ReturnType<typeof spawned>][] = [
-    ['active', spawned(125_000)],
-    ['fresher', spawned(2_000)],
-    ['fresher-2', spawned(5_000)]
+    ['active', spawned(125_000, 125_000)],
+    ['fresher', spawned(2_000, 2_000)],
+    ['fresher-2', spawned(5_000, 5_000)]
   ]
 
   assert.deepEqual(selectPoolEvictions(entries, 1, NOW, FRESH_MS), [])
@@ -144,8 +169,8 @@ test('#95189: a backend genuinely idle for minutes IS evicted (#95189 long-windo
   // Sanity: the widening does NOT make the pool unbounded. 10 minutes of
   // silence (the documented POOL_IDLE_MS) is still fair game.
   const entries: [string, ReturnType<typeof spawned>][] = [
-    ['idle', spawned(10 * 60_000)],
-    ['fresh', spawned(5_000)]
+    ['idle', spawned(10 * 60_000, 10 * 60_000)],
+    ['fresh', spawned(5_000, 5_000)]
   ]
 
   // keep=1, idle is over the cap AND past the fresh window → evicted.

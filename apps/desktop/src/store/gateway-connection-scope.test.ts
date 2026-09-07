@@ -49,7 +49,8 @@ const {
   openGatewayForAgent,
   pruneSecondaryGateways,
   setPrimaryGateway,
-  setPrimaryGatewayConnectionId
+  setPrimaryGatewayConnectionId,
+  touchSecondaryGateways
 } = await import('./gateway')
 
 const { setApiRequestConnection } = await import('@/hermes')
@@ -129,6 +130,20 @@ describe('primary gateway registry scope', () => {
 })
 
 describe('pruneSecondaryGateways with registry-scoped entries', () => {
+  it('marks only running scopes as streaming in pool keepalives', async () => {
+    await openGatewayForAgent(null, 'research')
+    await openGatewayForAgent('homelab', 'worker')
+    await openGatewayForAgent('homelab', 'idle')
+    const touchBackend = window.hermesDesktop?.touchBackend as ReturnType<typeof vi.fn>
+    touchBackend.mockClear()
+
+    touchSecondaryGateways(new Set(['research', 'conn:homelab::worker']))
+
+    expect(touchBackend).toHaveBeenCalledWith('research', { streaming: true })
+    expect(touchBackend).toHaveBeenCalledWith('conn:homelab::worker', { streaming: true })
+    expect(touchBackend).toHaveBeenCalledWith('conn:homelab::idle', { streaming: false })
+  })
+
   it('keeps the previous source socket open when Sessions switches backends', async () => {
     await ensureGatewayForAgent('work', 'default')
     await ensureGatewayForAgent('homelab', 'default')

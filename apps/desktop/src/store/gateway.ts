@@ -1665,12 +1665,13 @@ export function openSecondaryCount(): number {
 
 // Keep the idle reaper from killing a backend we still need: ping every live
 // secondary. The active one is pinged separately (touchActiveGatewayBackend).
-export function touchSecondaryGateways(): void {
+export function touchSecondaryGateways(streamingScopes: ReadonlySet<string> = new Set()): void {
   const desktop = window.hermesDesktop
 
   for (const entry of g.secondaries.values()) {
     if (entry.wantOpen) {
-      void desktop?.touchBackend?.(entry.scope).catch(() => undefined)
+      const streaming = streamingScopes.has(entry.scope) || (!entry.connectionId && streamingScopes.has(entry.profile))
+      void desktop?.touchBackend?.(entry.scope, { streaming }).catch(() => undefined)
     }
   }
 }

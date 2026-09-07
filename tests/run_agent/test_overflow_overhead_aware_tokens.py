@@ -33,7 +33,8 @@ def _no_sleep(monkeypatch):
     """Short-circuit all time.sleep and jittered_backoff calls."""
     import time as _time
     monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
-    monkeypatch.setattr(run_agent, "jittered_backoff", lambda *a, **k: 0.0)
+    from agent import retry_utils as _retry_utils
+    monkeypatch.setattr(_retry_utils, "jittered_backoff", lambda *a, **k: 0.0)
 
 
 def _make_tool_defs(*names: str) -> list:
@@ -66,9 +67,9 @@ def _mock_response(content="Hello", finish_reason="stop", tool_calls=None, usage
 @pytest.fixture()
 def agent():
     with (
-        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",
@@ -117,7 +118,7 @@ class TestHTTP413OverheadAwareTokens:
 
         with (
             patch(
-                "agent.conversation_loop.estimate_request_tokens_rough",
+                "agent.model_metadata.estimate_request_tokens_rough",
                 return_value=_SENTINEL_TOKENS,
             ) as mock_estimate,
             patch.object(agent, "_compress_context") as mock_compress,
@@ -161,7 +162,7 @@ class TestHTTP413OverheadAwareTokens:
 
         with (
             patch(
-                "agent.conversation_loop.estimate_request_tokens_rough",
+                "agent.model_metadata.estimate_request_tokens_rough",
                 side_effect=_capture_estimate,
             ),
             patch.object(agent, "_compress_context") as mock_compress,
@@ -214,7 +215,7 @@ class TestContextOverflowOverheadAwareTokens:
 
         with (
             patch(
-                "agent.conversation_loop.estimate_request_tokens_rough",
+                "agent.model_metadata.estimate_request_tokens_rough",
                 return_value=_SENTINEL_TOKENS,
             ) as mock_estimate,
             patch.object(agent, "_compress_context") as mock_compress,
@@ -255,7 +256,7 @@ class TestContextOverflowOverheadAwareTokens:
 
         with (
             patch(
-                "agent.conversation_loop.estimate_request_tokens_rough",
+                "agent.model_metadata.estimate_request_tokens_rough",
                 side_effect=_capture_estimate,
             ),
             patch.object(agent, "_compress_context") as mock_compress,
@@ -288,7 +289,7 @@ class TestContextOverflowOverheadAwareTokens:
 
         with (
             patch(
-                "agent.conversation_loop.estimate_request_tokens_rough",
+                "agent.model_metadata.estimate_request_tokens_rough",
                 return_value=_SENTINEL_TOKENS,
             ),
             patch.object(agent, "_compress_context") as mock_compress,
@@ -343,7 +344,7 @@ class TestLongContextTierOverheadAwareTokens:
 
         with (
             patch(
-                "agent.conversation_loop.estimate_request_tokens_rough",
+                "agent.model_metadata.estimate_request_tokens_rough",
                 return_value=_SENTINEL_TOKENS,
             ),
             patch.object(agent, "_compress_context") as mock_compress,
@@ -382,7 +383,7 @@ class TestLongContextTierOverheadAwareTokens:
 
         with (
             patch(
-                "agent.conversation_loop.estimate_request_tokens_rough",
+                "agent.model_metadata.estimate_request_tokens_rough",
                 side_effect=_capture_estimate,
             ),
             patch.object(agent, "_compress_context") as mock_compress,

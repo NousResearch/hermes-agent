@@ -16,10 +16,14 @@ Tracks [issue #7816](https://github.com/NousResearch/hermes-agent/issues/7816).
 
 ## How it runs
 
-The curator is triggered by an inactivity check, not a cron daemon. On CLI session start, and on a recurring tick inside the gateway's cron-ticker thread, Hermes checks whether:
+The curator is triggered by an inactivity check, not a cron job. On CLI session start, during gateway housekeeping, and on the Desktop/`hermes serve` maintenance timer, Hermes checks whether:
 
 1. Enough time has passed since the last curator run (`interval_hours`, default **7 days**), and
 2. The agent has been idle long enough (`min_idle_hours`, default **2 hours**).
+
+Desktop and other `hermes serve` backends share the existing hourly maintenance timer (first poll after 90 seconds), independently of cron jobs. They measure inactivity from process startup and the most recent chat activity in the same profile, retaining that activity timestamp after a session closes or is reaped, and skip curator while a turn in that profile is running. A connected but inactive window does not block maintenance. This timer also polls personal and organization Skill Sync, subject to those features' own opt-in gates. A running messaging gateway for the same profile owns these chores instead.
+
+The timer services its backend's profile. In-flight maintenance runs in a worker thread; closing the backend does not cooperatively interrupt that pass. Starting multiple independent serve processes for the same profile can still race the curator's interval check.
 
 If both are true, it spawns a background fork of `AIAgent` — the same pattern used by the memory/skill self-improvement nudges. The fork runs in its own prompt cache and never touches the active conversation.
 
@@ -315,7 +319,7 @@ Skills named in any cron job's `skills:` list are protected the same way for **a
 
 Only **agent-created** skills can be pinned — `hermes curator pin` refuses on bundled and hub-installed skills with an explanatory message if you try. Hub-installed skills are never subject to curator mutation. Bundled built-in skills are only touched when `curator.prune_builtins: true` (the default), and even then only archived after `archive_after_days` of non-use — never patched, consolidated, or deleted. Set `curator.prune_builtins: false` to exempt bundled skills entirely.
 
-A small set of **protected built-ins** is hardcoded as never-archivable and never-consolidatable, regardless of `curator.prune_builtins`, pin state, or LLM judgment. These back load-bearing UX — for example, `plan` powers the `/plan` slash-command flow — so silently archiving one would turn its slash command into an "Unknown command" error with no signal to you. Protected built-ins are filtered out of the curator's candidate list entirely, so the consolidation pass never sees them.
+A small set of **protected built-ins** can be hardcoded as never-archivable and never-consolidatable, regardless of `curator.prune_builtins`, pin state, or LLM judgment. These back load-bearing UX, so silently archiving one would turn its slash command into an "Unknown command" error with no signal to you. (The set is currently empty — `plan`, its original member, graduated to a built-in `/plan` command with no skill on disk.) Protected built-ins are filtered out of the curator's candidate list entirely, so the consolidation pass never sees them.
 
 If you want a stronger guarantee than "no deletion" — for instance, freezing a skill's content entirely while the agent still reads it — edit `~/.hermes/skills/<name>/SKILL.md` directly with your editor. The pin guards tool-driven deletion, not your own filesystem access.
 

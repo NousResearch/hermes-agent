@@ -163,6 +163,24 @@ def _legacy_reset_child_sql(alias: str, reasons_sql: str) -> str:
 _RESET_CHILD_SQL = ("json_extract(COALESCE({a}.model_config, '{{}}'), '$._reset_from') IS NOT NULL"
     " OR " + _legacy_reset_child_sql("{a}", _RESET_END_REASONS_SQL))
 
+# Listing projection follows compression plus *hidden* reset/new_session children
+# (CLI /new with empty session_key). Same-key / `_reset_from` children stay
+# independently listable. Resume uses get_compression_tip and must not cross
+# a reset boundary (#84870).
+# Cross-surface coupling guard: ``new_session`` is CLI-specific today.
+_CONTINUATION_PARENT_REASONS = ("compression",) + _RESET_END_REASONS + ("new_session",)
+_HIDDEN_RESET_PARENT_REASONS_SQL = _RESET_END_REASONS_SQL + ", 'new_session'"
+_LIST_CONTINUATION_EDGE_SQL = (
+    "(parent.end_reason = 'compression' OR ("
+    f"parent.end_reason IN ({_HIDDEN_RESET_PARENT_REASONS_SQL}) "
+    "AND json_extract(COALESCE(child.model_config, '{}'), '$._reset_from') IS NULL "
+    f"AND NOT ({_legacy_reset_child_sql('child', _RESET_END_REASONS_SQL)})"
+    ")) "
+    "AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL "
+    "AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL "
+    "AND COALESCE(child.source, '') != 'tool'"
+)
+
 # Picker-visible rows: roots + branch/reset children (not subagent runs or compression continuations).
 _LISTABLE_CHILD_SQL = (f"(s.parent_session_id IS NULL OR {_BRANCH_CHILD_SQL.format(a='s')}"
     f" OR {_RESET_CHILD_SQL.format(a='s')})")

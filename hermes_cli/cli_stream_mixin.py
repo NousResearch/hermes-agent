@@ -608,6 +608,18 @@ class CLIStreamMixin:
         progress modes tool.completed also commits a stacked scrollback line (tool history).
         """
         from cli import CLI_CONFIG, _DIM, _RST, _cprint, _hermes_home
+        if event_type == "delegation.injected":
+            try:
+                count = max(1, int(kwargs.get("task_count") or 1))
+            except (TypeError, ValueError):
+                count = 1
+            if count == 1:
+                text = "↪ Background agent finished — result injected into current turn."
+            else:
+                text = f"↪ {count} background agents finished — results injected into current turn."
+            _cprint(f"  {_DIM}{text}{_RST}")
+            self._invalidate()
+            return
         # MoA reference outputs (display-only events from the MoA facade): render each answer
         # as a labelled thinking-style block BEFORE the aggregator acts.
         if event_type == "moa.reference":

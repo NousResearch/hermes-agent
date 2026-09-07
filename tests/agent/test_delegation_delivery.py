@@ -288,6 +288,8 @@ def test_tool_boundary_flush_failure_restores_carrier_and_requeues_event():
     assert _complete_unit(delegation_id, _child(0, "must retry after flush failure")
     )
     agent = _tool_boundary_agent()
+    display_events = []
+    agent.tool_progress_callback = lambda *args, **kwargs: display_events.append((args, kwargs))
     agent._incremental_persistence_failed = False
     agent._flush_messages_to_session_db = lambda _messages: False
     messages = [
@@ -308,6 +310,7 @@ def test_tool_boundary_flush_failure_restores_carrier_and_requeues_event():
     assert any(
         event.get("delegation_id") == delegation_id for event in _queue_contents()
     )
+    assert not any(args and args[0] == "delegation.injected" for args, _ in display_events)
 
 
 def test_owner_loss_retires_local_latch_and_next_turn_can_inject(monkeypatch):
@@ -426,6 +429,8 @@ def test_run_conversation_inject_transport_normalize_and_ack(monkeypatch, tmp_pa
     agent = _make_loop_agent(tmp_path)
     cached_system_prompt = deepcopy(getattr(agent, "_cached_system_prompt"))
     requests = []
+    display_events = []
+    agent.tool_progress_callback = lambda *args, **kwargs: display_events.append((args, kwargs))
     responses = [
         _loop_response(
             content="",
@@ -476,6 +481,11 @@ def test_run_conversation_inject_transport_normalize_and_ack(monkeypatch, tmp_pa
     assert "not a new user request" in requests[1][-1]["content"]
     assert _event_state(delegation_id) == ("delivered", 1)
     assert not agent._pending_delegation_inject_claims
+    injected = [item for item in display_events if item[0] and item[0][0] == "delegation.injected"]
+    assert len(injected) == 1
+    assert injected[0][1]["task_count"] == 1
+    assert injected[0][1]["unit_count"] == 1
+    assert injected[0][1]["delegation_ids"] == [delegation_id]
     heartbeat = agent._delegation_inject_claim_heartbeat
     heartbeat["thread"].join(timeout=1)
     assert not heartbeat["thread"].is_alive()

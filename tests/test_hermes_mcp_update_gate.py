@@ -65,6 +65,28 @@ def test_marker_that_names_nobody_does_not_gate_the_bridge(tmp_path, body):
     assert marker.read_text() == body, "readers never mutate the marker"
 
 
+def test_a_release_still_in_flight_gates_the_bridge(tmp_path):
+    """A `.cas-release-<pid>-<uuid>` tombstone under a LIVE pid is the middle of
+    another reader's rename/read/unlink transaction, so the claim behind it is
+    still real. update-marker.ts answers 'cleanup-race' and update_lock.py
+    raises the blocking error; this module classified it as "names nobody" and
+    let the bridge walk into a venv that was being rewritten."""
+    marker = tmp_path / gate.MARKER_NAME
+    tombstone = tmp_path / f"{gate.MARKER_NAME}.cas-release-4242-abcdef"
+    tombstone.write_text("123\n100\n")
+    argv = ["python", "-m", gate.MCP_MAIN_MODULE]
+
+    with pytest.raises(gate.UpdateMarkerError) as excinfo:
+        gate.live_update_marker_owner(marker, pid_alive=lambda pid: True)
+    assert not isinstance(excinfo.value, gate.UpdateMarkerUnhealthyError)
+    assert gate.should_quiesce_mcp_bridge(argv=argv, marker=marker, pid_alive=lambda pid: True)
+
+    # An ABANDONED release is a different fact: nothing runs behind it, and the
+    # mutating readers recover it. It must not wedge the bridge.
+    assert not gate.should_quiesce_mcp_bridge(argv=argv, marker=marker, pid_alive=lambda pid: False)
+    assert tombstone.exists(), "readers never mutate"
+
+
 def test_unreadable_marker_still_fails_closed_for_the_exact_mcp_argv(tmp_path):
     """Opposite of the case above: a marker we could not READ might be hiding a
     real update, so that one alone keeps gating -- and only this entry point."""

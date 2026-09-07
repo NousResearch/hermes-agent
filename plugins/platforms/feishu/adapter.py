@@ -93,6 +93,14 @@ from utils import atomic_json_write, env_float, env_int
 
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 
+from plugins.platforms.feishu.lifecycle_card import (
+    FINAL_STATES as _LIFECYCLE_FINAL_STATES,
+    LifecycleCard,
+    make_title as _lifecycle_make_title,
+    split_entry_ref as _lifecycle_split_entry_ref,
+    strip_mentions as _lifecycle_strip_mentions,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -178,16 +186,17 @@ async def _read_limited_feishu_webhook_body(request: Any, max_bytes: int) -> byt
 
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
 
-# Feishu reactions render as prominent badges, unlike Discord/Telegram's
-# small footer emoji — a success badge on every message would add noise, so
-# we only mark start (Typing) and failure (CrossMark); the reply itself is
-# the success signal.
-_FEISHU_REACTION_IN_PROGRESS = "Typing"
+# Reactions on the user's message are the zero-cost status channel:
+# OnIt while working, DONE/CrossMark terminal — readable from a phone
+# lock screen without opening the thread.
+_FEISHU_REACTION_IN_PROGRESS = "OnIt"
+_FEISHU_REACTION_SUCCESS = "DONE"
 _FEISHU_REACTION_FAILURE = "CrossMark"
 # Bound on the (message_id → reaction_id) handle cache. Happy-path entries
 # drain on completion; the cap is a safeguard against unbounded growth from
 # delete-failures, not a capacity plan.
 _FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
+_LIFECYCLE_TITLE_TIMEOUT_SECONDS = 20.0
 _FEISHU_MESSAGE_TEXT_CACHE_SIZE = 512       # LRU cap for reply-context message text lookups
 
 # QR onboarding constants
@@ -311,6 +320,9 @@ class FeishuAdapterSettings:
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
     allow_all_dm: bool = False  # resolved per-profile so multiplexed adapters honor their own .env
+    group_thread_replies: bool = True
+    lifecycle_cards_enabled: bool = True
+    reaction_routing_enabled: bool = False
 
 
 @dataclass
@@ -332,7 +344,10 @@ class FeishuBatchState:
 
 # --- Admission: policy types ---
 
-RejectReason = Literal["self_echo", "self_ids_unknown", "bots_disabled", "bot_not_mentioned", "group_policy_rejected"]
+RejectReason = Literal[
+    "self_echo", "self_ids_unknown", "bots_disabled", "bot_not_mentioned",
+    "group_policy_rejected", "dm_policy_rejected",
+]
 
 
 def _is_bot_sender(sender: Any) -> bool:
@@ -1252,6 +1267,12 @@ class FeishuAdapter(BasePlatformAdapter):
         self._update_prompt_counter = itertools.count(1)
         # Reaction deletion needs the opaque reaction_id from create, cached per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
+        # ponytail: one lifecycle card per chat_id — concurrent runs in
+        # different topics of the same group degrade to separate messages.
+        self._lifecycle_cards: Dict[str, LifecycleCard] = {}
+        self._lifecycle_card_chats: Dict[str, str] = {}  # card message_id → card key
+        self._lifecycle_title_tasks: set = set()
+        self._lifecycle_lock = asyncio.Lock()
         self._load_seen_message_ids()
 
     @staticmethod
@@ -1326,6 +1347,13 @@ class FeishuAdapter(BasePlatformAdapter):
             default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
             group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
             require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
+            group_thread_replies=_to_boolean(extra.get("group_thread_replies", True)),
+            lifecycle_cards_enabled=_to_boolean(
+                extra.get("lifecycle_cards", _get_scoped_secret("FEISHU_LIFECYCLE_CARDS", "true"))
+            ),
+            reaction_routing_enabled=_to_boolean(
+                extra.get("reaction_routing", _get_scoped_secret("FEISHU_REACTION_ROUTING", "false"))
+            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1335,6 +1363,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._allowed_group_users = set(settings.allowed_group_users)
         self._admins = set(settings.admins)
         self._default_group_policy = settings.default_group_policy or settings.group_policy
+
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -1561,8 +1590,19 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        if self._lifecycle_cards_enabled and (metadata or {}).get("_interim_send"):
+            result = await self._lifecycle_interim_send(chat_id, content, reply_to, metadata)
+            if result is not None:
+                return result
+
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+
+        absorbed = await self._lifecycle_absorb_final(
+            chat_id, formatted, reply_to=reply_to, metadata=metadata, chunk_count=len(chunks)
+        )
+        if absorbed is not None:
+            return absorbed
         # Decide markdown-vs-text once for the whole message: a chunk of a long
         # markdown reply may be plain prose that fails the per-chunk regex and would
         # otherwise render as literal ``**bold`` / fences while other chunks render.
@@ -1610,6 +1650,10 @@ class FeishuAdapter(BasePlatformAdapter):
         """Edit a previously sent Feishu text/post message."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
+
+        base_id, entry_idx = _lifecycle_split_entry_ref(message_id)
+        if entry_idx is not None:
+            return await self._lifecycle_edit_entry(base_id, entry_idx, content)
 
         content = self.format_message(content)
 
@@ -1876,10 +1920,15 @@ class FeishuAdapter(BasePlatformAdapter):
                 logger.warning("[Feishu] Failed to get chat info for %s: [%s] %s", chat_id, code, msg)
                 return fallback
             data = getattr(response, "data", None)
+            # chat_mode is the shape field ("group"/"p2p"); chat_type is the
+            # visibility field ("private"/"public") and misclassifies private
+            # groups as non-groups. Prefer chat_mode, fall back to chat_type.
+            raw_chat_mode = str(getattr(data, "chat_mode", "") or "").strip().lower()
             raw_chat_type = str(getattr(data, "chat_type", "") or "").strip().lower()
             info = {
                 "chat_id": chat_id, "name": str(getattr(data, "name", None) or chat_id),
-                "type": self._map_chat_type(raw_chat_type), "raw_type": raw_chat_type or None,
+                "type": self._map_chat_type(raw_chat_mode or raw_chat_type),
+                "raw_type": raw_chat_type or None, "raw_mode": raw_chat_mode or None,
             }
             self._chat_info_cache[chat_id] = info
             return dict(info)
@@ -2268,7 +2317,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def _handle_reaction_event(self, event_type: str, data: Any) -> None:
         """Fetch the reacted-to message; if it was sent by this bot, emit a synthetic text event."""
-        if not self._client:
+        if not self._client or not getattr(self, "_reaction_routing_enabled", False):
             return
         event = getattr(data, "event", None)
         message_id = str(getattr(event, "message_id", "") or "")
@@ -2393,6 +2442,241 @@ class FeishuAdapter(BasePlatformAdapter):
         async with chat_lock:
             await self.handle_message(event)
 
+    # =========================================================================
+    # Lifecycle status card — one interactive card per turn, patched in place
+    # =========================================================================
+
+    @staticmethod
+    def _lifecycle_card_key(chat_id: str, anchor: str) -> str:
+        return f"{chat_id}\x00{anchor}"
+
+    def _register_lifecycle_card(self, key: str, card: LifecycleCard) -> None:
+        prev = self._lifecycle_cards.get(key)
+        if prev and prev.message_id:
+            self._lifecycle_card_chats.pop(prev.message_id, None)
+        card.key = key
+        self._lifecycle_cards[key] = card
+
+    def _drop_lifecycle_card(self, key: str) -> Optional[LifecycleCard]:
+        card = self._lifecycle_cards.pop(key, None)
+        if card and card.message_id:
+            self._lifecycle_card_chats.pop(card.message_id, None)
+        return card
+
+    def _resolve_lifecycle_card(
+        self, chat_id: str, reply_to: Optional[str], *, strict: bool
+    ) -> Optional[LifecycleCard]:
+        """Find the open card belonging to the turn that ``reply_to`` anchors.
+
+        Cards are per turn, so a chat can hold several at once when a second
+        question arrives mid-run. ``strict`` (used for final answers) demands
+        a real anchor match; progress updates accept the newest open card so a
+        status line without an anchor still lands somewhere sane.
+        """
+        open_cards = [
+            card
+            for card in self._lifecycle_cards.values()
+            if card.chat_id == chat_id
+            and card.state not in _LIFECYCLE_FINAL_STATES
+            and not card.answer_absorbed
+        ]
+        for card in open_cards:
+            if card.matches_anchor(reply_to):
+                return card
+        if strict or not open_cards:
+            return None
+        # ponytail: newest-wins when the send carries no anchor; per-turn
+        # routing would need the turn id plumbed through the send path.
+        return open_cards[-1]
+
+    async def _patch_lifecycle_card(self, card: LifecycleCard) -> bool:
+        if not self._client or not card.message_id:
+            return False
+        try:
+            from lark_oapi.api.im.v1 import (
+                PatchMessageRequest,
+                PatchMessageRequestBody,
+            )
+            body = (
+                PatchMessageRequestBody.builder()
+                .content(json.dumps(card.build_card(), ensure_ascii=False))
+                .build()
+            )
+            request = (
+                PatchMessageRequest.builder()
+                .message_id(card.message_id)
+                .request_body(body)
+                .build()
+            )
+            response = await self._run_blocking(self._client.im.v1.message.patch, request)
+            if self._response_succeeded(response):
+                return True
+            logger.debug(
+                "[Feishu] Lifecycle card patch rejected for %s: code=%s msg=%s",
+                card.message_id,
+                getattr(response, "code", None),
+                getattr(response, "msg", None),
+            )
+        except Exception:
+            logger.warning(
+                "[Feishu] Lifecycle card patch raised for %s", card.message_id, exc_info=True
+            )
+        return False
+
+    async def _lifecycle_interim_send(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[SendResult]:
+        """Fold an interim status send into the chat's lifecycle card.
+
+        Returns None when the card path is unavailable so the caller falls
+        back to a normal message — no status update is ever silently lost.
+        """
+        async with self._lifecycle_lock:
+            card = self._resolve_lifecycle_card(chat_id, reply_to, strict=False)
+            if card is None:
+                card = LifecycleCard(chat_id=chat_id, anchor_message_id=reply_to or "")
+                self._register_lifecycle_card(
+                    self._lifecycle_card_key(chat_id, reply_to or f"anon{id(card):x}"), card
+                )
+            entry_idx = card.add_entry(self.format_message(content))
+            if not card.message_id:
+                if not await self._lifecycle_send_card(card, reply_to, metadata):
+                    return None
+            else:
+                if not await self._patch_lifecycle_card(card):
+                    self._drop_lifecycle_card(card.key)
+                    return None
+            return SendResult(
+                success=True,
+                message_id=f"{card.message_id}#e{entry_idx}",
+            )
+
+    def _spawn_lifecycle_title(self, card: LifecycleCard, prompt: str) -> None:
+        """Upgrade the card's raw-prompt title to a generated one, in the background.
+
+        The auxiliary titler takes seconds, so the card ships with the trimmed
+        prompt and is patched when (if) a better title arrives.
+        """
+        if not prompt.strip():
+            return
+        task = asyncio.create_task(self._apply_lifecycle_title(card, prompt))
+        self._lifecycle_title_tasks.add(task)
+        task.add_done_callback(self._lifecycle_title_tasks.discard)
+
+    async def _apply_lifecycle_title(self, card: LifecycleCard, prompt: str) -> None:
+        try:
+            from agent.title_generator import generate_title
+
+            title = await asyncio.to_thread(
+                generate_title, prompt, _LIFECYCLE_TITLE_TIMEOUT_SECONDS
+            )
+        except Exception:
+            logger.debug("[Feishu] Lifecycle card titling failed", exc_info=True)
+            return
+        if not title:
+            return
+        async with self._lifecycle_lock:
+            if self._lifecycle_cards.get(card.key) is not card:
+                return
+            card.title = _lifecycle_make_title(title)
+            if card.message_id:
+                await self._patch_lifecycle_card(card)
+
+    async def _lifecycle_send_card(
+        self,
+        card: LifecycleCard,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> bool:
+        """Post the card for the first time and record its message id."""
+        try:
+            response = await self._feishu_send_with_retry(
+                chat_id=card.chat_id,
+                msg_type="interactive",
+                payload=json.dumps(card.build_card(), ensure_ascii=False),
+                reply_to=card.anchor_message_id or reply_to,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            logger.warning("[Feishu] Lifecycle card send failed: %s", exc)
+            return False
+        result = self._finalize_send_result(response, "lifecycle card send failed")
+        if not result.success or not result.message_id:
+            return False
+        card.message_id = str(result.message_id)
+        self._lifecycle_card_chats[card.message_id] = card.key
+        return True
+
+    async def _lifecycle_edit_entry(
+        self, base_message_id: str, entry_idx: int, content: str
+    ) -> SendResult:
+        async with self._lifecycle_lock:
+            card_key = self._lifecycle_card_chats.get(base_message_id)
+            card = self._lifecycle_cards.get(card_key) if card_key else None
+            if not card or card.message_id != base_message_id:
+                return SendResult(success=False, error="lifecycle card no longer active")
+            card.update_entry(entry_idx, self.format_message(content))
+            ok = await self._patch_lifecycle_card(card)
+            if ok:
+                return SendResult(success=True, message_id=f"{base_message_id}#e{entry_idx}")
+            return SendResult(success=False, error="lifecycle card patch failed")
+
+    async def _lifecycle_absorb_final(
+        self,
+        chat_id: str,
+        formatted: str,
+        *,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+        chunk_count: int,
+    ) -> Optional[SendResult]:
+        """Deliver a single-chunk final answer by patching the open card to done."""
+        if not self._lifecycle_cards_enabled or chunk_count != 1:
+            return None
+        if (metadata or {}).get("_interim_send"):
+            return None
+        async with self._lifecycle_lock:
+            card = self._resolve_lifecycle_card(chat_id, reply_to, strict=True)
+            if not card:
+                return None
+            card.finalize("done", answer=formatted)
+            if card.message_id:
+                delivered = await self._patch_lifecycle_card(card)
+            else:
+                # Turn finished before any status update had to be shown, so
+                # no card exists yet — post the answer as the card itself.
+                delivered = await self._lifecycle_send_card(card, reply_to, metadata)
+            if delivered:
+                return SendResult(success=True, message_id=card.message_id)
+            card.state = "working"
+            card.answer = ""
+            card.answer_absorbed = False
+            return None
+
+    async def _lifecycle_close(
+        self, chat_id: str, anchor: str, outcome: "ProcessingOutcome"
+    ) -> None:
+        if not chat_id:
+            return
+        async with self._lifecycle_lock:
+            card = self._drop_lifecycle_card(self._lifecycle_card_key(chat_id, anchor))
+            if not card or not card.message_id or card.answer_absorbed:
+                return
+            if outcome is ProcessingOutcome.SUCCESS:
+                card.add_entry("✅ Done — reply below")
+                card.finalize("done")
+            elif outcome is ProcessingOutcome.CANCELLED:
+                card.add_entry("⏹ Cancelled")
+                card.finalize("cancelled")
+            else:
+                card.add_entry("❌ Run failed")
+                card.finalize("failed")
+            await self._patch_lifecycle_card(card)
+
     # --- Processing status reactions ---
     def _reactions_enabled(self) -> bool:
         return os.getenv("FEISHU_REACTIONS", "true").strip().lower() not in {"false", "0", "no"}
@@ -2436,6 +2720,21 @@ class FeishuAdapter(BasePlatformAdapter):
         return data is not None
 
     async def on_processing_start(self, event: MessageEvent) -> None:
+        chat_id = str(getattr(getattr(event, "source", None), "chat_id", "") or "")
+        if self._lifecycle_cards_enabled and chat_id:
+            async with self._lifecycle_lock:
+                prompt = _lifecycle_strip_mentions(getattr(event, "text", "") or "")
+                card = LifecycleCard(
+                    chat_id=chat_id,
+                    title=_lifecycle_make_title(prompt),
+                    requester=str(getattr(event, "user_name", "") or ""),
+                    anchor_message_id=str(event.message_id or ""),
+                    thread_anchor_id=str(getattr(event, "reply_to_message_id", "") or ""),
+                )
+                self._register_lifecycle_card(
+                    self._lifecycle_card_key(chat_id, str(event.message_id or "")), card
+                )
+                self._spawn_lifecycle_title(card, prompt)
         message_id = event.message_id
         if not self._reactions_enabled() or not message_id or message_id in self._pending_processing_reactions:
             return
@@ -2448,18 +2747,29 @@ class FeishuAdapter(BasePlatformAdapter):
                 cache.popitem(last=False)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        if self._lifecycle_cards_enabled:
+            try:
+                await self._lifecycle_close(
+                    str(getattr(getattr(event, "source", None), "chat_id", "") or ""),
+                    str(getattr(event, "message_id", "") or ""),
+                    outcome,
+                )
+            except Exception:
+                logger.debug("[Feishu] Lifecycle card close failed", exc_info=True)
         message_id = event.message_id
         if not self._reactions_enabled() or not message_id:
             return
         start_reaction_id = self._pending_processing_reactions.get(message_id)
         if start_reaction_id:
             if not await self._remove_reaction(message_id, start_reaction_id):
-                # Don't stack a second badge on a Typing we couldn't remove (UI would read as both
+                # Don't stack a second badge on an OnIt we couldn't remove (UI would read as both
                 # "working" and "done/failed"); keep the handle so LRU eventually evicts it.
                 return
             self._pending_processing_reactions.pop(message_id, None)
         if outcome is ProcessingOutcome.FAILURE:
             await self._add_reaction(message_id, _FEISHU_REACTION_FAILURE)
+        elif outcome is ProcessingOutcome.SUCCESS:
+            await self._add_reaction(message_id, _FEISHU_REACTION_SUCCESS)
 
     # --- Webhook server and security ---
     def _record_webhook_anomaly(self, remote_ip: str, status: str) -> None:
@@ -3270,6 +3580,9 @@ class FeishuAdapter(BasePlatformAdapter):
             if mode == "mentions" and not require_mention and not self._mentions_self(message):
                 return "bot_not_mentioned"
         if not is_group:
+            # Groups-only bot: drop every DM before a turn/working bubble starts.
+            if os.getenv("FEISHU_DM_POLICY", "").strip().lower() == "disabled":
+                return "dm_policy_rejected"
             # _allow_all_dm is snapshotted per-profile in _load_settings: _admit runs on the
             # lark_oapi WS thread with no secret scope, so a bare os.getenv would read the
             # default profile's value.
@@ -3595,9 +3908,16 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> Any:
         thread_id = (metadata or {}).get("thread_id")
         effective_reply_to = reply_to or ((metadata or {}).get("reply_to_message_id") if thread_id else None)
+        reply_in_thread = bool(thread_id)
+        if not reply_in_thread and effective_reply_to and self._group_thread_replies:
+            # A top-level group reply has no thread_id yet — opt it into a topic
+            # thread instead of an inline quote. DMs stay inline (no thread concept).
+            chat_info = self._chat_info_cache.get(chat_id) or await self.get_chat_info(chat_id)
+            if chat_info.get("type") in ("group", "forum"):
+                reply_in_thread = True
         if effective_reply_to:
             body = self._build_reply_message_body(
-                content=payload, msg_type=msg_type, reply_in_thread=bool(thread_id), uuid_value=str(uuid.uuid4()),
+                content=payload, msg_type=msg_type, reply_in_thread=reply_in_thread, uuid_value=str(uuid.uuid4()),
             )
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)

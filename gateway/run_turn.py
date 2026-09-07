@@ -2764,7 +2764,7 @@ class GatewayTurnMixin:
         for status / approval / stream sends (Feishu topics need the triggering message id via the
         reply API, so carry it as a fallback). Slack and Buzz honour the user's reply_in_thread
         opt-out: never synthesise a thread for progress, or every later reply inherits it."""
-        from gateway.run import _non_conversational_metadata, _resolve_progress_thread_id
+        from gateway.run import _interim_metadata, _non_conversational_metadata, _resolve_progress_thread_id
         is_buzz = str(getattr(source.platform, "value", source.platform) or "").lower() == "buzz"
         _progress_reply_in_thread = True
         _adapter = self._adapter_for_source(source) if source.platform == Platform.SLACK or is_buzz else None
@@ -2792,12 +2792,12 @@ class GatewayTurnMixin:
             and not source.thread_id
             else None
         )
-        _progress_metadata = _non_conversational_metadata(
+        _progress_metadata = _interim_metadata(_non_conversational_metadata(
             self._thread_metadata_for_progress(
                 source, event_message_id, _progress_thread_id, _relay_prospective_thread_id,
             ),
             platform=source.platform,
-        )
+        ))
         if _native_slack_task_cards:
             # chat.startStream in channels requires the recipient team/user pair; harmless elsewhere.
             _progress_metadata = dict(_progress_metadata or {})

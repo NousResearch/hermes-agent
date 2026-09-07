@@ -1249,6 +1249,180 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertTrue(captured["request"].request_body.reply_in_thread)
 
+    def _make_reply_capturing_adapter(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def reply(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_reply"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+        return adapter, captured
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_top_level_group_reply_upgrades_to_thread(self):
+        """A top-level group mention reply (no thread_id) should open a topic thread."""
+        adapter, captured = self._make_reply_capturing_adapter()
+        adapter._chat_info_cache["oc_chat"] = {"chat_id": "oc_chat", "name": "Team", "type": "group"}
+
+        result = asyncio.run(
+            adapter._send_raw_message(
+                chat_id="oc_chat",
+                msg_type="text",
+                payload="hi",
+                reply_to="om_parent",
+                metadata=None,
+            )
+        )
+
+        self.assertTrue(result.success)
+        self.assertTrue(captured["request"].request_body.reply_in_thread)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_dm_reply_stays_inline(self):
+        """DM (p2p) replies keep the existing inline quoted-reply behavior."""
+        adapter, captured = self._make_reply_capturing_adapter()
+        adapter._chat_info_cache["oc_chat"] = {"chat_id": "oc_chat", "name": "DM", "type": "dm"}
+
+        result = asyncio.run(
+            adapter._send_raw_message(
+                chat_id="oc_chat",
+                msg_type="text",
+                payload="hi",
+                reply_to="om_parent",
+                metadata=None,
+            )
+        )
+
+        self.assertTrue(result.success)
+        self.assertFalse(captured["request"].request_body.reply_in_thread)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_in_thread_inbound_reply_stays_thread_reply(self):
+        """A reply to an already-in-thread message keeps reply_in_thread=True."""
+        adapter, captured = self._make_reply_capturing_adapter()
+        adapter._chat_info_cache["oc_chat"] = {"chat_id": "oc_chat", "name": "Team", "type": "group"}
+
+        result = asyncio.run(
+            adapter._send_raw_message(
+                chat_id="oc_chat",
+                msg_type="text",
+                payload="hi",
+                reply_to=None,
+                metadata={"thread_id": "omt_1", "reply_to_message_id": "om_last"},
+            )
+        )
+
+        self.assertTrue(result.success)
+        self.assertTrue(captured["request"].request_body.reply_in_thread)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_group_thread_replies_disabled_keeps_inline_reply(self):
+        """group_thread_replies=False opts out of the topic-thread upgrade."""
+        adapter, captured = self._make_reply_capturing_adapter()
+        adapter._group_thread_replies = False
+        adapter._chat_info_cache["oc_chat"] = {"chat_id": "oc_chat", "name": "Team", "type": "group"}
+
+        result = asyncio.run(
+            adapter._send_raw_message(
+                chat_id="oc_chat",
+                msg_type="text",
+                payload="hi",
+                reply_to="om_parent",
+                metadata=None,
+            )
+        )
+
+        self.assertTrue(result.success)
+        self.assertFalse(captured["request"].request_body.reply_in_thread)
+
+    def _make_chat_info_adapter(self, response_data):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(chat=SimpleNamespace(
+                get=lambda request: SimpleNamespace(
+                    success=lambda: True,
+                    data=response_data,
+                ),
+            )))
+        )
+        return adapter
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_get_chat_info_private_group_classified_as_group(self):
+        """Regression for #53107: GET /im/v1/chats/:id returns
+        chat_mode="group" (shape) and chat_type="private" (visibility)
+        for a private group.  The adapter used to read only chat_type,
+        mapping every private group to "dm", which suppressed the
+        group thread-reply upgrade.  chat_mode must win.
+        """
+        adapter = self._make_chat_info_adapter(SimpleNamespace(
+            name="test_sample_group",
+            chat_mode="group",
+            chat_type="private",
+        ))
+
+        info = asyncio.run(adapter.get_chat_info("oc_1f2e3d4c5b6a7988776655443322110"))
+
+        self.assertEqual(info["type"], "group")
+        self.assertEqual(info["raw_mode"], "group")
+        self.assertEqual(info["raw_type"], "private")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_get_chat_info_p2p_chat_classified_as_dm(self):
+        """p2p chats (chat_mode="p2p") must still classify as "dm" so
+        quoted inline replies keep working in direct messages.
+        """
+        adapter = self._make_chat_info_adapter(SimpleNamespace(
+            name="Some User",
+            chat_mode="p2p",
+            chat_type="p2p",
+        ))
+
+        info = asyncio.run(adapter.get_chat_info("oc_dm"))
+
+        self.assertEqual(info["type"], "dm")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_get_chat_info_private_group_chat_info_feeds_thread_upgrade(self):
+        """End-to-end regression for #53107: with a private group's real
+        API payload in the cache, a top-level mention reply must upgrade
+        to a topic thread (reply_in_thread=True).
+        """
+        adapter, captured = self._make_reply_capturing_adapter()
+        adapter._chat_info_cache["oc_chat"] = {
+            "chat_id": "oc_chat",
+            "name": "Team",
+            "type": "group",
+            "raw_type": "private",
+            "raw_mode": "group",
+        }
+
+        result = asyncio.run(
+            adapter._send_raw_message(
+                chat_id="oc_chat",
+                msg_type="text",
+                payload="hi",
+                reply_to="om_parent",
+                metadata=None,
+            )
+        )
+
+        self.assertTrue(result.success)
+        self.assertTrue(captured["request"].request_body.reply_in_thread)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_post_for_every_chunk_of_multi_chunk_markdown(self):
@@ -1715,6 +1889,62 @@ class TestDedupTTL(unittest.TestCase):
         self.assertEqual(writes[-1], ["om_a", "om_b"])
 
 
+class TestDmPolicyDisabled(unittest.TestCase):
+    """FEISHU_DM_POLICY=disabled drops DMs while groups still admit."""
+
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_DM_POLICY": "disabled",
+            "FEISHU_ALLOWED_USERS": "ou_allowed",
+            "FEISHU_GROUP_POLICY": "allowlist",
+        },
+        clear=True,
+    )
+    def test_disabled_rejects_allowlisted_dm(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        sender = SimpleNamespace(
+            sender_type="user",
+            sender_id=SimpleNamespace(open_id="ou_allowed", user_id=None, union_id=None),
+        )
+        message = SimpleNamespace(chat_type="p2p", chat_id="oc_dm", mentions=[], content="")
+        self.assertEqual(adapter._admit(sender, message), "dm_policy_rejected")
+
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_DM_POLICY": "disabled",
+            "FEISHU_ALLOWED_USERS": "ou_allowed",
+            "FEISHU_GROUP_POLICY": "allowlist",
+        },
+        clear=True,
+    )
+    def test_disabled_still_admits_allowlisted_group(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        message = SimpleNamespace(content='{"text":"@_all hi"}', mentions=[])
+        allowed_sender = SimpleNamespace(open_id="ou_allowed", user_id=None)
+        self.assertTrue(_admits_group(adapter, message, allowed_sender, ""))
+
+    @patch.dict(os.environ, {"FEISHU_ALLOWED_USERS": "ou_allowed"}, clear=True)
+    def test_allowlisted_dm_admitted_when_policy_unset(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        sender = SimpleNamespace(
+            sender_type="user",
+            sender_id=SimpleNamespace(open_id="ou_allowed", user_id=None, union_id=None),
+        )
+        message = SimpleNamespace(chat_type="p2p", chat_id="oc_dm", mentions=[], content="")
+        self.assertIsNone(adapter._admit(sender, message))
+
+
 class TestGroupMentionAtAll(unittest.TestCase):
     """Tests for @_all (Feishu @everyone) group mention routing."""
 
@@ -1842,7 +2072,7 @@ class TestBotNameResolution(unittest.TestCase):
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
 class TestProcessingReactions(unittest.TestCase):
-    """Typing on start → removed on SUCCESS, swapped for CrossMark on FAILURE,
+    """OnIt on start → swapped for DONE on SUCCESS, CrossMark on FAILURE,
     removed (no replacement) on CANCELLED."""
 
     @staticmethod
@@ -1909,43 +2139,43 @@ class TestProcessingReactions(unittest.TestCase):
 
     # ------------------------------------------------------------------ start
     @patch.dict(os.environ, {}, clear=True)
-    def test_start_adds_typing_and_caches_reaction_id(self):
+    def test_start_adds_onit_and_caches_reaction_id(self):
         adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
         with self._patch_to_thread():
             self._run(adapter.on_processing_start(self._event()))
-        self.assertEqual(tracker.create_calls, ["Typing"])
+        self.assertEqual(tracker.create_calls, ["OnIt"])
         self.assertEqual(adapter._pending_processing_reactions["om_msg"], "r_typing")
 
 
     # --------------------------------------------------------------- complete
     @patch.dict(os.environ, {}, clear=True)
-    def test_success_removes_typing_and_adds_nothing(self):
+    def test_success_removes_onit_and_adds_done(self):
         adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
         with self._patch_to_thread():
             self._run(adapter.on_processing_start(self._event()))
             self._run(
                 adapter.on_processing_complete(self._event(), ProcessingOutcome.SUCCESS)
             )
-        self.assertEqual(tracker.create_calls, ["Typing"])
+        self.assertEqual(tracker.create_calls, ["OnIt", "DONE"])
         self.assertEqual(tracker.delete_calls, ["r_typing"])
         self.assertNotIn("om_msg", adapter._pending_processing_reactions)
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_failure_removes_typing_then_adds_cross_mark(self):
+    def test_failure_removes_onit_then_adds_cross_mark(self):
         adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
         with self._patch_to_thread():
             self._run(adapter.on_processing_start(self._event()))
             self._run(
                 adapter.on_processing_complete(self._event(), ProcessingOutcome.FAILURE)
             )
-        self.assertEqual(tracker.create_calls, ["Typing", "CrossMark"])
+        self.assertEqual(tracker.create_calls, ["OnIt", "CrossMark"])
         self.assertEqual(tracker.delete_calls, ["r_typing"])
 
 
     # ------------------------- delete failure: don't stack badges -----------
     @patch.dict(os.environ, {}, clear=True)
     def test_delete_failure_on_failure_outcome_skips_cross_mark(self):
-        # Removing Typing is best-effort — but if it fails, we must NOT
+        # Removing OnIt is best-effort — but if it fails, we must NOT
         # additionally add CrossMark, or the UI would show two contradictory
         # badges. The handle stays in the cache for LRU to clean up later.
         adapter, tracker = self._build_adapter(
@@ -1956,7 +2186,7 @@ class TestProcessingReactions(unittest.TestCase):
             self._run(
                 adapter.on_processing_complete(self._event(), ProcessingOutcome.FAILURE)
             )
-        self.assertEqual(tracker.create_calls, ["Typing"])  # CrossMark NOT added
+        self.assertEqual(tracker.create_calls, ["OnIt"])  # CrossMark NOT added
         self.assertEqual(tracker.delete_calls, ["r_typing"])  # delete was attempted
         self.assertEqual(
             adapter._pending_processing_reactions["om_msg"], "r_typing",

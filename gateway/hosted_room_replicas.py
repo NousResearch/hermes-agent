@@ -636,29 +636,29 @@ def replica_state(db_path: Path | str, *, room_id: Any) -> dict[str, Any]:
         room_id, label="room_id", max_chars=MAX_ROOM_ID_CHARS
     )
     with _replica_transaction(db_path) as conn:
-        from gateway.hosted_room_replica_retirement import RETIREMENT_TABLE
-        from gateway.hosted_rooms_common import table_exists
-        retired = conn.execute(f"SELECT retired_at FROM {RETIREMENT_TABLE} WHERE room_id=?", (room_id,)).fetchone() if table_exists(conn, RETIREMENT_TABLE) else None
-        row = conn.execute(
-            """SELECT room_id, name, members_json, authority_gateway_id,
-                      authority_epoch, last_seq, latest_seq, event_bytes,
-                      created_at, updated_at, disbanded_at,
-                      quarantined_at, quarantine_reason
-                 FROM hosted_room_replicas WHERE room_id=?""",
-            (room_id,),
-        ).fetchone()
-        reservation = (
-            conn.execute(
-                """SELECT owner_kind FROM hosted_room_id_reservations
-                    WHERE room_id=?""",
-                (room_id,),
-            ).fetchone()
-            if row is None
-            else None
-        )
-        from gateway.hosted_room_work_records import summary_locked
-        work_records = summary_locked(conn, room_id) if row is not None and row["quarantine_reason"] is None else {
-            "availability": "unavailable", "source_loss_safe": False}
+        return _replica_state_locked(conn, room_id)
+
+
+def _replica_state_locked(conn: sqlite3.Connection, room_id: str) -> dict[str, Any]:
+    """Share one audited SQLite view with the explicit recovery preflight."""
+    from gateway.hosted_room_replica_retirement import RETIREMENT_TABLE
+    from gateway.hosted_rooms_common import table_exists
+    from gateway.hosted_room_work_records import summary_locked
+
+    retired = conn.execute(f"SELECT retired_at FROM {RETIREMENT_TABLE} WHERE room_id=?", (room_id,)).fetchone() if table_exists(conn, RETIREMENT_TABLE) else None
+    row = conn.execute(
+        """SELECT room_id, name, members_json, authority_gateway_id,
+                  authority_epoch, last_seq, latest_seq, event_bytes,
+                  created_at, updated_at, disbanded_at,
+                  quarantined_at, quarantine_reason
+             FROM hosted_room_replicas WHERE room_id=?""", (room_id,),
+    ).fetchone()
+    reservation = (
+        conn.execute("SELECT owner_kind FROM hosted_room_id_reservations WHERE room_id=?", (room_id,)).fetchone()
+        if row is None else None
+    )
+    work_records = summary_locked(conn, room_id) if row is not None and row["quarantine_reason"] is None else {
+        "availability": "unavailable", "source_loss_safe": False}
     if row is None:
         if reservation is not None and reservation["owner_kind"] == "replica":
             raise ReplicaHistoryExpiredError(

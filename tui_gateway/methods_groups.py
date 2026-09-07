@@ -18,7 +18,7 @@ method = _registry.method
 #: Wire order of ``groups.capabilities.methods``; every one runs on the RPC pool.
 _METHODS = (
     "groups.capabilities", "groups.list", "groups.create", "groups.state", "groups.send",
-    "groups.rename", "groups.log", "groups.disband", "groups.replica_state",
+    "groups.rename", "groups.log", "groups.disband", "groups.replica_state", "groups.recovery.prepare",
     "groups.stop", "groups.retry", "groups.approve",
     "groups.replication.prepare", "groups.replication.enroll", "groups.replication.revoke",
     "groups.peer.invite", "groups.peer.revoke", "groups.peer.revoke_exact", "groups.peer.register")
@@ -593,6 +593,15 @@ _passthrough(
     "groups.replica_state", "gateway.hosted_room_replicas", "replica_state",
     "Report the local replica's coverage and authority lineage.",
     code=5117, room_code=4117, params=("room_id",), replica_only=True)
+
+
+@_room_method("groups.recovery.prepare", code=5130, room_code=4130, replica_only=True, db=True)
+def _(rid, params: dict, db_path) -> dict:
+    """Preview one saved Group Chat without creating an approval or granting authority."""
+    from gateway.hosted_room_manual_recovery import prepare_recovery
+    from gateway.hosted_rooms import local_authority_gateway_id
+    return _ok(rid, prepare_recovery(
+        db_path, room_id=params.get("room_id"), target_gateway_id=local_authority_gateway_id()))
 
 
 @method("groups.promote")

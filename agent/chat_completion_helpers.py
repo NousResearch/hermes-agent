@@ -1256,7 +1256,7 @@ def _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config
 def _build_bedrock_kwargs(agent, api_messages, tools_for_api):
     # Bedrock Converse — the adapter converts messages/tools and calls boto3 directly.
     return agent._get_transport().build_kwargs(model=agent.model, messages=api_messages, tools=tools_for_api,
-        max_tokens=agent.max_tokens or 4096, region=getattr(agent, "_bedrock_region", None) or "us-east-1",
+        max_tokens=agent.max_tokens, region=getattr(agent, "_bedrock_region", None) or "us-east-1",
         guardrail_config=getattr(agent, "_bedrock_guardrail_config", None))
 
 
@@ -1292,18 +1292,6 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
         context_management=context_management)
 
 
-def _anthropic_max_output_for_model(agent):
-    """Anthropic-compatible max-output fallback (last resort in build_kwargs, never
-    overriding an explicit value). Model-gated, not URL-gated: any proxy serving a
-    Claude/MiniMax/Qwen3 model needs max_tokens (Messages API treats it as
-    mandatory; proxies that omit it default as low as 4096)."""
-    with contextlib.suppress(Exception):
-        from agent.anthropic_adapter import _get_anthropic_max_output, _ANTHROPIC_OUTPUT_LIMITS
-        model_norm = (agent.model or "").lower().replace(".", "-")
-        if any(key in model_norm for key in _ANTHROPIC_OUTPUT_LIMITS):
-            return _get_anthropic_max_output(agent.model)
-    return None
-
 
 def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
     transport = agent._get_transport()
@@ -1325,7 +1313,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         _fixed_temp = None if _omit_temp else _ft
 
     _prefs = _provider_preferences_for_agent(agent)
-    _ant_max = _anthropic_max_output_for_model(agent)
+
     _qwen_meta = {"sessionId": agent.session_id or "hermes", "promptId": str(uuid.uuid4())} if _is_qwen else None
     _profile = None
     with contextlib.suppress(Exception):
@@ -1342,7 +1330,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         request_overrides=request_overrides, session_id=getattr(agent, "session_id", None),
         cache_scope_id=cache_scope_id, ollama_num_ctx=agent._ollama_num_ctx,
         provider_preferences=_prefs or None, openrouter_min_coding_score=agent.openrouter_min_coding_score,
-        anthropic_max_output=_ant_max, supports_reasoning=agent._supports_reasoning_extra_body(),
+        supports_reasoning=agent._supports_reasoning_extra_body(),
         qwen_session_metadata=_qwen_meta)
     if _profile:
         # Profiles handle per-provider quirks via hooks fed the context above.

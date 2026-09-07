@@ -273,11 +273,11 @@ def _require_pinned_command(command: Optional[str], message: str) -> None:
     if command and not _shutil.which(command):
         raise ValueError(message)
 
-def _credential_bundle(model, provider, base_url, api_key, api_mode, request_overrides, max_output_tokens, **extra) -> dict:
+def _credential_bundle(model, provider, base_url, api_key, api_mode, request_overrides, **extra) -> dict:
     """The child credential dict every branch of ``_resolve_delegation_credentials`` returns."""
     return {
         "model": model, "provider": provider, "base_url": base_url, "api_key": api_key, "api_mode": api_mode,
-        "request_overrides": request_overrides, "max_output_tokens": max_output_tokens, **extra,
+        "request_overrides": request_overrides, **extra,
     }
 
 def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
@@ -301,15 +301,14 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
     if v["api_mode"] in _EXPLICIT_API_MODES:
         api_mode = v["api_mode"]
 
-    # provider configured ALONGSIDE base_url: pull that provider's request personality (request_overrides /
-    # max_output_tokens) onto the explicit endpoint. Best-effort — a resolution failure only skips the overrides.
-    request_overrides = max_output_tokens = None
+    # Preserve the configured provider's request personality on an explicit endpoint.
+    request_overrides = None
     if v["provider"]:
         try:
             from hermes_cli.runtime_provider import resolve_runtime_provider
             runtime = resolve_runtime_provider(requested=v["provider"], target_model=v["model"])
             request_overrides = dict(runtime.get("request_overrides") or {}) or None
-            max_output_tokens = runtime.get("max_output_tokens")
+
         except Exception as exc:
             logger.debug(
                 "delegation.base_url: runtime resolution for provider '%s' failed; proceeding without request_overrides: %s",
@@ -318,7 +317,7 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
     # api_key None → inherited from parent in _build_child_agent
     return _credential_bundle(
         v["model"], provider, v["base_url"], v["api_key"], api_mode,
-        _merge_request_overrides(request_overrides, explicit_request_overrides), max_output_tokens,
+        _merge_request_overrides(request_overrides, explicit_request_overrides),
     )
 
 def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
@@ -354,7 +353,7 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
         configured_provider if runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM else runtime.get("provider"),
         runtime.get("base_url"), api_key, runtime.get("api_mode"),
         _merge_request_overrides(runtime.get("request_overrides"), explicit_request_overrides) or {},
-        runtime.get("max_output_tokens"), command=pinned_command, args=list(runtime.get("args") or []),
+        command=pinned_command, args=list(runtime.get("args") or []),
     )
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
@@ -374,7 +373,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         # Pure inherit; explicit request_overrides still merge OVER the parent's.
         return _credential_bundle(
             values["model"], None, None, None, None,
-            _merge_request_overrides(getattr(parent_agent, "request_overrides", None), explicit_request_overrides), None,
+            _merge_request_overrides(getattr(parent_agent, "request_overrides", None), explicit_request_overrides),
         )
     return _runtime_provider_credentials(values, explicit_request_overrides)
 
@@ -411,7 +410,7 @@ _NOUS_PROVIDERS = frozenset({"nous", "nous-portal", "nousresearch"})
 def _resolve_child_runtime(
     parent_agent, delegation_cfg: dict, parent_api_key: Any, *, model: Optional[str], override_provider: Optional[str],
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
-    override_max_tokens: Optional[int], override_acp_command: Optional[str], override_acp_args: Optional[List[str]],
+    override_acp_command: Optional[str], override_acp_args: Optional[List[str]],
 ) -> Dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
     are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's
@@ -494,7 +493,7 @@ def _resolve_child_runtime(
     }
     if not override_provider:
         kwargs["provider_data_collection"] = kwargs["provider_data_collection"] or ""
-    child_max_tokens = override_max_tokens if override_max_tokens is not None else getattr(parent_agent, "max_tokens", None)
+    child_max_tokens = getattr(parent_agent, "max_tokens", None)
     if isinstance(child_max_tokens, int):
         kwargs["max_tokens"] = child_max_tokens
     return kwargs

@@ -838,7 +838,7 @@ def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch)
 
     assert result["error"] is None
     assert captured["model"] == "real-model-id"
-    assert captured["max_tokens"] == 1234
+    assert captured["max_tokens"] is None
 
 
 

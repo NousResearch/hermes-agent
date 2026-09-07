@@ -235,7 +235,7 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
             "provider": rp.get("provider") or task_provider, "model": rp.get("model") or task_model,
             **{key: rp.get(key) for key in ("api_key", "base_url", "api_mode", "credential_pool", "command")},
             "request_overrides": dict(rp.get("request_overrides") or {}),
-            "max_tokens": rp.get("max_output_tokens"), "args": list(rp.get("args") or []), "routed": True,
+            "args": list(rp.get("args") or []), "routed": True,
         }
     except Exception as e:
         logger.debug("background-review aux routing failed (%s); using main model", e)
@@ -813,8 +813,7 @@ def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iteratio
         "enabled_toolsets": getattr(agent, "enabled_toolsets", None),
         "disabled_toolsets": getattr(agent, "disabled_toolsets", None), "skip_memory": True,
     }
-    if isinstance(rt.get("max_tokens"), int):
-        kwargs["max_tokens"] = rt["max_tokens"]
+
     if isinstance(rt.get("command"), str) and rt["command"]:
         kwargs.update(acp_command=rt["command"], acp_args=rt.get("args") or [])
     if not routed:

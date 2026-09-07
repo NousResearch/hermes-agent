@@ -1164,7 +1164,7 @@ class TestModelOverrides:
         assert info is not None
         assert info.family == "llava"
         assert info.context_window == 8192
-        assert info.max_output == 4096
+        assert info.max_output is None
         assert info.tool_call is True
         assert info.reasoning is False
 

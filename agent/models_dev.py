@@ -511,7 +511,7 @@ def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool 
 
 
 # Per-model overrides (config.yaml → model_overrides). Canonical schema (the ONLY key space consumers
-# accept): context_window, max_output_tokens, supports_tools, supports_vision, supports_reasoning,
+# accept): context_window, supports_tools, supports_vision, supports_reasoning,
 # model_family. ``<provider>.<model_id>`` is an explicit partial patch that always wins over the
 # catalog. ``<provider>._default`` / top-level ``_default`` are FILL-GAP defaults: they apply ONLY to
 # models the catalog does not know and never displace catalog data. Provider keys accept the Hermes
@@ -605,7 +605,7 @@ def _override_to_catalog_shape(override: Dict[str, Any]) -> Tuple[Dict[str, Any]
     vision is out-of-band because it maps onto the ``modalities.input`` list rather than a scalar field."""
     patch: Dict[str, Any] = {}
     limit = {
-        catalog_key: value for catalog_key, override_key in (("context", "context_window"), ("output", "max_output_tokens"))
+        catalog_key: value for catalog_key, override_key in (("context", "context_window"),)
         if (value := _override_int(override, override_key)) is not None
     }
     if limit:

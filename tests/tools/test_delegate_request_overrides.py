@@ -59,7 +59,7 @@ def test_direct_branch_forwards_request_overrides():
         "extra_body": {"provider": {"sort": "throughput"}},
     }
     # Shape parity with the named-provider branch: max_output_tokens present.
-    assert "max_output_tokens" in creds
+    assert "max_output_tokens" not in creds
 
 
 def test_direct_branch_absent_request_overrides_stays_none():
@@ -123,7 +123,7 @@ def test_explicit_merges_over_runtime_on_provider_alongside_base_url(mock_resolv
             "provider": {"sort": "throughput"},
         },
     }
-    assert creds["max_output_tokens"] == 8192
+    assert "max_output_tokens" not in creds
 
 
 # ── Branch 2: named provider (no base_url) ─────────────────────────────────

@@ -525,6 +525,15 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
   // write its result into profile B's state after the user switched.
   const profileEpoch = useRef(0)
 
+  // Scoped Skills tabs remount when their owner changes; stop the old native
+  // OAuth waiter even when no app-wide profile-switch event is emitted.
+  useEffect(
+    () => () => {
+      profileEpoch.current += 1
+    },
+    [scopeProfileKey]
+  )
+
   // A profile switch invalidates the config query (see store/profile.ts), which
   // refetches the new backend's mcp.json. Reset ALL per-profile view state — the
   // draft (incl. a dirty one, so profile A's edits can't be saved into B), its

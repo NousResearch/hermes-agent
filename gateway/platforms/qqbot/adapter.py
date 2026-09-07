@@ -686,7 +686,7 @@ class QQAdapter(BasePlatformAdapter):
 
         approval = parse_approval_button_data(button_data)
         if approval is not None:
-            session_key, decision = approval
+            session_key, decision, request_id = approval
             choice = self._APPROVAL_BUTTON_TO_CHOICE.get(decision)
             if choice is None:
                 logger.warning("[%s] Unknown approval decision %r (session=%s)", self._log_tag, decision, session_key)
@@ -698,7 +698,13 @@ class QQAdapter(BasePlatformAdapter):
                 return
             try:
                 from tools.approval import resolve_gateway_approval  # lazy: keep adapter light
-                count = resolve_gateway_approval(session_key, choice)
+                # A click settles only the request generation its card was issued for; an
+                # unbound legacy card must not fall back to the session FIFO (#104915).
+                count = (
+                    resolve_gateway_approval(session_key, choice, request_id=request_id)
+                    if request_id
+                    else 0
+                )
                 logger.info(
                     "[%s] Button resolved %d approval(s) for session %s (choice=%s, operator=%s)",
                     self._log_tag, count, session_key, choice, event.operator_openid)
@@ -1458,7 +1464,9 @@ class QQAdapter(BasePlatformAdapter):
         """Send a 3-button approval request (allow-once / allow-always / deny);
         clicks come back as INTERACTION_CREATE decoded by parse_approval_button_data."""
         from gateway.platforms.qqbot.keyboards import build_approval_text
-        keyboard = build_approval_keyboard(req.session_key, allow_permanent=getattr(req, "allow_permanent", True))
+        keyboard = build_approval_keyboard(
+            req.session_key, allow_permanent=getattr(req, "allow_permanent", True),
+            request_id=getattr(req, "request_id", None))
         return await self.send_with_keyboard(chat_id, build_approval_text(req), keyboard, reply_to=reply_to)
 
     # Cross-adapter gateway contract: gateway/run.py detects send_exec_approval /
@@ -1469,7 +1477,7 @@ class QQAdapter(BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False) -> SendResult:
+        smart_denied: bool = False, request_id: Optional[str] = None) -> SendResult:
         """Button-based exec-approval prompt (called by gateway/run.py while the
         agent blocks on approval); clicks resolve via _default_interaction_dispatch."""
         del metadata  # QQ has no thread_id / DM targeting overrides.
@@ -1479,7 +1487,7 @@ class QQAdapter(BasePlatformAdapter):
         req = ApprovalRequest(
             session_key=session_key, title="Execute this command?", description=description,
             command_preview=command, timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
-            allow_permanent=allow_permanent and not smart_denied)
+            allow_permanent=allow_permanent and not smart_denied, request_id=request_id)
         # QQ requires a msg_id for passive replies; the last inbound id is the natural one.
         return await self.send_approval_request(chat_id, req, reply_to=self._last_msg_id.get(chat_id))
 

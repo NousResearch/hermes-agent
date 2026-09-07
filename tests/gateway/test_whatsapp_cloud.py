@@ -88,9 +88,9 @@ def _make_adapter(**overrides):
     adapter._last_inbound_wamid_by_chat = {}
 
     # Phase 9 state — interactive-button correlation dicts.
-    adapter._clarify_state = {}
-    adapter._exec_approval_state = {}
-    adapter._slash_confirm_state = {}
+    adapter._clarify_state = OrderedDict()
+    adapter._exec_approval_state = OrderedDict()
+    adapter._slash_confirm_state = OrderedDict()
 
     # BasePlatformAdapter contract — minimum to keep send/lifecycle happy
     adapter._running = True
@@ -997,7 +997,7 @@ class TestSendExecApprovalButtons:
         body = payload["interactive"]["body"]["text"]
         assert "rm -rf /tmp/foo" in body
         assert "cleanup script" in body
-        assert adapter._exec_approval_state[approval_id] == "sess-app-1"
+        assert adapter._exec_approval_state[approval_id] == ("sess-app-1", None)
 
 
 class TestSendSlashConfirmButtons:
@@ -1098,7 +1098,7 @@ class TestDispatchInteractiveReplyApproval:
     @pytest.mark.asyncio
     async def test_approve_tap_calls_resolver_and_confirms(self, monkeypatch):
         adapter = _make_adapter()
-        adapter._exec_approval_state["app1"] = "sess-app-1"
+        adapter._exec_approval_state["app1"] = ("sess-app-1", "req-app-1")
         adapter._http_client = MagicMock()
         adapter._http_client.post = AsyncMock(
             return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]})
@@ -1107,7 +1107,7 @@ class TestDispatchInteractiveReplyApproval:
         calls = []
         monkeypatch.setattr(
             "tools.approval.resolve_gateway_approval",
-            lambda session_key, choice: calls.append((session_key, choice)) or 1,
+            lambda session_key, choice, request_id=None: calls.append((session_key, choice, request_id)) or 1,
         )
 
         raw = {
@@ -1121,11 +1121,74 @@ class TestDispatchInteractiveReplyApproval:
         handled = await adapter._dispatch_interactive_reply(raw, {})
 
         assert handled is True
-        assert calls == [("sess-app-1", "approve")]
+        assert calls == [("sess-app-1", "approve", "req-app-1")]
         assert "app1" not in adapter._exec_approval_state
         confirm_payload = adapter._http_client.post.call_args.kwargs["json"]
         assert confirm_payload["type"] == "text"
         assert "Approved" in confirm_payload["text"]["body"]
+
+    @pytest.mark.asyncio
+    async def test_unbound_tap_fails_closed(self, monkeypatch):
+        """A card without a bound request id must not settle the FIFO (#104915)."""
+        adapter = _make_adapter()
+        adapter._exec_approval_state["app2"] = ("sess-app-2", None)
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]})
+        )
+
+        calls = []
+        monkeypatch.setattr(
+            "tools.approval.resolve_gateway_approval",
+            lambda session_key, choice, request_id=None: calls.append((session_key, choice, request_id)) or 1,
+        )
+
+        raw = {
+            "from": "15551234567",
+            "type": "interactive",
+            "interactive": {
+                "type": "button_reply",
+                "button_reply": {"id": "appr:app2:approve", "title": "Approve"},
+            },
+        }
+        handled = await adapter._dispatch_interactive_reply(raw, {})
+
+        assert handled is True
+        assert calls == []
+        confirm_payload = adapter._http_client.post.call_args.kwargs["json"]
+        assert "expired" in confirm_payload["text"]["body"]
+
+    @pytest.mark.asyncio
+    async def test_request_binding_evicts_with_state_beyond_cache_cap(self):
+        """The request id lives in the same bounded record as the tap state: past
+        INTERACTIVE_STATE_CACHE_SIZE the oldest cards evict WHOLE — no stranded
+        request-id half, no unbounded side map (#104915 review)."""
+        from gateway.platforms.whatsapp_cloud import INTERACTIVE_STATE_CACHE_SIZE
+
+        adapter = _make_adapter()
+        # The single-record shape is the fix: the old separate plain-dict binding
+        # (`_exec_approval_request_ids`) only popped on tap and could never evict.
+        assert not hasattr(adapter, "_exec_approval_request_ids")
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]})
+        )
+
+        first_approval_id = None
+        for i in range(INTERACTIVE_STATE_CACHE_SIZE + 3):
+            result = await adapter.send_exec_approval(
+                "15551234567", f"cmd-{i}", "sess-1", request_id=f"req-{i}",
+            )
+            assert result.success
+            if first_approval_id is None:
+                payload = adapter._http_client.post.call_args.kwargs["json"]
+                first_approval_id = payload["interactive"]["action"]["buttons"][0]["reply"]["id"].split(":")[1]
+
+        assert len(adapter._exec_approval_state) == INTERACTIVE_STATE_CACHE_SIZE
+        # Oldest card evicted whole: the tap state left AND took its binding with it.
+        assert first_approval_id not in adapter._exec_approval_state
+        newest_id = next(reversed(adapter._exec_approval_state))
+        assert adapter._exec_approval_state[newest_id] == ("sess-1", f"req-{INTERACTIVE_STATE_CACHE_SIZE + 2}")
 
 
 @pytest.mark.usefixtures("authorized_interactive_env")
@@ -1182,7 +1245,7 @@ class TestDispatchInteractiveReplyAuthorization:
             _dm_policy="allowlist",
             _allow_from={"15551234567"},
         )
-        adapter._exec_approval_state["app1"] = "sess-app-1"
+        adapter._exec_approval_state["app1"] = ("sess-app-1", "req-app-1")
         adapter._http_client = MagicMock()
         adapter._http_client.post = AsyncMock(
             return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]})
@@ -1190,7 +1253,7 @@ class TestDispatchInteractiveReplyAuthorization:
         calls = []
         monkeypatch.setattr(
             "tools.approval.resolve_gateway_approval",
-            lambda session_key, choice: calls.append((session_key, choice)) or 1,
+            lambda session_key, choice, request_id=None: calls.append((session_key, choice, request_id)) or 1,
         )
 
         raw = {
@@ -1204,7 +1267,7 @@ class TestDispatchInteractiveReplyAuthorization:
         handled = await adapter._dispatch_interactive_reply(raw, {})
 
         assert handled is True
-        assert calls == [("sess-app-1", "approve")]
+        assert calls == [("sess-app-1", "approve", "req-app-1")]
 
 
 @pytest.mark.usefixtures("authorized_interactive_env")

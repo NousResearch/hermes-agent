@@ -186,6 +186,7 @@ class TestTelegramApprovalCallback:
         """
         adapter = _make_adapter()
         adapter._approval_state[5] = "agent:main:telegram:group:12345:99"
+        adapter._approval_request_ids[5] = "req-5"
         adapter.pause_typing_for_chat("12345")
         assert "12345" in adapter._typing_paused
 
@@ -214,6 +215,7 @@ class TestTelegramApprovalCallback:
     async def test_approval_callback_escapes_dynamic_user_name(self):
         adapter = _make_adapter()
         adapter._approval_state[3] = "agent:main:telegram:group:12345:99"
+        adapter._approval_request_ids[3] = "req-3"
 
         query = AsyncMock()
         query.data = "ea:once:3"
@@ -237,6 +239,62 @@ class TestTelegramApprovalCallback:
         assert "MARKDOWN_V2" in repr(edit_kwargs["parse_mode"])
         assert "Alice\\_Bob" in edit_kwargs["text"]
         assert "Approved once" in edit_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_tap_resolves_only_its_bound_request(self):
+        """An inline tap settles its own request generation, never the FIFO (#104915)."""
+        adapter = _make_adapter()
+        adapter._approval_state[7] = "agent:main:telegram:group:12345:99"
+        adapter._approval_request_ids[7] = "req-7"
+
+        query = AsyncMock()
+        query.data = "ea:once:7"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.first_name = "Norbert"
+        query.from_user.id = "12345"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+                await adapter._handle_callback_query(update, context)
+
+        mock_resolve.assert_called_once_with(
+            "agent:main:telegram:group:12345:99", "once", request_id="req-7")
+
+    @pytest.mark.asyncio
+    async def test_unbound_tap_fails_closed(self):
+        """A prompt without a bound request id must not settle the FIFO (#104915)."""
+        adapter = _make_adapter()
+        adapter._approval_state[8] = "agent:main:telegram:group:12345:99"
+        adapter.pause_typing_for_chat("12345")
+
+        query = AsyncMock()
+        query.data = "ea:once:8"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.first_name = "Norbert"
+        query.from_user.id = "12345"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+                await adapter._handle_callback_query(update, context)
+
+        mock_resolve.assert_not_called()
+        assert "12345" in adapter._typing_paused
 
 
     @pytest.mark.asyncio

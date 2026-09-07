@@ -25,7 +25,9 @@ from plugins.platforms.discord.adapter import (  # noqa: E402
     SlashConfirmView,
     UpdatePromptView,
     _component_check_auth,
-    _resolve_exec_approval_admin_gate,
+)
+from plugins.platforms.discord.exec_approval import (
+    resolve_exec_approval_admin_gate as _resolve_exec_approval_admin_gate,
 )
 
 

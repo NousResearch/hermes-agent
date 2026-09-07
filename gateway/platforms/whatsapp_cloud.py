@@ -202,7 +202,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # the gateway resolver. Popped on tap; FIFO-capped via _bounded_put so ignored
         # prompts don't accumulate (an evicted tap degrades to text fallback).
         self._clarify_state: "OrderedDict[str, str]" = OrderedDict()
-        self._exec_approval_state: "OrderedDict[str, str]" = OrderedDict()
+        # Exec-approval taps bind to their own request generation (#104915): one bounded
+        # record per card, approval_id → (session_key, request_id), so both halves share
+        # the FIFO cap and eviction can never strand the request id (single-record tuple
+        # shape per the older #87554 carrier).
+        self._exec_approval_state: "OrderedDict[str, tuple[str, Optional[str]]]" = OrderedDict()
         self._slash_confirm_state: "OrderedDict[str, str]" = OrderedDict()
         self._runner = self._http_client = None
 
@@ -403,7 +407,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         state: "OrderedDict[str, str]", state_id: str, session_key: str,
     ) -> SendResult:
         """POST an ``interactive`` message (caller supplies ``type``/``body``/``action``) and, on
-        success, remember ``state_id → session_key`` for the tap. Free-form interactives need no
+        success, remember ``state_id → state value`` for the tap. Free-form interactives need no
         Meta approval but are only valid inside the 24h window — fine, all senders here reply to a user."""
         result = await self._post_message_result(
             self._outbound_payload(chat_id, "interactive", interactive, _reply_to_from(metadata)),
@@ -467,7 +471,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True,
-        allow_session: bool = True, smart_denied: bool = False,
+        allow_session: bool = True, smart_denied: bool = False, request_id: Optional[str] = None,
     ) -> SendResult:
         """Approve / Deny buttons; a tap resolves via ``tools.approval.resolve_gateway_approval``."""
         del allow_permanent, allow_session  # This adapter already offers one-shot Approve / Deny only.
@@ -479,7 +483,13 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         )
         approval_id = uuid.uuid4().hex[:12]
         interactive = self._button_interactive(body_text, (f"appr:{approval_id}:approve", "✅ Approve"), (f"appr:{approval_id}:deny", "❌ Deny"))
-        return await self._send_interactive(chat_id, interactive, metadata, self._exec_approval_state, approval_id, session_key)
+        # The 12-hex button payload can't carry the full request id, so the tap state carries
+        # (session_key, request_id) as ONE record: the binding is stored exactly when the card
+        # is, and FIFO eviction drops both halves together — no stranded request-id half
+        # (#104915; single bounded tuple shape per the older #87554 carrier).
+        return await self._send_interactive(
+            chat_id, interactive, metadata, self._exec_approval_state, approval_id, (session_key, request_id),
+        )
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
@@ -819,17 +829,17 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     @staticmethod
     def _pop_tap_state(
-        state: "OrderedDict[str, str]", key: str, stale_log: str, choice: str = "", valid: tuple = (),
-    ) -> Optional[str]:
-        """Pop the session_key for a tapped prompt. None (info-logged) when nothing is live — likely
+        state: "OrderedDict[str, Any]", key: str, stale_log: str, choice: str = "", valid: tuple = (),
+    ) -> Optional[Any]:
+        """Pop the stored value for a tapped prompt. None (info-logged) when nothing is live — likely
         a stale tap; an unrecognised ``choice`` keeps the prompt live and also yields None."""
-        session_key = state.pop(key, None)
-        if not session_key:
+        value = state.pop(key, None)
+        if not value:
             logger.info(stale_log, key)
         elif valid and choice not in valid:
-            state[key] = session_key
+            state[key] = value
             return None
-        return session_key
+        return value
 
     async def _handle_clarify_tap(self, to: str, inner: Dict[str, Any], parts: list) -> bool:
         _, clarify_id, choice = parts
@@ -875,17 +885,26 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def _handle_approval_tap(self, to: str, inner: Dict[str, Any], parts: list) -> bool:
         _, approval_id, choice = parts
-        session_key = self._pop_tap_state(
+        record = self._pop_tap_state(
             self._exec_approval_state, approval_id,
             "[whatsapp_cloud] approval tap with no matching state (approval_id=%s) — likely stale; falling back to text",
             choice, ("approve", "deny"),
         )
-        if not session_key:
+        if not record:
             return False
+        # One record per card: (session_key, request_id) share the approval_id lifecycle,
+        # so an evicted or consumed card takes its binding with it (#104915).
+        session_key, request_id = record
         approval = _optional_module("tools.approval", "[whatsapp_cloud] approval resolver unavailable")
         if approval is None:
             return False
-        count = approval.resolve_gateway_approval(session_key, choice)
+        # A tap settles only the request generation its card was issued for; an unbound
+        # card must not fall back to the session FIFO (#104915).
+        count = (
+            approval.resolve_gateway_approval(session_key, choice, request_id=request_id)
+            if request_id
+            else 0
+        )
         # A tap after the wait timed out (count == 0) must not claim approval:
         # the command was already denied fail-closed.
         if count:

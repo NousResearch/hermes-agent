@@ -572,7 +572,7 @@ class TeamsAdapter(BasePlatformAdapter):
     async def _on_card_action(
         self, ctx: "ActivityContext[AdaptiveCardInvokeActivity]"
     ) -> "InvokeResponse[AdaptiveCardActionMessageResponse]":
-        from tools.approval import resolve_gateway_approval, has_blocking_approval
+        from tools.approval import resolve_gateway_approval
 
         data = ctx.activity.value.action.data or {}
         hermes_action = data.get("hermes_action", "")
@@ -585,9 +585,16 @@ class TeamsAdapter(BasePlatformAdapter):
         choice = _APPROVAL_CHOICES.get(hermes_action)
         if not choice:
             return self._invoke_message("Unknown action.")
-        if not has_blocking_approval(session_key):
+        # A card settles only the request generation it was issued for; an unbound or stale
+        # card fails closed instead of falling back to the session FIFO (#104915).
+        request_id = str(data.get("request_id") or "")
+        count = (
+            resolve_gateway_approval(session_key, choice, request_id=request_id)
+            if request_id
+            else 0
+        )
+        if not count:
             return self._invoke_card([TextBlock(text="⚠️ Approval already resolved or expired.", wrap=True)])
-        resolve_gateway_approval(session_key, choice)
         body = _approval_body(data.get("cmd", ""), data.get("desc", ""))
         body.append(TextBlock(text=_APPROVAL_LABELS[choice], wrap=True, weight="Bolder"))
         return self._invoke_card(body)
@@ -615,11 +622,15 @@ class TeamsAdapter(BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False) -> SendResult:
+        smart_denied: bool = False, request_id: Optional[str] = None) -> SendResult:
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
         # Button data carries a truncated cmd — just enough to reconstruct the card body.
-        btn_data_base = {"session_key": session_key, "cmd": _truncate(command, 200), "desc": description}
+        # request_id binds each button to the request generation its card was issued for (#104915).
+        btn_data_base = {
+            "session_key": session_key, "cmd": _truncate(command, 200), "desc": description,
+            "request_id": request_id or "",
+        }
 
         def _action(title: str, hermes_action: str, **kw) -> "ExecuteAction":
             return ExecuteAction(

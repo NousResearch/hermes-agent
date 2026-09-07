@@ -268,6 +268,9 @@ from gateway.platforms.base import (
 )
 from tools.url_safety import is_safe_url
 from gateway.platforms._shared import profile_scoped as _profile_scoped_config_load
+from plugins.platforms.discord.exec_approval import (  # noqa: E402 — sibling owner module (see send_exec_approval)
+    build_exec_approval_card, build_exec_approval_view, define_exec_approval_view,
+)
 
 
 async def _read_url_image_with_redirect_guard(
@@ -5508,44 +5511,21 @@ class DiscordAdapter(BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
         metadata: Optional[dict] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False,
+        smart_denied: bool = False, request_id: Optional[str] = None,
     ) -> SendResult:
-        """Button-based exec approval prompt; buttons call ``resolve_gateway_approval()`` (not /approve)."""
+        """Button-based exec approval prompt; buttons call ``resolve_gateway_approval()`` (not /approve).
+        Wiring only — the card payload and the request-bound view live in ``exec_approval``."""
         def _build(_channel):
-            # Payload in plain content: embeds can be invisible/detached on web/mobile.
-            reason_budget = 300
-            reason_display = str(description or "dangerous command")
-            if len(reason_display) > reason_budget:
-                reason_display = reason_display[: reason_budget - 15] + "... [truncated]"
-            prompt_prefix = (
-                "⚠️ **Command Approval Required**\n\n"
-                "Do you want Hermes to run this command?\n\n"
-                "**Requested command:**\n```bash\n"
-            )
-            if smart_denied:
-                prompt_prefix += "**Smart DENY:** owner override applies to this one operation only.\n\n"
             mention_content = self._approval_mention_content()
-            if mention_content:
-                prompt_prefix = f"{mention_content}\n{prompt_prefix}"
-            prompt_tail = f"\n```\n**Reason:** {reason_display}"
-            truncated_suffix = "\n... [truncated]"
-            command_budget = max(0, self.MAX_MESSAGE_LENGTH - len(prompt_prefix) - len(prompt_tail))
-            content_cmd_display = str(command or "")
-            if len(content_cmd_display) > command_budget:
-                content_cmd_display = content_cmd_display[: max(0, command_budget - len(truncated_suffix))] + truncated_suffix
-            content = f"{prompt_prefix}{content_cmd_display}{prompt_tail}"
-            embed = discord.Embed(
-                title="⚠️ Command Approval Required",
-                description=f"```\n{self._embed_body(str(command or ''))}\n```",
-                color=discord.Color.orange(),
+            content, embed = build_exec_approval_card(
+                command, description, smart_denied=smart_denied, mention_content=mention_content,
+                max_message_length=self.MAX_MESSAGE_LENGTH, embed_body=self._embed_body,
             )
-            embed.add_field(name="Reason", value=reason_display, inline=False)
-            require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
-            view = ExecApprovalView(
-                session_key=session_key, allowed_user_ids=self._allowed_user_ids,
-                allowed_role_ids=self._allowed_role_ids, require_admin=require_admin,
-                admin_user_ids=admin_user_ids, allow_permanent=allow_permanent,
-                allow_session=allow_session, smart_denied=smart_denied,
+            view = build_exec_approval_view(
+                config_extra=getattr(self.config, "extra", None), session_key=session_key,
+                allowed_user_ids=self._allowed_user_ids, allowed_role_ids=self._allowed_role_ids,
+                allow_permanent=allow_permanent, allow_session=allow_session,
+                smart_denied=smart_denied, request_id=request_id,
             )
             send_kwargs: Dict[str, Any] = {"content": content, "embed": embed, "view": view}
             if mention_content:
@@ -6230,24 +6210,6 @@ def _component_check_auth(
     return False
 
 
-def _resolve_exec_approval_admin_gate(config_extra: Optional[dict]) -> Tuple[bool, set]:
-    """Resolve the exec-approval admin gate from ``extra``; returns ``(require_admin, admin_user_ids)``.
-    Default OFF (user-scope buttons). When ``require_admin_for_exec_approval`` is true only
-    ``allow_admin_from`` ids may click; on with no admins -> ``(True, set())`` (fail closed, log once).
-    """
-    extra = config_extra if isinstance(config_extra, dict) else {}
-    raw_toggle = extra.get("require_admin_for_exec_approval", False)
-    require_admin = str(raw_toggle).strip().lower() in {"true", "1", "yes"}
-    if not require_admin:
-        return (False, set())
-    try:
-        from gateway.slash_access import _coerce_id_list
-        admin_ids = set(_coerce_id_list(extra.get("allow_admin_from")))
-    except Exception:
-        admin_ids = set()
-    return (True, admin_ids)
-
-
 def _define_discord_view_classes() -> None:
     """Register Discord UI view classes as module globals.
     Called at module load and after a lazy install so the classes exist whenever DISCORD_AVAILABLE."""
@@ -6313,90 +6275,9 @@ def _define_discord_view_classes() -> None:
             self._disable_all()
             await self._expire_embed("⏱ Prompt expired — no action taken")
 
-    class ExecApprovalView(_HermesView):
-        """Allow Once / Allow Session / Always Allow / Deny buttons for a dangerous command.
-        Clicks call ``resolve_gateway_approval()`` — the same mechanism as the text ``/approve`` flow."""
-
-        def __init__(
-            self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None,
-            require_admin: bool = False, admin_user_ids: Optional[set] = None,
-            allow_permanent: bool = True, allow_session: bool = True, smart_denied: bool = False,
-        ):
-            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
-            self.session_key = session_key
-            self.require_admin = require_admin
-            self.admin_user_ids = {str(a).strip() for a in (admin_user_ids or set()) if str(a).strip()}
-            if smart_denied or not allow_session:
-                self.remove_item(self.allow_session)
-                self.remove_item(self.allow_always)
-            elif not allow_permanent:
-                self.remove_item(self.allow_always)
-
-        def _check_auth(self, interaction: discord.Interaction) -> bool:
-            """Base admission always required; with ``require_admin`` the clicker must
-            also be an admin. Fails closed (logged once) when no admins are configured."""
-            if not super()._check_auth(interaction):
-                return False
-            if not self.require_admin:
-                return True
-            user = getattr(interaction, "user", None)
-            try:
-                uid = str(getattr(user, "id", "") or "")
-            except Exception:
-                uid = ""
-            if uid and uid in self.admin_user_ids:
-                return True
-            if not self.admin_user_ids:
-                logger.warning(
-                    "[Discord] require_admin_for_exec_approval is enabled but "
-                    "no admins are configured (allow_admin_from is empty) — "
-                    "exec approval buttons are disabled for everyone. Add "
-                    "admin user IDs under the discord platform's "
-                    "allow_admin_from, or disable the toggle."
-                )
-            return False
-
-        async def _resolve(self, interaction: discord.Interaction, choice: str, color: discord.Color, label: str):
-            """Resolve the approval via the gateway approval queue and update the embed."""
-            if not await self._gate(
-                interaction, resolved_msg="This approval has already been resolved~",
-                unauth_msg="You're not authorized to approve commands~",
-            ):
-                return
-            self.resolved = True
-            # Unblock the waiting agent thread FIRST. A click after the approval
-            # wait timed out (count == 0) must not claim "Approved".
-            try:
-                from tools.approval import resolve_gateway_approval
-                count = resolve_gateway_approval(self.session_key, choice)
-                logger.info(
-                    "Discord button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                    count, self.session_key, choice, interaction.user.display_name,
-                )
-            except Exception as exc:
-                logger.error("Failed to resolve gateway approval from button: %s", exc)
-                count = 0
-            if not count:
-                color = discord.Color.dark_grey()
-                label = "⌛ Approval expired — command was not run (already timed out or resolved elsewhere)"
-            await self._finalize_embed(
-                interaction, color, f"{label} by {interaction.user.display_name}" if count else label)
-
-        @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)
-        async def allow_once(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "once", discord.Color.green(), "Approved once")
-
-        @discord.ui.button(label="Allow Session", style=discord.ButtonStyle.grey)
-        async def allow_session(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "session", discord.Color.blue(), "Approved for session")
-
-        @discord.ui.button(label="Always Allow", style=discord.ButtonStyle.blurple)
-        async def allow_always(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "always", discord.Color.purple(), "Approved permanently")
-
-        @discord.ui.button(label="Deny", style=discord.ButtonStyle.red)
-        async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "deny", discord.Color.red(), "Denied")
+    # Request-bound exec-approval cards are owned by their topical module (#104915);
+    # built here on the shared base so a lazy install re-registers them like the rest.
+    ExecApprovalView = define_exec_approval_view(_HermesView)
 
     class SlashConfirmView(_HermesView):
         """Approve Once / Always Approve / Cancel for slash-command confirmations (``/reload-mcp``,

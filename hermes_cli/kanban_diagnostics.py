@@ -637,10 +637,20 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     if not assignee.strip():
         return []
 
-    # Most recent event that put the task into ready; with none (old task /
-    # truncated events) fall back to created_at — over-flagging an ancient
-    # task beats missing a stranded one.
-    last_ready_ts = _latest_event_ts(events, {"created", "promoted", "reclaimed", "unblocked"})
+    # Most recent event that put the task into ready; dashboard drag/drop and
+    # status buttons record the transition as a generic ``status`` event.
+    # With none (old task / truncated events), fall back to created_at —
+    # over-flagging an ancient task beats missing a stranded one.
+    ready_transition_kinds = {"created", "promoted", "reclaimed", "unblocked"}
+    last_ready_ts = max([
+        0,
+        *(
+            _event_ts(ev)
+            for ev in events
+            if _event_kind(ev) in ready_transition_kinds
+            or (_event_kind(ev) == "status" and _parse_payload(ev).get("status") == "ready")
+        ),
+    ])
     if last_ready_ts == 0:
         last_ready_ts = int(_task_field(task, "created_at", default=0) or 0)
     if last_ready_ts == 0:

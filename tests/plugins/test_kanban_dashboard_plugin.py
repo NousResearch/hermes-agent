@@ -1149,6 +1149,54 @@ def test_reassign_endpoint_switches_profile(client):
 # ---------------------------------------------------------------------------
 
 
+def test_board_ready_diagnostic_tracks_current_ready_interval(client):
+    created = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "retry", "assignee": "worker"},
+    ).json()["task"]
+    task_id = created["id"]
+    old_ready_at = int(time.time()) - 67 * 3600
+    with kbc.connect() as conn:
+        conn.execute(
+            "UPDATE task_events SET created_at = ? WHERE task_id = ? AND kind = 'created'",
+            (old_ready_at, task_id),
+        )
+        conn.commit()
+
+    def board_task():
+        board = client.get("/api/plugins/kanban/board").json()
+        return next(
+            task
+            for column in board["columns"]
+            for task in column["tasks"]
+            if task["id"] == task_id
+        )
+
+    def stranded_diagnostics():
+        return [
+            diagnostic
+            for diagnostic in board_task().get("diagnostics", [])
+            if diagnostic["kind"] == "stranded_in_ready"
+        ]
+
+    stranded = stranded_diagnostics()[0]
+    assert stranded["data"]["ready_since"] == old_ready_at
+
+    assert client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}", json={"status": "triage"},
+    ).status_code == 200
+    assert stranded_diagnostics() == []
+
+    assert client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}", json={"status": "ready"},
+    ).status_code == 200
+    assert stranded_diagnostics() == []
+
+    with kbc.connect() as conn:
+        claimed = kb.claim_task(conn, task_id, claimer="worker:test")
+        assert claimed is not None and claimed.status == "running"
+    assert stranded_diagnostics() == []
+
+
 def test_diagnostics_endpoint_surfaces_blocked_hallucination(client):
     conn = kbc.connect()
     try:

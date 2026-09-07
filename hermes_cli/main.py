@@ -492,6 +492,69 @@ def _under_gateway_supervisor(argv: list) -> bool:
     ).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _nf_tier_gate(flag_name, env_profile_name):
+    """North Forge tier / pinned-edition gate — runs before the stock profile logic.
+
+    Returns ``None`` on a drive with no signed provisioning record (dev checkout,
+    plain upstream Hermes, un-provisioned install) so stock behaviour is byte-for-byte
+    unchanged. Otherwise returns ``(verdict, value)``:
+
+      * ``("pass", None)``  — Full tier honoured the caller's own request; let the
+        stock ``-p`` / ``active_profile`` path resolve it.
+      * ``("force", name_or_None)`` — the tier policy picked the edition (a Basic
+        pin, or a Full-tier default landing). ``None`` == the root chassis. Any
+        ``-p`` is stripped from argv by the caller.
+      * ``("block", message)`` — hard stop (Basic drive asked for a forbidden
+        edition via an explicit flag, or the record is tampered).
+
+    Never raises for its own bugs — a broken gate must not stop hermes starting.
+    """
+    try:
+        from hermes_cli.nf_tier import (
+            load, enforce_startup_profile, NfTierError,
+            STATE_ACTIVE, STATE_TAMPERED, _tampered_message,
+        )
+        from hermes_constants import get_default_hermes_root
+    except Exception:
+        return None
+    try:
+        p = load()
+        if p.state not in (STATE_ACTIVE, STATE_TAMPERED):
+            return None
+        if p.state == STATE_TAMPERED:
+            return ("block", _tampered_message(p))
+
+        requested, from_flag = None, False
+        if flag_name is not None:
+            requested, from_flag = flag_name, True
+        elif env_profile_name is not None:
+            requested, from_flag = env_profile_name, True
+        else:
+            # The sticky active_profile is consulted here (not only in the stock
+            # block below) so a Full-tier drive still honours it and a Basic-tier
+            # drive can ignore a stale one without erroring.
+            try:
+                ap = get_default_hermes_root() / "active_profile"
+                if ap.exists():
+                    nm = ap.read_text(encoding="utf-8").strip()
+                    if nm and nm != "default":
+                        requested = nm  # from_flag stays False — a soft signal
+            except (OSError, UnicodeDecodeError):
+                pass
+
+        try:
+            resolved = enforce_startup_profile(requested, from_flag=from_flag)
+        except NfTierError as exc:
+            return ("block", str(exc))
+        if p.tier == "full" and requested is not None and resolved == requested:
+            return ("pass", None)
+        return ("force", resolved)
+    except SystemExit:
+        raise
+    except Exception:
+        return None
+
+
 def _apply_profile_override() -> None:
     """Pre-parse --profile/-p and set HERMES_HOME before imports."""
     argv = sys.argv[1:]
@@ -503,7 +566,39 @@ def _apply_profile_override() -> None:
     # we must still read active_profile — the user may have run
     # `hermes profile use` and the gateway should honour it (#22502).
     hermes_home_env = os.environ.get("HERMES_HOME", "")
-    if profile_name is None and hermes_home_env and Path(hermes_home_env).parent.name == "profiles":
+    _env_at_profile_dir = bool(hermes_home_env) and Path(hermes_home_env).parent.name == "profiles"
+
+    # --- North Forge tier gate (inert unless the drive is provisioned) --------
+    _nf = _nf_tier_gate(
+        profile_name,
+        Path(hermes_home_env).name if (profile_name is None and _env_at_profile_dir) else None,
+    )
+    if _nf is not None:
+        _verdict, _value = _nf
+        if _verdict == "block":
+            print(f"Error: {_value}", file=sys.stderr)
+            sys.exit(1)
+        if _verdict == "force":
+            if consume > 0 and profile_index is not None:  # drop any -p/--profile
+                _start = profile_index + 1
+                sys.argv = sys.argv[:_start] + sys.argv[_start + consume :]
+            if _value is None:
+                if _env_at_profile_dir:  # don't inherit a profile-dir HERMES_HOME
+                    os.environ["HERMES_HOME"] = str(Path(hermes_home_env).parent.parent)
+                return
+            try:
+                from hermes_cli.profiles import resolve_profile_env
+                os.environ["HERMES_HOME"] = resolve_profile_env(_value)
+            except Exception as exc:
+                print(f"Error: North Forge is provisioned for the '{_value}' edition, "
+                      f"but it is not installed on this drive ({exc}). Re-run Setup "
+                      f"(scripts\\nf-setup.ps1).", file=sys.stderr)
+                sys.exit(1)
+            return
+        # _verdict == "pass": fall through to the stock logic below
+    # --- end North Forge tier gate ------------------------------------------
+
+    if profile_name is None and _env_at_profile_dir:
         return
 
     if profile_name is None and not _under_gateway_supervisor(argv):

@@ -60,4 +60,18 @@ REM (Re)write "<drive>:\Start North Forge.lnk" against the path the checkout is 
 REM right now, so it stays correct even if Windows re-letters the drive.
 if exist "%REPO%\scripts\make-drive-root-shortcut.ps1" powershell -NoProfile -ExecutionPolicy Bypass -File "%REPO%\scripts\make-drive-root-shortcut.ps1" -RepoRoot "%REPO%" -Quiet >nul 2>&1
 
+REM --- North Forge tier check (CHG-2026-09-07-022) --------------------------------
+REM If this drive carries a provisioning record and it has been tampered with,
+REM stop here with a clear message rather than letting the in-process gate refuse
+REM every subcommand. A missing record is normal (un-provisioned drive) -> exit 0.
+"%VENV%\Scripts\python.exe" -m hermes_cli.nf_tier verify >nul 2>&1
+if errorlevel 2 (
+  echo.
+  echo [north-forge] this drive's North Forge provisioning is invalid or was modified
+  echo [north-forge] after Setup Run. An admin must repair it:  scripts\nf-setup.ps1 -Force
+  "%VENV%\Scripts\python.exe" -m hermes_cli.nf_tier show
+  pause
+  exit /b 2
+)
+
 "%VENV%\Scripts\hermes.exe" %*

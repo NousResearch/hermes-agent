@@ -16,6 +16,25 @@ def _die(msg: str, code: int = 1, *, err: bool = False) -> None:
     sys.exit(code)
 
 
+def _nf_guard_mutation(verb: str) -> None:
+    """Refuse profile-tree mutations on a Basic-tier North Forge drive.
+
+    A Basic drive is confined to its one pinned edition; adding, importing,
+    installing, renaming or deleting editions is admin-tier only. No-op on an
+    un-provisioned or Full-tier drive.
+    """
+    try:
+        from hermes_cli import nf_tier
+        p = nf_tier.load()
+    except Exception:
+        return
+    if p.locked:
+        pin = p.pinned_edition or "the North Forge chassis"
+        _die(f"This drive is provisioned Basic-tier (pinned to '{pin}'). "
+             f"You cannot {verb} editions here — that is an admin action. "
+             f"Re-provision with scripts\\nf-setup.ps1 on an admin machine.")
+
+
 def _confirm(prompt: str) -> bool:
     """y/N prompt; EOF / Ctrl-C count as "no"."""
     try:
@@ -118,6 +137,16 @@ def _profile_list(args):
     from hermes_cli.profiles import format_profile_label, get_active_profile_name, list_profiles
     profiles = list_profiles()
     active = get_active_profile_name()
+    # North Forge Basic tier: only the pinned edition is visible (and reachable).
+    try:
+        from hermes_cli import nf_tier
+        _nfp = nf_tier.load()
+        if _nfp.locked:
+            _pin = _nfp.pinned_edition or "default"
+            profiles = [p for p in profiles
+                        if (p.is_default and _pin == "default") or p.name == _pin]
+    except Exception:
+        pass
     if not profiles:
         print("No profiles found.")
         return
@@ -145,6 +174,7 @@ def _profile_use(args):
 
 
 def _profile_create(args):
+    _nf_guard_mutation("create")
     from hermes_cli.profiles import (
         _get_wrapper_dir, _is_wrapper_dir_in_path, check_alias_collision, create_profile,
         create_wrapper_script, get_active_profile_name, seed_profile_skills,
@@ -220,6 +250,7 @@ def _profile_create(args):
 
 
 def _profile_delete(args):
+    _nf_guard_mutation("delete")
     from hermes_cli.profiles import delete_profile
     try:
         delete_profile(args.profile_name, yes=getattr(args, "yes", False))
@@ -332,6 +363,7 @@ def _profile_show(args):
 
 
 def _profile_alias(args):
+    _nf_guard_mutation("re-alias")
     from hermes_cli.profiles import (
         _get_wrapper_dir, _is_wrapper_dir_in_path, check_alias_collision, create_wrapper_script,
         profile_exists, remove_wrapper_script, validate_alias_name,
@@ -363,6 +395,7 @@ def _profile_alias(args):
 
 
 def _profile_rename(args):
+    _nf_guard_mutation("rename")
     from hermes_cli.profiles import normalize_profile_name, rename_profile
     try:
         new_dir = rename_profile(args.old_name, args.new_name)
@@ -385,6 +418,7 @@ def _profile_export(args):
 
 
 def _profile_import(args):
+    _nf_guard_mutation("import")
     from hermes_cli.profiles import check_alias_collision, create_wrapper_script, import_profile
     try:
         profile_dir = import_profile(args.archive, name=getattr(args, "import_name", None))
@@ -400,6 +434,7 @@ def _profile_import(args):
 
 
 def _profile_install(args):
+    _nf_guard_mutation("install")
     import tempfile
     from hermes_cli.profile_distribution import DistributionError, install_distribution, plan_install
     try:

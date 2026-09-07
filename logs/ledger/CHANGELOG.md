@@ -8,6 +8,112 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.6.0] — 2026-09-07 — hermes@2237be3559 (0 behind upstream/main)
+
+`RUN-2026-09-07-010`. Written on the `NF-v0.5.5` commit (`13fd25e063`), then
+**rebased clean onto `origin/main`** (`a4ffbca513` — the owner's `Merge branch
+'NousResearch:main'` upstream sync + a `fmt(js)` pass that landed mid-run); no
+file overlap, base moved `hermes@03f3b09222 (47 behind)` → `hermes@2237be3559
+(0 behind)`. **MINOR** — a new North
+Forge capability: the two-tier (Full / Basic) access model with a pinned
+front-door **edition**, enforced at the profile-resolution layer, not just the
+UI. This is the tier/pin mechanism the architecture notes flagged as the biggest
+blocker; drive naming, the launcher, and the editions concept were waiting on it.
+Design recorded in **`DECISION-2026-09-07-003`** (DECIDED). The engine is
+unmodified — enforcement rides on Hermes' existing profile system plus one new
+North-Forge module and small gates at each profile-selection entry point.
+
+### Added
+
+- **CHG-2026-09-07-022** — **Tier / pinned-edition access control.**
+  - **An edition is a Hermes profile.** The North Forge generic chassis is the
+    root profile (`"default"`); Kyocera / Penny Pincher / Sales / Pine Barron
+    Farms are profiles under `<nf-root>/profiles/<edition>/` (installable from
+    admin-gated distribution repos via the existing `hermes profile install`).
+  - **`hermes_cli/nf_tier.py`** (new, stdlib-only, import-light — it runs before
+    argparse). Reads a signed provisioning record written once at Setup Run:
+    - `<nf-root>/north-forge/provisioning.json` — `{schema, tier, pinned_edition,
+      installed_editions, provisioned_at/by, note, sig}`.
+    - `<nf-root>/north-forge/.nf-key` — 32 random bytes, HMAC-SHA256 key, mode
+      `0600`, created once, outside `profiles/`.
+    - `<nf-root>/north-forge/.nf-admin` — pbkdf2 hash of the admin passcode;
+      gates *re-provisioning*, not the signature.
+    - States: **unprovisioned** (no record → gate is inert, plain-Hermes
+      behaviour — dev checkouts, CI), **active** (signature verifies → tier logic
+      applies), **tampered** (record present, signature/key missing or invalid →
+      **fail closed:** the drive refuses to start until an admin repairs it).
+    - `sig` is HMAC over the canonical signed subset. It is *tamper-evident*
+      (stops a casual `"basic"`→`"full"` edit), **not** tamper-proof against an
+      operator who scripts a re-sign — the real containment for proprietary
+      edition content is that it is never shipped to a Basic drive. Stated plainly
+      in `DECISION-2026-09-07-003` and the module docstring (no "credential
+      protection" overclaim — cf. `DECISION-2026-09-07-002`).
+  - **Enforcement at the dispatch layer** (a UI-hidden option is not access
+    control — Codex audit risk):
+    - **`hermes_cli/main.py` `_apply_profile_override()`** — new `_nf_tier_gate()`
+      runs before the stock `-p` / `active_profile` logic. **Basic tier:** a bare
+      launch and a stale `active_profile` both land on the pin; an explicit
+      `-p <other-edition>` (or `HERMES_HOME` pointed straight at another profile
+      dir) **exits non-zero** with a message naming the pin — never a silent
+      redirect, and `HERMES_HOME` never moves. **Full tier:** the pin is the
+      default landing profile; `-p` / `active_profile` / the switcher all work.
+      **Tampered:** exit non-zero. **Unprovisioned:** returns `None` → stock path
+      unchanged.
+    - **`hermes_cli/profiles.py`** — backstop `nf_tier.assert_edition_allowed()`
+      in **`resolve_profile_env()`** (covers the sudo path, tests, plugins) and
+      **`set_active_profile()`** (covers `hermes profile use`, the dashboard
+      `POST /api/profiles/active`, `_retarget_active_profile`). `NfTierError`
+      subclasses `ValueError`, which every caller here already handles.
+    - **`hermes_cli/profile_cmd.py`** — `_nf_guard_mutation()` refuses
+      `create` / `delete` / `import` / `install` / `rename` / `alias` on a Basic
+      drive (no sideloading editions); `hermes profile list` shows only the pin.
+    - **`hermes_cli/web_routers/profiles.py`** — `GET /api/profiles` filtered to
+      the pin, `POST /api/profiles/active` and `POST /api/profiles` return **403**
+      on a Basic drive.
+    - **`/edition`** slash command (new `CommandDef` + `_exec_edition` in
+      `slash_exec.py`) — read-only status + switch menu: Full tier lists the
+      installed editions and the `hermes profile use <name>` line; Basic tier
+      shows the pin and "locked … no switcher". (Switching still needs a relaunch,
+      like `hermes profile use`, so the executor stays a pure formatter per the
+      registry invariant.)
+  - **`scripts/nf-setup.ps1`** (new) — the **Setup Run** wizard (a deliberate
+    one-time admin step; **not** run by `bootstrap-north-forge.ps1`). Prompts /
+    takes `-Tier`, `-Pin`, `-Installed`, the admin passcode; calls
+    `python -m hermes_cli.nf_tier` so the sign/verify logic has one
+    implementation. PS 5.1-safe: native calls run under a local
+    `$ErrorActionPreference = 'Continue'` and are judged by `$LASTEXITCODE`, not
+    stderr content.
+  - **`scripts/bootstrap-north-forge.ps1`** — prints whether the drive is
+    provisioned and points at `nf-setup.ps1`; **no tier is set at bootstrap**.
+  - **`north-forge.cmd`** — before launch, `python -m hermes_cli.nf_tier verify`;
+    a **tampered** record stops the launcher with a plain-language message
+    (missing record = normal, exit 0). Independent of the venv-readiness
+    preflight.
+  - **Tests** — `tests/test_nf_tier_enforcement.py` (19): unit (states, HMAC
+    verify, `enforce_startup_profile` matrix, admin passcode, the `__main__`
+    CLI); integration through a real `python -c "import hermes_cli.main"`
+    subprocess (Basic blocks `-p`/`HERMES_HOME`/stale sticky and forces the pin;
+    tampered refuses; Full defaults-then-switches; unprovisioned untouched);
+    backstops (`resolve_profile_env`, `set_active_profile`, `profile_cmd`
+    mutations, `/edition`); a Windows-only `nf-setup.ps1` end-to-end (provision,
+    no-`-Force` refusal, passcode gate). `19 passed`; the NF launcher suites
+    (`test_nf_preflight_readiness.py`, `test_bootstrap_north_forge_path_safety.py`)
+    still `21 passed`; `tests/hermes_cli/test_commands*.py` + `test_config.py`
+    `208 passed`. Pre-existing Windows-lane failures in
+    `test_apply_profile_override.py` / `test_profiles.py` are unchanged (verified
+    against a clean `main` — `ERR-2026-09-07-002` class, POSIX-only setup). `ruff`
+    clean.
+  - **Role mapping validated** (per the owner's list): Marguerite → Basic /
+    penny-pincher; sales rep → Basic / sales-edition; TSC engineer → Full /
+    kyocera default, switcher on; admin → Full / no pin, sees Pine Barron Farms.
+  - Paths: `hermes_cli/nf_tier.py` (new), `hermes_cli/main.py`,
+    `hermes_cli/profiles.py`, `hermes_cli/profile_cmd.py`,
+    `hermes_cli/slash_exec.py`, `hermes_cli/commands.py`,
+    `hermes_cli/web_routers/profiles.py`, `scripts/nf-setup.ps1` (new),
+    `scripts/bootstrap-north-forge.ps1`, `north-forge.cmd`,
+    `tests/test_nf_tier_enforcement.py` (new). Ref: `DECISION-2026-09-07-003`.
+    Run: RUN-2026-09-07-010.
+
 ## [NF-v0.5.5] — 2026-09-07 — hermes@03f3b09222 (47 behind upstream/main)
 
 `RUN-2026-09-07-009`. Stacks on the (as-yet unpushed) `NF-v0.5.4` commit.

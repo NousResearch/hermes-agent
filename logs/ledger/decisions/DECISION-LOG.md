@@ -118,6 +118,75 @@ gains a `Superseded-by:` / `Supersedes:` link.
 
 ## Resolved
 
+### DECISION-2026-09-07-003 — Edition / tier mechanism — what is an "edition", and how is Basic tier enforced?
+
+- **Opened:** 2026-09-07 · **Base:** hermes@2237be3559 (0 behind upstream/main) — written on `13fd25e063`, rebased clean onto `origin/main` `a4ffbca513`
+- **Run:** RUN-2026-09-07-010 (opened and decided the same run)
+- **Source:** the owner's tier/pin build assignment (RUN-2026-09-07-010 prompt);
+  the two-tier access model in [[north-forge-architecture]]; a queued research
+  question (`logs/CODEX-VISION-SKETCH-2026-09-07.md` — **never produced**, so this
+  run did its own check first).
+- **Confidence:** Confirmed Fact — the existing mechanisms and their enforcement
+  points were read in the tree and exercised this run (`config.yaml`
+  `skills.disabled` is enforced at `tools/skills_tool.py:553`, not only in
+  listings; profile selection funnels through
+  `hermes_cli/main.py::_apply_profile_override` → `resolve_profile_env`;
+  `cryptography` / `pynacl` are project deps but **not** in the bare dev venv).
+- **Supersedes:** —
+- **The call:** North Forge needs "editions" (generic chassis, Kyocera, Penny
+  Pincher, Sales, Pine Barron Farms) with exactly one **pinned** front-door per
+  drive and a two-tier lock (Full = switcher; Basic = pin only, unreachable
+  otherwise, enforced at command dispatch not just the UI). Nothing in the tree
+  had a "tier" or a lockable profile. What is an edition, mechanically, and where
+  is the lock?
+- **Options:**
+  - **A — Edition = a Hermes profile; tier/pin = a signed North-Forge record +
+    gates at every profile-selection path.** Reuses profile isolation (SOUL.md,
+    `skills/`, `mcp.json`, `config.yaml`, state) and `distribution.yaml`
+    packaging. New `hermes_cli/nf_tier.py` + `provisioning.json` (HMAC-signed) +
+    small calls in `_apply_profile_override`, `resolve_profile_env`,
+    `set_active_profile`, `profile_cmd`, the dashboard router, and a `/edition`
+    command. Cost: the lock surface is every profile entry point (six of them) —
+    each must be covered.
+  - **B — Edition = a persona overlay + a `config.yaml` `skills.disabled`
+    filter.** Lightest; enforcement rides entirely on the existing
+    `skills_tool.py:553` invocation gate. Cost: an edition cannot carry its own
+    MCP servers, model config, or state — too thin for Kyocera (hotline tooling,
+    KB builder, drift audits), and "sees everything including Pine Barron Farms"
+    implies editions are separate installs.
+  - **C — Hybrid:** edition = profile, but selection routed through one new
+    North-Forge chokepoint that disables every other path. Cost: same wide
+    lockdown surface as A with more indirection.
+- **Leaning at open:** A.
+- **Decided:** 2026-09-07 (`RUN-2026-09-07-010`) — chose **A**, owner-confirmed
+  (edition = full Hermes profile; HMAC-signed provisioning keyed by the admin
+  passcode, fail-closed; wire every selection path in one pass). Implemented by
+  **`CHG-2026-09-07-022`** (`NF-v0.6.0`).
+  - **Signature strength, stated honestly:** the record is HMAC-SHA256 with the
+    key stored on the drive (`<nf-root>/north-forge/.nf-key`, `0600`, outside
+    `profiles/`). That is **tamper-evident, not tamper-proof** — it fails a
+    casual `"basic"`→`"full"` edit closed; it is not a defence against an operator
+    who will find `.nf-key` and script a re-sign. Asymmetric signing (Ed25519 via
+    `cryptography`/`pynacl`) was rejected for this pass: the verifier runs in
+    `main.py` **before argparse and before any hermes import**, where pulling in
+    `cryptography` is a cost and a "must never block startup" risk, and the bare
+    dev venv does not even carry it. The real containment for proprietary edition
+    content is that it is **not shipped to a Basic drive at all**; the admin
+    passcode (`.nf-admin`, pbkdf2) additionally gates *re-running* `nf-setup.ps1`.
+    A future hardened-drive form (sealed volume, dual-partition split) could carry
+    a real key store — that is **out of scope here and tracked under
+    `DECISION-2026-09-06-003`**, which this does **not** resolve.
+  - **Fail-open vs fail-closed boundary:** *absent* record = un-provisioned =
+    behaves exactly like upstream Hermes (dev checkouts / CI / plain installs
+    unaffected — keeps fork drift testable). *Present but unverifiable* = tampered
+    = the drive refuses to start. These are deliberately different.
+- **Intersection noted (not resolved):** `DECISION-2026-09-06-003` (install
+  model — drive-native vs machine-local; hardened form awaits ratification). The
+  hardened drive is where a non-drive-resident key store would live; this pass
+  builds only the minimal signed-file form and does not pre-empt that decision.
+- **Owner:** Kenneth C. Walker Jr.
+- **Status:** DECIDED
+
 ### DECISION-2026-09-07-001 — Splash art — keep the stock Hermes launch mark, or swap it?
 
 - **Opened:** 2026-09-07 · **Base:** hermes@233757037d (6 behind upstream/main) — committed on `c4e88d2ab6`
@@ -233,4 +302,5 @@ gains a `Superseded-by:` / `Supersedes:` link.
 | DECISION-2026-09-06-002 | 2026-09-06 | Repo hygiene | Keep or delete the attic clone? | OPEN — leaning A (delete) | — |
 | DECISION-2026-09-06-003 | 2026-09-07 | Install model | Drive-native run-in-place vs machine-local managed install? | OPEN — leaning A (drive-native); hardened form (seal / dual-volume / certify) awaits ratification | — |
 | DECISION-2026-09-07-001 | 2026-09-07 | Branding | Keep the stock Hermes launch splash, or swap it? | DECIDED — C (swap via a North Forge skin), landed `CHG-2026-09-07-012`; reaffirmed `RUN-2026-09-07-006` (deferral floated then withdrawn, never executed) | 2026-09-07 |
+| DECISION-2026-09-07-003 | 2026-09-07 | Access architecture | What is an "edition", and how is Basic tier enforced? | DECIDED — A (edition = Hermes profile; HMAC-signed `provisioning.json` + gates at every profile-selection path), landed `CHG-2026-09-07-022` (`NF-v0.6.0`). Signature is tamper-evident not tamper-proof; hardened key store deferred to `DECISION-2026-09-06-003` | 2026-09-07 |
 | DECISION-2026-09-07-002 | 2026-09-07 | Branding wording | "engine used unmodified" / "full rebrand" broader than the code (Codex F-07) | OPEN — leaning A (tighten wording, no identifier churn); logged only | — |

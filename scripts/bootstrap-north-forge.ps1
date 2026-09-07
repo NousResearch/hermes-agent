@@ -213,6 +213,21 @@ try {
     Write-Warning "drive-root shortcut skipped: $($_.Exception.Message)"
 }
 
+# --- tier / pinned-edition provisioning (separate admin step) --------------
+# bootstrap does NOT set a tier. Stamping a drive with Full/Basic + a pinned
+# edition is a deliberate one-time admin action (CHG-2026-09-07-022):
+#   scripts\nf-setup.ps1            (interactive)
+#   scripts\nf-setup.ps1 -NonInteractive -Tier basic -Pin penny-pincher
+# Without it the drive is un-provisioned: no edition lock, behaves like plain Hermes.
+try {
+    $st = (& $pyExe -m hermes_cli.nf_tier verify --json 2>$null | Out-String).Trim()
+    if ($st -match '"state":\s*"active"') {
+        Write-Host "  tier   : provisioned  ($st)"
+    } else {
+        Write-Host "  tier   : not provisioned - run  scripts\nf-setup.ps1  to set Full/Basic + a pinned edition"
+    }
+} catch { }
+
 # --- verify -----------------------------------------------------
 $env:HERMES_HOME = $DataDir
 $ver = (& $pyExe -c "import hermes_cli; print('import ok')" 2>&1 | Out-String).Trim()

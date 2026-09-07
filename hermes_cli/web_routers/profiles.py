@@ -631,20 +631,59 @@ def post_profiles_sessions_pull_requests(body: SessionPrScanBody):
     return {"pull_requests": found, "scanned": wanted}
 
 
+def _nf_tier_state():
+    """North Forge provisioning for this dashboard's drive, or ``None`` if unprovisioned/error."""
+    try:
+        from hermes_cli import nf_tier
+        p = nf_tier.load()
+        return p if p.state == nf_tier.STATE_ACTIVE else None
+    except Exception:
+        return None
+
+
+def _nf_assert_switch_allowed(name: str) -> None:
+    """Raise HTTP 403 when a Basic-tier drive tries to reach a non-pinned edition."""
+    p = _nf_tier_state()
+    if p is None or not p.locked:
+        return
+    try:
+        from hermes_cli import nf_tier
+        target = nf_tier.normalize_edition(name)
+    except Exception:
+        target = (name or "").strip().lower()
+    if target != (p.pinned_edition or "default"):
+        raise HTTPException(
+            status_code=403,
+            detail=(f"This drive is provisioned Basic-tier, pinned to "
+                    f"'{p.pinned_edition or 'the North Forge chassis'}'. Other editions "
+                    f"are not available here."))
+
+
 @router.get("/api/profiles")
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
     try:
         profiles = await run_in_threadpool(profiles_mod.list_profiles)
-        return {"profiles": [_profile_to_dict(p) for p in profiles]}
+        rows = [_profile_to_dict(p) for p in profiles]
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
-        return {"profiles": _fallback_profile_dicts(profiles_mod)}
+        rows = _fallback_profile_dicts(profiles_mod)
+    nf = _nf_tier_state()
+    if nf is not None and nf.locked:
+        pin = nf.pinned_edition or "default"
+        rows = [r for r in rows
+                if str(r.get("name", "")).lower() == pin
+                or (pin == "default" and (r.get("is_default") or r.get("name") == "default"))]
+    return {"profiles": rows}
 
 
 @router.post("/api/profiles")
 async def create_profile_endpoint(body: ProfileCreate):
     from hermes_cli import profiles as profiles_mod
+    if (_nf := _nf_tier_state()) is not None and _nf.locked:
+        raise HTTPException(status_code=403, detail=(
+            "This drive is provisioned Basic-tier — editions cannot be created here. "
+            "Re-provision on an admin machine with scripts/nf-setup.ps1."))
     explicit_source = (body.clone_from or "").strip()
     if explicit_source:
         # Clone config/skills/SOUL (or full state when clone_all) from the named source.
@@ -725,6 +764,7 @@ async def set_active_profile_endpoint(body: ProfileActiveUpdate):
     """Set the sticky active profile (mirrors ``hermes profile use``); does not retarget the
     running dashboard, only subsequent CLI commands and gateways."""
     from hermes_cli import profiles as profiles_mod
+    _nf_assert_switch_allowed(body.name)
     with _profile_errors("POST /api/profiles/active failed"):
         # Stats the target, creates the state directory, writes via temp file + replace.
         await run_in_threadpool(profiles_mod.set_active_profile, body.name)

@@ -1332,6 +1332,13 @@ def get_active_profile() -> str:
 def set_active_profile(name: str) -> None:
     """Set the sticky active profile (``default`` = remove the file)."""
     canon = _canon_valid(name)
+    # North Forge tier gate: a Basic-tier drive is pinned to a single edition and
+    # cannot re-point the sticky profile (covers `hermes profile use`, the
+    # dashboard's POST /api/profiles/active, and _retarget_active_profile). No-op
+    # on an un-provisioned or Full-tier drive. NfTierError subclasses ValueError,
+    # which every caller here already handles.
+    from hermes_cli import nf_tier
+    nf_tier.assert_edition_allowed(canon, action="switch to")
     if canon != "default" and not profile_exists(canon):
         raise _missing_profile_error(canon)
     path = _get_active_profile_path()
@@ -1688,6 +1695,10 @@ def resolve_profile_env(profile_name: str) -> str:
     (junction-transparent); only the spelling is preserved.
     """
     canon = _canon_valid(profile_name)
+    # North Forge tier gate (backstop for callers that bypass main._apply_profile_override:
+    # the sudo path, tests, plugins). No-op unless the drive is Basic-tier provisioned.
+    from hermes_cli import nf_tier
+    nf_tier.assert_edition_allowed(canon, action="start in")
     env_home = os.environ.get("HERMES_HOME", "").strip()
     if env_home:
         env_path = Path(env_home)

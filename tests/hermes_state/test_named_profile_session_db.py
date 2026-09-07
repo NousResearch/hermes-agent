@@ -279,7 +279,7 @@ def test_bot_capability_rebuild_stays_on_the_profile_store(homes, monkeypatch):
 
 
 def test_reset_session_agent_stays_on_the_profile_store(homes, monkeypatch):
-    """Sibling rebuild site: ``/new`` and the ``tools.set`` RPC drop the same profile binding."""
+    """The tools.configure session reset must retain the same profile binding."""
     root, profile = homes
     from tui_gateway import server
 

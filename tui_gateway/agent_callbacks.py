@@ -358,14 +358,10 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
 
 
 def _rebuild_session_agent(sid: str, session: dict, **kwargs):
-    """Rebuild a LIVE session's agent on the profile that session belongs to.
+    """Rebuild on the session's profile, transferring its DB ownership without acquiring a second ref.
 
-    ``_make_agent`` resolves prompt/skills/toolsets through ``get_hermes_home()`` and falls back to the
-    process-wide LAUNCH ``state.db`` when handed no handle, so an unscoped in-session rebuild silently moves
-    a named-profile session onto the launch profile: its later turns append to ``~/.hermes/state.db`` under
-    the same session id while the desktop replays the profile store and shows a stale transcript (#104079).
-    The outgoing agent already holds this session's handle — inherit it (same session, same FILE) instead of
-    acquiring a second refcount, and carry ownership across so teardown still releases it exactly once.
+    An unscoped _make_agent defaults to the launch store: named-profile Bot Chat turns then disappear
+    from the profile's replay even though they were successfully written to another database (#104079).
     """
     old_agent = session.get("agent")
     profile_home = session.get("profile_home")

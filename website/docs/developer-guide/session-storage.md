@@ -6,6 +6,22 @@ sessions. This replaces the earlier per-session JSONL file approach.
 
 Source files: `hermes_state.py` (facade) plus the `hermes_state_*.py` siblings (schema, fts, search, compression, portability, gateway, ...)
 
+### Desktop profile isolation and compaction generations
+
+Each named profile stores its transcript in its own `$HERMES_HOME/state.db`,
+including when one `hermes serve` process serves several profiles. In-session
+agent rebuilds (Bot Chat capability refresh and `tools.configure`) must retain
+that session's database handle and bind its profile home during construction.
+Releasing the outgoing agent must not close the handle inherited by its replacement.
+
+In-place compaction archives old rows with `active=0` and inserts the retained
+context as `active=1` rows. A protected message can therefore legitimately appear
+in both generations with identical content and timestamp. Do not delete these
+archive rows as duplicates. Diagnose duplicate *live* writes using `active=1`,
+and check the database's profile as well as the session ID when investigating
+history that appears to revert.
+
+
 
 ## Architecture Overview
 

@@ -667,6 +667,21 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         # replacement agent.client may be a native OpenAI client while provider stays
         # "moa": pop the MoA-internal key ONLY then (the facade consumes it; stripping
         # it there forces a duplicate fan-out). Only the facade exposes ``prepare()`` (#78382).
+        if getattr(agent, "client", None) is None and agent.provider == "moa":
+            # A fallback/restore cycle can leave agent.client as None while provider
+            # stays "moa" (e.g. an aggregator rebuilt through an anthropic/bedrock
+            # fallback that nulled the OpenAI client).  Rebuild the facade here — the
+            # same single construction point the restore path uses.  Without this the
+            # next line crashes the turn with
+            # 'NoneType' object has no attribute 'chat'.  Mirrors #53802.
+            from agent.moa_loop import build_moa_facade
+
+            agent.client = build_moa_facade(agent, agent.model)
+            agent._anthropic_client = None
+            logger.warning(
+                "MoA client was None after a fallback/restore cycle; "
+                "rebuilt the facade for %s", agent.model,
+            )
         _completions = getattr(getattr(agent.client, "chat", None), "completions", None)
         if not callable(getattr(_completions, "prepare", None)):
             api_kwargs.pop("_moa_prepared_request", None)

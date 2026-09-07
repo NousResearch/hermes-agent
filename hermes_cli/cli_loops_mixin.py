@@ -327,15 +327,44 @@ class CLILoopsMixin:
         def load():
             from hermes_cli.goals import GoalManager
             from hermes_cli.config import load_config
+            from agent.executive.services import build_objective_services
+            from agent.executive.knowledge_discovery.factory import (
+                build_evidence_pack_engine,
+            )
 
             def make(sid):
+                # Borrow HermesCLI's SessionDB for the canonical evidence-pack
+                # factory. Ownership and close responsibility remain with
+                # HermesCLI.
+                session_db = getattr(self, "_session_db", None)
+
                 try:
-                    goals_cfg = (load_config() or {}).get("goals") or {}
+                    cfg = load_config() or {}
+                    goals_cfg = cfg.get("goals") or {}
                     max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+                    services = build_objective_services(
+                        session_id=sid,
+                        config=cfg,
+                        storage=session_db,
+                        evidence_pack_engine_factory=build_evidence_pack_engine,
+                    )
                 except Exception:
                     max_turns = 20
-                return GoalManager(session_id=sid, default_max_turns=max_turns)
+                    services = build_objective_services(
+                        session_id=sid,
+                        config=None,
+                        storage=session_db,
+                        evidence_pack_engine_factory=build_evidence_pack_engine,
+                    )
+
+                return GoalManager(
+                    session_id=sid,
+                    default_max_turns=max_turns,
+                    services=services,
+                )
+
             return make
+
         return self._session_bound_manager("_goal_manager", "goal manager", load)
 
     def _get_heartbeat_manager(self):

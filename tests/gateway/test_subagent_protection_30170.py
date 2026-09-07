@@ -239,6 +239,9 @@ class TestBusyHandlerDemotesInterruptForSubagents:
         with patch("gateway.platforms.base.merge_pending_message_event"):
             await runner._handle_active_session_busy_message(event, sk)
 
-        parent.steer.assert_called_once_with("course-correct")
+        parent.steer.assert_called_once()
+        injected = parent.steer.call_args.args[0]
+        assert injected.endswith("course-correct")
+        assert '"chat_id": "123"' in injected
         parent.interrupt.assert_not_called()
 

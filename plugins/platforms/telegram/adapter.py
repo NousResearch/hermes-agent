@@ -3302,6 +3302,15 @@ class TelegramAdapter(BasePlatformAdapter):
                             _send_attempt + 1, wait, safe_send_error)
                         await asyncio.sleep(wait)
                         continue
+                    # Retries exhausted and still flooded. Fail closed the same way a long penalty
+                    # does: raising here handed the caller the platform's own wording instead of the
+                    # canonical result, so the delivery ledger did not recognise the row as a flood
+                    # refusal, armed no redelivery timer, and the reply waited for the next restart.
+                    logger.warning(
+                        "[%s] Telegram flood control on send persisted across %d attempts; failing "
+                        "closed so the delivery ledger owns the wait: %s",
+                        self.name, _send_attempt + 1, safe_send_error)
+                    return _flood_cap_result(wait)
                 raise
 
     async def _retrigger_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]]) -> None:
@@ -3514,6 +3523,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 except Exception as retry_err:
                     safe_retry_error = _redact_telegram_error_text(retry_err)
                     logger.error("[%s] Edit retry failed after flood wait: %s", self.name, safe_retry_error)
+                    retry_wait = getattr(retry_err, "retry_after", None)
+                    if retry_wait is not None or "retry after" in str(retry_err).lower():
+                        # Still flooded after the inline wait, and typically for much longer than the
+                        # first refusal asked for. Fail closed canonically so the ledger arms its
+                        # timer on this delay rather than storing the platform's raw wording, which
+                        # it would read as an ordinary failure and never redeliver.
+                        return _flood_cap_result(
+                            float(retry_wait) if retry_wait is not None else wait)
                     return SendResult(success=False, error=safe_retry_error)
             safe_error = _redact_telegram_error_text(e)
             # Transient network errors must not permanently disable progress-message editing.
@@ -5657,9 +5674,11 @@ class TelegramAdapter(BasePlatformAdapter):
         return False
 
     async def _build_triggered_event(self, msg, update, msg_type: MessageType) -> MessageEvent:
-        """Event for an addressed text/command: trigger text cleaned, replied-to media cached, attribution applied."""
+        """Event for an addressed text/command: trigger text cleaned (sole addressee only), replied-to
+        media cached, attribution applied."""
+        from plugins.platforms.telegram.telegram_context import group_trigger_text
         event = self._build_message_event(msg, msg_type, update_id=update.update_id)
-        event.text = self._clean_bot_trigger_text(event.text)
+        event.text = group_trigger_text(self, msg, event.text)
         await self._cache_replied_media(msg, event)
         return self._apply_telegram_group_observe_attribution(event)
 
@@ -5984,7 +6003,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
         if msg.caption:
-            event.text = self._clean_bot_trigger_text(msg.caption)
+            from plugins.platforms.telegram.telegram_context import group_trigger_text
+            event.text = group_trigger_text(self, msg, msg.caption)
         # Stickers: _handle_sticker overwrites event.text with its vision description, so observe attribution must run after it.
         if msg.sticker:
             await self._handle_sticker(msg, event)
@@ -6281,12 +6301,14 @@ class TelegramAdapter(BasePlatformAdapter):
             is_bot=bool(getattr(user, "is_bot", False)) if user else False)
         reply_to_id, reply_to_text = self._reply_context(message)
         from gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt
+        from plugins.platforms.telegram.telegram_context import group_identity_prompt
         _chat_id_str = str(chat.id)
+        channel_prompt = resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None)
         return MessageEvent(
             text=message.text or "", message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.message_id), platform_update_id=update_id,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
-            channel_prompt=resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None),
+            channel_prompt=group_identity_prompt(self, message, channel_prompt),
             timestamp=message.date)
 
     # -- Message reactions (processing lifecycle) --

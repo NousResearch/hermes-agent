@@ -123,7 +123,7 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
         "run `sqlite3 ... \".recover\"` against the live "
         "state.db, a vulnerable sqlite3 CLI can corrupt it "
         "further\n"
-        "3. Restore from a backup in ~/.hermes/backups/\n"
+        "3. Restore from a backup in {backups_dir}/\n"
         "Then send your message again."
     ),
     "disk": (
@@ -295,7 +295,11 @@ class TurnExplainersMixin:
             )
             if persistence_cause == "corrupt":
                 # Copy-pasteable, so name the real store (profiles / HERMES_HOME do not live under ~/.hermes).
+                from hermes_constants import get_default_hermes_root
                 from hermes_state import _default_db_path
 
                 body = body.replace("{db_path}", str(_default_db_path()))
+                body = body.replace(
+                    "{backups_dir}", str(get_default_hermes_root() / "backups")
+                )
         return _NO_REPLY + body if body else ""

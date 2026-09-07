@@ -186,3 +186,48 @@ def spawn_background_process(
             "output": "", "exit_code": -1,
             "error": _redact_terminal_error_text(f"Failed to start background process: {e}"),
         }, ensure_ascii=False)
+
+
+_YIELDED_NOTE = (
+    "The user sent a message while this command was running, so it was moved to the "
+    "background WITHOUT being killed and is still running. You will be notified when it "
+    "exits (notify_on_complete). Read the user's message and respond to it now; use "
+    "process(action='poll'|'wait'|'log', session_id=...) to check on this command."
+)
+
+
+def yield_to_background_handler(
+    *, command: str, env_type: str, cwd: Optional[str], effective_task_id: str,
+    task_id: Optional[str], session_key: str,
+):
+    """Build the ``yield_handler`` a foreground ``env.execute`` calls when the tool thread is
+    asked to yield (a user message arrived mid-command). Local backend only: the live Popen
+    is adopted by the process registry as a notify-on-complete background session and the
+    partial output is returned to the model right away. Other backends return None (no
+    adoptable host process) and the foreground wait continues."""
+    if env_type != "local":
+        return None
+
+    def _handler(proc, output_so_far: str) -> dict:
+        from tools.process_registry import process_registry
+        session = process_registry.adopt_local(
+            proc, command=command, cwd=cwd, task_id=effective_task_id,
+            owner_task_id=task_id or effective_task_id, session_key=session_key,
+            output_so_far=output_so_far)
+        _stamp_routing_if_gateway(process_registry, session, session_key)
+        logger.info("foreground command yielded to background as %s (pid %s)", session.id, session.pid)
+        return {
+            "output": output_so_far, "returncode": None, "yielded_session_id": session.id, "pid": session.pid,
+        }
+    return _handler
+
+
+def _stamp_routing_if_gateway(process_registry, session, session_key) -> None:
+    """Route the adopted session's completion like a normal notify_on_complete spawn."""
+    from gateway.session_context import async_delivery_supported, get_session_env
+    if not async_delivery_supported():
+        session.notify_on_complete = False
+        return
+    _stamp_gateway_routing(session, get_session_env)
+    if session.watcher_platform:
+        _register_completion_watcher(process_registry, session, session_key)

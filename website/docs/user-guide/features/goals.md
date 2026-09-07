@@ -1,0 +1,293 @@
+---
+sidebar_position: 16
+title: "Persistent Goals"
+description: "Set a standing goal and let Hermes keep working across turns until it's done. Our take on the Ralph loop."
+---
+
+# Persistent Goals (`/goal`)
+
+`/goal` gives Hermes a standing objective that survives across turns. After every turn a lightweight judge model checks whether the goal is satisfied by the assistant's last response. If not, Hermes automatically feeds a continuation prompt back into the same session and keeps working — until the goal is achieved, you pause or clear it, or the turn budget runs out.
+
+It's our take on the **Ralph loop**, directly inspired by [Codex CLI 0.128.0's `/goal`](https://github.com/openai/codex) by Eric Traut (OpenAI). The core idea — keep a goal alive across turns and don't stop until it's achieved — is theirs. The implementation here is independent and adapted to Hermes' architecture.
+
+## When to use it
+
+Use `/goal` for tasks where you want Hermes to iterate on its own without you re-prompting every turn:
+
+- "Fix every lint error in `src/` and verify `ruff check` passes"
+- "Port feature X from repo Y, including tests, and get CI green"
+- "Investigate why session IDs sometimes drift on mid-run compression and write up a report"
+- "Build a small CLI to rename files by their EXIF dates, then test it against the photos/ folder"
+
+Tasks where the agent does one turn and stops don't need `/goal`. Tasks where *you'd otherwise have to say "keep going" three times* are where this shines.
+
+## Goals vs Kanban: which one do I want?
+
+`/goal` and [Kanban](./kanban) both keep Hermes working without you re-prompting, so it's tempting to assume one flows into the other. It doesn't — the boundary is sharp:
+
+- **`/goal` is single-session.** The loop feeds continuation prompts back into *this* conversation until the judge says done. Setting a goal never creates a kanban card, never assigns work to another profile, and never fans out. There is no handoff to the board, implicit or otherwise.
+- **Kanban is a board of many tasks.** Each card is dispatched to its own worker process with its own session. Cards, dependencies, assignees, and handoffs live on the board — not in `/goal`.
+- **The overlap is deliberate, and small.** A kanban card created with `--goal` runs the same Ralph-style continuation engine as `/goal` — but *inside that one card's worker session*. It borrows the engine, not the board. See [Goal-mode cards](./kanban#goal-mode-cards---goal).
+
+| You want | Reach for |
+|---|---|
+| Keep iterating on one task in this chat until it's done | `/goal <text>` |
+| Many independent tasks, with dependencies, handoffs, or multiple profiles | [Kanban](./kanban) — `hermes kanban create …` |
+| One card on the board that should keep iterating until its acceptance criteria are met | A kanban card with `--goal` |
+
+:::note
+If you want work on the board, put it there yourself (`hermes kanban create …`) — `/goal` won't do it for you. The reverse is also true: pausing, resuming, or clearing a goal in this chat never creates, claims, or moves a kanban card.
+:::
+
+## Quick start
+
+```
+/goal Fix every failing test in tests/hermes_cli/ and make sure scripts/run_tests.sh passes for that directory
+```
+
+What you'll see:
+
+1. **Goal accepted** — `⊙ Goal set (20-turn budget): <your goal>`
+2. **Turn 1 runs** — Hermes starts working as if you'd sent the goal as a normal message.
+3. **Judge runs** — after the turn, the judge model decides `done`, `continue`, or `blocked`.
+4. **Loop fires if needed** — if `continue`, you'll see `↻ Continuing toward goal (1/20): <judge's reason>` and Hermes takes the next step automatically.
+5. **Terminates** — eventually you see either `✓ Goal achieved: <reason>` or `⏸ Goal paused — N/20 turns used`.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `/goal <text>` | Set (or replace) the standing goal. Kicks off the first turn immediately so you don't need to send a separate message. |
+| `/goal draft <text>` | Draft a structured completion contract from a plain-language objective, then set it. See [Completion contracts](#completion-contracts). |
+| `/goal show` | Print the active goal's completion contract. |
+| `/goal` or `/goal status` | Show the current goal, its status, and turns used. |
+| `/goal pause` | Stop the auto-continuation loop without clearing the goal. |
+| `/goal resume` | Resume the loop (resets the turn counter back to zero). |
+| `/goal clear` | Drop the goal entirely. |
+| `/goal wait <pid> [reason]` | Park the loop on a background process — it stops re-poking the agent every turn while the process runs, and auto-resumes when it exits. |
+| `/goal unwait` | Drop the wait barrier and resume the loop immediately. |
+| `/goal gate add <command>` | Add a **quality gate**: a shell command that must pass before the goal can be judged done. See [Quality gates](#quality-gates). |
+| `/goal gate` or `/goal gate list` | List the goal's gates and their pass/fail state. |
+| `/goal gate remove <N>` | Remove the Nth gate (1-based). |
+| `/goal gate clear` | Remove all gates. |
+
+The classic CLI, TUI, Desktop, dashboard chat, and messaging gateway use one shared `/goal` command handler. This includes draft/show, inline contracts, wait/unwait, quality gates, and the clear/stop/done aliases. Desktop goal controls use the same handler, too. ACP does not currently advertise or implement `/goal`.
+
+`/goal draft <text>` both creates the goal and starts its first turn, including when drafting is unavailable and Hermes falls back to a free-form goal. `draft` is a whole-word subcommand: `/goal drafting docs` keeps `drafting docs` as the literal objective without calling the draft model.
+
+Messaging platforms retain their access rules: `/goal gate add` requires an explicitly configured gateway admin; listing, removing, and clearing gates remain available for recovery. Rendering and turn scheduling are surface-specific, but command parsing and persisted goal changes are shared.
+
+## Completion contracts
+
+A bare `/goal <text>` works fine, but a *vague* goal makes for vague judging — the judge can only check what you told it to want. Codex's `/goal` guidance makes the same point: a durable objective works best when it names **what done means, how to prove it, what not to break, what's in scope, and when to stop**. Hermes adapts this as an optional **completion contract** layered on top of the existing goal loop.
+
+A contract has five fields, all optional:
+
+| Field | Meaning |
+|---|---|
+| `outcome` | The single end state that must be true when done. |
+| `verification` | The specific test / command / artifact that *proves* the outcome. |
+| `constraints` | What must not change or regress. |
+| `boundaries` | Which files, dirs, tools, or systems are in scope. |
+| `stop_when` | The condition under which Hermes should stop and ask for input. |
+
+When a contract is set, both prompts change: the **continuation prompt** tells the agent to target the verification surface and respect the constraints, and the **judge prompt** decides `done` *only when the verification criterion is met with concrete evidence* (a command result, file excerpt, test output) — not a loose "looks done" claim. This directly tightens the most common `/goal` failure mode (premature completion or endless over-continuation on an underspecified objective).
+
+### Two ways to set a contract
+
+**1. Let Hermes draft it** (recommended — adapted from Codex's "let the agent draft the goal" tip):
+
+```
+/goal draft Migrate the auth service from session cookies to JWT
+```
+
+Hermes expands your one-liner into a full contract via the `goal_judge` auxiliary model, sets it, and shows you the result so you can review or tighten any field. If the aux model is unavailable, it falls back to a plain free-form goal — drafting never blocks setting a goal.
+
+**2. Write it inline** with `field: value` lines:
+
+```
+/goal Migrate auth to JWT
+verify: pytest tests/auth passes
+constraints: keep the /login response shape unchanged
+boundaries: only touch services/auth and its tests
+stop when: a DB schema migration is required
+```
+
+The first non-field line(s) are the goal headline; recognized field prefixes (`verify:`, `verified by:`, `constraints:`, `preserve:`, `boundaries:`, `scope:`, `stop when:`, `blocked:`, …) populate the contract. A plain goal with an incidental colon (`Fix bug: the parser drops commas`) is **not** mangled — only known field prefixes are pulled out.
+
+Use `/goal show` to review the active contract. Contracts persist in `SessionDB.state_meta` alongside the goal, so they survive `/resume`. Old goals from before this feature load unchanged (no contract). Contracts and `/subgoal` criteria compose: subgoals fold into the contract as extra criteria the judge must also satisfy.
+
+## Adding criteria mid-goal: `/subgoal`
+
+While a goal is active you can append extra acceptance criteria with `/subgoal <text>` without resetting the loop. Each call adds one numbered item to the goal's subgoal list; the **continuation prompt** the agent sees on the next turn includes the original goal plus an "Additional criteria the user added mid-loop" block, and the **judge prompt** is rewritten so the verdict must consider every subgoal — the goal isn't marked done until the original objective **and** every subgoal are met.
+
+| Command | What it does |
+|---|---|
+| `/subgoal <text>` | Append a new criterion to the active goal. Requires an active `/goal`. |
+| `/subgoal` (no args) | Show the current numbered subgoal list. |
+| `/subgoal remove <N>` | Remove the Nth subgoal (1-based). |
+| `/subgoal clear` | Drop every subgoal but keep the original goal intact. |
+
+Subgoals are persisted alongside the goal in `SessionDB.state_meta`, so they survive `/resume`. Setting a new `/goal <text>` replaces the goal and clears the subgoal list; `/goal clear` does the same.
+
+Use this when you start a loop ("fix the failing tests") and notice partway through that you also want it to "and add a regression test for the bug you just patched" — `/subgoal add a regression test` tightens the success criteria without breaking the running loop.
+
+## Quality gates
+
+A completion contract makes the judge stricter, but the judge is still an LLM reading prose. A **quality gate** is stronger: a deterministic shell command that must exit 0 before the goal can complete at all. Inspired by Prime-Agent's bounded autonomous mode (`--autonomous-gate`).
+
+```
+/goal Fix the flaky session tests
+/goal gate add scripts/run_tests.sh tests/hermes_cli/test_goals.py
+```
+
+How it works, each turn:
+
+1. **Gates run before the judge.** If any gate fails, the judge is *not called* — a red gate is deterministic evidence the goal isn't done. The gate's exit code and output tail (last ~3 KB) become the continuation prompt, so the agent iterates against the actual failure instead of a vibe.
+2. **All gates pass → normal judging.** The LLM judge then decides done/blocked/continue/wait exactly as before.
+3. **Unchanged workspace → no re-run.** If a gate failed and nothing changed in the workspace since (tracked via a git fingerprint of HEAD + working-tree status), the gate is not re-run — the recorded failure is replayed and the attempt count advances. A stuck agent can't burn wall-clock re-running an identical red suite. Outside a git repo, gates simply always re-run.
+4. **Retries are bounded.** Each gate defaults to 3 retries and a 5-minute timeout. When a gate exhausts its retries the goal auto-pauses (like the turn budget) with a message telling you to fix it manually, remove the gate, or `/goal resume`.
+
+Gates persist with the goal in `SessionDB.state_meta` (they survive `/resume` and context compression), and gate management (`/goal gate …`) is safe mid-run on the gateway — gates only run at turn boundary.
+
+Gates and contracts compose: use a contract to shape *what the agent aims for*, and gates to make *"done" mechanically checkable*. When both are set, gates run first.
+
+## Parking on a background process: automatic, with a manual override
+
+Some goals are gated on something that takes minutes and runs on its own — CI on a pushed PR, a long build, a test matrix, a deploy, a rate-limit cooldown. Without help, the goal loop would re-poke the agent every turn into "is it done yet?" busy-work while it waits.
+
+**This is handled automatically.** Every turn, the judge is shown the agent's own live background processes (the `terminal(background=true)` registry entries this session spawned — pid, session id, command, uptime, recent output, and any `watch_patterns` / `notify_on_complete` trigger; processes started by delegated subagents are not shown, so a fan-out parent is never parked on a worker's poller) alongside the goal and the agent's response. When the agent's progress is genuinely gated on one of them, the judge returns a **`wait`** verdict instead of `continue`, and the loop **parks**: the next turns are skipped (no judge call, no continuation, no turn consumed) until the wait is satisfied — then it resumes normally with the result in hand. A pid/session wait is capped at 30 minutes; a process that never exits (a watcher, a forgotten poller) cannot park the goal indefinitely. The judge can also park on a **time** basis (`wait_for_seconds`) for backoff/cooldown waits. `/goal status` shows `⏳ Goal (parked …)` while parked.
+
+The judge picks the right kind of wait from the process's own signal:
+
+- **`wait_on_session <id>`** — releases when the process's *own trigger* fires: it exits, **or** (if it was started with `watch_patterns`) its pattern matches. This is the one for a long-lived watcher / server / poller that signals **mid-run** (e.g. a build process that prints `BUILD SUCCESSFUL` and keeps running, or a `notify_on_complete` watcher) and may never exit on its own.
+- **`wait_on_pid <pid>`** — releases on process exit only.
+- **`wait_for_seconds <n>`** — releases after a fixed delay.
+
+You don't type anything for this — it's the judge's decision, made from the process context the loop hands it. The manual commands exist as an override:
+
+| Command | What it does |
+|---|---|
+| `/goal wait <pid> [reason]` | Manually park the loop until the process with that PID exits. |
+| `/goal unwait` | Clear any wait barrier (judge- or manually-set) and resume immediately. |
+
+The barrier (pid- or time-based) is persisted with the goal in `SessionDB.state_meta`, so it survives `/resume`. `/goal pause`, `/goal resume`, and `/goal clear` all drop it. If the PID is already dead when the barrier is set (or dies while parked), or the time deadline passes, the barrier clears on the next check — a stale barrier can never wedge the loop.
+
+Typical flow: the agent pushes a PR, starts a CI watcher with `terminal(background=true, notify_on_complete=true)`, and reports "watching CI." The judge sees the watcher process still running, returns `wait` on its pid, and the loop goes quiet — then picks back up the instant CI finishes and judges the goal against the actual result.
+
+## Behavior details
+
+### The judge
+
+After every turn, Hermes calls an auxiliary model with:
+
+- The standing goal text
+- The agent's most recent final response (last ~4 KB of text)
+- A system prompt telling the judge to reply with strict one-line JSON: `{"verdict": "done" | "blocked" | "continue" | "wait", "reason": "<one-sentence rationale>"}` (wait verdicts add `wait_on_session` / `wait_on_pid` / `wait_for_seconds`; the legacy `{"done": <bool>, "reason": "..."}` shape is still accepted)
+
+The judge is deliberately conservative: it marks a goal `done` only when the response **explicitly** confirms the goal is complete, when the final deliverable is clearly produced. A goal the agent explains is **unachievable** (impossible, out of scope, needs user input) gets a `blocked` verdict instead — never `done`: the goal **pauses** with the judge's reason (`🚫 Goal judged unachievable — paused`), so you can re-scope it with `/goal <text>` or override with `/goal resume` rather than burning budget or having an impossible task waved through as complete.
+
+### Fail-open semantics
+
+If the judge errors (network blip, malformed response, unavailable aux client), Hermes treats the verdict as `continue` — a broken judge never wedges progress. The **turn budget** is the real backstop.
+
+### Turn budget
+
+Default is 20 continuation turns (`goals.max_turns` in `config.yaml`). When the budget is hit, Hermes auto-pauses and tells you exactly how to proceed:
+
+```
+⏸ Goal paused — 20/20 turns used. Use /goal resume to keep going, or /goal clear to stop.
+```
+
+`/goal resume` resets the counter to zero, so you can keep going in measured chunks.
+
+### User messages always preempt
+
+Any real message you send while a goal is active takes priority over the continuation loop. On the CLI your message lands in `_pending_input` ahead of the queued continuation; on the gateway it goes through the adapter FIFO the same way. The judge runs again after your turn — so if your message happens to complete the goal, the judge will catch it and stop.
+
+### Mid-run safety (gateway)
+
+While an agent is already running, `/goal status`, `/goal pause`, `/goal clear`, `/goal wait`, and `/goal unwait` are safe to run — they only touch control-plane state and don't interrupt the current turn. Setting a **new** goal mid-run (`/goal <new text>`) is rejected with a message telling you to `/stop` first, so the old continuation can't race the new one.
+
+### Persistence
+
+Goal state lives in `SessionDB.state_meta` keyed by `goal:<session_id>`. That means `/resume` picks up right where you left off — set a goal, close your laptop, come back tomorrow, `/resume`, and the goal is still standing exactly as you left it (active, paused, or done).
+
+### Prompt cache
+
+The continuation prompt is a plain user-role message appended to history. It does **not** mutate the system prompt, swap toolsets, or touch the conversation in any way that invalidates Hermes' prompt cache. Running a 20-turn goal costs the same cache-wise as 20 turns of normal conversation.
+
+## Configuration
+
+Add to `~/.hermes/config.yaml`:
+
+```yaml
+goals:
+  # Max continuation turns before Hermes auto-pauses and asks you to
+  # /goal resume. Default 20. Lower this if you want tighter loops;
+  # raise it for long-running refactors.
+  max_turns: 20
+```
+
+### Choosing the judge model
+
+The judge uses the `goal_judge` auxiliary task. By default it resolves to your main model (see [Auxiliary Models](/user-guide/configuration#auxiliary-models)). If you want to route the judge to a cheap fast model to keep costs down, add an override:
+
+```yaml
+auxiliary:
+  goal_judge:
+    provider: openrouter
+    model: google/gemini-3-flash-preview
+```
+
+The judge call is small (~200 output tokens) and runs once per turn, so a cheap fast model is usually the right call.
+
+## Example walkthrough
+
+```
+You: /goal Create four files /tmp/note_{1..4}.txt, one per turn, each containing its number as text
+
+  ⊙ Goal set (20-turn budget): Create four files /tmp/note_{1..4}.txt, one per turn, each containing its number as text
+
+Hermes: Creating /tmp/note_1.txt now.
+  💻 echo "1" > /tmp/note_1.txt   (0.1s)
+  I've created /tmp/note_1.txt with the content "1". I'll continue with the remaining files on the next turn as you specified.
+
+  ↻ Continuing toward goal (1/20): Only 1 of 4 files has been created; 3 files remain.
+
+Hermes: [Continuing toward your standing goal]
+  💻 echo "2" > /tmp/note_2.txt   (0.1s)
+  Created /tmp/note_2.txt. Two more to go.
+
+  ↻ Continuing toward goal (2/20): 2 of 4 files created; 2 remain.
+
+Hermes: [Continuing toward your standing goal]
+  💻 echo "3" > /tmp/note_3.txt   (0.1s)
+  Created /tmp/note_3.txt.
+
+  ↻ Continuing toward goal (3/20): 3 of 4 files created; 1 remains.
+
+Hermes: [Continuing toward your standing goal]
+  💻 echo "4" > /tmp/note_4.txt   (0.1s)
+  All four files have been created: /tmp/note_1.txt through /tmp/note_4.txt, each containing its number.
+
+  ✓ Goal achieved: All four files were created with the specified content, completing the goal.
+
+You: _
+```
+
+Four turns, one `/goal` invocation, zero "keep going" prompts from you.
+
+## When the judge gets it wrong
+
+No judge is perfect. Two failure modes to watch for:
+
+**False negative — judge says continue when the goal is actually done.** The turn budget catches this. You'll see `⏸ Goal paused` and can `/goal clear` or just send a new message.
+
+**False positive — judge says done when work remains.** You'll see `✓ Goal achieved` but you know better. Send a follow-up message to continue, or re-set the goal more precisely: `/goal <more specific text>`. The judge's system prompt is deliberately conservative to make false positives rarer than false negatives.
+
+If you find a judge verdict unconvincing, the reason text in the `↻ Continuing toward goal` or `✓ Goal achieved` line tells you exactly what the judge saw. That's usually enough to diagnose whether the goal text was ambiguous or the model's response was.
+
+## Attribution
+
+`/goal` is Hermes' take on the **Ralph loop** pattern. The user-facing design — keep a goal alive across turns, don't stop until it's achieved, with create/pause/resume/clear controls — was popularised and shipped in [Codex CLI 0.128.0](https://github.com/openai/codex) by Eric Traut on OpenAI's Codex team. Our implementation is independent (central `CommandDef` registry, `SessionDB.state_meta` persistence, auxiliary-client judge, adapter-FIFO continuation on the gateway side) but the idea is theirs. Credit where credit's due.

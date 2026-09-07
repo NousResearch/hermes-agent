@@ -1,0 +1,103 @@
+"""Tests for the document context note prepended to user turns with attachments.
+
+A user who attaches a PDF / DOCX in chat used to see the agent treat it as
+"unreadable" because the context note told the model to "Ask the user what
+they'd like you to do with it" — steering it away from extracting the text it
+is perfectly capable of reading. These tests pin the contract:
+
+- text documents: note confirms the (adapter-)inlined content + records path.
+- binary documents (PDF/DOCX/…): note tells the agent to extract the text
+  itself and never tells it to punt back to the user.
+"""
+
+import importlib
+
+import pytest
+
+from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms.base import MessageEvent, MessageType
+from gateway.run import GatewayRunner
+from gateway.session import SessionSource
+
+gateway_run = importlib.import_module("gateway.run")
+_build_document_context_note = gateway_run._build_document_context_note
+
+
+class TestTextDocumentNote:
+    @pytest.mark.parametrize("mtype", ["text/plain", "text/markdown", "text/csv"])
+    def test_text_note_mentions_included_content_and_path(self, mtype):
+        note = _build_document_context_note("notes.txt", "/cache/doc_notes.txt", mtype)
+        assert "text document" in note
+        assert "notes.txt" in note
+        assert "/cache/doc_notes.txt" in note
+        assert "included below" in note
+
+    def test_non_inlined_text_note_tells_agent_to_read_cached_path(self):
+        note = _build_document_context_note(
+            "notes.txt",
+            "/cache/doc_notes.txt",
+            "text/plain",
+            content_inlined=False,
+        )
+        assert "included below" not in note
+        assert "/cache/doc_notes.txt" in note
+        assert "read" in note.lower()
+
+    @pytest.mark.asyncio
+    async def test_event_contract_marks_non_inlined_text_and_preserves_path(self):
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")}
+        )
+        runner.adapters = {}
+        runner._pending_native_image_paths_by_session = {}
+        runner._session_model_overrides = {}
+        runner._session_reasoning_overrides = {}
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="text-document",
+            chat_type="dm",
+            user_id="42",
+            user_name="Tester",
+        )
+        event = MessageEvent(
+            text="summarize this",
+            message_type=MessageType.DOCUMENT,
+            source=source,
+            media_urls=["/cache/notes.txt"],
+            media_types=["text/plain"],
+            media_text_inlined=[False],
+        )
+
+        prepared = await runner._prepare_inbound_message_text(
+            event=event,
+            source=source,
+            history=[],
+        )
+
+        assert prepared is not None
+        assert "/cache/notes.txt" in prepared
+        assert "included below" not in prepared
+        assert "read the cached file" in prepared.lower()
+
+
+class TestBinaryDocumentNote:
+    @pytest.mark.parametrize(
+        "mtype",
+        [
+            "application/pdf",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/octet-stream",
+        ],
+    )
+    def test_binary_note_guides_extraction(self, mtype):
+        note = _build_document_context_note("contract.pdf", "/cache/doc_contract.pdf", mtype)
+        # Records the path so the agent can open it.
+        assert "/cache/doc_contract.pdf" in note
+        # Tells the agent to read it by extracting the text...
+        assert "extract" in note.lower()
+        # ...and does NOT steer it into punting back to the user (the bug).
+        assert "ask the user" not in note.lower()
+        assert "paste" in note.lower()
+

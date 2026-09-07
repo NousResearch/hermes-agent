@@ -1,0 +1,863 @@
+---
+sidebar_position: 1
+title: "Messaging Gateway"
+description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Yuanbao, Microsoft Teams, LINE, Raft, Webhooks, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
+---
+
+# Messaging Gateway
+
+Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Feishu/Lark, WeCom, Weixin, BlueBubbles (iMessage), QQ, Yuanbao, Microsoft Teams, LINE, ntfy, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
+
+For the full voice feature set — including CLI microphone mode, spoken replies in messaging, and Discord voice-channel conversations — see [Voice Mode](/user-guide/features/voice-mode) and [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes).
+
+:::tip
+Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/integrations/nous-portal) subscription bundles all of them.
+:::
+
+## Platform Comparison
+
+| Platform | Voice | Images | Files | Threads | Reactions | Typing | Streaming |
+|----------|:-----:|:------:|:-----:|:-------:|:---------:|:------:|:---------:|
+| Telegram | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
+| Discord | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Slack | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Google Chat | — | ✅ | ✅ | ✅ | — | ✅ | — |
+| WhatsApp | — | ✅ | ✅ | — | — | ✅ | ✅ |
+| WhatsApp Cloud API | ✅ | ✅ | ✅ | — | — | ✅ | — |
+| Signal | — | ✅ | ✅ | — | — | ✅ | — |
+| SMS | — | — | — | — | — | — | — |
+| Email | — | ✅ | ✅ | ✅ | — | — | — |
+| Home Assistant | — | — | — | — | — | — | — |
+| Mattermost | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
+| Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| DingTalk | — | ✅ | ✅ | — | ✅ | — | ✅ |
+| Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| WeCom | ✅ | ✅ | ✅ | — | — | — | — |
+| WeCom Callback | — | — | — | — | — | — | — |
+| Weixin | ✅ | ✅ | ✅ | — | — | ✅ | — |
+| BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
+| Photon (iMessage) | ✅ | ✅ | ✅ | — | ✅ | ✅ | — |
+| QQ | ✅ | ✅ | ✅ | — | — | ✅ | — |
+| Yuanbao | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
+| Microsoft Teams | — | ✅ | — | ✅ | — | ✅ | — |
+| LINE | — | ✅ | ✅ | — | — | ✅ | — |
+| ntfy | — | — | — | — | — | — | — |
+| Raft | — | — | — | — | — | — | — |
+| IRC | — | — | — | — | — | — | — |
+| Buzz | — | ✅ | — | ✅ | — | — | — |
+| SimpleX | ✅ | ✅ | ✅ | — | — | ✅ | — |
+
+**Voice** = TTS audio replies and/or voice message transcription. **Images** = send/receive images. **Files** = send/receive file attachments. **Threads** = threaded conversations. **Reactions** = emoji reactions on messages. **Typing** = typing indicator while processing. **Streaming** = progressive message updates via editing.
+
+:::note Hermes Relay
+[Hermes Relay](/user-guide/messaging/relay) (experimental) is not a chat platform itself — it is a connector system that fronts platforms like Discord, Telegram, Slack, and WhatsApp through an external connector that owns the platform credentials. Capabilities (media, native approval/clarify prompts, reactions, threads, typing, streaming) are negotiated per connector at handshake rather than fixed in the table above.
+:::
+
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph Gateway["Hermes Gateway"]
+        subgraph Adapters["Platform adapters"]
+            tg[Telegram]
+            dc[Discord]
+            wa[WhatsApp]
+            sl[Slack]
+            gc[Google Chat]
+            sig[Signal]
+            sms[SMS]
+            em[Email]
+            ha[Home Assistant]
+            mm[Mattermost]
+            mx[Matrix]
+            dt[DingTalk]
+    fs[Feishu/Lark]
+    wc[WeCom]
+    wcb[WeCom Callback]
+    wx[Weixin]
+    bb[BlueBubbles]
+    qq[QQ]
+    yb[Yuanbao]
+    ms[Microsoft Teams]
+    api["API Server<br/>(OpenAI-compatible)"]
+    wh[Webhooks]
+        end
+
+        store["Session store<br/>per chat"]
+        agent["AIAgent<br/>run_agent.py"]
+        cron["Cron scheduler<br/>ticks every 60s"]
+    end
+
+    tg --> store
+    dc --> store
+    wa --> store
+    sl --> store
+    gc --> store
+    sig --> store
+    sms --> store
+    em --> store
+    ha --> store
+    mm --> store
+    mx --> store
+    dt --> store
+    fs --> store
+    wc --> store
+    wcb --> store
+    wx --> store
+    bb --> store
+    qq --> store
+    yb --> store
+    ms --> store
+    api --> store
+    wh --> store
+    store --> agent
+    cron --> store
+```
+
+Each platform adapter receives messages, routes them through a per-chat session store, and dispatches them to the AIAgent for processing. The gateway also runs the cron scheduler, ticking every 60 seconds to execute any due jobs.
+
+## Intentional Silence Tokens
+
+For group chats, hooks, and automation flows, Hermes supports explicit silence tokens. If the agent's final response is exactly one supported token, the gateway suppresses outbound delivery and sends nothing to the chat.
+
+Supported tokens:
+
+- `[SILENT]`
+- `SILENT`
+- `NO_REPLY`
+- `NO REPLY`
+
+Whitespace and case are normalized, but the whole final response must be the token. A sentence like "Use `[SILENT]` when nothing changed" is delivered normally.
+
+Silence is a delivery decision only. Hermes keeps the assistant silence turn in the session transcript, so the conversation still alternates normally:
+
+```text
+user: side-channel chatter
+assistant: [SILENT]   # stored, not delivered
+user: next message
+```
+
+Failed turns still surface as errors; Hermes does not hide failures just because the text resembles a silence token.
+
+## Quick Setup
+
+The easiest way to configure messaging platforms is the interactive wizard:
+
+```bash
+hermes gateway setup        # Interactive setup for all messaging platforms
+```
+
+This walks you through configuring each platform with arrow-key selection, shows which platforms are already configured, and offers to start/restart the gateway when done.
+
+## Gateway Commands
+
+```bash
+hermes gateway              # Run in foreground
+hermes gateway setup        # Configure messaging platforms interactively
+hermes gateway install      # Install as a user service (Linux) / launchd service (macOS)
+sudo hermes gateway install --system   # Linux only: install a boot-time system service
+hermes gateway start        # Start the default service
+hermes gateway stop         # Stop the default service
+hermes gateway status       # Check default service status
+hermes gateway status --system         # Linux only: inspect the system service explicitly
+```
+
+### Optional Linux event-loop watchdog
+
+A systemd-managed gateway can opt into process recovery when Python's asyncio
+event loop stops receiving scheduling time. This covers whole-process stalls
+that also prevent platform-specific liveness tasks from running:
+
+```yaml title="~/.hermes/config.yaml"
+gateway:
+  systemd_watchdog_seconds: 120
+```
+
+Regenerate the service unit after changing this setting:
+
+```bash
+hermes gateway install --force
+```
+
+A positive value makes the generated unit use `Type=notify`,
+`NotifyAccess=main`, and the matching `WatchdogSec`. Hermes sends heartbeats
+only while its event loop is making timely progress; systemd restarts the
+process when they stop. The default `0` keeps the existing `Type=simple`
+behavior. This setting is Linux/systemd-only and does not treat an ordinary
+platform network disconnect as an event-loop failure.
+
+## Chat Commands (Inside Messaging)
+
+| Command | Description |
+|---------|-------------|
+| `/new` or `/reset` | Start a fresh conversation |
+| `/model [provider:model]` | Show or change the model (supports `provider:model` syntax) |
+| `/personality [name]` | Set a personality (`none` to reset) |
+| `/retry` | Retry the last message |
+| `/undo` | Remove the last exchange |
+| `/status` | Show session info |
+| `/whoami` | Show your slash command access on this scope (admin / user / unrestricted) |
+| `/stop` | Stop the running agent |
+| `/approve` | Approve a pending dangerous command |
+| `/deny` | Reject a pending dangerous command |
+| `/sethome` | Set this chat as the home channel |
+| `/compress` | Manually compress conversation context |
+| `/title [name]` | Set or show the session title |
+| `/resume [name]` | Resume a previously named session |
+| `/sessions [all] [search <query>]` | List previous sessions; `search <query>` filters by title or id |
+| `/usage` | Show token usage for this session (`/usage reset [--force]` redeems a banked Codex limit reset) |
+| `/insights [days]` | Show usage insights and analytics |
+| `/reasoning [level\|show\|hide]` | Change reasoning effort or toggle reasoning display |
+| `/voice [on\|off\|tts\|join\|leave\|status]` | Control messaging voice replies and Discord voice-channel behavior |
+| `/rollback [number]` | List or restore filesystem checkpoints |
+| `/bg <prompt>` | Run a prompt in a separate background session |
+| `/btw <question>` | Ask a side question about the current conversation without interrupting it |
+| `/reload-mcp` | Reload MCP servers from config |
+| `/update` | Update Hermes Agent to the latest version |
+| `/help` | Show available commands |
+| `/<skill-name>` | Invoke any installed skill |
+
+## Session Management
+
+### Session Persistence
+
+Sessions persist across messages until they reset. The agent remembers your conversation context.
+
+### Finding Past Sessions (`/sessions`)
+
+`/sessions` lists your previous sessions for the current chat — including the one you're in now, marked `(current)` — and `/sessions <name>` resumes one (shorthand for `/resume`). When the list grows long, `/sessions search <query>` (alias `find`) filters by title or session-id match, ordered by most recently active. Cross-origin listing with `/sessions all` is admin-only — regular users get a notice explaining the list stayed chat-scoped, and only ever see sessions from their own chat origin.
+
+### Persistent `/model` Overrides
+
+A `/model` switch in a gateway chat applies to that session and now **survives gateway restarts**: the model/provider choice is persisted to the session store and rehydrated on first use after a restart (credentials are re-resolved at load time and never written to disk). `/new` (or `/reset`) clears the override, and `/model <name> --global` writes it through to `config.yaml` instead. `/model <name> --once` applies for a single turn only.
+
+### Delivery Reliability
+
+Final agent responses are recorded in a durable **delivery ledger**
+(`state.db`) around each platform send. If the gateway crashes or restarts
+between producing a response and the platform confirming receipt, the next
+boot redelivers the stored response instead of losing it — or re-running the
+whole turn.
+
+Semantics are honest at-least-once:
+
+- A response whose send **never started** is redelivered as-is.
+- A response that was **mid-send** when the gateway died (the platform may or
+  may not have received it) is redelivered with a visible
+  "♻️ Recovered reply — … may be a duplicate" prefix. Ambiguity is labeled,
+  never silently resent.
+- A final send refused by **flood control** (such as Telegram rate limits) is retried automatically
+  after the recorded penalty expires, without requiring a reconnect or restart.
+  A restart during the penalty adopts the stored reply without spending a retry
+  attempt or re-running the agent. Retries retain the original bot profile, chat
+  and thread. A rate-limit recovery prefix warns that earlier chunks may already
+  have arrived; the ledger cannot infer partial delivery from message length.
+- Redelivery is bounded: 3 attempts, 24-hour freshness, then the row is
+  abandoned. Delivered rows are pruned after 7 days.
+
+Disable with `gateway.delivery_ledger: false` in `config.yaml` (restores the
+old behavior: in-flight responses are lost on crash).
+
+### Reset Policies
+
+**By default sessions never auto-reset** — context lives until you `/reset`
+manually or context compression kicks in. If you want automatic resets, opt in
+with the `session_reset` section in `~/.hermes/config.yaml`:
+
+```yaml
+session_reset:
+  mode: idle        # "idle", "daily", "both", or "none" (default)
+  idle_minutes: 1440  # for idle/both: minutes of inactivity before reset
+  at_hour: 4          # for daily/both: hour of day (0-23, local time)
+```
+
+| Mode | Description |
+|------|-------------|
+| `none` | Never auto-reset (default) |
+| `daily` | Reset at a specific hour each day |
+| `idle` | Reset after N minutes of inactivity |
+| `both` | Whichever triggers first |
+
+A live background process (started with `terminal(background=true)`) normally
+protects its session from resetting so output isn't lost. To stop a forgotten
+process — say a preview server — from pinning a session open forever, a
+background process older than `bg_process_max_age_hours` (default **24**) no
+longer blocks reset. The process is **not** killed, only ignored by the reset
+guard. Set it to `0` to disable the cutoff (any live process blocks reset, the
+old behavior), or raise it if you run legitimate multi-day jobs whose liveness
+should keep the conversation open.
+
+Configure per-platform overrides in `~/.hermes/gateway.json`:
+
+```json
+{
+  "reset_by_platform": {
+    "telegram": { "mode": "idle", "idle_minutes": 240 },
+    "discord": { "mode": "idle", "idle_minutes": 60 }
+  }
+}
+```
+
+## Per-Channel Model & System Prompt Overrides
+
+Different channels can run different models and personas from a **single gateway** — e.g. a cheap fast model in `#daily` and a frontier model with a specialist prompt in `#dev`. Configure `channel_overrides` under the platform in `~/.hermes/gateway-config.yaml`:
+
+```yaml
+platforms:
+  discord:
+    enabled: true
+    channel_overrides:
+      "123456789012345678":        # channel/thread id
+        model: anthropic/claude-sonnet-4.6
+        provider: anthropic
+        system_prompt: "You are the #dev channel code-review specialist."
+      "987654321098765432":
+        model: openai/gpt-5-mini
+```
+
+Details:
+
+- All three keys are optional — set only `model`, only `system_prompt`, or any combination. Unset fields fall back to the global defaults.
+- Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
+- Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
+- The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
+
+## Security
+
+**By default, the gateway denies all users who are not in an allowlist or paired via DM.** This is the safe default for a bot with terminal access.
+
+```bash
+# Restrict to specific users (recommended):
+TELEGRAM_ALLOWED_USERS=123456789,987654321
+DISCORD_ALLOWED_USERS=123456789012345678
+SIGNAL_ALLOWED_USERS=+155****4567,+155****6543
+SMS_ALLOWED_USERS=+155****4567,+155****6543
+EMAIL_ALLOWED_USERS=trusted@example.com,colleague@work.com
+MATTERMOST_ALLOWED_USERS=3uo8dkh1p7g1mfk49ear5fzs5c
+MATRIX_ALLOWED_USERS=@alice:matrix.org
+DINGTALK_ALLOWED_USERS=user-id-1
+FEISHU_ALLOWED_USERS=ou_xxxxxxxx,ou_yyyyyyyy
+WECOM_ALLOWED_USERS=user-id-1,user-id-2
+WECOM_CALLBACK_ALLOWED_USERS=user-id-1,user-id-2
+TEAMS_ALLOWED_USERS=aad-object-id-1,aad-object-id-2
+
+# Or allow
+GATEWAY_ALLOWED_USERS=123456789,987654321
+
+# Or explicitly allow all users (NOT recommended for bots with terminal access):
+GATEWAY_ALLOW_ALL_USERS=true
+```
+
+### DM Pairing (Alternative to Allowlists)
+
+Instead of manually configuring user IDs, unknown users receive a one-time pairing code when they DM the bot. Email is the exception: unknown email senders are ignored unless email pairing is explicitly enabled.
+
+```bash
+# The user sees: "Pairing code: XKGH5N7P"
+# You approve them with:
+hermes pairing approve telegram XKGH5N7P
+
+# Other pairing commands:
+hermes pairing list          # View pending + approved users
+hermes pairing revoke telegram 123456789  # Remove access
+```
+
+Pairing codes expire after 1 hour, are rate-limited, and use cryptographic randomness.
+
+### Admins vs Regular Users
+
+Allowlists answer "can this person reach the bot at all?" The **admin / user split** answers "now that they're in, what are they allowed to do?"
+
+Every allowed user falls into one of two tiers per scope (DM vs group/channel):
+
+- **Admin** — full access. Can run every registered slash command (built-in + plugin) and use every gated capability.
+- **Regular user** — restricted access. Can chat with the agent normally, but can only run the slash commands you explicitly enable. The always-allowed floor is `/help` and `/whoami`.
+
+The tiers are configured per platform and per scope. DM admin status does not imply group/channel admin status — each scope has its own admin list.
+
+**What the tiers gate today:** slash commands. The split runs through the live command registry, so it covers built-ins and plugin-registered commands without per-feature wiring. Plain chat is not affected — non-admins can still talk to the agent.
+
+**What may be gated in the future:** more capability surfaces (tool access, model switching, expensive operations) will hang off the same admin / user distinction as we add them. Configuring the split now means those future restrictions land cleanly without you having to re-model who's an admin.
+
+#### Configuration
+
+```yaml
+gateway:
+  platforms:
+    discord:
+      extra:
+        allow_from: ["111", "222", "333"]
+        allow_admin_from: ["111"]                    # admins → all slash commands
+        user_allowed_commands: [status, model]       # what non-admins may run
+        # Optional: separate group/channel scope
+        group_allow_admin_from: ["111"]
+        group_user_allowed_commands: [status]
+```
+
+**Backward compat:** if `allow_admin_from` is not set for a scope, the tier split is disabled for that scope and every allowed user has full access. Existing installs keep working with no changes — opt in when you want the distinction.
+
+#### Inspecting your access
+
+Use `/whoami` from any platform to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run. See the [Telegram](/user-guide/messaging/telegram#slash-command-access-control) and [Discord](/user-guide/messaging/discord#slash-command-access-control) pages for platform-specific examples.
+
+## Redirecting the Agent
+
+Send a message while the agent is working to correct the active turn:
+
+- **Model generation restarts with context** — reasoning already shown and visible partial text are retained as an ordinary assistant checkpoint
+- **Completed work stays available** — prior tool calls and results remain in the turn
+- **Running tools finish safely** — the correction is applied at the next tool-result boundary instead of killing the tool
+- **`/stop` remains a hard stop** — use it to cancel the active turn and foreground work
+
+### Queue vs interrupt vs steer (busy-input mode)
+
+By default, messaging a busy agent redirects its active turn (a running foreground terminal command is moved to the background rather than killed, so your message is read immediately). Two other modes are available:
+
+- `queue` — follow-up messages wait and run as the next turn after the current task finishes.
+- `steer` — follow-up messages are injected into the current run via `/steer`, arriving at the agent after the next tool call. No interrupt, no new turn. Falls back to `queue` behavior if the agent hasn't started yet.
+
+```yaml
+display:
+  busy_input_mode: steer   # or queue, or interrupt (default)
+  busy_ack_enabled: true   # set to false to suppress the ⚡/⏳/⏩ chat reply entirely
+```
+
+The first time you message a busy agent on any platform, Hermes appends a one-line reminder to the busy-ack explaining the knob (`"💡 First-time tip — …"`). The reminder fires once per install — a flag under `onboarding.seen.busy_input_prompt` latches it. Delete that key to see the tip again.
+
+If you find the busy acknowledgment noisy, set `display.busy_ack_enabled: false`. Input handling is unchanged; only the confirmation message is hidden.
+
+## Clarify Questions (Multi-Select)
+
+When the agent uses the `clarify` tool to ask you a question, the gateway renders the choices as a numbered prompt (or native buttons on platforms that support them). Clarify supports **multi-select** questions too — the agent can let you pick several options at once:
+
+- **Messaging platforms** — the prompt says "Multiple selections allowed"; reply with the numbers separated by commas or spaces (e.g. `1, 3`), the option text, or your own free-form answer.
+- **Classic CLI / TUI** — multi-select renders as checkboxes: **Space** toggles an option, **Enter** submits the selection.
+
+Single-select prompts behave as before: pick one option by number, button, or text, or type your own answer via the "Other" path.
+
+## Tool Progress Notifications
+
+Control how much tool activity is displayed in `~/.hermes/config.yaml`:
+
+```yaml
+display:
+  tool_progress: all    # off | new | all | verbose | log
+  tool_progress_command: false  # set to true to enable /verbose in messaging
+  # How progress is grouped on platforms that support message editing:
+  #   accumulate (default) — edit one bubble in place as tools run
+  #   separate             — send one message per tool (pre-v0.9 style; noisier)
+  # Only applies where tool_progress is already enabled.
+  tool_progress_grouping: accumulate   # accumulate | separate
+```
+
+### `log` mode — audit file instead of chat messages
+
+Setting `display.tool_progress: log` sends **no** progress bubbles to chat. Instead, each tool call is appended as a line to `~/.hermes/logs/tool_calls.log` — a rotating audit file (5 MB × 3 backups) run through the same secret-redacting formatter as regular logs, so credentials never land on disk. Use it when you want a full tool-call trail without any chat noise.
+
+### Configurable status phrases
+
+Long-running gateway status lines ("still working…"-style heartbeats) draw from a phrase catalog. Built-in defaults ship in `gateway/assets/status_phrases.yaml`; you can add your own with profile-portable files under `HERMES_HOME`:
+
+- `~/.hermes/status_phrases.yaml` or any `*.yaml` in `~/.hermes/status_phrases/` (conventional paths, auto-loaded), or
+- point config at a relative path:
+
+```yaml
+display:
+  status_phrases:
+    path: status_phrases/whatsapp.yaml  # relative to HERMES_HOME
+    mode: append                        # append (default) or replace
+```
+
+Phrase files map a surface (`status`, `generic`) to a list of strings (max 80 phrases per surface, 160 chars each). Absolute paths and `..` escapes are ignored so config stays profile-portable. Only your configured phrase strings are used — raw tool arguments, commands, and reasoning text are never interpolated into a status phrase.
+
+### Message timestamps in model context
+
+Off by default. When enabled, Hermes prepends a human-readable timestamp
+(e.g. `[Tue 2026-04-28 13:40:53 CEST]`) onto each **user** message *in the
+model's context* so the agent knows when messages were sent — useful for
+temporal reasoning ("you asked this morning…", noticing a long gap). It is
+**not** added to assistant messages or the system prompt.
+
+```yaml
+gateway:
+  message_timestamps:
+    enabled: false   # set true to show send-times to the model
+```
+
+Persisted transcripts always stay clean — the timestamp is stored as message
+metadata regardless of this toggle, so enabling it later also surfaces
+send-times for past messages, and replay never accumulates duplicate prefixes.
+
+When enabled, the bot sends status messages as it works:
+
+```text
+💻 `ls -la`...
+🔍 web_search...
+📄 web_extract...
+🐍 execute_code...
+```
+
+## Background Sessions
+
+Run a prompt in a separate background session so the agent works on it independently while your main chat stays responsive:
+
+```
+/bg Check all servers in the cluster and report any that are down
+```
+
+Hermes confirms immediately:
+
+```
+🔄 Background task started: "Check all servers in the cluster..."
+   Task ID: bg_143022_a1b2c3
+```
+
+### How It Works
+
+Each `/bg` prompt spawns a **separate agent instance** that runs asynchronously:
+
+- **Isolated session** — the background agent has its own session with its own conversation history. It has no knowledge of your current chat context and receives only the prompt you provide.
+- **Same configuration** — inherits your model, provider, toolsets, reasoning settings, and provider routing from the current gateway setup.
+- **Non-blocking** — your main chat stays fully interactive. Send messages, run other commands, or start more background tasks while it works.
+- **Result delivery** — when the task finishes, the result is sent back to the **same chat or channel** where you issued the command, prefixed with "✅ Background task complete". If it fails, you'll see "❌ Background task failed" with the error.
+
+### Background Process Notifications
+
+When the agent running a background session uses `terminal(background=true)` to start long-running processes (servers, builds, etc.), the gateway can push status updates to your chat. Control this with `display.background_process_notifications` in `~/.hermes/config.yaml`:
+
+```yaml
+display:
+  background_process_notifications: concise    # concise | all | result | error | off
+```
+
+| Mode | What you receive |
+|------|-----------------|
+| `concise` | One-line status message on completion; failures append a short output tail (default) |
+| `all` | Running-output updates **and** the final raw-output message |
+| `result` | Only the final raw-output completion message (regardless of exit code) |
+| `error` | Only the final raw-output message when the exit code is non-zero |
+| `off` | No process watcher messages at all |
+
+You can also set this via environment variable:
+
+```bash
+HERMES_BACKGROUND_NOTIFICATIONS=result
+```
+
+### Use Cases
+
+- **Server monitoring** — "/bg Check the health of all services and alert me if anything is down"
+- **Long builds** — "/bg Build and deploy the staging environment" while you continue chatting
+- **Research tasks** — "/bg Research competitor pricing and summarize in a table"
+- **File operations** — "/bg Organize the photos in ~/Downloads by date into folders"
+
+:::tip
+Background tasks on messaging platforms are fire-and-forget — you don't need to wait or check on them. Results arrive in the same chat automatically when the task finishes.
+:::
+
+## Service Management
+
+### Linux (systemd)
+
+```bash
+hermes gateway install               # Install as user service
+hermes gateway start                 # Start the service
+hermes gateway stop                  # Stop the service
+hermes gateway status                # Check status
+journalctl --user -u hermes-gateway -f  # View logs
+
+# Enable lingering (keeps running after logout)
+sudo loginctl enable-linger $USER
+
+# Or install a boot-time system service that still runs as your user
+sudo hermes gateway install --system
+sudo hermes gateway start --system
+sudo hermes gateway status --system
+journalctl -u hermes-gateway -f
+```
+
+Use the user service on laptops and dev boxes. Use the system service on VPS or headless hosts that should come back at boot without relying on systemd linger.
+
+:::danger Don't add a custom `ExecStopPost` kill drop-in
+The unit Hermes installs already shuts the gateway down cleanly with `KillMode=mixed` + `KillSignal=SIGTERM`, and uses `Restart=always` with `RestartForceExitStatus` so updates and `/restart` respawn correctly. Do **not** add a systemd drop-in such as `ExecStopPost=/bin/kill -9 $MAINPID` — `ExecStopPost` fires on *every* stop, including clean restarts, so it `SIGKILL`s the freshly spawned instance before it stabilizes and `Restart=always` immediately respawns it. The result is an infinite restart loop (and, on Telegram, a flood of restart messages). If you've added such a drop-in, remove it: `systemctl --user edit hermes-gateway` (or `sudo systemctl edit hermes-gateway` for a system service) and delete the `ExecStopPost` line, then `systemctl --user daemon-reload`.
+:::
+
+:::tip Headless VMs: user service + linger avoids root prompts
+A system service needs root for every restart — including the automatic gateway restart at the end of `hermes update`. When `hermes update` runs as a non-root user, it tries passwordless `sudo systemctl`; if that's unavailable, it skips the restart and prints the manual `sudo systemctl restart hermes-gateway` command (it never blocks on an interactive password prompt).
+
+For a headless VM you never log into, a **user** service with lingering enabled gives you the same start-at-boot behavior with zero root involvement:
+
+```bash
+hermes gateway install          # user service
+sudo loginctl enable-linger $USER   # one-time: start at boot, survive logout
+```
+
+After that, `hermes update` can restart the gateway without any privileges. If you prefer to keep the system service, either run updates with `sudo hermes update`, or grant the service account passwordless sudo for systemctl, e.g. in `sudo visudo -f /etc/sudoers.d/hermes-gateway`:
+
+```
+hermes ALL=(root) NOPASSWD: /usr/bin/systemctl --no-ask-password reset-failed hermes-gateway*, /usr/bin/systemctl --no-ask-password start hermes-gateway*, /usr/bin/systemctl --no-ask-password restart hermes-gateway*
+```
+:::
+
+Avoid keeping both the user and system gateway units installed at once unless you really mean to. Hermes will warn if it detects both because start/stop/status behavior gets ambiguous.
+
+:::info Multiple installations
+If you run multiple Hermes installations on the same machine (with different `HERMES_HOME` directories), each gets its own systemd service name. The default `~/.hermes` uses `hermes-gateway`; other installations use `hermes-gateway-<hash>`. The `hermes gateway` commands automatically target the correct service for your current `HERMES_HOME`.
+:::
+
+### macOS (launchd)
+
+```bash
+hermes gateway install               # Install as launchd agent
+hermes gateway start                 # Start the service
+hermes gateway stop                  # Stop the service
+hermes gateway status                # Check status
+tail -f ~/.hermes/logs/gateway.log   # View logs
+```
+
+The generated plist lives at `~/Library/LaunchAgents/ai.hermes.gateway.plist`. It includes three environment variables:
+
+- **PATH** — your full shell PATH at install time, with the venv `bin/` and `node_modules/.bin` prepended. This ensures user-installed tools (Node.js, ffmpeg, etc.) are available to gateway subprocesses like the WhatsApp bridge.
+- **VIRTUAL_ENV** — points to the Python virtualenv so tools can resolve packages correctly.
+- **HERMES_HOME** — scopes the gateway to your Hermes installation.
+
+:::tip PATH changes after install
+launchd plists are static — if you install new tools (e.g. a new Node.js version via nvm, or ffmpeg via Homebrew) after setting up the gateway, run `hermes gateway install` again to capture the updated PATH. The gateway will detect the stale plist and reload automatically.
+:::
+
+:::info Multiple installations
+Like the Linux systemd service, each `HERMES_HOME` directory gets its own launchd label. The default `~/.hermes` uses `ai.hermes.gateway`; other installations use `ai.hermes.gateway-<suffix>`.
+:::
+
+## Platform-Specific Toolsets
+
+Each platform has its own toolset:
+
+| Platform | Toolset | Capabilities |
+|----------|---------|--------------|
+| CLI | `hermes-cli` | Full access |
+| Telegram | `hermes-telegram` | Full tools including terminal |
+| Discord | `hermes-discord` | Full tools including terminal |
+| WhatsApp | `hermes-whatsapp` | Full tools including terminal |
+| WhatsApp Cloud API | `hermes-whatsapp` | Full tools including terminal (shares toolset with the Baileys bridge) |
+| Slack | `hermes-slack` | Full tools including terminal |
+| Google Chat | `hermes-google_chat` | Full tools including terminal |
+| Signal | `hermes-signal` | Full tools including terminal |
+| SMS | `hermes-sms` | Full tools including terminal |
+| Email | `hermes-email` | Full tools including terminal |
+| Home Assistant | `hermes-homeassistant` | Full tools + HA device control (ha_list_entities, ha_get_state, ha_call_service, ha_list_services) |
+| Mattermost | `hermes-mattermost` | Full tools including terminal |
+| Matrix | `hermes-matrix` | Full tools including terminal |
+| DingTalk | `hermes-dingtalk` | Full tools including terminal |
+| Feishu/Lark | `hermes-feishu` | Full tools including terminal |
+| WeCom | `hermes-wecom` | Full tools including terminal |
+| WeCom Callback | `hermes-wecom-callback` | Full tools including terminal |
+| Weixin | `hermes-weixin` | Full tools including terminal |
+| BlueBubbles | `hermes-bluebubbles` | Full tools including terminal |
+| QQBot | `hermes-qqbot` | Full tools including terminal |
+| Yuanbao | `hermes-yuanbao` | Full tools including terminal |
+| Microsoft Teams | `hermes-teams` | Full tools including terminal |
+| API Server | `hermes-api-server` | Full tools (drops `clarify`, `text_to_speech` — programmatic access doesn't have an interactive user) |
+| Webhooks | `hermes-webhook` | Full tools including terminal |
+| Raft | `hermes-raft` | Wake-only channel; agent uses Raft CLI for message I/O |
+
+## Operating a multi-platform gateway
+
+A gateway typically runs several adapters at once (Telegram + Discord + Slack, etc.). The sections below cover day-2 operations that span all platforms.
+
+### `/platform` command
+
+Once the gateway is running, use the `/platform` slash command from any connected CLI session or chat to inspect and steer individual adapters without restarting the whole gateway:
+
+```
+/platform list                  # show all adapters and their state
+/platform pause <name>          # stop dispatching new messages to one adapter
+/platform resume <name>         # re-enable a paused adapter
+```
+
+`/platform list` shows whether each adapter is `running`, `paused` (manually), or `paused-by-breaker` (see below). Pausing keeps the adapter loaded and its background loops alive — incoming messages are dropped on the floor, but the connection itself stays open so resume is instant.
+
+See also the broader status summary command [`/platforms`](../../reference/slash-commands.md#info).
+
+### Disabling a platform whose credentials are still in `.env`
+
+`platforms.<name>.enabled: false` in `~/.hermes/config.yaml` is authoritative.
+Credentials for that platform left in the environment (`TELEGRAM_BOT_TOKEN`,
+`WEIXIN_TOKEN`, `HASS_TOKEN`, `EMAIL_*`, `TWILIO_ACCOUNT_SID`, ...) are still
+wired into the platform's config so send-only tooling keeps working, but they
+no longer start the adapter:
+
+```yaml title="~/.hermes/config.yaml"
+platforms:
+  weixin:
+    enabled: false   # wins over WEIXIN_TOKEN in .env
+```
+
+Earlier releases let the mere presence of credentials re-enable twelve
+platforms (Weixin, WhatsApp Cloud, Home Assistant, Email, SMS, DingTalk, Feishu,
+WeCom, WeCom callback, BlueBubbles, QQ Bot, Yuanbao) regardless of that key. If
+you relied on that, the gateway now logs one WARNING per affected platform at
+startup so it does not just go dark:
+
+```
+Platform 'weixin' is explicitly disabled by platforms.weixin.enabled: false in config.yaml,
+so the credentials found in the environment (WEIXIN_TOKEN, WEIXIN_ACCOUNT_ID) will NOT start
+its adapter. Environment credentials no longer override an explicit disable. Remove the key
+or set platforms.weixin.enabled: true to turn it back on.
+```
+
+Omitting the `enabled` key entirely keeps the env-only behaviour: credentials
+present → adapter starts.
+
+### Ignoring an inherited proxy (`gateway.trust_env`)
+
+By default every platform adapter honors `HTTP_PROXY` / `HTTPS_PROXY` /
+`NO_PROXY` (and `SSL_CERT_FILE`) from the gateway's environment, and
+auto-detects the macOS system proxy. A gateway started by a Windows Scheduled
+Task or a service manager can inherit a proxy the interactive shell never
+sees — a local Clash/V2Ray listener that isn't running yet — and log
+`Cannot connect to host 127.0.0.1:7890` on every poll. Turn the inherited
+proxy off for all adapters at once:
+
+```yaml title="~/.hermes/config.yaml"
+gateway:
+  trust_env: false
+```
+
+Explicit per-platform proxy variables (`DISCORD_PROXY`, `TELEGRAM_PROXY`,
+`MATRIX_PROXY`, ...) are still honored. Restart the gateway after changing it.
+
+### Automatic circuit breaker
+
+Each adapter is wrapped in a circuit breaker. Repeated retryable failures (network blips, rate-limit replies, 5xx upstream responses, websocket disconnects) cause the breaker to trip — the adapter is auto-paused, an operator notification is sent to the home channel of another live platform when one is configured, and a structured log line is emitted.
+
+The breaker does **not** auto-resume — it stays open until you run `/platform resume <name>` manually. This is intentional: if a platform is in a sustained outage, you don't want the gateway thrashing reconnects.
+
+### Where to look when a platform is paused
+
+When an adapter is paused, check:
+
+1. **Gateway log** (`~/.hermes/logs/gateway.log` or the systemd / launchd unit log). Search for the platform name and `circuit breaker`, `paused`, or `disabled`. The trip event includes the failure count and the last error.
+2. **`/platform list`** output — shows the current state and last reason.
+3. **The provider's status page** (Telegram bot API status, Discord status, etc.). The breaker tripped because the platform was unhealthy; don't try to resume until it's back.
+
+Once upstream is healthy, `/platform resume <name>` clears the breaker and re-arms the adapter.
+
+### Restart notifications
+
+When the gateway restarts (or is shut down with in-flight sessions), it can send a one-shot "the agent is back" / "the agent was interrupted" message to each platform's home channel. This is controlled per-platform by the `gateway_restart_notification` flag in `gateway-config.yaml`, which defaults to `true`:
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      home_chat_id: "123456789"
+      gateway_restart_notification: false   # opt out for this platform
+    discord:
+      home_chat_id: "987654321"
+      # gateway_restart_notification omitted → defaults to true
+```
+
+Disable it on noisy or low-priority platforms while leaving it on for your primary chat. The notification is sent once per restart, regardless of how many sessions were in flight.
+
+### Typing indicators
+
+While the agent is processing a message, the gateway shows a live typing status on platforms that support it — a "typing…" bubble on Telegram/Discord/Signal, or the "is thinking…" assistant status on Slack. This is controlled per-platform by the `typing_indicator` flag in `gateway-config.yaml`, which defaults to `true`:
+
+```yaml
+gateway:
+  platforms:
+    slack:
+      typing_indicator: false   # don't show "is thinking…" on Slack
+    telegram:
+      # typing_indicator omitted → defaults to true
+```
+
+Set `typing_indicator: false` on any platform where the indicator is unwanted. Some users find Slack's "is thinking…" status noisy (it also briefly disables the compose box while shown, since it uses Slack's Assistant API). Disabling it only suppresses the indicator — message delivery and everything else is unchanged. The flag is generic, so the same key works for every platform.
+
+### Session resume across gateway restarts
+
+When the gateway shuts down with an in-flight tool call or generation, the affected sessions are flagged as `restart_interrupted`. On the next startup, the gateway schedules an auto-resume for each one — the user gets a short heads-up in the chat ("Send any message after restart and I'll try to resume where you left off.") and the session picks up from the last committed turn when they reply.
+
+This behaviour is on by default and is logged at gateway start:
+
+```
+Scheduled auto-resume for N restart-interrupted session(s)
+```
+
+No configuration is required. If you don't want the heads-up, set `gateway_restart_notification: false` on the platform.
+
+### Mobile-friendly progress defaults
+
+Telegram is usually a mobile inbox, so the defaults are tuned for that surface:
+
+- **`tool_progress`** defaults to **`off`** — no per-tool breadcrumb stream filling up the chat.
+- **`busy_ack_detail`** defaults to **`off`** — busy-state acknowledgments and long-running heartbeats stay terse (no `iteration 21/60` debug detail).
+- **`interim_assistant_messages`** stays **on** — real mid-turn assistant commentary (the model literally telling you what it's about to do) is signal, not noise.
+- **`long_running_notifications`** stays **on** — a single edit-in-place "⏳ Working — N min" bubble updates every few minutes so you have a heartbeat instead of staring at `typing…` for half an hour.
+
+Opt out of either of the kept-on defaults or opt back into verbose progress per platform:
+
+```yaml
+display:
+  platforms:
+    telegram:
+      # Re-enable the tool-progress stream
+      tool_progress: new
+      # Show "iteration N/M, running: tool" in heartbeats and busy acks
+      busy_ack_detail: true
+      # Or quiet them entirely
+      interim_assistant_messages: false
+      long_running_notifications: false
+```
+
+### Progress bubble cleanup (opt-in)
+
+Tool-progress messages, the "still working…" heartbeat, and status-callback bubbles can also be auto-deleted after the final response lands. Enable per-platform via `display.platforms.<platform>.cleanup_progress`:
+
+```yaml
+display:
+  platforms:
+    telegram:
+      cleanup_progress: true
+    discord:
+      cleanup_progress: true
+```
+
+Defaults to `false`. Only platforms whose adapter implements `delete_message` honor the setting (currently Telegram and Discord). Failed runs **skip** cleanup so the bubbles remain as breadcrumbs.
+
+## Next Steps
+
+- [Telegram Setup](telegram.md)
+- [Discord Setup](discord.md)
+- [Slack Setup](slack.md)
+- [Google Chat Setup](google_chat.md)
+- [WhatsApp Setup](whatsapp.md)
+- [WhatsApp Business Cloud API Setup](whatsapp-cloud.md)
+- [Signal Setup](signal.md)
+- [SMS Setup (Twilio)](sms.md)
+- [Email Setup](email.md)
+- [Home Assistant Integration](homeassistant.md)
+- [Mattermost Setup](mattermost.md)
+- [Matrix Setup](matrix.md)
+- [DingTalk Setup](dingtalk.md)
+- [Feishu/Lark Setup](feishu.md)
+- [WeCom Setup](wecom.md)
+- [WeCom Callback Setup](wecom-callback.md)
+- [Weixin Setup (WeChat)](weixin.md)
+- [BlueBubbles Setup (iMessage)](bluebubbles.md)
+- [Photon Setup (iMessage)](photon.md)
+- [QQBot Setup](qqbot.md)
+- [Yuanbao Setup](yuanbao.md)
+- [Microsoft Teams Setup](teams.md)
+- [Teams Meetings Pipeline](teams-meetings.md)
+- [Microsoft Graph Webhook Listener](msgraph-webhook.md)
+- [LINE Setup](line.md)
+- [ntfy Setup](ntfy.md)
+- [SimpleX Chat Setup](simplex.md)
+- [Open WebUI + API Server](open-webui.md)
+- [Raft Setup](raft.md)
+- [IRC Setup](irc.md)
+- [Buzz Setup](buzz.md)
+- [A2A (Agent-to-Agent) Setup](a2a.md)
+- [Webhooks](webhooks.md)

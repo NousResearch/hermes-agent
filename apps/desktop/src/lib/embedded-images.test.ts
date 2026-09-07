@@ -1,0 +1,91 @@
+import { describe, expect, it } from 'vitest'
+
+import { extractEmbeddedImages, extractImageRefs } from './embedded-images'
+
+const SAMPLE_PNG_DATA_URL = 'data:image/png;base64,' + 'A'.repeat(120)
+
+describe('extractEmbeddedImages', () => {
+  it('returns text untouched when no data URL is present', () => {
+    expect(extractEmbeddedImages('describe this')).toEqual({ cleanedText: 'describe this', images: [] })
+  })
+
+  it('lifts a bare data:image URL out of prose', () => {
+    const result = extractEmbeddedImages(`describe this ${SAMPLE_PNG_DATA_URL}`)
+
+    expect(result.cleanedText).toBe('describe this ')
+    expect(result.images).toEqual([SAMPLE_PNG_DATA_URL])
+  })
+
+  it('lifts a JSON-wrapped image_url envelope out of prose', () => {
+    const result = extractEmbeddedImages(
+      `describe this{"type":"image_url","image_url":{"url":"${SAMPLE_PNG_DATA_URL}"}}`
+    )
+
+    expect(result.cleanedText).toBe('describe this')
+    expect(result.images).toEqual([SAMPLE_PNG_DATA_URL])
+  })
+
+  it('extracts multiple embedded images', () => {
+    const second = 'data:image/jpeg;base64,' + 'B'.repeat(96)
+    const result = extractEmbeddedImages(`first ${SAMPLE_PNG_DATA_URL} mid ${second} tail`)
+
+    expect(result.cleanedText).toBe('first  mid  tail')
+    expect(result.images).toEqual([SAMPLE_PNG_DATA_URL, second])
+  })
+
+  it('handles multi-megabyte data URLs without overflowing the JS stack', () => {
+    const hugeDataUrl = 'data:image/png;base64,' + 'A'.repeat(8_000_000)
+    const result = extractEmbeddedImages(`describe this ${hugeDataUrl} thanks`)
+
+    expect(result.cleanedText).toBe('describe this  thanks')
+    expect(result.images).toHaveLength(1)
+    expect(result.images[0]).toHaveLength(hugeDataUrl.length)
+  })
+})
+
+describe('extractImageRefs', () => {
+  it('returns the text untouched and no refs when there are no directives', () => {
+    expect(extractImageRefs('a normal prompt')).toEqual({ cleanedText: 'a normal prompt', refs: [] })
+  })
+
+  it('lifts leading @image directive lines into refs and clears the text', () => {
+    const result = extractImageRefs('@image:/tmp/cat.png\nwhat do you see?')
+
+    expect(result).toEqual({ cleanedText: 'what do you see?', refs: ['@image:/tmp/cat.png'] })
+  })
+
+  it('collects multiple refs in order', () => {
+    const result = extractImageRefs('@image:/tmp/a.png\n@image:/tmp/b.png\ncompare them')
+
+    expect(result.cleanedText).toBe('compare them')
+    expect(result.refs).toEqual(['@image:/tmp/a.png', '@image:/tmp/b.png'])
+  })
+
+  it('keeps only the directive lines when there is no trailing text', () => {
+    const result = extractImageRefs('@image:/tmp/only.png')
+
+    expect(result).toEqual({ cleanedText: '', refs: ['@image:/tmp/only.png'] })
+  })
+
+  it('lifts a backtick-quoted ref so a path with spaces survives intact', () => {
+    const ref = '@image:`/Users/me/Library/Application Support/Hermes/composer-images/a.png`'
+    const result = extractImageRefs(`${ref}\nwhat is this?`)
+
+    expect(result).toEqual({ cleanedText: 'what is this?', refs: [ref] })
+  })
+
+  it('drops the [screenshot] placeholder a native-vision turn leaves behind', () => {
+    // Flattening a parts list replaces each image part with `[screenshot]`; the
+    // lifted ref already renders that same attachment.
+    const result = extractImageRefs('@image:/tmp/cat.png\nwhat is in this photo?\n[screenshot]')
+
+    expect(result).toEqual({ cleanedText: 'what is in this photo?\n', refs: ['@image:/tmp/cat.png'] })
+  })
+
+  it('keeps [screenshot] when the message carries no image refs', () => {
+    expect(extractImageRefs('[screenshot]\nlook at the attached capture')).toEqual({
+      cleanedText: '[screenshot]\nlook at the attached capture',
+      refs: []
+    })
+  })
+})

@@ -1,0 +1,114 @@
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+
+.card {
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 10px;
+  padding: 1.1rem 1.2rem;
+  background: var(--ifm-card-background-color, var(--ifm-background-surface-color));
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.cardHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.title {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.schedule {
+  font-size: 0.8rem;
+  color: var(--ifm-color-emphasis-700);
+  white-space: nowrap;
+}
+
+.desc {
+  margin: 0;
+  color: var(--ifm-color-emphasis-800);
+  font-size: 0.92rem;
+}
+
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.tag {
+  font-size: 0.72rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: var(--ifm-color-emphasis-200);
+  color: var(--ifm-color-emphasis-800);
+}
+
+.cmdRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.cmd {
+  flex: 1;
+  overflow-x: auto;
+  white-space: nowrap;
+  padding: 0.45rem 0.6rem;
+  font-size: 0.82rem;
+  border-radius: 6px;
+  background: var(--ifm-color-emphasis-100);
+}
+
+.copyBtn {
+  flex-shrink: 0;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  background: transparent;
+  color: var(--ifm-color-emphasis-800);
+  border-radius: 6px;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.copyBtn:hover {
+  background: var(--ifm-color-emphasis-200);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.appBtn {
+  display: inline-block;
+  padding: 0.4rem 0.85rem;
+  border-radius: 6px;
+  background: var(--ifm-color-primary);
+  color: var(--ifm-color-primary-contrast-background, #fff);
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.appBtn:hover {
+  background: var(--ifm-color-primary-dark);
+  text-decoration: none;
+  color: var(--ifm-color-primary-contrast-background, #fff);
+}
+
+.hint {
+  font-size: 0.78rem;
+  color: var(--ifm-color-emphasis-600);
+}

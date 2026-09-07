@@ -1,0 +1,7 @@
+name: xai
+version: 1.0.0
+description: "xAI image generation backend (grok-imagine-image). Text-to-image."
+author: Julien Talbot
+kind: backend
+requires_env:
+  - XAI_API_KEY

@@ -1,0 +1,8 @@
+{
+  "label": "Messaging Gateway",
+  "position": 3,
+  "link": {
+    "type": "doc",
+    "id": "user-guide/messaging/index"
+  }
+}

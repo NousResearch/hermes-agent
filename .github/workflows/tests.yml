@@ -1,0 +1,196 @@
+name: Tests
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# Cancel in-progress runs for the same ref
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Run tests
+    # One 96-core runner for the whole suite. There is no slicing. Slicing
+    # existed to spread the suite over 4-core runners. It cost a matrix job, a
+    # duration cache, a per-slice artifact and a merge job to do it.
+    #
+    # 96 cores clear the floor that the slowest single test file sets (about
+    # 82s). A second slice divides work that is already at that floor, and
+    # adds a second setup.
+    runs-on: ubuntu-latest-96-core
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install ripgrep (prebuilt binary)
+        run: |
+          set -euo pipefail
+          RG_VERSION=15.1.0
+          RG_SHA256=1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599
+          RG_TARBALL=ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz
+          curl -sSfL --retry 3 --retry-delay 5 -o "$RG_TARBALL" \
+            "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${RG_TARBALL}"
+          echo "${RG_SHA256}  ${RG_TARBALL}" | sha256sum -c -
+          tar -xzf "$RG_TARBALL"
+          sudo mv "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl/rg" /usr/local/bin/rg
+          rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
+          rg --version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          # Pin the uv version: unpinned, setup-uv resolves "latest" by
+          # fetching a manifest from raw.githubusercontent.com on EVERY job —
+          # a transient fetch failure fails the whole job (2026-07-28 slice-5
+          # incident). Pinned, the binary downloads directly; no manifest hop.
+          version: "0.9.28"
+          # Persist uv's download/wheel cache (~/.cache/uv) across runs.
+          # Keyed on the dependency manifests, so the cache is reused until
+          # pyproject.toml or uv.lock changes. `uv sync` still runs every
+          # time, but resolves from the warm cache instead of re-downloading
+          # and re-building wheels.
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        uses: ./.github/actions/retry
+        with:
+          command: uv python install 3.11
+
+      - name: Install dependencies
+        # `uv sync --locked` installs the exact pinned set from uv.lock (and
+        # fails if the lock is out of sync with pyproject.toml), giving a
+        # reproducible env. It also creates .venv itself, so no separate
+        # `uv venv` step is needed.
+        #
+        # The trailing extras beyond all/dev are the lazy-install features
+        # (tools/lazy_deps.py) that tests exercise for real: provider.anthropic,
+        # stt/tts.mistral, image.fal, terminal.modal, terminal.daytona,
+        # memory.hindsight, search.parallel. The hermetic test env forbids
+        # mid-run pip installs (HERMES_DISABLE_LAZY_INSTALLS=1 in
+        # tests/conftest.py), so the SDKs those tests need must be in the
+        # venv up front — resolved from uv.lock like everything else, which
+        # also honors the exact supply-chain pins these extras carry.
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
+
+      - name: Minimize uv cache
+        # Optimized for CI: prunes pre-built wheels that are cheap to
+        # re-download, keeping the persisted cache small and fast to restore.
+        run: uv cache prune --ci
+
+      - name: Run tests
+        # Per-file isolation via scripts/run_tests.sh: each test file runs
+        # in its own freshly-spawned `python -m pytest <file>` subprocess
+        # with bounded parallelism. No xdist, no shared workers, no
+        # module-level state leakage between files.
+        #
+        # No --files: the runner discovers the suite itself. The discovered
+        # set is identical to the list the removed matrix job used to pass in.
+        run: |
+          source .venv/bin/activate
+          scripts/run_tests.sh
+        env:
+          # This is the maximum number of test FILES that run together.
+          # run_tests_parallel.py starts one pytest subprocess for each file
+          # from a single ThreadPoolExecutor, so this value IS the limit. The
+          # default is cpu_count*2, which is 192 here.
+          #
+          # Measured on this runner (96-core EPYC 7763, 377GB). Whole suite,
+          # two repetitions for each value. See run 32549672063:
+          #
+          #     workers   x cores   mean
+          #        48       0.5x    138s
+          #        96       1.0x    126s   <- fastest
+          #       144       1.5x    132s
+          #       192       2.0x    132s
+          #       240       2.5x    140s
+          #       288       3.0x    142s
+          #
+          # One worker for each core wins. The curve is shallow: 126s to 142s
+          # across a 6x range. The suite has sufficient concurrency at this
+          # size. The remaining time is the slowest files plus the setup.
+          # Workers above the core count only add contention.
+          HERMES_TEST_WORKERS: 96
+          # Ensure tests don't accidentally call real APIs
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install ripgrep (prebuilt binary)
+        run: |
+          set -euo pipefail
+          RG_VERSION=15.1.0
+          RG_SHA256=1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599
+          RG_TARBALL=ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz
+          curl -sSfL --retry 3 --retry-delay 5 -o "$RG_TARBALL" \
+            "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${RG_TARBALL}"
+          echo "${RG_SHA256}  ${RG_TARBALL}" | sha256sum -c -
+          tar -xzf "$RG_TARBALL"
+          sudo mv "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl/rg" /usr/local/bin/rg
+          rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
+          rg --version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          # Pin the uv version: unpinned, setup-uv resolves "latest" by
+          # fetching a manifest from raw.githubusercontent.com on EVERY job —
+          # a transient fetch failure fails the whole job (2026-07-28 slice-5
+          # incident). Pinned, the binary downloads directly; no manifest hop.
+          version: "0.9.28"
+          # Persist uv's download/wheel cache (~/.cache/uv) across runs.
+          # Keyed on the dependency manifests, so the cache is reused until
+          # pyproject.toml or uv.lock changes. `uv sync` still runs every
+          # time, but resolves from the warm cache instead of re-downloading
+          # and re-building wheels.
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        # `uv sync --locked` installs the exact pinned set from uv.lock (and
+        # fails if the lock is out of sync with pyproject.toml), giving a
+        # reproducible env. It also creates .venv itself, so no separate
+        # `uv venv` step is needed.
+        #
+        # Same extras as the test job's sync above: the hermetic test env
+        # forbids mid-run pip installs (HERMES_DISABLE_LAZY_INSTALLS=1 in
+        # tests/conftest.py), so lazy-install SDKs exercised by tests must be
+        # in the venv up front.
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
+
+      - name: Minimize uv cache
+        # Optimized for CI: prunes pre-built wheels that are cheap to
+        # re-download, keeping the persisted cache small and fast to restore.
+        run: uv cache prune --ci
+
+      - name: Run e2e tests
+        run: |
+          source .venv/bin/activate
+          python -m pytest tests/e2e/ -v --tb=short
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""

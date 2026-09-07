@@ -1,0 +1,5 @@
+name: alibaba-coding-plan-provider
+kind: model-provider
+version: 1.0.0
+description: Alibaba Cloud Coding Plan
+author: Nous Research

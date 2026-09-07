@@ -1,0 +1,19 @@
+Subject: Request for erasure under GDPR Article 17
+
+To the {broker_name} data protection officer,
+
+Under Article 17 of the EU General Data Protection Regulation (and/or the UK GDPR), I request the
+erasure of all personal data you hold about me, and under Article 21 I object to its processing.
+
+My personal data appears at:
+{listing_urls}
+
+Identifying details:
+  Name:  {full_name}
+  Email: {contact_email}
+
+Please confirm erasure in writing to the email above within one month, as required by Article 12(3).
+Do not request more personal data than necessary to action this request.
+
+Sincerely,
+{full_name}

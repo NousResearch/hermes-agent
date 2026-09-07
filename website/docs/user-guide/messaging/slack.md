@@ -1,0 +1,1073 @@
+---
+sidebar_position: 4
+title: "Slack"
+description: "Set up Hermes Agent as a Slack bot using Socket Mode"
+---
+
+# Slack Setup
+
+Connect Hermes Agent to Slack as a bot using Socket Mode. Socket Mode uses WebSockets instead of
+public HTTP endpoints, so your Hermes instance doesn't need to be publicly accessible — it works
+behind firewalls, on your laptop, or on a private server.
+
+:::warning Classic Slack Apps Deprecated
+Classic Slack apps (using RTM API) were **fully deprecated in March 2025**. Hermes uses the modern
+Bolt SDK with Socket Mode. If you have an old classic app, you must create a new one following
+the steps below.
+:::
+
+## Overview
+
+| Component | Value |
+|-----------|-------|
+| **Library** | `slack-bolt` / `slack_sdk` for Python (Socket Mode) |
+| **Connection** | WebSocket — no public URL required |
+| **Auth tokens needed** | Bot Token (`xoxb-`) + App-Level Token (`xapp-`) |
+| **User identification** | Slack Member IDs (e.g., `U01ABC2DEF3`) |
+
+---
+
+## Step 1: Create a Slack App
+
+The fastest path is to paste a manifest Hermes generates for you. It
+declares every built-in slash command (`/btw`, `/stop`, `/model`, …),
+every required OAuth scope, every event subscription, and enables Socket
+Mode — all at once.
+
+### Option A: From a Hermes-generated manifest (recommended)
+
+1. Generate the manifest. New Slack apps must use Agent view:
+   ```bash
+   hermes slack manifest --agent-view --write
+   ```
+   This writes `~/.hermes/slack-manifest.json` and prints paste-in
+   instructions. Existing apps that still use Slack's legacy Assistant view
+   can omit `--agent-view` until they are ready to migrate.
+
+   To populate Slack's long app description from an existing UTF-8 text or
+   Markdown file, add `--long-description-file`:
+
+   ```bash
+   hermes slack manifest --agent-view \
+     --long-description-file AGENTS.md --write
+   ```
+
+   The file contents are preserved exactly within Slack's 175–4,000-character
+   range. Use `--long-description "..."` for inline text instead; the inline
+   and file options are mutually exclusive and cannot be combined with
+   `--slashes-only`.
+2. Go to [https://api.slack.com/apps](https://api.slack.com/apps) →
+   **Create New App** → **From an app manifest**
+3. Pick your workspace, paste the JSON contents, review, click **Next**
+   → **Create**
+4. Skip ahead to **Step 6: Install App to Workspace**. The manifest
+   handled scopes, events, and slash commands for you.
+
+### Option B: From scratch (manual)
+
+1. Go to [https://api.slack.com/apps](https://api.slack.com/apps)
+2. Click **Create New App**
+3. Choose **From scratch**
+4. Enter an app name (e.g., "Hermes Agent") and select your workspace
+5. Click **Create App**
+
+You'll land on the app's **Basic Information** page. Continue with
+Steps 2–6 below.
+
+---
+
+## Step 2: Configure Bot Token Scopes
+
+Navigate to **Features → OAuth & Permissions** in the sidebar. Scroll to **Scopes → Bot Token Scopes** and add the following:
+
+| Scope | Purpose |
+|-------|---------|
+| `chat:write` | Send messages as the bot |
+| `app_mentions:read` | Detect when @mentioned in channels |
+| `channels:history` | Read messages in public channels the bot is in |
+| `channels:read` | List and get info about public channels |
+| `groups:history` | Read messages in private channels the bot is invited to |
+| `im:history` | Read direct message history |
+| `im:read` | View basic DM info |
+| `im:write` | Open and manage DMs |
+| `mpim:history` | Read group direct message (multi-person DM) history |
+| `mpim:read` | View basic group DM info |
+| `users:read` | Look up user information |
+| `files:read` | Read and download attached files, including voice notes/audio |
+| `files:write` | Upload files (images, audio, documents) |
+
+:::caution Missing scopes = missing features
+Without `channels:history` and `groups:history`, the bot **will not receive messages in channels** —
+it will only work in DMs. Without `files:read`, Hermes can chat but **cannot reliably read user-uploaded attachments**.
+These are the most commonly missed scopes.
+:::
+
+**Optional scopes:**
+
+| Scope | Purpose |
+|-------|---------|
+| `groups:read` | List and get info about private channels |
+| `assistant:write` | Render the working-state status line ("is thinking…") next to the bot name while it processes a message. Without this scope the `assistant.threads.setStatus` call fails silently and Slack shows its own rotating generic placeholders instead ("Finding answers…", "Reviewing findings…", …) — Hermes never controls the text. Required for `typing_status_text` to have any visible effect. |
+
+---
+
+## Step 3: Enable Socket Mode
+
+Socket Mode lets the bot connect via WebSocket instead of requiring a public URL.
+
+1. In the sidebar, go to **Settings → Socket Mode**
+2. Toggle **Enable Socket Mode** to ON
+3. You'll be prompted to create an **App-Level Token**:
+   - Name it something like `hermes-socket` (the name doesn't matter)
+   - Add the **`connections:write`** scope
+   - Click **Generate**
+4. **Copy the token** — it starts with `xapp-`. This is your `SLACK_APP_TOKEN`
+
+:::tip
+You can always find or regenerate app-level tokens under **Settings → Basic Information → App-Level Tokens**.
+:::
+
+---
+
+## Step 4: Subscribe to Events
+
+This step is critical — it controls what messages the bot can see.
+
+
+1. In the sidebar, go to **Features → Event Subscriptions**
+2. Toggle **Enable Events** to ON
+3. Expand **Subscribe to bot events** and add:
+
+| Event | Required? | Purpose |
+|-------|-----------|---------|
+| `message.im` | **Yes** | Bot receives direct messages |
+| `message.mpim` | **Yes** | Bot receives messages in **group DMs** (multi-person DMs) it's added to |
+| `message.channels` | **Yes** | Bot receives messages in **public** channels it's added to |
+| `message.groups` | **Recommended** | Bot receives messages in **private** channels it's invited to |
+| `app_mention` | **Yes** | Prevents Bolt SDK errors when bot is @mentioned |
+
+4. Click **Save Changes** at the bottom of the page
+
+:::danger Missing event subscriptions is the #1 setup issue
+If the bot works in DMs but **not in channels**, you almost certainly forgot to add
+`message.channels` (for public channels) and/or `message.groups` (for private channels).
+Without these events, Slack simply never delivers channel messages to the bot.
+:::
+
+
+---
+
+## Step 5: Enable the Messages Tab
+
+This step enables direct messages to the bot. Without it, users see **"Sending messages to this app has been turned off"** when trying to DM the bot.
+
+1. In the sidebar, go to **Features → App Home**
+2. Scroll to **Show Tabs**
+3. Toggle **Messages Tab** to ON
+4. Check **"Allow users to send Slash commands and messages from the messages tab"**
+
+:::danger Without this step, DMs are completely blocked
+Even with all the correct scopes and event subscriptions, Slack will not allow users to send direct messages to the bot unless the Messages Tab is enabled. This is a Slack platform requirement, not a Hermes configuration issue.
+:::
+
+---
+
+## Step 6: Install App to Workspace
+
+1. In the sidebar, go to **Settings → Install App**
+2. Click **Install to Workspace**
+3. Review the permissions and click **Allow**
+4. After authorization, you'll see a **Bot User OAuth Token** starting with `xoxb-`
+5. **Copy this token** — this is your `SLACK_BOT_TOKEN`
+
+:::tip
+If you change scopes or event subscriptions later, you **must reinstall the app** for the changes
+to take effect. The Install App page will show a banner prompting you to do so.
+:::
+
+---
+
+## Step 7: Find User IDs for the Allowlist
+
+Hermes uses Slack **Member IDs** (not usernames or display names) for the allowlist.
+
+To find a Member ID:
+
+1. In Slack, click on the user's name or avatar
+2. Click **View full profile**
+3. Click the **⋮** (more) button
+4. Select **Copy member ID**
+
+Member IDs look like `U01ABC2DEF3`. You need your own Member ID at minimum.
+
+---
+
+## Step 8: Configure Hermes
+
+Add the following to your `~/.hermes/.env` file:
+
+```bash
+# Required
+SLACK_BOT_TOKEN=xoxb-your-bot-token-here
+SLACK_APP_TOKEN=xapp-your-app-token-here
+SLACK_ALLOWED_USERS=U01ABC2DEF3              # Comma-separated Member IDs
+
+# Optional
+SLACK_HOME_CHANNEL=C01234567890              # Default channel for cron/scheduled messages
+SLACK_HOME_CHANNEL_NAME=general              # Human-readable name for the home channel (optional)
+```
+
+Or run the interactive setup:
+
+```bash
+hermes gateway setup    # Select Slack when prompted
+```
+
+Then start the gateway:
+
+```bash
+hermes gateway              # Foreground
+hermes gateway install      # Install as a user service
+sudo hermes gateway install --system   # Linux only: boot-time system service
+```
+
+:::tip Codex reasoning-effort safety
+For Codex-backed Slack peer-agent channels, prefer `agent.reasoning_effort: high` or lower. `xhigh`
+can spend the entire turn in hidden reasoning and never produce visible assistant text; Hermes now
+suppresses those incomplete-turn warnings from the thread and keeps the diagnostics in gateway logs.
+:::
+
+---
+
+## Step 9: Invite the Bot to Channels
+
+After starting the gateway, you need to **invite the bot** to any channel where you want it to respond:
+
+```
+/invite @Hermes Agent
+```
+
+The bot will **not** automatically join channels. You must invite it to each channel individually.
+
+---
+
+## Slash Commands
+
+Every Hermes command (`/btw`, `/stop`, `/new`, `/model`, `/help`, ...)
+is a native Slack slash command — exactly the way they work on Telegram
+and Discord. Type `/` in Slack and the autocomplete picker lists every
+Hermes command with its description.
+
+Under the hood: Hermes ships with a generated Slack app manifest (see
+Step 1, Option A) that declares every command in
+[`COMMAND_REGISTRY`](https://github.com/NousResearch/hermes-agent/blob/main/hermes_cli/commands.py)
+as a slash command. In Socket Mode, Slack routes the command event
+through the WebSocket regardless of the manifest's `url` field.
+
+### Agent messaging experience
+
+New Slack apps use Slack's **Agent** messaging experience. Existing Hermes
+Assistant apps can migrate by regenerating the manifest with `--agent-view`:
+
+```bash
+hermes slack manifest --agent-view --write
+```
+
+Update the manifest in **Features → App Manifest**, then reinstall the app if
+Slack asks. Agent view cannot be reverted to Assistant view, and users may need
+to hard-refresh Slack after the switch. The generated Agent manifest subscribes
+to `message.im`, `app_home_opened`, and `app_context_changed`, so Hermes can
+identify a Messages-tab DM and receive the user's active Slack context with a
+turn. Hermes only supplies that context as a label; it does not read the viewed
+channel's history.
+
+### Refreshing slash commands after updates
+
+When Hermes adds new commands (e.g. after `hermes update`), regenerate
+the manifest and update your Slack app:
+
+```bash
+hermes slack manifest --write
+```
+
+Then in Slack:
+1. Open [https://api.slack.com/apps](https://api.slack.com/apps) →
+   your Hermes app
+2. **Features → App Manifest → Edit**
+3. Paste the new contents of `~/.hermes/slack-manifest.json`
+4. **Save**. Slack will prompt to reinstall the app if scopes or slash
+   commands changed.
+
+### Legacy `/hermes <subcommand>` still works
+
+For backward compatibility with older manifests, you can still type
+`/hermes bg run the tests` — Hermes routes it the same way as `/bg
+run the tests`. Free-form questions also work: `/hermes what's the
+weather?` is treated as a regular message.
+
+### Using commands inside threads (the `!cmd` prefix)
+
+Slack itself blocks native slash commands inside thread replies — try
+`/queue` in a thread and Slack responds with *"/queue is not supported
+in threads. Sorry!"* There is no app-side setting that re-enables them;
+Slack never delivers them to Hermes.
+
+As a workaround, Hermes recognises a leading `!` as an alternate
+command prefix that works in threads (and anywhere else). Type
+`!queue`, `!stop`, `!model gpt-5.4`, etc. as a regular thread reply —
+Hermes treats it identically to the slash form and replies in the same
+thread.
+
+Only the first token is checked against the known command list, so
+casual messages like `!nice work` pass through to the agent unchanged.
+The bang form also works behind a mention (`@Hermes !stop`) and with
+leading whitespace — both dispatch as commands in threads.
+
+Approval prompts (dangerous command / `execute_code` approval) normally
+render as interactive buttons. When buttons can't be delivered and
+Hermes falls back to a text prompt, the prompt instructs you to reply
+with `!approve` / `!deny` — the form that works inside threads.
+
+### Slash replies are ephemeral
+
+Replies to a native slash command (e.g. `/status`, `/help`) are delivered
+**ephemerally** — "Only visible to you" — so command output never spams the
+channel. The "Running /cmd…" placeholder is replaced with the real reply; long
+replies are chunked into follow-up ephemeral messages. Slack caps the reply
+flow at 5 posts, so extremely long output is closed with an explicit
+truncation notice rather than silently dropped. If the primary ephemeral path
+fails, Hermes retries via a second ephemeral API path — a slash reply is never
+posted publicly to the channel as a fallback. (Commands typed as regular
+messages — `!cmd` in threads, `@Hermes /cmd` — reply as normal visible
+messages instead.)
+
+### Clarify prompts (one-tap buttons)
+
+When the agent needs to ask you a multiple-choice question (the `clarify`
+tool), Slack renders it as **Block Kit buttons** — one tap per option, plus an
+"✏️ Other…" button that switches to free-text mode (your next typed message
+becomes the answer). After a tap, the message updates in place to show who
+answered and what was chosen; further clicks on the same prompt are ignored.
+Button clicks honor the same user authorization as messages, and expired
+prompts (gateway restart, timeout) tell you to re-ask instead of silently
+eating the click. Open-ended clarify questions render as a plain question and
+accept your next typed reply. No configuration needed — this works regardless
+of the `rich_blocks` setting.
+
+### Advanced: emit only the slash-commands array
+
+If you maintain your Slack manifest by hand and just want the slash
+command list:
+
+```bash
+hermes slack manifest --slashes-only > /tmp/slashes.json
+```
+
+Paste that array into the `features.slash_commands` key of your
+existing manifest.
+
+---
+
+## How the Bot Responds
+
+Understanding how Hermes behaves in different contexts:
+
+| Context | Behavior |
+|---------|----------|
+| **DMs** | Bot responds to every message — no @mention needed |
+| **Channels** | Bot **only responds when @mentioned** (e.g., `@Hermes Agent what time is it?`). In channels, Hermes replies in a thread attached to that message. |
+| **Threads** | If you @mention Hermes inside an existing thread, it replies in that same thread. Once the bot has an active session in a thread, **subsequent replies in that thread do not require @mention** — the bot follows the conversation naturally. |
+
+:::tip
+In channels, always @mention the bot to start a conversation. Once the bot is active in a thread, you can reply in that thread without mentioning it. Outside of threads, messages without @mention are ignored to prevent noise in busy channels.
+:::
+
+---
+
+## Configuration Options
+
+Beyond the required environment variables from Step 8, you can customize Slack bot behavior through `~/.hermes/config.yaml`.
+
+### Thread & Reply Behavior
+
+```yaml
+platforms:
+  slack:
+    # Controls how multi-part responses are threaded
+    # "off"   — never thread replies to the original message
+    # "first" — first chunk threads to user's message (default)
+    # "all"   — all chunks thread to user's message
+    reply_to_mode: "first"
+
+    extra:
+      # Whether to reply in a thread (default: true).
+      # When false, channel messages get direct channel replies instead
+      # of threads. Messages inside existing threads still reply in-thread.
+      reply_in_thread: true
+
+      # Also post thread replies to the main channel
+      # (Slack's "Also send to channel" feature).
+      # Only the first chunk of the first reply is broadcast.
+      reply_broadcast: false
+
+      # Control Slack's automatic link-preview cards without changing or
+      # removing clickable links from message text. Omit either key to keep
+      # Slack's default behavior for that preview type.
+      unfurl_links: false
+      unfurl_media: false
+
+      # Render agent messages as Slack Block Kit blocks (default: false).
+      # When true, the final agent message is sent with structured blocks —
+      # section headers, dividers, true nested lists (via rich_text), and
+      # native Block Kit tables — instead of flat mrkdwn text. A plain-text
+      # fallback is always sent alongside for notifications/accessibility.
+      # Tables exceeding Slack's limits (100 rows / 20 cols / 10k chars)
+      # gracefully fall back to aligned monospace.
+      rich_blocks: false
+
+      # Append Slack-native feedback controls to final Block Kit replies.
+      # Requires rich_blocks: true. Default: false.
+      feedback_buttons: false
+
+      # Render live tool calls as Slack-native plan/task cards. This explicit
+      # opt-in activates native progress even when text tool_progress is off.
+      # If Slack rejects the native stream, Hermes keeps one editable text
+      # fallback current for the rest of the turn.
+      native_task_cards: false
+
+      # Suggested prompts pinned at the top of Agent view's Messages tab.
+      # Either a list of {title, message} rows, or a titled object:
+      # {title: "Start here", prompts: [{title: "Plan", message: "..."}]}
+      suggested_prompts: []
+
+      # Title Agent/Assistant DM threads from the first user message.
+      # Default: true. Set false to leave Slack's default thread titles.
+      assistant_thread_titles: true
+
+      # Accept messages posted by other Slack bots (default: "none").
+      # "none" ignores bots, "mentions" accepts a bot message only when
+      # that message itself @mentions Hermes, and "all" accepts every
+      # other bot. Hermes always ignores its own bot user to prevent
+      # self-echoes.
+      allow_bots: "none"
+
+      # Continuable-cron delivery surface (default: "thread").
+      # "in_channel" delivers a continuable cron job FLAT into the channel
+      # (no dedicated thread); pair with reply_in_thread: false (and
+      # require_mention: false) so a plain reply continues the job.
+      # See the cron guide → "Flat, in-channel continuation".
+      cron_continuable_surface: thread
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `platforms.slack.reply_to_mode` | `"first"` | Threading mode for multi-part messages: `"off"`, `"first"`, or `"all"` |
+| `platforms.slack.extra.reply_in_thread` | `true` | When `false`, channel messages get direct replies instead of threads. Messages inside existing threads still reply in-thread. |
+| `platforms.slack.extra.reply_broadcast` | `false` | When `true`, thread replies are also posted to the main channel. Only the first chunk is broadcast. |
+| `platforms.slack.extra.unfurl_links` | Slack default | Set to `false` to suppress automatic previews for linked web pages while preserving clickable links. When either unfurl key is set, media captions are posted as a separate message *before* the file (Slack's upload API cannot carry unfurl controls), and native draft streaming falls back to edit-based delivery. |
+| `platforms.slack.extra.unfurl_media` | Slack default | Set to `false` to suppress automatic media previews while preserving clickable links. Same caption-ordering and streaming notes as `unfurl_links`. |
+| `platforms.slack.extra.rich_blocks` | `false` | When `true`, agent messages are rendered as [Block Kit](https://docs.slack.dev/block-kit/) blocks (headers, dividers, true nested lists, and native tables). A plain-text fallback is always sent. Tables over Slack's limits fall back to aligned monospace. No app reinstall required — it's a send-side change only. |
+| `platforms.slack.extra.feedback_buttons` | `false` | When `true` with `rich_blocks`, appends Slack-native feedback controls to final replies. |
+| `platforms.slack.extra.native_task_cards` | `false` | When `true`, renders live tool calls as Slack-native plan/task cards. This is an explicit progress opt-in independent of Slack's default `tool_progress: off`; native API failures fall back to one continuously edited text update. |
+| `platforms.slack.extra.suggested_prompts` | `[]` | Up to four `{title, message}` prompts for Agent/Assistant DM entry points; accepts either a list or `{title, prompts}`. |
+| `platforms.slack.extra.assistant_thread_titles` | `true` | When `true`, names Agent/Assistant DM threads from the first user message. |
+| `platforms.slack.extra.allow_bots` | `"none"` | Controls messages from other Slack bots: `"none"` ignores them, `"mentions"` accepts a bot message only when **that message itself** @mentions Hermes, and `"all"` accepts all of them. Use `"mentions"` for the safest bot-to-bot collaboration mode. See [Accepting messages from other bots](#accepting-messages-from-other-bots-allow_bots). |
+| `platforms.slack.extra.api_human_users` | `[]` | Slack user IDs whose **Web-API (user-token) posts count as human**. Such posts carry the posting `app_id` and no `client_msg_id`, so by default they are dropped as app traffic; allowlist your own front-end's users here instead of `allow_bots: all`. See [Treating your own app's user-token posts as human](#treating-your-own-apps-user-token-posts-as-human-api_human_users). |
+| `platforms.slack.extra.cron_continuable_surface` | `"thread"` | Delivery surface for [continuable cron jobs](../features/cron.md#flat-in-channel-continuation-slack). `"thread"` opens a dedicated thread per delivery (default); `"in_channel"` delivers flat into the channel timeline. Pair `in_channel` with `reply_in_thread: false` (and `require_mention: false`) so a plain channel reply continues the job. |
+
+The equivalent environment variable is `SLACK_ALLOW_BOTS=none|mentions|all`.
+When both are set, `platforms.slack.extra.allow_bots` takes precedence. Avoid
+`all` when peer bots can answer each other without an explicit mention, because
+their own reply policies can still create loops.
+
+### Working-State Status Line
+
+While the agent processes a message, Slack shows a status line next to the bot
+name in the thread. By default Hermes sets it to `is thinking...`; customize it
+with `typing_status_text` — e.g. a kitten assistant named Ada:
+
+```yaml
+platforms:
+  slack:
+    # Custom working-state status line (default: "is thinking...").
+    typing_status_text: "is pouncing… 🐾"
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `platforms.slack.typing_status_text` | `"is thinking..."` | Text of the working-state status line shown while the agent processes a message. Requires the `assistant:write` scope — without it the status call fails silently and Slack renders its own generic placeholder, whatever this is set to. Set `typing_indicator: false` to disable the status line entirely. |
+
+:::note Where the status renders
+The custom status appears in the **footer beneath the reply composer** ("*BotName* is thinking…"), not inline in the message list. The inline "Generating response…" / "Finding answers…" lines Slack shows in the message area while an AI app works are **Slack's own rotating indicators** — `assistant.threads.setStatus` does not control those, and both can appear at the same time.
+:::
+
+The same key customizes Google Chat's visible working-state marker message
+(`platforms.google_chat.typing_status_text`, default `"Hermes is thinking…"`) —
+note that on Google Chat it is a real posted message that gets patched into the
+reply, not an ephemeral status.
+
+### Live Status (per-tool)
+
+By default the status line updates **live as the agent works**: instead of a
+static `is thinking...`, it shows what the agent is doing right now — `is
+running pytest tests/…`, `is reading docs/api.md…`, `is searching the web for
+slack api limits…`. Between tool calls it reverts to the static text. This
+rides the existing status-refresh cadence, so it makes no additional Slack API
+calls, and it works even with `tool_progress: off` (Slack's default) — unlike
+progress bubbles, the status line is ephemeral and leaves nothing behind in
+the channel.
+
+Control it with `display.live_status` (global or per-platform):
+
+```yaml
+display:
+  platforms:
+    slack:
+      # full = verb + argument ("is running pytest…")   [default]
+      # verb = verb only ("is running…") — hides commands/paths,
+      #        useful in shared or customer-facing channels
+      # off  = static text (typing_status_text or "is thinking...")
+      live_status: full
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `display.live_status` | `"full"` | Live per-tool status line. `full` shows verb + argument preview; `verb` shows the verb only (keeps file paths and commands out of shared channels); `off` restores the static text. Requires the `assistant:write` scope, same as the static status line. |
+
+### Native Streaming (live-typing replies)
+
+Slack's [Agents & AI Apps](https://docs.slack.dev/ai/) feature ships a native
+streaming surface (`chat.startStream` / `chat.appendStream` /
+`chat.stopStream`) that renders the reply as a live-typing message — much
+smoother than the edit-based progressive updates used otherwise. When
+`streaming.enabled` is on (transport `auto` or `draft`), Hermes uses native
+streaming automatically wherever it's available:
+
+- The stream starts on the first frame and appends only deltas (the API is
+  append-only). The streamed message **is** the final message — Hermes seals
+  it via `chat.stopStream` instead of posting a duplicate final reply.
+- If your Slack app doesn't have the AI features enabled (or lacks the
+  `assistant:write` scope), the first failure is cached and Hermes falls back
+  to edit-based streaming with a single log warning naming the fix.
+- Opt-in Block Kit (`rich_blocks: true`) is applied to the sealed message,
+  same as the edit-based finalize path.
+
+No extra configuration is needed beyond enabling streaming:
+
+```yaml
+streaming:
+  enabled: true       # transport auto/draft lights up Slack native streaming
+```
+
+### Native Task Cards (live tool progress)
+
+With `platforms.slack.extra.native_task_cards: true`, live tool calls render
+as Slack-native **plan/task cards** (the same UI Slack's own AI features use)
+instead of text progress bubbles: one card per turn, one row per tool call,
+with per-task running/complete/error states updating in place.
+
+```yaml
+platforms:
+  slack:
+    extra:
+      native_task_cards: true
+```
+
+- This is an explicit progress opt-in — it works even though Slack's default
+  is `tool_progress: off` (text bubbles spam channels; native cards don't).
+- Concurrent calls to the same tool are correlated by real tool-call ID, so
+  parallel `web_search` calls each get their own row with the right status.
+- If the native stream can't start or update, Hermes falls back to a single
+  continuously edited text message so progress stays live for the turn.
+- The card stream is stopped exactly once when the turn finalizes, including
+  on interrupt/disconnect, so no dangling live indicator is left behind.
+
+### Session Isolation
+
+```yaml
+# Global setting — applies to Slack and all other platforms
+group_sessions_per_user: true
+```
+
+When `true` (the default), each user in a shared channel gets their own isolated conversation session. Two people talking to Hermes in `#general` will have separate histories and contexts.
+
+Set to `false` if you want a collaborative mode where the entire channel shares one conversation session. Be aware this means users share context growth and token costs, and one user's `/reset` clears the session for everyone.
+
+### Mention & Trigger Behavior
+
+```yaml
+slack:
+  # Require @mention in channels (this is the default behavior;
+  # the Slack adapter enforces @mention gating in channels regardless,
+  # but you can set this explicitly for consistency with other platforms)
+  require_mention: true
+
+  # Prevent thread auto-engagement: only reply to channel messages that
+  # contain an explicit @mention. With this OFF (default), Slack can
+  # "auto-engage" — remembering past mentions in a thread and following
+  # up on bot-message replies, and resuming active sessions without a
+  # fresh mention. With strict_mention ON, every new channel message
+  # must @mention the bot before Hermes will respond.
+  strict_mention: false
+
+  # Ignore messages addressed to another user: when a channel or thread
+  # message *opens* by @mentioning someone other than the bot (e.g.
+  # "@rasha can you take this?"), stay silent unless the bot is also
+  # mentioned. Only a *leading* mention counts as "addressed to" — a
+  # message that references someone mid-sentence ("loop in @rasha")
+  # still reaches the bot. Overrides free_response_channels and thread
+  # auto-engagement. Opt-in; default off. Env: SLACK_IGNORE_OTHER_USER_MENTIONS.
+  ignore_other_user_mentions: false
+
+  # Require an explicit @mention for THREAD replies, while leaving
+  # top-level channel messages governed by require_mention /
+  # free_response_channels. Narrower than strict_mention: use it when a
+  # free-response bot should not join every follow-up in busy threads.
+  # Opt-in; default off. Env: SLACK_THREAD_REQUIRE_MENTION.
+  thread_require_mention: false
+
+  # Per-channel force-mention override — the opposite direction of
+  # free_response_channels. Channels listed here ALWAYS require an
+  # explicit @mention, even when require_mention is false globally.
+  # Ongoing conversations still auto-follow (mentioned threads, active
+  # sessions, bot-authored threads). Comma-separated IDs or a list.
+  # Env: SLACK_REQUIRE_MENTION_CHANNELS.
+  require_mention_channels: ""
+
+  # Custom mention patterns that trigger the bot
+  # (in addition to the default @mention detection)
+  mention_patterns:
+    - "hey hermes"
+    - "hermes,"
+
+  # Text prepended to every outgoing message
+  reply_prefix: ""
+```
+
+:::tip When to use `strict_mention`
+Set this to `true` in busy workspaces where Slack's default "the bot remembers this thread" behavior surprises users — for example, a long tech-support thread where the bot helped at the start and you'd rather it stay silent unless explicitly pinged again. DMs and active interactive sessions are unaffected.
+:::
+
+:::tip When to use `ignore_other_user_mentions`
+Set this to `true` when the bot follows busy threads (via thread auto-engagement or `free_response_channels`) and butts in on messages humans address to each other. It is a narrower tool than `strict_mention`: plain follow-ups in an engaged thread still get answers; only messages that open by @mentioning another person are skipped. **1:1 DMs are unaffected**; group DMs (MPIMs) and channels both apply it, matching the shared-surface policy below. Broadcast tokens (`@here`, `@channel`) and channel references address the room, not a person, so they are never skipped.
+:::
+
+:::info
+Slack supports both patterns: `@mention` required to start a conversation by default, but you can opt specific channels out via `SLACK_FREE_RESPONSE_CHANNELS` (comma-separated channel IDs) or `slack.free_response_channels` in `config.yaml`. Once the bot has an active session in a thread, subsequent thread replies do not require a mention. In **1:1 DMs** the bot always responds without needing a mention.
+:::
+
+:::caution Group DMs (MPIMs) are shared surfaces, not 1:1 DMs
+A **1:1 direct message** is a private conversation with one person, so it is mention-exempt. A **group DM (MPIM / multi-person DM)** is a *shared surface* — multiple people can see and trigger the bot — so it obeys the same operator controls as a channel: `require_mention`, `strict_mention`, `free_response_channels`, and `allowed_channels` all apply, and the bot only adds `:eyes:`/`:white_check_mark:` reactions when it is actually `@mentioned`. To let the bot respond freely in a specific group DM, add its channel ID (starts with `G`) to `free_response_channels`.
+:::
+
+#### Which mention option do I want?
+
+The gating options compose — each answers a different question:
+
+| Option | Question it answers | Default | Scope |
+|--------|--------------------|---------|-------|
+| `require_mention` | Do **top-level channel messages** need an @mention? | `true` | All channels |
+| `free_response_channels` | Which channels are exempt from `require_mention`? | none | Listed channels |
+| `require_mention_channels` | Which channels ALWAYS need an @mention, even when `require_mention` is `false` or the channel is free-response? Wins over both. | none | Listed channels |
+| `thread_require_mention` | Do **thread replies** need an @mention, even when top-level messages don't? Mentioned threads are not remembered. | `false` | Threads only |
+| `strict_mention` | Does **every** channel message (top-level and thread) need a fresh @mention? Disables all auto-follow: mentioned-thread memory, bot-reply follow-ups, active-session resume. | `false` | All channels + threads |
+| `ignore_other_user_mentions` | Should a message that **opens by @mentioning someone else** (`@rasha can you take this?`) be skipped? Overrides free-response and thread auto-follow; mid-sentence references still reach the bot. | `false` | Channels + group DMs |
+
+Rules of thumb: `strict_mention` is the broadest hammer; `thread_require_mention` quiets busy threads without touching top-level gating; `require_mention_channels` re-tightens individual channels on an otherwise free-response bot; `ignore_other_user_mentions` only skips messages explicitly addressed to another person. 1:1 DMs always respond and are unaffected by all of these.
+
+### Accepting messages from other bots (`allow_bots`)
+
+By default Hermes ignores every message authored by another Slack bot or app (including Workflow Builder posts). For multi-agent workspaces — several Hermes instances or peer bots collaborating in one channel — opt in with `allow_bots`:
+
+```yaml
+platforms:
+  slack:
+    extra:
+      # "none" (default) — ignore all bot/app-authored messages
+      # "mentions"       — accept a bot message only when THAT message
+      #                    @mentions this bot
+      # "all"            — accept every bot message (except the bot's own)
+      allow_bots: mentions
+```
+
+Env equivalent: `SLACK_ALLOW_BOTS=none|mentions|all` (the config key wins when both are set). Unknown values are treated as `none`.
+
+How `mentions` mode gates:
+
+- A peer-bot message is accepted **only when the message itself contains a current `@mention` of this bot** — in its text or its Block Kit blocks. Thread history does not count: a bot having been mentioned earlier in the thread, replies to the bot's own messages, and active thread sessions do **not** admit later unmentioned peer-bot messages. This is deliberate — it is what breaks agent-to-agent ack/status loops.
+- Human messages are unaffected; normal mention gating applies to them.
+- Hermes always ignores its own messages, in every mode, to prevent self-echo loops.
+
+`mentions` is the recommended mode for bot-to-bot collaboration: each agent must explicitly summon the other per turn. Avoid `all` unless every peer bot's own reply policy is loop-safe — two bots that answer everything will answer each other forever. Detection covers labeled bot messages (`bot_id`, `subtype: bot_message`), app-originated events, and unlabeled bot *users* (probed via `users.info`), so peer Hermes agents are filtered consistently across workspaces.
+
+For strict multi-bot deployments, pair with `require_mention: true` and `strict_mention: true` — see the smoke-check profile below.
+
+### Treating your own app's user-token posts as human (`api_human_users`)
+
+A message posted through the Web API with a **user token** (`xoxp-`) is
+authored by a real person, but it arrives with the posting `app_id` and no
+`client_msg_id` — the same signature Hermes uses to recognise app posts — so it
+is dropped as bot traffic. This blocks a common pattern: a custom front-end (an
+internal dashboard, a mobile shell, a kiosk) that sends messages to Hermes *as*
+the logged-in user.
+
+`allow_bots: all` would let those posts through, but it opens the door to every
+bot in the channel and weakens the loop protections. Instead, allowlist just
+the people who use your front-end:
+
+```yaml
+platforms:
+  slack:
+    extra:
+      api_human_users: ["U0AAAAAAA", "U0BBBBBBB"]
+```
+
+The equivalent environment variable is `SLACK_API_HUMAN_USERS` (comma-separated).
+
+Scope and safety:
+
+- The allowlist is **users only**. There is deliberately no app-ID variant: a
+  modern bot token (`xoxb-`) posts with the same `user` + `app_id` shape, so
+  trusting an app would also admit its own bot posts and defeat the loop guard.
+- Events carrying `bot_id` or `subtype: bot_message`, or no `user` at all, are
+  always treated as bot posts regardless of the allowlist.
+- The rest of the pipeline is unchanged: mention gating, `allowed_channels`,
+  and `SLACK_ALLOWED_USERS` still apply to the (now human) sender.
+
+### Reaction Triggers (`reaction_triggers`)
+
+By default, emoji reactions are acknowledged and dropped — a 👍 on a bot
+message does nothing. Set `slack.reaction_triggers` to route reactions into
+the agent loop (requires the `reactions:read` scope plus the
+`reaction_added`/`reaction_removed` bot event subscriptions in your Slack app
+manifest — regenerate with `hermes slack manifest`):
+
+```yaml
+slack:
+  # Opt-in. false/absent (default) = reactions are acked and dropped.
+  # true = any reaction ON THE BOT'S OWN MESSAGES routes to the agent.
+  reaction_triggers: true
+  # Or an explicit emoji allowlist — only these names route, and they may
+  # target ANY message (emoji-handoff workflows, e.g. :task: to capture):
+  # reaction_triggers: [white_check_mark, thumbsup, task]
+  # Optional handoff target: respond in this channel (top-level) or thread
+  # (C123:<thread_ts>) instead of the reacted-to message's thread.
+  # reaction_trigger_target: C0123456789
+```
+
+Environment equivalents: `SLACK_REACTION_TRIGGERS` (`true`/`all` or a
+comma-separated list) and `SLACK_REACTION_TRIGGER_TARGET`.
+
+Behavior:
+
+- The reaction arrives as a normal agent turn with text
+  `reaction:added:👍` / `reaction:removed:👍` (common Slack names are
+  translated to unicode; unknown names pass through as-is, e.g.
+  `reaction:added:custom-emoji`), threaded under
+  the reacted-to message so the agent sees what was reacted to and the
+  turn lands in the same session as a reply would.
+- The reactor becomes the message's user, so **user authorization and
+  `allowed_channels` gating apply exactly as for typed messages** — a
+  random user's reaction cannot trigger the agent anywhere their message
+  couldn't.
+- With `reaction_triggers: true`, only reactions on the bot's **own**
+  messages route (approve/acknowledge flows). With an explicit emoji
+  allowlist, the listed emojis route from any message.
+- The bot's own lifecycle reactions (`:eyes:` etc.) never feed back.
+- Independent of this opt-in, every human reaction fires the
+  `reaction:added`/`reaction:removed` [gateway hooks](../features/hooks.md#available-events)
+  for observers that don't need agent turns.
+
+### Peer-Agent Smoke Check
+
+For multi-bot Slack deployments that rely on strict per-turn mentions, keep the following profile:
+
+```yaml
+slack:
+  require_mention: true
+  strict_mention: true
+  allow_bots: mentions
+  allowed_channels: ""
+```
+
+After gateway config changes, deploys, or restarts, run this synthetic smoke target:
+
+```bash
+uv run --frozen pytest -q tests/gateway/test_slack_peer_agent_smoke.py -o addopts=''
+```
+
+This target uses in-process synthetic Slack events only. It does not send live Slack messages and does not require real bot tokens by default.
+
+Failure buckets:
+
+- `config:` `test_peer_agent_smoke_preflight_contract` caught a profile mismatch (`require_mention`, `strict_mention`, `allow_bots`, or `allowed_channels`).
+- `platform_connectivity:` the adapter/client was not initialized, so routing smoke is not a trustworthy signal yet.
+- `bot_identity:` the adapter never resolved its bot user ID, so current-message mention checks cannot work.
+- `routing_logic:` the Slack adapter regressed on one of the peer-agent invariants (human mention routing, peer-bot ignore, explicit peer mention admit, or passive ack/status/error suppression).
+
+If this target passes but a live workspace still misroutes messages, investigate Slack token/workspace connectivity and runtime deployment state outside the routing logic itself.
+
+### Channel allowlist (`allowed_channels`)
+
+Restrict the bot to a fixed set of Slack channels — useful when the bot is invited to many channels but should only respond in a few. When set, messages from channels NOT in this list are **silently ignored**, even if the bot is `@mentioned`.
+
+**1:1 DMs are exempt** from this filter, so authorized users can always reach the bot in a direct message. **Group DMs (MPIMs) are not exempt** — like channels, an MPIM must be on the allowlist (its ID starts with `G`) or its messages are dropped.
+
+```yaml
+slack:
+  allowed_channels:
+    - "C0123456789"   # #ops
+    - "C0987654321"   # #incident-response
+```
+
+Or via env var (comma-separated):
+
+```bash
+SLACK_ALLOWED_CHANNELS="C0123456789,C0987654321"
+```
+
+Behavior:
+
+- Empty / unset → no restriction (fully backward compatible).
+- Non-empty → channel ID must be on the list, or the message is dropped before any other gating (mention requirement, `free_response_channels`, etc.) runs.
+- Slack channel IDs start with `C` (public), `G` (private), or `D` (DM). Look them up via the Slack UI's "Open channel details" → "About" panel, or via the API.
+
+See also: [admin/user slash command split](../../reference/slash-commands.md#permissions-and-adminuser-split).
+
+### Unauthorized User Handling
+
+```yaml
+slack:
+  # What happens when an unauthorized user (not in SLACK_ALLOWED_USERS) DMs the bot
+  # "pair"   — prompt them for a pairing code (default)
+  # "ignore" — silently drop the message
+  unauthorized_dm_behavior: "pair"
+```
+
+You can also set this globally for all platforms:
+
+```yaml
+unauthorized_dm_behavior: "pair"
+```
+
+The platform-specific setting under `slack:` takes precedence over the global setting.
+
+### Voice Transcription
+
+```yaml
+# Global setting — enable/disable automatic transcription of incoming voice messages
+stt_enabled: true
+```
+
+When `true` (the default), incoming audio messages are automatically transcribed using the configured STT provider before being processed by the agent.
+
+### Full Example
+
+```yaml
+# Global gateway settings
+group_sessions_per_user: true
+unauthorized_dm_behavior: "pair"
+stt_enabled: true
+
+# Slack-specific settings
+slack:
+  require_mention: true
+  unauthorized_dm_behavior: "pair"
+
+# Platform config
+platforms:
+  slack:
+    reply_to_mode: "first"
+    extra:
+      reply_in_thread: true
+      reply_broadcast: false
+```
+
+---
+
+
+## Home Channel
+
+Set `SLACK_HOME_CHANNEL` to a channel ID where Hermes will deliver scheduled messages,
+cron job results, and other proactive notifications. To find a channel ID:
+
+1. Right-click the channel name in Slack
+2. Click **View channel details**
+3. Scroll to the bottom — the Channel ID is shown there
+
+```bash
+SLACK_HOME_CHANNEL=C01234567890
+```
+
+Make sure the bot has been **invited to the channel** (`/invite @Hermes Agent`).
+
+### Cron delivery targeting
+
+Cron jobs (see the [cron guide](../features/cron.md#delivery-options)) can target Slack three ways:
+
+| `deliver:` value | Where it lands |
+|------------------|----------------|
+| `slack` | The home channel (`SLACK_HOME_CHANNEL`) |
+| `slack:C0123456789` | A specific channel by ID |
+| `slack:U0123456789` | That user's **DM** — the bare user ID is resolved to a DM conversation automatically (requires the `im:write` scope) |
+
+Delivery works even when the cron process isn't co-located with the gateway — Hermes falls back to a standalone Web API sender using `SLACK_BOT_TOKEN`. `MEDIA:` attachments in the cron output are uploaded as native Slack file shares to the same target.
+
+### Sending messages and media (`send_message`)
+
+The agent's `send_message` tool accepts the same target shapes: a channel ID (`C…`/`G…`), a DM conversation (`D…`), or a bare user ID (`U…`/`W…`), which is resolved to the user's DM on every send path — text, media, and interactive prompts alike. `MEDIA:<path>` attachments (images, PDFs, documents) upload as native file shares; when a short message accompanies a single attachment it rides as the file's caption instead of a separate message. Missing files are reported per-file as warnings rather than failing the whole send.
+
+---
+
+## Multi-Workspace Support
+
+Hermes can connect to **multiple Slack workspaces** simultaneously using a single gateway instance. Each workspace is authenticated independently with its own bot user ID.
+
+### Configuration
+
+Provide multiple bot tokens as a **comma-separated list** in `SLACK_BOT_TOKEN`:
+
+```bash
+# Multiple bot tokens — one per workspace
+SLACK_BOT_TOKEN=xoxb-workspace1-token,xoxb-workspace2-token,xoxb-workspace3-token
+
+# A single app-level token is still used for Socket Mode
+SLACK_APP_TOKEN=xapp-your-app-token
+```
+
+Or in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  slack:
+    token: "xoxb-workspace1-token,xoxb-workspace2-token"
+```
+
+### OAuth Token File
+
+In addition to tokens in the environment or config, Hermes also loads tokens from an **OAuth token file** at:
+
+```
+~/.hermes/slack_tokens.json
+```
+
+This file is a JSON object mapping team IDs to token entries:
+
+```json
+{
+  "T01ABC2DEF3": {
+    "token": "xoxb-workspace-token-here",
+    "team_name": "My Workspace"
+  }
+}
+```
+
+Tokens from this file are merged with any tokens specified via `SLACK_BOT_TOKEN`. Duplicate tokens are automatically deduplicated.
+
+### How it works
+
+- The **first token** in the list is the primary token, used for the Socket Mode connection (AsyncApp).
+- Each token is authenticated via `auth.test` on startup. The gateway maps each `team_id` to its own `WebClient` and `bot_user_id`.
+- When a message arrives, Hermes uses the correct workspace-specific client to respond.
+- The primary `bot_user_id` (from the first token) is used for backward compatibility with features that expect a single bot identity.
+
+---
+
+## Voice Messages
+
+Hermes supports voice on Slack:
+
+- **Incoming:** Voice/audio messages are automatically transcribed using the configured STT provider: local `faster-whisper`, Groq Whisper (`GROQ_API_KEY`), or OpenAI Whisper (`VOICE_TOOLS_OPENAI_KEY`)
+- **Outgoing:** TTS responses are sent as audio file attachments
+
+---
+
+## Per-Channel Prompts
+
+Assign ephemeral system prompts to specific Slack channels. The prompt is injected at runtime on every turn — never persisted to transcript history — so changes take effect immediately.
+
+```yaml
+slack:
+  channel_prompts:
+    "C01RESEARCH": |
+      You are a research assistant. Focus on academic sources,
+      citations, and concise synthesis.
+    "C02ENGINEERING": |
+      Code review mode. Be precise about edge cases and
+      performance implications.
+```
+
+Keys are Slack channel IDs (find them via channel details → "About" → scroll to bottom). All messages in the matching channel get the prompt injected as an ephemeral system instruction.
+
+## Per-Channel Skill Bindings
+
+Auto-load a skill whenever a new session starts in a specific channel or DM. Unlike per-channel prompts (which are injected on every turn), skill bindings inject the skill content as a user message at **session start** — it becomes part of the conversation history and does not need to be reloaded on subsequent turns.
+
+This is ideal for DMs or channels with a dedicated purpose (flashcards, a domain-specific Q&A bot, a support triage channel, etc.) where you don't want the model's own skill selector to decide whether to load on every short reply.
+
+```yaml
+slack:
+  channel_skill_bindings:
+    # DM channel — always runs in "german-flashcards" mode
+    - id: "D0ATH9TQ0G6"
+      skills:
+        - german-flashcards
+    # Research channel — preload multiple skills in order
+    - id: "C01RESEARCH"
+      skills:
+        - arxiv
+        - writing-plans
+    # Short form: single skill as a string
+    - id: "C02SUPPORT"
+      skill: hubspot-on-demand
+```
+
+Notes:
+- The binding matches by channel ID. For threaded messages in a bound channel, the thread inherits the parent channel's binding.
+- The skill is loaded only at session start (new session or after auto-reset). If you change the binding, run `/new` or wait for the session to auto-reset for it to take effect.
+- Combine with `channel_prompts` for per-channel tone/constraints on top of the skill's instructions.
+
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| Bot doesn't respond to DMs | Verify `message.im` is in your event subscriptions and the app is reinstalled |
+| Bot works in DMs but not in channels | **Most common issue.** Add `message.channels` and `message.groups` to event subscriptions, reinstall the app, and invite the bot to the channel with `/invite @Hermes Agent` |
+| Bot doesn't respond to @mentions in channels | 1) Check `message.channels` event is subscribed. 2) Bot must be invited to the channel. 3) Ensure `channels:history` scope is added. 4) Reinstall the app after scope/event changes |
+| Bot ignores messages in private channels | Add both the `message.groups` event subscription and `groups:history` scope, then reinstall the app and `/invite` the bot |
+| Bot doesn't respond in group DMs (multi-person DMs) | Add the `message.mpim` event subscription and the `mpim:history` scope (plus `mpim:read`), then **reinstall** the app. Without `message.mpim`, Slack never delivers group-DM messages to the bot — even though 1:1 DMs work. |
+| "Sending messages to this app has been turned off" in DMs | Enable the **Messages Tab** in App Home settings (see Step 5) |
+| "not_authed" or "invalid_auth" errors | Regenerate your Bot Token and App Token, update `.env` |
+| Bot responds but can't post in a channel | Invite the bot to the channel with `/invite @Hermes Agent` |
+| Bot can chat but can't read uploaded images/files | Add `files:read`, then **reinstall** the app. Hermes now surfaces attachment access diagnostics in-chat when Slack returns scope/auth/permission failures. |
+| `missing_scope` error | Add the required scope in OAuth & Permissions, then **reinstall** the app |
+| Socket disconnects frequently | Check your network; Bolt auto-reconnects but unstable connections cause lag |
+| Changed scopes/events but nothing changed | You **must reinstall** the app to your workspace after any scope or event subscription change |
+
+### Quick Checklist
+
+If the bot isn't working in channels, verify **all** of the following:
+
+1. ✅ `message.channels` event is subscribed (for public channels)
+2. ✅ `message.groups` event is subscribed (for private channels)
+3. ✅ `app_mention` event is subscribed
+4. ✅ `channels:history` scope is added (for public channels)
+5. ✅ `groups:history` scope is added (for private channels)
+6. ✅ App was **reinstalled** after adding scopes/events
+7. ✅ Bot was **invited** to the channel (`/invite @Hermes Agent`)
+8. ✅ You are **@mentioning** the bot in your message
+
+---
+
+## Security
+
+:::warning
+**Always set `SLACK_ALLOWED_USERS`** with the Member IDs of authorized users. Without this setting,
+the gateway will **deny all messages** by default as a safety measure. Never share your bot tokens —
+treat them like passwords.
+:::
+
+- Tokens should be stored in `~/.hermes/.env` (file permissions `600`)
+- Rotate tokens periodically via the Slack app settings
+- Audit who has access to your Hermes config directory
+- Socket Mode means no public endpoint is exposed — one less attack surface

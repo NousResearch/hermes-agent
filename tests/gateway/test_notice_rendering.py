@@ -1,0 +1,144 @@
+"""Unit tests for messaging-gateway credit-notice rendering.
+
+Covers render_notice_line — the pure helper that turns an AgentNotice into the
+single plaintext line pushed standalone over a messaging platform (no status
+bar, unlike the TUI). Behavior contracts, not data snapshots.
+"""
+from agent.credits_tracker import AgentNotice
+from gateway.run import render_notice_line
+
+
+class TestRenderNoticeLine:
+    """render_notice_line emits the notice text VERBATIM.
+
+    The notice policy already bakes the level glyph (⚠ / • / ✕ / ✓) into the
+    text, and the TUI + CLI REPL render it as-is — so messaging must NOT add a
+    second glyph, which would double it ("⚠ ⚠ Credits 90% used", "⛔ ✕ Credit
+    access paused").
+    """
+
+    def test_returns_text_verbatim_with_its_baked_glyph(self):
+        assert (
+            render_notice_line(AgentNotice(text="⚠ Credits 90% used · $20.00 cap", level="warn"))
+            == "⚠ Credits 90% used · $20.00 cap"
+        )
+        assert (
+            render_notice_line(AgentNotice(text="• Grant spent · $5.00 top-up left", level="info"))
+            == "• Grant spent · $5.00 top-up left"
+        )
+        assert (
+            render_notice_line(
+                AgentNotice(text="✕ Credit access paused · run /credits to top up", level="error")
+            )
+            == "✕ Credit access paused · run /credits to top up"
+        )
+
+    def test_does_not_prepend_a_second_glyph(self):
+        # Regression: the text already carries its glyph; the level must not add
+        # another (the bug produced "⚠ ⚠ …" / "⛔ ✕ …").
+        line = render_notice_line(AgentNotice(text="⚠ Credits 90% used", level="warn"))
+        assert line == "⚠ Credits 90% used"
+        assert "⚠ ⚠" not in line
+
+
+def test_real_policy_notices_render_without_doubling():
+    """End-to-end regression: every notice evaluate_credits_notices emits already
+    carries its glyph, so render_notice_line must return it unchanged (no second
+    glyph prepended) for the messaging push."""
+    from agent.credits_tracker import CreditsState, evaluate_credits_notices
+
+    def _emitted(uf=None, paid=True, purchased=0):
+        # Both crossing gates pre-opened: this test's subject is RENDERING of
+        # every notice the policy can emit, not the gating.
+        latch = {"active": set(), "seen_below_90": True, "usage_band": None,
+                 "seen_grant_unspent": True}
+        if uf is None:
+            st = CreditsState(
+                subscription_limit_micros=None, subscription_micros=0,
+                denominator_kind="none", paid_access=paid,
+                purchased_micros=purchased, purchased_usd="%.2f" % (purchased / 1e6),
+            )
+        else:
+            lim = 20_000_000
+            st = CreditsState(
+                subscription_limit_micros=lim, subscription_limit_usd="20.00",
+                subscription_micros=int(lim * (1 - uf)), denominator_kind="subscription_cap",
+                paid_access=paid, purchased_micros=purchased,
+                purchased_usd="%.2f" % (purchased / 1e6),
+            )
+        show, _ = evaluate_credits_notices(st, latch)
+        return show
+
+    notices = (
+        _emitted(uf=0.9)                          # band 90 (warn)
+        + _emitted(uf=0.5)                        # band 50 (info)
+        + _emitted(uf=1.0, purchased=5_000_000)   # grant_spent (band suppressed by top-up)
+        + _emitted(uf=None, paid=False)           # depleted
+    )
+    # Every leg above must actually produce its notice — a gate regression that
+    # silences one leg must fail here, not silently shrink the coverage.
+    assert len(notices) == 4, [n.key for n in notices]
+    for n in notices:
+        assert render_notice_line(n) == n.text  # verbatim — no prepended glyph
+
+
+# ── Delivery seam: a rendered notice line goes out via _deliver_platform_notice ──
+
+import threading
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+
+def _make_source(platform_value="telegram", chat_id="555", user_id="u1"):
+    src = MagicMock()
+    plat = MagicMock()
+    plat.value = platform_value
+    src.platform = plat
+    src.chat_id = chat_id
+    src.user_id = user_id
+    # Real SessionSource.profile is None (single-profile) or a str; a MagicMock
+    # auto-attribute would read as a truthy "stamped profile" and trip the
+    # fail-closed path in _adapter_for_source (see AGENTS.md pitfall #17).
+    src.profile = None
+    return src
+
+
+def _make_runner_with_adapter(source, adapter):
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {source.platform: adapter}
+    runner.config = MagicMock()
+    runner.config.get_notice_delivery = MagicMock(return_value="public")
+    runner._thread_metadata_for_source = MagicMock(return_value={"thread": "t"})
+    return runner
+
+
+class TestDeliverNoticeLine:
+    """The seam between render_notice_line and the platform adapter.
+
+    Proves a rendered credit-notice line reaches adapter.send (public) /
+    send_private_notice (private) through the shared _deliver_platform_notice
+    rail — the path the gateway notice_callback schedules onto the loop.
+    """
+
+    @pytest.mark.asyncio
+    async def test_public_delivery_sends_rendered_line(self):
+        source = _make_source()
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=MagicMock(success=True))
+        runner = _make_runner_with_adapter(source, adapter)
+
+        line = render_notice_line(
+            AgentNotice(text="⚠ Credits 90% used · $20.00 cap", level="warn")
+        )
+        await runner._deliver_platform_notice(source, line)
+
+        adapter.send.assert_awaited_once()
+        args, kwargs = adapter.send.call_args
+        assert args[0] == "555"
+        # Delivered verbatim — the policy's single glyph, not a doubled one.
+        assert args[1] == "⚠ Credits 90% used · $20.00 cap"
+
+

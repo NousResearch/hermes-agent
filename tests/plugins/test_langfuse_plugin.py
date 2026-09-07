@@ -1,0 +1,2389 @@
+"""Tests for the bundled observability/langfuse plugin."""
+from __future__ import annotations
+
+import importlib
+import logging
+import sys
+from decimal import Decimal
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+import yaml
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PLUGIN_DIR = REPO_ROOT / "plugins" / "observability" / "langfuse"
+
+
+# ---------------------------------------------------------------------------
+# Manifest + layout
+# ---------------------------------------------------------------------------
+
+class TestManifest:
+
+    def test_manifest_fields(self):
+        data = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text())
+        assert data["name"] == "langfuse"
+        assert data["version"]
+        # All eleven hooks the plugin implements.
+        assert set(data["hooks"]) == {
+            "pre_api_request", "post_api_request", "api_request_error",
+            "pre_llm_call", "post_llm_call",
+            "pre_tool_call", "post_tool_call",
+            "on_session_finalize", "on_session_end",
+            "subagent_start", "subagent_stop",
+        }
+        # Required env vars are the user-facing HERMES_ prefixed keys.
+        assert "HERMES_LANGFUSE_PUBLIC_KEY" in data["requires_env"]
+        assert "HERMES_LANGFUSE_SECRET_KEY" in data["requires_env"]
+
+
+# ---------------------------------------------------------------------------
+# Plugin discovery: langfuse is opt-in (not loaded unless explicitly enabled).
+# This guards against someone accidentally re-introducing a per-hook
+# load_config() gate or making the plugin auto-load.
+# ---------------------------------------------------------------------------
+
+class TestDiscovery:
+    def test_plugin_is_discovered_as_standalone_opt_in(self, tmp_path, monkeypatch):
+        """Scanner should find the plugin but NOT load it by default."""
+        from hermes_cli import plugins as plugins_mod
+
+        # Isolated HERMES_HOME so we don't read the developer's config.yaml.
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        manager = plugins_mod.PluginManager()
+        manager.discover_and_load()
+
+        # observability/langfuse appears in the plugin registry …
+        loaded = manager._plugins.get("observability/langfuse")
+        assert loaded is not None, "plugin not discovered"
+        # … but is not loaded (opt-in default → no config.yaml means nothing enabled)
+        assert loaded.enabled is False
+        assert "not enabled" in (loaded.error or "").lower()
+
+
+# ---------------------------------------------------------------------------
+# Runtime gate: _get_langfuse() returns None and caches _INIT_FAILED when
+# credentials are missing. Guards against regressing toward the rejected
+# per-hook load_config() design.
+# ---------------------------------------------------------------------------
+
+class TestRuntimeGate:
+    def _fresh_plugin(self):
+        """Import the plugin module fresh (clears any cached client)."""
+        mod_name = "plugins.observability.langfuse"
+        sys.modules.pop(mod_name, None)
+        return importlib.import_module(mod_name)
+
+    def test_get_langfuse_returns_none_without_credentials(self, monkeypatch):
+        for k in (
+            "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
+            "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
+        ):
+            monkeypatch.delenv(k, raising=False)
+
+        langfuse_plugin = self._fresh_plugin()
+        assert langfuse_plugin._get_langfuse() is None
+
+    def test_missing_sdk_logs_one_warning(self, monkeypatch, caplog):
+        langfuse_plugin = self._fresh_plugin()
+        monkeypatch.setattr(langfuse_plugin, "Langfuse", None)
+        langfuse_plugin._LANGFUSE_CLIENT = None
+
+        with caplog.at_level(logging.WARNING, logger=langfuse_plugin.__name__):
+            assert langfuse_plugin._get_langfuse() is None
+            assert langfuse_plugin._get_langfuse() is None
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert len(messages) == 1
+        assert "SDK is unavailable" in messages[0]
+        assert "tracing is disabled" in messages[0]
+
+    def test_get_langfuse_caches_failure_no_config_load(self, monkeypatch):
+        """A miss must be cached — no per-hook config.yaml reads, no env re-reads."""
+        for k in (
+            "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
+            "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
+        ):
+            monkeypatch.delenv(k, raising=False)
+
+        langfuse_plugin = self._fresh_plugin()
+
+        # Prime the cache with one call.
+        assert langfuse_plugin._get_langfuse() is None
+
+        # Now block os.environ.get — a correctly-cached plugin must not
+        # touch env again.
+        import os
+        called = {"n": 0}
+        real_get = os.environ.get
+
+        def tracking_get(key, default=None):
+            if key.startswith(("HERMES_LANGFUSE_", "LANGFUSE_")):
+                called["n"] += 1
+            return real_get(key, default)
+
+        monkeypatch.setattr(os.environ, "get", tracking_get)
+
+        for _ in range(20):
+            assert langfuse_plugin._get_langfuse() is None
+
+        assert called["n"] == 0, (
+            f"_get_langfuse() re-read env {called['n']} times after cache miss — "
+            "it should short-circuit via _INIT_FAILED"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Hooks are inert when the client is unavailable.
+# ---------------------------------------------------------------------------
+
+class TestHooksInert:
+    def test_hooks_noop_without_client(self, monkeypatch):
+        """All 6 hooks must return without raising when _get_langfuse() is None."""
+        for k in (
+            "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
+            "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
+        ):
+            monkeypatch.delenv(k, raising=False)
+
+        sys.modules.pop("plugins.observability.langfuse", None)
+        import importlib
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        # Each hook should just return; no exceptions.
+        mod.on_pre_llm_call(task_id="t", session_id="s", messages=[{"role": "user", "content": "hi"}])
+        mod.on_pre_llm_request(task_id="t", session_id="s", api_call_count=1, request_messages=[])
+        mod.on_post_llm_call(task_id="t", session_id="s", api_call_count=1)
+        mod.on_pre_tool_call(tool_name="read_file", args={}, task_id="t", session_id="s")
+        mod.on_post_tool_call(tool_name="read_file", args={}, result="ok", task_id="t", session_id="s")
+
+
+class TestPayloadSanitization:
+    def test_safe_value_redacts_base64_data_uri_instead_of_truncating(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        import importlib
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        payload = "data:image/png;base64," + ("a" * 20000)
+        result = mod._safe_value(payload)
+
+        assert result == {
+            "type": "data_uri",
+            "media_type": "image/png",
+            "omitted": True,
+            "length": len(payload),
+        }
+
+    def test_serialize_messages_redacts_data_uri_parts(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        import importlib
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        payload = "data:image/jpeg;base64," + ("b" * 20000)
+        serialized = mod._serialize_messages([
+            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": payload}}]}
+        ])
+
+        assert serialized[0]["content"][0]["image_url"]["url"] == {
+            "type": "data_uri",
+            "media_type": "image/jpeg",
+            "omitted": True,
+            "length": len(payload),
+        }
+
+
+class TestTraceScopeKey:
+    def _fresh_plugin(self):
+        mod_name = "plugins.observability.langfuse"
+        sys.modules.pop(mod_name, None)
+        return importlib.import_module(mod_name)
+
+    def test_trace_key_scopes_by_turn_id_when_available(self):
+        plugin = self._fresh_plugin()
+
+        key_a = plugin._trace_key("task-1", "session-1", turn_id="turn-a")
+        key_b = plugin._trace_key("task-1", "session-1", turn_id="turn-b")
+
+        assert key_a != key_b
+        assert "turn:turn-a" in key_a
+        assert "turn:turn-b" in key_b
+
+
+# ---------------------------------------------------------------------------
+# End-to-end collision regression: two turns of ONE gateway session must not
+# share trace state.  The helper-level tests above prove _trace_key returns
+# distinct keys; this drives the real pre/post hooks to prove the keys are
+# actually threaded through so the second turn gets its own root trace.
+#
+# Gateway reality this reproduces:
+#   * task_id == session_id for every turn        (gateway/run.py)
+#   * turn_id is unique per turn                   (turn_context.py)
+#   * api_call_count resets to 1 each turn         (conversation_loop.py)
+#
+# Before the turn/request scoping, _trace_key collapsed to the constant
+# session_id.  That worked only because _finish_trace pops the key on a clean
+# turn end.  When turn 1 does NOT finalize (interrupted, tool-only final step,
+# or empty final content), its state lingered under session_id and turn 2
+# silently merged into turn 1's trace instead of opening its own.
+# ---------------------------------------------------------------------------
+
+
+class TestTurnTraceIsolation:
+    def _fresh_plugin(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    @staticmethod
+    def _fake_client(started):
+        """A minimal Langfuse stand-in that records each root trace opened.
+
+        ``_start_root_trace`` calls ``create_trace_id`` then opens a root via
+        ``start_as_current_observation(...)`` (a context manager whose
+        ``__enter__`` returns the root span).  We record one entry per root
+        actually opened so the test can count distinct traces.
+        """
+
+        class _Span:
+            def update(self, **kw):
+                pass
+
+            def end(self, **kw):
+                pass
+
+            def set_trace_io(self, **kw):
+                pass
+
+            def start_observation(self, **kw):
+                return _Span()
+
+        class _RootCM:
+            def __enter__(self):
+                return _Span()
+
+            def __exit__(self, *exc):
+                return False
+
+        class _Client:
+            def create_trace_id(self, seed=None):
+                return f"trace::{seed}"
+
+            def start_as_current_observation(self, **kw):
+                started.append(kw.get("trace_context", {}).get("trace_id"))
+                return _RootCM()
+
+            def flush(self):
+                pass
+
+        return _Client()
+
+    def _run_turn(self, mod, *, session, turn_n, finalize):
+        """Drive one turn through the request-scoped hooks the gateway fires."""
+        task_id = session  # gateway sets task_id == session_id
+        turn_id = f"{session}:{task_id}:turn{turn_n}"
+        api_call_count = 1  # resets every turn
+        api_request_id = f"{turn_id}:api:{api_call_count}"
+
+        mod.on_pre_llm_request(
+            task_id=task_id,
+            session_id=session,
+            model="m",
+            provider="p",
+            api_mode="chat",
+            api_call_count=api_call_count,
+            request_messages=[{"role": "user", "content": "hi"}],
+            turn_id=turn_id,
+            api_request_id=api_request_id,
+        )
+        # finalize=False => leave a tool call on the final response so
+        # _finish_trace is skipped and the turn's state lingers.
+        mod.on_post_llm_call(
+            task_id=task_id,
+            session_id=session,
+            model="m",
+            provider="p",
+            api_mode="chat",
+            api_call_count=api_call_count,
+            assistant_content_chars=5 if finalize else 0,
+            assistant_tool_call_count=0 if finalize else 1,
+            usage={"input_tokens": 10, "output_tokens": 5},
+            turn_id=turn_id,
+            api_request_id=api_request_id,
+        )
+
+    def test_unfinalized_turn_does_not_capture_next_turn(self, monkeypatch):
+        """A turn that never finalizes must not absorb the following turn."""
+        mod = self._fresh_plugin()
+        started: list = []
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: self._fake_client(started))
+        monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
+        mod._TRACE_STATE.clear()
+
+        # Turn 1 ends without finalizing (its final step still has a tool call).
+        self._run_turn(mod, session="sess-iso", turn_n=1, finalize=False)
+        # Turn 2 is a normal, fully finalizing turn in the SAME session.
+        self._run_turn(mod, session="sess-iso", turn_n=2, finalize=True)
+
+        # Each turn opened its OWN root trace.  On the pre-fix code the second
+        # turn reused turn 1's lingering state and only one trace was opened.
+        assert len(started) == 2
+
+        # Turn 2 finalized and was popped by _finish_trace; only turn 1's
+        # (non-finalizing) state lingers.  Assert the surviving key is turn 1's
+        # and that turn 2 never merged into it — `all(...)` over an empty set
+        # would pass vacuously, so pin the exact surviving key instead.
+        keys = list(mod._TRACE_STATE.keys())
+        assert len(keys) == 1
+        assert "turn1" in keys[0]
+        assert "turn2" not in keys[0]
+
+    def test_pre_and_post_hooks_share_one_key_within_a_turn(self, monkeypatch):
+        """turn_id is preferred over api_request_id so the turn-scoped
+        post_llm_call (which carries no api_request_id) still resolves to the
+        same key as the request-scoped pre/post_api_request hooks.  If the
+        ordering were reversed, finalization would silently break."""
+        mod = self._fresh_plugin()
+        turn_id = "S:T:turnX"
+        api_request_id = f"{turn_id}:api:1"
+
+        k_pre_api = mod._trace_key("T", "S", turn_id=turn_id, api_request_id=api_request_id)
+        k_post_api = mod._trace_key("T", "S", turn_id=turn_id, api_request_id=api_request_id)
+        k_post_turn = mod._trace_key("T", "S", turn_id=turn_id, api_request_id="")
+
+        assert k_pre_api == k_post_api == k_post_turn
+
+    def test_non_finalizing_turns_do_not_grow_state_unboundedly(self, monkeypatch):
+        """Per-turn keys mean a turn that never finalizes leaves a lingering
+        entry.  Without a cap that grows once per non-finalizing turn forever;
+        the LRU eviction must bound _TRACE_STATE at _MAX_TRACE_STATE.
+        """
+        mod = self._fresh_plugin()
+        started: list = []
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: self._fake_client(started))
+        monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
+        monkeypatch.setattr(mod, "_MAX_TRACE_STATE", 8)
+        mod._TRACE_STATE.clear()
+
+        # Far more non-finalizing turns than the cap.
+        for n in range(50):
+            self._run_turn(mod, session="sess-leak", turn_n=n, finalize=False)
+
+        assert len(mod._TRACE_STATE) <= 8
+        # The survivors are the most-recently-updated turns (LRU eviction).
+        surviving = sorted(int(k.rsplit("turn", 1)[1]) for k in mod._TRACE_STATE)
+        assert surviving == list(range(42, 50))
+
+    def test_finish_trace_exits_root_context_manager(self, monkeypatch):
+        """_finish_trace must call root_ctx.__exit__(), not just root_span.end().
+
+        Regression for the "Exception ignored in: <generator>" traceback
+        on CLI exit.  The plugin enters the root observation's context
+        manager (start_as_current_observation(...).__enter__()) but must
+        also exit it; otherwise the generator is left suspended and is
+        only unwound when the GC collects it during interpreter teardown.
+        By then opentelemetry.trace.Span has been set to None, and the
+        generator's close() -> use_span.__exit__ -> isinstance(span, Span)
+        raises TypeError: isinstance() arg 2 must be a type.  Exiting the
+        context manager here unwinds the generator while modules are intact.
+        """
+        mod = self._fresh_plugin()
+        started: list = []
+        monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
+        mod._TRACE_STATE.clear()
+
+        exited: list = []
+
+        class _S:
+            def update(self, **kw): pass
+            def end(self, **kw): pass
+            def set_trace_io(self, **kw): pass
+            def start_observation(self, **kw): return _S()
+
+        class _TrackingRootCM:
+            def __enter__(self):
+                return _S()
+            def __exit__(self, *exc):
+                exited.append(exc)
+                return False
+
+        class _TrackingClient:
+            def create_trace_id(self, seed=None):
+                return f"trace::{seed}"
+            def start_as_current_observation(self, **kw):
+                started.append(kw.get("trace_context", {}).get("trace_id"))
+                return _TrackingRootCM()
+            def flush(self):
+                pass
+
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: _TrackingClient())
+
+        self._run_turn(mod, session="sess-exit", turn_n=1, finalize=True)
+
+        assert exited, (
+            "_finish_trace did not call root_ctx.__exit__; the generator is "
+            "left suspended and will raise TypeError on GC at interpreter "
+            "teardown when opentelemetry.trace.Span is None"
+        )
+        assert len(exited) == 1
+        assert exited[0] == (None, None, None)
+
+
+# ---------------------------------------------------------------------------
+# Placeholder-credential guard (#23823).
+#
+# Regression coverage for the silent-failure bug: when an operator leaves
+# HERMES_LANGFUSE_PUBLIC_KEY / SECRET_KEY at a template value like
+# "placeholder", "test-key", or "your-langfuse-key", the SDK accepts the
+# credentials at construction time (it does no server-side validation
+# eagerly) but drops every trace at flush time, with no signal in the
+# Hermes logs.  The fix in `_get_langfuse()` validates the documented
+# `pk-lf-` / `sk-lf-` prefix Langfuse always issues, surfaces a one-shot
+# warning naming the offending env var(s), and short-circuits via the
+# same `_INIT_FAILED` path used for missing credentials so subsequent
+# hook invocations don't re-log.
+# ---------------------------------------------------------------------------
+
+
+class _FakeLangfuse:
+    """Stand-in for the real :class:`langfuse.Langfuse` so tests don't
+    need the optional ``langfuse`` SDK installed.  The plugin's runtime
+    gate refuses to proceed past ``if Langfuse is None`` when the SDK
+    is missing, which would short-circuit before the placeholder check
+    can fire.  Patching ``plugin.Langfuse`` with this class lets the
+    placeholder validator exercise its full code path."""
+
+    instances: list["_FakeLangfuse"] = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        _FakeLangfuse.instances.append(self)
+
+
+class TestPlaceholderKeyDetection:
+    LOGGER_NAME = "plugins.observability.langfuse"
+
+    def _fresh_plugin(self, monkeypatch=None):
+        mod_name = "plugins.observability.langfuse"
+        sys.modules.pop(mod_name, None)
+        mod = importlib.import_module(mod_name)
+        if monkeypatch is not None:
+            # Pretend the SDK is installed so `_get_langfuse()` actually
+            # reaches the placeholder check.  Real SDK calls are never
+            # made because the placeholder/missing-credentials paths
+            # return before constructing a client.
+            _FakeLangfuse.instances.clear()
+            monkeypatch.setattr(mod, "Langfuse", _FakeLangfuse, raising=False)
+        return mod
+
+    @staticmethod
+    def _clear_env(monkeypatch):
+        for k in (
+            "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
+            "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
+        ):
+            monkeypatch.delenv(k, raising=False)
+
+    # -- helper unit tests (no SDK stub needed: these don't go through
+    #    _get_langfuse, they exercise the pure-Python helpers directly) ------
+
+
+    def test_validate_langfuse_key_accepts_documented_prefix(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        plugin = self._fresh_plugin()
+        assert plugin._validate_langfuse_key(
+            "HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz"
+        ) is None
+        assert plugin._validate_langfuse_key(
+            "HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz"
+        ) is None
+
+
+    # -- end-to-end _get_langfuse() behaviour --------------------------------
+    # These tests pass `monkeypatch` to _fresh_plugin() so the helper can
+    # stub out `Langfuse` (the optional SDK).  Without that, every call
+    # short-circuits at `if Langfuse is None` before reaching the
+    # placeholder validator — masking the very behaviour we're testing.
+
+    def test_placeholder_public_key_warns_and_skips(self, monkeypatch, caplog):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "placeholder")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz")
+        plugin = self._fresh_plugin(monkeypatch)
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+            assert plugin._get_langfuse() is None
+        text = caplog.text
+        assert "HERMES_LANGFUSE_PUBLIC_KEY" in text
+        assert "'placeholder'" in text
+        assert "pk-lf-" in text
+        # The valid secret value must NOT appear (the var NAME does, in
+        # the "or unset ..." hint, but the value preview shouldn't).
+        assert "'sk-lf-" not in text
+        # Never constructed the SDK client — short-circuited before that.
+        assert _FakeLangfuse.instances == []
+
+    def test_placeholder_secret_key_warns_and_skips(self, monkeypatch, caplog):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "test-key")
+        plugin = self._fresh_plugin(monkeypatch)
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+            assert plugin._get_langfuse() is None
+        text = caplog.text
+        assert "HERMES_LANGFUSE_SECRET_KEY" in text
+        assert "'test-key'" in text
+        assert "sk-lf-" in text
+        # The valid public value must NOT appear.
+        assert "'pk-lf-" not in text
+        assert _FakeLangfuse.instances == []
+
+    def test_both_placeholders_one_warning_with_both_keys(self, monkeypatch, caplog):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "placeholder")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "placeholder")
+        plugin = self._fresh_plugin(monkeypatch)
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+            assert plugin._get_langfuse() is None
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"
+                    and r.name == self.LOGGER_NAME]
+        assert len(warnings) == 1, (
+            f"Expected a single combined warning; got {len(warnings)}:\n"
+            + "\n".join(r.getMessage() for r in warnings)
+        )
+        text = warnings[0].getMessage()
+        assert "HERMES_LANGFUSE_PUBLIC_KEY" in text
+        assert "HERMES_LANGFUSE_SECRET_KEY" in text
+
+    def test_repeated_calls_do_not_re_warn(self, monkeypatch, caplog):
+        """The cached ``_INIT_FAILED`` sentinel must short-circuit
+        subsequent calls so each hook invocation isn't a fresh log
+        line — otherwise a busy gateway will spam the operator's
+        terminal."""
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "placeholder")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "placeholder")
+        plugin = self._fresh_plugin(monkeypatch)
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+            for _ in range(15):
+                assert plugin._get_langfuse() is None
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"
+                    and r.name == self.LOGGER_NAME]
+        assert len(warnings) == 1, (
+            f"Warning fired {len(warnings)} times across 15 calls; "
+            "expected 1 (cached via _INIT_FAILED)"
+        )
+
+
+class TestRequestMessageCoercion:
+    def test_prefers_request_messages_then_messages_then_history_then_user_message(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        assert mod._coerce_request_messages(
+            request_messages=[{"role": "system", "content": "s"}],
+            messages=[{"role": "user", "content": "m"}],
+            conversation_history=[{"role": "user", "content": "h"}],
+            user_message="u",
+        ) == [{"role": "system", "content": "s"}]
+        assert mod._coerce_request_messages(
+            messages=[{"role": "user", "content": "m"}],
+            conversation_history=[{"role": "user", "content": "h"}],
+            user_message="u",
+        ) == [{"role": "user", "content": "m"}]
+        assert mod._coerce_request_messages(
+            conversation_history=[{"role": "user", "content": "h"}],
+            user_message="u",
+        ) == [{"role": "user", "content": "h"}]
+        assert mod._coerce_request_messages(user_message="u") == [{"role": "user", "content": "u"}]
+
+    def test_messages_for_langfuse_includes_anthropic_system_param(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        out = mod._messages_for_langfuse_input(
+            request_messages=[{"role": "user", "content": "hi"}],
+            system_prompt="You are Hermes.",
+        )
+        assert out[0]["role"] == "system"
+        assert out[0]["content"] == "You are Hermes."
+        assert out[1]["role"] == "user"
+
+    def test_messages_for_langfuse_skips_duplicate_system(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        out = mod._messages_for_langfuse_input(
+            request_messages=[
+                {"role": "system", "content": "already here"},
+                {"role": "user", "content": "hi"},
+            ],
+            system_prompt="ignored when messages include system",
+        )
+        assert out[0]["role"] == "system"
+        assert out[0]["content"] == "already here"
+        assert out[1]["role"] == "user"
+
+
+class TestAssistantMessageSerialization:
+    def test_serialize_assistant_message_prefers_reasoning(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        message = SimpleNamespace(
+            content="answer",
+            reasoning="primary reasoning",
+            reasoning_content="fallback reasoning",
+            reasoning_details=[{"type": "summary", "text": "structured reasoning"}],
+        )
+
+        assert mod._serialize_assistant_message(message)["reasoning"] == "primary reasoning"
+
+    def test_serialize_assistant_message_uses_reasoning_content_when_reasoning_absent(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        message = SimpleNamespace(
+            content="answer",
+            reasoning=None,
+            reasoning_content="provider scratchpad",
+            reasoning_details=[{"type": "summary", "text": "structured reasoning"}],
+        )
+
+        assert mod._serialize_assistant_message(message)["reasoning"] == "provider scratchpad"
+
+    def test_serialize_assistant_message_uses_structured_reasoning_details(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        reasoning_details = [
+            {"type": "summary", "text": "checked tools"},
+            {"type": "encrypted_content", "encrypted_content": b"opaque"},
+        ]
+        message = SimpleNamespace(
+            content="answer",
+            reasoning=None,
+            reasoning_content=None,
+            reasoning_details=reasoning_details,
+        )
+
+        assert mod._serialize_assistant_message(message)["reasoning"] == [
+            {"type": "summary", "text": "checked tools"},
+            {"type": "encrypted_content", "encrypted_content": {"type": "bytes", "len": 6}},
+        ]
+
+    def test_serialize_assistant_message_without_reasoning_fields_sets_none(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        message = SimpleNamespace(content="answer")
+
+        assert mod._serialize_assistant_message(message)["reasoning"] is None
+
+
+class TestToolCallOutputBackfill:
+    def test_post_tool_call_backfills_matching_turn_tool_call_output(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        observation = object()
+        state = mod.TraceState(trace_id="trace-1", root_ctx=None, root_span=None)
+        state.tools["call-1"] = observation
+        state.turn_tool_calls.append({
+            "id": "call-1",
+            "type": "function",
+            "name": "web_extract",
+            "arguments": '{"urls": ["https://example.com"]}',
+            "function": {
+                "name": "web_extract",
+                "arguments": '{"urls": ["https://example.com"]}',
+            },
+        })
+
+        task_key = mod._trace_key("task-1", "session-1")
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+
+        ended = {}
+
+        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None):
+            ended["observation"] = obs
+            ended["output"] = output
+            ended["metadata"] = metadata
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end_observation)
+
+        mod.on_post_tool_call(
+            tool_name="web_extract",
+            args={"urls": ["https://example.com"]},
+            result='{"results": [{"url": "https://example.com", "content": "Example Domain"}]}',
+            task_id="task-1",
+            session_id="session-1",
+            tool_call_id="call-1",
+        )
+
+        assert ended["observation"] is observation
+        assert state.turn_tool_calls[0]["output"] == ended["output"]
+        assert state.turn_tool_calls[0]["function"]["output"] == ended["output"]
+        assert state.turn_tool_calls[0]["output"] == {
+            "results": [{"url": "https://example.com", "content": "Example Domain"}]
+        }
+
+    def test_serialize_messages_keeps_tool_name_and_call_id(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        messages = [{
+            "role": "tool",
+            "name": "web_extract",
+            "tool_call_id": "call-1",
+            "content": '{"ok": true}',
+        }]
+
+        assert mod._serialize_messages(messages) == [{
+            "role": "tool",
+            "name": "web_extract",
+            "tool_call_id": "call-1",
+            "content": {"ok": True},
+        }]
+
+
+class TestToolObservationKeying:
+    """Tests for pre/post tool_call observation matching when tool_call_id is absent."""
+
+    def _make_mod(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def test_empty_tool_call_id_single_tool_sets_output(self, monkeypatch):
+        mod = self._make_mod()
+        obs = object()
+        state = mod.TraceState(trace_id="t", root_ctx=None, root_span=None)
+        state.pending_tools_by_name.setdefault("my_tool", []).append(obs)
+
+        task_key = mod._trace_key("task-1", "sess-1")
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+
+        ended = {}
+
+        def fake_end(o, *, output=None, metadata=None, **kw):
+            ended["obs"] = o
+            ended["output"] = output
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end)
+
+        mod.on_post_tool_call(
+            tool_name="my_tool",
+            args={},
+            result='{"ok": true}',
+            task_id="task-1",
+            session_id="sess-1",
+            tool_call_id="",
+        )
+
+        assert ended["obs"] is obs
+        assert ended["output"] == {"ok": True}
+        assert state.pending_tools_by_name.get("my_tool") is None
+
+
+    def test_threaded_post_calls_preserve_fifo_under_lock(self, monkeypatch):
+        """The actual concurrency contract: when 8 threads race to drain
+        the pending queue, no observation is consumed twice and none is
+        lost.  Validates ``_STATE_LOCK`` discipline, not Python list
+        semantics."""
+        import threading
+
+        mod = self._make_mod()
+        n = 8
+        observations = [object() for _ in range(n)]
+        state = mod.TraceState(trace_id="t", root_ctx=None, root_span=None)
+        state.pending_tools_by_name["web_extract"] = list(observations)
+
+        task_key = mod._trace_key("task-thr", "sess-thr")
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+
+        recorded: list = []
+        lock = threading.Lock()
+
+        def fake_end(o, *, output=None, metadata=None, **kw):
+            with lock:
+                recorded.append(o)
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end)
+
+        barrier = threading.Barrier(n)
+
+        def worker():
+            barrier.wait()
+            mod.on_post_tool_call(
+                tool_name="web_extract", args={}, result='{"ok": true}',
+                task_id="task-thr", session_id="sess-thr", tool_call_id="",
+            )
+
+        threads = [threading.Thread(target=worker) for _ in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Every observation was consumed exactly once; queue is empty.
+        assert len(recorded) == n
+        assert set(map(id, recorded)) == set(map(id, observations))
+        assert state.pending_tools_by_name.get("web_extract") is None
+
+    def test_explicit_tool_call_id_uses_tools_dict(self, monkeypatch):
+        """When tool_call_id is present, pending_tools_by_name is not touched."""
+        mod = self._make_mod()
+        obs = object()
+        state = mod.TraceState(trace_id="t", root_ctx=None, root_span=None)
+        state.tools["call-99"] = obs
+
+        task_key = mod._trace_key("task-1", "sess-1")
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+
+        ended = {}
+
+        def fake_end(o, *, output=None, metadata=None, **kw):
+            ended["obs"] = o
+            ended["output"] = output
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end)
+
+        mod.on_post_tool_call(
+            tool_name="my_tool", args={}, result='{"status": "done"}',
+            task_id="task-1", session_id="sess-1", tool_call_id="call-99",
+        )
+
+        assert ended["obs"] is obs
+        assert ended["output"] == {"status": "done"}
+        assert not state.tools
+
+
+class TestUsageFromSanitizedResponse:
+    """Regression: ``post_api_request`` delivers ``response`` as a sanitized
+    dict (no ``.usage`` attribute) plus a separate ``usage`` summary dict. The
+    post-call handler must read the ``usage`` dict instead of treating the dict
+    response as a usage-bearing object and dropping all token/cost data."""
+
+    def _setup(self, mod, monkeypatch):
+        # Active client so on_post_llm_call does not early-return.
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        observation = object()
+        state = mod.TraceState(trace_id="trace-1", root_ctx=None, root_span=None)
+        state.generations[mod._request_key(1)] = observation
+        monkeypatch.setitem(mod._TRACE_STATE, mod._trace_key("task-1", "session-1"), state)
+        captured = {}
+
+        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None):
+            captured["usage_details"] = usage_details
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end_observation)
+        return captured
+
+    def test_sanitized_dict_response_uses_usage_dict(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        captured = self._setup(mod, monkeypatch)
+
+        # A plain dict has no ``.usage`` attribute — mirrors post_api_request.
+        mod.on_post_llm_call(
+            task_id="task-1",
+            session_id="session-1",
+            api_call_count=1,
+            model="gemini-3-flash-preview",
+            response={"model": "gemini-3-flash-preview", "usage": {"input_tokens": 100, "output_tokens": 20}},
+            usage={"input_tokens": 100, "output_tokens": 20},
+            assistant_content_chars=42,
+        )
+
+        # Before the fix the dict response shadowed the usage dict and tokens
+        # were lost (usage_details == {}).
+        assert captured["usage_details"] == {"input": 100, "output": 20}
+
+    def test_real_response_object_with_usage_still_used(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        captured = self._setup(mod, monkeypatch)
+
+        # A response object that genuinely carries usage must still take the
+        # response-object path (post_llm_call / legacy behavior).
+        seen = {}
+
+        def fake_usage_and_cost(resp, **_):
+            seen["resp"] = resp
+            return {"input": 7, "output": 3}, {}
+
+        monkeypatch.setattr(mod, "_usage_and_cost", fake_usage_and_cost)
+
+        class _Resp:
+            usage = {"prompt_tokens": 7, "completion_tokens": 3}
+
+        resp = _Resp()
+        mod.on_post_llm_call(
+            task_id="task-1",
+            session_id="session-1",
+            api_call_count=1,
+            model="gemini-3-flash-preview",
+            response=resp,
+            usage={"input_tokens": 999, "output_tokens": 999},
+            assistant_content_chars=42,
+        )
+
+        assert seen["resp"] is resp
+        assert captured["usage_details"] == {"input": 7, "output": 3}
+
+
+# ---------------------------------------------------------------------------
+# Model attribution: wire truth over stale agent attribute
+# ---------------------------------------------------------------------------
+
+class TestModelAttribution:
+    def _fresh_plugin(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def _client_capturing_generations(self, gens):
+        class _Gen:
+            def update(self, **kw): pass
+            def end(self, **kw): pass
+
+        class _Span:
+            def update(self, **kw): pass
+            def end(self, **kw): pass
+            def set_trace_io(self, **kw): pass
+            def start_observation(self, **kw):
+                gens.append(kw)
+                return _Gen()
+
+        class _RootCM:
+            def __enter__(self): return _Span()
+            def __exit__(self, *exc): return False
+
+        class _Client:
+            def create_trace_id(self, seed=None): return "t"
+            def start_as_current_observation(self, **kw): return _RootCM()
+            def flush(self): pass
+
+        return _Client()
+
+    def test_pre_api_request_prefers_request_body_model(self, monkeypatch):
+        """Agent attribute says old model; request body says the switched one."""
+        mod = self._fresh_plugin()
+        gens: list = []
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: self._client_capturing_generations(gens))
+        mod._TRACE_STATE.clear()
+
+        mod.on_pre_llm_request(
+            task_id="t", session_id="s", turn_id="s:t:turn1",
+            api_call_count=1,
+            model="old-model-attr",
+            provider="openrouter",
+            request_messages=[{"role": "user", "content": "hi"}],
+            request={"body": {"model": "switched/new-model"}},
+        )
+        assert gens, "no generation started"
+        assert gens[0]["model"] == "switched/new-model"
+
+    def test_pre_api_request_falls_back_to_attr_without_body_model(self, monkeypatch):
+        mod = self._fresh_plugin()
+        gens: list = []
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: self._client_capturing_generations(gens))
+        mod._TRACE_STATE.clear()
+
+        mod.on_pre_llm_request(
+            task_id="t", session_id="s", turn_id="s:t:turn2",
+            api_call_count=1,
+            model="attr-model",
+            request_messages=[{"role": "user", "content": "hi"}],
+            request={"body": {}},
+        )
+        assert gens[0]["model"] == "attr-model"
+
+    def test_post_api_request_uses_response_model_for_cost(self, monkeypatch):
+        """Cost estimation must key off the model that actually served."""
+        mod = self._fresh_plugin()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        mod._TRACE_STATE.clear()
+
+        seen = {}
+        def fake_usage_and_cost(response, *, provider, api_mode, model, base_url):
+            seen["model"] = model
+            return {"input": 1, "output": 1}, {}
+        monkeypatch.setattr(mod, "_usage_and_cost", fake_usage_and_cost)
+
+        class _Gen:
+            def update(self, **kw): pass
+            def end(self, **kw): pass
+
+        class _Root:
+            def update(self, **kw): pass
+            def end(self, **kw): pass
+            def set_trace_io(self, **kw): pass
+
+        turn_id = "s:t:turn3"
+        key = mod._trace_key("t", "s", turn_id=turn_id)
+        state = mod.TraceState(trace_id="x", root_ctx=None, root_span=_Root())
+        state.generations["1"] = _Gen()
+        mod._TRACE_STATE[key] = state
+
+        class _Resp:
+            usage = {"prompt_tokens": 1, "completion_tokens": 1}
+
+        mod.on_post_llm_call(
+            task_id="t", session_id="s", turn_id=turn_id, api_call_count=1,
+            model="stale-attr-model",
+            response_model="actual/served-model",
+            response=_Resp(),
+            assistant_content_chars=2,
+        )
+        assert seen["model"] == "actual/served-model"
+
+
+# ---------------------------------------------------------------------------
+# Cost total: explicit "total" alongside the per-type breakdown
+# ---------------------------------------------------------------------------
+
+class TestCostTotal:
+    """Langfuse ingests per-type ``cost_details`` keys but does not derive
+    ``calculatedTotalCost`` from them. Without an explicit ``total`` the
+    dashboard reads 0 for every priced generation."""
+
+    def _fresh_plugin(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def test_response_path_totals_the_breakdown(self):
+        mod = self._fresh_plugin()
+
+        class _Usage:
+            input_tokens = 1000
+            output_tokens = 500
+            cache_read_input_tokens = 2000
+            cache_creation_input_tokens = 0
+
+        class _Resp:
+            usage = _Usage()
+
+        _, cost_details = mod._usage_and_cost(
+            _Resp(),
+            provider="anthropic",
+            api_mode="anthropic_messages",
+            model="claude-sonnet-4-6",
+            base_url="",
+        )
+
+        assert cost_details["total"] == pytest.approx(0.0111)
+        components = {k: v for k, v in cost_details.items() if k != "total"}
+        assert components
+        assert cost_details["total"] == pytest.approx(sum(components.values()))
+
+    def test_usage_summary_path_totals_the_breakdown(self, monkeypatch):
+        mod = self._fresh_plugin()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        state = mod.TraceState(trace_id="trace-1", root_ctx=None, root_span=None)
+        state.generations[mod._request_key(1)] = object()
+        monkeypatch.setitem(mod._TRACE_STATE, mod._trace_key("task-1", "session-1"), state)
+        captured = {}
+
+        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None):
+            captured["cost_details"] = cost_details
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end_observation)
+
+        # A dict response has no ``.usage``, so the handler takes the
+        # usage-summary path rather than the response-object path.
+        mod.on_post_llm_call(
+            task_id="task-1",
+            session_id="session-1",
+            api_call_count=1,
+            model="claude-sonnet-4-6",
+            provider="anthropic",
+            response={"model": "claude-sonnet-4-6"},
+            usage={"input_tokens": 1000, "output_tokens": 500},
+            assistant_content_chars=42,
+        )
+
+        cost_details = captured["cost_details"]
+        components = {k: v for k, v in cost_details.items() if k != "total"}
+        assert components
+        assert cost_details["total"] == pytest.approx(sum(components.values()))
+
+    def test_priced_model_with_no_tokens_reports_no_total(self):
+        mod = self._fresh_plugin()
+
+        class _Usage:
+            input_tokens = 0
+            output_tokens = 0
+
+        class _Resp:
+            usage = _Usage()
+
+        _, cost_details = mod._usage_and_cost(
+            _Resp(),
+            provider="anthropic",
+            api_mode="anthropic_messages",
+            model="claude-sonnet-4-6",
+            base_url="",
+        )
+
+        # A priced model that billed nothing writes no per-type keys, so
+        # summing them must not invent a 0.0 total on an empty breakdown.
+        assert cost_details == {}
+
+
+# ---------------------------------------------------------------------------
+# Capture modes: metadata | sanitized | full  (HERMES_LANGFUSE_CAPTURE)
+# ---------------------------------------------------------------------------
+
+class TestCaptureModes:
+    def _fresh_plugin(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def test_default_mode_is_sanitized(self, monkeypatch):
+        mod = self._fresh_plugin()
+        monkeypatch.delenv("HERMES_LANGFUSE_CAPTURE", raising=False)
+        assert mod._capture_mode() == "sanitized"
+
+    def test_invalid_mode_falls_back_and_warns_once(self, monkeypatch, caplog):
+        mod = self._fresh_plugin()
+        monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "everything")
+        with caplog.at_level(logging.WARNING):
+            assert mod._capture_mode() == "sanitized"
+            assert mod._capture_mode() == "sanitized"
+        warnings = [r for r in caplog.records if "HERMES_LANGFUSE_CAPTURE" in r.getMessage()]
+        assert len(warnings) == 1
+
+    def test_metadata_mode_omits_content(self, monkeypatch):
+        mod = self._fresh_plugin()
+        monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "metadata")
+        out = mod._capture_content("top secret prompt text")
+        assert out == {"omitted": True, "type": "text", "chars": 22}
+        obj = mod._capture_content({"password": "hunter22", "path": "/x"})
+        assert obj["omitted"] is True
+        assert set(obj["keys"]) == {"password", "path"}
+        assert "hunter22" not in str(obj)
+
+    def test_metadata_mode_message_serialization_keeps_roles(self, monkeypatch):
+        mod = self._fresh_plugin()
+        monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "metadata")
+        msgs = mod._serialize_messages([
+            {"role": "user", "content": "my ssn is 123-45-6789"},
+            {"role": "assistant", "content": "noted"},
+        ])
+        assert [m["role"] for m in msgs] == ["user", "assistant"]
+        assert all(isinstance(m["content"], dict) and m["content"]["omitted"] for m in msgs)
+        assert "6789" not in str(msgs)
+
+    def test_sanitized_mode_redacts_secrets(self, monkeypatch):
+        mod = self._fresh_plugin()
+        monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "sanitized")
+        samples = {
+            "openai": "here sk-" + "a" * 20 + " done",
+            "anthropic": "key sk-ant-" + "a" * 20 + " x",
+            "github": "tok ghp_" + "a" * 36,
+            "aws": "AKIA" + "A" * 16,
+            "langfuse": "pk-lf-" + "a" * 20,
+            "bearer": "Authorization: Bearer " + "a" * 20,
+            "assignment": 'api_key="supersecretvalue"',
+        }
+        for name, text in samples.items():
+            out = mod._capture_content(text)
+            # redact_sensitive_text masks secrets (e.g. "sk-aaa...aaaa") or
+            # replaces them with "«redacted:...»" sentinels — check that the
+            # original secret substring is gone, not for a specific marker.
+            assert text != out, f"{name} not redacted: {out!r}"
+
+    def test_sanitized_mode_redacts_before_truncation(self, monkeypatch):
+        mod = self._fresh_plugin()
+        monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "sanitized")
+        secret = "sk-" + "z" * 40
+        text = "x" * 100 + " " + secret + " " + "y" * 100
+        out = mod._truncate_text(text, 120)
+        assert "z" * 10 not in out
+        assert text != out, "secret was not redacted before truncation"
+
+    def test_sanitized_mode_keeps_ordinary_text(self, monkeypatch):
+        mod = self._fresh_plugin()
+        monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "sanitized")
+        text = "refactor the memory manager to emit spans"
+        assert mod._capture_content(text) == text
+
+    def test_full_mode_keeps_secret_shaped_text(self, monkeypatch):
+        mod = self._fresh_plugin()
+        monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "full")
+        text = "here sk-abcdefghijklmnop1234 done"
+        assert mod._capture_content(text) == text
+
+    def test_capture_mode_recorded_in_trace_metadata(self, monkeypatch):
+        mod = self._fresh_plugin()
+        monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "metadata")
+        seen = {}
+
+        class _Span:
+            def update(self, **kw): pass
+            def end(self, **kw): pass
+            def set_trace_io(self, **kw): pass
+            def start_observation(self, **kw): return _Span()
+
+        class _RootCM:
+            def __enter__(self): return _Span()
+            def __exit__(self, *exc): return False
+
+        class _Client:
+            def create_trace_id(self, seed=None): return "t1"
+            def start_as_current_observation(self, **kw):
+                seen.update(kw)
+                return _RootCM()
+
+        state = mod._start_root_trace(
+            "k", task_id="t", session_id="s", platform="cli", provider="p",
+            model="m", api_mode="chat", messages=[{"role": "user", "content": "hi"}],
+            client=_Client(),
+        )
+        assert seen["metadata"]["capture_mode"] == "metadata"
+        assert state is not None
+
+
+# ---------------------------------------------------------------------------
+# api_request_error hook
+# ---------------------------------------------------------------------------
+
+class TestApiRequestErrorHook:
+    def _fresh_plugin(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def _seed_state(self, mod, task_key, gen_key="1"):
+        class _Gen:
+            def __init__(self):
+                self.updates = []
+                self.ended = False
+            def update(self, **kw):
+                self.updates.append(kw)
+            def end(self, **kw):
+                self.ended = True
+
+        class _Root:
+            def __init__(self):
+                self.ended = False
+            def update(self, **kw): pass
+            def end(self, **kw): self.ended = True
+            def set_trace_io(self, **kw): pass
+
+        gen = _Gen()
+        root = _Root()
+        state = mod.TraceState(trace_id="t", root_ctx=None, root_span=root)
+        state.generations[gen_key] = gen
+        mod._TRACE_STATE[task_key] = state
+        return gen, root
+
+    def test_retryable_error_closes_generation_keeps_turn(self, monkeypatch):
+        mod = self._fresh_plugin()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        mod._TRACE_STATE.clear()
+        turn_id = "s:t:turn1"
+        task_key = mod._trace_key("t", "s", turn_id=turn_id)
+        gen, root = self._seed_state(mod, task_key)
+
+        mod.on_api_request_error(
+            task_id="t", session_id="s", api_call_count=1,
+            turn_id=turn_id,
+            status_code=429, retryable=True, retry_count=1, max_retries=3,
+            error={"type": "RateLimitError", "message": "slow down"},
+        )
+
+        assert gen.ended is True
+        assert any(u.get("level") == "ERROR" for u in gen.updates)
+        # error metadata landed
+        meta = [u["metadata"] for u in gen.updates if "metadata" in u]
+        assert meta and meta[0]["status_code"] == 429
+        # turn stays open for the retry
+        assert task_key in mod._TRACE_STATE
+        assert root.ended is False
+
+    def test_terminal_error_finishes_turn(self, monkeypatch):
+        mod = self._fresh_plugin()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: type("C", (), {"flush": lambda self: None})())
+        mod._TRACE_STATE.clear()
+        turn_id = "s:t:turn2"
+        task_key = mod._trace_key("t", "s", turn_id=turn_id)
+        gen, root = self._seed_state(mod, task_key)
+
+        mod.on_api_request_error(
+            task_id="t", session_id="s", api_call_count=1,
+            turn_id=turn_id,
+            status_code=401, retryable=False,
+            error={"type": "AuthenticationError", "message": "bad key"},
+        )
+
+        assert gen.ended is True
+        assert task_key not in mod._TRACE_STATE
+        assert root.ended is True
+
+    def test_error_hook_noops_without_state(self, monkeypatch):
+        mod = self._fresh_plugin()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        mod._TRACE_STATE.clear()
+        # Must not raise
+        mod.on_api_request_error(
+            task_id="t", session_id="s", api_call_count=1,
+            error={"type": "X", "message": "y"}, retryable=False,
+        )
+
+    def test_error_message_respects_capture_mode(self, monkeypatch):
+        mod = self._fresh_plugin()
+        monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "metadata")
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        mod._TRACE_STATE.clear()
+        turn_id = "s:t:turn3"
+        task_key = mod._trace_key("t", "s", turn_id=turn_id)
+        gen, _root = self._seed_state(mod, task_key)
+
+        mod.on_api_request_error(
+            task_id="t", session_id="s", api_call_count=1, turn_id=turn_id,
+            retryable=True,
+            error={"type": "APIError", "message": "secret prompt echo sk-abc"},
+        )
+        meta = [u["metadata"] for u in gen.updates if "metadata" in u][0]
+        assert isinstance(meta["error_message"], dict)
+        assert meta["error_message"]["omitted"] is True
+
+
+# ---------------------------------------------------------------------------
+# on_session_finalize hook
+# ---------------------------------------------------------------------------
+
+class TestSessionFinalizeHook:
+    def _fresh_plugin(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def _client(self, flushes):
+        class _Client:
+            def flush(self):
+                flushes.append(1)
+        return _Client()
+
+    def _state(self, mod):
+        class _Root:
+            def __init__(self):
+                self.ended = False
+            def update(self, **kw): pass
+            def end(self, **kw): self.ended = True
+            def set_trace_io(self, **kw): pass
+        root = _Root()
+        return mod.TraceState(trace_id="t", root_ctx=None, root_span=root), root
+
+    def test_finalize_closes_matching_session_traces(self, monkeypatch):
+        mod = self._fresh_plugin()
+        flushes = []
+        client = self._client(flushes)
+        monkeypatch.setattr(mod, "_LANGFUSE_CLIENT", client)
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+        mod._TRACE_STATE.clear()
+
+        s1, r1 = self._state(mod)
+        s2, r2 = self._state(mod)
+        mod._TRACE_STATE["session:sess-a:turn:1"] = s1
+        mod._TRACE_STATE["session:sess-b:turn:1"] = s2
+
+        mod.on_session_finalize(session_id="sess-a")
+
+        assert "session:sess-a:turn:1" not in mod._TRACE_STATE
+        assert "session:sess-b:turn:1" in mod._TRACE_STATE
+        assert r1.ended is True
+        assert r2.ended is False
+        assert flushes  # flushed at least once
+
+    def test_finalize_without_session_closes_all(self, monkeypatch):
+        mod = self._fresh_plugin()
+        flushes = []
+        client = self._client(flushes)
+        monkeypatch.setattr(mod, "_LANGFUSE_CLIENT", client)
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+        mod._TRACE_STATE.clear()
+
+        s1, r1 = self._state(mod)
+        mod._TRACE_STATE["session:sess-x:turn:1"] = s1
+        mod.on_session_finalize()
+        assert not mod._TRACE_STATE
+        assert r1.ended is True
+
+    def test_finalize_noop_when_client_never_initialized(self):
+        mod = self._fresh_plugin()
+        mod._TRACE_STATE.clear()
+        # _LANGFUSE_CLIENT is None on a fresh module; must not raise or init.
+        mod.on_session_finalize(session_id="whatever")
+
+    def test_finalize_shuts_down_client_on_process_exit(self, monkeypatch):
+        """reason="shutdown" must call client.shutdown() while the interpreter
+        is alive, so the SDK's own atexit handler (which runs during
+        interpreter finalization, after opentelemetry.trace.Span is torn
+        down) becomes a no-op instead of raising the "isinstance() arg 2
+        must be a type" TypeError on quit."""
+        mod = self._fresh_plugin()
+        events = []
+
+        class _Client:
+            def flush(self):
+                events.append("flush")
+
+            def shutdown(self):
+                events.append("shutdown")
+
+        client = _Client()
+        monkeypatch.setattr(mod, "_LANGFUSE_CLIENT", client)
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+        mod._TRACE_STATE.clear()
+
+        mod.on_session_finalize(session_id="sess-a", reason="shutdown")
+        assert "shutdown" in events
+        assert events.index("flush") < events.index("shutdown")
+
+    def test_finalize_keeps_client_alive_on_session_rotation(self, monkeypatch):
+        """/new, /reset, and gateway session expiry finalize the session but
+        the process lives on — the cached client must NOT be shut down or
+        later sessions silently stop exporting."""
+        mod = self._fresh_plugin()
+        events = []
+
+        class _Client:
+            def flush(self):
+                events.append("flush")
+
+            def shutdown(self):
+                events.append("shutdown")
+
+        client = _Client()
+        monkeypatch.setattr(mod, "_LANGFUSE_CLIENT", client)
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+        mod._TRACE_STATE.clear()
+
+        for reason in ("session_boundary", "new_session", "session_expired", ""):
+            mod.on_session_finalize(session_id="sess-a", reason=reason)
+        assert "shutdown" not in events
+        assert "flush" in events
+
+
+# ---------------------------------------------------------------------------
+# Subagent tracing: delegated children as spans under the parent turn
+# ---------------------------------------------------------------------------
+
+class TestSubagentTracing:
+    """``tools/delegate_tool.py`` emits subagent_start/subagent_stop. The
+    payloads carry ``parent_turn_id`` but no ``task_id``, so the parent trace
+    must be resolved by turn id rather than by rebuilding the scope key."""
+
+    def _fresh_plugin(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def _state(self, mod, monkeypatch, key, spans):
+        class _Obs:
+            def __init__(self, kw):
+                self.kw = kw
+                self.ended = False
+                self.updates = {}
+
+            def update(self, **kw):
+                self.updates.update(kw)
+
+            def end(self, **kw):
+                self.ended = True
+
+        class _Root:
+            def start_observation(self, **kw):
+                obs = _Obs(kw)
+                spans.append(obs)
+                return obs
+
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        state = mod.TraceState(trace_id="trace-1", root_ctx=None, root_span=_Root())
+        monkeypatch.setitem(mod._TRACE_STATE, key, state)
+        return state
+
+    def test_start_attaches_span_despite_task_scoped_key(self, monkeypatch):
+        mod = self._fresh_plugin()
+        spans = []
+        # Key minted by the LLM hooks with a task id — a naive rebuild from
+        # session_id alone would not match this.
+        state = self._state(mod, monkeypatch, "task:task-9:turn:turn-7", spans)
+
+        mod.on_subagent_start(
+            parent_session_id="sess-1",
+            parent_turn_id="turn-7",
+            child_session_id="child-sess-1",
+            child_subagent_id="sub-1",
+            child_role="researcher",
+            child_goal="find the thing",
+        )
+
+        assert len(spans) == 1
+        assert spans[0].kw["name"] == "Subagent: researcher"
+        assert spans[0].kw["metadata"]["child_subagent_id"] == "sub-1"
+        assert "child-sess-1" in state.subagents
+
+    def test_stop_ends_span_and_records_outcome(self, monkeypatch):
+        mod = self._fresh_plugin()
+        spans = []
+        state = self._state(mod, monkeypatch, "task:task-9:turn:turn-7", spans)
+
+        mod.on_subagent_start(
+            parent_session_id="sess-1", parent_turn_id="turn-7",
+            child_session_id="child-sess-1", child_role="researcher",
+            child_goal="find the thing",
+        )
+        mod.on_subagent_stop(
+            parent_session_id="sess-1", parent_turn_id="turn-7",
+            child_session_id="child-sess-1", child_role="researcher",
+            child_summary="found it", child_status="ok",
+            tool_call_history=[{"name": "read_file"}, {"name": "grep"}],
+            duration_ms=1234,
+        )
+
+        assert spans[0].ended is True
+        assert spans[0].updates["metadata"]["status"] == "ok"
+        assert spans[0].updates["metadata"]["tool_call_count"] == 2
+        assert spans[0].updates["metadata"]["duration_ms"] == 1234
+        # Popped so a repeated stop cannot double-end the span.
+        assert not state.subagents
+
+    def test_unknown_turn_is_a_noop(self, monkeypatch):
+        mod = self._fresh_plugin()
+        spans = []
+        self._state(mod, monkeypatch, "task:task-9:turn:turn-7", spans)
+
+        mod.on_subagent_start(
+            parent_turn_id="turn-does-not-exist",
+            child_session_id="child-sess-1", child_role="researcher",
+        )
+        mod.on_subagent_stop(
+            parent_turn_id="turn-does-not-exist",
+            child_session_id="child-sess-1",
+        )
+
+        assert spans == []
+
+    def test_start_without_child_session_is_a_noop(self, monkeypatch):
+        mod = self._fresh_plugin()
+        spans = []
+        self._state(mod, monkeypatch, "task:task-9:turn:turn-7", spans)
+
+        # subagent_stop keys on child_session_id, so a start without one could
+        # never be matched and must not open an unclosable span.
+        mod.on_subagent_start(
+            parent_turn_id="turn-7", child_session_id=None, child_role="researcher",
+        )
+
+        assert spans == []
+
+
+# ---------------------------------------------------------------------------
+# MoA fan-out: one generation per advisor, priced at the advisor's own model
+# ---------------------------------------------------------------------------
+
+class TestMoAReferenceGenerations:
+    """MoA returns only the aggregator's response, so without per-advisor
+    generations the whole fan-out collapses into one line priced at the
+    aggregator's model. Advisors routinely run on a different provider."""
+
+    def _fresh_plugin(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def _state(self, mod, monkeypatch, gens):
+        class _Obs:
+            def __init__(self, kw):
+                self.kw = kw
+                self.updates = {}
+                self.ended = False
+
+            def update(self, **kw):
+                self.updates.update(kw)
+
+            def end(self, **kw):
+                self.ended = True
+
+        class _Root:
+            def start_observation(self, **kw):
+                obs = _Obs(kw)
+                gens.append(obs)
+                return obs
+
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        return mod.TraceState(trace_id="t", root_ctx=None, root_span=_Root())
+
+    def _refs(self):
+        return [
+            {
+                "label": "anthropic:claude-sonnet-4-6",
+                "model": "claude-sonnet-4-6",
+                "provider": "anthropic",
+                "usage": {"input_tokens": 100, "output_tokens": 50},
+                "cost_usd": 0.001,
+                "cost_status": "ok",
+                "cost_source": "pricing_table",
+            },
+            {
+                "label": "openai:gpt-5",
+                "model": "gpt-5",
+                "provider": "openai",
+                "usage": {"input_tokens": 80, "output_tokens": 40, "reasoning_tokens": 10},
+                "cost_usd": 0.002,
+            },
+        ]
+
+    def test_one_generation_per_advisor_with_own_model_and_cost(self, monkeypatch):
+        mod = self._fresh_plugin()
+        gens = []
+        state = self._state(mod, monkeypatch, gens)
+
+        mod._emit_moa_reference_generations(state, client=object(), references=self._refs())
+
+        assert len(gens) == 2
+        assert gens[0].kw["model"] == "claude-sonnet-4-6"
+        assert gens[1].kw["model"] == "gpt-5"
+        # Each advisor's dollars, not the aggregator's rate applied to all.
+        assert gens[0].updates["cost_details"]["total"] == pytest.approx(0.001)
+        assert gens[1].updates["cost_details"]["total"] == pytest.approx(0.002)
+        assert gens[0].updates["usage_details"] == {"input": 100, "output": 50}
+        assert gens[1].updates["usage_details"]["reasoning_tokens"] == 10
+        assert all(g.ended for g in gens)
+
+    def test_repeat_emit_is_deduped_within_a_turn(self, monkeypatch):
+        mod = self._fresh_plugin()
+        gens = []
+        state = self._state(mod, monkeypatch, gens)
+
+        # The MoA client holds its last fan-out until the next one, so a
+        # tool-loop turn delivers the same references on every API call.
+        refs = self._refs()
+        mod._emit_moa_reference_generations(state, client=object(), references=refs)
+        mod._emit_moa_reference_generations(state, client=object(), references=refs)
+        mod._emit_moa_reference_generations(state, client=object(), references=list(refs))
+
+        assert len(gens) == 2
+
+    def test_a_new_fanout_emits_again(self, monkeypatch):
+        mod = self._fresh_plugin()
+        gens = []
+        state = self._state(mod, monkeypatch, gens)
+
+        mod._emit_moa_reference_generations(state, client=object(), references=self._refs())
+        second = self._refs()
+        second[0]["usage"]["output_tokens"] = 999
+        mod._emit_moa_reference_generations(state, client=object(), references=second)
+
+        assert len(gens) == 4
+
+    def test_non_moa_turn_emits_nothing(self, monkeypatch):
+        mod = self._fresh_plugin()
+        gens = []
+        state = self._state(mod, monkeypatch, gens)
+
+        for value in (None, [], "not-a-list", [None, "junk"]):
+            mod._emit_moa_reference_generations(state, client=object(), references=value)
+
+        assert gens == []
+
+class TestAtexitFinalization(TestTurnTraceIsolation):
+    """Short-lived processes (kanban workers, `hermes chat -q`, cron) can exit
+    with tool calls still queued — the root span never ends and the backend
+    shows an anonymous trace (no name/session/metadata). _finalize_all_traces
+    (registered atexit after client construction) must end every open root."""
+
+    def test_finalize_all_ends_open_roots_and_clears_state(self, monkeypatch):
+        mod = self._fresh_plugin()
+        started: list = []
+        ended: list = []
+        client = self._fake_client(started)
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+        monkeypatch.setattr(
+            mod, "_end_observation", lambda obs, **k: ended.append(obs)
+        )
+        mod._TRACE_STATE.clear()
+
+        # Three worker-style turns that never finalize (tool calls pending).
+        for n in range(3):
+            self._run_turn(mod, session=f"worker-{n}", turn_n=0, finalize=False)
+        assert len(mod._TRACE_STATE) == 3
+
+        root_ends: list = []
+        for state in mod._TRACE_STATE.values():
+            real_end = state.root_span.end
+            state.root_span.end = lambda *a, _r=real_end, **k: root_ends.append(1)
+
+        mod._finalize_all_traces()
+
+        assert len(root_ends) == 3, "every open root span must be ended"
+        assert mod._TRACE_STATE == {}, "state must be drained"
+        # Idempotent: a second call (SDK/atexit re-entry) is a no-op.
+        mod._finalize_all_traces()
+        assert len(root_ends) == 3
+
+    def test_atexit_hook_is_registered_on_client_init(self, monkeypatch):
+        mod = self._fresh_plugin()
+        registered: list = []
+        import atexit as _atexit
+
+        monkeypatch.setattr(mod, "Langfuse", lambda **kw: object())
+        monkeypatch.setattr(
+            _atexit, "register", lambda fn, *a, **k: registered.append(fn)
+        )
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-0123456789abcdef")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-0123456789abcdef")
+        mod._LANGFUSE_CLIENT = None
+
+        assert mod._get_langfuse() is not None
+        assert mod._finalize_all_traces in registered
+
+class TestSystemPromptInGenerationInput:
+    """The generation input must carry the system prompt even for providers
+    that move it out of ``messages``: Anthropic Messages (``system`` kwarg)
+    and the Responses/Codex API (``instructions``).  Hermes forwards it to
+    hooks as ``system_prompt``; the plugin prepends a ``role: system`` entry.
+
+    Regression for the trace gap discussed in PR #32175 (Anthropic) and its
+    Codex sibling: without this, hosted traces show conversations without the
+    agent's instructions, skills, and memory."""
+
+    def _make_mod(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def _capture_generation(self, mod, monkeypatch):
+        """Route on_pre_llm_request into a seeded TraceState and record the
+        generation observation kwargs."""
+        captured = {}
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        state = mod.TraceState(trace_id="t", root_ctx=None, root_span=None)
+        task_key = mod._trace_key("task-1", "sess-1")
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+
+        def fake_child(state_, **kw):
+            captured["input"] = kw.get("input_value")
+            captured["metadata"] = kw.get("metadata")
+            return object()
+
+        monkeypatch.setattr(mod, "_start_child_observation", fake_child)
+        return captured
+
+    def _fire(self, mod, *, request_messages, system_prompt=None):
+        kwargs = dict(
+            task_id="task-1",
+            session_id="sess-1",
+            model="m",
+            provider="p",
+            api_mode="codex_responses",
+            api_call_count=1,
+            request_messages=request_messages,
+        )
+        if system_prompt is not None:
+            kwargs["system_prompt"] = system_prompt
+        mod.on_pre_llm_request(**kwargs)
+
+    def test_string_system_prompt_prepended(self, monkeypatch):
+        mod = self._make_mod()
+        captured = self._capture_generation(mod, monkeypatch)
+        self._fire(
+            mod,
+            request_messages=[{"role": "user", "content": "hi"}],
+            system_prompt="You are Hermes.",
+        )
+        assert captured["input"][0]["role"] == "system"
+        assert captured["input"][0]["content"] == "You are Hermes."
+        assert captured["input"][1]["role"] == "user"
+
+    def test_anthropic_block_list_flattened(self, monkeypatch):
+        """Anthropic OAuth mode sends ``system`` as content blocks (with
+        cache_control); the trace should carry the readable text."""
+        mod = self._make_mod()
+        captured = self._capture_generation(mod, monkeypatch)
+        blocks = [
+            {"type": "text", "text": "part one", "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": "part two"},
+        ]
+        self._fire(
+            mod,
+            request_messages=[{"role": "user", "content": "hi"}],
+            system_prompt=blocks,
+        )
+        first = captured["input"][0]
+        assert first["role"] == "system"
+        assert "part one" in first["content"]
+        assert "part two" in first["content"]
+
+    def test_no_duplicate_when_messages_already_carry_system(self, monkeypatch):
+        """chat_completions keeps system in messages[0]; forwarding
+        system_prompt as well must not produce two system entries."""
+        mod = self._make_mod()
+        captured = self._capture_generation(mod, monkeypatch)
+        self._fire(
+            mod,
+            request_messages=[
+                {"role": "system", "content": "You are Hermes."},
+                {"role": "user", "content": "hi"},
+            ],
+            system_prompt="You are Hermes.",
+        )
+        roles = [m["role"] for m in captured["input"]]
+        assert roles.count("system") == 1
+        assert roles[0] == "system"
+
+    def test_absent_system_prompt_keeps_previous_shape(self, monkeypatch):
+        mod = self._make_mod()
+        captured = self._capture_generation(mod, monkeypatch)
+        self._fire(mod, request_messages=[{"role": "user", "content": "hi"}])
+        assert captured["input"][0]["role"] == "user"
+        assert "system_prompt_chars" not in (captured["metadata"] or {})
+
+    def test_system_survives_serialization_window(self, monkeypatch):
+        """_serialize_messages keeps only the last 12 messages; the system
+        prompt must be prepended after windowing so long conversations
+        never drop it."""
+        mod = self._make_mod()
+        captured = self._capture_generation(mod, monkeypatch)
+        many = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"}
+            for i in range(30)
+        ]
+        self._fire(mod, request_messages=many, system_prompt="SYS")
+        assert captured["input"][0]["role"] == "system"
+        # window (12) + prepended system
+        assert len(captured["input"]) == 13
+
+    def test_metadata_records_chars(self, monkeypatch):
+        mod = self._make_mod()
+        captured = self._capture_generation(mod, monkeypatch)
+        self._fire(
+            mod,
+            request_messages=[{"role": "user", "content": "hi"}],
+            system_prompt="You are Hermes.",
+        )
+        assert captured["metadata"]["system_prompt_chars"] == len("You are Hermes.")
+
+
+class TestSystemPromptCrossesHookBoundary:
+    """End-to-end across the hook seam with real transport-built kwargs —
+    the regression coverage PR #32175's review asked for: verify the
+    provider-specific request shape (Anthropic ``system`` kwarg, Codex
+    ``instructions``) actually reaches the Langfuse generation input, with
+    no Hermes internals mocked (only the Langfuse client is faked)."""
+
+    def _make_mod(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def _capture_generation(self, mod, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        state = mod.TraceState(trace_id="t", root_ctx=None, root_span=None)
+        task_key = mod._trace_key("task-1", "sess-1")
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+
+        def fake_child(state_, **kw):
+            captured["input"] = kw.get("input_value")
+            return object()
+
+        monkeypatch.setattr(mod, "_start_child_observation", fake_child)
+        return captured
+
+    def _derive_and_fire(self, mod, api_kwargs, api_messages):
+        """Mirror agent/conversation_loop.py's pre_api_request emission:
+        derive request_messages exactly the way the loop does, derive
+        system_prompt via the loop's helper, and invoke the plugin hook."""
+        from agent.conversation_loop import _system_prompt_for_hooks
+
+        request_messages = api_kwargs.get("messages")
+        if not isinstance(request_messages, list):
+            request_messages = api_kwargs.get("input")
+        if not isinstance(request_messages, list):
+            request_messages = api_messages
+        mod.on_pre_llm_request(
+            task_id="task-1",
+            session_id="sess-1",
+            model="m",
+            provider="p",
+            api_mode="x",
+            api_call_count=1,
+            request_messages=list(request_messages),
+            system_prompt=_system_prompt_for_hooks(api_kwargs, request_messages),
+        )
+
+    def test_codex_instructions_reach_generation_input(self, monkeypatch):
+        from agent.transports.codex import ResponsesApiTransport
+
+        api_messages = [
+            {"role": "system", "content": "SYS-CODEX"},
+            {"role": "user", "content": "hi"},
+        ]
+        api_kwargs = ResponsesApiTransport().build_kwargs("gpt-x", api_messages, None)
+        # Premise: the Responses API moves the system prompt out of the input.
+        assert api_kwargs["instructions"] == "SYS-CODEX"
+        assert all(i.get("role") != "system" for i in api_kwargs["input"] if isinstance(i, dict))
+
+        mod = self._make_mod()
+        captured = self._capture_generation(mod, monkeypatch)
+        self._derive_and_fire(mod, api_kwargs, api_messages)
+        assert captured["input"][0]["role"] == "system"
+        assert captured["input"][0]["content"] == "SYS-CODEX"
+
+    def test_anthropic_system_kwarg_reaches_generation_input(self, monkeypatch):
+        from agent.transports.anthropic import AnthropicTransport
+
+        api_messages = [
+            {"role": "system", "content": "SYS-ANTHROPIC"},
+            {"role": "user", "content": "hi"},
+        ]
+        api_kwargs = AnthropicTransport().build_kwargs(
+            "claude-x", api_messages, None, max_tokens=64
+        )
+        # Premise: the Messages API moves the system prompt to a kwarg.
+        assert "system" in api_kwargs
+        assert all(m.get("role") != "system" for m in api_kwargs["messages"])
+
+        mod = self._make_mod()
+        captured = self._capture_generation(mod, monkeypatch)
+        self._derive_and_fire(mod, api_kwargs, api_messages)
+        assert captured["input"][0]["role"] == "system"
+        assert "SYS-ANTHROPIC" in captured["input"][0]["content"]
+
+    def test_bedrock_system_kwarg_reaches_generation_input(self, monkeypatch):
+        from agent.transports.bedrock import BedrockTransport
+
+        api_messages = [
+            {"role": "system", "content": "SYS-BEDROCK"},
+            {"role": "user", "content": "hi"},
+        ]
+        api_kwargs = BedrockTransport().build_kwargs(
+            "anthropic.claude-x", api_messages, None, max_tokens=64
+        )
+        # Premise: Bedrock Converse moves system into a separate 'system' kwarg,
+        # shaped as [{"text": ...}] blocks — no "type" key, unlike Anthropic.
+        # (The transport may append extra blocks, e.g. cachePoint markers.)
+        assert {"text": "SYS-BEDROCK"} in api_kwargs["system"]
+        assert all(m.get("role") != "system" for m in api_kwargs["messages"])
+
+        mod = self._make_mod()
+        captured = self._capture_generation(mod, monkeypatch)
+        self._derive_and_fire(mod, api_kwargs, api_messages)
+        assert captured["input"][0]["role"] == "system"
+        assert "SYS-BEDROCK" in captured["input"][0]["content"]
+
+    def test_chat_completions_shape_needs_no_fallback(self, monkeypatch):
+        """When system stays in messages[0] (chat_completions), the helper
+        returns it but the plugin must not duplicate the entry."""
+        from agent.conversation_loop import _system_prompt_for_hooks
+
+        api_kwargs = {
+            "messages": [
+                {"role": "system", "content": "SYS-CHAT"},
+                {"role": "user", "content": "hi"},
+            ]
+        }
+        sp = _system_prompt_for_hooks(api_kwargs, api_kwargs["messages"])
+        assert sp == "SYS-CHAT"
+
+        mod = self._make_mod()
+        captured = self._capture_generation(mod, monkeypatch)
+        self._derive_and_fire(mod, api_kwargs, api_kwargs["messages"])
+        roles = [m["role"] for m in captured["input"]]
+        assert roles.count("system") == 1
+class TestFinishTraceUsesUpdateTrace:
+    """Regression: SDK v3 has update_trace, not set_trace_io.
+
+    Calling the non-existent set_trace_io raised AttributeError inside
+    _finish_trace's try block and skipped root_span.end(). Generations/tools
+    still exported, so the Langfuse list showed Observation Levels + Latency
+    but blank Input/Output columns (no CHAIN root).
+    """
+
+    def test_finish_ends_root_and_calls_update_trace(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        roots: list = []
+
+        class _Span:
+            def __init__(self):
+                self.ended = False
+                self.updates = []
+                self.trace_updates = []
+
+            def update(self, **kw):
+                self.updates.append(kw)
+
+            def end(self, **kw):
+                self.ended = True
+
+            def update_trace(self, **kw):
+                self.trace_updates.append(kw)
+
+            def start_observation(self, **kw):
+                return _Span()
+
+            # Deliberately NO set_trace_io — mirrors real LangfuseChain.
+
+        class _RootCM:
+            def __init__(self):
+                self.span = _Span()
+                roots.append(self.span)
+
+            def __enter__(self):
+                return self.span
+
+            def __exit__(self, *exc):
+                return False
+
+        class _Client:
+            def create_trace_id(self, seed=None):
+                return f"trace::{seed}"
+
+            def start_as_current_observation(self, **kw):
+                return _RootCM()
+
+            def flush(self):
+                pass
+
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: _Client())
+        monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
+        mod._TRACE_STATE.clear()
+
+        mod.on_pre_llm_request(
+            task_id="t1",
+            session_id="s1",
+            model="m",
+            provider="p",
+            api_mode="chat",
+            api_call_count=1,
+            request_messages=[{"role": "user", "content": "hi"}],
+            turn_id="turn-1",
+        )
+        mod.on_post_llm_call(
+            task_id="t1",
+            session_id="s1",
+            model="m",
+            provider="p",
+            api_mode="chat",
+            api_call_count=1,
+            assistant_content_chars=12,
+            assistant_tool_call_count=0,
+            assistant_response="hello world!",
+            turn_id="turn-1",
+        )
+
+        assert len(roots) == 1
+        root = roots[0]
+        assert root.ended is True
+        assert any("output" in u for u in root.trace_updates)
+        assert any("output" in u for u in root.updates)
+        assert mod._TRACE_STATE == {}
+
+    def test_finish_still_ends_when_update_trace_raises(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        roots: list = []
+
+        class _Span:
+            def __init__(self):
+                self.ended = False
+
+            def update(self, **kw):
+                pass
+
+            def end(self, **kw):
+                self.ended = True
+
+            def update_trace(self, **kw):
+                raise RuntimeError("simulated update_trace failure")
+
+            def start_observation(self, **kw):
+                return _Span()
+
+        class _RootCM:
+            def __init__(self):
+                self.span = _Span()
+                roots.append(self.span)
+
+            def __enter__(self):
+                return self.span
+
+            def __exit__(self, *exc):
+                return False
+
+        class _Client:
+            def create_trace_id(self, seed=None):
+                return f"trace::{seed}"
+
+            def start_as_current_observation(self, **kw):
+                return _RootCM()
+
+            def flush(self):
+                pass
+
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: _Client())
+        monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
+        mod._TRACE_STATE.clear()
+
+        mod.on_pre_llm_request(
+            task_id="t1",
+            session_id="s1",
+            model="m",
+            provider="p",
+            api_mode="chat",
+            api_call_count=1,
+            request_messages=[{"role": "user", "content": "hi"}],
+            turn_id="turn-1",
+        )
+        mod.on_post_llm_call(
+            task_id="t1",
+            session_id="s1",
+            model="m",
+            provider="p",
+            api_mode="chat",
+            api_call_count=1,
+            assistant_content_chars=5,
+            assistant_tool_call_count=0,
+            assistant_response="done",
+            turn_id="turn-1",
+        )
+
+        assert roots[0].ended is True
+        assert mod._TRACE_STATE == {}
+
+class TestCanonicalCostExport:
+    """Both supported response paths must export the same complete cost."""
+
+    @staticmethod
+    def _response(input_tokens, output_tokens, cache_read=0, cache_write=0):
+        cache_details = SimpleNamespace(
+            cached_tokens=cache_read,
+            cache_write_tokens=cache_write,
+        )
+        usage = SimpleNamespace(
+            # Anthropic response shape.
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_input_tokens=cache_read,
+            cache_creation_input_tokens=cache_write,
+            # OpenAI chat response shape used by the included-route case.
+            prompt_tokens=input_tokens + cache_read + cache_write,
+            completion_tokens=output_tokens,
+            prompt_tokens_details=cache_details,
+        )
+        return SimpleNamespace(usage=usage)
+
+    @staticmethod
+    def _summary(input_tokens, output_tokens, cache_read=0, cache_write=0, request_count=1):
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_read_tokens": cache_read,
+            "cache_write_tokens": cache_write,
+            "reasoning_tokens": 0,
+            "request_count": request_count,
+        }
+
+    @staticmethod
+    def _capture_summary_path(mod, monkeypatch, usage, *, provider, model, api_mode):
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        observation = object()
+        state = mod.TraceState(trace_id="trace-cost", root_ctx=None, root_span=None)
+        state.generations[mod._request_key(1)] = observation
+        task_key = mod._trace_key("task-cost", "session-cost")
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+        captured = {}
+
+        def fake_end_observation(
+            obs,
+            *,
+            output=None,
+            metadata=None,
+            usage_details=None,
+            cost_details=None,
+        ):
+            captured["usage_details"] = usage_details
+            captured["cost_details"] = cost_details
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end_observation)
+        mod.on_post_llm_call(
+            task_id="task-cost",
+            session_id="session-cost",
+            api_call_count=1,
+            model=model,
+            provider=provider,
+            api_mode=api_mode,
+            response={"model": model},
+            usage=usage,
+        )
+        return captured["usage_details"], captured["cost_details"]
+
+    def _run_both_paths(
+        self,
+        mod,
+        monkeypatch,
+        usage,
+        *,
+        provider="anthropic",
+        model="priced-model",
+        api_mode="anthropic_messages",
+    ):
+        response_result = mod._usage_and_cost(
+            self._response(
+                usage["input_tokens"],
+                usage["output_tokens"],
+                usage.get("cache_read_tokens", 0),
+                usage.get("cache_write_tokens", 0),
+            ),
+            provider=provider,
+            api_mode=api_mode,
+            model=model,
+            base_url="",
+        )
+        summary_result = self._capture_summary_path(
+            mod,
+            monkeypatch,
+            usage,
+            provider=provider,
+            model=model,
+            api_mode=api_mode,
+        )
+        assert response_result[0] == summary_result[0]
+        return response_result[1], summary_result[1]
+
+    @pytest.mark.parametrize(
+        ("cache_read", "cache_write", "expected_total"),
+        [
+            (0, 0, 0.00002),
+            (2, 3, 0.0000255),
+        ],
+        ids=("no-cache", "cached"),
+    )
+    def test_known_costs_include_canonical_total_on_both_paths(
+        self,
+        monkeypatch,
+        cache_read,
+        cache_write,
+        expected_total,
+    ):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        import agent.usage_pricing as pricing
+
+        entry = pricing.PricingEntry(
+            input_cost_per_million=Decimal("1"),
+            output_cost_per_million=Decimal("2"),
+            cache_read_cost_per_million=Decimal("0.5"),
+            cache_write_cost_per_million=Decimal("1.5"),
+            source="custom_contract",
+        )
+        monkeypatch.setattr(pricing, "get_pricing_entry", lambda *_, **__: entry)
+        usage = self._summary(10, 5, cache_read, cache_write)
+
+        response_cost, summary_cost = self._run_both_paths(mod, monkeypatch, usage)
+        expected = {
+            "total": expected_total,
+            "input": 0.00001,
+            "output": 0.00001,
+        }
+        if cache_read:
+            expected["cache_read_input_tokens"] = 0.000001
+        if cache_write:
+            expected["cache_creation_input_tokens"] = 0.0000045
+        assert response_cost == pytest.approx(expected)
+        assert summary_cost == pytest.approx(expected)
+
+    def test_total_uses_request_cost_instead_of_component_sum(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        import agent.usage_pricing as pricing
+
+        entry = pricing.PricingEntry(
+            input_cost_per_million=Decimal("1"),
+            output_cost_per_million=Decimal("2"),
+            cache_read_cost_per_million=Decimal("0.5"),
+            cache_write_cost_per_million=Decimal("1.5"),
+            request_cost=Decimal("0.01"),
+            source="provider_models_api",
+        )
+        monkeypatch.setattr(pricing, "get_pricing_entry", lambda *_, **__: entry)
+        usage = self._summary(10, 5, cache_read=2, cache_write=3)
+
+        response_cost, summary_cost = self._run_both_paths(mod, monkeypatch, usage)
+        for cost_details in (response_cost, summary_cost):
+            component_sum = sum(
+                value for key, value in cost_details.items() if key != "total"
+            )
+            assert cost_details["total"] == pytest.approx(0.0100255)
+            assert component_sum == pytest.approx(0.0000255)
+
+    def test_request_only_price_still_exports_total(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        import agent.usage_pricing as pricing
+
+        entry = pricing.PricingEntry(
+            request_cost=Decimal("0.01"),
+            source="provider_models_api",
+        )
+        monkeypatch.setattr(pricing, "get_pricing_entry", lambda *_, **__: entry)
+        usage = self._summary(0, 0)
+
+        response_cost, summary_cost = self._run_both_paths(mod, monkeypatch, usage)
+        assert response_cost == {"total": 0.01}
+        assert summary_cost == {"total": 0.01}
+
+    def test_partial_cache_pricing_exports_no_costs(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        import agent.usage_pricing as pricing
+
+        entry = pricing.PricingEntry(
+            input_cost_per_million=Decimal("1"),
+            output_cost_per_million=Decimal("2"),
+            cache_read_cost_per_million=None,
+            source="provider_models_api",
+        )
+        monkeypatch.setattr(pricing, "get_pricing_entry", lambda *_, **__: entry)
+        usage = self._summary(10, 5, cache_read=2)
+
+        response_cost, summary_cost = self._run_both_paths(mod, monkeypatch, usage)
+        assert response_cost == {}
+        assert summary_cost == {}
+
+    def test_unknown_pricing_exports_no_costs(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        import agent.usage_pricing as pricing
+
+        monkeypatch.setattr(pricing, "get_pricing_entry", lambda *_, **__: None)
+        usage = self._summary(10, 5)
+
+        response_cost, summary_cost = self._run_both_paths(mod, monkeypatch, usage)
+        assert response_cost == {}
+        assert summary_cost == {}
+
+    def test_included_route_does_not_pin_total(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        usage = self._summary(10, 5, cache_read=2)
+
+        response_cost, summary_cost = self._run_both_paths(
+            mod,
+            monkeypatch,
+            usage,
+            provider="openai-codex",
+            model="gpt-5.3-codex",
+            api_mode="chat_completions",
+        )
+        assert response_cost == summary_cost
+        assert "total" not in response_cost
+        # Subscription-included routes must send NO cost keys at all —
+        # explicit zeros are treated as authoritative by Langfuse and block
+        # its own model-based estimation (#43129).
+        assert response_cost == {}

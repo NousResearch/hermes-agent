@@ -2482,7 +2482,7 @@ describe('liveness probe classification', () => {
     assert.equal(classifyLivenessProbeResult({ kind: 'exit', code: 1 }), 'unknown')
     assert.equal(classifyLivenessProbeResult({ kind: 'exit', code: 99 }), 'unknown')
 
-    // Error metadata never proves absence â€” even numeric/string 3.
+    // Error metadata never proves absence — even numeric/string 3.
     assert.equal(classifyLivenessProbeResult({ kind: 'error', code: 3 }), 'unknown')
     assert.equal(classifyLivenessProbeResult({ kind: 'error', code: '3' }), 'unknown')
     assert.equal(classifyLivenessProbeResult({ kind: 'error', code: 'ETIMEDOUT' }), 'unknown')

@@ -129,7 +129,7 @@ test('resolveStagedUpdaterBinary returns null off Windows even when hermes-setup
 
   const resolved = resolveStagedUpdaterBinary(home, {
     // The installer stages hermes-setup on macOS/Linux too, so "it exists" is
-    // the normal case â€” and precisely the one that must not win.
+    // the normal case — and precisely the one that must not win.
     fileExists: () => {
       probes += 1
 
@@ -343,7 +343,7 @@ test('sandboxFallbackFromEnv: ELECTRON_DISABLE_SANDBOX / --no-sandbox opt out', 
   assert.equal(sandboxFallbackFromEnv({}, []), false)
 })
 
-// â”€â”€ observeUpdaterHandoff (#66753) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── observeUpdaterHandoff (#66753) ──────────────────────────────────────────
 
 class FakeChild {
   pid = 1234

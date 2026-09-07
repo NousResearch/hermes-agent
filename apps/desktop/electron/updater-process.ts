@@ -95,14 +95,14 @@ export type WindowsUpdateLaunchResult =
  *
  * The staged Tauri `hermes-setup.exe` has no self-update path, so every
  * updater-side fix only reaches users when a new binary is built, signed and
- * published â€” which historically lags main by months and strands users on
+ * published — which historically lags main by months and strands users on
  * long-fixed bugs (cache resolver #67369, marker self-adopt #74782; the
  * 2026-08-09 incident chain). `scripts/desktop-update/windows.ps1` lives in the repo
  * checkout instead: every `hermes update` refreshes the code that drives the
  * NEXT update, and only PowerShell itself is frozen.
  *
  * Returns the spawn recipe when the script exists in the checkout, or null
- * (caller falls back to the staged binary â€” old checkouts that predate the
+ * (caller falls back to the staged binary — old checkouts that predate the
  * script keep working unchanged). Windows-only by the same policy as
  * resolveStagedUpdaterBinary: POSIX updates in place via
  * applyUpdatesPosixInApp and needs no hand-off at all.
@@ -119,7 +119,7 @@ export function resolveUpdateScriptHandoff(
 
   const exists = deps.fileExists ?? stagedFileExists
 
-  // Current layout first, then the pre-reorg flat path â€” an updated asar can
+  // Current layout first, then the pre-reorg flat path — an updated asar can
   // meet a checkout from either side of the move (the checkout also ships a
   // forwarder at the legacy path for the inverse skew).
   for (const candidate of [
@@ -159,10 +159,10 @@ export function resolveWindowsUpdateTransport(
  * and QUITS, the script waits it out, runs `hermes update`, swaps/relaunches
  * the app, and writes .hermes-update-result.json. With the app gone before
  * the update starts, the HERMES_DESKTOP_CHILD_PID reaper-exclusion dance is
- * unnecessary â€” there are no live desktop backends to spare.
+ * unnecessary — there are no live desktop backends to spare.
  *
  * Null when the checkout predates the script (caller surfaces the manual
- * `hermes update` card â€” old checkouts pull the script on their next update).
+ * `hermes update` card — old checkouts pull the script on their next update).
  */
 export function resolvePosixScriptHandoff(
   updateRoot: string,
@@ -199,12 +199,12 @@ export function resolvePosixScriptHandoff(
  * attach to, and Windows PowerShell 5.1 dies during console init before
  * -File processing (the same class of failure as #54220's conhost work, on
  * the launch side). The same spawn with a visible console, or non-detached,
- * runs fine â€” so unit tests and foreground use hide the bug.
+ * runs fine — so unit tests and foreground use hide the bug.
  *
  * `cmd /c start "" /min powershell ...` was the variant that survived the
  * full detached+hidden production shape in testing: `start` allocates the
  * child its own (minimized) console and fully detaches it from cmd.exe,
- * which exits immediately. The spawned pid is therefore the WRAPPER's â€”
+ * which exits immediately. The spawned pid is therefore the WRAPPER's —
  * callers must not use it as a marker owner (the script claims the marker
  * itself with its own $PID).
  */
@@ -264,7 +264,7 @@ export function wrapHandoffForDetachedConsole(
 /**
  * Electron/Chromium internal switches that must NOT be replayed on re-exec:
  * runtime artifacts of THIS launch, not user intent (ported from the deleted
- * update-relaunch.ts; #45205). `--no-sandbox` is deliberately kept â€” it is
+ * update-relaunch.ts; #45205). `--no-sandbox` is deliberately kept — it is
  * the user's sandbox opt-out and the signal that makes a relaunch safe when
  * chrome-sandbox isn't setuid.
  */
@@ -300,7 +300,7 @@ export function collectRelaunchArgs(argv: unknown): string[] {
   })
 }
 
-/** True when the user has opted out of the SUID sandbox â€” the relaunch is
+/** True when the user has opted out of the SUID sandbox — the relaunch is
  * safe even if chrome-sandbox fails preflight (ported from update-relaunch.ts). */
 export function sandboxFallbackFromEnv(env: Record<string, string | undefined>, launchArgs: string[]): boolean {
   const disable = String(env?.ELECTRON_DISABLE_SANDBOX || '').trim()
@@ -326,10 +326,10 @@ function stagedFileExists(candidate: string): boolean {
 }
 
 /**
- * Decide which staged installer binary â€” if any â€” may be handed an update.
+ * Decide which staged installer binary — if any — may be handed an update.
  *
  * The Tauri installer self-copies into HERMES_HOME on *every* platform
- * (`hermes-setup.exe` on Windows, `hermes-setup` elsewhere â€” see
+ * (`hermes-setup.exe` on Windows, `hermes-setup` elsewhere — see
  * apps/bootstrap-installer `paths::installer_dest` and
  * `bootstrap::copy_self_to_hermes_home`), so finding that binary on macOS or
  * Linux is expected, not leftover junk.
@@ -340,7 +340,7 @@ function stagedFileExists(candidate: string): boolean {
  * lock and update in place through applyUpdatesPosixInApp(). Off Windows the
  * hand-off therefore buys nothing and costs a great deal: a staged binary older
  * than the hand-off protocol holds the update marker, spawns `hermes update`,
- * and that child refuses its own parent â€” wedging the in-app Update button for
+ * and that child refuses its own parent — wedging the in-app Update button for
  * good, with no route (update, re-download, reinstall) to a newer binary
  * (#74836). Returning null off Windows is what routes those platforms to the
  * in-app updater.
@@ -500,7 +500,7 @@ export interface ObserveUpdaterHandoffDeps {
  * and report whether the hand-off actually became viable (#66753).
  *
  * Before this, the Desktop called `unref()` and quit after a fixed dwell
- * without ever observing the child's async `error` event (ENOENT/EACCES â€”
+ * without ever observing the child's async `error` event (ENOENT/EACCES —
  * Node reports exec failures asynchronously) or an early `exit`. A failed
  * spawn therefore looked identical to a successful one: the app vanished, no
  * updater appeared, and nothing relaunched. Worse, an unhandled `'error'`
@@ -508,11 +508,11 @@ export interface ObserveUpdaterHandoffDeps {
  *
  * Success is: no `error` event AND either the child survives the settle
  * window or it exits 0 inside it (the Windows `cmd start` wrapper exits 0
- * immediately by design â€” see wrapHandoffForDetachedConsole). Failure is a
+ * immediately by design — see wrapHandoffForDetachedConsole). Failure is a
  * spawn `error`, a non-zero exit, or a signal death inside the window.
  *
  * Children that expose no event interface (bare test doubles) settle as ok
- * after the window â€” the observation is a best-effort hardening, never a new
+ * after the window — the observation is a best-effort hardening, never a new
  * way to wedge an update.
  */
 export function observeUpdaterHandoff(

@@ -238,17 +238,29 @@ class HostSupervisor:
         self._send_frame(
             {"type": "interrupt", "sid": sid, "request_id": request_id or uuid.uuid4().hex})
 
-    def _await_reply(self, frame: dict[str, Any], request_id: str, timeout: float) -> dict:
-        """Send ``frame`` and block for the host reply carrying ``request_id``."""
+    def _await_reply(self, frame: dict[str, Any], request_id: str, timeout: float,
+                     *, on_timeout_keep: bool = False) -> dict:
+        """Send ``frame`` and block for the host reply carrying ``request_id``.
+
+        ``on_timeout_keep`` (control + late-ack path only) leaves the pending
+        queue in place on a timeout so ``_retire_pending_and_arm_late`` can
+        settle-or-arm it atomically under the lock; every other path pops the
+        entry in the finally so a failed/abandoned wait can't leak it."""
         q: queue.Queue[dict] = queue.Queue(maxsize=1)
         with self._lock:
             self._pending_controls[request_id] = q
+        timed_out = False
         try:
             self._send_frame(frame)
-            return q.get(timeout=timeout)
+            try:
+                return q.get(timeout=timeout)
+            except queue.Empty:
+                timed_out = on_timeout_keep
+                raise
         finally:
-            with self._lock:
-                self._pending_controls.pop(request_id, None)
+            if not timed_out:
+                with self._lock:
+                    self._pending_controls.pop(request_id, None)
 
     def respond(self, sid: str, params: dict[str, Any], *, timeout: float = 15.0) -> dict:
         """Deliver an interactive prompt response to the host that owns it."""
@@ -280,16 +292,19 @@ class HostSupervisor:
             self._send_frame(frame)
             return {"status": "sent", "request_id": request_id}
         try:
-            return self._await_reply(frame, request_id, timeout)
+            return self._await_reply(frame, request_id, timeout,
+                                     on_timeout_keep=on_late_ack is not None)
         except queue.Empty:
             if on_late_ack is None:
                 raise
             # #101824: the timeout→late-handler handoff must be atomic under
-            # self._lock. Retiring the pending route (the old finally) AFTER
-            # registering the late handler left a window where a terminal
-            # frame was still routed into the (now unobserved) synchronous
-            # queue and dropped, so the caller never saw the ack and the late
-            # handler never fired. The helper settles both sides atomically.
+            # self._lock. Retiring the pending route (the default finally in
+            # _await_reply) AFTER registering the late handler left a window
+            # where a terminal frame was still routed into the (now unobserved)
+            # synchronous queue and dropped, so the caller never saw the ack
+            # and the late handler never fired. The queue is therefore kept on
+            # this path (on_timeout_keep) and the helper settles both sides
+            # atomically.
             with self._lock:
                 settled = self._retire_pending_and_arm_late(request_id, on_late_ack)
             if settled is not None:

@@ -19,7 +19,7 @@ from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.cli_output import line_input
 from hermes_cli.config import cfg_get
-from hermes_cli.plugin_capabilities import _child_dict, _write_raw_config_value
+from hermes_cli.plugin_capabilities import _child_dict, _write_raw_config_value, _write_raw_config_values
 from hermes_cli.secret_prompt import masked_secret_prompt
 from utils import atomic_write_text
 
@@ -908,8 +908,11 @@ def _save_enabled_set(enabled: set) -> None:
 
 
 def _save_plugin_sets(enabled: set, disabled: set) -> None:
-    _save_enabled_set(enabled)
-    _save_disabled_set(disabled)
+    """Persist both plugin lists atomically after preflighting both keys."""
+    _write_raw_config_values({
+        ("plugins", "enabled"): sorted(enabled),
+        ("plugins", "disabled"): sorted(disabled),
+    })
 
 
 _BASIC_AUTH_PLUGIN_KEYS = frozenset({"basic", "dashboard_auth/basic"})

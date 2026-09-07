@@ -1,5 +1,7 @@
 """CLI notification ownership, structured queueing and last-moment consumption."""
 
+import logging
+
 
 class CLIProcessNotificationsMixin:
     def _owns_process_notification(self, event: dict) -> bool:
@@ -20,10 +22,24 @@ class CLIProcessNotificationsMixin:
         return str(resolved_key) == current_key
 
     def _drain_process_notifications(self, consumer: str) -> None:
+        from cli import _InternalContinuation
         from tools.process_registry import process_registry
-        from tools.async_delegation import claim_event_delivery, complete_event_delivery
+        from tools.async_delegation import (
+            claim_event_delivery,
+            complete_event_delivery,
+            recover_and_enqueue_work_groups,
+            release_enqueued_work_group_event,
+        )
         from tools.process_registry_notifications import (
             ProcessNotificationBatch, SubagentNotification, group_process_notifications)
+
+        try:
+            recover_and_enqueue_work_groups(
+                consumer="cli-closeout-poller",
+                target_queue=process_registry.completion_queue,
+            )
+        except Exception:
+            logging.warning("CLI closeout recovery poll failed", exc_info=True)
 
         claimed = []
         for event, text in process_registry.drain_notifications(
@@ -31,6 +47,20 @@ class CLIProcessNotificationsMixin:
         ):
             claim = claim_event_delivery(event, consumer)
             if claim is None:
+                continue
+            if event.get("type") == "async_delegation_work_closeout":
+                item = _InternalContinuation(
+                    text=text,
+                    work_id=str(event.get("origin_work_id") or ""),
+                    generation=int(event.get("work_generation") or 0),
+                    delivery_id=str(event.get("delivery_id") or ""),
+                    claim_id=str(event.get("claim_id") or ""),
+                )
+                try:
+                    self._internal_continuations.put_nowait(item)
+                except Exception:
+                    release_enqueued_work_group_event(event)
+                    raise
                 continue
             claimed.append((event, text))
             complete_event_delivery(event, claim)

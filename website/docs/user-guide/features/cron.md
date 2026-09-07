@@ -837,6 +837,20 @@ Cron jobs inherit your configured fallback providers and credential pool rotatio
 
 This means cron jobs that run at high frequency or during peak hours are more resilient — a single rate-limited key won't fail the entire run.
 
+## Run failures (`last_error`)
+
+A failed agent run records a concise `last_error`, visible in job listings and `/cron list`
+with credential patterns and URL credentials redacted (including previously stored errors).
+This is separate from `last_fire_error` (scheduler handoff) and `last_delivery_error` (delivery).
+Those fields can correctly be empty when the agent itself failed.
+
+For a connection failure, inspect the run document under `cron/output/<job_id>/` in the active
+Hermes home. Its `## Error` section includes the chained traceback, with credential patterns
+and URL credentials redacted. The file uses the existing private output-file permissions;
+traceback locals are not captured. Delivery notices and `last_error` retain the concise error,
+not the full traceback. Review diagnostics before sharing: redaction is not a guarantee that
+arbitrary application data is non-sensitive.
+
 ## Missed scheduled fires (`last_fire_error`)
 
 On hosted (managed-cron) deployments, a scheduled fire travels from the platform scheduler through the dashboard to the gateway's internal API server. If that final hand-off fails — the gateway process is down, or its API-server listener never started — the run never begins, so there is no execution record and no `last_status` to inspect. The tell-tale shape: the job works every time you trigger it manually, but never auto-fires.

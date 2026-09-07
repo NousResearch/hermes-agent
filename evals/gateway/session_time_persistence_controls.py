@@ -36,10 +36,10 @@ messages = [{"role": "user", "content": "persist across soft release"}]
 store.append_to_transcript(entry.session_id, messages[0])
 results = {"legacy_yaml_env_ignored": True, "cache": []}
 
-for strategy in ("ttl", "lru"):
+for strategy in ("ttl", "lru", "pressure"):
     runner = object.__new__(GatewayRunner)
     runner._agent_cache_lock = threading.Lock()
-    runner._agent_cache_bounds_cache = AgentCacheBounds(max_size=1, idle_ttl_secs=1)
+    runner._agent_cache_bounds_cache = AgentCacheBounds(max_size=1, idle_ttl_secs=1, memory_high_mb=1, protect_recent=0)
     runner.session_store = store
     trace = []
     released = threading.Event()
@@ -52,13 +52,18 @@ for strategy in ("ttl", "lru"):
         trace.append("release")
         released.set()
     agent = SimpleNamespace(_memory_manager=object(), _session_messages=list(messages),
-                            _last_activity_ts=time.time() - 86400,
+                            _last_activity_ts=time.time() - 86400, _last_flushed_db_idx=len(messages),
                             commit_memory_session=commit, release_clients=release)
     active = SimpleNamespace(_last_activity_ts=time.time() - 86400)
     runner._running_agents = {"active": active}
     runner._agent_cache = OrderedDict([(entry.session_key, (agent, "sig")), ("active", (active, "sig"))])
     if strategy == "ttl":
         assert runner._sweep_idle_cached_agents() == 1
+    elif strategy == "pressure":
+        unflushed = SimpleNamespace(_session_messages=[{"role": "user", "content": "not on disk"}], _last_flushed_db_idx=0)
+        runner._agent_cache["unflushed"] = (unflushed, "sig")
+        assert runner._sweep_agent_cache_under_pressure() == 1
+        assert "unflushed" in runner._agent_cache
     else:
         with runner._agent_cache_lock:
             runner._enforce_agent_cache_cap()
@@ -71,11 +76,26 @@ for strategy in ("ttl", "lru"):
     assert store._db.get_session(resumed.session_id)["end_reason"] is None
     results["cache"].append({"strategy": strategy, "order": trace, "same_transcript": True, "active_preserved": True})
 
+store._db.end_session(entry.session_id, "ws_orphan_reap")
+recovered = store.get_or_create_session(source)
+assert recovered.session_id == entry.session_id
+assert store._db.get_session(entry.session_id)["end_reason"] is None
+results["ws_orphan_end_reopens_same_transcript"] = True
+
 store.suspend_session(entry.session_key)
 suspended = store.get_or_create_session(source)
 assert suspended.session_id != entry.session_id
 assert store._db.get_session(entry.session_id)["end_reason"] == "suspended"
 results["explicit_suspension_rotates"] = True
+store.append_to_transcript(suspended.session_id, messages[0])
+# Historical finalization wrote both the flag and durable reset boundary.
+store._db.set_expiry_finalized(suspended.session_id)
+store._db.promote_to_session_reset(suspended.session_id)
+store._db.replace_gateway_routing_entries({}, scope=store._routing_scope())
+store._entries.clear()
+fenced = store.get_or_create_session(source)
+assert fenced.session_id != suspended.session_id
+results["historical_expiry_fence_preserved"] = True
 store._db.close()
 
 spec = importlib.util.spec_from_file_location("migration_probe", repo / "optional-skills/migration/openclaw-migration/scripts/openclaw_to_hermes.py")

@@ -1274,15 +1274,16 @@ def format_room_list(
         name = _clean_line(room.get("name") or room.get("room_id"), limit=72)
         member_count = _room_member_count(room)
         status = _room_status(service, room)
+        lines.append("")
         lines.append(
             f"{_room_status_icon(status)} **{room_reference(room)}. "
             f"{_plain_display_label(name, limit=72)}** · "
             f"{status} · {member_count} Bot{'s' if member_count != 1 else ''}"
         )
     if page < page_count:
-        lines.append(f"More: `{rooms_command} list {page + 1}`")
+        lines.extend(["", f"More: `{rooms_command} list {page + 1}`"])
     elif page > 1:
-        lines.append(f"Previous: `{rooms_command} list {page - 1}`")
+        lines.extend(["", f"Previous: `{rooms_command} list {page - 1}`"])
     lines.extend([
         "",
         "────────",

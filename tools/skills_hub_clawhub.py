@@ -235,17 +235,22 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         if detail is None:
             return None
         slug, skill_data = detail
-        latest_version = self._resolve_latest_version(slug, skill_data)
+        # Keep the requested identity even when the detail payload omits its owner.
+        owner = self._parse_identifier(identifier)[1] or self._owner_from_payload(skill_data)
+        owner_params = {"owner": owner} if owner else None
+        latest_version = self._resolve_latest_version(slug, skill_data, owner=owner)
         if not latest_version:
             logger.warning("ClawHub fetch failed for %s: could not resolve latest version", slug)
             return None
 
         # Primary: ZIP bundle from /download. Fallback: version metadata with
         # inline/raw content (files may sit under version_data["version"]).
-        files = self._download_zip(slug, latest_version)
+        files = self._download_zip(slug, latest_version, owner=owner)
         if "SKILL.md" not in files:
-            version_data = self._get_json(f"{self.BASE_URL}/skills/{slug}/versions/{latest_version}")
-            if isinstance(version_data, dict):
+            version_data = self._get_json(
+                f"{self.BASE_URL}/skills/{slug}/versions/{latest_version}", params=owner_params,
+            )
+            if isinstance(version_data, dict) and self._owner_matches(owner, version_data):
                 files = self._extract_files(version_data) or files
                 nested = version_data.get("version", {})
                 if "SKILL.md" not in files and isinstance(nested, dict):
@@ -255,14 +260,20 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
                 "ClawHub fetch for %s resolved version %s but could not retrieve file content", slug, latest_version,
             )
             return None
-        return SkillBundle(name=slug, files=files, source="clawhub", identifier=slug, trust_level="community")
+        return SkillBundle(name=slug, files=files, source="clawhub",
+                           identifier=f"@{owner}/{slug}" if owner else slug, trust_level="community")
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         detail = self._skill_detail(identifier)
         if detail is None:
             return None
         slug, data = detail
-        return self._item_to_meta({**data, "slug": data.get("slug") or slug})
+        meta = self._item_to_meta({**data, "slug": data.get("slug") or slug})
+        owner = self._parse_identifier(identifier)[1] or self._owner_from_payload(data)
+        if meta is not None and owner:
+            meta.identifier = f"@{owner}/{slug}"
+            meta.extra["owner"] = owner
+        return meta
 
     def _search_catalog(self, query: str, limit: int = 10) -> List[SkillMeta]:
         cache_key = f"clawhub_search_catalog_v1_{hashlib.md5(f'{query}|{limit}'.encode()).hexdigest()}"
@@ -325,7 +336,8 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
             _cache_metas(cache_key, results)
         return results
 
-    def _resolve_latest_version(self, slug: str, skill_data: Dict[str, Any]) -> Optional[str]:
+    def _resolve_latest_version(self, slug: str, skill_data: Dict[str, Any],
+                                owner: Optional[str] = None) -> Optional[str]:
         latest, tags = skill_data.get("latestVersion"), skill_data.get("tags")
         version = _first_str(
             latest.get("version") if isinstance(latest, dict) else None,
@@ -333,7 +345,8 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         )
         if version:
             return version
-        vd = self._get_json(f"{self.BASE_URL}/skills/{slug}/versions")
+        vd = self._get_json(f"{self.BASE_URL}/skills/{slug}/versions",
+                            params={"owner": owner} if owner else None)
         return _first_str(vd[0].get("version")) if isinstance(vd, list) and vd and isinstance(vd[0], dict) else None
 
     def _fetch_owner_handle(self, slug: str) -> Optional[str]:
@@ -439,16 +452,19 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
                     files[fname] = content
         return files
 
-    def _download_zip(self, slug: str, version: str) -> Dict[str, str]:
+    def _download_zip(self, slug: str, version: str, owner: Optional[str] = None) -> Dict[str, str]:
         """Download the skill ZIP from /download and extract its text files."""
         import io
         import zipfile
 
         files: Dict[str, str] = {}
+        params = {"slug": slug, "version": version}
+        if owner:
+            params["owner"] = owner
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                resp = httpx.get(f"{self.BASE_URL}/download", params={"slug": slug, "version": version},
+                resp = httpx.get(f"{self.BASE_URL}/download", params=params,
                                  timeout=30, follow_redirects=True)
                 if resp.status_code == 429:
                     try:

@@ -1182,6 +1182,44 @@ class TestForceReloadSymmetry:
         assert msg2 == _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
         hold.set()
 
+    def test_pre_tool_call_timeout_block_precedes_earlier_approval(self, monkeypatch):
+        """An unavailable policy callback must dominate another callback's approval directive."""
+        from hermes_cli.plugins import (
+            _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE,
+            resolve_pre_tool_block,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
+        )
+        hold = threading.Event()
+        approval_calls = []
+
+        def approve(**_kwargs):
+            return {"action": "approve", "message": "operator approval required"}
+
+        def hung_policy(**_kwargs):
+            hold.wait(timeout=10.0)
+
+        mgr = PluginManager()
+        mgr._hooks["pre_tool_call"] = [approve, hung_policy]
+
+        import hermes_cli.plugins as plugins_mod
+
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
+        monkeypatch.setattr(
+            "tools.approval.request_tool_approval",
+            lambda *_args, **_kwargs: approval_calls.append(1) or {"approved": True},
+        )
+
+        try:
+            assert resolve_pre_tool_block("web_search", {"query": "x"}) == (
+                _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+            )
+            assert approval_calls == []
+        finally:
+            hold.set()
+
     def test_pre_tool_call_retries_after_running_worker_becomes_stale(self, monkeypatch, caplog):
         """A permanently hung policy worker must not block tools until restart."""
         from hermes_cli.plugins import _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE

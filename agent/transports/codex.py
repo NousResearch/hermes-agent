@@ -544,6 +544,20 @@ class ResponsesApiTransport(ProviderTransport):
         if params.get("request_overrides"):
             kwargs.update(params["request_overrides"])
 
+        verbosity = params.get("verbosity")
+        if (
+            isinstance(verbosity, str)
+            and verbosity in {"low", "medium", "high"}
+            and (model or "").lower().rsplit("/", 1)[-1].startswith(("gpt-5", "gpt-6"))
+            and not is_xai_responses
+            and not is_github_responses
+        ):
+            text = kwargs.get("text")
+            if text is None or isinstance(text, dict):
+                text = dict(text or {})
+                text.setdefault("verbosity", verbosity)
+                kwargs["text"] = text
+
         _bound_prompt_cache_key_field(kwargs)
 
         # Older xAI models reject ``service_tier`` (HTTP 400); only Grok 4.6 accepts Priority Processing.

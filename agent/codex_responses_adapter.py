@@ -771,6 +771,7 @@ _PREFLIGHT_OPTIONAL_FIELDS: tuple[tuple[str, Callable[[Any], bool], Optional[Cal
 
 _PREFLIGHT_ALLOWED_KEYS = {
     "model", "instructions", "input", "tools", "store", "extra_headers", "extra_body",
+    "text",
     *(key for key, _, _ in _PREFLIGHT_OPTIONAL_FIELDS),
 }
 
@@ -814,6 +815,11 @@ def _preflight_codex_api_kwargs(
         value = api_kwargs.get(key)
         if accept(value):
             normalized[key] = coerce(value) if coerce else value
+    text = api_kwargs.get("text")
+    if text is not None:
+        if not isinstance(text, dict):
+            raise ValueError("Codex Responses request 'text' must be an object.")
+        normalized["text"] = dict(text)
     extra_headers = _optional_dict(api_kwargs, "extra_headers") or {}
     if not all(_nonblank(key) for key in extra_headers):
         raise ValueError("Codex Responses request 'extra_headers' keys must be non-empty strings.")

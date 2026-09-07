@@ -4,6 +4,7 @@
 (no I/O).
 """
 
+import base64
 import os
 import posixpath
 import re
@@ -168,12 +169,6 @@ def _pattern_has_regex_newline(pattern: str) -> bool:
     return "\n" in pattern or bool(_REGEX_NEWLINE_ESCAPE_RE.search(pattern))
 
 
-def _rg_pattern_stdin(pattern: str) -> str:
-    """Encode one ripgrep pattern for stdin pattern-file transport."""
-    pattern = pattern.replace("\r", r"\r").replace("\n", r"\n")
-    return pattern or "\n"
-
-
 def _grep_pattern_stdin(pattern: str) -> str:
     """Encode one grep pattern without reinterpreting backslash escapes."""
     return pattern or "\n"
@@ -215,7 +210,12 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
     usable payload remains. ``warning`` is attached to files_only/content results."""
     stdout, limit_reason = _search_stdout_and_limit(result)
     diagnostics, payload = _split_tool_diagnostics(stdout)
-    if result.exit_code == 2 and not payload.strip():
+    # A multiline regex diagnostic contains whitespace-free '~' rulers, which
+    # look like filenames to the shared splitter. Compilation errors are fatal
+    # regardless: rg cannot have produced partial matches before compiling.
+    if result.exit_code == 2 and (
+        not payload.strip() or "rg: regex parse error:" in diagnostics.splitlines()
+    ):
         error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
         return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
     lines = [ln for ln in payload.strip().split('\n') if ln]
@@ -398,15 +398,40 @@ class SearchMixin:
 
     def _run_rg_bounded(self, words: List[str], fetch_limit: int, timeout: int, *,
                         merge_stderr: bool = False, native_ok: bool = True,
-                        shell_prefix: str = "") -> ExecuteResult:
+                        shell_prefix: str = "", pattern: Optional[str] = None) -> ExecuteResult:
         """Run an rg command (shell-quoted words) and keep the first ``fetch_limit``
         lines: natively on a local POSIX host, else through the backend shell as
         ``<prefix><words> | head -n N``. ``native_ok=False`` keeps a form the native
- lane cannot express (the multi-root ``cd`` prefix); ``shell_prefix`` is shell-only."""
+        lane cannot express (the multi-root ``cd`` prefix); ``shell_prefix`` is
+        shell-only. ``pattern`` is data, not a shell word: native argv or stdin
+        transport preserves it without regex rewriting."""
         if native_ok and self._native_read_enabled():
+            if pattern is not None:
+                words = words + ["-e", self._quote_shell_arg(pattern)]
             return self._run_rg_native(words, fetch_limit, timeout, merge_stderr=merge_stderr)
         stderr = "" if merge_stderr else " 2>/dev/null"
-        return self._exec(f"{shell_prefix}{' '.join(words)}{stderr} | head -n {fetch_limit}", timeout=timeout)
+        command = " ".join(words)
+        stdin_data = None
+        if pattern is not None:
+            if "\r" in pattern or "\n" in pattern:
+                # Pattern files split on LF and strip CRLF. Rewriting controls as
+                # regex escapes changes (?x) whitespace/comments and -F semantics.
+                # Decode only after command preprocessing. Quoted expansion does
+                # not interpret regex data as shell syntax. The trailing sentinel
+                # prevents command substitution from stripping pattern newlines.
+                if "\0" in pattern:
+                    return ExecuteResult(stdout="rg: CR/LF patterns cannot contain NUL bytes", exit_code=2)
+                stdin_data = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
+                command = ('( pattern=$(base64 -d && printf .) || exit 2; '
+                           + command + ' -e "${pattern%.}"; )')
+            else:
+                stdin_data = pattern or "\n"
+                command += " -f -"
+        command = f"{command}{stderr} | head -n {fetch_limit}"
+        if stdin_data is not None:
+            # Heredoc redirection must feed the producer, not head.
+            command = "{ " + command + "; }"
+        return self._exec(shell_prefix + command, timeout=timeout, stdin_data=stdin_data)
 
     def _quote_executable(self, executable: str) -> str:
         """Quote an executable without leaking controller path semantics."""
@@ -607,17 +632,10 @@ class SearchMixin:
                 glob_expr_probe = f"{glob_expr} {self._search_prune_glob_args()}"
             else:
                 glob_expr_probe = glob_expr
-            if self._native_read_enabled():
-                probe_words = [rg, flags, "--count-matches", glob_expr_probe,
-                               "-e", self._quote_shell_arg(pattern), self._escape_native_tool_arg(path)]
-                probe = self._run_rg_bounded(probe_words, 50, timeout=30)
-            else:
-                probe = self._exec(
-                    f"set -o pipefail; {{ {rg} {flags} --count-matches{glob_expr_probe} "
-                    f"-f - {self._escape_native_tool_arg(path)} 2>/dev/null | head -50; }}",
-                    timeout=30,
-                    stdin_data=_rg_pattern_stdin(pattern),
-                )
+            probe_words = [rg, flags, "--count-matches", glob_expr_probe,
+                           self._escape_native_tool_arg(path)]
+            probe = self._run_rg_bounded(
+                probe_words, 50, timeout=30, shell_prefix="set -o pipefail; ", pattern=pattern)
             total, per_file = 0, []
             for line in (probe.stdout or "").strip().splitlines():
                 p, _sep, n = line.rpartition(":")
@@ -846,7 +864,8 @@ class SearchMixin:
     def _run_search_pipeline(self, cmd_parts: List[str], output_mode: str, limit: int,
                              offset: int, context: int, warning: Optional[str] = None,
                              line_cap: bool = False,
-                             stdin_data: Optional[str] = None) -> SearchResult:
+                             stdin_data: Optional[str] = None,
+                             rg_pattern: Optional[str] = None) -> SearchResult:
         """Run ``cmd_parts | head -n <fetch_limit>`` under pipefail and parse. Extra
         rows report the true total (context mode also emits "--" separators, so
         grab 200 more). pipefail keeps the engine's exit 2 alive across ``| head``
@@ -866,7 +885,7 @@ class SearchMixin:
             result = self._exec("set -o pipefail; " + command, timeout=60, stdin_data=stdin_data)
         else:
             result = self._run_rg_bounded(cmd_parts, fetch_limit, timeout=60, merge_stderr=True,
-                                          shell_prefix="set -o pipefail; ")
+                                          shell_prefix="set -o pipefail; ", pattern=rg_pattern)
         return _parse_search_output(result, output_mode, limit, offset, context, warning=warning)
 
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
@@ -895,13 +914,6 @@ class SearchMixin:
             cmd_parts.extend(["--glob", self._quote_shell_arg(file_glob)])
         if output_mode in _OUTPUT_MODE_FLAGS:
             cmd_parts.append(_OUTPUT_MODE_FLAGS[output_mode])
-        stdin_data = None
-        if self._native_read_enabled():
-            # Direct POSIX argv has no shell/Win32 rewriting; preserve the fast path.
-            cmd_parts.extend(["-e", self._quote_shell_arg(pattern)])
-        else:
-            cmd_parts.extend(["-f", "-"])
-            stdin_data = _rg_pattern_stdin(pattern)
         # rg is a native Windows binary (winget/cargo/choco): needs C:/... not MSYS /c/...
         cmd_parts.append(self._escape_native_tool_arg(path))
         ml_note = (
@@ -915,7 +927,7 @@ class SearchMixin:
             offset,
             context,
             warning=ml_note,
-            stdin_data=stdin_data,
+            rg_pattern=pattern,
         )
 
     def _grep_cmd(self, head: List[str], pattern: str, output_mode: str, context: int,

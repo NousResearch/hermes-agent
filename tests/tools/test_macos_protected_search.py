@@ -97,12 +97,15 @@ def test_broad_content_search_passes_protected_globs_to_ripgrep(tmp_path, monkey
     home.mkdir(parents=True)
     env = RecordingEnvironment(home)
     ops = ShellFileOperations(env)
-    monkeypatch.setattr(file_operations, "_HOME", str(home))
-    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        ops, "_macos_search_exclusions",
+        lambda path: _macos_protected_search_exclusions(
+            path, cwd=str(home), home=str(home), platform="darwin"),
+    )
 
     ops.search("needle", path=str(home), target="content")
 
-    rg_command = next(command for command in env.commands if command.startswith("set -o pipefail; rg"))
+    rg_command = next(command for command in env.commands if "--line-number" in command)
     for dirname in PROTECTED_NAMES:
         assert f"!{dirname}/**" in rg_command
 

@@ -62,7 +62,7 @@ def _action_result_from(name: str, ok: bool, message: str, meta: Dict[str, Any],
         # What we asked for; the driver's `path` records the rung that ran.
         delivery_mode=_typed(requested_delivery, str),
         # Preserve top-level precedence; newer drivers nest the code under refusal.
-        code=_typed(_raw("code") or _raw("reason_code") or nested_code, str),
+        code=_typed(_raw("code") or _raw("reason_code") or nested_code or None, str),
     )
 
 def _z_index_uninformative(windows: List[Dict[str, Any]]) -> bool:

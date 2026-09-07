@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from agent.usage_pricing import (
+    _OFFICIAL_DOCS_PRICING,
     CanonicalUsage,
     format_cost_label,
     estimate_usage_cost,
@@ -9,6 +10,30 @@ from agent.usage_pricing import (
     resolve_billing_route,
 )
 from decimal import Decimal
+
+
+def test_astra_whole_request_price_tier_includes_cache_writes():
+    below = estimate_usage_cost(
+        "gpt-6-astra",
+        CanonicalUsage(input_tokens=100_000, output_tokens=10_000, cache_read_tokens=10_000, cache_write_tokens=10_000),
+        provider="openai",
+    )
+    above = estimate_usage_cost(
+        "gpt-6-astra",
+        CanonicalUsage(input_tokens=100_000, output_tokens=10_000, cache_read_tokens=100_000, cache_write_tokens=100_001),
+        provider="openai",
+    )
+
+    # Whole-request tier: crossing 272K prompt tokens re-prices every component of the request,
+    # including cache writes, at the *_above rates — so the cost ratio exceeds the token ratio.
+    entry = _OFFICIAL_DOCS_PRICING[("openai", "gpt-6-astra")]
+    assert above.amount_usd == (
+        Decimal(100_000) * entry.input_cost_per_million_above
+        + Decimal(10_000) * entry.output_cost_per_million_above
+        + Decimal(100_000) * entry.cache_read_cost_per_million_above
+        + Decimal(100_001) * entry.cache_write_cost_per_million_above
+    ) / Decimal(1_000_000)
+    assert below.amount_usd < above.amount_usd
 
 
 
@@ -103,6 +128,48 @@ def test_deepseek_v4_pro_pricing_entry_exists():
     assert float(entry.input_cost_per_million) == 0.435
     assert float(entry.output_cost_per_million) == 0.87
     assert float(entry.cache_read_cost_per_million) == 0.003625
+
+
+def test_bundled_pricing_skips_endpoint_metadata(monkeypatch):
+    """An exact bundled price must not block on the provider's /models API."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("endpoint metadata should not be fetched")
+        ),
+    )
+
+    entry = get_pricing_entry(
+        "deepseek-chat",
+        provider="deepseek",
+        base_url="https://api.deepseek.com/v1",
+    )
+
+    assert entry is not None
+    assert entry.source == "official_docs_snapshot"
+
+
+def test_unknown_model_falls_back_to_endpoint_metadata(monkeypatch):
+    """Models absent from the bundled table still use endpoint pricing."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: {
+            "deepseek-future": {
+                "pricing": {"prompt": "0.000001", "completion": "0.000002"}
+            }
+        },
+    )
+
+    entry = get_pricing_entry(
+        "deepseek-future",
+        provider="deepseek",
+        base_url="https://api.deepseek.com/v1",
+    )
+
+    assert entry is not None
+    assert entry.source == "provider_models_api"
+    assert entry.input_cost_per_million == Decimal("1")
+    assert entry.output_cost_per_million == Decimal("2")
 
 
 
@@ -314,6 +381,34 @@ def test_vertex_default_model_estimates_cached_usage(monkeypatch):
 
     assert result.status == "estimated"
     assert result.amount_usd is not None and result.amount_usd > 0
+
+
+def test_curated_google_flash_models_resolve_official_snapshot_pricing(monkeypatch):
+    """Every ``google/gemini-*-flash`` model curated for the OpenRouter and Nous
+    pickers must also bill through the Google official-docs snapshot on the
+    direct Gemini and Vertex routes — a model pickable via the aggregators but
+    ``unknown`` to Google-route accounting is a catalog/pricing drift.
+    """
+    from hermes_cli.models_catalog_static import OPENROUTER_MODELS, _PROVIDER_MODELS
+
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: {},
+    )
+    curated = {m for m, _desc in OPENROUTER_MODELS} | set(_PROVIDER_MODELS["nous"])
+    flash = sorted(m for m in curated if m.startswith("google/gemini-") and m.endswith("-flash"))
+    assert flash, "expected curated google/gemini-*-flash picker entries"
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000)
+    for model in flash:
+        bare = model.split("/", 1)[1]
+        gemini = estimate_usage_cost(bare, usage, provider="gemini")
+        vertex = estimate_usage_cost(model, usage, provider="vertex")
+        assert gemini.status == "estimated", (model, gemini.status)
+        assert gemini.source == "official_docs_snapshot", model
+        assert vertex.amount_usd == gemini.amount_usd, model
+        # Direct-route models the picker offers must also be pickable directly.
+        assert bare in _PROVIDER_MODELS["gemini"], model
+        assert model in _PROVIDER_MODELS["vertex"], model
 
 
 def test_normalize_usage_minimax_logs_cache_observability(caplog):

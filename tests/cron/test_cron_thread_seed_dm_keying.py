@@ -16,7 +16,7 @@ not on SessionSource field shapes — pins the end-to-end contract.
 
 from unittest.mock import MagicMock, patch
 
-from cron.scheduler import _seed_cron_channel_session, _seed_cron_thread_session
+from cron.scheduler_delivery import _seed_cron_channel_session, _seed_cron_thread_session
 from gateway.config import Platform
 from gateway.session import SessionSource, build_session_key
 

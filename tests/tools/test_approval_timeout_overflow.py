@@ -17,26 +17,26 @@ from agent.deadline import MAX_SAFE_TIMEOUT_S
 
 def _with_configured_timeout(value):
     return patch(
-        "tools.approval._get_approval_config",
+        "tools.approval_context._get_approval_config",
         return_value={"timeout": value},
     )
 
 
 class TestApprovalTimeoutOverflowClamp:
     def test_normal_value_passes_through(self):
-        from tools.approval import _get_approval_timeout
+        from tools.approval_context import _get_approval_timeout
 
         with _with_configured_timeout(300):
             assert _get_approval_timeout() == 300
 
     def test_oversized_value_clamped(self):
-        from tools.approval import _get_approval_timeout
+        from tools.approval_context import _get_approval_timeout
 
         with _with_configured_timeout(10**18):
             assert _get_approval_timeout() == int(MAX_SAFE_TIMEOUT_S)
 
     def test_invalid_value_falls_back_to_default(self):
-        from tools.approval import _get_approval_timeout
+        from tools.approval_context import _get_approval_timeout
 
         with _with_configured_timeout("soon"):
             assert _get_approval_timeout() == 300
@@ -44,7 +44,7 @@ class TestApprovalTimeoutOverflowClamp:
     def test_oversized_float_value_clamped(self):
         # YAML `1e18` arrives as a float, not an int — different int() path
         # than the string/int forms; the clamp must cover it too.
-        from tools.approval import _get_approval_timeout
+        from tools.approval_context import _get_approval_timeout
 
         with _with_configured_timeout(1e18):
             assert _get_approval_timeout() == int(MAX_SAFE_TIMEOUT_S)
@@ -53,10 +53,11 @@ class TestApprovalTimeoutOverflowClamp:
         # Capping silently changes behavior for every consumer; operators
         # must see it happen.
         import tools.approval as approval_mod
+        from tools import approval_context
 
         with _with_configured_timeout(10**18):
             with caplog.at_level("WARNING", logger=approval_mod.__name__):
-                approval_mod._get_approval_timeout()
+                approval_context._get_approval_timeout()
         assert "exceeds the platform-safe maximum" in caplog.text
 
     def test_deadline_import_failure_fails_closed(self, monkeypatch):
@@ -65,7 +66,7 @@ class TestApprovalTimeoutOverflowClamp:
         # exact time_t overflow this fix exists to prevent.
         import builtins
 
-        from tools.approval import _get_approval_timeout
+        from tools.approval_context import _get_approval_timeout
 
         real_import = builtins.__import__
 
@@ -86,7 +87,7 @@ class TestApprovalTimeoutOverflowClamp:
     def test_clamped_value_safe_for_lock_acquire(self):
         # The exact primitive that crashed in #83220: Lock.acquire on macOS
         # converts the relative timeout to an absolute time_t timestamp.
-        from tools.approval import _get_approval_timeout
+        from tools.approval_context import _get_approval_timeout
 
         with _with_configured_timeout(10**18):
             timeout = _get_approval_timeout()
@@ -97,7 +98,7 @@ class TestApprovalTimeoutOverflowClamp:
     def test_clamped_value_safe_for_thread_join(self):
         # Sibling crash site: the CLI prompt fallback joins the input thread
         # with the configured timeout (tools/approval.py get_input path).
-        from tools.approval import _get_approval_timeout
+        from tools.approval_context import _get_approval_timeout
 
         with _with_configured_timeout(10**18):
             timeout = _get_approval_timeout()
@@ -107,7 +108,7 @@ class TestApprovalTimeoutOverflowClamp:
         assert not t.is_alive()
 
     def test_human_wait_ceiling_inherits_clamp(self):
-        from tools.approval import HUMAN_WAIT_MARGIN_S, human_wait_ceiling
+        from tools.approval_human_wait import HUMAN_WAIT_MARGIN_S, human_wait_ceiling
 
         with _with_configured_timeout(10**18):
             ceiling = human_wait_ceiling()

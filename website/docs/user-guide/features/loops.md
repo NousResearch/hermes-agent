@@ -61,7 +61,7 @@ A loop ends when any of these fires:
 |---|---|
 | The agent decides it's done | The wakeup prompt teaches the agent to end its reply with `LOOP_COMPLETE` on its own line when the task is finished or moot. |
 | A run cap | `--times N` — stop after N wakeups. |
-| An evidence-based condition | `--until <condition>` — after each wakeup, the same auxiliary judge that powers `/goal` checks the reply against your condition (fail-open: a broken judge never wedges the loop). |
+| An evidence-based condition | `--until <condition>` — after each wakeup, the same auxiliary judge that powers `/goal` checks the reply against your condition. If the judge rules the condition unachievable, the loop **pauses** with the reason instead of re-firing until the tick budget (fail-open: a broken judge never wedges the loop). |
 | You | `/loop stop` (or `/loop pause` to keep it around). |
 | The backstop budget | `loops.max_ticks` (default 100) pauses the loop so an unattended session can't burn tokens forever. `0` = unlimited. |
 
@@ -110,7 +110,7 @@ loops:
   self_paced_ceiling_seconds: 900  # self-paced max backoff
 ```
 
-The `--until` judge routes through the `goal_judge` auxiliary task, so `auxiliary.goal_judge.*` overrides (provider, model, max_tokens) apply to loop conditions too.
+The `--until` judge routes through the `goal_judge` auxiliary task, so `auxiliary.goal_judge.*` routing overrides (provider, model) apply to loop conditions too.
 
 ## `/loop` vs `/goal` vs cron
 

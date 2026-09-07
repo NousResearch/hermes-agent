@@ -224,6 +224,37 @@ def _native_authorize_params(challenge, **overrides):
     return params
 
 
+@pytest.mark.parametrize("forwarded_template", ["198.51.100.{i}", ", 198.51.100.{i}"],
+                         ids=["rotated-address", "empty-first-hop"])
+def test_native_authorize_spoofed_forwarded_headers_cannot_bypass_pending_cap(
+    gated_client, forwarded_template,
+):
+    # The public OAuth entry point must limit one peer before allocating the
+    # global pending store, even when XFF rotates or has an empty first hop.
+    _verifier, challenge = _make_pkce()
+    params = _native_authorize_params(challenge, provider="stub")
+    for i in range(native_flow._MAX_PENDING_PER_IP):
+        response = gated_client.get(
+            "/auth/native/authorize", params=params,
+            headers={"X-Forwarded-For": forwarded_template.format(i=i)},
+        )
+        assert response.status_code == 302
+
+    blocked = gated_client.get(
+        "/auth/native/authorize", params=params,
+        headers={"X-Forwarded-For": forwarded_template.format(i=native_flow._MAX_PENDING_PER_IP)},
+    )
+    assert blocked.status_code == 503
+    assert "too many pending" in blocked.json()["detail"]
+
+    # Exhausting one peer's allowance must leave room for another real peer.
+    other_client = TestClient(
+        web_server.app, base_url=gated_client.base_url,
+        client=("203.0.113.10", 50000), follow_redirects=False,
+    )
+    assert other_client.get("/auth/native/authorize", params=params).status_code == 302
+
+
 def test_native_authorize_empty_provider_auto_selects_oauth_with_password_also_registered(
     gated_client,
 ):

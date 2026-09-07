@@ -13,10 +13,12 @@ provider, flip ``app.state.auth_required = True``, drive a ``TestClient``.
 from __future__ import annotations
 
 import time
+from typing import Any, cast
 
 import pytest
 
 from fastapi.testclient import TestClient
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth import (
@@ -30,7 +32,8 @@ from hermes_cli.dashboard_auth import (
 )
 from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE, SESSION_RT_COOKIE
 from hermes_cli.dashboard_auth.login_page import render_login_html
-from hermes_cli.dashboard_auth.routes import _reset_password_rate_limit
+from hermes_cli.dashboard_auth.routes import _PW_RATE_MAX_ATTEMPTS, _reset_password_rate_limit
+from hermes_cli.web_server_lifecycle import _dashboard_forwarded_allow_ips
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
 
@@ -337,24 +340,47 @@ class TestRateLimit:
         )
         assert good.status_code == 429
 
-    def test_spoofed_x_forwarded_for_does_not_reset_rate_limit(self, gated_app):
+    @pytest.mark.parametrize(
+        "peer, forwarded_suffix",
+        [("203.0.113.9", ""), ("127.0.0.1", ", 203.0.113.9"),
+         ("172.18.0.9", ", 203.0.113.9")],
+        ids=["direct", "loopback-proxy", "configured-proxy"],
+    )
+    def test_spoofed_x_forwarded_for_does_not_reset_rate_limit(
+        self, gated_app, peer, forwarded_suffix,
+    ):
         # X-Forwarded-For is attacker-controlled unless it came from a trusted
-        # reverse proxy, so direct dashboard requests must not be able to pick
-        # fresh rate-limit buckets by rotating the header value.
-        for i in range(10):
-            resp = gated_app.post(
+        # reverse proxy. Even behind an appending proxy, the client-supplied
+        # first hop must not override Uvicorn's resolved client address.
+        trusted = _dashboard_forwarded_allow_ips({"trusted_proxies": ["172.18.0.0/16"]})
+        # Uvicorn and Starlette expose incompatible static ASGI type aliases.
+        app = cast(Any, ProxyHeadersMiddleware(cast(Any, web_server.app), trusted_hosts=trusted))
+        client = TestClient(app, base_url=gated_app.base_url, client=(peer, 50000))
+        for i in range(_PW_RATE_MAX_ATTEMPTS):
+            resp = client.post(
                 "/auth/password-login",
-                headers={"X-Forwarded-For": f"198.51.100.{i}"},
+                headers={"X-Forwarded-For": f"198.51.100.{i}{forwarded_suffix}"},
                 json={"provider": "testpw", "username": "admin", "password": "WRONG"},
             )
             assert resp.status_code == 401
 
-        blocked = gated_app.post(
+        blocked = client.post(
             "/auth/password-login",
-            headers={"X-Forwarded-For": "198.51.100.250"},
+            headers={"X-Forwarded-For": f"198.51.100.250{forwarded_suffix}"},
             json={"provider": "testpw", "username": "admin", "password": "hunter2"},
         )
         assert blocked.status_code == 429
+
+        # Another real client must retain its own budget, including when both
+        # clients reach the dashboard through the same trusted proxy.
+        other_peer = peer if forwarded_suffix else "203.0.113.10"
+        other_client = TestClient(app, base_url=gated_app.base_url, client=(other_peer, 50001))
+        allowed = other_client.post(
+            "/auth/password-login",
+            headers={"X-Forwarded-For": "203.0.113.10"},
+            json={"provider": "testpw", "username": "admin", "password": "hunter2"},
+        )
+        assert allowed.status_code == 200
 
 
 # ---------------------------------------------------------------------------

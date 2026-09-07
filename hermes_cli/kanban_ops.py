@@ -249,7 +249,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
 def _cmd_watch(args: argparse.Namespace) -> int:
     """Live-stream task_events to the terminal."""
     kinds = {k.strip() for k in args.kinds.split(",") if k.strip()} if args.kinds else None
-    print("Watching kanban events. Ctrl-C to stop.", flush=True)
+    print(f"Watching kanban events on board '{kb.get_current_board()}'. Ctrl-C to stop.", flush=True)
     # Seed cursor at the latest id so we don't replay history.
     with kbc.connect_closing() as conn:
         cursor = int(conn.execute("SELECT COALESCE(MAX(id), 0) AS m FROM task_events").fetchone()["m"])

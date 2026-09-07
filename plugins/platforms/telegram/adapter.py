@@ -5404,13 +5404,14 @@ class TelegramAdapter(BasePlatformAdapter):
         if self._topic_gates_pass(getattr(message, "message_thread_id", None), warn_non_numeric=False) is False:
             return False
         chat_id_str = self._chat_id_str(message)
-        if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
-            return False
         # Observed context is shared at chat/topic scope, so require an explicit chat allowlist.
         allowed = self._telegram_observe_allowed_chats()
         if not allowed or chat_id_str not in allowed:
             return False
-        # Only observe messages the require_mention gate would skip.
+        # Exclusive mentions suppress responses, not perception in approved chats.
+        if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
+            return True
+        # Otherwise only observe messages the require_mention gate would skip.
         if chat_id_str in self._telegram_free_response_chats() or self._telegram_is_free_response_topic(message):
             return False
         if not self._telegram_require_mention() or self._is_reply_to_bot(message) or self._message_mentions_bot(message):
@@ -5419,7 +5420,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _telegram_group_observe_shared_source(self, source):
         """Return a chat/topic-scoped source for observed Telegram group context."""
-        return dataclasses.replace(source, user_id=None, user_name=None, user_id_alt=None)
+        # Passive ingress bypasses the runner's profile stamp. Use the same namespace
+        # as batching/dispatch before the store resolves the chat/topic session.
+        return dataclasses.replace(
+            source, user_id=None, user_name=None, user_id_alt=None,
+            profile=self._session_key_profile(source))
 
     def _telegram_group_observe_attributed_text(self, event: MessageEvent) -> str:
         user_id = event.source.user_id or "unknown"
@@ -5614,6 +5619,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # addressed to some other bot.
         self._observe_bot_identity_from_message(message)
         if self._is_own_message(message):
+            return False
+        from plugins.platforms.telegram.telegram_bot_admission import bot_message_allowed
+        allow_bots = str(self.config.extra.get("allow_bots", _scoped_gate_env("TELEGRAM_ALLOW_BOTS", "none"))).strip().lower()
+        if not bot_message_allowed(self, message, allow_bots):
             return False
         if not self._is_group_chat(message):
             return True
@@ -6311,7 +6320,7 @@ class TelegramAdapter(BasePlatformAdapter):
             message_id=str(message.message_id), platform_update_id=update_id,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
             channel_prompt=group_identity_prompt(self, message, channel_prompt),
-            timestamp=message.date)
+            timestamp=message.date, allow_gateway_control=not source.is_bot)
 
     # -- Message reactions (processing lifecycle) --
 
@@ -6500,7 +6509,7 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     _bridge_gate(
         "group_allowed_chats", "TELEGRAM_GROUP_ALLOWED_CHATS",
         telegram_cfg.get("group_allowed_chats") or _telegram_extra.get("group_allowed_chats"))
-    for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages", "free_response_topics"):
+    for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages", "free_response_topics", "bot_loop"):
         if _key in telegram_cfg:
             extras.setdefault(_key, telegram_cfg[_key])
     # Pass through telegram-specific extra keys but EXCLUDE generic shared-config keys: _merge_platform_map

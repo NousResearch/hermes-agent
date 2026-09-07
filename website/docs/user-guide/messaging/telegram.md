@@ -176,6 +176,63 @@ TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES=true
 
 This requires Telegram to deliver ordinary group messages to the gateway, so disable BotFather privacy mode or promote the bot to group admin as described above.
 
+## Bounded bot-to-bot handoffs
+
+For native Telegram delivery between bots, enable bot-to-bot communication in
+BotFather for the participating bots. Hermes does not relay messages internally.
+Configure each profile's `config.yaml`, for example:
+
+```yaml
+telegram:
+  allow_bots: mentions
+  allowed_chats: ["-1001234567890"]
+  group_allowed_chats: ["-1001234567890"]
+  bot_loop:
+    max_events: 20
+    window_seconds: 60
+    max_hops: 8
+```
+
+`mentions` admits a peer bot only when it explicitly mentions this bot or replies
+to it; `all` still obeys the normal chat/topic/trigger gates; `none` (the default)
+does not admit group bot traffic. Peer bots cannot use the human guest-mode
+exception to `allowed_chats`. Bot-authored slash commands (including captions)
+are dropped, and bot text is never gateway control/approval/clarification input.
+Human commands and DMs retain their existing behavior.
+
+The limits above are defaults. Values must be positive integers; invalid values
+fall back to the defaults rather than disabling protection. They can also be
+set under `platforms.telegram.extra.bot_loop`. No loop-guard environment
+variables are used.
+
+- Only authorized, triggered **dispatch events** spend the bot budget, once,
+  after text/media batching. Authorization prefilters and passive observations
+  do not spend it. Duplicate admitted native message IDs are suppressed.
+- All peer senders share a conversation budget, isolated by receiving profile,
+  platform, chat, and topic. This is a local inbound-dispatch cap, not a count of
+  every outbound Telegram message or a distributed depth protocol.
+- The sliding window may recover with time, but **the hop count never does**.
+  After `max_hops`, a new authorized, triggered human message in that same lane
+  must start another chain. Passive chatter, anonymous/channel posts, and replay
+  of an old human message do not reset it. Human messages do not reset the rate
+  window. A warning is logged when the hard limit is reached.
+- State is in memory for the runner's lifetime, including inactive lanes; a
+  gateway restart resets it. Do not use repeated restarts to sustain unattended
+  exchanges. Native bot IDs older than the last admitted human message are
+  treated as stale rather than starting another exchange.
+
+Telegram's existing text debounce runs **before** this admission/queue policy and
+may coalesce nearby messages in the same batching lane. FIFO here applies to
+admitted `MessageEvent` turns, not necessarily every native message or fragment.
+For initial acceptance, use one completed, non-streamed message per handoff and
+avoid a second same-lane arrival during debounce. Short messages and disabling
+streaming do not themselves disable batching; live delivery still needs testing.
+
+This protection builds on [PR #91483](https://github.com/NousResearch/hermes-agent/pull/91483)
+by **69k4xmdfm2-blip** (`285468e722be5e05572e7e012914c14642257eb8`),
+preserving its conversation-wide sliding-window approach while replacing the
+stateful authorization check, automatic cooldown reset, and environment settings.
+
 ## Step 4: Find Your User ID
 
 Hermes Agent uses numeric Telegram user IDs to control access. Your user ID is **not** your username — it's a number like `123456789`.

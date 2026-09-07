@@ -20,6 +20,7 @@ from contextlib import suppress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.run_busy import _BOT_ADMISSION_RECEIPT, _FIFO_HANDOFF_RECEIPT
 from gateway.run_common import _UNSET
 from gateway.session import (
     SessionSource, is_shared_multi_user_session, neutralize_untrusted_inline_text
@@ -111,9 +112,13 @@ class GatewayInboundMixin:
 
     async def _hm_admit_event(
         self, event: "MessageEvent"
-    ) -> Optional[Tuple["MessageEvent", SessionSource, bool]]:
-        """Ingress gates for ``_handle_message``; None when dropped, else ``(event, source, is_internal)``
-        (the ``pre_gateway_dispatch`` hook may have rewritten ``event``)."""
+    ) -> Optional[Tuple["MessageEvent", SessionSource, bool, bool, bool]]:
+        """Ingress gates for ``_handle_message``.
+
+        Returns ``(event, source, is_internal, admitted_while_busy, fifo_handoff)``.
+        The hook may rewrite ``event``; receipt authority stays local, never
+        copied onto arbitrary events. FIFO precedence does not grant budget.
+        """
         from gateway.run import _is_slack_ignored_channel
         source = event.source
         # getattr(self, ...) throughout: bare test runners build GatewayRunner via object.__new__.
@@ -173,7 +178,21 @@ class GatewayInboundMixin:
             return None
 
         if is_internal:
-            return event, source, True
+            return event, source, True, False, False
+
+        # A busy-queue receipt is runner-owned and bound to the exact event.
+        # Reject redelivery while that object is still queued before exposing it
+        # to hooks, then consume it before hooks can reenter with the same object.
+        if any(self._trusted_queue_receipt(event, name) is not None for name in (
+            _BOT_ADMISSION_RECEIPT, _FIFO_HANDOFF_RECEIPT,
+        )):
+            adapter = self._adapter_for_source(source)
+            key = self._session_key_for_source(source)
+            queued = [getattr(adapter, "_pending_messages", {}).get(key), *(self._overflow_queue(key) or ())]
+            if any(item is event for item in queued):
+                return None
+        admitted_while_busy = self._consume_queue_receipt(event, _BOT_ADMISSION_RECEIPT)
+        fifo_handoff = self._consume_queue_receipt(event, _FIFO_HANDOFF_RECEIPT)
 
         # scale-to-zero: only real user-originated inbound stamps the last-inbound clock;
         # counting internal/system events would keep a genuinely idle gateway awake.
@@ -197,7 +216,22 @@ class GatewayInboundMixin:
             ):
                 await self._hm_offer_pairing_code(source)
             return None
-        return event, source, False
+        if self._is_telegram_peer_event(event) and self._draining and not self._queue_during_drain_enabled(
+            self._effective_busy_input_mode(source)
+        ):
+            return None  # shutdown rejection must precede fresh budget charging
+
+        from gateway.bot_loop_guard import admit_telegram_bot_turn
+        if self._is_telegram_peer_event(event):
+            if event.get_command():
+                return None
+            if not admitted_while_busy and not admit_telegram_bot_turn(self, event, check_only=True):
+                return None
+        else:
+            if not admit_telegram_bot_turn(self, event):
+                return None  # authorized human intervention resets the peer chain here
+            admitted_while_busy = False
+        return event, source, False, admitted_while_busy, fifo_handoff
 
     def _hm_estop_turn_allowed(self, event: "MessageEvent", source: SessionSource) -> bool:
         """Whether a turn may bypass the global emergency stop: pause blocks NEW agent turns, never
@@ -490,7 +524,11 @@ class GatewayInboundMixin:
         from gateway.platforms.base import merge_pending_message_event
         adapter = self._adapter_for_source(source)
         if adapter:
-            merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
+            queued = [adapter._pending_messages.get(_quick_key), *(self._overflow_queue(_quick_key) or ())]
+            if self._is_telegram_peer_event(event) or any(self._is_telegram_peer_event(item) for item in queued):
+                self._queue_or_replace_pending_event(_quick_key, event)
+            else:
+                merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
 
     async def _hm_busy_slash_or_photo(
         self, event: "MessageEvent", source: SessionSource, _quick_key: str
@@ -598,11 +636,18 @@ class GatewayInboundMixin:
         running_agent.interrupt(_interrupt_text)
 
     async def _hm_handle_running_session_message(
-        self, event: "MessageEvent", source: SessionSource, _quick_key: str
+        self, event: "MessageEvent", source: SessionSource, _quick_key: str,
+        admitted_while_busy: bool = False,
     ) -> Optional[str]:
         """Fast-path while this session's agent is running: interrupt by default (minimal latency);
         busy_input_mode queue/steer, subagent and compression protection demote to queue."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        if admitted_while_busy and self._is_telegram_peer_event(event):
+            if self._queue_or_replace_pending_event(_quick_key, event):
+                self._issue_queue_receipt(event, _BOT_ADMISSION_RECEIPT)
+            return None
+        if self._queue_busy_peer_event(event, _quick_key):
+            return None
         _handled, _result = await self._hm_busy_slash_or_photo(event, source, _quick_key)
         if _handled:
             return _result
@@ -1183,7 +1228,7 @@ class GatewayInboundMixin:
         _admitted = await self._hm_admit_event(event)
         if _admitted is None:
             return None
-        event, source, is_internal = _admitted
+        event, source, is_internal, admitted_while_busy, fifo_handoff = _admitted
 
         _paused_notice = self._hm_estop_gate(event, source, is_internal)
         if _paused_notice is not None:
@@ -1199,7 +1244,9 @@ class GatewayInboundMixin:
         if self._is_session_running(_quick_key):
             self._hm_evict_reaped_agent(_quick_key)
         if self._is_session_running(_quick_key):
-            return await self._hm_handle_running_session_message(event, source, _quick_key)
+            return await self._hm_handle_running_session_message(
+                event, source, _quick_key, admitted_while_busy
+            )
 
         _handled, _result = await self._hm_dispatch_idle_commands(event, source, _quick_key)
         if _handled:
@@ -1232,7 +1279,32 @@ class GatewayInboundMixin:
             logger.info("Rejecting new active session %s: max_concurrent_sessions reached", _quick_key)
             return _limit_message
 
-        event, source, is_internal = self._hm_rescue_orphaned_fifo(event, source, is_internal, _quick_key)
+        # This is the cold dispatch acceptance boundary.  The active-session
+        # slot is now reserved, so a fresh peer can be charged without pause,
+        # drain, or capacity refusal silently consuming its finite budget.
+        original_event = event
+        original_is_peer = self._is_telegram_peer_event(original_event)
+        if original_is_peer and not admitted_while_busy:
+            from gateway.bot_loop_guard import admit_telegram_bot_turn
+            if not admit_telegram_bot_turn(self, event):
+                if _active_session_lease is not None:
+                    _active_session_lease.release()
+                return None
+        # A cold handoff is the oldest queued head, not a fresh arrival. Its
+        # remaining overflow is newer and must not be "rescued" ahead of it.
+        if not (admitted_while_busy or fifo_handoff):
+            event, source, is_internal = self._hm_rescue_orphaned_fifo(
+                event, source, is_internal, _quick_key
+            )
+        if event is not original_event and original_is_peer:
+            # Orphan rescue retained the newly accepted arrival for a later turn.
+            self._issue_queue_receipt(original_event, _BOT_ADMISSION_RECEIPT)
+        if event is not original_event and self._is_telegram_peer_event(event):
+            if not self._consume_queue_receipt(event, _BOT_ADMISSION_RECEIPT):
+                # A queued peer must carry runner-owned acceptance authority.
+                if _active_session_lease is not None:
+                    _active_session_lease.release()
+                return None
 
         _claim_state = self._session_state(_quick_key)
         if _active_session_lease is not None:

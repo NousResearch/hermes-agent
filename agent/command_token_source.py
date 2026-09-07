@@ -114,7 +114,7 @@ class CommandTokenSource:
             token, ttl = _mint(self._command, self._label)
             self._token = token
             self._expires_at = time.monotonic() + (
-                max(ttl - _TOKEN_REFRESH_LEEWAY_SECONDS, 5.0) if ttl else _NO_TTL_REFRESH_SECONDS
+                max(ttl - _TOKEN_REFRESH_LEEWAY_SECONDS, 0.0) if ttl else _NO_TTL_REFRESH_SECONDS
             )
             logger.debug(
                 "Minted key_cmd token for provider %s (ttl=%s)",

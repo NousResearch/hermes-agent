@@ -1251,6 +1251,39 @@ def _reject_multiple_os_marks(items):
         )
 
 
+def pytest_collection_finish(session):  # noqa: D401 — pytest hook
+    """Hard-fail collection if any ``tests/`` directory sits on ``sys.path``.
+
+    Regression net for t_d40ea7e5: a test module at ``tests/<dir>/`` doing
+    ``sys.path.insert(0, str(Path(__file__).resolve().parents[1]))`` is an
+    off-by-one — the repo root is ``parents[2]``. The inserted
+    ``<root>/tests`` entry makes the repo's own ``tests/acp/`` package
+    importable as the bare top-level name ``acp``, shadowing the real ACP
+    SDK; every ``pytest.importorskip("acp")``-style optional-extra gate then
+    false-positives for the rest of the process. Because pytest imports
+    every module in a directory during collection even when ``-k`` deselects
+    all of its tests, one such top-level statement pollutes the whole shard.
+    Catching it here, after collection but outside any deselectable test,
+    covers every directory under ``tests/`` — not just the one the old
+    ``tests/hermes_cli/test_syspath_hygiene.py`` guard test was collected
+    from — and cannot be skipped by ``-k``.
+    """
+    offenders = sorted(
+        {
+            str(Path(p).resolve())
+            for p in sys.path
+            if p and Path(p).resolve().name == "tests"
+        }
+    )
+    if offenders:
+        raise pytest.UsageError(
+            "tests/ directories on sys.path after collection (repo tests/acp/ "
+            "would shadow any installed acp SDK, breaking importorskip "
+            "gates; parents[1] off-by-one class from t_d40ea7e5): "
+            + ", ".join(offenders)
+        )
+
+
 def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
     """Apply host-OS gating, then skip ``requires_wal`` where WAL is unusable.
 

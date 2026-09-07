@@ -4289,7 +4289,9 @@ def _resolve_auto_route(
     _warn_stale_openai_base_url(runtime.get("provider", ""))
     main_provider, main_model, base_url, api_key, api_mode = _main_route_target(runtime, task)
     if api_mode == "claude_agent_sdk":
-        return _resolve_claude_sdk_auto_route(main_model)
+        from agent.claude_sdk_aux_client import resolve_auto_route as _sdk_auto_route
+
+        return _sdk_auto_route(main_model)
     routed = _try_main_provider_route(main_provider, main_model, base_url, api_key, api_mode)
     if routed is not None:
         return routed
@@ -4315,47 +4317,6 @@ def _effective_provider_for_client(client: Any, fallback: str) -> str:
     return str(fallback or "")
 
 
-def _tag_effective_provider(client: Any, provider: str) -> None:
-    """Retain auto-routing identity on the client that survives cache reuse."""
-    if client is None or not provider:
-        return
-    try:
-        setattr(client, "_hermes_aux_effective_provider", provider)
-    except (AttributeError, TypeError):
-        logger.debug("Auxiliary client %s cannot retain effective provider %s",
-                     type(client).__name__, provider)
-
-
-def _resolve_claude_sdk_auto_route(main_model: str) -> Tuple[Optional[Any], Optional[str], str]:
-    """Fail-closed subscription lane (claude-agent-sdk, #25267).
-
-    When the MAIN provider is the claude-agent-sdk (subscription OAuth, never metered),
-    auto-detection must NOT silently re-route auxiliary tasks (title generation, context
-    compression, ...) onto metered fallback providers — that would break the provider's
-    billing contract through the side door. Explicit ``auxiliary.<task>.{provider,model}``
-    config is resolved before this chain and remains the operator's deliberate opt-in;
-    without it, aux work stays on the same subscription-owned SDK route, and if that
-    facade is unavailable aux features simply no-op.
-    """
-    try:
-        from agent.claude_sdk_aux_client import ClaudeSdkAuxClient
-
-        sdk_aux_model = main_model or "claude-sonnet-5"
-        sdk_aux_client = ClaudeSdkAuxClient(default_model=sdk_aux_model)
-        _tag_effective_provider(sdk_aux_client, "claude-agent-sdk")
-        logger.debug("aux auto-detect: routing to claude-agent-sdk one-shot (subscription lane, model=%s)",
-                     sdk_aux_model)
-        return sdk_aux_client, sdk_aux_model, "claude-agent-sdk"
-    except Exception:
-        logger.warning("aux auto-detect: claude-agent-sdk one-shot client unavailable; failing closed "
-                       "rather than routing auxiliary work to a metered provider.", exc_info=True)
-        return None, None, ""
-
-
-# Centralized Provider Router: resolve_provider_client() is the single entry point for building a configured
-# client (auth, base URL, headers, API format) from (provider, model). Never read auth env vars ad-hoc.
-
-
 def _to_async_client(sync_client, model: str, is_vision: bool = False):
     """Sync client → async counterpart, preserving Codex routing (``is_vision`` adds the Copilot vision header)."""
     from openai import AsyncOpenAI
@@ -4368,12 +4329,11 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     if isinstance(sync_client, BedrockAuxiliaryClient):
         return AsyncBedrockAuxiliaryClient(sync_client), model
     with contextlib.suppress(ImportError):
-        from agent.claude_sdk_aux_client import AsyncClaudeSdkAuxClient, ClaudeSdkAuxClient
+        from agent.claude_sdk_aux_client import async_client_for as _sdk_async_client_for
 
-        if isinstance(sync_client, ClaudeSdkAuxClient):
-            async_client = AsyncClaudeSdkAuxClient(sync_client)
-            _tag_effective_provider(async_client, _effective_provider_for_client(sync_client, ""))
-            return async_client, model
+        sdk_async = _sdk_async_client_for(sync_client)
+        if sdk_async is not None:
+            return sdk_async, model
     with contextlib.suppress(ImportError):
         from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
         if isinstance(sync_client, GeminiNativeClient):
@@ -4990,13 +4950,10 @@ def _resolve_registry_branch(req: _ResolveRequest) -> _ResolveResult:
 
 
 def _resolve_claude_agent_sdk_branch(req: _ResolveRequest) -> _ResolveResult:
-    """Subscription-owned Agent SDK auxiliary facade."""
-    from agent.claude_sdk_aux_client import ClaudeSdkAuxClient
+    """Subscription-owned Agent SDK auxiliary facade; policy lives in agent.claude_sdk_aux_client."""
+    from agent.claude_sdk_aux_client import resolve_branch
 
-    final_model = _normalize_resolved_model(
-        req.model or "claude-sonnet-5", req.provider
-    )
-    return _route_client(req, ClaudeSdkAuxClient(default_model=final_model), final_model)
+    return resolve_branch(req)
 
 
 # Explicit providers with a dedicated branch; anything else falls through to named custom

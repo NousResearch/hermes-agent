@@ -1843,7 +1843,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             protect_last_n=cs.protect_last, summary_target_ratio=cs.target_ratio,
             summary_model_override=None, quiet_mode=agent.quiet_mode, base_url=agent.base_url,
             api_key=getattr(agent, "api_key", ""), config_context_length=_effective_context_length,
-            provider=agent.provider, api_mode=agent.api_mode,
+            provider=agent.provider, custom_providers=_custom_providers, api_mode=agent.api_mode,
             abort_on_summary_failure=cs.abort_on_summary_failure,
             max_tokens=_compressor_max_tokens(agent), model_thresholds=cs.model_thresholds,
             threshold_tokens_cap=cs.threshold_tokens,

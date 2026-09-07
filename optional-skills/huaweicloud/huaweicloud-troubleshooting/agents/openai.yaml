@@ -1,0 +1,4 @@
+interface:
+  display_name: 'Huawei Cloud Troubleshooting'
+  short_description: 'Diagnose Huawei Cloud errors using evidence and read-only checks.'
+  default_prompt: 'Use $huaweicloud-troubleshooting to diagnose this Huawei Cloud error.'

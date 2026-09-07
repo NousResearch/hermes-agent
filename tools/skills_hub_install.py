@@ -11,9 +11,6 @@ from __future__ import annotations
 import logging
 import hashlib
 import shutil
-import threading
-import time
-from contextvars import copy_context
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from agent.skill_utils import is_excluded_skill_path
@@ -246,46 +243,6 @@ def bundle_content_hash(bundle: SkillBundle) -> str:
 
 _SOURCE_ID_ALIASES = {"skills.sh": "skills-sh"}
 
-_FETCH_TIMEOUT_SECONDS = 30.0
-# Keep capacity occupied until fetch really exits, including after caller timeout.
-# Repeated/concurrent checks must not accumulate abandoned credential contexts.
-_FETCH_SLOT = threading.BoundedSemaphore(1)
-
-
-def _fetch_bundle_bounded(
-    src: SkillSource, identifier: str, timeout: float = _FETCH_TIMEOUT_SECONDS,
-) -> Optional[SkillBundle]:
-    """Bound caller waiting, not execution of the synchronous source adapter.
-
-    One process-wide slot bounds lingering workers. While it is occupied, new
-    checks fail fast rather than enqueue work or retain more request contexts.
-    Python cannot cancel a running thread; the daemon may finish in background.
-    """
-    deadline = time.monotonic() + timeout
-    if timeout <= 0 or not _FETCH_SLOT.acquire(blocking=False):
-        return None
-    box: Dict[str, Tuple[float, Optional[SkillBundle]]] = {}
-
-    def _run() -> None:
-        try:
-            bundle = src.fetch(identifier)
-            box["result"] = (time.monotonic(), bundle)
-        except Exception:
-            logger.debug("Skill update fetch failed for %s", identifier, exc_info=True)
-        finally:
-            _FETCH_SLOT.release()
-
-    try:
-        worker = threading.Thread(target=copy_context().run, args=(_run,),
-                                  name="skills-update-fetch", daemon=True)
-        worker.start()
-    except Exception:
-        _FETCH_SLOT.release()
-        raise
-    worker.join(max(0.0, deadline - time.monotonic()))
-    finished, bundle = box.get("result", (float("inf"), None))
-    return bundle if finished <= deadline else None
-
 
 def _source_matches(source: SkillSource, source_name: str) -> bool:
     return source.source_id() == _SOURCE_ID_ALIASES.get(source_name, source_name)
@@ -311,9 +268,6 @@ def check_for_skill_updates(
     if sources is None:
         sources = create_source_router(auth=auth)
 
-    # A shared remote-wait budget, not N independent 30-second waits. Local
-    # lock/path/hash work is not cancellable and is outside this wait guarantee.
-    deadline = time.monotonic() + _FETCH_TIMEOUT_SECONDS
     results: List[dict] = []
     for entry in installed:
         identifier, source_name = entry.get("identifier", ""), entry.get("source", "")
@@ -333,7 +287,10 @@ def check_for_skill_updates(
             continue
         bundle = None
         for src in filter(lambda s: _source_matches(s, source_name), sources):
-            bundle = _fetch_bundle_bounded(src, identifier, timeout=deadline - time.monotonic())
+            try:
+                bundle = src.fetch(identifier)
+            except Exception:
+                bundle = None
             if bundle:
                 break
         if not bundle:

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import pytest
 
+from hermes_cli.local_runtime import hardware
 from hermes_cli.local_runtime.catalog import (
     CATALOG,
     PLEASANT_FLOOR_TOK_S,
@@ -167,3 +168,36 @@ def test_quality_decides_where_speed_permits():
         if (c := select_variant(e, budget)) is not None and c.zero_spill
     ]
     assert pick == max(resident, key=lambda e: e.quality).id
+
+
+def test_cpu_only_host_budgets_ram_without_inventing_gpu_memory(monkeypatch):
+    """A CPU backend may use host RAM, but it has no resident-GPU tier.
+
+    Windows Server machines without a display adapter used to turn all RAM
+    into an UMA device. That made the catalog price CPU inference at GPU
+    bandwidth and recommend the dense 27B model as fully GPU-resident.
+    """
+    total = 32 * _GIB
+    monkeypatch.setattr(hardware, "_ram_bytes", lambda: (total, 24 * _GIB))
+    monkeypatch.setattr(hardware, "_nvidia_vram", lambda: None)
+    monkeypatch.setattr(hardware, "_unified_pool_bytes", lambda *_: None)
+
+    budget = hardware.probe_budget(planning=True, platform_name="win32")
+
+    assert budget == HardwareBudget(
+        usable_vram_bytes=0,
+        total_device_bytes=0,
+        ram_available_bytes=int(total * 0.80),
+        uma=False,
+    )
+    picked = recommended_entry(budget)
+    assert picked is not None
+    assert (picked[0].id, picked[1]) == ("qwen3.6-35b-a3b", "best-cpu-only")
+
+    mac_budget = hardware.probe_budget(planning=True, platform_name="darwin")
+    assert mac_budget == HardwareBudget(
+        usable_vram_bytes=int(total * 0.80),
+        total_device_bytes=total,
+        ram_available_bytes=0,
+        uma=True,
+    )

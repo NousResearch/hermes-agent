@@ -1192,7 +1192,8 @@ export const en: Translations = {
           'A higher-quality model fits this machine but would respond too slowly on its memory bandwidth — this is the best model that stays fast.',
         'fastest-resident':
           'No model reaches full speed on this hardware; this one comes closest while running entirely in GPU memory.',
-        'least-painful-spilled': 'No model fits entirely in GPU memory here — this one runs best from system RAM.'
+        'least-painful-spilled': 'No model fits entirely in GPU memory here — this one runs best from system RAM.',
+        'best-cpu-only': 'This machine has no detected GPU — this is the best model for CPU-only inference.'
       } as Record<string, string>,
       downloaded: 'Downloaded',
       downloadAction: size => `Download · ${size}`,

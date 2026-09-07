@@ -248,6 +248,40 @@ describe('LocalModelsSettings', () => {
     expect(screen.getByText(/256\.0 GB RAM/)).toBeTruthy()
   })
 
+  it('shows CPU-only recommendations without claiming GPU memory', async () => {
+    mocked.getLocalHardware.mockResolvedValue({
+      ...BASE_HARDWARE,
+      uma: false,
+      vram_total_bytes: 0,
+      vram_usable_bytes: 0,
+      vram_label: '0.0 GB',
+      gpu_name: null,
+      gpu_util_percent: null,
+      vram_used_bytes: null
+    })
+    mocked.getLocalCatalog.mockResolvedValue({
+      models: [
+        {
+          ...SPILLED_MODEL,
+          recommended: true,
+          recommended_reason: 'best-cpu-only',
+          quant_reason: 'Best CPU build for this machine — runs from system RAM'
+        }
+      ]
+    })
+
+    await renderFullPane()
+    await screen.findByText('Spilled Model')
+
+    expect(screen.queryByText(/GPU memory/)).toBeNull()
+    expect(screen.queryByText('Fits your GPU')).toBeNull()
+    expect(screen.getByText('Uses system RAM')).toBeTruthy()
+
+    fireEvent.pointerMove(screen.getByText('Recommended'))
+    fireEvent.pointerEnter(screen.getByText('Recommended'))
+    await waitFor(() => expect(screen.getAllByText(/best model for CPU-only inference/).length).toBeGreaterThan(0))
+  })
+
   it('tracks a download job to completion and refreshes', async () => {
     mocked.getLocalModelsStatus.mockResolvedValue({
       ...BASE_STATUS,

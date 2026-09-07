@@ -1,9 +1,9 @@
 """Live hardware budget probe.
 
 Budget-source rule: discrete cards may trust the device query (measured honest within rounding);
-unified-memory devices must budget from OS free physical memory minus headroom — their device
-queries have been observed off by 3x in both directions. Every probe here must work under a
-stripped PATH — gateway and service sessions don't inherit the interactive environment.
+unified-memory devices and CPU-only runtimes budget from OS free physical memory minus headroom.
+Device queries are absent or have been observed off by 3x in both directions. Every probe here
+must work under a stripped PATH because service sessions do not inherit the interactive environment.
 """
 
 from __future__ import annotations
@@ -256,7 +256,14 @@ def _uma_budget(base: int, total: int) -> HardwareBudget:
                           ram_available_bytes=0, uma=True)
 
 
-def probe_budget(*, planning: bool = False) -> HardwareBudget:
+def _cpu_budget(base: int) -> HardwareBudget:
+    """Host RAM available to CPU inference, after leaving the OS/app headroom."""
+    usable = max(0, int(base * (1 - _UMA_HEADROOM_FRACTION)))
+    return HardwareBudget(usable_vram_bytes=0, total_device_bytes=0,
+                          ram_available_bytes=usable, uma=False)
+
+
+def probe_budget(*, planning: bool = False, platform_name: str | None = None) -> HardwareBudget:
     """Construct the budget per the source rules above.
 
     ``planning=False``: LIVE budget (free VRAM now) for launch-time fit and growth re-grants.
@@ -264,6 +271,7 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
     selection — pricing against live-free while a model was loaded made every row read as too
     large. The managed server unloads/relaunches itself, so capacity is real.
     """
+    platform_name = sys.platform if platform_name is None else platform_name
     ram_total, ram_avail = _ram_bytes()
     vram = _nvidia_vram()
 
@@ -290,9 +298,13 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
         return _uma_budget(base, unified)
 
     if vram is None:
-        # No NVIDIA device visible: Metal/Vulkan/CPU paths budget from RAM as UMA (Apple
-        # Silicon) — conservative for discrete AMD until a vendor probe lands.
-        return _uma_budget(ram_total if planning else ram_avail, ram_total)
+        # Metal is unified memory. Everywhere else, no detected device means the CPU backend:
+        # RAM is still usable, but calling it GPU memory makes both fit labels and speed pricing
+        # wrong. Non-NVIDIA discrete devices remain conservative until a vendor probe lands.
+        base = ram_total if planning else ram_avail
+        if platform_name == "darwin":
+            return _uma_budget(base, ram_total)
+        return _cpu_budget(base)
 
     total, free = vram
     margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))

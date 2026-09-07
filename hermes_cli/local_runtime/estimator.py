@@ -65,7 +65,8 @@ class ModelProfile:
 class HardwareBudget:
     """Memory the physics check may budget against. Discrete cards may trust the device query;
     unified-memory devices must budget from OS free memory minus headroom (device queries observed
-    off by 3x). Callers construct this accordingly; the estimator just consumes it."""
+    off by 3x). CPU-only runtimes have zero device memory and carry their headroom-adjusted host
+    memory in ``ram_available_bytes``. Callers construct this accordingly; the estimator consumes it."""
 
     usable_vram_bytes: int      # live free (discrete) / derived (UMA)
     total_device_bytes: int

@@ -1386,7 +1386,8 @@ export const zh: Translations = {
         'best-quality-resident': '在完全驻留 GPU 且保持全速的模型中质量最高。推荐会在质量与该硬件的预计速度之间权衡。',
         'speed-gated-quality': '有更高质量的模型可以装入这台机器，但受内存带宽限制响应会太慢——这是保持流畅的最佳模型。',
         'fastest-resident': '没有模型能在该硬件上达到全速；这是完全驻留 GPU 内存中最快的一个。',
-        'least-painful-spilled': '没有模型能完全装入 GPU 内存——这是从系统内存运行表现最好的一个。'
+        'least-painful-spilled': '没有模型能完全装入 GPU 内存——这是从系统内存运行表现最好的一个。',
+        'best-cpu-only': '未检测到 GPU——这是仅使用 CPU 推理时表现最好的模型。'
       } as Record<string, string>,
       downloaded: '已下载',
       downloadAction: size => `下载 · ${size}`,

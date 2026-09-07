@@ -1324,7 +1324,7 @@ export interface LocalCatalogModel {
   recommended: boolean
   /** Why the resolver picked this entry (recommended rows only):
    *  best-quality-resident | speed-gated-quality | fastest-resident |
-   *  least-painful-spilled. Renders as the Recommended badge's tooltip. */
+   *  least-painful-spilled | best-cpu-only. Renders as the Recommended badge's tooltip. */
   recommended_reason?: string | null
   downloaded: boolean
   downloaded_model_id?: string | null

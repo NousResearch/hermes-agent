@@ -669,6 +669,21 @@ def delegate_task(
     default_max_iter = _split_child_budget(default_max_iter, len(task_list))
     # ── END KENSEI CUSTOM ──
 
+    # Profile validation must precede transcript creation and ancestry
+    # validation. Otherwise a malformed parent test double (or corrupted
+    # metadata) can mask the actionable target profile/config error, and an
+    # invalid spawn can leave a live transcript behind. Explicit
+    # profile_content is already pre-resolved and intentionally bypasses
+    # filesystem validation.
+    if profile and profile_content is None:
+        from hermes_constants import get_hermes_home
+        _profile_dir = get_hermes_home() / "profiles" / profile
+        if not _profile_dir.is_dir():
+            return tool_error(f"Profile '{profile}' not found at {_profile_dir}")
+        _profile_config = _profile_dir / "config.yaml"
+        if not _profile_config.is_file():
+            return tool_error(f"Profile '{profile}' has no config.yaml at {_profile_config}")
+
     overall_start = time.monotonic()
     # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on message
     # content or prompt caching. Best-effort: on failure live_paths is empty and delegation proceeds.

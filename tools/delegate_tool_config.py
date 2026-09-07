@@ -487,6 +487,7 @@ def _resolve_child_runtime(
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
     kwargs: Dict[str, Any] = {
+        "model": effective_model,
         "base_url": effective_base_url,
         "api_key": override_api_key if override_api_key is not None else (None if isolate_profile_credentials else parent_api_key),
         "provider": effective_provider,

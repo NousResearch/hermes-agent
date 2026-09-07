@@ -59,6 +59,25 @@ def bare_gemini_model_id(model: str) -> str:
     return name
 
 
+def is_gemini_model(model: str) -> bool:
+    """Return True when the model is a Gemini model (by name, not by endpoint).
+
+    This covers both native Gemini models and Gemini models relayed through
+    aggregators (e.g., OpenRouter, Nous Portal). The model name is already
+    available on the agent at the point where we need to decide whether to
+    suppress stream_options.
+    """
+    name = (model or "").strip().lower()
+    if not name:
+        return False
+    # Strip common aggregator prefixes
+    for prefix in ("google/", "gemini/"):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+    return name.startswith("gemini-")
+
+
 def is_native_gemini_base_url(base_url: str) -> bool:
     """Return True when the endpoint speaks Gemini's native REST API."""
     normalized = str(base_url or "").strip().rstrip("/").lower()

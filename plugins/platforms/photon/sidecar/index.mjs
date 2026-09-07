@@ -67,6 +67,7 @@ import crypto from "node:crypto";
 import { once } from "node:events";
 import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
 import { chooseSendFormat } from "./send-format.mjs";
+import { voiceAttachmentName } from "./voice-attachment-name.mjs";
 import {
   classifyProbeRejection,
   shouldProbe,
@@ -1091,7 +1092,16 @@ const server = http.createServer(async (req, res) => {
       // overrides only when Hermes supplied them so a known-good
       // inference isn't clobbered with an empty string.
       const opts = {};
-      if (name) opts.name = name;
+      if (kind === "voice") {
+        // spectrum-ts re-encodes non-m4a audio to m4a but uploads it under
+        // the original basename; an .mp3-named m4a voice note renders as a
+        // corrupted, unplayable bubble on iOS (#88083). Name the upload what
+        // the payload will actually be.
+        const voiceName = voiceAttachmentName(path, name);
+        if (voiceName) opts.name = voiceName;
+      } else if (name) {
+        opts.name = name;
+      }
       if (mimeType) opts.mimeType = mimeType;
       const builder =
         kind === "voice"

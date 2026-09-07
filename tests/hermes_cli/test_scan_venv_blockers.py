@@ -19,7 +19,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import agent.redact as redact_module
 import hermes_cli._scan_venv_blockers as scanner
 from hermes_cli._scan_venv_blockers import (
     _classify_local_preview_args,
@@ -699,17 +698,54 @@ def test_redact_long_flag_value_space_separated() -> None:
 
 
 
-def test_redact_sensitive_text_failure_returns_fully_redacted() -> None:
-    """When agent.redact.redact_sensitive_text raises, the entire result
-    must equal '<redacted>' so PID and name still provide diagnostics."""
+def test_redact_masking_failure_returns_fully_redacted() -> None:
+    """A masking failure must collapse to '<redacted>' so PID and name still
+    provide diagnostics rather than leaking an unmasked command line."""
     with patch.object(
-        redact_module,
-        "redact_sensitive_text",
+        scanner,
+        "_mask_secret_values",
         side_effect=RuntimeError("no redactor"),
     ):
         result = _redact_sensitive_cmdline("python.exe --token abc123")
 
     assert result == "<redacted>"
+
+
+def test_redaction_never_imports_the_target_checkout(monkeypatch) -> None:
+    """#104687 B3: the carrier is byte-identical here and runs against a root
+    whose ``agent`` package is mid-rewrite, so redaction must be self-contained."""
+    real_import = builtins.__import__
+
+    def _refuse_checkout_import(name, *args, **kwargs):
+        assert not name.startswith(("agent", "hermes_cli.", "hermes_constants")), name
+
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _refuse_checkout_import)
+
+    raw = "python.exe -m hermes_cli.main serve --host 127.0.0.1"
+    assert _redact_sensitive_cmdline(raw) == raw
+
+
+def test_redact_masks_bare_vendor_token_without_a_flag() -> None:
+    raw = "python.exe -m worker --header ghp_0123456789abcdef"
+    result = _redact_sensitive_cmdline(raw)
+    assert "ghp_0123456789abcdef" not in result
+    assert result == "python.exe -m worker --header <redacted>"
+
+
+def test_redact_masks_assignment_and_url_credentials() -> None:
+    raw = "python.exe -m worker HERMES_API_KEY=abc123 --url https://bob:hunter2@example.test/x"
+    result = _redact_sensitive_cmdline(raw)
+    assert "abc123" not in result
+    assert "hunter2" not in result
+    assert "HERMES_API_KEY=<redacted>" in result
+    assert "https://<redacted>@example.test/x" in result
+
+
+def test_redact_does_not_mask_identifier_lookalikes() -> None:
+    raw = "python.exe -m worker --monkey=banana --keyboard=qwerty --directory C:\\site"
+    assert _redact_sensitive_cmdline(raw) == raw
 
 
 def test_redact_session_key() -> None:

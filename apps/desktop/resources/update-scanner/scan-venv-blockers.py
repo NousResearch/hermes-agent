@@ -30,6 +30,7 @@ import argparse
 import json
 import math
 import os
+import re
 import shlex
 import sys
 from dataclasses import dataclass, replace
@@ -106,6 +107,31 @@ _SENSITIVE_LONG_FLAGS: list[str] = [
     "--token", "--api-key", "--password", "--secret", "--authorization", "--access-key",
     "--private-key", "--session-key",
 ]
+
+# Secret masking for the diagnostic command line, deliberately self-contained.
+#
+# Neither scanner copy may import the target checkout's ``agent.redact``: the
+# carrier runs from the candidate build against a mutable install root, and
+# reaching into that root for redaction code would defeat shipping the scanner
+# as a resource at all. These rules are a small, auditable subset of
+# ``agent/redact.py`` covering what a Windows command line can carry, and they
+# are byte-identical in both copies so the packaged carrier reports the same
+# command line the module does instead of a blanket ``<redacted>`` (#104687).
+_SECRET_TOKEN_RE = re.compile(
+    r"(?:sk-ant-|sk-|sk_live_|sk_test_|rk_live_|gh[opsur]_|github_pat_|glpat-|gsk_"
+    r"|xox[abprs]-|xapp-|AIza|AKIA|SG\.|hf_|r8_|npm_|pypi-|xai-|tvly-|exa_|ntn_|gAAAA)"
+    r"[A-Za-z0-9._-]{10,}"
+)
+# ``--api-key=V`` / ``AUTH_TOKEN=V`` / ``password: V``. The secret word must sit
+# on an identifier boundary so ``monkey=`` and ``keyboard=`` do not match.
+_SECRET_ASSIGN_RE = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"((?:[A-Za-z0-9]+[_-])*(?:api[_-]?key|key|token|secret|password|passwd|credential|auth)"
+    r"(?![A-Za-z0-9]))(\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|\S+)",
+    re.IGNORECASE,
+)
+_URL_CREDENTIALS_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^\s/:@]+:[^\s/@]+@")
+_AUTH_SCHEME_RE = re.compile(r"(?<![A-Za-z0-9])(Bearer|Basic)\s+\S+", re.IGNORECASE)
 
 _PYTHON_PROCESS_NAMES = {"python.exe", "pythonw.exe", "python", "pythonw"}
 _UPDATER_STOPPABLE_PURPOSES = ("serve", "dashboard")
@@ -239,9 +265,37 @@ def _find_flag(text: str, flag: str) -> int:
         pos = idx + 1
 
 
+def _mask_secret_values(text: str) -> str:
+    """Replace secret-shaped substrings of a command line with ``<redacted>``."""
+    text = _URL_CREDENTIALS_RE.sub(lambda match: match.group(1) + "<redacted>@", text)
+    text = _SECRET_ASSIGN_RE.sub(
+        lambda match: match.group(1) + match.group(2) + "<redacted>", text
+    )
+    text = _AUTH_SCHEME_RE.sub(lambda match: match.group(1) + " <redacted>", text)
+    return _SECRET_TOKEN_RE.sub("<redacted>", text)
+
+
 def _redact_sensitive_cmdline(cmdline: str) -> str:
-    """Never import mutable target redaction code or expose unbounded argv."""
-    return "<redacted>"
+    """Mask secret-shaped values, then replace everything after a sensitive long flag.
+
+    Self-contained on purpose (see ``_SECRET_TOKEN_RE``): this function is one
+    of the regions the carrier does *not* substitute, so the packaged scanner
+    and this module redact identically.
+    """
+    try:
+        cmdline = _mask_secret_values(cmdline)
+    except Exception:
+        return "<redacted>"
+    # --flag=value → preserve "--flag="; --flag value → preserve "--flag ".
+    earliest = len(cmdline)
+    for flag in _SENSITIVE_LONG_FLAGS:
+        for suffix in ("=", " "):
+            idx = _find_flag(cmdline, flag + suffix)
+            if idx != -1 and idx + len(flag) + 1 < earliest:
+                earliest = idx + len(flag) + 1
+    if earliest < len(cmdline):
+        return cmdline[:earliest] + "<redacted>"
+    return cmdline
 
 
 def _classify_local_preview_args(args: object) -> dict[str, object]:

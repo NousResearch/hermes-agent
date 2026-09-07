@@ -339,6 +339,17 @@
        reading column stays primary. */
     --conversation-scaffold-text: color-mix(in srgb, var(--ui-base) 64%, transparent);
     --conversation-scaffold-meta: color-mix(in srgb, var(--ui-base) 44%, transparent);
+    /* Reasoning ("thinking") bodies — the part a reasoning-model user actively
+       reads. Sized and coloured by tokens (defaults below mirror the previous
+       hard-coded `text-xs leading-snug text-muted-foreground/85` utilities)
+       so themes and user stylesheets can override them without touching the
+       component. The `aui_reasoning-text` data-slot is the stable hook.
+       Color derivation: the old chain was tertiary text (ui-base @ 54% alpha)
+       with the /85 utility on top → 0.54 × 0.85 = 0.459; srgb color-mix with
+       transparent only scales alpha, so 45.9% reproduces it exactly. */
+    --conversation-reasoning-font-size: 0.75rem;
+    --conversation-reasoning-line-height: 1.375;
+    --conversation-reasoning-color: color-mix(in srgb, var(--ui-base) 45.9%, transparent);
     --ui-stroke-primary: color-mix(
       in srgb,
       var(--ui-accent) var(--theme-stroke-primary-accent-mix),
@@ -1946,10 +1957,31 @@ body.guest-pointer-lock :is(webview, iframe) {
    context, so nothing inside a faded parent can be more opaque than it, and
    one row (an open diff) could not stay lit while its siblings dimmed. Hence
    the tool group wrapper carries no mark and each row inside it carries its
-   own — no two marked elements nest, so the fade never compounds. */
+   own — no two marked elements nest, so the fade never compounds.
+
+   The open reasoning body is deliberately NOT exempted by default: the fade
+   mark sits on the disclosure root (`aui_thinking-disclosure`), which
+   contains the body, so the whole thinking unit dims together and lifts
+   together on hover — same treatment as every other scaffolding. The
+   `--conversation-reasoning-*` tokens own its size and colour; the open-body
+   exemption below is likewise token-gated (default preserves the fade), so
+   a user stylesheet can set `--conversation-reasoning-open-opacity: 1` to
+   read open reasoning at full strength without touching anything else. */
 [data-slot='aui_assistant-message-content'] [data-conversation-scaffold] {
   opacity: 0.67;
   transition: opacity 120ms ease-out;
+}
+
+/* The third layer of #99793: the fade above multiplies on top of the
+   reasoning colour. When the disclosure is OPEN the body is reading
+   matter, not chrome, so its opacity is token-gated — the default
+   reproduces the stock fade exactly (0.67); set
+   --conversation-reasoning-open-opacity: 1 to read open reasoning at full
+   strength without unfading tool rows. `:has(> body)` matches only while
+   the body is mounted (open); collapsed rows keep the plain fade. */
+[data-slot='aui_assistant-message-content']
+  [data-slot='aui_thinking-disclosure']:has(> [data-slot='aui_thinking-body']) {
+  opacity: var(--conversation-reasoning-open-opacity, 0.67);
 }
 
 /* Lift on hover or *keyboard* focus only. `:focus-within` also matches the

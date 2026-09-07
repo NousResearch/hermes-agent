@@ -23,6 +23,7 @@ type KanbanMessages = {
   arcRunning: string
   arcStale: string
   title: string
+  refresh: string
   orchestrationSettings: string
   newTask: string
   filterCards: string
@@ -235,6 +236,7 @@ export const en: KanbanMessages = {
   arcRunning: 'An agent is working on this now.',
   arcStale: 'Claimed, but no worker heartbeat for 2+ minutes — the dispatcher will reclaim it.',
   title: 'Kanban',
+  refresh: 'Refresh board',
   orchestrationSettings: 'Orchestration settings',
   newTask: 'New task',
   filterCards: 'Filter cards…',
@@ -447,6 +449,7 @@ const ja: KanbanMessages = {
   arcRunning: 'エージェントが現在作業中です。',
   arcStale: '取得済みですが、2分以上ワーカーのハートビートがありません — ディスパッチャが再取得します。',
   title: 'カンバン',
+  refresh: 'ボードを更新',
   orchestrationSettings: 'オーケストレーション設定',
   newTask: '新しいタスク',
   filterCards: 'カードを絞り込み…',
@@ -658,6 +661,7 @@ const zh: KanbanMessages = {
   arcRunning: '有代理正在处理它。',
   arcStale: '已领取，但超过 2 分钟没有工作单元心跳 — 调度器将重新领取。',
   title: '看板',
+  refresh: '刷新看板',
   orchestrationSettings: '编排设置',
   newTask: '新建任务',
   filterCards: '筛选卡片…',
@@ -866,6 +870,7 @@ const zhHant: KanbanMessages = {
   arcRunning: '有代理正在處理它。',
   arcStale: '已領取，但超過 2 分鐘沒有工作單元心跳 — 排程器將重新領取。',
   title: '看板',
+  refresh: '重新整理看板',
   orchestrationSettings: '編排設定',
   newTask: '新增任務',
   filterCards: '篩選卡片…',

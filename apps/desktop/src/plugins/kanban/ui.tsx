@@ -13,11 +13,12 @@ import {
   profileColor,
   profileColorSoft,
   relativeTime,
-  useQuery
+  useQuery,
+  useValue
 } from '@hermes/plugin-sdk'
 import { type ReactNode, useEffect, useState } from 'react'
 
-import { fetchOrchestration, ORCHESTRATION_KEY } from './api'
+import { $kanbanScope, fetchOrchestration, orchestrationKey } from './api'
 import { columnLabel, useKanban } from './i18n'
 import { columnMeta, type KanbanTask } from './types'
 
@@ -34,7 +35,13 @@ export const $newTaskLane = atom<null | string>(null)
 
 /** Orchestration knobs (cached app-wide; the settings panel invalidates). */
 export function useOrchestration() {
-  return useQuery({ queryKey: ORCHESTRATION_KEY, queryFn: fetchOrchestration, staleTime: 60_000 }).data
+  const scope = useValue($kanbanScope)
+
+  return useQuery({
+    queryKey: orchestrationKey(scope),
+    queryFn: () => fetchOrchestration(scope),
+    staleTime: 60_000
+  }).data
 }
 
 /** The dispatcher's configured fallback for unassigned ready cards

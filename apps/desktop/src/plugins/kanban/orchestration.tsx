@@ -17,16 +17,18 @@ import {
   Switch,
   useMutation,
   useQuery,
-  useQueryClient
+  useQueryClient,
+  useValue
 } from '@hermes/plugin-sdk'
 import { useState } from 'react'
 
 import {
+  $kanbanScope,
   autoDescribeProfile,
   fetchOrchestration,
   fetchProfiles,
-  ORCHESTRATION_KEY,
-  PROFILES_KEY,
+  orchestrationKey,
+  profilesKey,
   saveOrchestration,
   saveProfileDescription
 } from './api'
@@ -72,7 +74,7 @@ function ProfileDescriptionRow({ profile }: { profile: KanbanProfile }) {
   const k = useKanban()
   const qc = useQueryClient()
   const [draft, setDraft] = useState(profile.description)
-  const invalidate = () => void qc.invalidateQueries({ queryKey: PROFILES_KEY })
+  const invalidate = () => void qc.invalidateQueries({ queryKey: profilesKey() })
 
   const save = useMutation({
     mutationFn: () => saveProfileDescription(profile.name, draft.trim()),
@@ -132,13 +134,23 @@ function ProfileDescriptionRow({ profile }: { profile: KanbanProfile }) {
 export function OrchestrationPanel() {
   const k = useKanban()
   const qc = useQueryClient()
-  const { data: settings } = useQuery({ queryKey: ORCHESTRATION_KEY, queryFn: fetchOrchestration })
-  const { data: roster } = useQuery({ queryKey: PROFILES_KEY, queryFn: fetchProfiles, staleTime: 60_000 })
+  const scope = useValue($kanbanScope)
+
+  const { data: settings } = useQuery({
+    queryKey: orchestrationKey(scope),
+    queryFn: () => fetchOrchestration(scope)
+  })
+
+  const { data: roster } = useQuery({
+    queryKey: profilesKey(scope),
+    queryFn: () => fetchProfiles(scope),
+    staleTime: 60_000
+  })
 
   const save = useMutation({
     mutationFn: (patch: Record<string, unknown>) => saveOrchestration(patch),
     onError: err => host.notify({ kind: 'error', message: errText(err) }),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ORCHESTRATION_KEY })
+    onSuccess: () => void qc.invalidateQueries({ queryKey: orchestrationKey() })
   })
 
   if (!settings || !roster) {

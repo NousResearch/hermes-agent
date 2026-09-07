@@ -1444,6 +1444,23 @@ try {
         exit 0
     }
 
+    # -- 0.5. Prerequisite preflight (FAIL CLOSED, pre-teardown) ------------
+    # The venv python drives every hand-off step; without it Invoke-HermesStep
+    # cannot even start a process. Check it BEFORE the Desktop and gateways
+    # are torn down so an antivirus quarantine surfaces as an actionable
+    # repair message with the app relaunched, not as a hand-off that dies
+    # mid-flight after the user's session is already gone. The shim and the
+    # browser UI are deliberately NOT prerequisites: step 2 tolerates a
+    # missing shim and the UI degrades to WinForms when ui.html is gone.
+    $preflightPython = Join-Path $InstallRoot "venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $preflightPython)) {
+        $finalCode = 3
+        $finalMsg = "Update aborted: $preflightPython is missing. The install needs repair - an antivirus may have quarantined it. Restore the file or run the Hermes installer, then try again."
+        Write-HandoffLog $finalMsg
+        exit $finalCode
+    }
+    Write-HandoffLog "prerequisite preflight passed (venv python present)"
+
     # -- 1. Wait for the Desktop to exit (FAIL CLOSED) ----------------------
     Publish-UiProgress "Waiting for Hermes to close"
     if ($DesktopPid -gt 0) {
@@ -1593,6 +1610,23 @@ try {
         $rebuild = Invoke-HermesStep $pythonExe @("-m", "hermes_cli.main", "desktop", "--force-build", "--build-only") "rebuild"
         Write-HandoffLog "desktop rebuild exit code: $($rebuild.Code)"
         if ($rebuild.Code -ne 0) { $desktopBuildFailed = $true }
+    }
+
+    # -- 5. Runtime verification: exit 0 is not proof the install works ----
+    # `hermes update` exits 0 even when the managed runtime was damaged
+    # mid-update (an antivirus quarantine of venv python.exe leaves the
+    # source synced but the interpreter gone). Probe the runtime BEFORE
+    # declaring success so the result receipt tells the truth.
+    if (-not $desktopBuildFailed -and $res.Code -eq 0) {
+        Publish-UiProgress "Verifying install"
+        $verify = Invoke-HermesStep $pythonExe @("-c", "import hermes_cli.main") "verify"
+        Write-HandoffLog ("runtime verify exit code: " + $verify.Code)
+        if ($verify.Code -ne 0) {
+            $finalCode = 8
+            $finalMsg = "Code and dependencies updated, but the Hermes runtime FAILED verification (exit $($verify.Code)) - possibly quarantined by antivirus software. Run the Hermes installer or restore the excluded files, then update again."
+            Write-HandoffLog $finalMsg
+            exit $finalCode
+        }
     }
 
     if ($res.Code -eq 0 -and -not $desktopBuildFailed) {

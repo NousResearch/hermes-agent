@@ -51,6 +51,19 @@ that means the effective setting must be `require_mention: false`. With
 `require_mention: true`, direct mentions and outbound filtering still work,
 but ordinary room messages never reach the relevance policy.
 
+### Dashboard
+
+With the plugin enabled, the Hermes dashboard exposes a **Groupchat** page.
+The page uses the dashboard's current language (English by default, with a
+German translation) and writes only the selected profile's Groupchat settings.
+It provides editors for filter-model selection, relevance timing, literal and
+regex rule lists, and Pingpong Guard rules. Comment lines beginning with `#`
+are preserved, so multilingual rule groups can be labelled in-place.
+
+The Matrix participation panel shows which running profiles have saved
+`require_mention: false` settings. This is configuration visibility, not proof
+that a gateway has restarted since its last change.
+
 ## Behavior
 
 The relevance model evaluates only the newest message, using recent room
@@ -99,6 +112,10 @@ Private JSONL audit logs are stored in `HERMES_HOME/logs`:
 
 - `<platform>-relevance-decisions.jsonl` for inbound decisions.
 - `<platform>-groupchat-outbound.jsonl` for outbound decisions.
+
+The dashboard displays this directory dynamically for the selected profile;
+individual channels are not repeated because their names are already part of
+the filenames. The passive-context directory is shown separately.
 
 Files are mode `0600`, rotate at 10 MiB, and retain one previous file.
 Records include stable reason codes and rule fingerprints, but omit message

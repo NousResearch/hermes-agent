@@ -1,0 +1,11 @@
+{
+  "name": "groupchat",
+  "label": "Groupchat",
+  "description": "Shared filter AI, relevance routing and pingpong protection for Hermes group chats",
+  "icon": "Users",
+  "version": "0.1.0",
+  "tab": { "path": "/groupchat", "position": "after:config" },
+  "entry": "index.js",
+  "css": "style.css",
+  "api": "plugin_api.py"
+}

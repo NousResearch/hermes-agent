@@ -152,6 +152,7 @@ def test_driver_signature_rejects_codesign_failure(monkeypatch):
         cua_backend_daemon._validate_cua_driver_app_signature("/Applications/CuaDriver.app")
 
 
+@pytest.mark.macos_only
 def test_embedded_spawn_resolves_shim_and_accepts_current_team(monkeypatch):
     executable = "/Applications/CuaDriver.app/Contents/MacOS/cua-driver"
     monkeypatch.setattr(cua_backend.os.path, "realpath", lambda path: executable)

@@ -18,7 +18,7 @@ def _coerce_int(value: Any, default: int, minimum: int) -> int:
     """Return ``value`` as an int >= ``minimum``, or ``default`` on any issue."""
     try:
         iv = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     return default if iv < minimum else iv
 

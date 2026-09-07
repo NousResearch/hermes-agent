@@ -159,10 +159,14 @@ assert all(
 assert all(("reasoning_effort" in r["kwargs"]) == (arm == "fixed") for r in named)
 assert all(r["kwargs"].get("reasoning_effort") == "high" for r in generic)
 assert all(r["kwargs"].get("reasoning_effort") == "high" for r in profile_controls)
+assert len(captures) == len(rows)
+for request, row in zip(captures, rows):
+    assert request["model"] == row["model"]
+    assert request.get("reasoning_effort") == row["kwargs"].get("reasoning_effort")
 print(
     json.dumps(
         {
-            "status": "PASS: feature gap reproduced",
+            "status": "PASS: named-route parity restored" if arm == "fixed" else "PASS: named-route reasoning loss reproduced",
             "repo": str(REPO),
             "home": os.environ["HOME"],
             "hermes_home": os.environ["HERMES_HOME"],
@@ -170,7 +174,7 @@ print(
             "rows": rows,
             "profile_controls": profile_controls,
             "network_attempts_blocked": blocked,
-            "scope": "Offline real AIAgent init and production request construction; no provider E2E or model dispatch.",
+            "scope": "Real AIAgent init and request construction plus localhost SDK HTTP; fixture responses, no vendor inference. Per-model reasoning_format is unsupported on both arms, including none.",
         },
         indent=2,
         default=str,

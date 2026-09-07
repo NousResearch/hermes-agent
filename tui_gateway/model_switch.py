@@ -230,8 +230,26 @@ def _apply_model_switch(
         confirm = _expensive_model_confirm(result, current_base_url, current_api_key)
         if confirm is not None:
             return confirm
-    if agent:
-        _commit_agent_switch(sid, session, agent, result, current_model, restore_snapshot)
+    records_composer_override = (
+        pin_session_override and isinstance(session, dict) and not one_turn
+        and not persist_global and session.get("follow_profile_config"))
+    had_composer_profile = "composer_override_profile" in session
+    previous_composer_profile = session.get("composer_override_profile")
+    if records_composer_override:
+        profile_model, profile_provider = _config_model_target()
+        session["composer_override_profile"] = {
+            "model": profile_model, "provider": profile_provider}
+    try:
+        if agent:
+            # Provenance must exist before this transaction persists the switched runtime.
+            _commit_agent_switch(sid, session, agent, result, current_model, restore_snapshot)
+    except Exception:
+        if records_composer_override:
+            if had_composer_profile:
+                session["composer_override_profile"] = previous_composer_profile
+            else:
+                session.pop("composer_override_profile", None)
+        raise
     # PER-SESSION override so a rebuild of THIS session (/new, resume) re-derives the model.
     # Deliberately NOT written to process-global env (HERMES_MODEL & co.): the desktop hosts
     # every same-profile session in one process, so os.environ would leak the switch to all.
@@ -239,13 +257,6 @@ def _apply_model_switch(
         session["model_override"] = {
             "model": result.new_model, "provider": result.target_provider,
             "base_url": result.base_url, "api_key": result.api_key, "api_mode": result.api_mode}
-        if not persist_global and session.get("follow_profile_config"):
-            profile_model, profile_provider = _config_model_target()
-            session["composer_override_profile"] = {
-                "model": profile_model, "provider": profile_provider}
-        if agent:
-            # _commit_agent_switch persists before the session pin and its provenance exist.
-            _persist_live_session_runtime(session)
     if persist_global:
         _persist_model_switch(result)
     return {

@@ -38,7 +38,7 @@ describe('async report hydration', () => {
   })
 
   it('separates batch result blocks without leaking preambles or transcript plumbing', () => {
-    const content = `[ASYNC DELEGATION BATCH COMPLETE — batch]\nPrivate instructions\nRole: leaf\n\n--- ✓ TASK 1/2: private goal  (status=completed) ---\n${report}\nFull live transcript (complete tool/assistant trace): /private/path\n\n--- ✓ TASK 2/2  (status=completed) ---\nPlain result`
+    const content = `[ASYNC DELEGATION BATCH COMPLETE — batch]\nPrivate instructions\nRole: leaf\n\n--- ✓ TASK 1/2: private goal  (status=completed) ---\n${report}\nFull live transcript (complete tool/assistant trace): /private/path\n\n--- ✓ TASK 2/2: private goal\nprivate continuation  (status=completed) ---\nPlain result`
     expect(hydrate(content).metadata.custom.asyncResult).toBe(`${report}\n\nPlain result`)
     expect(
       hydrate('[ASYNC DELEGATION COMPLETE — malformed]\nPrivate instructions').metadata.custom.asyncResult

@@ -3,7 +3,9 @@ import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 const root = path.resolve(import.meta.dirname, '../../apps/desktop')
-const artifactDir = process.env.NAVIGATION_ARTIFACT_DIR ?? '/home/teknium/.hermes/cache/desktop-bugs-74848ed3/followups/async-reports'
+const artifactDir = process.env.ASYNC_REPORT_ARTIFACT_DIR
+if (!artifactDir) throw new Error('Set ASYNC_REPORT_ARTIFACT_DIR to an offline artifact directory')
+fs.mkdirSync(artifactDir, {recursive:true})
 const fixture = path.join(import.meta.dirname, 'async-report-probe.tsx')
 const baseline = path.join(artifactDir, 'baseline-hydration.ts')
 fs.writeFileSync(baseline, execFileSync('git', ['show', 'a688e7d5ff9aeaaa9c97d28c316467f89ab8c943:apps/desktop/src/lib/chat-messages/hydration.ts'], {encoding:'utf8'}).replaceAll("from './", "from '@/lib/chat-messages/"))

@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory(prefix="async-report-producer-") as temporary:
     events = {
         "cron": dict(common, **result),
         "process": dict(common, status="completed", summary=report),
-        "batch": dict(common, is_batch=True, goals=["PRIVATE FIRST", "PRIVATE SECOND"], results=[
+        "batch": dict(common, is_batch=True, goals=["PRIVATE FIRST", "PRIVATE SECOND\nPRIVATE CONTINUATION"], results=[
             dict(task_index=0, status="completed", summary=report, live_transcript="/private/transcript"),
             dict(task_index=1, status="completed", summary="Plain batch result"),
         ]),

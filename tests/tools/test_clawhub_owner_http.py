@@ -35,7 +35,7 @@ def registry(*, fallback=False, mismatch=False):
                         archive.writestr("SKILL.md", "# Alice fixture")
                     payload = buf.getvalue()
             elif url.path.endswith("/versions"):
-                payload = [{"version": "1.0"}]
+                payload = {"items": [{"version": "1.0"}]} if fallback else [{"version": "1.0"}]
             elif url.path.endswith("/versions/1.0"):
                 payload = {"files": {"SKILL.md": "# Alice fixture"}}
             else:

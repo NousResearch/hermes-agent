@@ -94,6 +94,7 @@ export function ProjectOverviewRow({
 }: ProjectOverviewRowProps) {
   const { t } = useI18n()
   const s = t.sidebar
+  const projectLabel = project.isNoProject ? s.projects.home : project.label
   const isActive = project.id === activeProjectId
   const [open, toggleOpen] = useWorkspaceNodeOpen(project.id)
   // The appearance popover anchors here (the full row) so it opens flush with
@@ -124,9 +125,9 @@ export function ProjectOverviewRow({
               folder" chat. New session sits outermost: it's the one you reach
               for. */}
           {!project.isNoProject && <ProjectMenu anchorRef={rowRef} isActive={isActive} project={project} />}
-          {onNewSession && (
+          {onNewSession && (!project.isNoProject || project.isHome) && (
             <WorkspaceAddButton
-              label={s.newSessionIn(project.label)}
+              label={s.newSessionIn(projectLabel)}
               onClick={() => onNewSession(project.path)}
               onPointerDown={
                 onNewSessionSplit
@@ -144,7 +145,7 @@ export function ProjectOverviewRow({
                           })
                         },
                         event,
-                        { cwd: project.path, label: s.newSessionIn(project.label) }
+                        { cwd: project.path, label: s.newSessionIn(projectLabel) }
                       )
                     }
                   : undefined
@@ -157,11 +158,11 @@ export function ProjectOverviewRow({
       data-glass-opaque={dragging ? '' : undefined}
       label={
         <SidebarRowLink
-          aria-label={s.projects.enter(project.label)}
+          aria-label={s.projects.enter(projectLabel)}
           labelClassName={cn('hover:text-foreground hover:underline', isActive && 'text-foreground')}
           onClick={() => onEnter?.(project.id)}
         >
-          {project.label}
+          {projectLabel}
         </SidebarRowLink>
       }
       lead={lead}
@@ -180,7 +181,7 @@ export function ProjectOverviewRow({
       ref={rowRef}
       toggle={
         preview.length > 0
-          ? { ariaLabel: s.projects.toggle(project.label, !open), onToggle: toggleOpen, open }
+          ? { ariaLabel: s.projects.toggle(projectLabel, !open), onToggle: toggleOpen, open }
           : undefined
       }
       totals={{ costUsd: project.totalCostUsd ?? 0, tokens: project.totalTokens ?? 0 }}

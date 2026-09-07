@@ -143,7 +143,7 @@ export function extractEmbeddedImages(text: string): EmbeddedImageExtraction {
 
   pieces.push(text.slice(appendCursor))
 
-  return { cleanedText: pieces.join('').trim(), images }
+  return { cleanedText: pieces.join(''), images }
 }
 
 export function embeddedImageUrls(text: string): string[] {
@@ -193,5 +193,5 @@ export function extractImageRefs(text: string): { cleanedText: string; refs: str
     cleanedText = cleanedText.replace(SCREENSHOT_PLACEHOLDER_LINE_RE, '')
   }
 
-  return { cleanedText: cleanedText.trim(), refs }
+  return { cleanedText, refs }
 }

@@ -985,7 +985,10 @@ def _grouped_fanout(monkeypatch, tasks, gates):
 
 
 def test_ungrouped_task_completes_alone_and_group_completes_together(monkeypatch):
-    """A finished ungrouped task must not wait for its siblings; tasks sharing a `group` must."""
+    """With delegation.independent_completions on, a finished ungrouped task must not wait for its siblings;
+    tasks sharing a `group` must."""
+    import tools.delegate_tool as dt
+    monkeypatch.setattr(dt, "_load_config", lambda: {"independent_completions": True})
     gates = [threading.Event() for _ in range(4)]
     tasks = [
         {"goal": "review PR 1 thoroughly and report"},
@@ -1030,6 +1033,57 @@ def test_units_of_one_call_share_a_single_capacity_slot():
     assert (first["status"], second["status"], other["status"]) == ("dispatched", "dispatched", "rejected")
     assert ad.active_task_count() == 2
     gate.set()
+
+
+def test_multi_task_call_is_one_completion_unless_independent_completions(monkeypatch):
+    """Default: a background fan-out returns as ONE message when every task is done, so an orchestrator
+    is not woken N times per call; `group` is inert until delegation.independent_completions is on."""
+    import tools.delegate_tool as dt
+    monkeypatch.setattr(dt, "_load_config", lambda: {})
+    gates = [threading.Event() for _ in range(3)]
+    tasks = [{"goal": "review PR 1 thoroughly and report"}, {"goal": "review PR 2 thoroughly and report", "group": "g"},
+             {"goal": "review PR 3 thoroughly and report", "group": "g"}]
+    handle = _grouped_fanout(monkeypatch, tasks, gates)
+    assert handle["status"] == "dispatched" and "units" not in handle
+    gates[0].set()
+    gates[1].set()
+    assert _drain_one(timeout=0.5) is None  # two of three done: no message yet
+    gates[2].set()
+    evt = _drain_one()
+    assert sorted(r["task_index"] for r in evt["results"]) == [0, 1, 2]
+
+
+def test_units_beyond_slot_count_still_start_and_are_not_stalled_while_queued(monkeypatch):
+    """Units of one call share a slot, so live units can exceed the slot cap; every unit must still get a worker,
+    and a unit must not be judged stalled for time it spent waiting to start."""
+    _fast_stale_monitor(monkeypatch, idle=0.3, grace=0.2)
+    started, release = [], threading.Event()
+    frozen = lambda: (((0, None, None),), False)  # noqa: E731 - child never progresses => token never changes
+
+    def blocker(uid):
+        def run():
+            started.append(uid)
+            release.wait(timeout=10)
+            return {"results": [{"task_index": 0, "status": "completed"}], "total_duration_seconds": 0}
+        return run
+
+    common = dict(goals=["x"], context=None, toolsets=None, role="leaf", model="m", session_key="", max_async_children=1)
+    ad.dispatch_async_delegation_batch(delegation_id="deleg_c-1", runner=blocker("c-1"), progress_fn=frozen, **common)
+    ad.dispatch_async_delegation_batch(delegation_id="deleg_c-2", runner=blocker("c-2"), slot_key="deleg_c-1", **common)
+    deadline = time.monotonic() + 2.0
+    while len(started) < 2 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert sorted(started) == ["c-1", "c-2"]  # second unit started despite a 1-slot pool
+
+    # A unit whose runner has NOT started yet must not accrue stall time: pin the pool so it stays queued.
+    monkeypatch.setattr(ad, "_get_executor", lambda n: ad._executor)
+    ad.dispatch_async_delegation_batch(delegation_id="deleg_q", runner=blocker("q"), progress_fn=frozen,
+                                       **{**common, "max_async_children": 3})
+    time.sleep(0.7)  # > idle + grace with the unit still queued
+    with ad._records_lock:
+        assert ad._records["deleg_q"]["status"] == "running"
+    assert "q" not in started
+    release.set()
 
 
 def test_child_finished_before_crash_is_recovered_with_its_result(tmp_path):

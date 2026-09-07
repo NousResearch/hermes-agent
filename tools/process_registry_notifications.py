@@ -143,8 +143,9 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
         evt,
         f"[ASYNC DELEGATION BATCH COMPLETE — {deleg_id}]",
         f"A background fan-out unit you dispatched earlier — {unit} — has finished; its consolidated results are "
-        "below. Other units from the same delegate_task call (other groups / ungrouped tasks) report separately as "
-        "they finish. You may have moved on since dispatching — act on these or re-dispatch if things have changed.",
+        "below. Any other units from the same delegate_task call report separately as they finish. You may have "
+        "moved on since dispatching — act on these or re-dispatch if things have changed. If you are still waiting "
+        "on siblings, end your turn after acting on this one.",
         completed_at, with_goal=False)
     lines[-1] += f"   Total duration: {evt.get('total_duration_seconds', evt.get('duration_seconds', '?'))}s"
     if evt.get("error") and not results:

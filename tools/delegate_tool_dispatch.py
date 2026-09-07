@@ -274,14 +274,15 @@ def _batch_progress_token(child_agents: List[Any]) -> tuple:
 
 _BACKGROUND_NOTES = {
     "one": (
-        "Subagent is running in the background. You and the user can keep working; its full result re-enters the "
-        "conversation as a new message when it finishes. Do not wait or poll — just continue."
+        "Subagent is running in the background; its full result re-enters the conversation as a new message when it "
+        "finishes. Results are delivered only after you END YOUR TURN: do anything that does not depend on it, then "
+        "stop with a one-line status. Do not poll its transcript or artifacts to wait for it."
     ),
     "many": (
-        "{n} subagents are running in parallel in the background as {k} independent unit(s). You and the user can keep "
-        "working; each unit's results re-enter the conversation as their own message as soon as THAT unit finishes "
-        "(tasks sharing a `group` finish together; ungrouped tasks report individually), so act on each as it lands. "
-        "Do not wait or poll — just continue."
+        "{n} subagents are running in parallel in the background as {k} completion unit(s); each unit's results "
+        "re-enter the conversation as their own new message when THAT unit finishes. Results are delivered only "
+        "after you END YOUR TURN: do anything that does not depend on them, then stop with a one-line status. Do not "
+        "poll transcripts or artifacts to wait for them."
     ),
     "control_hint": (
         "While a child runs you can orchestrate it live with this same tool: delegate_task(action='list') to see live "
@@ -320,7 +321,13 @@ def _dispatched_payload(batch: _Batch, units: List[tuple[_Batch, str]]) -> dict:
 def _units_of(batch: _Batch) -> List[_Batch]:
     """Partition the call's children into async units: one per distinct task ``group`` (first-appearance order) and
     one per ungrouped task. Each unit is a ``_Batch`` sharing the call's task_list/transcripts but owning a subset of
-    ``children``, so a unit joins only on itself and its completion re-enters the conversation on its own."""
+    ``children``, so a unit joins only on itself and its completion re-enters the conversation on its own.
+
+    Off by default (``delegation.independent_completions``): the whole call is ONE unit and returns as one message.
+    A per-task flurry of completions (one new turn each) fragmented orchestrators that had no plan for it."""
+    from tools.delegate_tool_config import _get_independent_completions
+    if not _get_independent_completions():
+        return [batch]
     members: Dict[Any, List[tuple]] = {}
     for i, t, c in batch.children:
         g = t.get("group")

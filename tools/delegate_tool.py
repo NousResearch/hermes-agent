@@ -507,10 +507,11 @@ _DESCRIPTION_HEAD = (
     "Spawn subagents in isolated contexts; each gets its own conversation, terminal session, and toolset, and only its "
     "final summary returns to you. Pass every task in `tasks` — one entry spawns one subagent, several run in parallel "
     "(limit in the tasks description).\n\n"
-    "Runs in the background: dispatch returns immediately with live transcript paths, and each completed unit "
-    "re-enters the conversation on its own — an ungrouped task as soon as IT finishes, tasks sharing a `group` "
-    "together once all of them finish. Choose groups by how you want to use the results (see `group`). "
-    "No need to wait or poll; continue other work while results are pending. "
+    "Runs in the background: dispatch returns immediately with live transcript paths, and the call's results re-enter "
+    "the conversation as a new message when its subagents finish (one message per call by default; with "
+    "delegation.independent_completions each ungrouped task / `group` returns on its own). Results are delivered only "
+    "BETWEEN your turns: finish whatever does not depend on them, then give a one-line status and END YOUR TURN. Never "
+    "poll transcripts, artifact files, or CI to wait for a child. "
     "While children run, `action` (list/steer/stop) controls them live — steer when a transcript shows a "
     "child drifting.\n\n"
     "USE FOR: reasoning-heavy subtasks, work that would flood your context with intermediate data, or independent "
@@ -600,12 +601,10 @@ DELEGATE_TASK_SCHEMA = {
                         ),
                         "group": _p(
                             "string",
-                            "Optional result-delivery bucket within this call; all tasks still run in parallel. "
-                            "Use the same group when you want to review results together (comparison, synthesis, "
-                            "or one coordinated decision): ONE message arrives after all tasks in that group finish. "
-                            "Omit when each result is useful to act on separately: it arrives as soon as that task "
-                            "finishes. Different groups report independently. This does not order execution; if B "
-                            "needs A's output, dispatch B after A returns.",
+                            "Optional result-delivery bucket within this call (only when delegation.independent_completions "
+                            "is enabled; otherwise the whole call returns as one message). Tasks sharing a group return "
+                            "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
+                            "order execution; if B needs A's output, dispatch B after A returns.",
                         ),
                     },
                     "required": ["goal"],

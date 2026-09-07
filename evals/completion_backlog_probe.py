@@ -99,6 +99,22 @@ def probe(surface, scenario, directory):
                 time.sleep(.01)
             assert registry.completion_queue.qsize() == count
             raw = list(registry.completion_queue.queue)
+            delegation = None
+            if scenario == 'mixed':
+                from tools import async_delegation as ad
+                delegation = {'type': 'async_delegation', 'delegation_id': f'deleg-{surface}',
+                              'session_key': 'backlog-owner', 'goal': 'Fixture delegation',
+                              'status': 'completed', 'summary': 'DELEGATION_RESULT',
+                              'dispatched_at': time.time(), 'completed_at': time.time()}
+                ad._persist_dispatch(delegation)
+                ad._persist_completion(delegation, {'status': 'completed'})
+                watch = {'type': 'watch_match', 'session_key': 'backlog-owner',
+                         'session_id': processes[0].id, 'pattern': 'READY', 'output': 'WATCH_READY'}
+                while not registry.completion_queue.empty():
+                    registry.completion_queue.get_nowait()
+                raw = raw[:4] + [watch] + raw[4:8] + [delegation] + raw[8:]
+                for event in raw:
+                    registry.completion_queue.put(event)
             expected = [format_process_notification(event) for event in raw]
             if scenario == 'foreign':
                 session['session_key'] = cli.session_id = 'another-owner'
@@ -136,8 +152,16 @@ def probe(surface, scenario, directory):
                 poller.join(10)
                 assert not poller.is_alive()
             texts = [item['text'] for item in received]
+            delegation_delivered = None
+            if delegation:
+                with ad._transaction() as conn:
+                    row = conn.execute("SELECT delivery_state, delivery_attempts FROM async_delegations WHERE delegation_id=?",
+                                       (delegation['delegation_id'],)).fetchone()
+                    delegation_delivered = tuple(row) == ('delivered', 1)
             return {'surface': surface, 'scenario': scenario, 'children': count,
                     'wire_turns': len(texts), 'texts': texts,
+                    'delegation_delivered_once': delegation_delivered,
+                    'payload_order': [next((i for i, turn in enumerate(texts) if payload in turn), -1) for payload in expected],
                     'all_payloads_preserved': all(any(text in turn for turn in texts) for text in expected),
                     'single_exact': texts == expected if count == 1 else None,
                     'queue_remaining': registry.completion_queue.qsize(),
@@ -162,7 +186,7 @@ def main():
         os.environ['HOME'] = home
         results = [probe(surface, scenario, Path(home) / surface / scenario)
                    for surface in ('cli', 'poller', 'post-turn')
-                   for scenario in ('backlog', 'single', 'consumed', 'foreign')]
+                   for scenario in ('backlog', 'single', 'consumed', 'foreign', 'mixed')]
     Path(args.output).write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(json.dumps([{k: v for k, v in row.items() if k != 'texts'} for row in results], indent=2))
 

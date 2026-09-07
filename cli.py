@@ -293,6 +293,7 @@ _TERMINAL_ENV_MAPPINGS = {
         "ssh_host", "ssh_user", "ssh_port", "ssh_key", "container_cpu", "container_memory",
         "container_disk", "container_persistent", "docker_volumes", "docker_env", "docker_extra_args",
         "docker_shm_size", "docker_mount_cwd_to_workspace", "docker_network", "docker_run_as_host_user",
+        "docker_snap_compat",
         "docker_persist_across_processes", "docker_shared_container_key", "docker_orphan_reaper",
         "sandbox_dir", "persistent_shell",
     )
@@ -2531,6 +2532,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
     # Seeded -q first message (see _should_seed_interactive); run() re-creates
     # _pending_input, so it is enqueued only after the fresh queue exists.
     _seeded_first_message: Optional["_SeededQueryMessage"] = None
+    # Inspection surfaces (banner, /tools, status line) read this on partially built instances too.
+    disabled_toolsets: Optional[List[str]] = None
 
     def __init__(
         self,
@@ -2666,9 +2669,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         # A ``moa:<preset>`` model string selects the MoA virtual provider in one shot (parity with
         # interactive ``/moa`` and the model picker). See #56828.
         _moa_provider_override, self.model = _normalize_moa_model(self.model)
-        _env_mt = os.environ.get("HERMES_MAX_TOKENS")
-        _mt = _model_config.get("max_tokens")
-        self.max_tokens = _int_or(_env_mt, None) if _env_mt else (_mt if isinstance(_mt, int) else None)
+
         if self.model == "":  # auto-detect from a local server
             _base_url = _model_config.get("base_url") or ""
             if base_url_hostname(_base_url) in ("localhost", "127.0.0.1"):
@@ -3404,6 +3405,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
             claim = claim_event_delivery(event, consumer)
             if claim is None:
                 continue
+            if event.get("type") == "async_delegation":
+                from tools.process_registry_notifications import SubagentNotification
+                synthetic_message = SubagentNotification(synthetic_message, event)
             self._pending_input.put(synthetic_message)
             complete_event_delivery(event, claim)
 
@@ -3466,6 +3470,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
             self._check_termios_drift,
             lambda: self._drain_process_notifications("cli-idle"),
             self._maybe_fire_loop_tick,
+            self._maybe_resume_parked_goal,
         ):
             with suppress(Exception):
                 step()
@@ -3484,6 +3489,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
 
     def _tui_process_one_input(self, user_input):
         """Route one submitted input: file drop, /resume pick, ! shell, slash command, or a chat turn."""
+        from tools.process_registry_notifications import SubagentNotification
+        notification_preview = user_input if isinstance(user_input, SubagentNotification) else None
         user_input, is_voice_input, is_seeded_query = self._tui_unwrap_input(user_input)
         if not user_input:
             return
@@ -3530,7 +3537,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         if isinstance(user_input, str) and _PASTE_REF_RE.search(user_input):
             user_input = self._expand_paste_references(user_input)
         print()
-        self._print_user_message_preview(user_input)
+        self._print_user_message_preview(notification_preview or user_input)
 
         if submit_images:
             n = len(submit_images)
@@ -3541,7 +3548,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         self._turn_summary_begin()
         self._app.invalidate()
         try:
-            self.chat(user_input, images=submit_images or None, voice_input=is_voice_input)
+            self.chat(notification_preview or user_input, images=submit_images or None, voice_input=is_voice_input)
         finally:
             self._tui_after_turn()
 

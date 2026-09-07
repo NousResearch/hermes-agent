@@ -30,6 +30,7 @@ from agent.codex_headers import (
     codex_cloudflare_headers as _codex_cloudflare_headers,
     is_official_codex_base_url as _is_official_codex_base_url,
 )
+from agent.codex_runtime import _codex_event_has_content
 
 # `openai.OpenAI` is imported lazily (~240 ms cold); `OpenAI` below is a proxy
 # so in-module calls, `auxiliary_client.OpenAI` reads and
@@ -377,26 +378,9 @@ def _anthropic_aux_stream_event_hook() -> Callable[[Any], None]:
     return _on_event
 
 
-_CODEX_PROGRESS_DELTA_TYPES = frozenset({
-    "response.output_text.delta", "response.reasoning_summary_text.delta", "response.text.delta",
-    "response.audio.delta", "response.function_call_arguments.delta", "response.reasoning_text.delta",
-})
-
 # A dead stream fails at the no-progress window (first token AND between tokens); a live
 # stream re-arms per event, bounded by _aux_stream_total_ceiling().
 _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS = 60.0
-
-
-def _codex_event_has_content(event: Any) -> bool:
-    """Whether a Codex Responses event carries a non-empty payload."""
-    event_type = _field(event, "type")
-    if event_type in _CODEX_PROGRESS_DELTA_TYPES:
-        return bool(_field(event, "delta"))
-    if event_type == "response.output_item.added":
-        item = _field(event, "item")
-        return "function_call" in str(_field(item, "type") or "") and any(
-            bool(_field(item, f)) for f in ("id", "call_id", "name", "arguments"))
-    return False
 
 
 @contextlib.contextmanager
@@ -591,19 +575,20 @@ def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
     return _bare_model(model) == "trinity-large-thinking"
 
 
-# Codex OAuth hard-caps gpt-5.4/5.5/5.6 at 272K (raw API/OpenRouter expose 1.05M); the default
-# 50% trigger would compact at ~136K, so raise to 85% (~231K).
+# Codex OAuth hard-caps gpt-5.4/5.5/5.6 and gpt-6 Astra at 272K (raw API/OpenRouter expose 1.05M);
+# the default 50% trigger would compact at ~136K, so raise to 85% (~231K).
 _CODEX_GPT54_GPT55_COMPACTION_THRESHOLD = 0.85
 # gpt-5.3-codex-spark: Codex-OAuth-only, native 128K; 70% (~90K) leaves summary headroom.
 _CODEX_SPARK_COMPACTION_THRESHOLD = 0.70
 
 
 def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = None) -> bool:
-    """True for gpt-5.4/5.5/5.6 (and the Daybreak Sol alias) on the Codex OAuth route only.
+    """True for gpt-5.4/5.5/5.6, gpt-6 Astra (and the Daybreak Sol alias) on the Codex OAuth route only.
 
     Other routes expose a larger window for the same slug and keep the user's threshold.
     Prefix-matched so ``-pro`` and dated snapshots track every 272K-capped family; ``-900k``
-    picker variants are excluded. Name kept for the ``compression.codex_gpt55_autoraise`` key.
+    picker variants are excluded. Astra is substring-matched (any slug containing ``astra``
+    without ``900k``). Name kept for the ``compression.codex_gpt55_autoraise`` key.
     """
     bare = _codex_route_bare_model(model, provider)
     if bare is None:
@@ -611,6 +596,8 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
     from agent.model_metadata import is_codex_context_variant
     if is_codex_context_variant(bare):
         return False
+    if "astra" in bare:
+        return "900k" not in bare
     return bare == "gpt-daybreak-blue-latest" or any(
         bare == fam or bare.startswith(fam + "-") or bare.startswith(fam + ".")
         for fam in ("gpt-5.4", "gpt-5.5", "gpt-5.6"))
@@ -642,7 +629,7 @@ def _compression_threshold_for_model(
 ) -> Optional[float]:
     """Per-model/route compression threshold override (fraction of context used), or None.
 
-    Arcee Trinity Large Thinking → 0.75 (preserve reasoning context); Codex-route gpt-5.4/5.5/5.6
+    Arcee Trinity Large Thinking → 0.75 (preserve reasoning context); Codex-route gpt-5.4/5.5/5.6/Astra
     → 0.85, gated by ``allow_codex_gpt55_autoraise``; Codex-route gpt-5.3-codex-spark → 0.70, ungated.
     """
     if _is_arcee_trinity_thinking(model):
@@ -1742,8 +1729,8 @@ class _BedrockCompletionsAdapter:
             )
         response = call_converse(
             region=self._region, model=model, messages=kwargs.get("messages", []), tools=kwargs.get("tools"),
-            # Omitted/None cap → None so Bedrock uses the model max (no-cap-by-default like
-            # every other aux wire). Truthiness mirrors the Anthropic shim: explicit 0 = "no cap".
+            # Converse specifically defaults to the model maximum when omitted.
+            # Truthiness mirrors the Anthropic shim: explicit 0 means omit.
             max_tokens=int(max_tokens) if max_tokens else None, temperature=kwargs.get("temperature"),
             top_p=kwargs.get("top_p"), stop_sequences=stop,
         )
@@ -2443,6 +2430,9 @@ def _relay_sync_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
+    from agent.auxiliary_wire import prepare_chat_messages
+
+    kwargs = prepare_chat_messages(client, kwargs)
     callback = create or (lambda request: client.chat.completions.create(**request))
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
@@ -2462,6 +2452,9 @@ async def _relay_async_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
+    from agent.auxiliary_wire import prepare_chat_messages
+
+    kwargs = prepare_chat_messages(client, kwargs)
     callback = create or (lambda request: client.chat.completions.create(**request))
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
@@ -2477,6 +2470,9 @@ async def _relay_async_completion(
 def _relay_sync_stream(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None, api_mode: str | None = None
 ) -> Any:
+    from agent.auxiliary_wire import prepare_chat_messages
+
+    kwargs = prepare_chat_messages(client, kwargs)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return client.chat.completions.create(**kwargs)
@@ -2957,7 +2953,8 @@ def _contains_any(text: str, needles: Tuple[str, ...]) -> bool:
 
 
 # Billing-body markers (credit exhaustion wrapped in 402/403/404/429 bodies), plus daily/weekly quota
-# exhaustion (functionally credit exhaustion; "resource exhausted" is the Vertex/gRPC quota phrasing).
+# exhaustion (functionally credit exhaustion; "resource exhausted" is the Vertex/gRPC quota phrasing —
+# also serialized by SDK wrappers and NIM as RESOURCE_EXHAUSTED / ResourceExhausted / resource-exhausted).
 _PAYMENT_KEYWORDS = (
     "credits", "insufficient funds", "can only afford", "billing", "payment required",
     "out of funds", "run out of funds", "balance_depleted", "no usable credits",
@@ -2965,6 +2962,7 @@ _PAYMENT_KEYWORDS = (
     "requires a subscription", "upgrade for access", "upgrade for higher limits",
     "reached your session usage limit", "quota exceeded", "quota_exceeded",
     "too many tokens per day", "daily limit", "tokens per day", "daily quota", "resource exhausted",
+    "resource_exhausted", "resource-exhausted", "resourceexhausted",
     "weekly usage limit", "weekly limit",
 )
 
@@ -3604,8 +3602,6 @@ def _fallback_request_kwargs(
         destination.provider, destination.model, fallback_messages,
         temperature=temperature, max_tokens=fallback_max_tokens, tools=fallback_tools, timeout=effective_timeout,
         extra_body=fallback_extra_body, reasoning_config=reasoning_config, base_url=destination.base_url, task=task)
-    if apply_fast_lane and fallback_max_tokens is not None and max_tokens is None:
-        fb_kwargs.update(auxiliary_max_tokens_param(fallback_max_tokens, model=destination.model))
     return fb_kwargs
 
 
@@ -5549,41 +5545,29 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
 
 
 class CompressionFastLane(NamedTuple):
-    """Explicit, non-reasoning compression route safe for a bounded summary."""
+    """Explicit, non-reasoning compression route."""
 
     certified_non_reasoning: bool
-    max_tokens: Optional[int]
     reasoning_config: Optional[Dict[str, Any]]
 
 
-def _fast_lane_config_fields(config: Dict[str, Any]) -> tuple[str, str, bool, Optional[int]]:
-    """``(provider, model, non_reasoning, cap)`` from one task config.
-
-    ``non_reasoning`` only when ``reasoning_effort`` EXPLICITLY disables thinking (unset is NOT
-    non-reasoning); ``cap`` is a positive int ``max_output_tokens`` or None — booleans are config
-    drift, never a cap (``int(True) == 1``).
-    """
+def _fast_lane_config_fields(config: Dict[str, Any]) -> tuple[str, str, bool]:
+    """Only explicit reasoning disablement certifies a non-reasoning route."""
     from hermes_constants import parse_reasoning_effort
     provider = str(config.get("provider") or "").strip().lower()
     model = str(config.get("model") or "").strip()
     parsed_effort = parse_reasoning_effort(config.get("reasoning_effort"))
     non_reasoning = parsed_effort is not None and parsed_effort.get("enabled") is False
-    raw_cap = config.get("max_output_tokens")
-    try:
-        cap = 0 if isinstance(raw_cap, bool) else int(raw_cap or 0)
-    except (TypeError, ValueError):
-        cap = 0
-    return provider, model, non_reasoning, (cap if cap > 0 else None)
+    return provider, model, non_reasoning
 
 
 def resolve_compression_fast_lane(
     actual_provider: str, actual_model: Optional[str], *, requested_provider: Optional[str] = None,
     requested_model: Optional[str] = None, route_config: Optional[Dict[str, Any]] = None,
 ) -> CompressionFastLane:
-    """Certify the opt-in fast lane: capped only when an explicit, operator-certified
-    non-reasoning provider/model exactly matches the route actually called."""
+    """Certify explicit non-reasoning settings only on the matching destination."""
     config = route_config if route_config is not None else _get_auxiliary_task_config("compression")
-    cfg_provider, cfg_model, non_reasoning, cap = _fast_lane_config_fields(config)
+    cfg_provider, cfg_model, non_reasoning = _fast_lane_config_fields(config)
     provider = str(requested_provider or "").strip().lower() or cfg_provider
     model = str(requested_model or "").strip() or cfg_model
     explicit_route = provider not in {"", "auto"} and model.lower() not in {"", "auto"}
@@ -5591,14 +5575,14 @@ def resolve_compression_fast_lane(
     provider_matches = actual_norm == _normalize_aux_provider(provider)
     model_matches = str(actual_model or "").strip().lower() == model.lower()
     if explicit_route and provider_matches and model_matches and non_reasoning:
-        return CompressionFastLane(True, cap, {"enabled": False, "effort": "none"})
-    return CompressionFastLane(False, None, None)
+        return CompressionFastLane(True, {"enabled": False, "effort": "none"})
+    return CompressionFastLane(False, None)
 
 
 def _compression_config_claims_fast_lane(config: Dict[str, Any]) -> bool:
     """Whether task config declares fast-only controls that cannot leak."""
-    provider, model, non_reasoning, cap = _fast_lane_config_fields(config)
-    return provider not in {"", "auto"} and model.lower() not in {"", "auto"} and non_reasoning and cap is not None
+    provider, model, non_reasoning = _fast_lane_config_fields(config)
+    return provider not in {"", "auto"} and model.lower() not in {"", "auto"} and non_reasoning
 
 
 def _compression_fast_lane_controls(
@@ -5618,7 +5602,7 @@ def _compression_fast_lane_controls(
             body["reasoning"] = lane.reasoning_config
     elif _compression_config_claims_fast_lane(leak_guard_config):
         body.pop("reasoning", None)
-    return lane.max_tokens, body
+    return max_tokens, body
 
 
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
@@ -5823,7 +5807,7 @@ def _is_gemini_native_route(provider_norm: str, effective_base: str) -> bool:
 def _forwards_max_tokens(provider: str, provider_norm: str, model: str, effective_base: str, task: Optional[str]) -> bool:
     """Whether an explicit max_tokens is forwarded on this route.
 
-    No default cap elsewhere (omitted = model max; avoids max_completion_tokens / ZAI-vision
+    No default cap elsewhere (omitted = provider default; avoids max_completion_tokens / ZAI-vision
     quirks). Forward only where mandatory or honored: Anthropic Messages wire (400 without it);
     NVIDIA NIM (empty choices[] when omitted); MoA reference slots; Gemini native (fixed 65,535
     ceiling otherwise); OpenRouter (budgets the FULL window when omitted → 402 on low credit);
@@ -6544,10 +6528,9 @@ def _prepare_aux_request(
     )
     effective_timeout = _effective_aux_timeout(task, timeout)
     request_provider = effective_provider or resolved_provider
-    fast_compression_cap = None
     if not async_mode:
         compression_config = _get_auxiliary_task_config("compression") if task == "compression" else {}
-        fast_compression_cap, effective_extra_body = _compression_fast_lane_controls(
+        _, effective_extra_body = _compression_fast_lane_controls(
             task, actual_provider=request_provider, actual_model=final_model,
             requested_provider=provider, requested_model=model, route_config=compression_config,
             leak_guard_config=compression_config, max_tokens=max_tokens,
@@ -6569,10 +6552,6 @@ def _prepare_aux_request(
         request_provider, final_model, messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config, base_url=base_info or resolved_base_url, task=task)
-    if fast_compression_cap is not None and max_tokens is None:
-        # The compression route is certified non-reasoning, so a bounded summary is
-        # intentional; explicit caller caps pass through untouched.
-        kwargs.update(auxiliary_max_tokens_param(fast_compression_cap, model=final_model))
     if extra_headers:
         kwargs["extra_headers"] = dict(extra_headers)
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)

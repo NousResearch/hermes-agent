@@ -433,6 +433,17 @@ def _finalize_routing(agent, api_mode, credential_pool):
     with suppress(Exception):
         agent._get_transport()
 
+    # The Nous agent key lives ~1 h. Without the proactive refresher every agent in the process
+    # discovers expiry reactively, on its own next request, all in the same minute: with 200
+    # in-process subagents that was a 401 storm each hour (620 in one run) and the credential
+    # pool benched the provider for all of them. The gateway and web server start this thread
+    # at boot; the CLI process (and everything spawned inside it) never did. Idempotent,
+    # process-wide, daemon.
+    if agent.provider == "nous":
+        with suppress(Exception):
+            from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
+            start_nous_auth_keepalive()
+
     with suppress(Exception):
         from hermes_cli.model_normalize import (
             _AGGREGATOR_PROVIDERS, normalize_model_for_provider
@@ -564,6 +575,10 @@ _SESSION_STATE: Dict[str, Any] = {
     # prefix, kept separately only to place an early cache marker.
     "_cached_system_prompt": None,
     "_cached_system_prompt_static": None,
+    # ``(cwd, workspace_block)`` pinned on the first build: the git/workspace snapshot is
+    # probed once per session and replayed on every rebuild, so a moving repo can't push the
+    # prefix-cache divergence point ahead of the volatile band at a compaction boundary.
+    "_frozen_workspace_snapshot": None,
     # Whether close() also closes _session_db. False: a caller-supplied handle is usually the
     # SHARED launch handle; callers handing over a DEDICATED handle set True.
     "_owns_session_db": False,
@@ -1669,18 +1684,8 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
     except (TypeError, ValueError):
         agent._aux_compression_context_length_config = None
 
-    # model.max_tokens from config when the caller did not pass one.
     _model_cfg = _agent_cfg.get("model", {})
     _model_section = _model_cfg if isinstance(_model_cfg, dict) else {}
-    _config_max_tokens = _model_section.get("max_tokens")
-    if agent.max_tokens is None and _config_max_tokens is not None:
-        agent.max_tokens = _positive_int(_config_max_tokens, reject=(bool,))
-        if agent.max_tokens is None:
-            _warn_invalid_config_int(
-                "model.max_tokens in config.yaml", _config_max_tokens,
-                "must be a positive integer (e.g. 4096)", "provider default",
-            )
-    agent._session_init_model_config["max_tokens"] = agent.max_tokens
 
     _config_context_length = _model_section.get("context_length")
     if _config_context_length is not None:
@@ -2117,10 +2122,11 @@ def _init_usage_state(agent):
 _USAGE_STATE: Dict[str, Any] = {
     "_user_turn_count": 0,
     "_is_user_initiated_turn": False,  # Copilot x-initiator: first call of a user turn = "user"
-    # Usage anchors (agent/model_metadata.py): last response's exact usage + transcript
+    # Usage anchors (agent/usage_anchor.py): last response's exact usage + transcript
     # snapshot; invalidated on compaction/session switch so stale anchors never suppress compression.
     "_usage_anchor": None,
     "_turn_base_usage_anchor": None,
+    "_request_pressure_anchored": False,  # whether the last pressure figure came from the anchor
     # Cumulative token usage for the session
     "session_prompt_tokens": 0,
     "session_completion_tokens": 0,

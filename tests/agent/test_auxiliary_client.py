@@ -1395,6 +1395,16 @@ class TestIsPaymentError:
 
 
 
+    @pytest.mark.parametrize("spelling", ["RESOURCE_EXHAUSTED", "ResourceExhausted", "resource-exhausted"])
+    @pytest.mark.parametrize("status", [None, 429])
+    def test_resource_exhausted_separator_variants_are_payment(self, spelling, status):
+        """NIM / gRPC wrappers serialize the quota signal without the space; the fallback gate
+        must read every spelling like the literal ``resource exhausted`` (#85649)."""
+        exc = Exception(f"{spelling}: Worker local total request limit reached (32/32)")
+        if status is not None:
+            exc.status_code = status
+        assert _is_payment_error(exc) is True
+
     def test_403_subscription_required_is_payment(self):
         exc = Exception(
             "this model requires a subscription, upgrade for access: "
@@ -3605,6 +3615,22 @@ class TestCodexAuxiliaryToolMessageConversion:
         assert "user" in roles and "assistant" in roles
         assert not any(it.get("role") == "tool" for it in input_items)
         assert kwargs["instructions"] == "sys"
+
+    def test_video_input_fails_before_responses_request(self):
+        responses = MagicMock()
+        adapter = _CodexCompletionsAdapter(SimpleNamespace(responses=responses), "gpt-5.5")
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,AAAA"}},
+                {"type": "text", "text": "Describe the video"},
+            ],
+        }]
+
+        with pytest.raises(ValueError, match="does not support video_url input"):
+            adapter.create(messages=messages)
+
+        responses.create.assert_not_called()
 
 
 class TestCodexAuxiliaryAdapterNullOutputRecovery:

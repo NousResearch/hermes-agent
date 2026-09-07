@@ -25,6 +25,7 @@ import { confirm } from '@/store/confirm'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
+import { $settingsRequestProfile } from '@/store/settings-scope'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
 import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
@@ -33,6 +34,7 @@ import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
 import { providerGroup, providerMeta, providerPriority } from './helpers'
 import { LocalModelsSettings } from './local-models-settings'
 import { SettingsContent, SettingsSkeleton } from './primitives'
+import { SettingsProfileScope } from './profile-scope'
 
 // The embedded terminal (and thus the "run disconnect command" path) only
 // exists in the Electron desktop shell, not the web dashboard.
@@ -347,7 +349,9 @@ export function ProvidersSettings({
   view
 }: ProvidersSettingsProps) {
   const { t } = useI18n()
-  const { rowProps, vars } = useEnvCredentials()
+  // Match the shared Settings target for credential reads and writes.
+  const scopeProfile = useStore($settingsRequestProfile)
+  const { rowProps, vars } = useEnvCredentials(scopeProfile)
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([])
   const [openProvider, setOpenProvider] = useState<null | string>(null)
   const [disconnecting, setDisconnecting] = useState<null | string>(null)
@@ -474,6 +478,7 @@ export function ProvidersSettings({
 
     return (
       <SettingsContent>
+        <SettingsProfileScope className="mb-5" />
         <LocalEndpointRow onOpen={startManualLocalEndpoint} />
         {keyGroups.length > 0 ? (
           <div className="grid gap-3">

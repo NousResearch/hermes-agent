@@ -11,10 +11,11 @@ import os
 import subprocess
 import sys
 import time as _time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from hermes_cli.update_cmd_common import _best_effort
+from hermes_cli.update_inventory import _gateway_service_matches_profile
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
@@ -78,14 +79,24 @@ def _current_checkout_sha() -> str | None:
 
 
 def _receipt_looks_unfinished(receipt: dict) -> bool:
-    """True when *receipt* is from an update that did not finish cleanly."""
+    """True when *receipt* is from an update that did not finish cleanly.
+
+    The command boundary stamps a ``stop_reason`` on every receipt, including clean
+    ones (``completed at command boundary``, ``sys.exit(0)``); it must not make a
+    successful receipt look unfinished, or the next ``hermes update`` retriggers
+    ``fleet_restart_pending`` from pre-pull plan SHAs (#98022).
+    """
+    exit_code = receipt.get("exit_code")
+    outcome = receipt.get("outcome")
+    if exit_code not in (0, None) or outcome in ("failed", "partial", "running"):
+        return True
     gateway_restart = receipt.get("gateway_restart")
-    return bool(
-        receipt.get("stop_reason")
-        or receipt.get("exit_code") not in (0, None)
-        or receipt.get("outcome") in ("failed", "partial", "running")
-        or (isinstance(gateway_restart, dict) and gateway_restart.get("incomplete"))
-    )
+    if isinstance(gateway_restart, dict) and gateway_restart.get("incomplete"):
+        return True
+    # A stop_reason alone (update_contract refusals: outcome="refused", no exit_code)
+    # counts only when nothing else vouched for success.
+    succeeded = exit_code == 0 or outcome == "success"
+    return bool(receipt.get("stop_reason")) and not succeeded
 
 
 def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
@@ -184,29 +195,36 @@ def _needs_sudo(scope: str) -> bool:
     )
 
 
-def _restart_systemd_gateway_units_best_effort(failed: list) -> None:
+def _restart_systemd_gateway_units_best_effort(failed: list, listings) -> None:
     """Best-effort ``systemctl restart`` of every hermes-gateway/serve unit."""
-    for scope, scope_cmd, result in _systemd_gateway_unit_listings():
+    answered = set()
+    for scope, scope_cmd, result in listings:
+        answered.add(scope)
         if result.returncode != 0:
+            failed.append(f"systemd-{scope} (listing failed)")
             continue
 
         def process_unit(svc_name: str, _scope=scope, _cmd=scope_cmd) -> None:
-            restart_cmd = list(_cmd) + ["--no-ask-password", "restart", svc_name]
+            manage_cmd = list(_cmd) + ["--no-ask-password"]
             if _needs_sudo(_scope):
-                restart_cmd = ["sudo", "-n"] + restart_cmd
-            _systemctl(restart_cmd, timeout=30)
+                manage_cmd = ["sudo", "-n"] + manage_cmd
+            result = _systemctl_reset_and_restart(manage_cmd, svc_name)
+            if result.returncode != 0 or not _wait_for_service_active(_cmd, svc_name):
+                failed.append(svc_name)
 
         _for_each_systemd_gateway_unit(
             result.stdout,
             process_unit=process_unit,
             on_unit_timeout=lambda svc_name, exc: failed.append(svc_name),
         )
+    # A timeout or missing executable is not an empty scope.
+    failed.extend(f"systemd-{scope} (listing unavailable)" for scope, _ in _SYSTEMD_SCOPES if scope not in answered)
 
 
 def _run_pending_fleet_restart() -> bool:
     """Catch-up restart for gateways left on pre-update code. Never raises.
 
-    True when the restart completed or nothing was running; False if incomplete.
+    True when all discovered targets recovered (or none exist); False if incomplete.
 
     See #95294.
     """
@@ -233,22 +251,30 @@ def _run_pending_fleet_restart() -> bool:
         logger.debug("Pending fleet restart: gateway probe failed: %s", exc)
         pids = None
 
-    if pids == []:
-        print("  ✓ No running gateways — nothing to restart.")
-        return True
-
     failed: list = []
     try:
+        # Snapshot before stopping: Restart=no units can disappear from list-units on a clean exit.
+        systemd_listings = list(_systemd_gateway_unit_listings()) if supports_systemd_services() else None
+        # Stop old processes before supervisor recovery, never its freshly verified workers.
+        if pids != []:
+            try:
+                leftover = list(find_gateway_pids(all_profiles=True))
+            except Exception:
+                leftover = list(pids or [])
+            if leftover:
+                with _best_effort('Pending fleet restart: PID stop failed: %s'):
+                    kill_gateway_processes(all_profiles=True)
+                    _wait_for_gateway_exit(timeout=5.0, force_after=None)
         # --- Systemd services (Linux) --- Discover all hermes-gateway* units (default + profiles) plus
         # hermes-serve* units (the Desktop app's backend, #83438).
-        if supports_systemd_services():
-            _restart_systemd_gateway_units_best_effort(failed)
+        if systemd_listings is not None:
+            _restart_systemd_gateway_units_best_effort(failed, systemd_listings)
         # --- Launchd services (macOS) --- Restart EVERY ai.hermes.gateway* LaunchAgent, not only the
         # invoking profile's — parity with the systemd branch above (#41403). Per-label TimeoutExpired
         # isolation happens inside.
         if is_macos():
             try:
-                _restart_macos_launchd_gateways([], failed, 45.0)
+                _restart_macos_launchd_gateways([], failed, 45.0, require_supervision=True)
             except Exception as exc:
                 logger.debug("Pending fleet restart: launchd failed: %s", exc)
                 failed.append("launchd")
@@ -260,14 +286,6 @@ def _run_pending_fleet_restart() -> bool:
             except Exception as exc:
                 logger.debug("Pending fleet restart: Windows failed: %s", exc)
                 failed.append("windows-gateway")
-        try:
-            leftover = list(find_gateway_pids(all_profiles=True))
-        except Exception:
-            leftover = list(pids or [])
-        if leftover:
-            with _best_effort('Pending fleet restart: PID stop failed: %s'):
-                kill_gateway_processes(all_profiles=True)
-                _wait_for_gateway_exit(timeout=5.0, force_after=None)
         if failed:
             _warn_incomplete_gateway_fleet_restart(failed)
             return False
@@ -454,7 +472,9 @@ def _restart_launchd_gateway_after_update(*, supervision_verify: bool = True) ->
     return [], [current_label]
 
 
-def _restart_macos_launchd_gateways(restarted_services: list, failed_or_stale_units: list, drain_budget: float) -> None:
+def _restart_macos_launchd_gateways(
+    restarted_services: list, failed_or_stale_units: list, drain_budget: float, *, require_supervision: bool = False,
+) -> None:
     """Restart every launchd-managed gateway after an update (macOS).
 
     The pull is shared across profiles, so every ``ai.hermes.gateway*`` LaunchAgent
@@ -469,9 +489,14 @@ def _restart_macos_launchd_gateways(restarted_services: list, failed_or_stale_un
     cannot leave the rest of the fleet on old code (#68523).
     """
     from hermes_cli.gateway import (
-        get_launchd_label, launchd_gateway_labels_for_install, _graceful_restart_via_sigusr1, _launchd_kickstart,
+        get_launchd_label, get_launchd_plist_path, launchd_gateway_labels_for_install, _graceful_restart_via_sigusr1, _launchd_kickstart,
         _locate_launchd_gateway_service, _wait_for_launchd_service_pid,
     )
+    if require_supervision:
+        listing = subprocess.run(["launchctl", "list"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
+        if listing.returncode != 0:
+            failed_or_stale_units.append("launchd (listing failed)")
+            return
     _restarted, _failed = _restart_launchd_gateway_after_update(supervision_verify=True)
     restarted_services.extend(_restarted)
     failed_or_stale_units.extend(_failed)
@@ -485,7 +510,9 @@ def _restart_macos_launchd_gateways(restarted_services: list, failed_or_stale_un
             # reuse that domain so a sibling is never probed in one and restarted in another.
             domain, old_pid = _locate_launchd_gateway_service(label)
             if domain is None:
-                continue  # installed but not bootstrapped — nothing running old code here
+                if require_supervision and get_launchd_plist_path().with_name(f"{label}.plist").exists():
+                    failed_or_stale_units.append(label)
+                continue  # A profile without an installed job has no restart target.
             graceful_ok = False
             if old_pid is not None and old_pid > 0:
                 print(f"  → {label}: draining (up to {int(drain_budget)}s)...")
@@ -530,17 +557,6 @@ def _surviving_gateway_pids_after_failed_restart():
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Could not probe for surviving gateways after update: %s", exc)
         return None
-
-
-def _gateway_service_matches_profile(profile: str, service: object) -> bool:
-    """Match an exact gateway service/label (systemd/launchd/s6 shapes) to a profile.
-
-    Never substring-match: ``foo`` must not claim ``hermes-gateway-foobar.service``.
-    """
-    name = str(service).removesuffix(".service")
-    if profile == "default":
-        return name in {"hermes-gateway", "ai.hermes.gateway", "gateway", "gateway-default"}
-    return name in {f"hermes-gateway-{profile}", f"ai.hermes.gateway-{profile}", f"gateway-{profile}"}
 
 
 _MANUAL_GATEWAY_SKIP_REASON = (
@@ -850,6 +866,18 @@ class _GatewayRestartOutcome:
     relaunched_profiles: list
     externally_supervised_profiles: list
     killed_pids: set
+    #: Gateways stopped with NO successor (no profile mapping / relaunch could not be armed);
+    #: the summary tells the user to restart them by hand, so the fleet probe must not expect
+    #: a row for them.
+    stopped_unmapped_pids: set = field(default_factory=set)
+
+    def fleet_probe_signals(self) -> tuple:
+        """``(pre_restart_pids, killed_pids)`` with the unmapped stops removed — the signals that
+        legitimately predict a fleet-matrix row."""
+        pre = self.pre_restart_gateway_pids
+        if pre is not None:
+            pre = [pid for pid in pre if pid not in self.stopped_unmapped_pids]
+        return pre, self.killed_pids - self.stopped_unmapped_pids
 
     def record_receipt(self, **extra) -> None:
         """Best-effort ``record_gateway_restart`` from the current bookkeeping."""
@@ -921,6 +949,7 @@ def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None
         with suppress(ProcessLookupError, PermissionError):
             os.kill(pid, _signal.SIGTERM)
             out.killed_pids.add(pid)
+            out.stopped_unmapped_pids.add(pid)
 
     if out.restarted_services or out.killed_pids:
         print()
@@ -1213,9 +1242,12 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         # never fires on Windows (pause/resume populates neither), so a healthy
         # resumed gateway yielded zero rows and exit 0.
         # See #93406.
+        # A gateway stopped WITHOUT a successor ("Restart manually") publishes no row by design,
+        # so it must not count as an expected one — otherwise an update whose only live gateways
+        # were unmapped exits 1 with "no rows" after correctly stopping them.
+        _pre_restart, _killed = restart.fleet_probe_signals()
         _fleet_rows_expected = _m()._fleet_probe_expected_runtimes(
-            _pre_update_plan, restart.pre_restart_gateway_pids, _windows_gateway_resume, restart.restarted_services,
-            restart.killed_pids,
+            _pre_update_plan, _pre_restart, _windows_gateway_resume, restart.restarted_services, _killed,
         )
         _fleet_snapshot = _collect_fleet_snapshot(restart, _fleet_rows_expected)
         if print_fleet_version_matrix(_fleet_snapshot):
@@ -1308,7 +1340,7 @@ def _fleet_probe_expected_runtimes(
     healthy, so zero rows is only proof-of-safety when NOTHING says a gateway existed
     pre-update. Signals: ``restarted_services``/``killed_pids``; ``pre_restart_pids``
     non-empty or None (same contract as ``_restart_phase_failure_is_incomplete``); plan
-    inventoried ≥1 runtime. ``windows_resume_token`` is deliberately EXCLUDED: it is
+    inventoried ≥1 ``kind == "gateway"`` runtime. ``windows_resume_token`` is deliberately EXCLUDED: it is
     pause/resume bookkeeping, not an inventory, and its entries don't map to probe rows
     (``unmapped`` Scheduled-Task gateways never publish gateway_state.json; a paused
     profile resumes DETACHED). Counting it made every Windows update that paused a
@@ -1326,7 +1358,11 @@ def _fleet_probe_expected_runtimes(
     if pre_restart_pids is None or pre_restart_pids:
         return True
     with suppress(Exception):
-        if pre_update_plan is not None and pre_update_plan.runtimes:
+        # Gateway-kind only: serve/dashboard plan records never publish a gateway_state.json
+        # row, so a dashboard-only plan cannot ground a rows-expected verdict (#97332).
+        if pre_update_plan is not None and any(
+            getattr(runtime, "kind", None) == "gateway" for runtime in pre_update_plan.runtimes
+        ):
             return True
     return False
 

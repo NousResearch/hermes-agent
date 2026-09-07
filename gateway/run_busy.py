@@ -15,6 +15,7 @@ import json
 import os
 import time
 from agent.i18n import t
+from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import SessionSource
@@ -556,7 +557,9 @@ class GatewayBusySessionMixin:
                     status_parts.append(f"{elapsed_min} min elapsed")
                 if summary.get("max_iterations", 0):
                     status_parts.append(
-                        f"iteration {summary.get('api_call_count', 0)}/{summary.get('max_iterations', 0)}"
+                        format_iteration_progress(
+                            summary.get("api_call_count", 0), summary.get("max_iterations", 0)
+                        )
                     )
                 if summary.get("current_tool"):
                     status_parts.append(f"running: {summary.get('current_tool')}")
@@ -887,13 +890,9 @@ class GatewayBusySessionMixin:
     async def _busy_goal_command(self, event: MessageEvent, quick_key: str, source):
         # Control verbs are safe mid-run (state only); setting new goal text is rejected so we don't
         # race a second continuation against the current turn. wait/gate take an argument.
-        _goal_arg = (event.get_command_args() or "").strip().lower()
-        _goal_verb = _goal_arg.split(None, 1)[0] if _goal_arg else ""
-        if (
-            not _goal_arg
-            or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done", "unwait"}
-            or _goal_verb in {"wait", "gate"}
-        ):
+        from hermes_cli.goal_command import is_goal_control
+
+        if is_goal_control(event.get_command_args() or ""):
             return await self._handle_goal_command(event)
         return "Agent is running — use /goal status / pause / clear / wait mid-run, or /stop before setting a new goal."
 

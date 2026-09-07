@@ -29,6 +29,43 @@ This is the shape that covers the workloads `delegate_task` can't:
 
 For the full design rationale, comparative analysis against Cline Kanban / Paperclip / NanoClaw / Google Gemini Enterprise, and the eight canonical collaboration patterns, see `docs/hermes-kanban-v1-spec.pdf` in the repository.
 
+## PR completion contracts
+
+Declare PR work at creation with `--completion-contract OWNER/REPO` (or an exact
+`https://github.com/OWNER/REPO/pull/123` URL for existing work). `kanban_create`
+accepts the same `completion_contract`. Use `local-only` for intentionally local
+work; existing and undeclared cards retain that default. Prose URLs are not policy.
+
+After publishing, pass `metadata.published_pr` to completion. The first matching
+URL binds the card permanently; retries cannot substitute a green sibling PR.
+CLI `show --json` and `kanban_show` expose the persisted contract.
+
+The shared `complete_task` boundary covers worker tools, CLI, review approval and
+dashboard completion. It reads classic branch protection and active ruleset
+required contexts, paginates exact-head check runs and legacy statuses, then
+re-reads the PR head/base. Optional failed/skipped telemetry does not veto accepted
+required checks. Missing, pending, failed, cancelled, timed-out, stale, skipped or
+neutral **required** evidence cannot complete the card. Neither can zero-run
+acceptance, unreadable policy or GitHub API failures. A repository without required
+checks needs a local-only contract. `gh` must be authenticated with read access to
+the repository's checks and rules; no remote writes are performed by this gate.
+
+Rejection retains the active card and workspace. Durable `pr_acceptance` events
+store PR URL, SHA, required contexts, check IDs/URLs, classifications and recovery
+instructions; `last_failure_error` surfaces the next step. Fix failures, rerun
+infrastructure checks or wait, then retry completion. Use `kanban_block` when
+human action is needed. Generic GitHub `failure` cannot establish whether a test
+or artifact upload failed; inspect its retained URL. Explicit infrastructure
+conclusions and API failures are classified separately. No extra worker is spawned.
+
+Receipt persistence and the terminal write recheck run/status/contract ownership
+under one SQLite lock: a reclaimed worker cannot complete or attach acceptance to
+the new run. The final GitHub read is a completion-time snapshot, not a distributed
+transaction or a continuous post-completion monitor. This is a single-user lifecycle
+guard, not OS isolation against arbitrary direct database writes. GitHub Enterprise
+is not covered. Related publication/lifecycle work: #91230, #84254, #52311; local
+verification and publication alone are not remote acceptance.
+
 ## Kanban vs. `delegate_task`
 
 They look similar; they are not the same primitive.

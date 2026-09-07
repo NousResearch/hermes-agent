@@ -115,8 +115,8 @@ The fallback activates automatically when the primary model fails with:
 
 When triggered, Hermes:
 
-1. Resolves credentials for the fallback provider
-2. Builds a new API client
+1. Resolves credentials for the fallback provider (including named custom providers using `key_cmd`)
+2. Builds a new API client, preserving a dynamic credential source across timeout and request-client rebuilds
 3. Swaps the model, provider, and client in-place
 4. Resets the retry counter and continues the conversation
 

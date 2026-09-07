@@ -321,12 +321,19 @@ def _read_json(path: Path) -> Optional[dict]:
     return blob if isinstance(blob, dict) else None
 
 
-def check_for_updates() -> Optional[int]:
+def check_for_updates(*, passive: bool = False) -> Optional[int]:
     """Check whether a Hermes update is available.
 
     If ``HERMES_REVISION`` is set (nix builds embed it), compare it to upstream main via
     ``git ls-remote``; otherwise count commits behind ``origin/main`` in the local checkout.
     """
+    def _read_config_opt_out():
+        from hermes_cli.config import load_config
+        return load_config().get("updates", {}).get("check", True) is False
+
+    if passive and _quiet(_read_config_opt_out) is True:
+        return None
+
     cache_file = get_hermes_home() / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
     # Docker images have no working tree (the image excludes `.git`) and set no HERMES_REVISION.
@@ -445,7 +452,7 @@ def prefetch_update_check():
     """Kick off update check in a background daemon thread."""
     def _run():
         global _update_result
-        _update_result = check_for_updates()
+        _update_result = check_for_updates(passive=True)
         _update_check_done.set()
     _daemon(None, _run)
 
@@ -491,11 +498,25 @@ def _format_update_notice(behind: int) -> str:
 _deferred_update_notice_started = False
 
 
-def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
+def _render_markup_to_ansi(markup: str) -> str:
+    """Rich markup → ANSI string, for output that must go through prompt_toolkit's renderer.
+
+    Under ``patch_stdout`` (the interactive CLI), a plain ``Console.print`` writes ESC bytes into
+    the StdoutProxy, which sanitizes them into visible ``?[1;33m…`` artifacts (#83969).
+    """
+    from io import StringIO
+    from rich.console import Console as _Console
+    buf = StringIO()
+    _Console(file=buf, force_terminal=True, color_system="truecolor", highlight=False).print(markup)
+    return buf.getvalue().rstrip("\n")
+
+
+def _defer_update_notice(max_wait: float = 30.0) -> None:
     """Print the update warning once the prefetched check completes (at most once per process).
 
     Used when the banner rendered before the update prefetch finished so startup never blocks on
-    git/network.
+    git/network. The notice lands after prompt_toolkit owns the terminal, so it is routed through
+    ``cprint`` (prompt_toolkit's renderer prints above a running application from any thread).
     """
     global _deferred_update_notice_started
     if _deferred_update_notice_started:
@@ -504,7 +525,7 @@ def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
 
     def _wait_and_print() -> None:
         if _update_check_done.wait(timeout=max_wait) and _update_result:
-            console.print(_format_update_notice(_update_result))
+            cprint(_render_markup_to_ansi(_format_update_notice(_update_result)))
     _daemon("update-notice", _wait_and_print)  # never break the session over an update notice
 
 
@@ -863,12 +884,11 @@ def build_welcome_banner(
     right_lines.append(f"[dim {dim}]{' · '.join(summary_parts)}[/]")
     # Update check — NEVER block the banner on it: the prefetch does git/network work that rarely
     # finishes before render, so a blocking wait adds its full timeout to every startup. If not
-    # ready, a daemon thread prints the same notice above the prompt when it lands
-    # (prompt_toolkit's patch_stdout renders late prints safely).
+    # ready, a daemon thread prints the same notice above the prompt when it lands.
     def _update_line():
         behind = get_update_result(timeout=0.05)
         if behind is None and not _update_check_done.is_set():
-            _defer_update_notice(console)
+            _defer_update_notice()
         elif behind is not None and behind != 0:
             right_lines.append(_format_update_notice(behind))
     _quiet(_update_line)  # Never break the banner over an update check

@@ -251,7 +251,7 @@ _REQUEST_OPTION_MISSING = object()
 # vocabulary clamping happens downstream in agent.reasoning_effort.
 _REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"})
 _RUNTIME_AGENT_OVERRIDE_KEYS = (
-    "api_key", "base_url", "provider", "api_mode", "command", "args", "credential_pool", "max_tokens")
+    "api_key", "base_url", "provider", "api_mode", "command", "args", "credential_pool")
 
 
 def _clean_request_string(value: Any) -> Optional[str]:
@@ -313,24 +313,11 @@ def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[
         runtime = resolve_runtime_provider(requested=provider, target_model=target_model)
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
-    model_cfg = _get_model_config()
-    max_tokens = None
-    env_max_tokens = os.environ.get("HERMES_MAX_TOKENS")
-    if env_max_tokens:
-        with suppress(ValueError, TypeError):
-            max_tokens = int(env_max_tokens)
-    elif isinstance(model_cfg, dict):
-        cfg_max_tokens = model_cfg.get("max_tokens")
-        if isinstance(cfg_max_tokens, int):
-            max_tokens = cfg_max_tokens
-    if max_tokens is None:
-        runtime_max_tokens = runtime.get("max_output_tokens")
-        if isinstance(runtime_max_tokens, int) and runtime_max_tokens > 0:
-            max_tokens = runtime_max_tokens
+
     return {
         **{k: runtime.get(k) for k in ("api_key", "base_url", "provider", "api_mode", "command")},
         "args": list(runtime.get("args") or []),
-        "credential_pool": runtime.get("credential_pool"), "max_tokens": max_tokens}
+        "credential_pool": runtime.get("credential_pool")}
 
 
 def _request_agent_overrides(
@@ -771,7 +758,7 @@ class ResponseStore:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key"}
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key, X-Hermes-Session-Id"}
 _SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
@@ -1637,14 +1624,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _open_and_cache_session_db(self, home) -> Optional[Any]:
         """Cached SessionDB for ``home`` (shared by both ``_ensure_session_db*``). Never writes
         ``self._session_db`` (explicit override only), so no profile pins later requests."""
-        from hermes_state import SessionDB
+        from hermes_state_registry import acquire
         key = str(home)
         with self._session_db_cache_lock:
             if self._session_db_cache_closed:
                 return None
             db = self._session_dbs.get(key)
             if db is None:
-                db = SessionDB(db_path=home / "state.db")
+                db = acquire(home / "state.db")
                 self._session_dbs[key] = db
             return db
 
@@ -1659,7 +1646,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if db is shared_db:
                 continue
             try:
-                db.close()
+                from hermes_state_registry import release_or_close
+                release_or_close(db)
             except Exception:
                 logger.debug("Failed to close API-server SessionDB", exc_info=True)
 

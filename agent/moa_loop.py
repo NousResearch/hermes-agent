@@ -380,15 +380,14 @@ def _run_reference(
             messages, slot, runtime, reserve_output_tokens=max_tokens, context_length_cache=context_length_cache,
         )
         trimmed = _maybe_apply_moa_cache_control(trimmed, _with_cache_disabled(runtime, cache_disabled), cache_ttl=cache_ttl)
-        # Per-slot max_tokens beats the preset-level reference_max_tokens.
-        slot_max_tokens = slot.get("max_tokens")
+
         # Copilot gates premium models on request attribution; MoA fan-out serves the
         # user's current turn, so mirror the main agent's x-initiator header.
         from agent.auxiliary_client import _normalize_aux_provider
         is_copilot = _normalize_aux_provider(str(runtime.get("provider") or "")) in ("copilot", "copilot-acp")
         response = call_llm(
             task="moa_reference", messages=trimmed, temperature=temperature,
-            max_tokens=slot_max_tokens if slot_max_tokens is not None else max_tokens,
+            max_tokens=max_tokens,
             timeout=reference_timeout, reasoning_config=_slot_reasoning_config(slot),
             extra_headers={"x-initiator": "user"} if is_copilot else None, **runtime,
         )
@@ -790,8 +789,8 @@ def aggregate_moa_context(
     long syntheses). ``agent`` makes the fan-out interruptible.
 
     ``reference_max_tokens`` applies ONLY to the reference fan-out — the aggregator's own synthesis call is
-    never capped, so it always uses its model's own maximum. ``call_llm`` omits the parameter entirely when
-    it is ``None`` (see its docstring), which also sidesteps providers that reject ``max_tokens`` outright.
+    not given an advisor budget. Omission uses provider-specific defaults; native protocols may
+    still require an internal wire limit.
     A hardcoded cap on the aggregator call previously truncated long aggregator syntheses (#53580) — passing
     ``reference_max_tokens`` to both calls here would silently reintroduce that regression.
     """
@@ -1198,7 +1197,7 @@ class MoAChatCompletions:
         raw_reference_timeout = preset.get("reference_timeout")
         reference_outputs = _run_references_parallel(
             reference_models, ref_messages, temperature=_preset_temperature(preset, "reference_temperature"),
-            max_tokens=preset.get("reference_max_tokens"),
+
             progress_callback=lambda done, total, label: self._emit("moa.progress", refs_done=done, refs_total=total, label=label),
             reference_timeout=float(raw_reference_timeout) if raw_reference_timeout else None,
             agent=self._agent, late_accounting_sink=self._record_late_reference_accounting,

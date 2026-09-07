@@ -37,11 +37,11 @@ Rule of thumb: if the recurring prompt needs the conversation's context, use `/h
 | `/heartbeat resume` | Resume (re-anchors the timer — no instant stale fire). |
 | `/heartbeat clear` | Remove the heartbeat. |
 
-`/hb` is an alias. Works on the CLI and gateway platforms (on Slack, use `/hermes heartbeat …`).
+`/hb` is an alias. Works on the CLI, the TUI / Desktop app, and gateway platforms (on Slack, use `/hermes heartbeat …`).
 
 ## Behavior details
 
-- **Idle-only.** A heartbeat never interrupts a running turn. If the agent is busy when the tick comes due, it fires at the next idle poll.
+- **Idle-only.** A heartbeat never interrupts a running turn. If the agent is busy when the tick comes due, it fires at the next idle poll. In the gateway, an idle watched session wakes proactively; no new inbound message is needed.
 - **Missed ticks coalesce.** If the session was busy (or the process wasn't running) through several intervals, you get **one** heartbeat turn, not a backlog. The timer re-anchors on every fire.
 - **User messages win.** A queued user message always takes priority; the heartbeat waits for the input queue to drain.
 - **Cache-safe.** The injected prompt is an ordinary user message. No system-prompt mutation, no toolset change.

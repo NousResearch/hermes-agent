@@ -241,14 +241,40 @@ def async_delegation_display_text(evt: dict) -> str:
     return f"Subagent Tasks {outcome}: {title} ({len(results)} tasks)"
 
 
+def async_delegation_display_metadata(evt: dict) -> dict:
+    """Shared display sidecars; only explicit outcomes count as success or failure."""
+    raw_results = evt.get("results")
+    results = [r for r in raw_results if isinstance(r, dict)] if isinstance(raw_results, list) else []
+    goals = evt.get("goals")
+    task_count = len(results) or (len(goals) if isinstance(goals, list) else 0) or 1
+    # Single completions and batches failing before fan-out have no result rows.
+    results = results or [evt] * task_count
+    metadata = {
+        "display_text": async_delegation_display_text(evt),
+        "delegation_id": str(evt.get("delegation_id") or ""),
+        "task_count": task_count,
+        "completed_count": sum(1 for r in results if r.get("status") in {"completed", "success"}),
+        "failed_count": sum(1 for r in results if r.get("status") in {"failed", "error"}),
+    }
+    duration = evt.get("total_duration_seconds")
+    if duration is None:
+        duration = evt.get("duration_seconds")
+    if isinstance(duration, (int, float)):
+        metadata["duration_seconds"] = duration
+    return metadata
+
+
 class SubagentNotification(str):
     """Keep queued model text string-compatible, with a separate human preview."""
 
+    display_kind = "async_delegation_complete"
     display_text: str
+    display_metadata: dict
 
     def __new__(cls, text: str, event: dict):
         instance = super().__new__(cls, text)
-        instance.display_text = async_delegation_display_text(event)
+        instance.display_metadata = async_delegation_display_metadata(event)
+        instance.display_text = instance.display_metadata["display_text"]
         return instance
 
 

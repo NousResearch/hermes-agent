@@ -139,7 +139,11 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
 def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> None:
     """message.start + _run_prompt_submit for a claimed (running=True) turn; releases on failure."""
     try:
-        _emit("message.start", sid)
+        display = {key: kwargs[key] for key in ("display_kind", "display_metadata") if key in kwargs}
+        if display:
+            _emit("message.start", sid, display)
+        else:
+            _emit("message.start", sid)
         _run_prompt_submit(rid, sid, session, text, **kwargs)
     except Exception as exc:
         _notif_log_failure(what, exc)
@@ -492,18 +496,10 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
 
 
 def _async_delegation_display_metadata(evt: dict) -> dict:
-    """Build display-only metadata before the completion event is formatted."""
-    from tools.process_registry_notifications import async_delegation_display_text
-    raw_results = evt.get("results")
-    results: list[dict] = [r for r in raw_results if isinstance(r, dict)] if isinstance(raw_results, list) else []
-    task_count = len(results) or 1
-    completed_count = sum(1 for r in results if r.get("status") in {"completed", "success"})
-    failed_count = sum(1 for r in results if r.get("status") in {"failed", "error"})
-    duration = evt.get("total_duration_seconds") or evt.get("duration_seconds")
-    return {"display_text": async_delegation_display_text(evt),
-            "delegation_id": str(evt.get("delegation_id") or ""), "task_count": task_count,
-            "completed_count": completed_count or task_count - failed_count, "failed_count": failed_count,
-            **({"duration_seconds": duration} if isinstance(duration, (int, float)) else {})}
+    """Shared display contract for TUI and CLI completion deliveries."""
+    from tools.process_registry_notifications import async_delegation_display_metadata
+
+    return async_delegation_display_metadata(evt)
 
 
 _desktop_ui_wired = False

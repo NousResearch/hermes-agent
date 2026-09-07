@@ -2,6 +2,7 @@ import type { BillingBlock } from '@hermes/shared'
 
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { translateNow } from '@/i18n'
+import { toChatMessages } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -123,6 +124,25 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
       return {
         ...state,
+        ...(payload?.display_kind === 'async_delegation_complete'
+          ? {
+              messages: [
+                ...state.messages,
+                ...toChatMessages([
+                  {
+                    role: 'user',
+                    content: '',
+                    display_kind: payload.display_kind,
+                    display_metadata: payload.display_metadata,
+                    timestamp: occurredAt
+                  }
+                ]).map(message => ({
+                  ...message,
+                  id: `background-${sessionId}-${occurredAt}-${state.messages.length}`
+                }))
+              ]
+            }
+          : {}),
         busy: true,
         awaitingResponse: true,
         sawAssistantPayload: false,

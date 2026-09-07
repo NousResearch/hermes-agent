@@ -3032,6 +3032,7 @@ export interface Translations {
       resumeWhenBackgroundDone: (count: number) => string
       thinking: string
       thought: string
+      backgroundUpdates: string
       thoughtBriefly: string
       thoughtFor: (duration: string) => string
       turnDuration: (duration: string) => string

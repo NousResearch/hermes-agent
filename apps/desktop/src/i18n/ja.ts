@@ -3093,6 +3093,7 @@ export const ja = defineLocale({
           : `${count} 件のバックグラウンドタスクの完了後に再開します`,
       thinking: '考え中',
       thought: '思考済み',
+      backgroundUpdates: 'バックグラウンドの更新',
       thoughtBriefly: '少し思考',
       thoughtFor: duration => `${duration} 思考`,
       turnDuration: duration => `このターンの所要時間: ${duration}`,

@@ -11,6 +11,22 @@ const event = (type: string, timestamp: number, payload: Record<string, unknown>
   act(() => stream.handleEvent({ payload: { ...payload, timestamp }, session_id: SID, type }))
 
 describe('live transcript timeline events', () => {
+  it('starts a typed background boundary only when its follow-up actually starts', () => {
+    event('message.start', 10)
+    event('message.delta', 11, { text: 'Main answer.' })
+    event('message.complete', 12, { text: 'Main answer.' })
+    event('status.update', 13, { kind: 'process', text: 'An internal notification is queued.' })
+    expect(stream.state(SID).messages.some(message => message.displayKind)).toBe(false)
+    event('message.start', 14, { display_kind: 'async_delegation_complete', display_metadata: { task_count: 1 } })
+    event('message.delta', 15, { text: 'Review finished.' })
+    event('message.complete', 16, { text: 'Review finished.' })
+    expect(stream.state(SID).messages.map(message => [message.role, message.displayKind])).toEqual([
+      ['assistant', undefined],
+      ['system', 'async_delegation_complete'],
+      ['assistant', undefined]
+    ])
+  })
+
   beforeEach(async () => {
     stream = renderMessageStream(SID)
   })

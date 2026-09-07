@@ -2,17 +2,20 @@
 
 import queue
 
+import pytest
+
 from cli import HermesCLI
 
 
-def test_cli_completion_drain_uses_visible_session_identity(monkeypatch):
+@pytest.mark.parametrize("event_type", ["async_delegation", "completion"])
+def test_cli_completion_drain_uses_visible_session_identity(monkeypatch, event_type):
     """A CLI window must not claim another window's restored completion."""
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id = "visible-session"
     cli._pending_input = queue.Queue()
 
     event = {
-        "type": "async_delegation",
+        "type": event_type,
         "delegation_id": "deleg_visible",
         "session_key": "visible-session",
     }
@@ -42,7 +45,17 @@ def test_cli_completion_drain_uses_visible_session_identity(monkeypatch):
     cli._drain_process_notifications("cli-idle")
 
     assert calls == [("visible-session", True)]
-    assert cli._pending_input.get_nowait() == "completion payload"
+    queued = cli._pending_input.get_nowait()
+    assert queued == "completion payload"
+    expected_kind = (
+        "async_delegation_complete" if event_type == "async_delegation" else None
+    )
+    assert getattr(queued, "display_kind", None) == expected_kind
+    if expected_kind:
+        assert (
+            getattr(queued, "display_metadata")["delegation_id"]
+            == event["delegation_id"]
+        )
     assert claimed == [(event, "cli-idle")]
     assert completed == [(event, "claim-token")]
 
@@ -52,9 +65,10 @@ def test_cli_completion_ownership_rejects_foreign_session():
     cli.session_id = "visible-session"
     cli._session_db = None
 
-    assert not cli._owns_process_notification(
-        {"type": "async_delegation", "session_key": "foreign-session"}
-    )
+    assert not cli._owns_process_notification({
+        "type": "async_delegation",
+        "session_key": "foreign-session",
+    })
 
 
 def test_cli_completion_ownership_accepts_compression_lineage():
@@ -68,9 +82,7 @@ def test_cli_completion_ownership_accepts_compression_lineage():
 
     cli._session_db = FakeSessionDB()
 
-    assert cli._owns_process_notification(
-        {
-            "type": "async_delegation",
-            "session_key": "pre-compression-session",
-        }
-    )
+    assert cli._owns_process_notification({
+        "type": "async_delegation",
+        "session_key": "pre-compression-session",
+    })

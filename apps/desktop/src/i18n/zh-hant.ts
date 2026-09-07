@@ -2986,6 +2986,7 @@ export const zhHant = defineLocale({
         count === 1 ? '背景工作完成後將自動繼續' : `${count} 個背景工作完成後將自動繼續`,
       thinking: '思考中',
       thought: '已思考',
+      backgroundUpdates: '背景更新',
       thoughtBriefly: '思考了片刻',
       thoughtFor: duration => `思考了 ${duration}`,
       turnDuration: duration => `本輪耗時 ${duration}`,

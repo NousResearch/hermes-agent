@@ -3639,6 +3639,7 @@ export const zh: Translations = {
         count === 1 ? '后台任务完成后将自动继续' : `${count} 个后台任务完成后将自动继续`,
       thinking: '思考中',
       thought: '已思考',
+      backgroundUpdates: '后台更新',
       thoughtBriefly: '思考了片刻',
       thoughtFor: duration => `思考了 ${duration}`,
       turnDuration: duration => `本轮耗时 ${duration}`,

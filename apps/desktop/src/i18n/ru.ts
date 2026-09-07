@@ -3497,6 +3497,7 @@ export const ru = defineLocale({
           : `Продолжится, когда ${count} ${RU_NOUN(count, 'фоновая задача', 'фоновые задачи', 'фоновых задач')} завершатся`,
       thinking: 'Думает',
       thought: 'Помыслил',
+      backgroundUpdates: 'Фоновые обновления',
       thoughtBriefly: 'Кратко подумал',
       thoughtFor: duration => `Думал ${duration}`,
       turnDuration: duration => `Этот ход занял ${duration}`,

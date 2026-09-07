@@ -162,9 +162,18 @@ _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn was interrupted m
 
 
 def _legacy_display_kind(role: str, text: str) -> str | None:
-    """Display type of a synthetic row persisted untyped: new rows are typed at turn start (``persist_user_display_kind``);
-    this prefix sniff migrates rows already on disk (a turn killed mid-run never reached the stamp)."""
-    return "auto_continue" if role == "user" and text.lstrip().startswith(_AUTO_CONTINUE_NOTE_PREFIX) else None
+    """Migrate untyped synthetic rows in the display projection only, never model history."""
+    import re
+
+    if role != "user":
+        return None
+    if text.lstrip().startswith(_AUTO_CONTINUE_NOTE_PREFIX):
+        return "auto_continue"
+    if re.match(
+        r"\A\[ASYNC DELEGATION (?:BATCH )?COMPLETE — deleg_[A-Za-z0-9_-]+\](?:\r?\n|\Z)", text,
+    ):
+        return "async_delegation_complete"
+    return None
 
 
 _HISTORY_ASSISTANT_DETAIL_KEYS = (

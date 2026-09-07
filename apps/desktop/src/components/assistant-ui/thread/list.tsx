@@ -32,12 +32,15 @@ import { isSecondaryWindow } from '@/store/windows'
 
 import { MessageRenderBoundary } from '../message-render-boundary'
 
+import { BackgroundUpdates } from './background-updates'
 import { resolveShowEarlierAction, useTranscriptWindow } from './transcript-window'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
 export type MessageGroup = { id: string; weight: number } & (
-  { index: number; kind: 'standalone' } | { indices: number[]; kind: 'turn' }
+  | { index: number; kind: 'standalone' }
+  | { indices: number[]; kind: 'turn' }
+  | { indices: number[]; kind: 'background'; count: number }
 )
 
 // DOM is bounded by a render-cost budget, not a message/turn count. The
@@ -225,6 +228,26 @@ export function buildGroups(signature: string): MessageGroup[] {
   for (let i = 0; i < messages.length; i++) {
     const message = messages[i]
 
+    if (message.role === 'background') {
+      const indices = [message.index]
+      let weight = message.weight
+      let count = 1
+
+      while (i + 1 < messages.length && ['assistant', 'background'].includes(messages[i + 1].role)) {
+        const next = messages[++i]
+        indices.push(next.index)
+        weight += next.weight
+
+        if (next.role === 'background') {
+          count++
+        }
+      }
+
+      groups.push({ id: message.id, indices, kind: 'background', count, weight })
+
+      continue
+    }
+
     if (message.role !== 'user') {
       groups.push({ id: message.id, index: message.index, kind: 'standalone', weight: message.weight })
 
@@ -234,7 +257,7 @@ export function buildGroups(signature: string): MessageGroup[] {
     const indices = [message.index]
     let weight = message.weight
 
-    while (i + 1 < messages.length && messages[i + 1].role !== 'user') {
+    while (i + 1 < messages.length && !['user', 'background'].includes(messages[i + 1].role)) {
       weight += messages[++i].weight
       indices.push(messages[i].index)
     }
@@ -370,7 +393,9 @@ const TurnRow = memo(function TurnRow({ components, group, resetKey, virtualized
       )}
     >
       <MessageRenderBoundary resetKey={resetKey}>
-        {group.kind === 'turn' ? (
+        {group.kind === 'background' ? (
+          <BackgroundUpdates components={components} count={group.count} indices={group.indices} />
+        ) : group.kind === 'turn' ? (
           <div
             className="composer-human-ai-pair-container relative flex min-w-0 flex-col gap-(--conversation-turn-gap)"
             data-slot="aui_turn-pair"
@@ -404,7 +429,12 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // every tick (measured: 540 wasted Block renders per explain() sample with
   // two threads streaming).
   const structuralSignature = useAuiState(s =>
-    s.thread.messages.map((message, index) => `${index}:${message.id}:${message.role}`).join('\n')
+    s.thread.messages
+      .map(
+        (message, index) =>
+          `${index}:${message.id}:${message.metadata?.custom?.displayKind === 'async_delegation_complete' ? 'background' : message.role}`
+      )
+      .join('\n')
   )
 
   const weightSignature = useAuiState(s =>
@@ -551,7 +581,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     return groups.map(group => ({
       ...group,
       weight:
-        group.kind === 'turn'
+        group.kind !== 'standalone'
           ? group.indices.reduce((sum, index) => sum + (weights[index] ?? 1), 0)
           : (weights[group.index] ?? 1)
     }))

@@ -2650,6 +2650,7 @@ export const ar = defineLocale({
         count === 1 ? 'سيُستأنف عند انتهاء المهمة الخلفية' : `سيُستأنف عند انتهاء ${count} مهام خلفية`,
       thinking: 'يفكر...',
       thought: 'فكّر',
+      backgroundUpdates: 'تحديثات الخلفية',
       thoughtBriefly: 'فكّر قليلاً',
       thoughtFor: duration => `فكّر لمدة ${duration}`,
       turnDuration: duration => `استغرقت هذه الجولة ${duration}`,

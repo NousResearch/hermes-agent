@@ -65,8 +65,13 @@ _SUMMARY_ROUTE_PIN: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
     contextvars.ContextVar("hermes_summary_route_pin", default=None)
 )
 
-# ``timeout`` is included so a fallback entry keeps its own deadline.
-_PINNED_ROUTE_FIELDS: tuple[str, ...] = ("provider", "model", "base_url", "api_key", "api_mode", "timeout")
+# ``timeout`` is included so a fallback entry keeps its own deadline; ``reasoning_config``
+# so a pinned stall-fallback route carries its own effort instead of the stalled route's.
+_PINNED_ROUTE_FIELDS: tuple[str, ...] = ("provider", "model", "base_url", "api_key", "api_mode", "timeout", "reasoning_config")
+
+# update_model() sentinel distinguishing "caller left the effort unset" (keep/clear by route
+# change) from an explicit ``reasoning_config=None`` (clear on purpose).
+_REASONING_CONFIG_UNSET = object()
 
 
 @contextlib.contextmanager
@@ -2142,10 +2147,16 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     def update_model(
         self, model: str, context_length: int, base_url: str = "", api_key: Any = "", provider: str = "",
-        api_mode: str = "", max_tokens: int | None = None,
+        api_mode: str = "", max_tokens: int | None = None, reasoning_config: Any = _REASONING_CONFIG_UNSET,
     ) -> None:
         """Update model info after a model switch or fallback activation."""
         runtime_changed = (model, provider, base_url, api_mode) != (self.model, self.provider, self.base_url, self.api_mode)
+        if reasoning_config is not _REASONING_CONFIG_UNSET:
+            self.reasoning_config = copy.deepcopy(reasoning_config)
+        elif runtime_changed:
+            # An omitted effort cannot carry the previous route's policy across a route
+            # change; a same-route context-window recalibration keeps the snapshot.
+            self.reasoning_config = None
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         self.context_length = context_length
         # Re-resolve from the raw config value so a switch away from an overridden model falls back correctly.
@@ -2265,8 +2276,13 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
         custom_providers: list | None = None,
+        reasoning_config: Optional[Dict[str, Any]] = None,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
+        # Construction-time effort snapshot (deep copy: the caller's dict may keep mutating);
+        # agent-hosted compressors normally take the owning session's live snapshot via the
+        # scoped runtime instead — see _summary_main_runtime.
+        self.reasoning_config = copy.deepcopy(reasoning_config)
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
         self.tail_mode = tail_mode if tail_mode in ("legacy", "lean") else "lean"
         # Per-model context_length overrides live in custom_providers; without them deferred
@@ -3180,6 +3196,31 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self.summary_model = ""  # empty = use main model
         self._clear_compression_failure_cooldown()  # no cooldown — retry immediately
 
+    def _summary_main_runtime(self) -> Dict[str, Any]:
+        """Runtime snapshot for the next summary call: the owning session's attempt
+        snapshot when it matches, else this compressor's construct/update snapshot.
+
+        A reused compressor can outlive a session effort/model switch. The host scopes a
+        fresh runtime (``scoped_runtime_main``) around each compression attempt, and that
+        ContextVar also isolates a detached pool worker from a later attempt. The session-id
+        match refuses a FOREIGN session's runtime even on the same deployment; standalone
+        compressors (no bound session) always use their own snapshot.
+        """
+        from agent.auxiliary_client import get_scoped_runtime_main
+
+        runtime = get_scoped_runtime_main()
+        session_id = getattr(self, "_session_id", "")
+        if session_id and runtime.get("session_id") == session_id:
+            return runtime
+        return {
+            "model": self.model,
+            "provider": self.provider,
+            "base_url": self.base_url,
+            "api_key": self.api_key,
+            "api_mode": self.api_mode,
+            "reasoning_config": copy.deepcopy(self.reasoning_config),
+        }
+
     def _call_summary_llm(self, prompt: str, prompt_started_at: float) -> str:
         """Issue the single aux summary call; return validated content text.
         Raises RuntimeError for empty content or a length-truncated (PARTIAL) summary so the failure
@@ -3188,10 +3229,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         _aux_route: Dict[str, str] = {}
         call_kwargs: Dict[str, Any] = {
             "task": "compression",
-            "main_runtime": {
-                "model": self.model, "provider": self.provider, "base_url": self.base_url, "api_key": self.api_key,
-                "api_mode": self.api_mode,
-            },
+            "main_runtime": self._summary_main_runtime(),
             "messages": [{"role": "user", "content": prompt}], "route_info": _aux_route,
             # NO max_tokens: Anthropic/NIM wires forward it and a hard cap truncates summaries
             # (thinking models burn it on reasoning). Timeout comes from call_llm config.

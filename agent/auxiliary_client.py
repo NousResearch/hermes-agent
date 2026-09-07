@@ -1083,6 +1083,26 @@ def _parse_codex_final_response(final: Any) -> Tuple[List[str], List[Any], Any]:
         usage = SimpleNamespace(
             prompt_tokens=_u("input_tokens"), completion_tokens=_u("output_tokens"),
             total_tokens=_u("total_tokens"))
+        # Preserve the Responses detail buckets when adapting to Chat usage names —
+        # normalize_usage reads prompt_tokens_details/completion_tokens_details on the
+        # chat shape, so dropping them miscounts cached input as fresh input and hides
+        # reasoning tokens from every auxiliary consumer (session accounting, cache hit
+        # telemetry). Unset vs explicit null stays distinguishable: a dict (or object)
+        # is copied verbatim, an SDK-unset field is left absent, an explicit None is set.
+        for source_field, target_field in (
+            ("input_tokens_details", "prompt_tokens_details"),
+            ("output_tokens_details", "completion_tokens_details"),
+        ):
+            if isinstance(resp_usage, dict):
+                if source_field in resp_usage:
+                    setattr(usage, target_field, resp_usage[source_field])
+            else:
+                fields_set = getattr(resp_usage, "model_fields_set", None)
+                if (
+                    (fields_set is None or source_field in fields_set)
+                    and hasattr(resp_usage, source_field)
+                ):
+                    setattr(usage, target_field, getattr(resp_usage, source_field))
     return text_parts, tool_calls_raw, usage
 
 
@@ -1376,6 +1396,11 @@ class _CodexCompletionsAdapter:
             if isinstance(service_tier, str) and service_tier.strip() and not is_xai:
                 resp_kwargs["service_tier"] = service_tier.strip()
             reasoning_cfg = extra_body.get("reasoning")
+            if not isinstance(reasoning_cfg, dict) and kwargs.get("reasoning_effort") is not None:
+                # Provider profiles project session/task reasoning onto this top-level
+                # chat kwarg (custom/Ollama/vLLM style); honor it across the Responses
+                # bridge exactly like an explicit extra_body.reasoning dict.
+                reasoning_cfg = {"effort": kwargs["reasoning_effort"]}
             # ``enabled: False`` leaves reasoning/include unset (Codex still thinks by default).
             if isinstance(reasoning_cfg, dict) and reasoning_cfg.get("enabled") is not False:
                 # Truthy-only: Codex 400s on e.g. {"effort": null}, so falsy → default. Shared
@@ -2535,7 +2560,7 @@ def _runtime_main_value(field: str) -> Any:
 def set_runtime_main(
     provider: str, model: str, *, requested_provider: str = "", base_url: str = "",
     api_key: Any = "", api_mode: str = "", auth_mode: str = "", session_id: str = "",
-    cache_scope: str = "",
+    cache_scope: str = "", reasoning_config: Optional[Dict[str, Any]] = None,
 ) -> contextvars.Token:
     """Record the current context's live main runtime for auxiliary routing.
 
@@ -2545,7 +2570,9 @@ def set_runtime_main(
 
     ``cache_scope`` is the rotation-stable logical cache scope (compression- lineage root —
     agent/prompt_cache_scope.py) resolved once per turn by turn_context; auxiliary Responses calls prefer it
-    over ``session_id`` for prompt_cache_key derivation (#79017).
+    over ``session_id`` for prompt_cache_key derivation (#79017). ``reasoning_config`` is the
+    session's live effort snapshot, deep-copied so a later in-session change cannot mutate an
+    in-flight auxiliary attempt that inherited it.
     """
     runtime = {
         "provider": (provider or "").strip().lower(),
@@ -2558,6 +2585,8 @@ def set_runtime_main(
         "session_id": (session_id or "").strip(),
         "cache_scope": (cache_scope or "").strip(),
     }
+    if isinstance(reasoning_config, dict):
+        runtime["reasoning_config"] = copy.deepcopy(reasoning_config)
     # Publish authoritative context before updating the locked mirrors.
     token = _RUNTIME_MAIN_CONTEXT.set(runtime)
     _publish_runtime_main_mirrors(tuple(runtime[field] for field in _MAIN_RUNTIME_FIELDS))
@@ -2583,6 +2612,16 @@ def scoped_runtime_main(main_runtime: Optional[Dict[str, Any]]):
         yield runtime
     finally:
         _RUNTIME_MAIN_CONTEXT.reset(token)
+
+
+def get_scoped_runtime_main() -> Dict[str, Any]:
+    """Snapshot only the caller's scoped runtime; never consult legacy mirrors or config.
+
+    Producers (the compressor's summary handoff) must not inherit another concurrent
+    session's endpoint or effort through the compat globals — the ContextVar is the only
+    source, normalized the same way ``scoped_runtime_main`` binds it.
+    """
+    return _normalize_main_runtime(_RUNTIME_MAIN_CONTEXT.get() or {})
 
 
 def clear_runtime_main() -> None:
@@ -2849,7 +2888,13 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
 
 
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
-_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + ("requested_provider",)
+# ``session_id``/``cache_scope`` key the scoped-runtime handoff (compressor snapshot match,
+# prompt_cache_key derivation); ``reasoning_config`` carries the session's live effort snapshot
+# for tasks that inherit it (compression). Only dict reasoning configs survive normalization —
+# an absent/None effort must stay distinguishable from an explicit one downstream.
+_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + (
+    "requested_provider", "session_id", "cache_scope", "reasoning_config",
+)
 
 
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -2868,7 +2913,10 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
     normalized: Dict[str, Any] = {}
     for field in _MAIN_RUNTIME_CONTEXT_FIELDS:
         value = main_runtime.get(field)
-        if field == "api_key" and callable(value) and not isinstance(value, str):
+        if field == "reasoning_config" and isinstance(value, dict):
+            # Deep copy: the snapshot must not mutate under a concurrent in-session effort change.
+            normalized[field] = copy.deepcopy(value)
+        elif field == "api_key" and callable(value) and not isinstance(value, str):
             normalized[field] = value
         elif isinstance(value, str) and value.strip():
             normalized[field] = value.strip()
@@ -6569,6 +6617,43 @@ _PreparedAuxRequest = NamedTuple("_PreparedAuxRequest", [
     ("effective_extra_body", Dict[str, Any]), ("base_info", str)])
 
 
+def _aux_route_pins_target(resolved_provider: Optional[str], resolved_model: Optional[str]) -> bool:
+    """Whether task config pinned an explicit provider/model for this call.
+
+    A pinned target (``auxiliary.<task>.provider/model``, a summary_model override, or a
+    per-call ``model=``) owns its own reasoning policy; only a route left to ``auto``
+    inherits the session's.
+    """
+    return (
+        str(resolved_provider or "").strip().lower() not in {"", "auto", "main"}
+        or bool(str(resolved_model or "").strip())
+    )
+
+
+def _aux_route_matches_main_runtime(
+    request_provider: Optional[str], final_model: Optional[str], base_url: str,
+    main_runtime: Dict[str, Any],
+) -> bool:
+    """Whether the concrete auxiliary route IS the session's main deployment.
+
+    Provider and model must match; base_url only disambiguates when both sides carry one
+    (default-OpenAI sessions have no explicit URL on either side). Deployment identity is
+    compared from normalized route fields — anything stricter would silently disable
+    inheritance for default routes.
+    """
+    def _norm(value: Any) -> str:
+        return str(value or "").strip().rstrip("/").lower()
+
+    route_provider = _normalize_aux_provider(
+        _fallback_provider_from_label(str(request_provider or "")))
+    if route_provider != _normalize_aux_provider(str(main_runtime.get("provider") or "")):
+        return False
+    if _norm(final_model) != _norm(main_runtime.get("model")):
+        return False
+    main_base, route_base = _norm(main_runtime.get("base_url")), _norm(base_url)
+    return not (main_base and route_base and main_base != route_base)
+
+
 def _prepare_aux_request(
     task: Optional[str], *, provider: Optional[str], model: Optional[str], base_url: Optional[str],
     api_key: Optional[str], main_runtime: Dict[str, Any], messages: list,
@@ -6614,6 +6699,23 @@ def _prepare_aux_request(
                          f" at {base_info}" if base_info and "openrouter" not in base_info else "")
     # Client's actual base_url so endpoint-specific temperature overrides work on
     # auto-detected routes (api.moonshot.ai vs api.kimi.com/coding).
+    # Session-effort inheritance for compression: when task routing left provider/model
+    # ownership to the live main runtime AND the resolved route is that session's
+    # deployment, the summary follows the owning session's effort snapshot. Explicit
+    # per-call ``reasoning_config`` and a task-config ``extra_body.reasoning`` both win
+    # over inheritance; a route that landed anywhere else owns its own effort and must
+    # not carry the session's (a cross-route model change drops it).
+    if (
+        task == "compression"
+        and reasoning_config is None
+        and "reasoning" not in effective_extra_body
+        and not _aux_route_pins_target(resolved_provider, resolved_model)
+        and _aux_route_matches_main_runtime(
+            request_provider, final_model, base_info or resolved_base_url or "", main_runtime)
+    ):
+        inherited = main_runtime.get("reasoning_config")
+        if isinstance(inherited, dict):
+            reasoning_config = copy.deepcopy(inherited)
     kwargs = _build_call_kwargs(
         request_provider, final_model, messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,

@@ -499,9 +499,20 @@ class AIAgent(
             detail = detail[:217].rstrip() + "..."
         self._emit_warning(f"⚠ Auxiliary {task} failed: {detail}")
 
-    def _current_main_runtime(self) -> Dict[str, str]:
-        """Return the live main runtime for session-scoped auxiliary routing."""
-        return {key: getattr(self, key, "") or "" for key in ("model", "provider", "base_url", "api_key", "api_mode", "auth_mode")}
+    def _current_main_runtime(self) -> Dict[str, Any]:
+        """Return the live main runtime for session-scoped auxiliary routing.
+
+        ``session_id`` keys the compressor's scoped-runtime handoff (a foreign session's
+        runtime must never be borrowed); ``reasoning_config`` is the session's live effort
+        snapshot, deep-copied so a later in-session change cannot mutate an in-flight
+        auxiliary attempt that inherited it.
+        """
+        runtime: Dict[str, Any] = {
+            key: getattr(self, key, "") or "" for key in ("model", "provider", "base_url", "api_key", "api_mode", "auth_mode")
+        }
+        runtime["session_id"] = getattr(self, "session_id", "") or ""
+        runtime["reasoning_config"] = copy.deepcopy(getattr(self, "reasoning_config", None))
+        return runtime
 
     _check_compression_model_feasibility = _forward("agent.conversation_compression", "check_compression_model_feasibility")
     _replay_compression_warning = _forward("agent.conversation_compression", "replay_compression_warning")

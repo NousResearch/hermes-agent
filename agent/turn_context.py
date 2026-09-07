@@ -386,6 +386,9 @@ def _publish_runtime_main(agent: Any) -> None:
                 "requested_provider", "base_url", "api_key", "api_mode", "auth_mode", "session_id"
             )},
             cache_scope=_cache_scope,
+            # Entry snapshot of the session's reasoning effort (deep-copied inside
+            # set_runtime_main); auxiliary compression inherits it for this turn.
+            reasoning_config=getattr(agent, "reasoning_config", None),
         )
 
 

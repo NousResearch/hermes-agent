@@ -375,21 +375,23 @@ describe('quickstart', () => {
   })
 
   it('pins the quickstart progress view while the job runs', async () => {
-    $localRuntimeJobs.set([
-      {
-        job_id: 'q1',
-        kind: 'quickstart',
-        target: 'Qwen3.6 27B',
-        model_id: 'qwen3.6-27b',
-        status: 'running',
-        phase: 'downloading',
-        detail: 'Qwen3.6 27B — 17.6 GB',
-        total_bytes: 100,
-        done_bytes: 30,
-        percent: 30,
-        error: null
-      }
-    ])
+    const running: LocalRuntimeJob = {
+      job_id: 'q1',
+      kind: 'quickstart',
+      target: 'Qwen3.6 27B',
+      model_id: 'qwen3.6-27b',
+      status: 'running',
+      phase: 'downloading',
+      detail: 'Qwen3.6 27B — 17.6 GB',
+      total_bytes: 100,
+      done_bytes: 30,
+      percent: 30,
+      error: null
+    }
+
+    $localRuntimeJobs.set([running])
+    mocked.getLocalModelsJobs.mockResolvedValue({ jobs: [running] })
+
     renderPane()
 
     expect(await screen.findByText('Qwen3.6 27B — 17.6 GB')).toBeTruthy()

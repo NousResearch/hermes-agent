@@ -387,7 +387,8 @@ test('writeSecretFileAtomic does not inherit loose bits from a stale temp file',
   // earlier write would otherwise hand 0644 straight to the target.
   withTempDir(dir => {
     const target = path.join(dir, 'connection.json')
-    fs.writeFileSync(`${target}.tmp`, 'stale', { mode: 0o666 })
+    fs.writeFileSync(`${target}.tmp`, 'stale')
+    fs.chmodSync(`${target}.tmp`, 0o666)
     assert.notEqual(modeOf(`${target}.tmp`), SECRET_FILE_MODE)
 
     writeSecretFileAtomic(target, 'fresh')
@@ -456,7 +457,8 @@ test('writeSecretFileAtomic cannot be redirected through a symlink planted at th
   withTempDir(dir => {
     const target = path.join(dir, 'connection.json')
     const victim = path.join(dir, 'victim.txt')
-    fs.writeFileSync(victim, 'original', { mode: 0o644 })
+    fs.writeFileSync(victim, 'original')
+    fs.chmodSync(victim, 0o644)
 
     try {
       fs.symlinkSync(victim, `${target}.tmp`, 'file')
@@ -495,7 +497,8 @@ test('tightenSecretFileMode tightens a pre-existing world-readable config in pla
       }
     })
 
-    fs.writeFileSync(target, legacy, { mode: 0o644 })
+    fs.writeFileSync(target, legacy)
+    fs.chmodSync(target, 0o644)
     assert.equal(modeOf(target), 0o644)
 
     assert.equal(tightenSecretFileMode(target), true)
@@ -518,7 +521,8 @@ test('tightenSecretFileMode leaves a non-safeStorage token payload readable', ()
       remote: { url: 'https://gw.example.com', authMode: 'token', token: { encoding: 'plain', value: 'tok-live-42' } }
     })
 
-    fs.writeFileSync(target, legacyPlain, { mode: 0o644 })
+    fs.writeFileSync(target, legacyPlain)
+    fs.chmodSync(target, 0o644)
 
     tightenSecretFileMode(target)
 
@@ -549,7 +553,8 @@ test('tightenSecretFileMode refuses to chmod a symlink instead of following it t
   withTempDir(dir => {
     const target = path.join(dir, 'connection.json')
     const victim = path.join(dir, 'victim.txt')
-    fs.writeFileSync(victim, 'not mine', { mode: 0o644 })
+    fs.writeFileSync(victim, 'not mine')
+    fs.chmodSync(victim, 0o644)
 
     try {
       fs.symlinkSync(victim, target, 'file')

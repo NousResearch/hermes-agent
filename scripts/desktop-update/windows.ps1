@@ -1444,6 +1444,15 @@ try {
         exit 0
     }
 
+    # Check only the interpreter here: dependency recovery belongs to update.
+    $pythonExe = Join-Path $InstallRoot "venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) {
+        $finalCode = 3
+        $finalMsg = "Update aborted: $pythonExe is missing. Repair the installation and review antivirus quarantine before retrying."
+        Write-HandoffLog $finalMsg
+        exit $finalCode
+    }
+
     # -- 1. Wait for the Desktop to exit (FAIL CLOSED) ----------------------
     Publish-UiProgress "Waiting for Hermes to close"
     if ($DesktopPid -gt 0) {
@@ -1597,10 +1606,11 @@ try {
 
     # A zero-exit update is not proof that the runtime survived the update.
     if ($res.Code -eq 0 -and -not $desktopBuildFailed) {
-        $verify = Invoke-HermesStep $pythonExe @("-c", "import hermes_cli.main") "verify"
+        $verifyCode = "import hermes_cli.main; from pathlib import Path; from hermes_cli.desktop_update_verify import verify_windows_desktop_update; verify_windows_desktop_update(Path.cwd())"
+        $verify = Invoke-HermesStep $pythonExe @("-c", $verifyCode) "verify"
         if ($verify.Code -ne 0) {
             $finalCode = 8
-            $finalMsg = "The updated Hermes runtime failed verification. Repair the installation and review antivirus quarantine before retrying."
+            $finalMsg = "The updated Hermes runtime or Desktop build failed verification. Repair the installation and review antivirus quarantine before retrying."
             Write-HandoffLog $finalMsg
             exit $finalCode
         }

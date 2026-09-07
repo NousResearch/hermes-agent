@@ -1155,12 +1155,19 @@ def test_probe_fail_json_is_unambiguous_failure() -> None:
 
 
 def test_main_psutil_missing_is_probe_failure_not_clear(monkeypatch, capsys):
-    """Missing psutil exits non-zero with probe_failed JSON — never a clear scan."""
+    """Missing psutil exits non-zero and stays fail-closed — never a clear scan.
+
+    #104687 H9: the scanner imports psutil from the very site-packages the
+    update is about to rewrite, so an interrupted update can leave psutil
+    half-written and every later attempt refuses identically. The refusal must
+    stay fail-closed, but it carries its own repair command and a code distinct
+    from a generic probe failure so the trap is recognisable in a log.
+    """
     real_import = builtins.__import__
 
     def _no_psutil(name, *args, **kwargs):
         if name == "psutil" or name.startswith("psutil."):
-            raise ImportError("No module named 'psutil'")
+            raise ImportError("DLL load failed while importing _psutil_windows")
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", _no_psutil)
@@ -1175,9 +1182,11 @@ def test_main_psutil_missing_is_probe_failure_not_clear(monkeypatch, capsys):
     assert data["ok"] is False
     assert data["ready"] is False
     assert data["blocked"] is True
-    assert data["reason"] == "probe_failed"
-    assert data["error"]["code"] == "probe_failed"
+    assert data["reason"] == "scanner_dependency_unavailable"
+    assert data["error"]["code"] == "scanner_dependency_unavailable"
     assert "psutil" in captured.err.lower()
+    assert "pip install --force-reinstall psutil" in data["error"]["message"]
+    assert sys.executable in data["error"]["message"]
 
 
 def test_main_exempts_gateway_chain_but_keeps_other_holders(monkeypatch, capsys):

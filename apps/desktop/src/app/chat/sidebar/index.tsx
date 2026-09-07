@@ -88,6 +88,7 @@ import {
   $newProjectDropPlacement,
   $projects,
   $projectScope,
+  $projectSessionsLoadError,
   $projectTree,
   $projectTreeLoading,
   $reposScanning,
@@ -176,7 +177,7 @@ import {
   useRepoWorktreeMap
 } from './projects'
 import { WorktreeDialog } from './projects/worktree-dialog'
-import { SidebarBlankState, SidebarPinnedEmptyState, SidebarSessionSkeletons } from './section-states'
+import { SidebarBlankState, SidebarLoadErrorState, SidebarPinnedEmptyState, SidebarSessionSkeletons } from './section-states'
 import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
@@ -987,6 +988,13 @@ export function ChatSidebar({
   // from the backend — same grouping/ids as the overview, just with rows.
   const [enteredProjectTree, setEnteredProjectTree] = useState<SidebarProjectTree | null>(null)
 
+  // A failed drill-in fetch must show "could not load" + retry, never the
+  // "no sessions yet" empty state — silent failure reads as data loss. The
+  // retry count is a component-local re-arm: bumping it re-runs the effect
+  // below without the store having to track fetch attempts.
+  const projectSessionsLoadError = useStore($projectSessionsLoadError)
+  const [projectSessionsRetryCount, setProjectSessionsRetryCount] = useState(0)
+
   useEffect(() => {
     if (!enteredProjectId || !gatewayReady) {
       setEnteredProjectTree(null)
@@ -1006,8 +1014,18 @@ export function ChatSidebar({
       cancelled = true
     }
     // `projectTree` in deps: re-hydrate after a tree refresh so the entered view
-    // stays current with new/ended sessions.
-  }, [enteredProjectId, gatewayReady, projectTree])
+    // stays current with new/ended sessions. `projectSessionsRetryCount` in deps:
+    // the retry row re-arms a refetch by bumping it.
+  }, [enteredProjectId, gatewayReady, projectTree, projectSessionsRetryCount])
+
+  // The error signal outlives the fetch that failed (it must, so the user can
+  // see it); entering a different project clears it so the fresh drill-in gets
+  // its own honest state instead of inheriting the previous project's failure.
+  useEffect(() => {
+    if (!enteredProjectId) {
+      $projectSessionsLoadError.set(false)
+    }
+  }, [enteredProjectId])
 
   // Prefer the hydrated tree; fall back to the overview node (empty lanes) while
   // the drill-in fetch is in flight, so the header/structure render immediately.
@@ -1735,6 +1753,8 @@ export function ChatSidebar({
                 emptyState={
                   showSessionSkeletons ? (
                     <SidebarSessionSkeletons />
+                  ) : inProject && projectSessionsLoadError ? (
+                    <SidebarLoadErrorState onRetry={() => setProjectSessionsRetryCount(n => n + 1)} />
                   ) : (
                     <div className="grid min-h-16 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">
                       {inProject

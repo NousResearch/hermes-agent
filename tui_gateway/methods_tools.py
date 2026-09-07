@@ -151,7 +151,7 @@ def _rewind_or_err(rid, session, keep: int, value_err: tuple, fail_prefix: str, 
 
 
 def _clip(text: str, n: int = 120) -> str:
-    return text[:n] + ("…" if len(text) > n else "")
+    return text
 
 
 def _exec_out(rid, output: str) -> dict:

@@ -1547,6 +1547,22 @@ def _dispatch_lane_task(
         result.spawned.append((task_id, assignee, ""))
         _count_spawn(assignee)
         return True
+    # Assignment-time validation is only an admission check. Profile
+    # authority can be revoked while a task waits in ``ready``; revalidate
+    # immediately before claiming so a stale write-capability proof cannot
+    # authorize spawning a mutation-capable worker.
+    try:
+        _kb._validate_pr_task_assignee_authority(body=row["body"], assignee=assignee)
+    except ValueError as exc:
+        with _kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'blocked', block_kind = 'capability' "
+                "WHERE id = ? AND status IN ('ready', 'review')",
+                (task_id,),
+            )
+            _kb._append_event(conn, task_id, "authority_revoked", {"reason": str(exc)})
+        result.skipped_nonspawnable.append(task_id)
+        return False
     claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
     claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
     if claimed is None:
@@ -1602,6 +1618,24 @@ def _apply_default_assignee(
     by the default, not "unassigned but secretly routed". ``dry_run`` reports
     without writing. Returns False when the write failed.
     """
+    row = conn.execute("SELECT body FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        return False
+    try:
+        _kb._validate_pr_task_assignee_authority(body=row["body"], assignee=assignee)
+    except ValueError:
+        if not dry_run:
+            with _kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', block_kind = 'capability' "
+                    "WHERE id = ? AND status = 'ready'",
+                    (task_id,),
+                )
+                _kb._append_event(
+                    conn, task_id, "claim_rejected",
+                    {"reason": "authority_revoked", "assignee": assignee},
+                )
+        return False
     if dry_run:
         return True
     try:

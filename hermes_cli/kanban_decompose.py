@@ -307,6 +307,12 @@ def decompose_task(
     task, reason = _load_triage_task(task_id)
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
+    if kb.is_atomic_pr_automation_task(body=task.body):
+        return DecomposeOutcome(
+            task_id,
+            False,
+            "atomic PR automation task must retain its typed exact-head owner",
+        )
 
     routing = _load_routing()
     raw, reason = _call_aux(

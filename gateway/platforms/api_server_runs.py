@@ -13,9 +13,13 @@ from typing import Any, Callable, Dict, List, Optional
 
 try:
     from aiohttp import web
+except ImportError:  # pragma: no cover - exercised only without aiohttp
+    web = None  # type: ignore[assignment]
+
+try:
+    # aiohttp>=3.12 exposes RequestKey; older 3.11 builds do not.
     from aiohttp.web_request import RequestKey
 except ImportError:
-    web = None  # type: ignore[assignment]
     RequestKey = None  # type: ignore[assignment,misc]
 
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
@@ -322,6 +326,7 @@ class _RunLaunch:
     request_profile: Any
     browser_control_principal: Any
     browser_control_transport_family: Any
+    workspace_cwd: str = ""  # client-supplied absolute dir (body cwd / X-Hermes-Workspace)
 
     @property
     def approval_session_key(self) -> str:
@@ -365,6 +370,9 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     body, room_error = await self._normalize_room_dispatch(request, body)
     if room_error is not None:
         return room_error
+    workspace_cwd, workspace_err = self._resolve_run_workspace(request, body if isinstance(body, dict) else {})
+    if workspace_err is not None:
+        return workspace_err
     room_dispatch, room_execution_policy = (
         v if isinstance(v, dict) else None for v in (
             (body.get("hosted_room_dispatch"), body.get("_room_execution_policy"))
@@ -377,8 +385,14 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     idempotency_scope = idempotency_fingerprint = ""
     if idempotency_key:
         idempotency_scope = self._run_idempotency_scope(request)
+        # Include resolved workspace so the same Idempotency-Key cannot replay
+        # across different working directories.
         idempotency_fingerprint = hashlib.sha256(json.dumps(
-            {"body": body, "gateway_session_key": gateway_session_key or ""},
+            {
+                "body": body,
+                "gateway_session_key": gateway_session_key or "",
+                "workspace_cwd": workspace_cwd or "",
+            },
             sort_keys=True, separators=(",", ":"), ensure_ascii=False,
         ).encode()).hexdigest()
     raw_input = body.get("input")
@@ -450,7 +464,8 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
-        browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get())
+        browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
+        workspace_cwd=workspace_cwd or "")
     self._activate_admitted_request()
     task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
     with suppress(TypeError):
@@ -486,9 +501,23 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             session_tokens = self._bind_api_server_session(
                 chat_id=session_id or "", session_key=run.approval_session_key, session_id=session_id or "",
                 browser_control_principal=run.browser_control_principal,
-                browser_control_transport_family=run.browser_control_transport_family)
+                browser_control_transport_family=run.browser_control_transport_family,
+                cwd=run.workspace_cwd or "")
             if session_tokens:
                 resets.append((session_tokens, clear_session_vars))
+            # Mechanical terminal/file cwd: register under both keys the tool chain
+            # consults (session task id for later commands; run_id for the first).
+            if run.workspace_cwd:
+                try:
+                    from tools.terminal_tool import register_task_env_overrides
+                    override = {"cwd": run.workspace_cwd}
+                    register_task_env_overrides(effective_task_id, override)
+                    if run.run_id and run.run_id != effective_task_id:
+                        register_task_env_overrides(run.run_id, override)
+                except Exception:
+                    logger.debug(
+                        "[api_server] failed to register run task cwd for %s",
+                        run.run_id, exc_info=True)
             if run.agent_kwargs["room_dispatch"] is not None:
                 policy = RoomExecutionPolicy.from_mapping(run.agent_kwargs["room_execution_policy"] or {})
                 resets.append((bind_room_execution_policy(policy), reset_room_execution_policy))
@@ -563,9 +592,24 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             _finish("cancelled")
             return
         with self._profile_scope(run.request_profile):
-            agent = self._create_agent(
-                stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
-                **run.agent_kwargs)
+            # /v1/runs builds the agent before _run_agent_sync binds session
+            # context. Pin the logical cwd around construction so the system
+            # prompt / context discovery advertise this workspace.
+            pinned_cwd_token = None
+            if run.workspace_cwd:
+                try:
+                    from agent.runtime_cwd import set_session_cwd
+                    pinned_cwd_token = set_session_cwd(run.workspace_cwd)
+                except Exception:
+                    logger.debug("[api_server] failed to pin run cwd", exc_info=True)
+            try:
+                agent = self._create_agent(
+                    stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
+                    **run.agent_kwargs)
+            finally:
+                if pinned_cwd_token is not None:
+                    with suppress(Exception):
+                        pinned_cwd_token.var.reset(pinned_cwd_token)
         self._active_run_agents[run_id] = agent
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
         result, usage = await loop.run_in_executor(

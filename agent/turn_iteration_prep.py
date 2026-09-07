@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import random
+import sys
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict
@@ -19,6 +20,61 @@ from agent.display import KawaiiSpinner
 from agent.turn_context import reanchor_current_turn_user_idx
 
 logger = logging.getLogger("agent.conversation_loop")
+
+ITERATION_BUDGET_WARNING_TEMPLATE = (
+    "[SYSTEM NOTICE — iteration budget checkpoint] You have used {used} of {maximum} "
+    "iterations. Checkpoint durable progress now, then continue the task; do not stop "
+    "solely because of this warning."
+)
+
+
+def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
+    """Append the opt-in one-shot warning to the newest tool result."""
+    import os
+    from agent.delegation_context import is_dispatcher_owned_worker_context
+
+    ratio = getattr(agent, "budget_warning_ratio", None)
+    kanban_worker = (
+        bool(os.environ.get("HERMES_KANBAN_TASK"))
+        and is_dispatcher_owned_worker_context()
+        and "kanban_complete" in getattr(agent, "valid_tool_names", ())
+    )
+    if ratio is None and kanban_worker:
+        ratio = 0.9
+    budget = getattr(agent, "iteration_budget", None)
+    if (
+        ratio is None
+        or budget is None
+        or budget.max_total <= 1
+        or budget.max_total >= sys.maxsize
+        or getattr(agent, "_iteration_budget_warning_injected", False)
+        or budget.used < min(ratio * budget.max_total, budget.max_total - 1)
+    ):
+        return False
+    notice = ITERATION_BUDGET_WARNING_TEMPLATE.format(
+        used=budget.used, maximum=budget.max_total
+    )
+    if kanban_worker:
+        notice += (
+            " While tools are still available, call kanban_complete only if all task "
+            "requirements are verified; otherwise persist a kanban_comment handoff and "
+            "continue. A diff or commit alone is not completion evidence."
+        )
+    # Only the current tool-result tail is mutable; an older turn may already be cached.
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    if (not messages or messages[-1].get("role") != "tool"
+            or messages[-1].get(_DB_PERSISTED_MARKER)):
+        return False
+    message = messages[-1]
+    content = message.get("content", "")
+    if isinstance(content, str):
+        message["content"] = content + f"\n\n{notice}"
+    elif isinstance(content, list) or content is None:
+        message["content"] = [*(content or []), {"type": "text", "text": notice}]
+    else:
+        return False
+    agent._iteration_budget_warning_injected = True
+    return True
 
 
 @dataclass
@@ -75,6 +131,9 @@ def prepare_iteration(agent: Any,*, messages: Any, api_call_count: Any) -> Itera
     # same cache-safe channel as /steer (newest tool result); off with no budget.
     if getattr(agent, "run_budget_seconds", None):
         _maybe_inject_run_budget_wrapup(agent, messages)
+
+    # Use the same cache-safe channel as /steer; never add a synthetic user/system row.
+    _maybe_inject_iteration_budget_warning(agent, messages)
 
     request_logger = getattr(agent, "logger", None) or logger  # same name as the origin module
     # Per-agent validation cursor skips re-parsing tool_call args already validated.

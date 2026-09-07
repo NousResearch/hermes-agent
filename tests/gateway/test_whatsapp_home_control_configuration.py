@@ -77,7 +77,10 @@ async def test_allowed_dm_and_unrestricted_slash_policy_do_not_enroll_owner(conf
     runner, event = configured()
     assert runner._is_user_authorized_for_source(event.source)
     assert not policy_for_source(runner.config, event.source).enabled
-    assert "Tier: unrestricted" in await runner._handle_whoami_command(event)
+    assert not runner._can_control_group_chats(event)
+    identity = await runner._handle_whoami_command(event)
+    assert "Command access: unrestricted" in identity
+    assert "Some actions also require the right chat or owner access." in identity
     assert not is_home_control_source(runner.config, event.source)
     assert not runner._can_control_group_chats(event)
     result = await runner._handle_rooms_command(event)
@@ -108,7 +111,8 @@ async def test_explicit_dm_admin_works_without_changing_delivery_or_talk_access(
     assert runner.config.get_home_channel(Platform.WHATSAPP).chat_id == DELIVERY_GROUP
     assert runner._is_user_authorized_for_source(event.source)
     assert runner._can_control_group_chats(event)
-    assert "Tier: **admin**" in await runner._handle_whoami_command(event)
+    assert "Command access: admin" in await runner._handle_whoami_command(event)
+    assert runner._can_control_group_chats(event)
     other = replace(event, source=replace(event.source, chat_id=CONTACT, user_id=CONTACT))
     assert runner._is_user_authorized_for_source(other.source)
     assert not runner._can_control_group_chats(other)

@@ -325,7 +325,7 @@ class GatewaySlashCommandsMixin(
                           t("gateway.profile.home", home=reply.data["home"])])
 
     async def _handle_whoami_command(self, event: MessageEvent) -> str:
-        """Handle /whoami — platform, DM-vs-group scope, tier and runnable commands (always allowed)."""
+        """Handle /whoami — identity and command access, not resource-level authority."""
         from gateway.slash_access import policy_for_source
         source = event.source
         policy = policy_for_source(self.config, source)
@@ -334,15 +334,17 @@ class GatewaySlashCommandsMixin(
         scope = "DM" if chat_type in {"dm", "direct", "private", ""} else "group/channel"
         user_id = (source.user_id if source else None) or "?"
         head = f"**You** — {platform} ({scope})\nUser ID: `{user_id}`\n"
+        note = "\nSome actions also require the right chat or owner access."
         if not policy.enabled:
-            return head + "Tier: unrestricted (no admin list configured for this scope)\nSlash commands: all available"
+            return head + "Command access: unrestricted" + note
         if policy.is_admin(user_id):
-            return head + "Tier: **admin**\nSlash commands: all available"
+            return head + "Command access: admin" + note
         # Non-admin: floor first (mirrors slash_access._ALWAYS_ALLOWED_FOR_USERS), then operator
         # additions, deduped in order.
         runnable = list(dict.fromkeys(["help", "whoami"] + sorted(policy.user_allowed_commands)))
-        runnable_str = ", ".join(f"/{c}" for c in runnable) if runnable else "(none)"
-        return head + f"Tier: user\nSlash commands you can run: {runnable_str}"
+        prefix = self._typed_command_prefix_for(source)
+        runnable_str = ", ".join(f"{prefix}{c}" for c in runnable) if runnable else "(none)"
+        return head + f"Command access: limited\nCommands: {runnable_str}" + note
 
     async def _handle_kanban_command(self, event: MessageEvent) -> str:
         """Handle /kanban — delegate to the shared kanban CLI (DB work in a thread pool). Allowed

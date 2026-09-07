@@ -16,9 +16,10 @@ def test_passive_check_obeys_config_before_using_cached_notice(monkeypatch):
     monkeypatch.delenv("HERMES_REVISION", raising=False)
     config = home / "config.yaml"
     config.write_text("updates:\n  check: true\n", encoding="utf-8")
-    assert banner.check_for_updates() == 17
+    assert banner.check_for_updates(passive=True) == 17
     config.write_text("updates:\n  check: false\n", encoding="utf-8")
-    assert banner.check_for_updates() is None
+    assert banner.check_for_updates(passive=True) is None
+    assert banner.check_for_updates() == 17
 
 
 def test_explicit_check_fetches_local_origin_despite_passive_opt_out(tmp_path, monkeypatch, capsys):

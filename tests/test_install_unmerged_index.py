@@ -127,20 +127,27 @@ def test_install_sh_clears_unmerged_index_then_stashes(tmp_path: Path) -> None:
     )
 
 
-def test_install_ps1_clears_unmerged_index_before_stash() -> None:
-    """install.ps1 must clear an unmerged index before stash/checkout, and do
-    so *before* the stash push (order matters — the fix is a no-op otherwise)."""
+def test_install_ps1_refuses_unmerged_index_before_stash() -> None:
+    """install.ps1 must refuse an unmerged index before any fetch/checkout or
+    stash push, and must never clear it with `git reset` (the conflict state is
+    user recovery evidence — issue #90944 follow-up)."""
     text = INSTALL_PS1.read_text()
     assert "ls-files --unmerged" in text, (
-        "install.ps1 must detect an unmerged index before updating"
+        "install.ps1 must inspect the index for unmerged entries before updating"
     )
     idx_unmerged = text.index("ls-files --unmerged")
-    idx_reset = text.index("reset -q", idx_unmerged)
     idx_stash = text.index("stash push --include-untracked")
     assert idx_unmerged < idx_stash, (
-        "the unmerged-index clear must run before `git stash push`"
+        "the unmerged-index check must run before `git stash push`"
     )
-    assert idx_reset < idx_stash, "`git reset` must run before `git stash push`"
+    # The refusal must precede any fetch/checkout that could mutate the
+    # working tree around the unmerged state.
+    assert text.index("fetch origin", idx_unmerged) > idx_unmerged
+    # The old reset-to-clear behavior is gone: an unmerged index is preserved
+    # as recovery evidence, not destroyed to force an automatic stash.
+    assert "Local changes contain unresolved conflicts" in text, (
+        "install.ps1 must refuse with explicit guidance when the index is unmerged"
+    )
 
 
 def test_install_sh_clears_unmerged_index_before_stash_source_order() -> None:

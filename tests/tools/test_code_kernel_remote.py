@@ -278,7 +278,10 @@ class TestIdleReapAndCapEviction(RemoteKernelBase):
         with patch("tools.code_kernel._lifecycle_limits", return_value=(1, 1800)):
             worker = threading.Thread(target=_run, args=(busy_env,), kwargs={"task": "busy"})
             worker.start()
-            while not any(k.attached for k in _REMOTE_KERNELS.values()):
+            # Snapshot the registry: the worker thread mutates _REMOTE_KERNELS
+            # as it attaches, and iterating the live dict mid-mutation raises
+            # "dictionary changed size during iteration" under load.
+            while not any(k.attached for k in list(_REMOTE_KERNELS.values())):
                 pass
             env = ScriptedEnv(_spawn_ok_handlers([_cell()]))
             _run(env, task="settled")

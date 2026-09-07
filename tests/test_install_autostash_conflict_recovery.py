@@ -63,19 +63,32 @@ def _make_conflicted_managed_checkout(tmp_path: Path) -> Path:
     return managed
 
 
-def _assert_conflict_was_recovered(repo: Path, output: str) -> None:
+def _assert_conflict_detected(repo: Path, output: str) -> None:
     assert "restoring local changes hit conflicts" in output
     assert "Conflicted files:" in output
     assert "tracked.txt" in output
-    assert "Working tree reset to clean state." in output
-    assert "Restore your changes later with: git stash apply stash@{0}" in output
-    assert _git(repo, "status", "--porcelain").stdout.strip() == ""
     assert _git(repo, "stash", "list").stdout.strip(), "stash must be preserved"
-    content = (repo / "tracked.txt").read_text(encoding="utf-8")
-    assert content == "upstream edit\n", content
-    # No conflict markers must be left in tracked source — they would crash
-    # the backend on import (SyntaxError on the <<<<<<< line).
-    assert "<<<<<<<" not in content and ">>>>>>>" not in content
+
+
+def _assert_sh_conflict_recovered(repo: Path, output: str) -> None:
+    """install.sh's unchanged contract: conflict detected, worktree reset
+    clean, stash preserved for manual restore."""
+    _assert_conflict_detected(repo, output)
+    assert "Working tree reset to clean state." in output
+    assert "Restore your changes later with: git stash apply" in output
+    assert _git(repo, "status", "--porcelain").stdout.strip() == ""
+
+
+def _assert_ps1_conflict_preserved(repo: Path, output: str) -> None:
+    """The Windows repair never destroys recovery evidence: it stops with the
+    conflict state and the stash intact, and never runs reset --hard over user
+    work (issue #90944 follow-up)."""
+    _assert_conflict_detected(repo, output)
+    assert "Local-change restoration failed; conflict state and recovery stash were left intact" in output
+    assert _git(repo, "status", "--porcelain").stdout.strip() != ""
+    assert "reset --hard" not in output, "reset --hard must never run over user work"
+    # Conflict markers are deliberately left in place: the installer stops and
+    # preserves the conflict state for the human to resolve.
 
 
 @pytest.mark.live_system_guard_bypass
@@ -101,7 +114,7 @@ def test_install_sh_repository_stage_recovers_from_autostash_conflict(
     )
 
     assert result.returncode == 0, result.stderr
-    _assert_conflict_was_recovered(managed, result.stdout)
+    _assert_sh_conflict_recovered(managed, result.stdout)
 
 
 @pytest.mark.live_system_guard_bypass
@@ -132,8 +145,11 @@ def test_install_ps1_repository_stage_recovers_from_autostash_conflict(
         text=True,
     )
 
-    assert result.returncode == 0, result.stderr
-    _assert_conflict_was_recovered(managed, result.stdout)
+    output = result.stdout + result.stderr
+    # The installer must stop before destroying anything: the restore conflict
+    # leaves the recovery stash plus conflict state intact and reports both.
+    assert result.returncode != 0, output
+    _assert_ps1_conflict_preserved(managed, output)
 
 
 @pytest.mark.live_system_guard_bypass

@@ -48,10 +48,12 @@ beforeEach(() => {
   connection.id = 'local'
 })
 
+// Load stable modules during collection, after mock fixtures are initialized.
+// Cold transforms must not consume a behavioral test or hook deadline.
+const { cachedUnionRoster } = await import('./data')
+
 describe('cachedUnionRoster', () => {
   it('reads the entry useRoster wrote under the connection-suffixed key', async () => {
-    const { cachedUnionRoster } = await import('./data')
-
     seed(['hermes-bots', 'roster', 'local'], { profiles: [{ name: 'default' }] })
 
     expect(cachedUnionRoster()?.profiles).toHaveLength(1)
@@ -61,8 +63,6 @@ describe('cachedUnionRoster', () => {
   })
 
   it('falls back to another connection’s entry when the window has moved', async () => {
-    const { cachedUnionRoster } = await import('./data')
-
     seed(['hermes-bots', 'roster', 'vera'], { profiles: [{ connectionId: 'vera', name: 'default' }] })
     connection.id = 'local'
 
@@ -70,8 +70,6 @@ describe('cachedUnionRoster', () => {
   })
 
   it('prefers the freshest snapshot among several cached connections', async () => {
-    const { cachedUnionRoster } = await import('./data')
-
     seed(['hermes-bots', 'roster', 'old'], { fetchedAt: 1_000, profiles: [{ name: 'stale' }] })
     seed(['hermes-bots', 'roster', 'new'], { fetchedAt: 9_000, profiles: [{ name: 'fresh' }] })
     connection.id = 'neither'
@@ -80,8 +78,6 @@ describe('cachedUnionRoster', () => {
   })
 
   it('reports nothing rather than throwing on a cold cache', async () => {
-    const { cachedUnionRoster } = await import('./data')
-
     expect(cachedUnionRoster()).toBeNull()
   })
 })

@@ -62,3 +62,18 @@ def decide_direct_db_open(
         return DbOpenDecision.ROUTE_VIA_GATEWAY
 
     return DbOpenDecision.ALLOW
+
+
+def cli_persistence_is_disabled(*, gateway_pid: Optional[int]) -> bool:
+    """Return whether a local CLI must not write the canonical DB.
+
+    A live Gateway owns canonical session writes. The local CLI may remain
+    running for interactive use, but it must not create or mutate the shared
+    state database while that Gateway is alive.
+    """
+    return decide_direct_db_open(
+        role="cli",
+        operation="write",
+        db_path=Path("state.db"),
+        gateway_pid=gateway_pid,
+    ) is DbOpenDecision.ROUTE_VIA_GATEWAY

@@ -4,6 +4,7 @@ import pytest
 
 from hermes_cli.db_ownership import (
     DbOpenDecision,
+    cli_persistence_is_disabled,
     decide_direct_db_open,
 )
 
@@ -30,6 +31,11 @@ def test_active_gateway_allows_only_safe_reads(role, tmp_path: Path):
     )
 
     assert decision is DbOpenDecision.SAFE_READ
+
+
+def test_cli_persistence_disabled_only_with_live_gateway():
+    assert cli_persistence_is_disabled(gateway_pid=1234) is True
+    assert cli_persistence_is_disabled(gateway_pid=None) is False
 
 
 def test_maintenance_requires_gateway_to_be_stopped(tmp_path: Path):

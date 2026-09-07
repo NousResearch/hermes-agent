@@ -1146,8 +1146,16 @@ def _session_db():
     db = None
     try:
         from hermes_state import SessionDB
+        from gateway.status import get_running_pid
+        from hermes_cli.db_ownership import DbOpenDecision, decide_direct_db_open
 
-        db = SessionDB()
+        decision = decide_direct_db_open(
+            role="cli",
+            operation="read",
+            db_path=Path("state.db"),
+            gateway_pid=get_running_pid(cleanup_stale=False),
+        )
+        db = SessionDB(read_only=decision is DbOpenDecision.SAFE_READ)
     except Exception:
         pass
     try:
@@ -1322,6 +1330,12 @@ def _create_titled_session(title: str) -> Optional[str]:
         import uuid as _uuid
 
         from hermes_state import SessionDB
+        from gateway.status import get_running_pid
+        from hermes_cli.db_ownership import cli_persistence_is_disabled
+
+        if cli_persistence_is_disabled(gateway_pid=get_running_pid(cleanup_stale=False)):
+            logger.warning("Gateway owns canonical session writes; refusing local titled-session creation")
+            return None
 
         new_session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:6]}"
         db = SessionDB()

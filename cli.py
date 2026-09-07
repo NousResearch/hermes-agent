@@ -2834,6 +2834,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         """Open the session store early (so /title works before the first message) + opportunistic maintenance."""
         self._session_db = None
         self._session_db_unavailable = False
+        self._cli_persistence_disabled = False
+        try:
+            from gateway.status import get_running_pid
+            from hermes_cli.db_ownership import cli_persistence_is_disabled
+            self._cli_persistence_disabled = cli_persistence_is_disabled(
+                gateway_pid=get_running_pid(cleanup_stale=False)
+            )
+        except Exception:
+            # A failed liveness probe must not silently grant a second writer.
+            self._cli_persistence_disabled = True
+        if self._cli_persistence_disabled:
+            self._session_db_unavailable = True
+            logger.warning(
+                "Gateway owns canonical session writes; local CLI persistence is disabled"
+            )
+            _run_checkpoint_auto_maintenance()
+            return
         try:
             from hermes_state import SessionDB
             self._session_db = SessionDB()

@@ -490,7 +490,7 @@ class CLIAgentSetupMixin:
         from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
         ensure_mcp_discovery_before_agent_build(
             logger=logger, single_query=getattr(self, "_single_query_mode", False))
-        if self._session_db is None:
+        if self._session_db is None and not getattr(self, "_cli_persistence_disabled", False):
             try:
                 from hermes_state import SessionDB
                 self._session_db = SessionDB()
@@ -546,6 +546,7 @@ class CLIAgentSetupMixin:
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
                 notice_callback=self._on_notice, notice_clear_callback=self._on_notice_clear,
                 reaction_callback=self._on_reaction)
+            self.agent._persist_disabled = getattr(self, "_cli_persistence_disabled", False)
             # Reference for atexit memory-provider shutdown: ``_run_cleanup`` in cli.py
             # reads ``cli._active_agent_ref``, so this MUST write the ``cli`` module's
             # global — a ``global`` statement here would bind this module's namespace.

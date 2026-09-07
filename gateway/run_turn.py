@@ -1758,7 +1758,7 @@ class GatewayTurnMixin:
             if prepared.message_text is not None and session_entry is not None:
                 _rows = await self.async_session_store.load_transcript(prepared.persistence_session_id, raw=True)
                 _owned = any(
-                    row.get("role") == "user" and (
+                    row.get("role") == "user" and not row.get("observed") and (
                         row.get("platform_message_id") == str(event.message_id) if event.message_id
                         else row["id"] not in prepared.persisted_user_row_ids
                     ) for row in _rows

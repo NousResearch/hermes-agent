@@ -100,6 +100,26 @@ def test_failure_owner_uses_launch_rows_across_compaction(tmp_path):
             )
             assert db.message_count() == before
             assert current_id in {r["id"] for r in store.load_transcript(sid, raw=True)}
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="observed", user_id="fixture"
+        )
+        entry = store.get_or_create_session(source)
+        sid = entry.session_id
+        prepared = runner._PreparedTurn(
+            [], "", "accepted", "accepted", 1700000000, None, sid
+        )
+        db.append_message(sid, "user", "ambient observation", observed=True)
+        before = db.message_count()
+        await runner._hmwa_agent_error_reply(
+            RuntimeError("controlled pre-agent failure"),
+            MessageEvent(text="accepted", source=source, message_id=None),
+            source,
+            entry,
+            entry.session_key,
+            prepared,
+        )
+        assert db.message_count() == before + 1
+        assert db.get_messages(sid)[-1]["content"] == "accepted"
         db.close()
 
     asyncio.run(check())

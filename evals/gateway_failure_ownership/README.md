@@ -1,63 +1,63 @@
 # Gateway failure-writer ownership
 
-Offline, full gateway-handler integration: `_handle_message` → session preparation
-and lease → production `_run_agent` / TurnRunner → real AIAgent → loopback HTTP/SSE
-→ on-disk SQLite → gateway persistence/delivery → exception fallback.
-
-Run from any checkout using its Python environment:
+Offline integration: `_handle_message` → session preparation and lease → production
+`_run_agent` / TurnRunner → real AIAgent → loopback HTTP/SSE → on-disk SQLite →
+gateway persistence/delivery → exception fallback.
 
 ```sh
 .venv/bin/python evals/gateway_failure_ownership/probe.py "$PWD" /tmp/ownership.json
 scripts/run_tests.sh -j 1 tests/gateway/test_failure_writer_ownership.py
 ```
 
-The first argument selects the production checkout, allowing the same fixture to
-A/B another worktree. The second is the JSON receipt. The temporary HERMES_HOME is
-recorded in that receipt. Inherited credentials are removed; socket connections
-are restricted to loopback, tools are disabled, and all state is temporary.
-No live account, messaging service, or paid provider is contacted.
+The first argument selects the production checkout, so the same fixture can A/B
+another checkout without editing it. The receipt records its temporary HERMES_HOME.
+Inherited credentials are cleared, tools are disabled, and socket connections are
+restricted to loopback. No live messaging account or paid provider is contacted.
 
-## Controlled fault boundaries
+## Fault boundaries and controls
 
-- The local peer returns a real HTTP 400 for the provider-failure turn.
-- A subclass raises during AIAgent construction for the pre-agent failure cases.
-  All successful construction and conversation behavior is production code.
-- The voice-policy callback raises after the agent and gateway persistence steps.
-  Neither the handler nor its exception writer is mocked or invoked directly.
-- A raw baseline read raises `TranscriptReadError` to verify fail-closed admission.
+- Real HTTP 400 from the loopback peer; successful replies use HTTP/SSE.
+- Controlled AIAgent constructor failure, or voice-policy failure after persistence.
+  The handler and exception writer remain production code.
+- Chat A succeeds with ID `100`; chat B resumes that session and fails construction
+  with a different input and the same ID. Both inputs must remain, with unmodified
+  platform IDs for quote/reply lookup.
+- A separate Python process commits an unrelated, nonobserved input during a keyless
+  constructor failure. Both writers' inputs must survive; the gateway lease is not
+  treated as universal writer authority.
+- Separately accepted identical keyed/keyless inputs, identical timestamps,
+  same-delivery pre-agent retry, provider failure/recovery, and healthy follow-up.
+- A normal history read fails closed before agent construction. There is no longer
+  a raw baseline to read or an extra keyless admission query.
+- 5,000 archived 4-KiB rows remain in SQLite. The complete keyless failure handler
+  must stay below 8 MiB traced peak allocation, with zero raw transcript scans.
+- Durable owner markers are unique across accepted inputs and absent from provider
+  wire messages. The foreign writer supplies its own independent marker.
 
-Authorization is allowed for the fixture source, topic recovery is disabled,
-provider routing selects the local peer, and the agent cache is evicted per turn.
-This proves handler reachability with controlled exception sources, not a claim
-that any particular real Telegram or provider failure caused the reporter's rows.
-The initial warmup is essential: a first-turn `session_meta` row can separate the
-two user rows and mask replay coalescing.
+The second invariant uses real SQLite archives and a compression tree containing
+an earlier `ws_orphan_reap` sibling and a live successor. It checks both published
+reroutes and map-free restart routing; root/middle ancestors and successor writes
+can establish ownership, while reaped, undone, observed, foreign-marker, and
+unmarked rows cannot. These are storage-boundary checks, not provider-driven
+compaction.
 
-## Evidence
+## Receipts
 
-Base `869228cab4a8276d3b4c78da9d9939670c47bd0f`: **6/16** checkpoints.
-Fixed implementation: **16/16**, with 14 accepted user rows, same-ID failure retry
-not reinserted, and unreadable-baseline input refused. Both runs made only real
-loopback requests, with no blocked external connection attempts.
+The expanded full-handler matrix has 20 checkpoints (19 deliveries plus marker
+propagation). Base `869228cab4a8276d3b4c78da9d9939670c47bd0f`: **7/20**; reviewed
+intermediate `653cd72ef63b013798748774a2509f453b566a77`: **1/20**; fixed: **20/20**.
+All fault boundaries were reached. Base and fixed runs made 10 loopback requests
+and recorded zero external connection attempts. Counts are cumulative exact-row
+sequence checks, not independent defect counts.
 
-The original 15-checkpoint invariant was RED on base (6/15), with every controlled
-exception boundary reached. The added sixteenth checkpoint tests baseline-read
-refusal; base does not perform that raw read and incorrectly proceeds.
-The matrix includes two separately accepted identical platform inputs, identical
-keyless inputs with identical timestamps, HTTP failure and recovery, keyed/keyless
-post-persistence exceptions, pre-agent failures, same-delivery failure retry,
-separate identical pre-agent inputs, and a healthy follow-up.
+The reviewed intermediate lost chat B's input (1 row instead of 2), also lost the
+keyless input beside the independent writer, and allocated 28,034,300 bytes in
+the archived-history handler. The fixed run retained all 18 expected active user
+rows (including the independent writer) and used 107,679 bytes in that handler.
+The memory measurement excludes fixture seeding and receipt serialization.
 
-Two invariant tests are retained. The second uses real SQLite compaction archives
-and durable compression lineage with keyed/keyless input. It proves both parent
-and successor-only ownership; disabling successor lookup makes it RED (3 rows
-instead of 2). A new ambient observed row must not masquerade as the accepted
-input; that negative control was also RED/GREEN verified. It does not run
-provider-driven compaction. Independent review
-identified baseline-read, content-projection, archive, and successor-only edge
-cases; ownership now avoids content comparison and includes durable lineage.
-
-Targeted canonical runner: 25 passing tests in four files (ownership,
-`test_42039_duplicate_user_message`, silence tokens, retry replacement). Broad
-gateway tests are left to CI, not a local publication gate. No historical rows are
-rewritten and no storage-wide deduplication is introduced.
+Exactly two invariant tests are retained. Eleven targeted files passed 63 tests;
+broader directory suites and CI are not claimed. No historical rows are rewritten.
+Existing rows without a marker cannot establish delivery ownership, so historical
+redelivery is not deduplicated by this mechanism. This is exception-path input
+arbitration, not global exactly-once delivery or content deduplication.

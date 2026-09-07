@@ -44,22 +44,26 @@ its transcript write when the agent reports that it owns persistence.
 
 ## Gateway exception-path input ownership
 
-A gateway exception can happen before the agent starts or after its input has
-already reached SQLite. The exception writer checks raw durable user rows, not
-replay text: replay may join adjacent unanswered inputs into one message.
-Platform deliveries are identified by their inbound message ID. For keyless
-internal turns, the gateway snapshots existing physical user-row IDs after
-session hygiene, while holding the turn lease; a new durable user row belongs
-to that turn. Separately accepted identical inputs remain separate, even with
-identical timestamps.
+A gateway exception can occur before agent construction or after its input reaches
+SQLite. The gateway gives the accepted input an owner marker in the existing
+`display_metadata` sidecar and passes it through the agent's normal persistence
+path. Provider messages never contain this metadata. Platform markers namespace
+the inbound message ID by platform, profile, scope, chat, and thread; the original
+`platform_message_id` remains unchanged for quote/reply resolution. Keyless turns
+receive a fresh marker, even for identical text and timestamps.
 
-Ownership reads include the launch session's compression lineage and archived
-compaction generations, but not undone rows or ambient observed messages. This covers both a successful
-parent write before rotation and a successor-only write after a failed parent
-flush. An unreadable keyless baseline stops the turn with the existing
-history-unavailable response rather than assuming an empty history. Normal
-agent-owned transcript writes are unchanged. This is failure-writer arbitration,
-not historical content deduplication or a database migration.
+The exception writer probes only for that marker, following the published reroute
+and canonical live compression successor, then compression ancestors. Active rows
+and compaction archives count; undone rows, observed input, and unrelated writers
+do not. An unrelated process writing the same session cannot suppress this turn.
+No whole-history baseline or archived message-body allocation is needed. Failed
+ownership reads do not authorize a speculative append; ordinary history-read
+failures retain the existing history-unavailable response.
+
+Normal agent-owned persistence is unchanged. This is failure-writer arbitration,
+not universal exactly-once delivery, content deduplication, or a schema migration.
+Historical rows are not rewritten; unmarked historical inputs cannot establish
+ownership for a redelivered event.
 
 ## Architecture Overview
 

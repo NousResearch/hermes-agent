@@ -113,7 +113,13 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "memory.mem0": ("mem0ai==2.0.10",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
-    "platform.telegram": ("python-telegram-bot[webhooks]==22.8",),
+    "platform.telegram": (
+        "python-telegram-bot[webhooks]==22.8",
+        # PTB [webhooks] only requires tornado~=6.5, which still resolves 6.5.7
+        # (GHSA-mpf4-983q-p7j4 / CVE-2026-82397 urlencoded parse_qs DoS). Pin the
+        # patched floor so lazy Telegram installs cannot keep a vulnerable tornado.
+        "tornado==6.5.8",
+    ),
     # brotlicffi: aiohttp needs its 2-arg Decompressor for Discord CDN Brotli attachments
     # (google's 1-arg `Brotli` fails "Can not decode br"). aiohttp is only capped transitively
     # by these adapters, so pin the patched floor explicitly.

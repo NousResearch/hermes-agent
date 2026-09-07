@@ -399,6 +399,12 @@ _REQUIRED_SECURITY_PINS = {
         "platform.matrix",
         "platform.teams",
     },
+    # python-telegram-bot[webhooks] only requires tornado~=6.5, which still
+    # resolves 6.5.7 (GHSA-mpf4-983q-p7j4 / CVE-2026-82397). The lazy Telegram
+    # path must carry the patched floor so it cannot keep a vulnerable tornado.
+    "tornado": {
+        "platform.telegram",
+    },
 }
 
 
@@ -434,3 +440,33 @@ def test_security_pins_present_in_mirrored_lazy_features():
         "pyproject extras — the lazy install path would not enforce the "
         "CVE-patched floor:\n  " + "\n  ".join(problems)
     )
+
+
+_TORNADO_CVE_FLOOR = (6, 5, 8)
+
+
+def test_locked_tornado_is_not_vulnerable_to_ghsa_mpf4_983q_p7j4():
+    """The committed uv.lock must resolve tornado to the GHSA-mpf4-983q-p7j4 floor.
+
+    python-telegram-bot[webhooks] only requires tornado~=6.5, which still
+    resolves 6.5.7. The lockfile is what hash-verified installs pull.
+    """
+    lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
+    versions = []
+    in_tornado = False
+    for line in lock.splitlines():
+        if line.startswith("[[package]]"):
+            in_tornado = False
+        elif line.strip() == 'name = "tornado"':
+            in_tornado = True
+        elif in_tornado and line.startswith("version = "):
+            versions.append(line.split("=", 1)[1].strip().strip('"'))
+            in_tornado = False
+
+    assert versions, "tornado not found in uv.lock"
+    for ver in versions:
+        assert _version_tuple(ver) >= _TORNADO_CVE_FLOOR, (
+            f"uv.lock resolves tornado=={ver}, below the GHSA-mpf4-983q-p7j4 "
+            f"fix floor {'.'.join(map(str, _TORNADO_CVE_FLOOR))} — regenerate "
+            "the lockfile after bumping the pin"
+        )

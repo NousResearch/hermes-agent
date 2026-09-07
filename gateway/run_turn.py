@@ -306,6 +306,9 @@ class GatewayTurnMixin:
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)
+        from gateway.run_heartbeat_acceptance import resolve_heartbeat_owner
+        if not await resolve_heartbeat_owner(self, event, session_entry):
+            return
         return source, session_entry, session_key
 
     async def _hmwa_heal_telegram_topic_binding(self, source, session_entry, session_key):
@@ -1949,6 +1952,9 @@ class GatewayTurnMixin:
 
             # Capture the launch session id so post-run compression publication is identity-guarded
             # (a /new may move session_entry.session_id while the old run is still unwinding).
+            from gateway.run_heartbeat_acceptance import heartbeat_owner_is_current
+            if not heartbeat_owner_is_current(self, event, session_key):
+                return
             _run_start_session_id = session_entry.session_id
             _turn_started_monotonic = time.monotonic()
             # Admission/typing is not execution. All routing, authorization and

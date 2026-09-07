@@ -1035,6 +1035,41 @@ class GatewayNotificationsMixin:
         except Exception:
             logger.debug(fail_msg, exc_info=True)
 
+    async def _completion_delivery_ready(self, evt: dict) -> bool:
+        """Unavailable owners/transports must not spend a durable delivery attempt."""
+        from gateway.run import _parse_session_key
+        from gateway.wake import adapter_supports_push
+
+        parent_session_id = str(evt.get("parent_session_id") or "").strip()
+        if parent_session_id:
+            verdict = await self._classify_completion_target(parent_session_id)
+            if verdict != "deliver":
+                # Definitively closed targets still need the normal terminal disposition.
+                return verdict == "terminal"
+        source = await asyncio.to_thread(self._build_process_event_source, evt)
+        if source is not None:
+            platform = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+            adapter = self._resolve_injection_adapter(platform)
+        else:
+            session_key = str(evt.get("session_key") or "").strip()
+            raw_sid = str(evt.get("origin_session_id") or "").strip()
+            if not raw_sid and session_key and _parse_session_key(session_key) is None:
+                raw_sid = session_key
+            adapter = self.adapters.get(Platform.API_SERVER) if raw_sid else None
+            if adapter is not None and adapter_supports_push(adapter):
+                return False
+        if adapter is None:
+            return False
+        if not adapter_supports_push(adapter):
+            ensure = getattr(adapter, "_ensure_session_db", None)
+            try:
+                if not callable(ensure) or await asyncio.to_thread(ensure) is None:
+                    return False
+            except Exception:
+                logger.debug("Async-completion delivery DB unavailable", exc_info=True)
+                return False
+        return True
+
     async def _preflight_completion_delivery(self, evt: dict) -> "_CompletionClaim":
         """Claim the durable row (async delegations) and verify the target before adapter acceptance.
 
@@ -1044,6 +1079,9 @@ class GatewayNotificationsMixin:
         """
         claim = self._CompletionClaim()
         evt_type = evt.get("type")
+        if evt_type == "async_delegation" and not await self._completion_delivery_ready(evt):
+            claim.proceed, claim.early_result = False, False
+            return claim
         # An interim per-task notice shares the batch's delegation_id but is not the durable
         # completion; claiming that row here would acknowledge the FINAL result before it exists.
         if evt_type == "async_delegation" and not evt.get("task_failure_notice"):
@@ -1308,6 +1346,11 @@ class GatewayNotificationsMixin:
         if len(deliverable) == 1:
             evt, synth_text = deliverable[0]
             return await self._deliver_completion_notification(synth_text, evt)
+        # Check the entire group before claiming ANY row: an unavailable sibling must
+        # not exhaust its budget just because the primary has a usable route.
+        for evt, _text in deliverable:
+            if not await self._completion_delivery_ready(evt):
+                return False
         from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
         primary_evt, primary_text = deliverable[0]
         blocks = [primary_text]

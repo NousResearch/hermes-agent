@@ -51,6 +51,21 @@ class TestConfigParsing:
         cfg = ToolSearchConfig.from_raw(True)
         assert cfg.enabled == "auto"
 
+    def test_tool_call_bridge_allows_freeform_arguments(self):
+        from tools.tool_search import bridge_tool_schemas
+
+        tool_call = next(
+            schema for schema in bridge_tool_schemas(1)
+            if schema["function"]["name"] == "tool_call"
+        )
+        arguments = (
+            tool_call["function"]["parameters"]["properties"]["calls"]
+            ["items"]["properties"]["arguments"]
+        )
+
+        assert arguments["type"] == "object"
+        assert arguments["additionalProperties"] is True
+
 
     def test_search_limits_clamped(self):
         from tools.tool_search import ToolSearchConfig

@@ -970,7 +970,7 @@ def _detect_target_venv_holders(
     process_rows: list[dict[str, object]] = []
     matches: list[tuple[int, str, str]] = []
     try:
-        proc_iter = psutil.process_iter(["pid", "exe", "name", "cmdline", "cwd"])
+        proc_iter = psutil.process_iter(["pid", "exe", "name"])
     except Exception as exc:
         if strict:
             raise RuntimeError(f"process enumeration failed: {exc}") from exc
@@ -1002,16 +1002,28 @@ def _detect_target_venv_holders(
                 exe_norm = str(Path(exe).resolve()).lower()
             except (OSError, ValueError):
                 exe_norm = str(exe).lower()
-        argv = [str(value) for value in (info.get("cmdline") or [])]
-        cmdline = " ".join(argv)
-        cwd_low = str(info.get("cwd") or "").lower().rstrip(os.sep) + os.sep
         name = str(info.get("name") or "")
-        if strict and exe is None and info.get("cmdline") is None and info.get("cwd") is None and Path(name).name.casefold() in {"python.exe", "pythonw.exe", "hermes.exe"}:
+        is_holder = exe_norm.startswith(venv_prefix)
+        if not is_holder and not _holder_name_gate(name, exe):
+            continue
+        try:
+            raw_argv = info["cmdline"] if "cmdline" in info else proc.cmdline()
+        except Exception:
+            raw_argv = None
+        raw_cwd = None
+        if not is_holder:
+            try:
+                raw_cwd = info["cwd"] if "cwd" in info else proc.cwd()
+            except Exception:
+                raw_cwd = None
+        argv = [str(value) for value in (raw_argv or [])]
+        cmdline = " ".join(argv)
+        cwd_low = str(raw_cwd or "").lower().rstrip(os.sep) + os.sep
+        if strict and exe is None and raw_argv is None and raw_cwd is None and Path(name).name.casefold() in {"python.exe", "pythonw.exe", "hermes.exe"}:
             raise RuntimeError(f"process {numeric_pid} ({name}) identity metadata was unreadable")
         process_rows.append({"pid": numeric_pid, "ppid": info.get("ppid"), "exe": str(exe or ""), "exe_norm": exe_norm, "name": name, "argv": argv, "cmdline": cmdline})
         # The managed base interpreter can be shared with unrelated Python
         # users. Its location alone is not ownership of this target venv.
-        is_holder = exe_norm.startswith(venv_prefix)
         if not is_holder and _holder_name_gate(name, exe):
             argv0 = argv[0].strip('"') if argv else ""
             if argv0 and Path(argv0).is_absolute() and _within(argv0, venv_dir):

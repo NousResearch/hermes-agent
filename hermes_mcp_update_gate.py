@@ -57,7 +57,7 @@ def _pid_alive(pid: int) -> bool:
     if os.name != "nt":
         try:
             os.kill(pid, 0)
-        except ProcessLookupError:
+        except (ProcessLookupError, OverflowError):
             return False
         except OSError:
             return True

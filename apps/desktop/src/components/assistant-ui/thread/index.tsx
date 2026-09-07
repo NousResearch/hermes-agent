@@ -43,6 +43,8 @@ interface ThreadProps {
   onCancel?: () => Promise<void> | void
   onDismissError?: (messageId: string) => void
   onRestoreToMessage?: (messageId: string, target?: RestoreMessageTarget) => Promise<void> | void
+  /** The profile that OWNS this instance (see ThreadMessageListProps). */
+  profile?: string
   sessionId?: string | null
   sessionKey?: string | null
 }
@@ -64,6 +66,7 @@ export const Thread = memo(function Thread({
   onCancel,
   onDismissError,
   onRestoreToMessage,
+  profile,
   sessionId = null,
   sessionKey
 }: ThreadProps) {
@@ -175,6 +178,7 @@ export const Thread = memo(function Thread({
           components={messageComponents}
           emptyPlaceholder={emptyPlaceholder}
           loadingIndicator={loadingIndicator}
+          profile={profile}
           sessionId={sessionId}
           sessionKey={sessionKey}
         />

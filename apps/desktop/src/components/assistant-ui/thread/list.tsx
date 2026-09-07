@@ -210,6 +210,11 @@ interface ThreadMessageListProps {
   components: ThreadMessageComponents
   emptyPlaceholder?: ReactNode
   loadingIndicator?: ReactNode
+  /** The profile that OWNS this instance — a background/keep-alive tile can
+   *  belong to a different profile than the window's ambient active one.
+   *  Threaded into scroll-position storage scoping (#thread-scroll-tile-scope);
+   *  omitted for the primary view, which correctly follows the ambient profile. */
+  profile?: string
   sessionId?: string | null
   sessionKey?: string | null
 }
@@ -400,6 +405,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   components,
   emptyPlaceholder,
   loadingIndicator,
+  profile,
   sessionId = null,
   sessionKey
 }) => {
@@ -709,7 +715,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // settled gate — a close mid-settle must not persist transient clamped
   // metrics.
   useEffect(() => {
-    const storageKey = threadScrollStorageKey()
+    const storageKey = threadScrollStorageKey(profile)
 
     const flush = () => {
       if (sessionKey && loadSettledRef.current && restoredContentKeyRef.current === sessionKey) {
@@ -720,7 +726,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     window.addEventListener('beforeunload', flush)
 
     return () => window.removeEventListener('beforeunload', flush)
-  }, [sessionKey])
+  }, [profile, sessionKey])
 
   // Reset the cap and restore the remembered scroll state on mount + every
   // session switch (messages swap in place on a long-lived runtime, so
@@ -753,7 +759,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
 
     // Cleanup belongs to the subscription owner, not the newly active globals.
-    const storageKey = threadScrollStorageKey()
+    const storageKey = threadScrollStorageKey(profile)
     const sessionSwitched = settleKeyRef.current !== sessionKey
 
     const plan = planThreadScrollRestore(restoredContentKeyRef.current, sessionKey, hasGroups, loadSettledRef.current)
@@ -923,7 +929,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       cancelAnimationFrame(rafId)
       record()
     }
-  }, [contentRef, hasGroups, scrollRef, scrollToBottom, sessionId, sessionKey, stopScroll])
+  }, [contentRef, hasGroups, profile, scrollRef, scrollToBottom, sessionId, sessionKey, stopScroll])
 
   // A thread can mount with a run already active, without a runStart event.
   useEffect(() => {

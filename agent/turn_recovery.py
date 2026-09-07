@@ -543,6 +543,34 @@ def recover_after_classification(
             return True, recovered_with_pool
         logger.info("image-corrupt recovery: no image parts found to strip; surfacing original error.")
 
+    # Local engine per-prompt image count limit (vLLM --limit-mm-per-prompt, SGLang
+    # limit_mm_data_per_request, Ollama).  Strip oldest images to fit the reported
+    # ceiling and retry once.  Gated to local endpoints: we only have confirmed
+    # error-message patterns for local engines.
+    if (
+        classified.reason == FailoverReason.too_many_images
+        and not _retry.too_many_images_retry_attempted
+    ):
+        from agent.model_metadata import is_local_endpoint
+        from agent.error_surface import _is_custom_endpoint
+        _base_url = getattr(agent, "base_url", "") or ""
+        _provider = getattr(agent, "provider", "") or ""
+        if is_local_endpoint(_base_url) or _is_custom_endpoint(_provider):
+            _retry.too_many_images_retry_attempted = True
+            from agent.conversation_loop import _image_error_max_count
+            from agent.context_compressor import strip_images_to_count_limit
+            _limit = _image_error_max_count(api_error)
+            if isinstance(api_messages, list):
+                _stripped = strip_images_to_count_limit(api_messages, _limit)
+                if _stripped > 0:
+                    _vlines(agent, f"⚠️  Provider image limit ({_limit or 'default'}) — stripped {_stripped} image(s) and retrying...")
+                    logger.warning(
+                        "%stoo-many-images recovery: stripped %d image(s) to limit %s",
+                        agent.log_prefix, _stripped, _limit,
+                    )
+                    return True, recovered_with_pool
+            logger.info("too-many-images recovery: no image parts to strip; surfacing original error.")
+
     # Anthropic OAuth subscription rejected the 1M-context beta: disable it for this
     # session, rebuild the client, retry once. Reactive so capable subscriptions keep 1M.
     if (

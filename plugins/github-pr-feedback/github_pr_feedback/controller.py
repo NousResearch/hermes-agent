@@ -1798,7 +1798,7 @@ class ScanController:
             )
             self._ledger.finalize(receipt, task_id, lease)
             promote_task = getattr(self._kanban, "promote_task", None)
-            if promote_task is not None:
+            if promote_task is not None and self._policy.auto_dispatch:
                 promote_task(self._policy.board or "", task_id)
         except Exception as error:  # noqa: BLE001 - retain retryable dispatch failure.
             if os.environ.get("HERMES_PR_FEEDBACK_DEBUG"):
@@ -1928,7 +1928,7 @@ class ScanController:
             )
             self._ledger.finalize(receipt, task_id, lease)
             promote_task = getattr(self._kanban, "promote_task", None)
-            if promote_task is not None:
+            if promote_task is not None and self._policy.auto_dispatch:
                 promote_task(self._policy.board or "", task_id)
         except Exception as error:  # noqa: BLE001 - retain retryable dispatch failure.
             if os.environ.get("HERMES_PR_FEEDBACK_DEBUG"):
@@ -2227,7 +2227,7 @@ class ScanController:
             )
             self._ledger.finalize(receipt, task_id, lease)
             promote_task = getattr(self._kanban, "promote_task", None)
-            if promote_task is not None:
+            if promote_task is not None and self._policy.auto_dispatch:
                 promote_task(self._policy.board or "", task_id)
         except Exception as error:  # noqa: BLE001 - retain retryable dispatch failure.
             if os.environ.get("HERMES_PR_FEEDBACK_DEBUG"):

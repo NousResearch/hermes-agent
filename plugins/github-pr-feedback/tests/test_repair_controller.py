@@ -287,10 +287,15 @@ class LocalGit:
 class Kanban:
     def __init__(self):
         self.tasks = []
+        self.promoted = []
 
     def create_or_get_task(self, task):
         self.tasks.append(task)
         return "repair-task"
+
+    def promote_task(self, board, task_id):
+        self.promoted.append((board, task_id))
+        self.tasks[-1] = replace(self.tasks[-1], initial_status="running")
 
 
 class StatusKanban(Kanban):
@@ -325,7 +330,7 @@ def test_repair_controller_dedupes_exact_head_and_preserves_merge_authority(
     assert second.created == 0
     task = kanban.tasks[0]
     assert task.assignee == "pr-repair-steward"
-    assert task.initial_status == "running"
+    assert task.initial_status == "blocked"
     assert task.max_runtime_seconds == 1200
     assert "git merge --no-ff --no-edit" in task.instructions
     assert "Commit the resolved merge before running base-relative" in task.instructions
@@ -722,6 +727,7 @@ def test_report_only_repair_scan_creates_a_blocked_observation(tmp_path: Path) -
     assert result.created == 1
     assert kanban.tasks[0].initial_status == "blocked"
     assert "Report only" in kanban.tasks[0].instructions
+    assert kanban.promoted == []
     ledger.close()
 
 
@@ -781,7 +787,7 @@ def test_report_only_receipt_does_not_block_later_active_repair(tmp_path: Path) 
 
     assert report.created == 1
     assert active.created == 1
-    assert [task.initial_status for task in kanban.tasks] == ["blocked", "running"]
+    assert [task.initial_status for task in kanban.tasks] == ["blocked", "blocked"]
     ledger.close()
 
 

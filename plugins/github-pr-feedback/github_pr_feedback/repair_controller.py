@@ -406,7 +406,11 @@ class RepairController:
                     )
                     self._ledger.finalize(receipt, task_id, lease)
                     promote_task = getattr(self._kanban, "promote_task", None)
-                    if promote_task is not None:
+                    if (
+                        promote_task is not None
+                        and self._policy.auto_dispatch
+                        and not task.evidence.get("report_only", False)
+                    ):
                         promote_task(self._policy.board or "", task_id)
                     created += 1
                 except Exception as error:
@@ -453,9 +457,13 @@ class RepairController:
                             self._local_git, receipt, task_id, self._policy.board or ""
                         )
                         self._ledger.finalize(receipt, task_id, lease)
-                    promote_task = getattr(self._kanban, "promote_task", None)
-                    if promote_task is not None:
-                        promote_task(self._policy.board or "", task_id)
+                        promote_task = getattr(self._kanban, "promote_task", None)
+                        if (
+                            promote_task is not None
+                            and self._policy.auto_dispatch
+                            and not task.evidence.get("report_only", False)
+                        ):
+                            promote_task(self._policy.board or "", task_id)
                         created += 1
                         continue
                     if outcome.resolved_head_sha is None or outcome.receipt_id is None:

@@ -1781,7 +1781,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         """O(1) running count for status-bar polling; dict ``len()`` is atomic, no lock."""
         return len(self._running)
 
-    def list_sessions(self, task_id: str = None, session_key: str = None) -> list:
+    def list_sessions(self, task_id: str = None, session_key: str = None, *, include_retained: bool = False) -> list:
         """Running and recently-finished processes for ``task_id`` and/or ``session_key``;
         cross-task entries sharing the gateway session (a forgotten preview server
         blocking session reset) are flagged ``"session_scoped": true``.
@@ -1791,7 +1791,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
         surfaced too, even if they belong to a different task — so the agent can discover a forgotten
         preview server that is blocking session reset (#29177).
         """
-        sessions = load_completed_results()
+        # Only an explicit tool query reads historical receipts. Status bars and
+        # gateway liveness scans call this frequently and need the live registry.
+        sessions = load_completed_results() if include_retained else {}
         with self._lock:
             sessions.update(self._finished)
             sessions.update(self._running)
@@ -1995,7 +1997,8 @@ def _list_processes(task_id) -> dict:
         session_key = get_current_session_key(default="") or ""
     return {"processes": [
         _redact_process_result(p)
-        for p in process_registry.list_sessions(task_id=task_id, session_key=session_key or None)]}
+        for p in process_registry.list_sessions(
+            task_id=task_id, session_key=session_key or None, include_retained=True)]}
 
 
 # action -> (handler(session_id, args) -> dict, redact output?). Output-bearing

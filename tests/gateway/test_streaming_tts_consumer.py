@@ -48,8 +48,12 @@ def test_profile_first_sentence_threshold_preserves_later_batching(value, tmp_pa
         consumer.start()
         consumer.finish()
         assert await consumer.wait_complete()
-        expected = (["Yes.", "OK. This is the longer sentence."] if tuned else
-                    ["Yes. OK. This is the longer sentence."])
+        if tuned:
+            expected = ["Yes.", "OK. This is the longer sentence."]
+        elif type(value) is int and value == 6:
+            expected = ["Yes. OK.", "This is the longer sentence."]
+        else:
+            expected = ["Yes. OK. This is the longer sentence."]
         assert calls == expected + ["Tail"]
         assert adapter.finish_count == 1
         assert consumer.completed and not consumer.partial

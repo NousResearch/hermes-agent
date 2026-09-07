@@ -34,17 +34,20 @@ class TestSentenceChunker:
         opener = "Yes. "
         opening = c.feed(opener[:split_at]) + c.feed(opener[split_at:])
         assert opening == ([opener] if first_min_len == 1 else [])
-        assert c.feed("OK. ") == []  # Later short sentences still batch normally.
+        middle = c.feed("OK. ")
+        assert middle == (["Yes. OK. "] if first_min_len == 6 else [])
         rest = c.feed("This is the longer sentence. Tail")
-        assert rest == ["OK. This is the longer sentence. " if opening else
-                        "Yes. OK. This is the longer sentence. "]
+        expected_rest = {1: "OK. This is the longer sentence. ",
+                         6: "This is the longer sentence. "}.get(first_min_len,
+                         "Yes. OK. This is the longer sentence. ")
+        assert rest == [expected_rest]
         assert c.flush() == ["Tail"]
         assert c.flush() == []
-        assert "".join(opening + rest + ["Tail"]) == "Yes. OK. This is the longer sentence. Tail"
+        assert "".join(opening + middle + rest + ["Tail"]) == "Yes. OK. This is the longer sentence. Tail"
 
         # Several sentences in one delta obey the same first-only rule.
         batched = ts.SentenceChunker(first_min_len=first_min_len)
-        assert batched.feed("Yes. OK. This is the longer sentence. ") == opening + rest
+        assert batched.feed("Yes. OK. This is the longer sentence. ") == opening + middle + rest
 
         # An idle flush of a nonempty tail counts as the first emitted sentence.
         idle = ts.SentenceChunker(first_min_len=first_min_len)

@@ -1477,6 +1477,14 @@ platform_toolsets:
 # tts:
 #   provider: "gemini"
 #   speed: 1.0              # global speed multiplier (provider-specific overrides this)
+#   streaming:
+#     # Positive integer; default 20 preserves normal sentence batching.
+#     # Set to 1 to start a complete short opener (e.g. "Yes.") at its sentence
+#     # boundary. Only the first emitted sentence uses this threshold; later
+#     # sentences keep the 20-character minimum. Applies to the gateway, CLI
+#     # speaker pipeline, and speak-stream WebSocket. Does not change punctuation
+#     # detection; an idle/end-of-text flush also counts as the first emission.
+#     first_sentence_min_chars: 20
 #   gemini:
 #     model: "gemini-3.1-flash-tts-preview"
 #     voice: "Kore"

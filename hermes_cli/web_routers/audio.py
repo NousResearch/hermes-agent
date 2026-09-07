@@ -371,16 +371,16 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
     loop = asyncio.get_running_loop()
 
     def _resolve():
-        from tools.tts_streaming import resolve_streaming_provider
+        from tools.tts_streaming import SentenceChunker, resolve_streaming_provider
         from tools.tts_tool import _get_provider, _load_tts_config, _resolve_max_text_length
         with _config_profile_scope(profile):
             cfg = _load_tts_config()
             streamer = resolve_streaming_provider(cfg)
             cap = _resolve_max_text_length(_get_provider(cfg), cfg) if streamer else 0
-        return streamer, cap
+        return streamer, cap, SentenceChunker.from_config(cfg)
 
     try:
-        streamer, cap = await loop.run_in_executor(None, _resolve)
+        streamer, cap, chunker = await loop.run_in_executor(None, _resolve)
     except Exception:
         _log.exception("speak-stream provider resolution failed")
         streamer, cap = None, 0
@@ -399,10 +399,7 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
     chunks: asyncio.Queue = asyncio.Queue()  # PCM out; None = synthesis done
 
     def _produce():
-        from tools.tts_streaming import SentenceChunker
         from tools.tts_text_normalize import _strip_markdown_for_tts
-
-        chunker = SentenceChunker()
 
         # The session stays open for a whole agent turn and no text arrives
         # during tool execution, so without an idle flush a narration line with

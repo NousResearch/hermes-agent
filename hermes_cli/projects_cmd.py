@@ -197,7 +197,29 @@ def _cmd_remove_folder(args, conn, proj):
 @_with_project
 def _cmd_rename(args, conn, proj) -> str:
     pdb.update_project(conn, proj.id, name=args.name)
-    return f"Renamed {proj.slug} -> {args.name}"
+    msg = f"Renamed {proj.slug} -> {args.name}"
+    # Push the rename to Discord immediately instead of waiting for the
+    # gateway's reconcile pass. Best-effort by contract: a Discord outage must
+    # never fail the local rename (reconciliation will catch up later).
+    try:
+        from gateway import project_channels as _pc
+
+        if _pc.is_enabled() and proj.discord_channel_id:
+            desired = _pc.channel_name_for(_pc._slugify_for_channel(args.name))
+            if _pc.rename_channel(proj.discord_channel_id, desired):
+                msg += f"\nDiscord: channel renamed to #{desired}"
+                # Re-agree the name pair so the reconciler doesn't read this as
+                # drift and try to rename anything back.
+                state = _pc._read_name_state()
+                state[proj.id] = {
+                    "channel_name": desired, "project_name": args.name,
+                }
+                _pc._write_name_state(state)
+            else:
+                msg += "\nDiscord: channel rename failed (see logs); will retry on the next gateway pass."
+    except Exception as exc:
+        msg += f"\nDiscord: channel rename skipped: {exc}"
+    return msg
 
 
 @_with_project
@@ -265,18 +287,31 @@ def _cmd_sync_discord(args: argparse.Namespace) -> int:
         return 2
 
     results = _pc.sync_all_projects(include_archived=getattr(args, "include_archived", False))
+    failed = 0
     if not results:
         print("No projects to sync.")
-        return 0
-    failed = 0
     for slug, cid in results:
         if cid:
             print(f"  {slug:24} -> #{_pc.channel_name_for(slug)} ({cid})")
         else:
             failed += 1
             print(f"  {slug:24} -> FAILED (see logs)", file=sys.stderr)
+
+    # Reverse direction: hand-made channels in the category with no project yet.
+    # Runs after the forward sync so a channel just created above is already
+    # bound and cannot be re-adopted as an orphan.
+    adopted = _pc.adopt_orphan_channels()
+    if adopted:
+        print("\nAdopted manual channels:")
+        for chan_name, pid in adopted:
+            if pid:
+                print(f"  #{chan_name:23} -> project {pid}")
+            else:
+                failed += 1
+                print(f"  #{chan_name:23} -> FAILED (see logs)", file=sys.stderr)
+
     if failed:
-        print(f"\n{failed} project(s) could not be provisioned.", file=sys.stderr)
+        print(f"\n{failed} item(s) could not be provisioned.", file=sys.stderr)
         return 1
     return 0
 

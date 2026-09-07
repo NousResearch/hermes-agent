@@ -1307,6 +1307,17 @@ class GatewayStartupMixin:
                                 "project_channels: %d project channel(s) ready",
                                 len(created),
                             )
+                        # Reverse direction: adopt hand-made channels in the
+                        # Projects category that have no project yet. Runs after
+                        # the forward sync so a channel this pass just created is
+                        # already bound and cannot be re-adopted as an orphan.
+                        adopted = await asyncio.to_thread(_pc.adopt_orphan_channels)
+                        made = [n for n, pid in adopted if pid]
+                        if made:
+                            logger.info(
+                                "project_channels: adopted %d manual channel(s): %s",
+                                len(made), ", ".join(made),
+                            )
                     except Exception as exc:
                         logger.warning(
                             "project_channels: startup backfill failed: %s", exc

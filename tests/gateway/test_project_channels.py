@@ -107,6 +107,17 @@ class _FakeDiscord:
             cid = path.split("/")[2]
             self.messages.setdefault(cid, []).append(payload["content"])
             return {"id": str(self._next_id)}
+        if method == "PATCH" and path.startswith("/channels/"):
+            # Rename: mutate the stored channel so a later GET reflects it,
+            # exactly as Discord would. Without this the double cannot catch a
+            # reconciler that renames forever because the name never sticks.
+            cid = path.split("/")[2]
+            for ch in self.channels:
+                if str(ch["id"]) == cid:
+                    if "name" in (payload or {}):
+                        ch["name"] = payload["name"]
+                    return dict(ch)
+            return {}
         return {}
 
 
@@ -264,6 +275,247 @@ def test_create_from_discord_is_idempotent_on_existing_project(
     second = pc.create_project_from_discord("Twice", config=cfg)
     assert second["ok"] is True and second["already_existed"] is True
     assert second["project_id"] == first["project_id"]
+
+
+# ---------------------------------------------------------------------------
+# Adoption: manual Discord channel -> project (reverse of sync_all_projects)
+# ---------------------------------------------------------------------------
+
+
+def _seed_category(fake, name="Projects", cat_id="cat1"):
+    fake.channels.append({"id": cat_id, "name": name, "type": 4, "parent_id": None})
+    return cat_id
+
+
+def _seed_channel(fake, name, parent_id, chan_id):
+    fake.channels.append(
+        {"id": chan_id, "name": name, "type": 0, "parent_id": parent_id}
+    )
+    return chan_id
+
+
+def test_adopt_creates_project_folder_and_binding(pc, pdb, fake_discord, tmp_path):
+    """A hand-made proj-* channel becomes a real project bound to that channel."""
+    cat = _seed_category(fake_discord)
+    _seed_channel(fake_discord, "proj-manual-thing", cat, "c99")
+    cfg = _enabled_cfg(projects_root=str(tmp_path))
+
+    results = pc.adopt_orphan_channels(config=cfg)
+
+    assert [n for n, pid in results if pid] == ["proj-manual-thing"]
+    folder = tmp_path / "manual-thing"
+    assert folder.is_dir()
+    with pdb.connect_closing() as conn:
+        proj = pdb.project_for_channel(conn, "c99")
+        assert proj is not None
+        assert proj.primary_path == str(folder)
+
+
+def test_adopt_is_idempotent(pc, pdb, fake_discord, tmp_path):
+    """Re-running adoption must not fork a second project for the same channel."""
+    cat = _seed_category(fake_discord)
+    _seed_channel(fake_discord, "proj-once", cat, "c1")
+    cfg = _enabled_cfg(projects_root=str(tmp_path))
+
+    first = pc.adopt_orphan_channels(config=cfg)
+    second = pc.adopt_orphan_channels(config=cfg)
+
+    assert [n for n, pid in first if pid] == ["proj-once"]
+    # Second pass sees it bound and skips it entirely.
+    assert second == []
+    with pdb.connect_closing() as conn:
+        assert len(pdb.list_projects(conn)) == 1
+
+
+def test_adopt_ignores_channels_outside_the_category(pc, pdb, fake_discord, tmp_path):
+    """Only channels in the configured category are adoptable.
+
+    A guild's unrelated channels must never become projects — adopting one
+    would bind the agent's cwd to a folder the user never asked for.
+    """
+    cat = _seed_category(fake_discord)
+    _seed_channel(fake_discord, "proj-inside", cat, "c1")
+    _seed_channel(fake_discord, "proj-outside", "other-cat", "c2")
+    _seed_channel(fake_discord, "proj-orphan-no-parent", None, "c3")
+    cfg = _enabled_cfg(projects_root=str(tmp_path))
+
+    results = pc.adopt_orphan_channels(config=cfg)
+
+    assert [n for n, pid in results if pid] == ["proj-inside"]
+    with pdb.connect_closing() as conn:
+        assert pdb.project_for_channel(conn, "c2") is None
+        assert pdb.project_for_channel(conn, "c3") is None
+
+
+def test_adopt_ignores_channels_without_the_prefix(pc, pdb, fake_discord, tmp_path):
+    cat = _seed_category(fake_discord)
+    _seed_channel(fake_discord, "general", cat, "c1")
+    _seed_channel(fake_discord, "proj-real", cat, "c2")
+    cfg = _enabled_cfg(projects_root=str(tmp_path))
+
+    results = pc.adopt_orphan_channels(config=cfg)
+
+    assert [n for n, pid in results if pid] == ["proj-real"]
+    with pdb.connect_closing() as conn:
+        assert pdb.project_for_channel(conn, "c1") is None
+
+
+def test_adopt_binds_existing_project_instead_of_duplicating(
+    pc, pdb, fake_discord, tmp_path
+):
+    """Channel deleted then hand-recreated: rebind, don't create a second project.
+
+    The folder already belongs to a project, so adoption must attach the new
+    channel id to it rather than creating a duplicate row for the same path.
+    """
+    folder = tmp_path / "existing"
+    folder.mkdir()
+    with pdb.connect_closing() as conn:
+        pid = pdb.create_project(
+            conn, name="existing", folders=[str(folder)], primary_path=str(folder)
+        )
+    cat = _seed_category(fake_discord)
+    _seed_channel(fake_discord, "proj-existing", cat, "c-new")
+    cfg = _enabled_cfg(projects_root=str(tmp_path))
+
+    results = pc.adopt_orphan_channels(config=cfg)
+
+    assert [n for n, p in results if p] == ["proj-existing"]
+    with pdb.connect_closing() as conn:
+        assert len(pdb.list_projects(conn)) == 1
+        assert pdb.get_project(conn, pid).discord_channel_id == "c-new"
+
+
+def test_adopt_does_nothing_when_disabled(pc, fake_discord, tmp_path):
+    """A disabled feature performs zero HTTP."""
+    cfg = {"discord": {"project_channels": {"enabled": False, "guild_id": "g1"}}}
+    assert pc.adopt_orphan_channels(config=cfg) == []
+    assert fake_discord.calls == []
+
+
+def test_adopt_without_category_present_is_a_noop(pc, fake_discord, tmp_path):
+    """A missing category must not be created as a side effect of a scan."""
+    _seed_channel(fake_discord, "proj-lonely", "nope", "c1")
+    cfg = _enabled_cfg(projects_root=str(tmp_path))
+
+    assert pc.adopt_orphan_channels(config=cfg) == []
+    # Read-only: the GET happened, but no channel/category was ever POSTed.
+    assert not [c for c in fake_discord.calls if c[0] == "POST"]
+
+
+# ---------------------------------------------------------------------------
+# Rename reconciliation (project <-> channel, session -> thread)
+# ---------------------------------------------------------------------------
+
+
+def _bound_project(pdb, fake, tmp_path, name="Alpha", chan="proj-alpha", cid="c1"):
+    """Create a project bound to a seeded channel, and agree their names."""
+    folder = tmp_path / name.lower()
+    folder.mkdir(exist_ok=True)
+    with pdb.connect_closing() as conn:
+        pid = pdb.create_project(
+            conn, name=name, folders=[str(folder)], primary_path=str(folder)
+        )
+        pdb.update_project(conn, pid, discord_channel_id=cid)
+    _seed_category(fake)
+    _seed_channel(fake, chan, "cat1", cid)
+    return pid
+
+
+def test_reconcile_first_pass_only_records_never_renames(
+    pc, pdb, fake_discord, tmp_path
+):
+    """Enabling reconciliation must not mass-rename existing channels."""
+    _bound_project(pdb, fake_discord, tmp_path)
+    cfg = _enabled_cfg(projects_root=str(tmp_path))
+
+    assert pc.reconcile_project_names(config=cfg) == []
+    assert not [c for c in fake_discord.calls if c[0] == "PATCH"]
+    # But it did record the agreed pair, so a later change is detectable.
+    assert pc.name_state_path().exists()
+
+
+def test_discord_rename_propagates_to_hermes(pc, pdb, fake_discord, tmp_path):
+    pid = _bound_project(pdb, fake_discord, tmp_path)
+    cfg = _enabled_cfg(projects_root=str(tmp_path))
+    pc.reconcile_project_names(config=cfg)  # agree
+
+    # User renames the channel in the Discord client.
+    fake_discord.channels[-1]["name"] = "proj-renamed-in-discord"
+    actions = pc.reconcile_project_names(config=cfg)
+
+    assert len(actions) == 1
+    with pdb.connect_closing() as conn:
+        assert pdb.get_project(conn, pid).name == "renamed-in-discord"
+
+
+def test_hermes_rename_propagates_to_discord(pc, pdb, fake_discord, tmp_path):
+    pid = _bound_project(pdb, fake_discord, tmp_path)
+    cfg = _enabled_cfg(projects_root=str(tmp_path))
+    pc.reconcile_project_names(config=cfg)  # agree
+
+    with pdb.connect_closing() as conn:
+        pdb.update_project(conn, pid, name="Beta Project")
+    actions = pc.reconcile_project_names(config=cfg)
+
+    assert len(actions) == 1
+    assert fake_discord.channels[-1]["name"] == "proj-beta-project"
+
+
+def test_reconcile_is_stable_after_syncing(pc, pdb, fake_discord, tmp_path):
+    """A reconciled pair must not keep renaming on every later pass."""
+    pid = _bound_project(pdb, fake_discord, tmp_path)
+    cfg = _enabled_cfg(projects_root=str(tmp_path))
+    pc.reconcile_project_names(config=cfg)
+    with pdb.connect_closing() as conn:
+        pdb.update_project(conn, pid, name="Gamma")
+    pc.reconcile_project_names(config=cfg)
+
+    before = len(fake_discord.calls)
+    assert pc.reconcile_project_names(config=cfg) == []
+    # Only the channel LIST call, no further PATCH.
+    assert not [
+        c for c in fake_discord.calls[before:] if c[0] == "PATCH"
+    ]
+
+
+def test_both_sides_renamed_hermes_wins(pc, pdb, fake_discord, tmp_path):
+    """A simultaneous rename resolves to Hermes, without flip-flopping.
+
+    projects.db is the system of record (it owns the folder binding), so the
+    Discord edit is discarded and the channel is renamed back to match.
+    """
+    pid = _bound_project(pdb, fake_discord, tmp_path)
+    cfg = _enabled_cfg(projects_root=str(tmp_path))
+    pc.reconcile_project_names(config=cfg)
+
+    fake_discord.channels[-1]["name"] = "proj-from-discord"
+    with pdb.connect_closing() as conn:
+        pdb.update_project(conn, pid, name="From Hermes")
+
+    pc.reconcile_project_names(config=cfg)
+    with pdb.connect_closing() as conn:
+        assert pdb.get_project(conn, pid).name == "From Hermes"
+    assert fake_discord.channels[-1]["name"] == "proj-from-hermes"
+
+    # And it settles: a further pass changes nothing.
+    before = len(fake_discord.calls)
+    assert pc.reconcile_project_names(config=cfg) == []
+    assert not [c for c in fake_discord.calls[before:] if c[0] == "PATCH"]
+
+
+def test_reconcile_ignores_unbound_projects(pc, pdb, fake_discord, tmp_path):
+    """A project with no channel (or a deleted one) is skipped, not crashed on."""
+    folder = tmp_path / "lonely"
+    folder.mkdir()
+    with pdb.connect_closing() as conn:
+        pid = pdb.create_project(
+            conn, name="Lonely", folders=[str(folder)], primary_path=str(folder)
+        )
+        pdb.update_project(conn, pid, discord_channel_id="gone-999")
+    cfg = _enabled_cfg(projects_root=str(tmp_path))
+
+    assert pc.reconcile_project_names(config=cfg) == []
 
 
 # ---------------------------------------------------------------------------

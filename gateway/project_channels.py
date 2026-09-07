@@ -396,6 +396,134 @@ def sync_all_projects(
 # ---------------------------------------------------------------------------
 
 
+def adopt_orphan_channels(
+    *, config: Optional[dict] = None, limit: int = 25
+) -> List[Tuple[str, Optional[str]]]:
+    """Create projects for hand-made ``<prefix><name>`` channels that have none.
+
+    The inverse of :func:`sync_all_projects`: that one walks projects looking for
+    a missing channel, this one walks channels looking for a missing project. It
+    closes the last manual gap — creating a channel in the Discord client by hand
+    used to be inert, because nothing ever scanned the guild for unbound channels.
+
+    Only channels **inside the configured category** are considered, and only
+    those whose name carries the configured prefix. Both narrowings matter: the
+    guild holds unrelated channels, and adopting one would bind the agent's cwd
+    to a folder the user never meant to create.
+
+    The project name is derived from the channel name with the prefix stripped;
+    the folder follows ``create_project_from_discord``'s rule
+    (``<projects_root>/<name>``), so a channel adopted here and a project created
+    from ``/project create`` land in the same place. Returns
+    ``[(channel_name, project_id_or_None), ...]``. Never raises.
+    """
+    results: List[Tuple[str, Optional[str]]] = []
+    try:
+        s = settings(config)
+        if not (s["enabled"] and s["guild_id"]):
+            return results
+        token = _bot_token()
+        if not token:
+            return results
+
+        prefix = s["channel_prefix"]
+        channels = list_guild_channels(s["guild_id"], token)
+        # Resolve the category by name WITHOUT creating it: a missing category
+        # means there is nothing to adopt, and creating one here would be a
+        # surprising side effect of a read-only scan.
+        category_id = None
+        wanted_category = s["category_name"].strip().lower()
+        for ch in channels:
+            if (
+                ch.get("type") == _CHANNEL_TYPE_CATEGORY
+                and str(ch.get("name", "")).strip().lower() == wanted_category
+            ):
+                category_id = str(ch.get("id"))
+                break
+        if category_id is None:
+            return results
+
+        from hermes_cli import projects_db as pdb
+
+        with pdb.connect_closing() as conn:
+            for ch in channels:
+                if len(results) >= limit:
+                    break
+                if ch.get("type") != _CHANNEL_TYPE_TEXT:
+                    continue
+                if str(ch.get("parent_id") or "") != category_id:
+                    continue
+                chan_name = str(ch.get("name", "")).strip()
+                if prefix and not chan_name.lower().startswith(prefix.lower()):
+                    continue
+                chan_id = str(ch.get("id") or "")
+                if not chan_id:
+                    continue
+                # Already bound (include archived: an archived project still owns
+                # its channel, and re-adopting would fork a duplicate project).
+                if pdb.project_for_channel(conn, chan_id, include_archived=True):
+                    continue
+
+                bare = chan_name[len(prefix):] if prefix else chan_name
+                bare = bare.strip("-").strip()
+                if not bare:
+                    continue
+
+                created = _adopt_one_channel(conn, bare, chan_id, s)
+                results.append((chan_name, created))
+                if created:
+                    logger.info(
+                        "project_channels: adopted #%s -> project %s",
+                        chan_name, created,
+                    )
+    except Exception as exc:
+        logger.warning("project_channels: adopt_orphan_channels failed: %s", exc)
+    return results
+
+
+def _adopt_one_channel(
+    conn: Any, bare_name: str, channel_id: str, s: dict
+) -> Optional[str]:
+    """Bind one orphan channel to a project, creating the row/folder as needed.
+
+    Split out so a single bad channel (permissions, a name that resolves outside
+    the root) cannot abort the whole adoption sweep.
+    """
+    try:
+        from hermes_cli import projects_db as pdb
+
+        root = os.path.abspath(os.path.expanduser(s["projects_root"]))
+        folder = os.path.join(root, bare_name)
+        # Same containment guard as create_project_from_discord: a channel named
+        # `proj-..%2F..` must not escape the projects root.
+        if os.path.commonpath([root, os.path.abspath(folder)]) != root:
+            logger.warning(
+                "project_channels: refusing to adopt #%s%s (resolves outside %s)",
+                s["channel_prefix"], bare_name, root,
+            )
+            return None
+
+        # A project may already exist for this folder (created in Hermes, its
+        # channel deleted and hand-recreated). Bind rather than duplicate.
+        existing = pdb.project_for_path(conn, folder, include_archived=True)
+        if existing is not None:
+            pdb.update_project(conn, existing.id, discord_channel_id=channel_id)
+            return existing.id
+
+        os.makedirs(folder, exist_ok=True)
+        pid = pdb.create_project(
+            conn, name=bare_name, folders=[folder], primary_path=folder
+        )
+        pdb.update_project(conn, pid, discord_channel_id=channel_id)
+        return pid
+    except Exception as exc:
+        logger.warning(
+            "project_channels: could not adopt channel %s (%s): %s",
+            channel_id, bare_name, exc,
+        )
+        return None
+
+
 def create_project_from_discord(
     name: str, *, config: Optional[dict] = None
 ) -> Dict[str, Any]:
@@ -604,6 +732,270 @@ def create_thread_in_channel(
     if isinstance(created, dict) and created.get("id"):
         return str(created["id"])
     return None
+
+
+def rename_channel(
+    channel_id: str, new_name: str, token: Optional[str] = None
+) -> bool:
+    """PATCH a channel (or thread) name. Returns True on success.
+
+    Used by rename reconciliation. Discord applies the same name rules as on
+    create, so callers pass an already-normalised name.
+    """
+    tok = token or _bot_token()
+    if not tok or not channel_id or not new_name:
+        return False
+    res = _request("PATCH", f"/channels/{channel_id}", tok, {"name": new_name[:100]})
+    return isinstance(res, dict) and bool(res.get("id"))
+
+
+def name_state_path():
+    """Path of the JSON file recording last-seen names, for drift detection.
+
+    Reconciliation needs to know WHICH SIDE changed, and a single snapshot of
+    current names cannot answer that. Storing the last agreed pair lets a later
+    pass tell "Discord was renamed" from "Hermes was renamed".
+    """
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "gateway" / "project_channel_names.json"
+
+
+def _read_name_state() -> Dict[str, Dict[str, str]]:
+    import json
+
+    try:
+        path = name_state_path()
+        if not path.exists():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        logger.debug("project_channels: could not read name state: %s", exc)
+        return {}
+
+
+def _write_name_state(state: Dict[str, Dict[str, str]]) -> None:
+    import json
+
+    try:
+        path = name_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    except Exception as exc:
+        logger.debug("project_channels: could not write name state: %s", exc)
+
+
+def reconcile_project_names(
+    *, config: Optional[dict] = None
+) -> List[Tuple[str, str]]:
+    """Keep project names and their Discord channel names in sync, both ways.
+
+    Renames used to drift silently: bindings key off the immutable channel id,
+    so a rename on either side kept working but left the two surfaces showing
+    different names. This reconciles them.
+
+    Direction is decided by comparing both current names against the last agreed
+    pair in :func:`name_state_path`:
+
+    * Discord name changed  -> rename the Hermes project to match.
+    * Hermes name changed   -> PATCH the Discord channel to match.
+    * Both changed          -> Hermes wins: projects.db is the system of record
+      (it owns the folder binding and drives cwd resolution), so the durable
+      side is the one that survives a conflict. The Discord channel is renamed
+      back and the conflict is logged.
+    * First run for a pair  -> record only, never rename. An upgrade must not
+      mass-rename channels that were fine.
+
+    Returns ``[(slug, description_of_action), ...]``. Never raises.
+    """
+    actions: List[Tuple[str, str]] = []
+    try:
+        s = settings(config)
+        if not (s["enabled"] and s["guild_id"]):
+            return actions
+        token = _bot_token()
+        if not token:
+            return actions
+
+        from hermes_cli import projects_db as pdb
+
+        channels = {
+            str(c.get("id")): str(c.get("name", ""))
+            for c in list_guild_channels(s["guild_id"], token)
+        }
+        state = _read_name_state()
+        dirty = False
+
+        with pdb.connect_closing() as conn:
+            for project in pdb.list_projects(conn):
+                cid = project.discord_channel_id
+                if not cid or cid not in channels:
+                    continue
+                live_chan = channels[cid]
+                # The channel name Hermes would generate for this project today.
+                # Derived from the NAME, not the slug: the slug is immutable
+                # after creation, so a slug-derived name could never change and
+                # the Hermes->Discord direction would be dead code.
+                desired_chan = channel_name_for(
+                    _slugify_for_channel(project.name), config
+                )
+                prev = state.get(project.id) or {}
+                prev_chan = prev.get("channel_name")
+                prev_proj = prev.get("project_name")
+
+                if prev_chan is None or prev_proj is None:
+                    # First observation: adopt reality as the agreed pair.
+                    state[project.id] = {
+                        "channel_name": live_chan,
+                        "project_name": project.name,
+                    }
+                    dirty = True
+                    continue
+
+                chan_changed = live_chan != prev_chan
+                proj_changed = project.name != prev_proj
+
+                if chan_changed and proj_changed:
+                    logger.warning(
+                        "project_channels: '%s' renamed on BOTH sides "
+                        "(discord=%s, hermes=%s); keeping Hermes and renaming "
+                        "the channel back",
+                        project.slug, live_chan, project.name,
+                    )
+                    # projects.db is the system of record, so drop the Discord
+                    # edit and let the Hermes->Discord branch push our name.
+                    chan_changed = False
+
+                if chan_changed:
+                    new_name = _project_name_from_channel(live_chan, s)
+                    if new_name and new_name != project.name:
+                        pdb.update_project(conn, project.id, name=new_name)
+                        actions.append(
+                            (project.slug, f"hermes name -> '{new_name}' (from Discord)")
+                        )
+                        logger.info(
+                            "project_channels: renamed project %s -> '%s' to match #%s",
+                            project.slug, new_name, live_chan,
+                        )
+                    state[project.id] = {
+                        "channel_name": live_chan,
+                        "project_name": new_name or project.name,
+                    }
+                    dirty = True
+                elif proj_changed and desired_chan != live_chan:
+                    if rename_channel(cid, desired_chan, token=token):
+                        actions.append(
+                            (project.slug, f"discord channel -> #{desired_chan}")
+                        )
+                        logger.info(
+                            "project_channels: renamed #%s -> #%s to match project '%s'",
+                            live_chan, desired_chan, project.name,
+                        )
+                        state[project.id] = {
+                            "channel_name": desired_chan,
+                            "project_name": project.name,
+                        }
+                        dirty = True
+                elif proj_changed:
+                    # Name changed but maps to the same channel name (e.g. case
+                    # or punctuation only) — just re-agree, no HTTP.
+                    state[project.id] = {
+                        "channel_name": live_chan,
+                        "project_name": project.name,
+                    }
+                    dirty = True
+
+        if dirty:
+            _write_name_state(state)
+    except Exception as exc:
+        logger.warning("project_channels: reconcile_project_names failed: %s", exc)
+    return actions
+
+
+def _slugify_for_channel(name: str) -> str:
+    """Slug-shaped form of a human project name, for channel naming.
+
+    Mirrors projects_db's slugify closely enough for channel names: lowercase,
+    non-alphanumerics collapsed to hyphens. ``channel_name_for`` re-normalises,
+    so this only has to get word separation right.
+    """
+    return re.sub(r"[^a-z0-9]+", "-", str(name or "").strip().lower()).strip("-")
+
+
+def _project_name_from_channel(channel_name: str, s: dict) -> str:
+    """Human project name implied by a channel name (prefix stripped)."""
+    prefix = s["channel_prefix"]
+    bare = channel_name[len(prefix):] if (
+        prefix and channel_name.lower().startswith(prefix.lower())
+    ) else channel_name
+    return bare.strip("-").strip()
+
+
+def reconcile_thread_names(
+    session_db: Any, *, config: Optional[dict] = None, limit: int = 100
+) -> List[Tuple[str, str]]:
+    """Rename mirrored threads whose session title changed since mirroring.
+
+    A thread's name is set once when the session is mirrored, so a later retitle
+    (auto-title landing after the first turn, or a manual rename) left the thread
+    showing a stale name forever. Returns ``[(session_id, new_name), ...]``.
+    Never raises.
+    """
+    renamed: List[Tuple[str, str]] = []
+    try:
+        if not is_enabled(config):
+            return renamed
+        token = _bot_token()
+        if not token:
+            return renamed
+
+        mirror = _read_mirror_state()
+        if not mirror:
+            return renamed
+        state = _read_name_state()
+        dirty = False
+
+        try:
+            rows = session_db.list_sessions_rich(
+                source=None, exclude_sources=["tool"], limit=500
+            )
+        except Exception as exc:
+            logger.debug("project_channels: could not list sessions: %s", exc)
+            return renamed
+
+        for row in rows:
+            if len(renamed) >= limit:
+                break
+            sid = str(row.get("id") or "")
+            tid = mirror.get(sid)
+            if not sid or not tid:
+                continue
+            title = str(row.get("title") or "").strip()
+            if not title:
+                continue
+            key = f"thread:{sid}"
+            if (state.get(key) or {}).get("name") == title:
+                continue
+            # First sighting of a thread predating this feature: record without
+            # renaming, so enabling it doesn't rewrite every existing thread.
+            if key not in state:
+                state[key] = {"name": title}
+                dirty = True
+                continue
+            if rename_channel(tid, title[:100], token=token):
+                state[key] = {"name": title}
+                dirty = True
+                renamed.append((sid, title))
+                logger.info(
+                    "project_channels: renamed thread %s -> '%s'", tid, title[:100]
+                )
+
+        if dirty:
+            _write_name_state(state)
+    except Exception as exc:
+        logger.warning("project_channels: reconcile_thread_names failed: %s", exc)
+    return renamed
 
 
 def post_message(channel_id: str, content: str, token: Optional[str] = None) -> bool:
@@ -915,6 +1307,7 @@ def mirror_sessions_to_threads(
 
 
 __all__ = [
+    "adopt_orphan_channels",
     "channel_for_cwd",
     "channel_name_for",
     "create_project_from_discord",
@@ -926,9 +1319,13 @@ __all__ = [
     "list_guild_channels",
     "mirror_sessions_to_threads",
     "mirrored_session_for_thread",
+    "name_state_path",
     "post_message",
     "provision_project",
+    "reconcile_project_names",
+    "reconcile_thread_names",
     "relay_new_messages",
+    "rename_channel",
     "sessions_needing_threads",
     "settings",
     "sync_all_projects",

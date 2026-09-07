@@ -563,6 +563,11 @@ class GatewayAdapterLifecycleMixin:
         """
         # Let the gateway finish connecting before the first pass.
         await asyncio.sleep(20)
+        # Adoption polls Discord (one REST call), unlike the mirror/relay pass
+        # which is local-only when idle. Run it every Nth pass so a short
+        # poll_interval doesn't turn channel adoption into a rate-limit risk.
+        _ADOPT_EVERY = 20
+        _pass = 0
         while self._running:
             sleep_for = float(interval) if interval else 15.0
             try:
@@ -590,6 +595,32 @@ class GatewayAdapterLifecycleMixin:
                             "project_channels: relayed %d message(s) to Discord",
                             relayed,
                         )
+                    # Pick up channels created by hand in the Discord client
+                    # without waiting for a gateway restart, and reconcile any
+                    # renames that happened on either side. All three are
+                    # HTTP-bearing, so they share the throttled slot.
+                    _pass += 1
+                    if _pass % _ADOPT_EVERY == 0:
+                        adopted = await asyncio.to_thread(_pc.adopt_orphan_channels)
+                        names = [n for n, pid in adopted if pid]
+                        if names:
+                            logger.info(
+                                "project_channels: adopted %d manual channel(s): %s",
+                                len(names), ", ".join(names),
+                            )
+                        renames = await asyncio.to_thread(_pc.reconcile_project_names)
+                        for slug, what in renames:
+                            logger.info(
+                                "project_channels: reconciled %s: %s", slug, what
+                            )
+                        retitled = await asyncio.to_thread(
+                            _pc.reconcile_thread_names, db
+                        )
+                        if retitled:
+                            logger.info(
+                                "project_channels: renamed %d thread(s) to match "
+                                "session titles", len(retitled),
+                            )
             except Exception as exc:
                 logger.warning("project_session_mirror: pass failed: %s", exc)
             await asyncio.sleep(sleep_for)

@@ -265,10 +265,7 @@ function ModelResults({
   const q = normalize(search)
 
   const matches = (provider: ModelOptionProvider, model: string) =>
-    !q ||
-    foldIncludes(modelSearchText(model), q) ||
-    foldIncludes(provider.name, q) ||
-    foldIncludes(provider.slug, q)
+    !q || foldIncludes(modelSearchText(model), q) || foldIncludes(provider.name, q) || foldIncludes(provider.slug, q)
 
   // Only configured providers (those with curated models) are selectable
   // here. Switching to a NOT-yet-configured provider goes through the

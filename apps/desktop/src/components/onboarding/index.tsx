@@ -198,13 +198,16 @@ export function DesktopOnboardingOverlay({
   const targetProfile = onboarding.targetProfile ?? profile
 
   // Async flows retain the initiating route even after the overlay closes.
-  const ctx = useMemo<OnboardingContext>(() => ({
-    profile: targetProfile,
-    requestGateway: onboarding.targetProfile
-      ? (method, params) => requestGatewayForProfile(targetProfile, method, params)
-      : requestGateway,
-    onCompleted: () => onCompletedRef.current?.()
-  }), [onboarding.targetProfile, targetProfile, requestGateway])
+  const ctx = useMemo<OnboardingContext>(
+    () => ({
+      profile: targetProfile,
+      requestGateway: onboarding.targetProfile
+        ? (method, params) => requestGatewayForProfile(targetProfile, method, params)
+        : requestGateway,
+      onCompleted: () => onCompletedRef.current?.()
+    }),
+    [onboarding.targetProfile, targetProfile, requestGateway]
+  )
 
   // Cinematic exit on "Begin": dissolve the panel + overlay (revealing the chat
   // behind), THEN finalize so the unmount lands after the fade — mirrors the

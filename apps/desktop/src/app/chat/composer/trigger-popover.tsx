@@ -230,7 +230,9 @@ export function ComposerTriggerPopover({
                       </span>
                       <span className="min-w-0 shrink truncate font-medium leading-5 text-foreground">{display}</span>
                       {description && (
-                        <span className="min-w-0 flex-1 truncate leading-5 text-(--ui-text-tertiary)">{description}</span>
+                        <span className="min-w-0 flex-1 truncate leading-5 text-(--ui-text-tertiary)">
+                          {description}
+                        </span>
                       )}
                     </>
                   )}

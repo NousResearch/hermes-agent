@@ -81,28 +81,45 @@ function fallbackTimeoutGateway(): OnboardingContext['requestGateway'] {
 
 describe('refreshOnboarding', () => {
   it('keeps onboarding work in its initiating lifetime and profile', async () => {
-    const { startManualOnboarding, startProviderOAuth, saveOnboardingApiKey, closeManualOnboarding } = await import('./onboarding')
+    const { startManualOnboarding, startProviderOAuth, saveOnboardingApiKey, closeManualOnboarding } =
+      await import('./onboarding')
     const requests: { path: string; profile?: string }[] = []
     let release!: () => void
     let delayKey = true
     installApiMock(async request => {
       requests.push(request)
 
-      if (request.path === '/api/providers/oauth') { return { providers: [] } }
-
-      if (request.path.endsWith('/start')) {
-        return { flow: 'device_code', session_id: 'local-fixture', user_code: 'FAKE', verification_url: 'http://localhost/fixture', expires_in: 600 }
+      if (request.path === '/api/providers/oauth') {
+        return { providers: [] }
       }
 
-      if (request.path.includes('/poll/')) { return { status: 'approved' } }
+      if (request.path.endsWith('/start')) {
+        return {
+          flow: 'device_code',
+          session_id: 'local-fixture',
+          user_code: 'FAKE',
+          verification_url: 'http://localhost/fixture',
+          expires_in: 600
+        }
+      }
 
-      if (request.path === '/api/env' && delayKey) { await new Promise<void>(resolve => { release = resolve }) }
+      if (request.path.includes('/poll/')) {
+        return { status: 'approved' }
+      }
+
+      if (request.path === '/api/env' && delayKey) {
+        await new Promise<void>(resolve => {
+          release = resolve
+        })
+      }
 
       if (request.path.startsWith('/api/model/options')) {
         return { providers: [{ slug: 'fixture', name: 'Fixture', models: ['fixture-model'] }] }
       }
 
-      if (request.path.startsWith('/api/model/recommended-default')) { return { model: 'fixture-model' } }
+      if (request.path.startsWith('/api/model/recommended-default')) {
+        return { model: 'fixture-model' }
+      }
 
       return { ok: true }
     })
@@ -110,8 +127,11 @@ describe('refreshOnboarding', () => {
     let profile = 'beta'
 
     const ctx: OnboardingContext = {
-      get profile() { return profile },
-      requestGateway: async method => (method === 'setup.status' ? { provider_configured: true } : { ok: true }) as never
+      get profile() {
+        return profile
+      },
+      requestGateway: async method =>
+        (method === 'setup.status' ? { provider_configured: true } : { ok: true }) as never
     }
 
     try {

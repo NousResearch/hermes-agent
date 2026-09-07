@@ -205,7 +205,10 @@ export function listOAuthProviders(profile?: null | string): Promise<OAuthProvid
   })
 }
 
-export function disconnectOAuthProvider(providerId: string, profile?: null | string): Promise<{ ok: boolean; provider: string }> {
+export function disconnectOAuthProvider(
+  providerId: string,
+  profile?: null | string
+): Promise<{ ok: boolean; provider: string }> {
   return hermesApi<{ ok: boolean; provider: string }>({
     ...profileScoped(profile),
     path: `/api/providers/oauth/${encodeURIComponent(providerId)}`,
@@ -222,7 +225,12 @@ export function startOAuthLogin(providerId: string, profile?: ProfileScope): Pro
   })
 }
 
-export function submitOAuthCode(providerId: string, sessionId: string, code: string, profile?: null | string): Promise<OAuthSubmitResponse> {
+export function submitOAuthCode(
+  providerId: string,
+  sessionId: string,
+  code: string,
+  profile?: null | string
+): Promise<OAuthSubmitResponse> {
   return hermesApi<OAuthSubmitResponse>({
     ...profileScoped(profile),
     path: `/api/providers/oauth/${encodeURIComponent(providerId)}/submit`,

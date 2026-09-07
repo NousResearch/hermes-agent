@@ -11,8 +11,7 @@ Three fixes under test:
    ``fire_claim``/``run_claim`` stamped in the FUTURE (clock/TZ skew across a
    restart) is treated as stale/overwritable, not eternally fresh.
 
-3. ``_execute_job_now`` no longer mislabels paused/disabled/missing jobs as
-   "already being fired".
+3. ``_execute_job_now`` no longer mislabels a missing job as "already being fired".
 """
 
 import json
@@ -149,18 +148,6 @@ class TestFutureDatedClaims:
 
 
 class TestHonestRunSkipMessages:
-    def test_paused_job_not_reported_as_already_firing(self):
-        from tools.cronjob_tools import _execute_job_now
-
-        job = create_job(name="paused job", schedule="0 7 * * *", prompt="x")
-        from cron.jobs import pause_job
-
-        pause_job(job["id"])
-        res = _execute_job_now(get_job(job["id"]))
-        assert res["claimed"] is False
-        assert "paused" in (res["error"] or "").lower()
-        assert "already being fired" not in (res["error"] or "").lower()
-
     def test_missing_job_not_reported_as_already_firing(self):
         from tools.cronjob_tools import _execute_job_now
 

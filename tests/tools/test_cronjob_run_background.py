@@ -79,7 +79,7 @@ class TestBackgroundDispatch:
             assert res["claimed"] is True
             assert res["dispatched"] is True
             assert res["delegation_id"]
-            m_claim.assert_called_once_with("job-bg-01", return_job=True)
+            m_claim.assert_called_once_with("job-bg-01", force=True, preserve_paused=True, return_job=True)
             # The job actually starts on the daemon executor.
             assert run_started.wait(timeout=5.0), "job never started in background"
         finally:
@@ -153,16 +153,16 @@ class TestBackgroundDispatch:
         assert "provider exploded" in (found.get("error") or "")
 
     def test_claim_lost_reports_immediately_without_dispatch(self):
-        """Paused/already-firing jobs report in the tool response, not as a
-        delayed completion event."""
+        """An already-firing job reports in the tool response, not as a delayed event."""
+        held = {**_JOB, "enabled": False, "state": "paused", "fire_claim": {"by": "other-owner"}}
         with _bound_session_key():
             with patch("tools.cronjob_tools.claim_job_for_fire", return_value=False), \
-                 patch("tools.cronjob_tools.get_job",
-                       return_value={**_JOB, "enabled": False}), \
+                 patch("tools.cronjob_tools.get_job", return_value=held), \
                  patch("tools.async_delegation.dispatch_async_delegation") as m_disp:
                 res = _try_dispatch_background_run(_job('job-bg-04'))
+        assert res is not None
         assert res["claimed"] is False
-        assert "paused/disabled" in res["error"]
+        assert "already running" in res["error"]
         m_disp.assert_not_called()
 
 
@@ -181,18 +181,57 @@ class TestSyncFallbacks:
         assert res is None
 
     def test_pool_at_capacity_runs_inline(self):
-        """A rejected dispatch must not strand the already-taken claim."""
+        """A rejected dispatch must not strand or detach the already-taken claim."""
+        claimed = {
+            **_job("job-bg-07"),
+            "enabled": True,
+            "state": "scheduled",
+            "fire_claim": {"by": "bg-owner"},
+        }
         with _bound_session_key():
-            with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
-                 patch("tools.async_delegation.dispatch_async_delegation",
-                       return_value={"status": "rejected", "error": "capacity"}), \
-                 patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
-                 patch("tools.cronjob_tools.get_job",
-                       return_value={"last_status": "ok", "last_error": None}):
-                res = _try_dispatch_background_run(_job('job-bg-07'))
+            with patch(
+                "tools.cronjob_tools.claim_job_for_fire", return_value=claimed
+            ), patch(
+                "tools.async_delegation.dispatch_async_delegation",
+                return_value={"status": "rejected", "error": "capacity"},
+            ), patch(
+                "cron.scheduler.run_one_job", return_value=True
+            ) as m_run, patch(
+                "tools.cronjob_tools.get_job",
+                return_value={"last_status": "ok", "last_error": None},
+            ):
+                res = _try_dispatch_background_run(_job("job-bg-07"))
         assert res["dispatched"] is False
         assert res["success"] is True
-        m_run.assert_called_once()   # ran inline on this thread
+        m_run.assert_called_once_with(
+            claimed, adapters=None, loop=None, extra_prompt=None
+        )
+
+    def test_dispatch_exception_runs_claimed_job_inline(self):
+        claimed = {
+            **_job("job-bg-exception"),
+            "fire_claim": {"by": "bg-owner"},
+        }
+        with _bound_session_key():
+            with patch(
+                "tools.cronjob_tools.claim_job_for_fire", return_value=claimed
+            ), patch(
+                "tools.async_delegation.dispatch_async_delegation",
+                side_effect=RuntimeError("dispatcher unavailable"),
+            ), patch(
+                "cron.scheduler.run_one_job", return_value=True
+            ) as m_run, patch(
+                "tools.cronjob_tools.get_job",
+                return_value={"last_status": "ok", "last_error": None},
+            ):
+                res = _try_dispatch_background_run(_job("job-bg-exception"))
+
+        assert res is not None
+        assert res["dispatched"] is False
+        assert res["success"] is True
+        m_run.assert_called_once_with(
+            claimed, adapters=None, loop=None, extra_prompt=None
+        )
 
 
 class TestInFlightDedupe:
@@ -200,25 +239,8 @@ class TestInFlightDedupe:
     (salvaged from #53395 by @izumi0uu): the fire claim's 300s TTL is
     routinely outlived by real jobs, so the claim alone can't prevent it."""
 
-    def test_run_claimed_job_skips_when_already_running(self):
-        """The authoritative guard: _run_claimed_job refuses to fire a job
-        whose id is already registered in the scheduler running set."""
-        from cron import scheduler as sched
-        from tools.cronjob_tools import _run_claimed_job
-
-        assert sched.try_register_running_job("job-bg-08")   # simulate ticker mid-run
-        try:
-            with patch("cron.scheduler.run_one_job") as m_run:
-                res = _run_claimed_job(_job('job-bg-08'))
-            assert res["success"] is False
-            assert "already running" in res["error"]
-            m_run.assert_not_called()
-        finally:
-            sched.release_running_job("job-bg-08")
-
-    def test_run_claimed_job_registers_and_releases(self):
-        """A normal run holds the registration for run_one_job's duration and
-        releases it after — visible to get_running_job_ids mid-run."""
+    def test_run_claimed_job_uses_and_releases_prior_reservation(self):
+        """The runner sees the reservation acquired before store CAS and releases it after."""
         from cron import scheduler as sched
         from tools.cronjob_tools import _run_claimed_job
 
@@ -228,6 +250,7 @@ class TestInFlightDedupe:
             seen_during_run["registered"] = "job-bg-09" in sched.get_running_job_ids()
             return True
 
+        assert sched.try_register_running_job("job-bg-09")
         with patch("cron.scheduler.run_one_job", side_effect=probe_run), \
              patch("tools.cronjob_tools.get_job",
                    return_value={"last_status": "ok", "last_error": None}):
@@ -326,5 +349,5 @@ class TestCronjobRunToolIntegration:
         assert out["success"] is True
         assert out["job"]["executed"] is True
         assert out["job"]["execution_success"] is True
-        m_claim.assert_called_once_with("job-bg-13", return_job=True)
+        m_claim.assert_called_once_with("job-bg-13", force=True, preserve_paused=True, return_job=True)
         m_run.assert_called_once()

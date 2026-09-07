@@ -32,7 +32,6 @@ from cron.jobs import (
     AmbiguousJobReference,
     claim_job_for_fire,
     get_job,
-    is_job_runnable,
     list_jobs,
     mark_job_run,
     parse_schedule,
@@ -178,34 +177,45 @@ _ALREADY_RUNNING_ERROR = (
 
 
 def _claim_for_manual_run(job_id: str, log_label: str):
-    """At-most-once claim shared by the sync and background run paths: ``(claimed_job, None)`` or
-    ``(None, error_dict)`` in the ``_execute_job_now`` shape. A lost claim is labelled precisely —
-    claim_job_for_fire also returns False for paused/disabled/missing jobs, not just in-flight ones."""
+    """Reserve one manual run in-process, then take the cross-process store claim.
+
+    The local running-set reservation is deliberately first: a second manual run in the same
+    process must not steal an expired store claim from the run already in flight. On success the
+    reservation is transferred to ``_run_claimed_job``, which releases it in ``finally``.
+    """
+    from cron.scheduler import release_running_job, try_register_running_job
+
+    if not try_register_running_job(job_id):
+        return None, {"claimed": False, "success": False, "error": _ALREADY_RUNNING_ERROR}
     try:
-        claimed_job = claim_job_for_fire(job_id, return_job=True)
+        claimed_job = claim_job_for_fire(
+            job_id, force=True, preserve_paused=True, return_job=True
+        )
         if isinstance(claimed_job, dict):
             return claimed_job, None
+        release_running_job(job_id)
         refreshed = get_job(job_id)
         if refreshed is None:
             reason = "Job no longer exists; nothing to run."
-        elif not is_job_runnable(refreshed):
-            reason = "Job is paused/disabled; resume it before running."
+        elif isinstance(refreshed.get("fire_claim"), dict):
+            reason = _ALREADY_RUNNING_ERROR
         else:
-            reason = "Job is already being fired by the scheduler; not run again."
+            reason = "Job could not be claimed for this manual run."
         return None, {"claimed": False, "success": False, "error": reason}
     except Exception as e:
+        release_running_job(job_id)
         logger.error("Failed to claim cron job %s for %s: %s", job_id, log_label, e)
-        with contextlib.suppress(Exception):
-            mark_job_run(job_id, False, str(e))
-        return None, {"claimed": True, "success": False, "error": str(e)}
+        return None, {"claimed": False, "success": False, "error": str(e)}
 
 
 def _execute_job_now(job: Dict[str, Any], extra_prompt: Optional[str] = None) -> Dict[str, Any]:
-    """Run a job now, outside the scheduler tick: claim via ``claim_job_for_fire`` (the ticker's
-    CAS, so a concurrent tick cannot double-fire and next_run_at advances), then fire through
-    the shared ``run_one_job`` body. Returns {"claimed", "success", "error"}."""
+    """Run a job now outside the scheduler tick through the unified manual reservation and
+    owner-fenced runner. Returns distinct ``claimed``, ``executed``, ``success``, and ``error`` fields."""
     claimed_job, err = _claim_for_manual_run(job["id"], "immediate run")
-    return err if err is not None else _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
+    if err is not None:
+        return err
+    assert claimed_job is not None
+    return _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
 
 
 @contextlib.contextmanager
@@ -260,28 +270,42 @@ def _run_heartbeat(job_name: str):
             thread.join(timeout=_CRON_RUN_HEARTBEAT_INTERVAL + 1)
 
 
-def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) -> Dict[str, Any]:
-    """Fire an already-claimed job through the shared ``run_one_job`` body (split from
-    ``_execute_job_now`` so the background path can claim synchronously and hand the run
-    to a worker). Returns {"claimed": True, "success": bool, "error": ...}."""
-    job_id = job["id"]
-    _registered = False
-    fire_owner = None
+def _release_manual_run_reservation(job: Dict[str, Any]) -> None:
+    """Best-effort abort for a claimed manual run whose executor never started."""
+    job_id = str(job.get("id") or "")
+    claim = job.get("fire_claim")
+    owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+    if owner:
+        try:
+            from cron.jobs import release_fire_claim
+
+            release_fire_claim(job_id, expected_owner=owner)
+        except Exception:
+            logger.debug("Could not release manual fire claim for %s", job_id, exc_info=True)
     try:
-        from cron.scheduler import release_running_job, run_one_job, try_register_running_job
+        from cron.scheduler import release_running_job
 
-        # In-flight dedupe: the fire claim's TTL is routinely outlived by real jobs, so
-        # register in the scheduler's shared running set (same guard the ticker uses;
-        # also visible to the gateway shutdown drain).
-        # In-flight dedupe (idea from #53395 by @izumi0uu): the fire claim's TTL (300s) is routinely
-        # outlived by real jobs, so it alone cannot stop a manual run from double-firing a job the ticker
-        # (or another manual run) is still executing.
-        if not try_register_running_job(job_id):
-            return {"claimed": True, "success": False, "error": _ALREADY_RUNNING_ERROR}
-        _registered = True
+        release_running_job(job_id)
+    except Exception:
+        logger.debug("Could not release local manual-run reservation for %s", job_id, exc_info=True)
 
-        claim = job.get("fire_claim")
-        fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else None
+
+def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) -> Dict[str, Any]:
+    """Execute a claimed manual-run reservation and release its local guard in ``finally``.
+
+    Returns distinct ``claimed`` and ``executed`` fields so callers never equate reservation with
+    body entry.
+    """
+    job_id = job["id"]
+    _registered = True
+    execution_started = False
+    claim = job.get("fire_claim")
+    fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else None
+    try:
+        from cron.scheduler import release_running_job, run_one_job
+
+        # ``_claim_for_manual_run`` acquired the process-local reservation before the store CAS.
+        # Ownership is transferred here and released exactly once in the execution ``finally``.
 
         # Inside the gateway process deliver on the loop that owns clients such as
         # Matrix/aiohttp (a standalone asyncio.run() loop breaks them).
@@ -297,6 +321,7 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
             # run_one_job records last_run_at/last_status via mark_job_run; `job` is the
             # owner-bearing claimed snapshot, so terminal writes stay fenced by that owner.
             with _run_heartbeat(str(job.get("name") or job_id)):
+                execution_started = True
                 processed = run_one_job(job, adapters=adapters, loop=gateway_loop, extra_prompt=extra_prompt)
         finally:
             _registered = False
@@ -321,18 +346,32 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         if execution is not None and execution.get("status") != "completed":
             ok = False
             run_error = execution.get("error") or f"execution ended in {execution.get('status') or 'unknown'} state"
-        return {"claimed": True, "success": bool(processed and ok), "error": run_error}
+        return {
+            "claimed": True,
+            "executed": execution_started,
+            "success": bool(processed and ok),
+            "error": run_error,
+        }
     except Exception as e:
         logger.error("Failed to execute cron job %s immediately: %s", job_id, e)
-        if _registered:
-            # Raised before the run's own release (e.g. heartbeat setup): don't leave the
-            # job marked in-flight. Only release registrations WE took — a bare discard
-            # could erase a ticker-owned entry.
+        if not execution_started:
+            _release_manual_run_reservation(job)
+            _registered = False
+        else:
+            if _registered:
+                # Raised after body entry but before the normal release.
+                with contextlib.suppress(Exception):
+                    from cron.scheduler import release_running_job
+
+                    release_running_job(job_id)
             with contextlib.suppress(Exception):
-                release_running_job(job_id)
-        with contextlib.suppress(Exception):
-            mark_job_run(job_id, False, str(e), expected_fire_owner=fire_owner)
-        return {"claimed": True, "success": False, "error": str(e)}
+                mark_job_run(job_id, False, str(e), expected_fire_owner=fire_owner)
+        return {
+            "claimed": True,
+            "executed": execution_started,
+            "success": False,
+            "error": str(e),
+        }
 
 
 def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[str]:
@@ -453,6 +492,7 @@ def _try_dispatch_background_run(
         if err["claimed"]:
             err["dispatched"] = False
         return err
+    assert claimed_job is not None
 
     origin_ui_session_id = ""
     try:
@@ -486,14 +526,23 @@ def _try_dispatch_background_run(
         res = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
         return _manual_run_completion(res, job_id, job_name, deliver, started_at)
 
-    dispatch = dispatch_async_delegation(
-        goal=f"Manual run of cron job '{job_name}' ({job_id})",
-        context=("Triggered via cronjob(action='run'). The job executed in its own "
-                 "fresh cron session; this block reports its outcome."),
-        toolsets=None, role="cron_run", model=job.get("model"), session_key=session_key,
-        parent_session_id=str(session_id) if session_id else None, runner=_runner,
-        origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
-        max_async_children=max_async)
+    try:
+        dispatch = dispatch_async_delegation(
+            goal=f"Manual run of cron job '{job_name}' ({job_id})",
+            context=("Triggered via cronjob(action='run'). The job executed in its own "
+                     "fresh cron session; this block reports its outcome."),
+            toolsets=None, role="cron_run", model=job.get("model"), session_key=session_key,
+            parent_session_id=str(session_id) if session_id else None, runner=_runner,
+            origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
+            max_async_children=max_async)
+    except Exception as exc:
+        logger.warning(
+            "cronjob run: background dispatch failed (%s); running job '%s' inline.",
+            exc, job_name,
+        )
+        result = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
+        result["dispatched"] = False
+        return result
     if dispatch.get("status") == "dispatched":
         return {"claimed": True, "dispatched": True, "delegation_id": dispatch.get("delegation_id")}
 
@@ -501,7 +550,7 @@ def _try_dispatch_background_run(
     logger.info(
         "cronjob run: background pool unavailable (%s); running job '%s' inline.",
         dispatch.get("error", "rejected"), job_name)
-    result = _run_claimed_job(job, extra_prompt=extra_prompt)
+    result = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
     result["dispatched"] = False
     return result
 
@@ -661,17 +710,22 @@ def _action_run(job: Dict[str, Any], a: Dict[str, Any]) -> str:
     # one-shot for the same occurrence; a lost consumed fire cannot re-arm itself, so
     # reconcile after the run has persisted its final state.
     claimed = exec_result.get("claimed", False)
+    executed = bool(exec_result.get("executed", False))
     if claimed:
         _notify_provider_jobs_changed_safe()
     result = _refreshed_job_view(job_id)
-    result["executed"] = claimed
+    result["executed"] = executed
     result["execution_success"] = exec_result.get("success", False)
-    if not claimed:
+    if not executed:
         result["execution_skipped"] = exec_result.get("error") or (
-            "Already being fired by the scheduler; not run again.")
+            "Execution did not start; not run again.")
     elif exec_result.get("error"):
         result["execution_error"] = exec_result["error"]
-    return _dumps({"success": True, "job": result})
+    succeeded = bool(exec_result.get("success", False))
+    payload = {"success": succeeded, "job": result}
+    if not succeeded:
+        payload["error"] = exec_result.get("error") or "Manual run failed."
+    return _dumps(payload)
 
 
 def _pick(updates: Dict[str, Any], job: Dict[str, Any], key: str) -> Any:

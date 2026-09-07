@@ -3,6 +3,7 @@
 
 import contextlib
 import copy
+import hmac
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 import json
@@ -2482,14 +2483,40 @@ def _machine_id() -> str:
     return f"{host}:{os.getpid()}"
 
 
+def release_fire_claim(job_id: str, *, expected_owner: str) -> bool:
+    """Release an unstarted fire claim without recording a run.
+
+    The owner fence prevents a failed dispatcher from clearing a replacement claim.
+    No schedule, repeat, or terminal-status field is changed.
+    """
+    owner = str(expected_owner or "").strip()
+    if not owner:
+        return False
+
+    def apply(jobs, _i, job):
+        claim = job.get("fire_claim")
+        if not isinstance(claim, dict):
+            return False
+        current_owner = str(claim.get("by") or "")
+        if not current_owner or not hmac.compare_digest(current_owner, owner):
+            return False
+        job["fire_claim"] = None
+        save_jobs(jobs)
+        return True
+
+    return _with_job(job_id, apply, False)
+
+
 def claim_job_for_fire(
-    job_id: str, *, claim_ttl_seconds: int = FIRE_CLAIM_TTL_SECONDS, force: bool = False, return_job: bool = False,
+    job_id: str, *, claim_ttl_seconds: int = FIRE_CLAIM_TTL_SECONDS, force: bool = False,
+    preserve_paused: bool = False, return_job: bool = False,
 ) -> Union[bool, Dict[str, Any]]:
     """Atomically claim a job for one external 'fire' (multi-machine at-most-once); True iff THIS
     caller won (``CronScheduler.fire_due``: exactly one of N replicas runs a job). Under the
-    fence + file lock: reject missing/terminal/paused jobs unless ``force`` (explicit manual
-    fire, which also resumes the job atomically; external callbacks must leave it false so a
-    stale callback cannot resurrect a paused job). Lose if a claim younger than
+    fence + file lock: reject missing/terminal/paused jobs unless ``force``. Forced fires activate
+    the job atomically by default; an explicit manual run may set ``preserve_paused`` to execute a
+    properly paused job once without enabling its future schedule. External callbacks leave both
+    flags false so a stale callback cannot resurrect a paused job. Lose if a claim younger than
     ``claim_ttl_seconds`` exists (the TTL lets another fire reclaim after a crash; mark_job_run
     clears the claim). Otherwise stamp ``fire_claim`` and, for recurring jobs, advance
     ``next_run_at`` so a stale re-delivery cannot re-fire."""
@@ -2497,9 +2524,13 @@ def claim_job_for_fire(
         if is_terminal_job(job) and not _is_recoverable_error_job(job):
             return False
         # Both enabled and pause markers must clear — a half-paused record must not claim. ``force``
-        # (Trigger-now on a paused job) bypasses the gate and atomically resumes the job below.
+        # bypasses that gate. ``preserve_paused`` is deliberately narrower: only a consistent
+        # disabled+paused record keeps its scheduling state during this one manual occurrence.
         if not force and not is_job_runnable(job):
             return False
+        keep_paused = (
+            force and preserve_paused and job.get("enabled") is False and job.get("state") == "paused"
+        )
         now = _hermes_now()
         if _claim_is_live(job.get("fire_claim"), now, claim_ttl_seconds):
             return False  # someone holds a fresh claim
@@ -2514,7 +2545,7 @@ def claim_job_for_fire(
                     job["next_run_at"] = nxt
                     save_jobs(jobs)
             return False
-        if force:
+        if force and not keep_paused:
             _activate_job_record(job)
         # Per-acquisition token: a process may legitimately reclaim its own stale lease, and the
         # previous runner must not heartbeat the new claim merely because hostname + PID match.

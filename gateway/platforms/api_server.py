@@ -3421,8 +3421,37 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 if prompt_err:
                     return prompt_err
                 extra_prompt = extra_prompt or None
-        return self._job_response(
-            lambda jid: _cron_trigger(jid, extra_prompt=extra_prompt), job_id, notify=False)
+        from tools.cronjob_tools import (
+            _claim_for_manual_run,
+            _release_manual_run_reservation,
+            _run_claimed_job,
+        )
+
+        with _reserve_pending_api_work(self) as reservation:
+            claimed_job, claim_error = await asyncio.to_thread(
+                _claim_for_manual_run, job_id, "relay manual run"
+            )
+            if claim_error is not None:
+                reason = str(claim_error.get("error") or "Manual run was not accepted.")
+                status = 404 if "no longer exists" in reason else 409
+                return web.json_response({"error": reason}, status=status)
+            assert claimed_job is not None
+
+            async def _run_reserved_job():
+                try:
+                    return await asyncio.to_thread(
+                        _run_claimed_job, claimed_job, extra_prompt=extra_prompt
+                    )
+                except Exception as exc:
+                    _release_manual_run_reservation(claimed_job)
+                    logger.error("Manual cron run executor failed for job %s: %s", job_id, exc)
+                    return {"claimed": True, "executed": False, "success": False, "error": str(exc)}
+
+            task = asyncio.create_task(_run_reserved_job())
+            reservation["detached"] = True
+            task.add_done_callback(lambda _task: _release_pending_api_work(self, reservation))
+            self._track_background_task(task, tolerate_missing=True)
+            return web.json_response({"status": "accepted", "job_id": job_id}, status=202)
 
     async def _handle_cron_fire(self, request: "web.Request") -> "web.Response":
         """POST /api/cron/fire — Chronos fire webhook (NAS -> agent), authenticated by a

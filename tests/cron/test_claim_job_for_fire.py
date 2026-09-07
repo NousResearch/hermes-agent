@@ -76,6 +76,30 @@ def test_forced_claim_atomically_resumes_paused_job(temp_home):
     assert claimed["fire_claim"] is not None
 
 
+def test_release_fire_claim_is_owner_fenced_and_state_neutral(temp_home):
+    """Abort may clear only its own fire claim without recording an occurrence."""
+    import cron.jobs as jobs
+
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="release")
+    jobs.pause_job(job["id"])
+    assert jobs.claim_job_for_fire(job["id"], force=True, preserve_paused=True) is True
+    claimed = jobs.get_job(job["id"])
+    assert claimed is not None
+    owner = claimed["fire_claim"]["by"]
+
+    assert jobs.release_fire_claim(job["id"], expected_owner="other-owner") is False
+    still_claimed = jobs.get_job(job["id"])
+    assert still_claimed is not None
+    assert still_claimed["fire_claim"]["by"] == owner
+    assert jobs.release_fire_claim(job["id"], expected_owner=owner) is True
+    released = jobs.get_job(job["id"])
+    assert released is not None
+    assert released["fire_claim"] is None
+    assert released["state"] == "paused"
+    assert released["enabled"] is False
+    assert released["repeat"]["completed"] == 0
+
+
 def test_stale_claim_is_reclaimable(temp_home, monkeypatch):
     """A claim older than the TTL is overwritten — the fire isn't stuck forever
     if the winning machine crashed before mark_job_run cleared the claim."""

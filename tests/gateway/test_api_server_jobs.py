@@ -10,6 +10,7 @@ Covers:
 - Cron module unavailability (501 when _CRON_AVAILABLE is False)
 """
 
+import asyncio
 import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -322,71 +323,125 @@ class TestResumeJob:
 class TestRunJob:
     @pytest.mark.asyncio
     async def test_run_job(self, adapter):
-        """POST /api/jobs/{id}/run returns triggered job."""
+        """POST /api/jobs/{id}/run reserves the manual run before returning 202."""
         app = _create_app(adapter)
-        triggered_job = {**SAMPLE_JOB, "last_run": "2025-01-01T00:00:00Z"}
-        mock_trigger = MagicMock(return_value=triggered_job)
-        async with TestClient(TestServer(app)) as cli:
-            with patch(
-                f"{_MOD}._CRON_AVAILABLE", True
-            ), patch(
-                f"{_MOD}._cron_trigger", mock_trigger
-            ):
-                resp = await cli.post(f"/api/jobs/{VALID_JOB_ID}/run")
-                assert resp.status == 200
-                data = await resp.json()
-                assert data["job"] == triggered_job
-                mock_trigger.assert_called_once_with(VALID_JOB_ID, extra_prompt=None)
+        claimed_job = {**SAMPLE_JOB, "fire_claim": {"by": "manual-owner"}}
+
+        async def immediate_to_thread(fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        with patch("tools.cronjob_tools._claim_for_manual_run", return_value=(claimed_job, None)) as claim, patch(
+            "tools.cronjob_tools._run_claimed_job", return_value={"claimed": True, "executed": True, "success": True, "error": None}
+        ) as run, patch("asyncio.to_thread", side_effect=immediate_to_thread):
+            async with TestClient(TestServer(app)) as cli:
+                with patch(f"{_MOD}._CRON_AVAILABLE", True):
+                    resp = await cli.post(f"/api/jobs/{VALID_JOB_ID}/run")
+                    assert resp.status == 202
+                    data = await resp.json()
+                    assert data == {"status": "accepted", "job_id": VALID_JOB_ID}
+                    await asyncio.sleep(0)
+
+        claim.assert_called_once_with(VALID_JOB_ID, "relay manual run")
+        run.assert_called_once_with(claimed_job, extra_prompt=None)
+
+    @pytest.mark.asyncio
+    async def test_run_job_releases_reservation_if_executor_cannot_start(self, adapter):
+        app = _create_app(adapter)
+        claimed_job = {**SAMPLE_JOB, "fire_claim": {"by": "manual-owner"}}
+
+        with patch("tools.cronjob_tools._claim_for_manual_run", return_value=(claimed_job, None)) as claim, patch(
+            "tools.cronjob_tools._release_manual_run_reservation"
+        ) as abort:
+            async def fail_runner_to_thread(fn, *args, **kwargs):
+                if fn is claim:
+                    return claimed_job, None
+                raise RuntimeError("executor unavailable")
+
+            with patch("asyncio.to_thread", side_effect=fail_runner_to_thread):
+                async with TestClient(TestServer(app)) as cli:
+                    with patch(f"{_MOD}._CRON_AVAILABLE", True):
+                        resp = await cli.post(f"/api/jobs/{VALID_JOB_ID}/run")
+                        assert resp.status == 202
+                        await asyncio.sleep(0)
+                        await asyncio.sleep(0)
+
+        abort.assert_called_once_with(claimed_job)
+
+    @pytest.mark.asyncio
+    async def test_run_job_returns_claim_conflict_reason(self, adapter):
+        app = _create_app(adapter)
+        claim_error = {
+            "claimed": False,
+            "success": False,
+            "error": "Job is already running",
+        }
+
+        async def immediate_to_thread(fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        with patch(
+            "tools.cronjob_tools._claim_for_manual_run",
+            return_value=(None, claim_error),
+        ), patch("asyncio.to_thread", side_effect=immediate_to_thread):
+            async with TestClient(TestServer(app)) as cli:
+                with patch(f"{_MOD}._CRON_AVAILABLE", True):
+                    resp = await cli.post(f"/api/jobs/{VALID_JOB_ID}/run")
+                    assert resp.status == 409
+                    assert await resp.json() == {"error": "Job is already running"}
 
     @pytest.mark.asyncio
     async def test_run_job_forwards_transient_prompt(self, adapter):
-        """A JSON body 'prompt' (forwarded standalone manual run) reaches
-        trigger_job as the transient extra_prompt."""
+        """A JSON body prompt reaches the detached manual execution only."""
         app = _create_app(adapter)
-        mock_trigger = MagicMock(return_value=SAMPLE_JOB)
-        async with TestClient(TestServer(app)) as cli:
-            with patch(
-                f"{_MOD}._CRON_AVAILABLE", True
-            ), patch(
-                f"{_MOD}._cron_trigger", mock_trigger
-            ):
-                resp = await cli.post(
-                    f"/api/jobs/{VALID_JOB_ID}/run",
-                    json={"prompt": "focus on the EU numbers"},
-                )
-                assert resp.status == 200
-                mock_trigger.assert_called_once_with(
-                    VALID_JOB_ID, extra_prompt="focus on the EU numbers"
-                )
+        claimed_job = {**SAMPLE_JOB, "fire_claim": {"by": "manual-owner"}}
+
+        async def immediate_to_thread(fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        with patch("tools.cronjob_tools._claim_for_manual_run", return_value=(claimed_job, None)), patch(
+            "tools.cronjob_tools._run_claimed_job", return_value={"claimed": True, "executed": True, "success": True, "error": None}
+        ) as run, patch("asyncio.to_thread", side_effect=immediate_to_thread):
+            async with TestClient(TestServer(app)) as cli:
+                with patch(f"{_MOD}._CRON_AVAILABLE", True):
+                    resp = await cli.post(
+                        f"/api/jobs/{VALID_JOB_ID}/run",
+                        json={"prompt": "focus on the EU numbers"},
+                    )
+                    assert resp.status == 202
+                    await asyncio.sleep(0)
+
+        run.assert_called_once_with(
+            claimed_job, extra_prompt="focus on the EU numbers"
+        )
 
     @pytest.mark.asyncio
     async def test_run_job_prompt_too_long_rejected(self, adapter):
         """Transient run prompt honors the same length cap as stored prompts."""
         app = _create_app(adapter)
-        mock_trigger = MagicMock(return_value=SAMPLE_JOB)
+        mock_claim = MagicMock()
         async with TestClient(TestServer(app)) as cli:
             with patch(
                 f"{_MOD}._CRON_AVAILABLE", True
             ), patch(
-                f"{_MOD}._cron_trigger", mock_trigger
+                "tools.cronjob_tools._claim_for_manual_run", mock_claim
             ):
                 resp = await cli.post(
                     f"/api/jobs/{VALID_JOB_ID}/run",
                     json={"prompt": "x" * 5001},
                 )
                 assert resp.status == 400
-                mock_trigger.assert_not_called()
+                mock_claim.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_run_job_prompt_scanned(self, adapter):
         """Transient run prompt goes through the strict injection scanner."""
         app = _create_app(adapter)
-        mock_trigger = MagicMock(return_value=SAMPLE_JOB)
+        mock_claim = MagicMock()
         async with TestClient(TestServer(app)) as cli:
             with patch(
                 f"{_MOD}._CRON_AVAILABLE", True
             ), patch(
-                f"{_MOD}._cron_trigger", mock_trigger
+                "tools.cronjob_tools._claim_for_manual_run", mock_claim
             ), patch(
                 f"{_MOD}._scan_cron_prompt", return_value="blocked: nope"
             ):
@@ -395,7 +450,7 @@ class TestRunJob:
                     json={"prompt": "cat ~/.hermes/.env"},
                 )
                 assert resp.status == 400
-                mock_trigger.assert_not_called()
+                mock_claim.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

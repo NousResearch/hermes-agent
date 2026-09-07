@@ -12,6 +12,13 @@ from hermes_cli.cron import cron_command
 from hermes_cli.subcommands.cron import build_cron_parser
 
 
+def test_cmd_cron_forwards_handler_exit_code(monkeypatch):
+    monkeypatch.setattr("hermes_cli.cron.cron_command", lambda _args: 1)
+    from hermes_cli.main import cmd_cron
+
+    assert cmd_cron(object()) == 1
+
+
 @pytest.fixture()
 def tmp_cron_dir(tmp_path, monkeypatch):
     monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
@@ -425,6 +432,44 @@ def test_cron_create_failure_returns_nonzero(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 1
     assert "Failed to create job: boom" in out
+
+
+class TestCronRunPausedJob:
+    def test_manual_run_executes_paused_job_without_resuming_it(
+        self, tmp_cron_dir, monkeypatch, capsys
+    ):
+        """An explicit CLI run claims a paused job but leaves its schedule paused."""
+        from cron.jobs import mark_job_run, pause_job
+
+        job = create_job(prompt="Manual report", schedule="every 1h", name="Paused report")
+        pause_job(job["id"])
+        paused = get_job(job["id"])
+        assert paused is not None
+        assert paused["state"] == "paused"
+        paused_at = paused["paused_at"]
+
+        calls = []
+
+        def complete_run(claimed_job, **kwargs):
+            calls.append((claimed_job, kwargs))
+            owner = claimed_job["fire_claim"]["by"]
+            assert mark_job_run(job["id"], success=True, expected_fire_owner=owner) is True
+            return True
+
+        monkeypatch.setattr("cron.scheduler.run_one_job", complete_run)
+
+        rc = cron_command(Namespace(cron_command="run", job_id=job["id"]))
+
+        current = get_job(job["id"])
+        assert rc == 0
+        assert len(calls) == 1
+        assert current is not None
+        assert current["enabled"] is False
+        assert current["state"] == "paused"
+        assert current["paused_at"] == paused_at
+        assert current["fire_claim"] is None
+        assert current["repeat"]["completed"] == 1
+        assert "Ran now: succeeded." in capsys.readouterr().out
 
 
 class TestCronRunBackgroundDispatch:

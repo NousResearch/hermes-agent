@@ -412,10 +412,79 @@ _ROUTING_FILTER_DEFAULTS = (
 
 _NOUS_PROVIDERS = frozenset({"nous", "nous-portal", "nousresearch"})
 
+
+def _resolve_child_fallback_chain(parent_agent, routing_cfg: Any, pinned: bool) -> Optional[List[Dict[str, Any]]]:
+    """Resolve the fallback chain owned by the same config block as the child route.
+
+    A pinned child (provider, endpoint, or model) never borrows the parent's
+    chain. It may use only a chain explicitly declared by its routing owner.
+    An unpinned child inherits the parent chain when the setting is absent or
+    null. An explicit empty list disables fallback in either case.
+
+    Valid entries in a partially malformed declaration are retained through
+    the canonical fallback normalizer. If no usable entry remains, the
+    pin-aware default applies.
+    """
+    parent_chain = getattr(parent_agent, "_fallback_chain", None) or None
+    default = None if pinned else parent_chain
+    if not isinstance(routing_cfg, dict) or "fallback_providers" not in routing_cfg:
+        return default
+
+    declared = routing_cfg.get("fallback_providers")
+    if declared is None:
+        return default
+    if declared == []:
+        return None
+    if not isinstance(declared, list):
+        logger.warning(
+            "Ignoring delegation fallback_providers: expected a list, got %s; using the %s default",
+            type(declared).__name__,
+            "pinned" if pinned else "inherited",
+        )
+        return default
+
+    invalid_positions = [
+        index
+        for index, entry in enumerate(declared)
+        if not isinstance(entry, dict)
+        or not str(entry.get("provider") or "").strip()
+        or not str(entry.get("model") or "").strip()
+    ]
+    if invalid_positions:
+        logger.warning(
+            "Ignoring invalid delegation fallback_providers entr%s at index%s %s",
+            "y" if len(invalid_positions) == 1 else "ies",
+            "" if len(invalid_positions) == 1 else "es",
+            ", ".join(str(index) for index in invalid_positions),
+        )
+
+    try:
+        from hermes_cli.fallback_config import get_fallback_chain
+
+        normalized = get_fallback_chain({"fallback_providers": declared})
+    except Exception as exc:
+        logger.warning(
+            "Could not normalize delegation fallback_providers (%s); using the %s default",
+            exc,
+            "pinned" if pinned else "inherited",
+        )
+        return default
+
+    if normalized:
+        return normalized
+    if declared:
+        logger.warning(
+            "delegation fallback_providers contains no usable routes; using the %s default",
+            "pinned" if pinned else "inherited",
+        )
+    return default
+
+
 def _resolve_child_runtime(
     parent_agent, delegation_cfg: dict, parent_api_key: Any, *, model: Optional[str], override_provider: Optional[str],
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
     override_acp_command: Optional[str], override_acp_args: Optional[List[str]],
+    fallback_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
     are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's
@@ -489,9 +558,13 @@ def _resolve_child_runtime(
         "capabilities": _inherit_parent_capabilities(parent_agent, override_provider, override_base_url),
         "api_mode": effective_api_mode, "acp_command": effective_acp_command, "acp_args": effective_acp_args,
         "reasoning_config": child_reasoning,
-        # Inherit the parent's fallback chain EXCEPT under a pinned provider: a mid-run 429/auth failure must not
-        # silently reroute the quiet child onto the parent's fallbacks. Predictability > liveness for explicit pins.
-        "fallback_model": None if override_provider else (getattr(parent_agent, "_fallback_chain", None) or None),
+        # Resolve routing and recovery policy from the same configuration owner. A pinned provider, endpoint, or
+        # model never borrows the parent's chain; an explicitly declared child chain still remains available.
+        "fallback_model": _resolve_child_fallback_chain(
+            parent_agent,
+            fallback_cfg if isinstance(fallback_cfg, dict) else delegation_cfg,
+            pinned=bool(override_provider or override_base_url or model),
+        ),
         "openrouter_min_coding_score": getattr(parent_agent, "openrouter_min_coding_score", None),
         # Routing filters reset to their defaults under a pinned provider (see _ROUTING_FILTER_DEFAULTS).
         **{a: d if override_provider else getattr(parent_agent, a, d) for a, d in _ROUTING_FILTER_DEFAULTS},

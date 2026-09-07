@@ -739,9 +739,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     @staticmethod
     def _new_session(command, task_id, owner_task_id, session_key, cwd, **extra) -> ProcessSession:
+        from gateway.session_context import get_session_env
+
         return ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}", command=command, task_id=task_id,
             owner_task_id=owner_task_id or task_id, session_key=session_key, cwd=cwd,
+            parent_session_id=get_session_env("HERMES_SESSION_ID", ""),
             started_at=time.time(), **extra)
 
     @staticmethod
@@ -1926,7 +1929,7 @@ PROCESS_SCHEMA = {
     "description": (
         "Poll, wait on, or kill background terminal processes (from "
         "terminal(background=true)). "
-        "Completed results remain retrievable by session_id after restart "
+        "Completed results remain retrievable by session_id when resuming their owning conversation "
         "(up to 7 days, newest 64 results per profile; rolling output tail). "
         "poll: status + new output. log: full output, paged. wait: block "
         "until exit or timeout (partial output on timeout). write vs "

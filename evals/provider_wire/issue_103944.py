@@ -32,7 +32,7 @@ class Handler(BaseHTTPRequestHandler):
             "id": "fixture",
             "object": "chat.completion",
             "created": 0,
-            "model": body["model"],
+            "model": body.get("model", body.get("name", "fixture")),
             "choices": [
                 {
                     "index": 0,

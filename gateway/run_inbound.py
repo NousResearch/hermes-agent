@@ -984,9 +984,15 @@ class GatewayInboundMixin:
                 from hermes_cli.plugins import get_plugin_command_handler
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
-                    result = plugin_handler(event.get_command_args().strip())
-                    if asyncio.iscoroutine(result):
-                        result = await result
+                    user_args = event.get_command_args().strip()
+                    if asyncio.iscoroutinefunction(plugin_handler):
+                        result = await plugin_handler(user_args)
+                    else:
+                        # Sync handlers may do blocking I/O; running them on the loop
+                        # thread stalls every task (shutdown_watchdog probes included).
+                        result = await asyncio.to_thread(plugin_handler, user_args)
+                        if asyncio.iscoroutine(result):
+                            result = await result
                     return True, str(result) if result else None, command
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e)

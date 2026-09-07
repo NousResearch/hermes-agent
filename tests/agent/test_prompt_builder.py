@@ -532,6 +532,66 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert result == ""
 
+    def test_loads_profile_home_agents_md(self, tmp_path, monkeypatch):
+        from agent.prompt_builder import load_profile_agents_md
+
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "AGENTS.md").write_text("Reviewer contract: check invariant tests.")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        # Direct function test
+        direct = load_profile_agents_md(home_override=hermes_home)
+        assert direct is not None
+        assert "## AGENTS.md (profile)" in direct
+        assert "Reviewer contract: check invariant tests." in direct
+
+        # In context files prompt (with no project AGENTS.md)
+        cwd_dir = tmp_path / "project"
+        cwd_dir.mkdir()
+        result = build_context_files_prompt(cwd=str(cwd_dir), skip_soul=True, home_override=hermes_home)
+        assert "Project Context" in result
+        assert "AGENTS.md (profile)" in result
+        assert "Reviewer contract: check invariant tests." in result
+
+    def test_profile_agents_override_md_priority(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "AGENTS.md").write_text("Base profile rules.")
+        (hermes_home / "AGENTS.override.md").write_text("Override profile rules.")
+
+        cwd_dir = tmp_path / "project"
+        cwd_dir.mkdir()
+        result = build_context_files_prompt(cwd=str(cwd_dir), skip_soul=True, home_override=hermes_home)
+        assert "Override profile rules." in result
+        assert "Base profile rules." not in result
+        assert "AGENTS.override.md (profile)" in result
+
+    def test_profile_agents_md_alongside_project_agents_md(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "AGENTS.md").write_text("Reviewer role contract.")
+
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / "AGENTS.md").write_text("Project repository rules.")
+
+        result = build_context_files_prompt(cwd=str(project_dir), skip_soul=True, home_override=hermes_home)
+        assert "Project Context" in result
+        assert "Project repository rules." in result
+        assert "Reviewer role contract." in result
+        assert "## AGENTS.md\n\nProject repository rules." in result
+        assert "## AGENTS.md (profile)\n\nReviewer role contract." in result
+
+    def test_profile_agents_md_dedupes_when_cwd_is_hermes_home(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "AGENTS.md").write_text("Rules in profile home.")
+
+        result = build_context_files_prompt(cwd=str(hermes_home), skip_soul=True, home_override=hermes_home)
+        assert result.count("Rules in profile home.") == 1
+
+
 
 
 

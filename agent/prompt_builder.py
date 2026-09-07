@@ -1481,6 +1481,34 @@ def load_soul_md(context_length: Optional[int] = None, home_override: "Path | No
         return None
 
 
+def load_profile_agents_md(context_length: Optional[int] = None, home_override: "Path | None" = None) -> Optional[str]:
+    """AGENTS.md / AGENTS.override.md from the active profile home (HERMES_HOME), or None.
+
+    Allows profile roles (reviewers, implementers, domain specialists) to carry an operating contract
+    independent of the project repository the session is working in.
+    """
+    try:
+        from hermes_cli.config import ensure_hermes_home
+        ensure_hermes_home()
+    except Exception as e:
+        logger.debug("Could not ensure HERMES_HOME before loading profile AGENTS.md: %s", e)
+    home = Path(home_override) if home_override is not None else get_hermes_home()
+    for name in ("AGENTS.override.md", "AGENTS.md", "agents.md"):
+        candidate = home / name
+        if not candidate.exists():
+            continue
+        try:
+            content = (_read_text_with_timeout(candidate) or "").strip()
+            if not content:
+                return None
+            label = f"{name} (profile)"
+            return _context_section(content, label, label, candidate, context_length)
+        except Exception as e:
+            logger.debug("Could not read %s from %s: %s", name, home, e)
+            return None
+    return None
+
+
 def _read_context_file(path: Path) -> str:
     """Stripped text of *path*; "" when missing, empty or unreadable (logged at debug)."""
     if not path.exists():
@@ -1488,7 +1516,7 @@ def _read_context_file(path: Path) -> str:
     try:
         return (_read_text_with_timeout(path) or "").strip()
     except Exception as e:
-        logger.debug("Could not read %s: %s", path, e)
+        logger.debug("Could not read context file %s: %s", path, e)
         return ""
 
 
@@ -1571,7 +1599,7 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
     cursorrules_content = "".join(
         f"## {label}\n\n{_scan_context_content(content, label)}\n\n"
         for path, label in candidates if (content := _read_context_file(path))
-    )
+    ).strip()
     if not cursorrules_content:
         return ""
     return _truncate_content(cursorrules_content, ".cursorrules", context_length=context_length,
@@ -1585,8 +1613,8 @@ def build_context_files_prompt(
     """Discover and load context files for the system prompt (each capped, see ``_get_context_file_max_chars``).
 
     Only ONE project context type loads, first found wins: .hermes.md/HERMES.md (walk to git root) →
-    AGENTS.md chain (git root → cwd) → CLAUDE.md (cwd) → .cursorrules + .cursor/rules/*.mdc (cwd). SOUL.md
-    from HERMES_HOME is independent and always included unless *skip_soul* (already the identity slot).
+    AGENTS.md chain (git root → cwd) → CLAUDE.md (cwd) → .cursorrules + .cursor/rules/*.mdc (cwd).
+    AGENTS.md and SOUL.md from HERMES_HOME are independent and loaded alongside project context.
     """
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
     # A FALLBACK-picked cwd inside the Hermes install tree must not gain system-prompt authority (the desktop
@@ -1607,11 +1635,17 @@ def build_context_files_prompt(
                     or _load_claude_md(cwd_path, context_length) or _load_cursorrules(cwd_path, context_length)]
     if not skip_soul:
         sections.append(load_soul_md(context_length, home_override=home_override))
+    profile_agents = load_profile_agents_md(context_length, home_override=home_override)
+    if profile_agents:
+        profile_body = profile_agents.split("\n\n", 1)[-1].strip()
+        if not any(s and (profile_body == s.split("\n\n", 1)[-1].strip() or profile_body in s) for s in sections if s):
+            sections.append(profile_agents)
     sections = [s for s in sections if s]
     if not sections:
         return ""
     return ("# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n"
             + "\n".join(sections))
+
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

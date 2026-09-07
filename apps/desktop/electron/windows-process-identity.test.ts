@@ -13,13 +13,23 @@ import {
 } from './windows-process-identity'
 
 describe('queryWindowsProcessCreatedAt', () => {
-  it.runIf(process.platform === 'win32')('proves the real Electron test process creation identity', async () => {
-    const expected = Math.floor(Date.now() / 1_000 - process.uptime())
-    const createdAt = await queryWindowsProcessCreatedAt(process.pid)
+  it.runIf(process.platform === 'win32')(
+    'proves the real Electron test process creation identity',
+    async () => {
+      const expected = Math.floor(Date.now() / 1_000 - process.uptime())
+      // Real `Get-Process` via `execFile`, not a stub: on a loaded host (many
+      // live process-tree specs running in the same job) the default 3s probe
+      // budget flaked once. This raises only this arm's budget through the
+      // options object `queryWindowsProcessCreatedAt` already exposes to
+      // callers -- production's own default timeout is untouched -- and
+      // asserts the exact same identity match as before.
+      const createdAt = await queryWindowsProcessCreatedAt(process.pid, { timeoutMs: 12_000 })
 
-    assert.ok(createdAt, 'the current process must be queryable on native Windows')
-    assert.ok(Math.abs(createdAt - expected) <= 2, 'the OS identity must match this exact test process generation')
-  })
+      assert.ok(createdAt, 'the current process must be queryable on native Windows')
+      assert.ok(Math.abs(createdAt - expected) <= 2, 'the OS identity must match this exact test process generation')
+    },
+    15_000
+  )
 
   it('returns exact integer epoch seconds from the bounded hidden query', async () => {
     const calls: Array<{ args: string[]; timeoutMs: number }> = []

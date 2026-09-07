@@ -8,6 +8,7 @@ import errno
 import hashlib
 import json
 import logging
+import math
 import re
 import socket
 import threading
@@ -17,7 +18,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import suppress
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -194,6 +196,35 @@ class PeerRunsHTTPError(RuntimeError):
             status_code in {401, 403} and error_code in _REAUTHORIZATION_CODES)
 
 
+_ROOM_GRANT_REQUEST_BUDGET: ContextVar[tuple[float, float, Callable[[], float]] | None] = ContextVar(
+    "room_grant_request_budget", default=None)
+
+
+def room_grant_request_budget_remaining() -> float | None:
+    budget = _ROOM_GRANT_REQUEST_BUDGET.get()
+    if budget is None:
+        return None
+    wall_end, clock_end, clock = budget
+    return min(wall_end - time.monotonic(), clock_end - clock())
+
+
+@contextmanager
+def room_grant_request_budget(seconds: float, *, clock: Callable[[], float] = time.monotonic):
+    """One renewal chain's budget, including probes and fresh cleanup clients.
+
+    Context-local limits never shorten a concurrent foreground request's timeout.
+    """
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError("room grant request budget must be finite and positive")
+    outer = room_grant_request_budget_remaining()
+    seconds = min(seconds, outer) if outer is not None else seconds
+    token = _ROOM_GRANT_REQUEST_BUDGET.set((time.monotonic() + seconds, clock() + seconds, clock))
+    try:
+        yield
+    finally:
+        _ROOM_GRANT_REQUEST_BUDGET.reset(token)
+
+
 def digest_reauthorization_error(
     catalog: GatewayRoomCatalog, *, capability_digest: str | None,
     execution_policy_digest: str | None) -> PeerRunsHTTPError | None:
@@ -217,6 +248,19 @@ def _run_path(record: Mapping[str, Any], *suffix: str) -> str:
 
 class PeerRunsHTTPClient:
     """Drive a peer's dedicated group session via scoped async Runs APIs."""
+
+    @property
+    def timeout_seconds(self) -> float:
+        remaining = room_grant_request_budget_remaining()
+        if remaining is None:
+            return self._timeout_seconds
+        if remaining <= 0:
+            raise PeerRunsHTTPError("peer renewal request budget exhausted", retryable=True, not_admitted=True)
+        return min(self._timeout_seconds, 1.0, remaining)
+
+    @timeout_seconds.setter
+    def timeout_seconds(self, value: float) -> None:
+        self._timeout_seconds = float(value)
 
     def __init__(
         self, *, base_url: str, api_key: str, target_profile: str | None = None, timeout_seconds: float = 30,
@@ -310,6 +354,8 @@ class PeerRunsHTTPClient:
         self, path: str, *, method: str = "GET", body: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None, room_grant: str | None = None,
         reject_redirects: bool = False) -> dict[str, Any]:
+        # A maintenance request cannot restart its socket budget across redirects.
+        reject_redirects = reject_redirects or _ROOM_GRANT_REQUEST_BUDGET.get() is not None
         deadline, ambiguous = time.monotonic() + self.timeout_seconds, method == "POST"
         request = urllib.request.Request(
             self._request_url(path), method=method,
@@ -413,8 +459,10 @@ class PeerRunsHTTPClient:
     def dispatch(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any]:
         return self._admit_dispatch(self._checked_dispatch(dispatch, grant), grant=grant)
 
-    def recover_dispatch(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any]:
-        """Recover one exact admission by receipt or idempotent POST replay."""
+    def recover_dispatch(
+        self, *, dispatch: Mapping[str, Any], grant: str, receipt_only: bool = False,
+    ) -> Mapping[str, Any]:
+        """Recover an exact receipt; replay admission only outside receipt-only cleanup."""
         checked = self._checked_dispatch(dispatch, grant)
         existing = self._receipt(checked.task_id, checked.execution_generation)
         if existing is not None:
@@ -423,6 +471,8 @@ class PeerRunsHTTPClient:
             return self._accepted(
                 checked, run_id=str(existing["run_id"]), session_id=str(existing["session_id"]),
                 replayed=True)
+        if receipt_only:
+            raise PeerRunsHTTPError("accepted peer run receipt is unavailable", retryable=True, ambiguous=True)
         key, now = (checked.task_id, checked.execution_generation), self.clock()
         backoff = self._recovery_backoff.get(key)
         if backoff is not None and now < float(backoff["next_attempt_at"]):
@@ -521,6 +571,10 @@ class PeerRunsHTTPClient:
     def _poll_receipt(self, record: Mapping[str, Any], *, grant: str) -> dict[str, Any]:
         run_id, now = str(record["run_id"]), self.clock()
         cached = self._status_cache.get(run_id)
+        fingerprint = hashlib.sha256(grant.encode()).hexdigest()
+        if (cached is not None and getattr(cached.get("error"), "needs_reauthorization", False)
+                and cached.get("grant_sha256") != fingerprint):
+            cached = None  # A retired bearer's refusal must not poison its validated replacement.
         if cached is not None:
             status = cached["status"]
             if status.get("status") in _TERMINAL_RUN_STATES:
@@ -531,7 +585,7 @@ class PeerRunsHTTPClient:
                     raise error
                 return status
         delay = self._next_poll_delay(cached)
-        entry = {"delay": delay, "next_poll_at": now + delay}
+        entry = {"delay": delay, "next_poll_at": now + delay, "grant_sha256": fingerprint}
         try:
             full = self._request(_run_path(record), room_grant=self._require_room_grant(grant))
             status = {key: full[key] for key in _RUN_STATUS_KEYS if key in full}
@@ -1085,7 +1139,6 @@ def _open_roomlink_url(
     reject_redirects: bool = False,
 ):
     """Open with Hermes proxy/TLS policy and optional no-replay redirects."""
-
     from hermes_cli import urllib_security
 
     if not reject_redirects:
@@ -1126,4 +1179,4 @@ class _RejectAttachmentRedirects(urllib.request.HTTPRedirectHandler):
     handler_order = 100
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
+        raise urllib.error.HTTPError(req.full_url, code, "redirect refused", headers, fp)

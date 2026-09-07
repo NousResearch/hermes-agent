@@ -248,6 +248,7 @@ def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS) -> dict:
             "attachment_ids", "attachment_metadata_catalog", "attachment_same_gateway_delivery",
             "authority_epoch", "coordinator_fencing", "room_identity", "monotonic_log",
             "idempotent_send", "replayable_disband", "typed_events", "actor_identity", "peer_route_grant_fingerprint",
+            "peer_grant_renewal",
             ],
         "methods": list(_methods), "max_log_limit": MAX_LOG_LIMIT})
 
@@ -266,6 +267,9 @@ def _(rid, params: dict, db_path, _catalog=_local_catalog, _expiry=_grant_expiry
     ttl = float(params.get("ttl_seconds", 3600))
     if not 60 <= ttl <= 24 * 60 * 60:
         raise ValueError("ttl_seconds must be between 60 and 86400")
+    status_ttl = float(params.get("status_ttl_seconds", ttl))
+    if not ttl <= status_ttl <= 30 * 24 * 60 * 60:
+        raise ValueError("status_ttl_seconds must be at least ttl_seconds and no more than 2592000")
     grant_secret = gateway_room_grant_secret()
     execution_policy = _profile_execution_policy(profile)
     token = issue_room_grant(
@@ -276,13 +280,14 @@ def _(rid, params: dict, db_path, _catalog=_local_catalog, _expiry=_grant_expiry
         authority_epoch=int(params.get("authority_epoch") or 0),
         member_id=str(params.get("member_id") or ""), target_install_id=installation_id,
         target_profile=profile, execution_policy_digest=execution_policy["policy_digest"],
-        ttl_seconds=ttl)
+        ttl_seconds=ttl, status_ttl_seconds=status_ttl)
     claims = decode_room_grant(grant_secret, token, permission="status")
     reserve_grant_state(_profile_state_db_paths(profile), claims=claims, expires_at=_expiry(claims))
     catalog = _catalog(installation_id, profile, execution_policy)
     return _ok(rid, {
         "grant": token, "target_profile": profile, "catalog": catalog,
-        "endpoint": catalog["endpoint"]})
+        "endpoint": catalog["endpoint"], "expires_at": float(claims["expires_at"]),
+        "status_expires_at": float(claims["status_expires_at"])})
 
 
 @_room_method("groups.peer.revoke", code=4122, db=True)
@@ -671,7 +676,6 @@ def _(rid, params: dict) -> dict:
         )
     except Exception as exc:
         return _err(rid, 4142, str(exc))
-
 
 def _profile_state_db_paths(profile: str) -> tuple[Path, ...]:
     """Resolve shared and profile-local DBs that enforce RoomLink grants."""

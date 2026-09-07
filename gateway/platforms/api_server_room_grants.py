@@ -85,7 +85,6 @@ def _local_room_catalog(self, profile: str, installation_id: str) -> tuple[dict,
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
     from gateway.platforms import api_server_room_attachments, api_server_room_artifacts
-
     async def revoke_exact(request):
         from gateway.platforms import api_server
 

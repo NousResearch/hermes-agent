@@ -104,7 +104,7 @@ def test_late_refresh_preserves_winner_and_attempts_exact_cleanup(
         monkeypatch.setattr(hosted_room_links, "mark_room_link_status", fail_status)
     peer = Peer()
     tracked = second._tracked_peer_client("room-1", "member-peer", peer)
-    with pytest.raises(hosted_rooms.HostedRoomError, match="changed during reconnect"):
+    with pytest.raises(RuntimeError, match="changed before admission") as rejection:
         tracked.dispatch(dispatch=dispatch.as_mapping(), grant=tokens["old"])
     row = hosted_room_link_records.room_link_record(
         first.db_path, room_id="room-1", member_id="member-peer"
@@ -113,6 +113,8 @@ def test_late_refresh_preserves_winner_and_attempts_exact_cleanup(
     assert row["status"] == "ready"
     assert peer.dispatched == []
     assert peer.exact == [tokens["stale"]]
+    assert rejection.value.dispatch_not_attempted is True
+    assert rejection.value.not_admitted is False
 
 
 def test_transport_reuses_its_successfully_published_renewal(peers):

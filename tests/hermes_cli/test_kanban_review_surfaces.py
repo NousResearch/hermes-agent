@@ -113,13 +113,15 @@ def test_review_tools_are_gated_and_visible_to_kanban_workers(
 
 
 def test_review_changes_are_exposed_in_acp() -> None:
-    # Gate on the ``acp.schema`` submodule specifically: in multi-file pytest
-    # runs something puts the repo's ``tests/`` dir on sys.path, so the repo's
-    # own ``tests/acp/`` package shadows the real SDK and a bare
-    # ``importorskip("acp")`` false-positives — the shadow has no ``schema``
-    # submodule and ``acp_adapter.tools`` still fails importing it (t_63128384).
+    # Gate on the ``acp.schema`` submodule specifically. The historical
+    # "something puts the repo's tests/ dir on sys.path" pollution that
+    # shadowed the real SDK with tests/acp/ was root-caused and fixed in
+    # t_d40ea7e5 (off-by-one parents[1] -> parents[2] in three test files).
+    # We keep the submodule gate anyway: the venv here has no real `acp`
+    # installed, and tests/acp/ still exists — if pollution ever recurs the
+    # bare name would false-positive again (t_63128384).
     pytest.importorskip(
-        "acp.schema", reason="ACP adapter requires the optional acp extra"
+        "acp.schema", reason="ACP adapter requires the optional acp extra",
     )
     from acp_adapter.tools import _POLISHED_TOOLS
 

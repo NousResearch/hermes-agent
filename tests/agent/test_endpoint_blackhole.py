@@ -23,7 +23,10 @@ import httpx
 import pytest
 import requests
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+# "../.." = repo root. A single ".." would insert <root>/tests, putting the
+# repo's tests/acp/ package on sys.path ahead of any installed acp SDK and
+# false-positiving importorskip("acp") gates across the shard.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
 @pytest.fixture(autouse=True)

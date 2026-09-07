@@ -161,7 +161,8 @@ import { formatDesktopLogLine } from './desktop-log-line'
 import {
   recordStoppedDesktopPluginHost,
   relaunchDesktopPluginHost,
-  restoreStoppedDesktopPluginHosts
+  restoreStoppedDesktopPluginHosts,
+  stopAndRecordPluginHost
 } from './desktop-plugin-host-restore'
 import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 import {
@@ -504,7 +505,7 @@ import {
 } from './windows-update-apply'
 import { type ForceReleaseHolder, formatHolderLine, runWindowsUpdateForceRelease } from './windows-update-force-release'
 import { forceReleaseHoldersFromScan } from './windows-update-holder-policy'
-import { requireUpdaterHandoff, stopAndRecordPluginHost } from './windows-update-orchestration'
+import { requireUpdaterHandoff } from './windows-update-orchestration'
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'

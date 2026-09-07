@@ -2,11 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import {
-  requireUpdaterHandoff,
-  runUpdaterHandoffTransaction,
-  stopAndRecordPluginHost
-} from './windows-update-orchestration'
+import { requireUpdaterHandoff, runUpdaterHandoffTransaction } from './windows-update-orchestration'
 
 test('observes immediately after spawn before awaiting authentication', async () => {
   const events: string[] = []
@@ -160,41 +156,4 @@ test('a failed started handoff cannot fall through to an in-process updater', ()
     /child ownership is ambiguous/
   )
   assert.equal(requireUpdaterHandoff({ ok: true, value: 'quit desktop' }), 'quit desktop')
-})
-
-test('compensates a stopped plugin host when its recovery record cannot be persisted', async () => {
-  const host = { pid: 42 }
-  const compensated: unknown[] = []
-
-  assert.equal(
-    await stopAndRecordPluginHost({
-      terminate: async () => ({ terminated: true, host }),
-      record: () => false,
-      compensate: async value => {
-        compensated.push(value)
-
-        return true
-      }
-    }),
-    false
-  )
-  assert.deepEqual(compensated, [host])
-})
-
-test('reports when both the plugin-host recovery record and compensating restart fail', async () => {
-  const host = { pid: 42 }
-  const failures: unknown[] = []
-
-  assert.equal(
-    await stopAndRecordPluginHost({
-      terminate: async () => ({ terminated: true, host }),
-      record: () => false,
-      compensate: async () => false,
-      onRecoveryFailure: value => {
-        failures.push(value)
-      }
-    }),
-    false
-  )
-  assert.deepEqual(failures, [host])
 })

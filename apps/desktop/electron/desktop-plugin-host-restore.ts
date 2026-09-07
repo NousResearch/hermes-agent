@@ -338,3 +338,40 @@ export async function restoreStoppedDesktopPluginHosts(
 
   return outcome
 }
+
+/**
+ * Stop one supervisor and leave the ledger consistent with what happened.
+ *
+ * The failure that matters is the middle one: the supervisor is already dead
+ * and the record of it did not survive, so nothing will ever relaunch it. That
+ * is why a failed record compensates by relaunching immediately, and why the
+ * caller is told the unit was not stopped — an unrecorded stop is worse for
+ * the user than a supervisor that keeps the venv open, which the preflight
+ * will simply report as a blocker.
+ */
+export async function stopAndRecordPluginHost<THost>(deps: {
+  terminate: () => Promise<{ terminated: boolean; host?: THost | null }>
+  record: (host: THost) => boolean
+  compensate: (host: THost) => Promise<boolean>
+  onRecoveryFailure?: (host: THost) => void
+}): Promise<boolean> {
+  const outcome = await deps.terminate()
+
+  if (!outcome.terminated) {
+    return false
+  }
+
+  if (!outcome.host) {
+    return true
+  }
+
+  if (deps.record(outcome.host)) {
+    return true
+  }
+
+  if (!(await deps.compensate(outcome.host))) {
+    deps.onRecoveryFailure?.(outcome.host)
+  }
+
+  return false
+}

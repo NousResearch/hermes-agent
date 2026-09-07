@@ -645,6 +645,9 @@ def _retry_failed_closeout_continuation(
         recover_and_enqueue_work_groups(
             consumer="cli-closeout-retry",
             target_queue=process_registry.completion_queue,
+            work_filter=lambda candidate: (
+                str(candidate.get("work_id") or "") == continuation.work_id
+            ),
         )
         return True
     except Exception:
@@ -3471,7 +3474,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                     except queue.Empty:
                         pass
                 if continuation is not None:
-                    self.chat(
+                    self._tui_run_chat_turn(
                         continuation.text,
                         origin_work_id=continuation.work_id,
                         work_generation=continuation.generation,
@@ -3562,12 +3565,20 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             n = len(submit_images)
             _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
 
+        self._tui_run_chat_turn(
+            notification_preview or user_input,
+            images=submit_images or None,
+            voice_input=is_voice_input,
+        )
+
+    def _tui_run_chat_turn(self, message, *, images=None, voice_input=False, **chat_kwargs):
+        """Run a chat turn with the interactive busy, cancellation, and cleanup lifecycle."""
         self._agent_running = self._interactive_turn = True
         self._pet_turn_error = self._pet_reasoning = False
         self._turn_summary_begin()
         self._app.invalidate()
         try:
-            self.chat(notification_preview or user_input, images=submit_images or None, voice_input=is_voice_input)
+            self.chat(message, images=images, voice_input=voice_input, **chat_kwargs)
         finally:
             self._tui_after_turn()
 

@@ -14,7 +14,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
 from tools.async_delegation import _DB_LOCK, _transaction
@@ -1378,11 +1378,37 @@ def recover_work_groups() -> List[Dict[str, Any]]:
 
 
 def recover_and_enqueue_work_groups(
-    *, consumer: str = "async-delegation-recovery", target_queue: Any = None
+    *, consumer: str = "async-delegation-recovery", target_queue: Any = None,
+    work_filter: Optional[Callable[[Dict[str, Any]], bool]] = None,
 ) -> List[Dict[str, Any]]:
     """Publish recoverable envelopes through the same idempotent aggregate rail."""
     enqueued: List[Dict[str, Any]] = []
     for item in recover_work_groups():
+        if work_filter is not None:
+            candidate = dict(item)
+            if not candidate.get("routing"):
+                with _DB_LOCK, _transaction() as conn:
+                    routing = conn.execute(
+                        """SELECT origin_session, origin_ui_session_id,
+                                  origin_session_id, parent_session_id
+                           FROM async_delegation_work_groups WHERE work_id=?""",
+                        (item["work_id"],),
+                    ).fetchone()
+                if routing is None:
+                    continue
+                candidate["routing"] = {
+                    "session_key": routing[0],
+                    "origin_ui_session_id": routing[1],
+                    "origin_session_id": routing[2],
+                    "parent_session_id": routing[3],
+                }
+            try:
+                if not work_filter(candidate):
+                    continue
+            except Exception:
+                # Ownership filters are safety boundaries: an indeterminate route
+                # must not acquire a claim that this consumer cannot deliver.
+                continue
         delivery_id = item.get("delivery_id")
         if delivery_id:
             delivery_key = (

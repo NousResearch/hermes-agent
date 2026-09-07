@@ -37,6 +37,9 @@ class CLIProcessNotificationsMixin:
             recover_and_enqueue_work_groups(
                 consumer="cli-closeout-poller",
                 target_queue=process_registry.completion_queue,
+                work_filter=lambda item: self._owns_process_notification(
+                    dict(item.get("routing") or {})
+                ),
             )
         except Exception:
             logging.warning("CLI closeout recovery poll failed", exc_info=True)

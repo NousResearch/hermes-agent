@@ -505,6 +505,31 @@ def test_process_registry_startup_recovers_group_with_creation_disabled():
     assert ad.task_scoped_closeout_enabled({}) is False
 
 
+def test_recovery_filter_rejects_foreign_session_before_claim():
+    assert _register()
+    _finish("deleg-1")
+    assert ad.seal_work_group("work-1", "turn-1")
+
+    rejected = ad.recover_and_enqueue_work_groups(
+        consumer="foreign-cli",
+        work_filter=lambda item: item["routing"]["session_key"] == "other-route",
+    )
+
+    assert rejected == []
+    with ad._transaction() as conn:
+        row = conn.execute(
+            "SELECT state, closeout_claim FROM async_delegation_work_groups WHERE work_id='work-1'"
+        ).fetchone()
+    assert row == ("sealed", None)
+
+    accepted = ad.recover_and_enqueue_work_groups(
+        consumer="owning-cli",
+        work_filter=lambda item: item["routing"]["session_key"] == "route",
+    )
+    assert len(accepted) == 1
+    assert accepted[0]["origin_work_id"] == "work-1"
+
+
 def test_recovery_rotates_dead_bound_claim_before_enqueueing_replacement():
     assert _register()
     _finish("deleg-1")

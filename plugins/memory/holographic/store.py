@@ -188,6 +188,34 @@ class MemoryStore:
             self._rebuild_bank(row["category"])
             return True
 
+    def find_facts_by_substring(self, substring: str, limit: int = 20) -> list[dict]:
+        """Return facts whose content contains ``substring``, best matches first.
+
+        Best-match ordering: facts whose content *starts* with the substring
+        rank above mere substring hits (memory entries are ``key: value`` and
+        the mirror's ``old_text`` is usually the leading key), then by trust
+        descending and content length ascending. Used by the memory-write
+        mirror to map a ``replace``/``remove`` ``old_text`` back to the fact
+        that mirrored the prior entry.
+        """
+        with self._lock:
+            esc = substring.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            rows = self._conn.execute(
+                """
+                SELECT fact_id, content, category, tags, trust_score,
+                       retrieval_count, helpful_count, created_at, updated_at
+                FROM facts
+                WHERE content LIKE ? ESCAPE '\\'
+                ORDER BY
+                    CASE WHEN content LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END,
+                    trust_score DESC,
+                    LENGTH(content) ASC
+                LIMIT ?
+                """,
+                (f"%{esc}%", f"{esc}%", limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     def list_facts(self, category: str | None = None, min_trust: float = 0.0, limit: int = 50) -> list[dict]:
         """Browse facts ordered by trust_score descending, optionally filtered by category / min trust."""
         with self._lock:

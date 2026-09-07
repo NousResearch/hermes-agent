@@ -43,6 +43,8 @@ export interface SpawnedPluginHostProcess {
 export interface PluginHostRestoreDeps {
   isWindows?: boolean
   now?: () => number
+  /** Containment root for `argv[0]`; only System32/SysWOW64 under it may be relaunched. */
+  systemRoot?: string
   existsSync?: (target: string) => boolean
   readFileSync?: (target: string) => string
   writeFileSync?: (target: string, contents: string) => void
@@ -60,6 +62,7 @@ function defaultDeps(deps: PluginHostRestoreDeps) {
   return {
     isWindows: deps.isWindows ?? process.platform === 'win32',
     now: deps.now ?? Date.now,
+    systemRoot: deps.systemRoot ?? process.env.SystemRoot ?? 'C:\\Windows',
     existsSync: deps.existsSync ?? ((target: string) => fs.existsSync(target)),
     readFileSync: deps.readFileSync ?? ((target: string) => fs.readFileSync(target, 'utf8')),
     writeFileSync:
@@ -89,7 +92,7 @@ async function launchDesktopPluginHost(
 ): Promise<boolean> {
   const label = scriptArgument(host.argv) ?? host.argv.join(' ')
 
-  if (!isRelaunchableDesktopPluginHost(hermesHome, host, io.existsSync)) {
+  if (!isRelaunchableDesktopPluginHost(hermesHome, host, io.existsSync, io.systemRoot)) {
     io.log(`[updates] not relaunching plugin service host ${label}: launch line no longer qualifies`)
 
     return false
@@ -166,25 +169,41 @@ export function parseTerminatedPluginServiceHost(value: unknown): TerminatedPlug
   return { pid: pid as number, createdAt, argv: [...(argv as string[])], cwd: typeof cwd === 'string' && cwd ? cwd : null }
 }
 
+/** The only directories a relaunched `argv[0]` may resolve into. */
+function systemBinaryDirectories(systemRoot: string): string[] {
+  return [winPath.join(systemRoot, 'System32'), winPath.join(systemRoot, 'SysWOW64')]
+}
+
 /**
- * Only the exact supervisor shape the scanner proved is ever relaunched: a
- * Windows Script Host binary running a `.vbs` that lives under this
- * HERMES_HOME's `desktop-plugins` directory. The ledger lives in HERMES_HOME
- * too, so this is a shape check, not a trust boundary; it keeps a corrupt or
- * stale entry from turning into an arbitrary process launch.
+ * Only the exact supervisor shape the scanner proved is ever relaunched: the
+ * inbox Windows Script Host binary, resolving under `%SystemRoot%\System32` or
+ * `%SystemRoot%\SysWOW64`, running a `.vbs` under this HERMES_HOME's
+ * `desktop-plugins` directory.
+ *
+ * The basename check alone was not enough. This ledger is a same-user
+ * writable JSON file that the desktop replays at startup, so
+ * `C:\Users\me\Downloads\wscript.exe` satisfied a basename test and turned
+ * into an arbitrary process launch by the desktop. Containment is now on the
+ * resolved path, not on the name.
  */
 export function isRelaunchableDesktopPluginHost(
   hermesHome: string,
   host: Pick<TerminatedPluginServiceHost, 'argv'>,
-  existsSync: (target: string) => boolean = fs.existsSync
+  existsSync: (target: string) => boolean = fs.existsSync,
+  systemRoot: string = process.env.SystemRoot || 'C:\\Windows'
 ): boolean {
   const [executable] = host.argv
 
   if (!executable) {return false}
 
-  const binary = winPath.basename(executable.replace(/^"|"$/g, '')).toLowerCase()
+  const image = executable.replace(/^"|"$/g, '')
+  const binary = winPath.basename(image).toLowerCase()
 
   if (binary !== 'wscript.exe' && binary !== 'cscript.exe') {return false}
+
+  if (!winPath.isAbsolute(image)) {return false}
+
+  if (!systemBinaryDirectories(systemRoot).some(directory => isPathUnder(image, directory))) {return false}
 
   const script = scriptArgument(host.argv)
 
@@ -256,7 +275,7 @@ export function recordStoppedDesktopPluginHost(
 ): boolean {
   const io = defaultDeps(deps)
 
-  if (!isRelaunchableDesktopPluginHost(hermesHome, host, io.existsSync)) {
+  if (!isRelaunchableDesktopPluginHost(hermesHome, host, io.existsSync, io.systemRoot)) {
     io.log(`[updates] not recording plugin service host PID ${host.pid}: launch line is not a desktop-plugins script host`)
 
     return false

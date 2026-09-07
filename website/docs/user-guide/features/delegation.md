@@ -172,6 +172,17 @@ separate durable event IDs for delivery claims and recovery, exposed as
 `delegation_ids` and in the `clusters` details. Those event IDs do not consume
 additional capacity slots.
 
+Cancellation stops scheduling within the targeted component: pending tasks and
+queued workers return `status="interrupted"` with `api_calls=0` without entering
+the child runner. Already running tasks are interrupted and retain their real
+partial results. If async admission fails, children stay attached to the parent
+so its interrupt still reaches the synchronous fallback.
+
+Graph listings report active, successfully completed, stalled, failed, and
+interrupted cluster counts separately. A stalled or failed cluster remains
+visible while its siblings run and retains that outcome after they finish;
+`completed_clusters` counts only successful clusters.
+
 Independent delivery automatically disables itself when it would be unsafe or
 unavailable: the batch has no dependency edges, the graph has only one connected
 component, the caller is a synchronous nested orchestrator, the session cannot

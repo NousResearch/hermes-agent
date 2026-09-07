@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -70,6 +71,10 @@ def _install_fake_children(monkeypatch, *, mock_finalization=True):
             "api_call_count": 0, "current_tool": None, "last_activity_ts": time.time(),
         }
         child.tool_progress_callback = None
+        parent = kwargs.get("parent_agent")
+        if parent is not None:
+            with parent._active_children_lock:
+                parent._active_children.append(child)
         children.append(child)
         return child
 
@@ -198,10 +203,12 @@ def test_failed_prerequisite_blocks_descendant_without_model_call(monkeypatch):
 
 
 def test_background_graph_dispatches_independent_components(monkeypatch):
-    _install_fake_children(monkeypatch)
+    children = _install_fake_children(monkeypatch)
+    parent = _parent()
     captured = {}
 
     def dispatch_group(*, batches, max_async_children, graph_id):
+        assert parent._active_children == children
         captured["batches"] = batches
         captured["max"] = max_async_children
         captured["graph_id"] = graph_id
@@ -234,11 +241,12 @@ def test_background_graph_dispatches_independent_components(monkeypatch):
                 {"id": "consumer", "goal": "Use the first result", "depends_on": ["one"]},
             ],
             background=True,
-            parent_agent=_parent(),
+            parent_agent=parent,
         )
     )
 
     assert output["mode"] == "adaptive_background"
+    assert parent._active_children == []
     assert output["cluster_count"] == 2
     assert output["delegation_id"] == output["graph_id"] == captured["graph_id"]
     assert output["delegation_ids"] == [
@@ -372,3 +380,169 @@ def test_real_graph_delivery_uses_global_budget_and_transcript_identity(monkeypa
     for event in (first, second):
         assert event["graph_id"] == output["graph_id"]
         assert output["graph_id"] in format_process_notification(event).splitlines()[0]
+
+
+def _cancellation_tasks(split):
+    tasks = [
+        {"id": "a", "goal": "Produce the first input"},
+        {"id": "b", "goal": "Produce the second input"},
+        {"id": "c", "goal": "Combine both inputs", "depends_on": ["a", "b"]},
+    ]
+    if split:
+        tasks.append({"id": "independent", "goal": "Return an independent result"})
+    return tasks
+
+
+@pytest.mark.parametrize("split", [False, True])
+def test_cancel_before_component_start_never_enters_child_runner(monkeypatch, split):
+    children = _install_fake_children(monkeypatch)
+    run_child = MagicMock(return_value={})
+    monkeypatch.setattr(delegate_tool, "_run_single_child", run_child)
+    monkeypatch.setattr(delegate_tool, "_get_max_concurrent_children", lambda: 4)
+    monkeypatch.setattr("gateway.session_context.async_delivery_supported", lambda: True)
+    gate = threading.Event()
+    # The real registry accepts the graph while its coordinator is queued.
+    # Cancel before releasing the executor, including a singleton component.
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        executor.submit(gate.wait, 10)
+        monkeypatch.setattr(ad, "_get_executor", lambda _max: executor)
+        try:
+            output = json.loads(delegate_tool.delegate_task(
+                tasks=_cancellation_tasks(split), background=True, parent_agent=_parent(),
+            ))
+            assert output["status"] == "dispatched"
+            assert ad.interrupt_delegation(output["delegation_id"])
+        finally:
+            gate.set()
+    events = [process_registry.completion_queue.get(timeout=5) for _ in range(2 if split else 1)]
+    run_child.assert_not_called()
+    assert all(event["status"] == "interrupted" for event in events)
+    entries = [entry for event in events for entry in event["results"]]
+    assert len(entries) == len(children)
+    assert all(entry["status"] == "interrupted" and entry["api_calls"] == 0 for entry in entries)
+    for child in children:
+        child.close.assert_called_once()
+
+
+@pytest.mark.parametrize("split", [False, True])
+def test_cancel_skips_queued_root_and_dependent_but_keeps_running_result(monkeypatch, split):
+    from tools.daemon_pool import DaemonThreadPoolExecutor
+
+    children = _install_fake_children(monkeypatch)
+    started, release = threading.Event(), threading.Event()
+    queued, resume_scheduler = threading.Event(), threading.Event()
+    queued_futures = []
+    called = []
+
+    class OneWorkerPool(DaemonThreadPoolExecutor):
+        def __init__(self, **kwargs):
+            super().__init__(**{**kwargs, "max_workers": 1})
+            self.submitted = 0
+
+        def submit(self, fn, /, *args, **kwargs):
+            future = super().submit(fn, *args, **kwargs)
+            self.submitted += 1
+            if self.submitted == 2:
+                queued_futures.append(future)
+                queued.set()
+                # Hold the scheduler so it cannot cancel B's future. B will
+                # dequeue after A and must reject itself on its own worker.
+                assert resume_scheduler.wait(10)
+            return future
+
+    # Force B to queue behind A within the actual component scheduler.
+    # The registry retains its original executor class.
+    monkeypatch.setattr("tools.daemon_pool.DaemonThreadPoolExecutor", OneWorkerPool)
+    monkeypatch.setattr(delegate_tool, "_get_max_concurrent_children", lambda: 4)
+    monkeypatch.setattr("gateway.session_context.async_delivery_supported", lambda: True)
+
+    def run_child(task_index, goal, *args, **kwargs):
+        called.append(task_index)
+        if task_index == 0:
+            started.set()
+            assert release.wait(10)
+        # A may finish successfully despite a concurrent stop. Its result
+        # must survive, without that success releasing B or C afterwards.
+        return {"task_index": task_index, "status": "completed", "summary": "partial work", "api_calls": 2}
+
+    monkeypatch.setattr(delegate_tool, "_run_single_child", run_child)
+    try:
+        output = json.loads(delegate_tool.delegate_task(
+            tasks=_cancellation_tasks(split), background=True, parent_agent=_parent(),
+        ))
+        assert started.wait(5)
+        assert queued.wait(5)
+        target = output["clusters"][0]["delegation_id"] if split else output["delegation_id"]
+        assert ad.interrupt_delegation(target)
+        release.set()
+        assert queued_futures[0].result(timeout=5)["status"] == "interrupted"
+    finally:
+        release.set()
+        resume_scheduler.set()
+    events = [process_registry.completion_queue.get(timeout=5) for _ in range(2 if split else 1)]
+    results = {entry["task_index"]: entry for event in events for entry in event["results"]}
+    component_event = next(event for event in events if any(r["task_index"] == 0 for r in event["results"]))
+    assert component_event["status"] == "interrupted"
+    assert set(called) == ({0, 3} if split else {0})
+    assert results[0]["summary"] == "partial work"
+    assert results[0]["api_calls"] == 2
+    for index in (1, 2):
+        assert results[index]["status"] == "interrupted"
+        assert results[index]["api_calls"] == 0
+        children[index].close.assert_called_once()
+    if split:
+        assert results[3]["status"] == "completed"
+        children[3].interrupt.assert_not_called()
+
+
+@pytest.mark.parametrize("shape", ["single", "flat", "graph"])
+def test_capacity_fallback_keeps_children_attached_for_real_parent_interrupt(monkeypatch, shape):
+    from run_agent import AIAgent
+
+    children = _install_fake_children(monkeypatch)
+    parent = _parent()
+    parent._execution_thread_id = None
+    parent.quiet_mode = True
+    busy, release, started = threading.Event(), threading.Event(), threading.Event()
+    monkeypatch.setattr(delegate_tool, "_get_max_async_children", lambda: 1)
+    monkeypatch.setattr("gateway.session_context.async_delivery_supported", lambda: True)
+
+    def run_child(task_index, goal, child=None, parent_agent=None, **kwargs):
+        def interrupt(*args, **kwargs):
+            child._interrupt_requested = True
+            release.set()
+            return True
+
+        child.interrupt.side_effect = interrupt
+        started.set()
+        assert release.wait(10)
+        return {"task_index": task_index, "status": "interrupted", "summary": None, "api_calls": 1}
+
+    monkeypatch.setattr(delegate_tool, "_run_single_child", run_child)
+    blocker = ad.dispatch_async_delegation(
+        goal="Occupy the async slot", context=None, toolsets=None, role="leaf",
+        model="m", session_key="unrelated", max_async_children=1,
+        runner=lambda: {} if busy.wait(10) else {},
+    )
+    assert blocker["status"] == "dispatched"
+    tasks = _cancellation_tasks(False)
+    if shape == "flat":
+        tasks = [{"goal": task["goal"]} for task in tasks]
+    elif shape == "single":
+        tasks = [{"goal": "Return one short result"}]
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(delegate_tool.delegate_task, tasks=tasks, background=True, parent_agent=parent)
+        try:
+            assert started.wait(5)
+            with parent._active_children_lock:
+                assert set(map(id, parent._active_children)) == set(map(id, children))
+            # Actual AIAgent interrupt propagation, without running an LLM.
+            assert AIAgent.interrupt(parent, "test stop", hard_cancel=True)
+            assert release.wait(5)
+            assert any(child.interrupt.called for child in children)
+        finally:
+            release.set()
+            busy.set()
+        output = json.loads(future.result(timeout=5))
+    assert "SYNCHRONOUSLY" in output["note"]
+    assert all(result["status"] == "interrupted" for result in output["results"])

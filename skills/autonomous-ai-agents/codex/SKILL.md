@@ -56,6 +56,9 @@ terminal(command="cd $(mktemp -d) && git init && codex exec 'Build a snake game 
 terminal(command="codex exec --sandbox workspace-write 'Refactor the auth module'", workdir="~/project", background=true, pty=true)
 # Returns session_id
 
+# Tag the worker so later model controls can target it (ids/model names only)
+terminal(command="codex exec --sandbox workspace-write 'Refactor the auth module'", workdir="~/project", background=true, pty=true, coding_backend="codex", coding_model="gpt-5.2")
+
 # Monitor progress
 process(action="poll", session_id="<id>")
 process(action="log", session_id="<id>")

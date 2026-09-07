@@ -79,6 +79,9 @@ For iterative work requiring multiple exchanges, start the TUI in background:
 terminal(command="opencode", workdir="~/project", background=true, pty=true)
 # Returns session_id
 
+# Tag the worker so later model controls can target it (ids/model names only)
+terminal(command="opencode", workdir="~/project", background=true, pty=true, coding_backend="opencode", coding_session_id="<opencode-session-id>")
+
 # Send a prompt
 process(action="submit", session_id="<id>", data="Implement OAuth refresh flow and add tests")
 

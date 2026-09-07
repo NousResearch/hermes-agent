@@ -11,7 +11,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { selectForegroundPoolEviction, selectPoolEvictions } from './pool-eviction'
+import { selectForegroundPoolEviction, selectPoolEvictions, type PoolEvictionEntry } from './pool-eviction'
 
 const NOW = 1_000_000
 // Mirrors main.ts POOL_KEEPALIVE_FRESH_MS (4 minutes — see #95189).
@@ -171,7 +171,7 @@ test('foreground dial reclaims the least-recently-used idle resident after the p
 })
 
 test('foreground reclaim never selects a backend with an active turn lease', () => {
-  const entries: [string, ReturnType<typeof resident>][] = [
+  const entries: [string, PoolEvictionEntry][] = [
     ['old-active-turn', resident(500_000, true)],
     ['idle', resident(1_000)],
     ['unknown-activity', { process: { pid: 456 }, lastActiveAt: NOW - 900_000 }]

@@ -22,7 +22,9 @@ import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
   downloadGatewayMediaFile,
+  isFileMediaPath,
   isInlineMediaSrc,
+  isMarkdownDocumentPath,
   isRemoteGateway,
   mediaExternalUrl,
   mediaKind,
@@ -38,6 +40,8 @@ import { cn } from '@/lib/utils'
 import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
+import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
+import { paragraphPlainText, TranscriptDirectiveLeaf, useIsClaimedDirective } from './transcript-directive'
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
 // plugin is stateless beyond its internal cache so re-creating per-render
@@ -254,6 +258,24 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   const mediaPath = mediaPathFromMarkdownHref(href)
 
   if (mediaPath) {
+    // A delivered markdown document is renderable content, not an opaque
+    // download: route it to the preview rail (which renders .md with a
+    // rendered/source toggle) instead of the download-link fallback that
+    // `mediaKind() === 'file'` would produce. (#84951)
+    if (isMarkdownDocumentPath(mediaPath)) {
+      return <PreviewAttachment source="tool-result" target={mediaPath} />
+    }
+
+    // Non-media files (PDFs, data files, anything outside MEDIA_BY_EXT):
+    // MediaAttachment's kind==='file' branch is a degraded dead-end (bare
+    // "Open <name>" anchor). Route through the preview pipeline instead —
+    // the same file card + "Open preview" the bare-path markdown-link
+    // branch below produces — so MEDIA: uniformly delivers the richest
+    // rendering for every file type.
+    if (mediaKind(mediaPath) === 'file') {
+      return <PreviewAttachment source="tool-result" target={mediaPath} />
+    }
+
     return <MediaAttachment path={mediaPath} />
   }
 
@@ -272,6 +294,25 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   const target = href ? normalizeExternalUrl(href) : href
 
   if (!target || !/^https?:\/\//i.test(target)) {
+    // A plain filesystem href (`[report](/home/user/report.md)`, `file://…`,
+    // `~/notes.md`, `C:\…`) names a file on the AGENT's machine. A bare
+    // anchor is a dead link there — file:// is blocked in the renderer, and
+    // on a remote gateway the path isn't even on this disk. Route it through
+    // the preview pipeline instead: normalizeOrLocalPreviewTarget resolves at
+    // VIEW time against the session's backend (local reads the file directly;
+    // remote fetches it over the authenticated /api/fs bridge), so the same
+    // transcript works from every machine that opens it. Media extensions
+    // keep their richer inline player.
+    const fileHref = href && !href.startsWith('#') && isFileMediaPath(href) ? href : null
+
+    if (fileHref) {
+      return mediaKind(fileHref) === 'file' ? (
+        <PreviewAttachment source="explicit-link" target={fileHref} />
+      ) : (
+        <MediaAttachment path={fileHref} />
+      )
+    }
+
     return (
       <a
         className={cn('ref wrap-anywhere', className)}
@@ -408,6 +449,8 @@ interface MarkdownTextSurfaceProps {
   /** Disable artifact-card promotion for fenced blocks (reasoning text — a
    *  model's scratchpad draft must not register artifact versions). */
   disableArtifacts?: boolean
+  /** Foreign history must not load images or mount live transcript directives. */
+  previewOnly?: boolean
 }
 
 // Headings shrink to chat scale rather than the prose default (h1≈xl). Kept
@@ -462,11 +505,42 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
   )
 }
 
+/**
+ * Paragraph override. Almost always a plain `<p>` — but a paragraph that is
+ * exactly one `::name{...}` directive claimed by a plugin renders as that
+ * plugin's transcript component instead (`transcript.directives` area). The
+ * claim check subscribes to the registry, so hot-loading a plugin upgrades
+ * already-rendered directives in place; unclaimed directives stay prose.
+ */
+function MarkdownParagraph({
+  children,
+  className,
+  streaming,
+  ...props
+}: ComponentProps<'p'> & { streaming?: boolean }) {
+  const plain = paragraphPlainText(children)
+  const claimed = useIsClaimedDirective(plain)
+
+  if (claimed && plain !== null) {
+    return <TranscriptDirectiveLeaf streaming={streaming} text={plain} />
+  }
+
+  return (
+    // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which
+    // must out-specify Tailwind Typography's `prose` margins — so no
+    // `my-*` here on purpose.
+    <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props}>
+      {children}
+    </p>
+  )
+}
+
 function MarkdownTextSurface({
   containerClassName,
   containerProps,
   defer,
-  disableArtifacts
+  disableArtifacts,
+  previewOnly
 }: MarkdownTextSurfaceProps) {
   const { status, text } = useMessagePartText()
   const isStreaming = status.type === 'running'
@@ -493,13 +567,9 @@ function MarkdownTextSurface({
         h4: ({ className, ...props }: ComponentProps<'h4'>) => (
           <h4 className={cn('my-1 font-semibold', HEADING_SIZES.h4, className)} {...props} />
         ),
-        p: ({ className, ...props }: ComponentProps<'p'>) => (
-          // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which
-          // must out-specify Tailwind Typography's `prose` margins — so no
-          // `my-*` here on purpose.
-          <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props} />
-        ),
-        a: MarkdownLink,
+        p: (props: ComponentProps<'p'>) =>
+          previewOnly ? <p {...props} /> : <MarkdownParagraph {...props} streaming={isStreaming} />,
+        a: previewOnly ? ({ children }: ComponentProps<'a'>) => <span>{children}</span> : MarkdownLink,
         // Inline code must not vote when an ancestor resolves `dir="auto"`
         // (HTML's algorithm skips descendants that carry their own dir),
         // mirroring the CSS isolate that already keeps it out of the
@@ -547,39 +617,24 @@ function MarkdownTextSurface({
         li: ({ className, ...props }: ComponentProps<'li'>) => (
           <li className={cn('leading-(--dt-line-height)', className)} {...props} />
         ),
-        table: ({ className, ...props }: ComponentProps<'table'>) => (
-          <div className="aui-md-table my-2 max-w-full overflow-x-auto rounded-[0.375rem] border border-(--ui-stroke-tertiary)">
-            <table
-              className={cn(
-                'm-0 w-full min-w-[18rem] border-collapse text-[0.8125rem] [&_tr]:border-b [&_tr]:border-(--ui-stroke-tertiary) last:[&_tr]:border-0',
-                className
-              )}
-              {...props}
-            />
-          </div>
-        ),
+        // Columns are drag-resizable; the widths live outside the transcript
+        // (see markdown-table-widths.ts) so a new turn or a session switch
+        // doesn't undo a resize.
+        table: ResizableMarkdownTable,
         thead: ({ className, ...props }: ComponentProps<'thead'>) => (
           <thead className={cn('m-0 bg-muted/35 text-muted-foreground', className)} {...props} />
         ),
-        th: ({ className, ...props }: ComponentProps<'th'>) => (
-          <th
-            className={cn(
-              'whitespace-nowrap px-2.5 py-1.5 text-left align-middle text-[0.75rem] font-medium text-muted-foreground',
-              className
-            )}
-            {...props}
-          />
-        ),
+        th: ResizableMarkdownTh,
         td: ({ className, ...props }: ComponentProps<'td'>) => (
           <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)} {...props} />
         ),
-        img: MarkdownImage,
+        img: previewOnly ? ({ alt }: ComponentProps<'img'>) => <span>{alt}</span> : MarkdownImage,
         // ```mermaid / ```svg fences route to their lazy renderers; substantial
         // html/svg/code fences promote to an artifact card that opens in the
         // right rail; every other language falls back to the Shiki-highlighted
         // code block.
         SyntaxHighlighter: (props: SyntaxHighlighterProps) => {
-          const artifact = disableArtifacts ? null : detectArtifact(props.language, props.code)
+          const artifact = disableArtifacts || previewOnly ? null : detectArtifact(props.language, props.code)
 
           if (artifact) {
             return <ArtifactCard code={props.code} detection={artifact} streaming={isStreaming} />
@@ -595,7 +650,7 @@ function MarkdownTextSurface({
           )
         }
       }) as StreamdownTextComponents,
-    [disableArtifacts, isStreaming]
+    [disableArtifacts, isStreaming, previewOnly]
   )
 
   if (text.length > MAX_MARKDOWN_CHARS) {

@@ -156,7 +156,7 @@ class TestExecuteCodeIntegration:
 
     def test_execute_code_uses_active_profile_for_passthrough(self, monkeypatch):
         """The execute_code child must receive the routed profile's value."""
-        from tools.code_execution_tool import _scrub_child_env
+        from tools.code_execution_env import _scrub_child_env
 
         register_env_passthrough(["SERVICE_TOKEN"])
         monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
@@ -172,7 +172,7 @@ class TestExecuteCodeIntegration:
 
     def test_execute_code_omits_missing_scoped_passthrough(self, monkeypatch):
         """A missing routed secret must not leak into the execute_code child."""
-        from tools.code_execution_tool import _scrub_child_env
+        from tools.code_execution_env import _scrub_child_env
 
         register_env_passthrough(["SERVICE_TOKEN"])
         monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
@@ -185,6 +185,33 @@ class TestExecuteCodeIntegration:
             ss.set_multiplex_active(False)
 
         assert "SERVICE_TOKEN" not in child_env
+
+    def test_execute_code_strips_buzz_vars(self):
+        """BUZZ_* credentials must stay out of the execute_code child even
+        though they pass through to terminal children (issue #78026): the
+        carve-out is terminal-only.
+
+        - BUZZ_PRIVATE_KEY matches the KEY secret substring.
+        - BUZZ_AUTH_TAG matches the AUTH secret substring.
+        - BUZZ_RELAY_URL matches no secret substring but is not on the safe
+          prefix allowlist, so it is dropped too.
+        """
+        from tools.code_execution_env import _scrub_child_env
+
+        buzz_vars = {
+            "BUZZ_PRIVATE_KEY": "nsec1fake",
+            "BUZZ_AUTH_TAG": '["tag","data","kind","sig"]',
+            "BUZZ_RELAY_URL": "https://mycommunity.communities.buzz.xyz",
+            "PATH": "/usr/bin",
+            "HOME": "/home/user",
+        }
+        child_env = _scrub_child_env(buzz_vars)
+
+        assert "BUZZ_PRIVATE_KEY" not in child_env
+        assert "BUZZ_AUTH_TAG" not in child_env
+        assert "BUZZ_RELAY_URL" not in child_env
+        assert child_env["PATH"] == "/usr/bin"
+        assert child_env["HOME"] == "/home/user"
 
 
 class TestTerminalIntegration:
@@ -263,7 +290,8 @@ class TestTerminalIntegration:
         assert missing["output"] == "unset"
 
     def test_blocklisted_var_blocked_by_default(self):
-        from tools.environments.local import _sanitize_subprocess_env, _HERMES_PROVIDER_ENV_BLOCKLIST
+        from tools.environments.local import _sanitize_subprocess_env
+        from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
 
         # Pick a var we know is in the blocklist
         blocked_var = next(iter(_HERMES_PROVIDER_ENV_BLOCKLIST))
@@ -277,10 +305,8 @@ class TestTerminalIntegration:
         Hermes provider credentials — that was the bypass where a skill
         could declare ANTHROPIC_TOKEN / OPENAI_API_KEY as passthrough and
         defeat the execute_code sandbox scrubbing."""
-        from tools.environments.local import (
-            _sanitize_subprocess_env,
-            _HERMES_PROVIDER_ENV_BLOCKLIST,
-        )
+        from tools.environments.local import _sanitize_subprocess_env
+        from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
 
         blocked_var = next(iter(_HERMES_PROVIDER_ENV_BLOCKLIST))
         # Attempt to register — must be silently refused (logged warning).
@@ -317,6 +343,35 @@ class TestTerminalIntegration:
             assert var not in result
             assert "PATH" in result
 
+    def test_passthrough_cannot_register_buzz_vars(self, monkeypatch):
+        """GHSA-rhgp-j443-p4rf seal stays intact for the BUZZ_* first-party
+        platform credentials: even though they pass through to terminal
+        children in a Buzz agent context (issue #78026), env_passthrough
+        registration must still refuse them — the carve-out opens NO
+        registration path, so a skill cannot expand BUZZ_* exposure to
+        execute_code."""
+        from tools.environments.local import _sanitize_subprocess_env
+
+        monkeypatch.setenv("BUZZ_MANAGED_AGENT", "1")
+        for var in (
+            "BUZZ_PRIVATE_KEY",
+            "BUZZ_AUTH_TAG",
+            "BUZZ_RELAY_URL",
+        ):
+            register_env_passthrough([var])
+            assert not is_env_passthrough(var), (
+                f"{var} should be refused passthrough registration"
+            )
+            # Terminal sanitizer still passes BUZZ_* through to terminal
+            # children by the first-party carve-out...
+            result = _sanitize_subprocess_env({var: "value", "PATH": "/usr/bin"})
+            assert result.get(var) == "value"
+            # ...but the execute_code child never sees them.
+            from tools.code_execution_env import _scrub_child_env
+
+            child_env = _scrub_child_env({var: "value", "PATH": "/usr/bin"})
+            assert var not in child_env
+
     def test_passthrough_allows_auxiliary_non_secret_routing(self):
         """AUXILIARY_*_PROVIDER / _MODEL and GATEWAY_RELAY routing hints are not
         secrets, so a skill may still register them (they're not protected)."""
@@ -332,10 +387,8 @@ class TestTerminalIntegration:
     def test_make_run_env_blocklist_override_rejected(self):
         """_make_run_env must NOT expose a blocklisted var to subprocess env
         even after a skill attempts to register it via passthrough."""
-        from tools.environments.local import (
-            _make_run_env,
-            _HERMES_PROVIDER_ENV_BLOCKLIST,
-        )
+        from tools.environments.local import _make_run_env
+        from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
 
         blocked_var = next(iter(_HERMES_PROVIDER_ENV_BLOCKLIST))
         os.environ[blocked_var] = "secret_value"
@@ -377,7 +430,7 @@ class TestTerminalIntegration:
         """
         import builtins
 
-        from tools.code_execution_tool import _scrub_child_env
+        from tools.code_execution_env import _scrub_child_env
 
         real_import = builtins.__import__
 

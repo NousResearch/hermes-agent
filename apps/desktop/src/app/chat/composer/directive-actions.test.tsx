@@ -1,7 +1,8 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
+import { $previewTabs, closeRightRail } from '@/store/preview'
 
 import { ComposerDirectiveActions } from './directive-actions'
 import { refChipElement } from './rich-editor'
@@ -46,6 +47,7 @@ function pillValue() {
 afterEach(() => {
   cleanup()
   document.body.replaceChildren()
+  closeRightRail()
   delete desktopWindow.hermesDesktop
   openSession.mockReset()
   vi.useRealTimers()
@@ -62,7 +64,7 @@ describe('ComposerDirectiveActions', () => {
     expect(pillValue()).toBe('https://example.com/docs')
   })
 
-  it('opens a url externally rather than navigating the app', () => {
+  it('opens a url in the in-app browser rather than navigating the app', async () => {
     const openExternal = vi.fn().mockResolvedValue(undefined)
 
     desktopWindow.hermesDesktop = { openExternal } as unknown as Window['hermesDesktop']
@@ -72,7 +74,8 @@ describe('ComposerDirectiveActions', () => {
     hover(chips(editor, 'url')[0]!)
     fireEvent.click(screen.getByRole('button'))
 
-    expect(openExternal).toHaveBeenCalledWith('https://example.com/docs')
+    expect(openExternal).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/docs'))
     expect(pillValue()).toBeNull()
   })
 
@@ -124,6 +127,51 @@ describe('ComposerDirectiveActions', () => {
     vi.advanceTimersByTime(500)
 
     expect(pillValue()).toBe('https://example.com')
+  })
+
+  it('keeps the pill up through a slow diagonal transit to it', () => {
+    vi.useFakeTimers()
+
+    const editor = mountEditor([{ kind: 'url', value: 'https://example.com' }])
+    const chip = chips(editor, 'url')[0]!
+
+    hover(chip)
+    fireEvent.pointerOut(chip, { relatedTarget: null })
+    // The pointer is still in the gap between chip and pill — beyond the old
+    // 120 ms window, not yet on the pill's own hover.
+    act(() => {
+      vi.advanceTimersByTime(300)
+    })
+    expect(pillValue()).toBe('https://example.com')
+
+    fireEvent.mouseEnter(screen.getByRole('button').parentElement!)
+    act(() => {
+      vi.advanceTimersByTime(500)
+    })
+
+    expect(pillValue()).toBe('https://example.com')
+
+    const button = screen.getByRole('button')
+    fireEvent.pointerOut(button, { relatedTarget: button.firstElementChild })
+    act(() => { vi.advanceTimersByTime(750) })
+    expect(pillValue()).toBe('https://example.com')
+  })
+
+  it('still hides shortly after the pointer leaves the pill for good', () => {
+    vi.useFakeTimers()
+
+    const editor = mountEditor([{ kind: 'url', value: 'https://example.com' }])
+    const chip = chips(editor, 'url')[0]!
+
+    hover(chip)
+    fireEvent.pointerOut(chip, { relatedTarget: null })
+    fireEvent.mouseEnter(screen.getByRole('button').parentElement!)
+    fireEvent.mouseLeave(screen.getByRole('button').parentElement!)
+    act(() => { vi.advanceTimersByTime(300) })
+    fireEvent.pointerOut(document.body, { relatedTarget: document.documentElement })
+    act(() => { vi.advanceTimersByTime(200) })
+
+    expect(pillValue()).toBeNull()
   })
 
   it('binds to the document so a late-attached editor still gets the affordance', () => {

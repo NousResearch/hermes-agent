@@ -9,6 +9,18 @@ describe('gateway event routing', () => {
     expect(approvalReplaySessionId('message.delta', 'active-1', 'routed-1')).toBeNull()
   })
 
+  it('does not replay against an active runtime the gateway already reported gone', () => {
+    const isGone = (sid: string) => sid === 'dead-1'
+
+    // Unscoped fan-out attributed to a dead active session: skip.
+    expect(approvalReplaySessionId('session.info', 'dead-1', 'dead-1', { explicit: false, isGone })).toBeNull()
+    expect(approvalReplaySessionId('gateway.ready', 'dead-1', null, { explicit: false, isGone })).toBeNull()
+    // A live active session still replays.
+    expect(approvalReplaySessionId('session.info', 'live-1', 'live-1', { explicit: false, isGone })).toBe('live-1')
+    // An explicitly scoped frame is the runtime speaking for itself — never skipped.
+    expect(approvalReplaySessionId('session.info', 'dead-1', 'dead-1', { explicit: true, isGone })).toBe('dead-1')
+  })
+
   it('drops only unscoped subagent events (genuinely background work)', () => {
     expect(gatewayEventRequiresSessionId('subagent.progress')).toBe(true)
     expect(gatewayEventRequiresSessionId('subagent.start')).toBe(true)

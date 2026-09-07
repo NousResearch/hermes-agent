@@ -3,7 +3,12 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
-import { missingRendererAssets, parseModuleAssetRefs, type RendererBundleDeps } from './renderer-bundle'
+import {
+  missingRendererAssets,
+  parseLazyChunkRefs,
+  parseModuleAssetRefs,
+  type RendererBundleDeps
+} from './renderer-bundle'
 
 // A production-shaped index.html: the module entry Vite emits plus a
 // modulepreload for a lazy chunk. These are the refs the browser fetches
@@ -132,4 +137,122 @@ test('missingRendererAssets: an index naming nothing checkable is not torn', () 
   const deps = depsFor(INDEX_DIR, '<html><body>static shell, no modules</body></html>', [])
 
   assert.deepEqual(missingRendererAssets(INDEX_PATH, deps), [])
+})
+
+// ---------------------------------------------------------------------------
+// Lazy-chunk (__vite__mapDeps) awareness — #93479. index.html only names the
+// boot-critical modules; the chunks behind React.lazy() routes (syntax-diff-*,
+// shiki-*, mermaid-embed-*) live in each chunk's inline __vite__mapDeps table.
+// A torn install whose preloads are intact but whose lazy chunks are missing
+// used to pass the generation check and die on the first lazy import.
+// ---------------------------------------------------------------------------
+
+// Production-shaped Vite output: the deps table definition plus an index-only
+// call site that must NOT be misread as a filename list.
+const ENTRY_JS = [
+  'const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=[',
+  '"assets/syntax-diff-Bo0962zh.js","assets/shiki-block-COiz1pEN.js","assets/mermaid-embed-Cq7Xw2aa.js"',
+  '])))=>i.map(i=>d[i]);',
+  'const load=()=>import("./syntax-diff").then(m=>m.default);',
+  '__vite__mapDeps([0,1])'
+].join('\n')
+
+test('parseLazyChunkRefs reads the __vite__mapDeps filename table, not call sites', () => {
+  assert.deepEqual(parseLazyChunkRefs(ENTRY_JS), [
+    'assets/syntax-diff-Bo0962zh.js',
+    'assets/shiki-block-COiz1pEN.js',
+    'assets/mermaid-embed-Cq7Xw2aa.js'
+  ])
+})
+
+test('parseLazyChunkRefs returns [] for chunk-free/nullish js', () => {
+  assert.deepEqual(parseLazyChunkRefs(''), [])
+  assert.deepEqual(parseLazyChunkRefs(undefined as unknown as string), [])
+  assert.deepEqual(parseLazyChunkRefs('console.log("no deps table here")'), [])
+})
+
+// deps helper for the graph walk: per-file contents, not one shared html.
+function graphDepsFor(indexDir: string, files: Record<string, string>): RendererBundleDeps {
+  const byPath = new Map(Object.entries(files).map(([rel, content]) => [path.join(indexDir, rel), content]))
+
+  return {
+    readFileSync: (file: string) => {
+      const content = byPath.get(file)
+
+      if (content === undefined) {
+        throw new Error(`ENOENT: ${file}`)
+      }
+
+      return content
+    },
+    existsSync: (file: string) => byPath.has(file)
+  }
+}
+
+const GRAPH_INDEX_HTML = [
+  '<!doctype html>',
+  '<script type="module" crossorigin src="./assets/index-a1b2c3.js"></script>'
+].join('\n')
+
+test('missingRendererAssets: generation with all lazy chunks present is intact', () => {
+  const deps = graphDepsFor(INDEX_DIR, {
+    'index.html': GRAPH_INDEX_HTML,
+    'assets/index-a1b2c3.js': ENTRY_JS,
+    'assets/syntax-diff-Bo0962zh.js': '// present',
+    'assets/shiki-block-COiz1pEN.js': '// present',
+    'assets/mermaid-embed-Cq7Xw2aa.js': '// present'
+  })
+
+  assert.deepEqual(missingRendererAssets(INDEX_PATH, deps), [])
+})
+
+test('missingRendererAssets: torn lazy chunk is detected even when every preload exists', () => {
+  // The exact #93479 shape: index.html's own module list checks out, but the
+  // syntax-diff chunk behind React.lazy() never landed. Loading this copy
+  // boots fine and then blanks the workspace on the first diff render.
+  const deps = graphDepsFor(INDEX_DIR, {
+    'index.html': GRAPH_INDEX_HTML,
+    'assets/index-a1b2c3.js': ENTRY_JS,
+    'assets/shiki-block-COiz1pEN.js': '// present',
+    'assets/mermaid-embed-Cq7Xw2aa.js': '// present'
+  })
+
+  assert.deepEqual(missingRendererAssets(INDEX_PATH, deps), ['assets/syntax-diff-Bo0962zh.js'])
+})
+
+test('missingRendererAssets: walks transitive map-deps without looping on cycles', () => {
+  // A lazy chunk can carry its own deps table (shiki language chunks do).
+  // The walk must follow it — and a mutual reference must not hang the boot.
+  const deps = graphDepsFor(INDEX_DIR, {
+    'index.html': GRAPH_INDEX_HTML,
+    'assets/index-a1b2c3.js': [
+      'const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/level-one-aaa.js"])))=>i.map(i=>d[i]);'
+    ].join('\n'),
+    'assets/level-one-aaa.js': [
+      'const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=[',
+      '"assets/index-a1b2c3.js","assets/level-two-bbb.js"',
+      '])))=>i.map(i=>d[i]);'
+    ].join('\n')
+  })
+
+  assert.deepEqual(missingRendererAssets(INDEX_PATH, deps), ['assets/level-two-bbb.js'])
+})
+
+test('missingRendererAssets: a lazy-chunk-torn copy loses to an intact copy end to end', () => {
+  // The resolver contract: the same generation check that orders app.asar vs
+  // app.asar.unpacked must now see lazy-chunk tears too, so a torn candidate
+  // is skipped instead of shipping a delayed "Failed to fetch dynamically
+  // imported module" crash.
+  const files = {
+    'index.html': GRAPH_INDEX_HTML,
+    'assets/index-a1b2c3.js': ENTRY_JS,
+    'assets/shiki-block-COiz1pEN.js': '// present',
+    'assets/mermaid-embed-Cq7Xw2aa.js': '// present'
+  }
+
+  const torn = graphDepsFor(INDEX_DIR, files)
+  const intact = graphDepsFor(INDEX_DIR, { ...files, 'assets/syntax-diff-Bo0962zh.js': '// present' })
+
+  assert.notDeepEqual(missingRendererAssets(INDEX_PATH, torn), [])
+  assert.deepEqual(missingRendererAssets(INDEX_PATH, intact), [])
 })

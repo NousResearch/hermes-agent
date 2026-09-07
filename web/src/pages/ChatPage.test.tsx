@@ -177,6 +177,11 @@ const localStorageMock = (() => {
   };
 })();
 
+// React only routes updates through act() when this flag is set; without it
+// the isActive re-renders in the keyboard-inset gate test warn.
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
+  true;
+
 async function render(ui: ReactNode) {
   container = document.createElement("div");
   document.body.append(container);
@@ -268,6 +273,53 @@ describe("ChatPage", () => {
     });
 
     expect(maybeReloadForLoopbackWsAuthFailure).toHaveBeenCalledWith(4401);
+  });
+
+  it("attaches visualViewport keyboard-inset listeners only while the chat tab is active", async () => {
+    // NS-434 follow-up: ChatPage stays mounted (hidden) on every dashboard
+    // route. The keyboard-inset/scroll-pin listeners must only be live while
+    // /chat is the active tab, or the scroll pin fires when a soft keyboard
+    // opens on Settings etc.
+    const addEventListener = vi.fn();
+    const removeEventListener = vi.fn();
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: { addEventListener, removeEventListener, width: 1280 },
+    });
+
+    const { default: ChatPage } = await import("./ChatPage");
+
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive={false} />
+      </MemoryRouter>,
+    );
+    expect(addEventListener).not.toHaveBeenCalled();
+
+    await act(async () =>
+      root.render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      ),
+    );
+    expect(addEventListener.mock.calls.map((c) => c[0]).sort()).toEqual([
+      "resize",
+      "scroll",
+    ]);
+    expect(removeEventListener).not.toHaveBeenCalled();
+
+    await act(async () =>
+      root.render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive={false} />
+        </MemoryRouter>,
+      ),
+    );
+    expect(removeEventListener.mock.calls.map((c) => c[0]).sort()).toEqual([
+      "resize",
+      "scroll",
+    ]);
   });
 });
 

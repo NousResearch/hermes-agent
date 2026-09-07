@@ -89,6 +89,9 @@ def create_schema(db: sqlite3.Connection) -> None:
           result_json TEXT NOT NULL, delivered_at REAL)""",
     ):
         db.execute(statement)
+    from .delivery_outbox import create_schema as create_delivery_schema
+
+    create_delivery_schema(db)
     # Support development databases created before renewable consent IDs.
     definition = db.execute(
         "SELECT sql FROM sqlite_master WHERE name='wisdom_consent'"
@@ -469,10 +472,24 @@ class MediationStore:
                 ).rowcount
             )
 
-    def begin_delivery(self, org: str, assessment_id: str, token: str) -> bool:
+    def begin_delivery(
+        self, org: str, assessment_id: str, token: str, *, request_id: str | None = None
+    ) -> bool:
         now = self.clock()
         with self.store.transaction() as db:
             self._check_org(db, org)
+            if request_id is not None:
+                owned = db.execute(
+                    """SELECT 1 FROM wisdom_assessment WHERE id=? AND organization_id=?
+                  AND lease_token=? AND lease_until>? AND state IN ('ready','fallback')""",
+                    (assessment_id, org, token, now),
+                ).fetchone()
+                if not owned:
+                    return False
+                from .delivery_outbox import begin_reserved
+
+                if not begin_reserved(db, org, assessment_id, token, request_id, now):
+                    return False
             return bool(
                 db.execute(
                     """UPDATE wisdom_assessment SET state='delivering',updated_at=?
@@ -480,6 +497,53 @@ class MediationStore:
                 AND state IN ('ready','fallback')""",
                     (now, assessment_id, org, token, now),
                 ).rowcount
+            )
+
+    def cancel_delivery(self, org: str, assessment_id: str, token: str) -> None:
+        """Only before invoking the transport: preserve advice and release a known non-send."""
+        with self.store.transaction() as db:
+            self._check_org(db, org)
+            from .delivery_outbox import cancel_reserved
+
+            now = self.clock()
+            cancel_reserved(db, org, assessment_id, token, now)
+            db.execute(
+                """UPDATE wisdom_assessment SET state=CASE WHEN advice_json IS NULL THEN 'fallback' ELSE 'ready' END,
+              lease_token=NULL,lease_until=NULL,available_at=?,updated_at=?
+              WHERE id=? AND organization_id=? AND lease_token=? AND state='delivering'""",
+                (now + 60, now, assessment_id, org, token),
+            )
+
+    def delivery_ready(
+        self, org: str, assessment_id: str, token: str, *, user_id: str | None = None
+    ) -> bool:
+        with self.store.transaction() as db:
+            self._check_org(db, org)
+            now = self.clock()
+            owned = db.execute(
+                """SELECT s.platform,s.address_json FROM wisdom_assessment a
+              JOIN wisdom_agent_session s ON s.organization_id=a.organization_id AND s.session_key=a.owner_session
+              WHERE a.organization_id=? AND a.id=? AND a.lease_token=? AND a.lease_until>?
+              AND a.state='delivering'""",
+                (org, assessment_id, token, now),
+            ).fetchone()
+            remote = db.execute(
+                "SELECT * FROM wisdom_remote_delivery WHERE organization_id=? AND assessment_id=? AND local_token=?",
+                (org, assessment_id, token),
+            ).fetchone()
+            return bool(
+                owned
+                and (
+                    remote is None
+                    or (
+                        remote["state"] == "sending"
+                        and remote["lease_until"] > now
+                        and (user_id is None or remote["user_id"] == user_id)
+                        and remote["platform"] == owned["platform"]
+                        and json.loads(remote["address_json"])
+                        == json.loads(owned["address_json"])
+                    )
+                )
             )
 
     def complete_delivery(
@@ -496,6 +560,17 @@ class MediationStore:
             self._check_org(db, org)
             if not isinstance(receipt, DeliveryReceipt):
                 raise ValueError("a validated delivery receipt is required")
+            from .delivery_outbox import stage_outcome
+
+            staged = stage_outcome(
+                db,
+                org,
+                assessment_id,
+                token,
+                now,
+                receipt=receipt,
+                introduced=introduced,
+            )
             owner = db.execute(
                 """SELECT a.owner_session,s.platform,s.address_json
                 FROM wisdom_assessment a JOIN wisdom_agent_session s
@@ -513,6 +588,10 @@ class MediationStore:
                 or receipt.thread_id != address.get("thread_id", "")
                 or receipt.scope_id != address.get("scope_id", "")
             ):
+                if staged:
+                    # The session moved during the send. Recover the receipt using
+                    # the immutable reservation address, not the new destination.
+                    return False
                 raise ValueError("delivery receipt does not match the owning session")
             changed = bool(
                 db.execute(
@@ -553,6 +632,9 @@ class MediationStore:
     def uncertain_delivery(self, org: str, assessment_id: str, token: str) -> bool:
         with self.store.transaction() as db:
             self._check_org(db, org)
+            from .delivery_outbox import stage_outcome
+
+            stage_outcome(db, org, assessment_id, token, self.clock())
             return bool(
                 db.execute(
                     """UPDATE wisdom_assessment SET state='delivery_uncertain',

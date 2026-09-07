@@ -478,19 +478,83 @@ class WisdomMediation:
             job["id"]
             for job in self._current_feed_jobs(org, self._eligible_jobs(org, jobs))
         }
-        return [
-            item
-            for item in items
-            if item["assessment"]["id"] in eligible
-            and self.queue.begin_delivery(
-                org, item["assessment"]["id"], item["assessment"]["lease_token"]
+        from .delivery_outbox import DeliveryOutbox
+
+        outbox = DeliveryOutbox(self.service, clock=self.queue.clock)
+        reserved = []
+        for item in items:
+            job = item["assessment"]
+            if job["id"] not in eligible:
+                continue
+            automatic = job["reference"]["kind"] in {"candidate", "skill"} and not job[
+                "reference"
+            ].get("user_requested")
+            request_id = None
+            if automatic:
+                try:
+                    request_id = outbox.reserve(org, job)
+                except Exception as exc:
+                    # Intent is already durable; recovery can resolve a lost claim response.
+                    import logging
+
+                    logging.getLogger(__name__).warning(
+                        "Wisdom reservation deferred (%s)", type(exc).__name__
+                    )
+                    self.queue.defer_for_preferences(org, job, 0)
+                    continue
+                if request_id is None:
+                    self.queue.defer_for_preferences(org, job, 0)
+                    continue
+            reserved.append((item, request_id))
+        selected = []
+        for item, request_id in reserved:
+            job = item["assessment"]
+            if self.queue.begin_delivery(
+                org, job["id"], job["lease_token"], request_id=request_id
+            ):
+                selected.append(item)
+            elif request_id:
+                outbox.not_sent(org, job)
+                self.queue.defer_for_preferences(org, job, 0)
+        return selected
+
+    def delivery_ready(self, org, items):
+        from .delivery_outbox import DeliveryOutbox
+
+        self.service.require_setup()
+        user = DeliveryOutbox(self.service, clock=self.queue.clock).identity(org)
+        return all(
+            self.queue.delivery_ready(
+                org,
+                item["assessment"]["id"],
+                item["assessment"]["lease_token"],
+                user_id=user,
             )
-        ]
+            for item in items
+        )
+
+    def cancel_delivery(self, org, items):
+        for item in items:
+            job = item["assessment"]
+            self.queue.cancel_delivery(org, job["id"], job["lease_token"])
+
+    def flush_delivery(self, org):
+        from .delivery_outbox import DeliveryOutbox
+
+        try:
+            DeliveryOutbox(self.service, clock=self.queue.clock).flush(org)
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Wisdom receipt recovery deferred (%s)", type(exc).__name__
+            )
 
     def prepare(
         self, org: str, actor: ConsentActor, *, runtime, history, assessor=assess
     ) -> list[dict[str, Any]]:
         self.service.require_setup()
+        self.flush_delivery(org)
         claimed = self.queue.claim(org, actor.session_key)
         from .weekly_queue import process_weekly_review
         from .share_queue import process_share_package

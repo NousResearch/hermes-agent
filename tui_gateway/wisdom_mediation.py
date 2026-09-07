@@ -122,7 +122,26 @@ def poll(session: dict, *, emit, profile_scope, connected=lambda: True) -> None:
             selected = mediation.begin_delivery(org, items)
             if not selected:
                 return
-            view = advice_view(selected, introduction=introduction)
+            if (
+                not connected()
+                or session.get("_closing")
+                or session.get("_finalized")
+                or generation != int(session.get("_queued_prompt_generation", 0))
+                or not mediation.delivery_ready(org, selected)
+                or get_pending_gateway_approval(key)
+                or has_pending(key)
+            ):
+                mediation.cancel_delivery(org, selected)
+                return
+            try:
+                view = advice_view(selected, introduction=introduction)
+                text = (
+                    view.to_text()
+                    + "\n\nOpen /wisdom inbox to review and use consent controls."
+                )
+            except Exception:
+                mediation.cancel_delivery(org, selected)
+                raise
             try:
                 accepted = emit(
                     "notification.show",
@@ -132,8 +151,7 @@ def poll(session: dict, *, emit, profile_scope, connected=lambda: True) -> None:
                         "kind": "wisdom",
                         "level": "info",
                         "ttl_ms": None,
-                        "text": view.to_text()
-                        + "\n\nOpen /wisdom inbox to review and use consent controls.",
+                        "text": text,
                     },
                 )
                 for item in selected:

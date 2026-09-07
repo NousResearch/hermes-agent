@@ -136,7 +136,33 @@ async def schedule(
             selected, introduction = await scoped(lambda: begin(group))
             if not selected:
                 continue
-            view = advice_view(selected, introduction=introduction)
+            guard = adapter._active_sessions.get(key)
+            ready = await scoped(
+                lambda: WisdomMediation(WisdomService()).delivery_ready(org, selected)
+            )
+            if (
+                guard is None
+                or guard.is_set()
+                or not gateway._is_user_authorized(source)
+                or get_pending_gateway_approval(key)
+                or has_pending(key)
+                or not ready
+            ):
+                await scoped(
+                    lambda: WisdomMediation(WisdomService()).cancel_delivery(
+                        org, selected
+                    )
+                )
+                continue
+            try:
+                view = advice_view(selected, introduction=introduction)
+            except Exception:
+                await scoped(
+                    lambda: WisdomMediation(WisdomService()).cancel_delivery(
+                        org, selected
+                    )
+                )
+                raise
 
             def uncertain():
                 mediation = WisdomMediation(WisdomService())

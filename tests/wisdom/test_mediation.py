@@ -495,6 +495,7 @@ def test_delivery_rechecks_preferences_and_preserves_completed_advice(
 ):
     from hermes_wisdom.agent_led.policy import AgentLedPolicy
     from hermes_wisdom.client import WisdomMuteResponse, WisdomSuppression
+    from hermes_wisdom.client_delivery import ClientDeliveryResponse
     from hermes_wisdom.preferences import suppression_key
 
     instance, _actor, identity, now = consent
@@ -507,6 +508,18 @@ def test_delivery_rechecks_preferences_and_preserves_completed_advice(
         lambda **kw: AgentLedPolicy(enabled=True),
     )
     client = instance.service.client
+    client.claim_notification_delivery.side_effect = lambda request_id, reference: (
+        ClientDeliveryResponse(
+            org_id="org",
+            recipient_user_id="account-user",
+            event_id="event",
+            request_id=request_id,
+            reference=reference,
+            state="claimed",
+            lease_until="1970-01-01T00:18:40.000Z",
+            reason=None,
+        )
+    )
     client.recommendation_mute.return_value = WisdomMuteResponse(
         org_id="org",
         muted=blocked == "mute",

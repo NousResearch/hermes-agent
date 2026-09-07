@@ -276,13 +276,23 @@ async def test_slack_unacknowledged_response_is_not_success():
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "outcome",
-    ["accepted", "timeout", "missing_receipt", "persistence_failure", "cancelled"],
+    [
+        "accepted",
+        "timeout",
+        "missing_receipt",
+        "persistence_failure",
+        "cancelled",
+        "disconnected",
+        "expired_reservation",
+    ],
 )
 async def test_scheduler_commits_receipt_or_uncertainty_to_real_ledger(
     tmp_path, monkeypatch, outcome
 ):
     from gateway.wisdom_mediation import schedule
     from hermes_wisdom.delivery import DeliveryReceipt
+    from hermes_wisdom.client_delivery import ClientDeliveryResponse
+    from hermes_wisdom.delivery_outbox import DeliveryOutbox
     from hermes_wisdom.mediation_store import MediationStore
     from hermes_wisdom.store import WisdomStore
 
@@ -300,13 +310,49 @@ async def test_scheduler_commits_receipt_or_uncertainty_to_real_ledger(
         user_activity=True,
         address={"chat_id": "42"},
     )
-    identity = queue.enqueue("org", "feed:event", {"kind": "notice"})
+    identity = queue.enqueue(
+        "org", "feed:event", {"kind": "skill", "skill_id": "skill", "version": 1}
+    )
     job = queue.claim("org", "session")[0]
     advice = {"title": "Arrival", "explanation": "For review", "relevance": "digest"}
     assert queue.save_advice("org", identity, job["lease_token"], advice)
     job["state"] = "ready"
     item = {"assessment": job, "advice": advice, "interaction": None}
     service = Mock(store=store)
+    service.client.identity = {"owner": "account-user"}
+    service.client.display_org_id = "org"
+    outbox = DeliveryOutbox(service, clock=queue.clock)
+
+    def reserve(request_id, reference):
+        from datetime import datetime, timezone
+
+        return ClientDeliveryResponse(
+            org_id="org",
+            recipient_user_id="account-user",
+            event_id="event",
+            request_id=request_id,
+            reference=reference,
+            state="claimed",
+            reason=None,
+            lease_until=datetime
+            .fromtimestamp(time.time() + 120, timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z"),
+        )
+
+    service.client.claim_notification_delivery.side_effect = reserve
+    service.client.settle_notification_delivery.side_effect = (
+        lambda event_id, request_id, reference, **kwargs: ClientDeliveryResponse(
+            org_id="org",
+            recipient_user_id="account-user",
+            event_id=event_id,
+            request_id=request_id,
+            reference=reference,
+            state=kwargs["outcome"],
+            lease_until=None,
+            reason=None,
+        )
+    )
     if outcome == "persistence_failure":
         with store.transaction() as db:
             db.execute(
@@ -315,12 +361,38 @@ async def test_scheduler_commits_receipt_or_uncertainty_to_real_ledger(
     mediation = Mock(queue=queue)
     queue.claim_refresh = Mock(return_value=False)
     mediation.prepare.return_value = [item]
-    mediation.begin_delivery.side_effect = lambda org, group: [
-        item
-        for item in group
-        if queue.begin_delivery(
-            org, item["assessment"]["id"], item["assessment"]["lease_token"]
+
+    def begin(org, group):
+        selected = []
+        for item in group:
+            job = item["assessment"]
+            request_id = outbox.reserve(org, job)
+            if request_id and queue.begin_delivery(
+                org, job["id"], job["lease_token"], request_id=request_id
+            ):
+                selected.append(item)
+        if outcome == "disconnected":
+            adapter._active_sessions["session"].set()
+        elif outcome == "expired_reservation":
+            with store.transaction() as db:
+                db.execute("UPDATE wisdom_remote_delivery SET lease_until=0")
+        return selected
+
+    mediation.begin_delivery.side_effect = begin
+    mediation.delivery_ready.side_effect = lambda org, items: all(
+        queue.delivery_ready(
+            org,
+            i["assessment"]["id"],
+            i["assessment"]["lease_token"],
+            user_id="account-user",
         )
+        for i in items
+    )
+    mediation.cancel_delivery.side_effect = lambda org, items: [
+        queue.cancel_delivery(
+            org, i["assessment"]["id"], i["assessment"]["lease_token"]
+        )
+        for i in items
     ]
     monkeypatch.setattr("hermes_wisdom.service.WisdomService", lambda: service)
     monkeypatch.setattr("gateway.wisdom_mediation.WisdomMediation", lambda _: mediation)
@@ -383,6 +455,15 @@ async def test_scheduler_commits_receipt_or_uncertainty_to_real_ledger(
     else:
         await task
     row = queue.assessments("org")[0]
+    if outcome in {"disconnected", "expired_reservation"}:
+        assert row["state"] == "ready" and row["advice"] == advice
+        adapter.send_wisdom_mediation.assert_not_awaited()
+        outbox.flush("org")
+        assert (
+            service.client.settle_notification_delivery.call_args.kwargs["outcome"]
+            == "not_sent"
+        )
+        return
     assert row["state"] == (
         "delivered" if outcome == "accepted" else "delivery_uncertain"
     )
@@ -392,3 +473,8 @@ async def test_scheduler_commits_receipt_or_uncertainty_to_real_ledger(
     assert count == int(outcome == "accepted")
     assert queue.claim("org", "session") == []
     adapter.send_wisdom_mediation.assert_awaited_once()
+    outbox.flush("org")
+    assert service.client.claim_notification_delivery.call_count == 1
+    assert service.client.settle_notification_delivery.call_args.kwargs["outcome"] == (
+        "acknowledged" if outcome == "accepted" else "uncertain"
+    )

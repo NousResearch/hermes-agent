@@ -543,21 +543,46 @@ def _configure_cfg_sections(profile_dir, params, applied) -> None:
         launch_mcp = _try(lambda: (load_launch() or {}).get("mcp_servers"), {})
         launch_mcp = launch_mcp if isinstance(launch_mcp, dict) else {}
     with _hermes_home_scope(profile_dir):
-        from hermes_cli.config import load_config, save_config
+        from hermes_cli.config import load_config
+        from hermes_cli.plugin_capabilities import _write_raw_config_values
         cfg = load_config() or {}
+        updates = {}
         if isinstance(params.get("disabled_skills"), list):
-            try:
-                from hermes_cli.skills_config import save_disabled_skills
-                save_disabled_skills(cfg, _clean_names(params["disabled_skills"]))
-                applied["skills"] = True
-                cfg = load_config() or {}
-            except Exception:
-                applied["skills"] = False
+            from agent.skill_utils import ESSENTIAL_SKILLS
+            updates[("skills", "disabled")] = sorted(
+                _clean_names(params["disabled_skills"]) - ESSENTIAL_SKILLS)
         if isinstance(params.get("enabled_toolsets"), list):
-            applied["toolsets"] = _best_effort(lambda: _save_toolset_pin(cfg, params["enabled_toolsets"], save_config))
+            wanted = sorted(_clean_names(params["enabled_toolsets"]))
+            updates[("tools", "enabled_toolsets")] = wanted
         if want_mcp:
-            applied["mcp_servers"] = _best_effort(lambda: _save_mcp_toggles(
-                load_config() or {}, params["enabled_mcp_servers"], launch_mcp, save_config))
+            source_mcp = cfg.get("mcp_servers")
+            mcp_cfg = source_mcp if isinstance(source_mcp, dict) else {}
+            mcp_cfg = {name: dict(entry) if isinstance(entry, dict) else entry
+                       for name, entry in mcp_cfg.items()}
+            wanted = _clean_names(params["enabled_mcp_servers"])
+            for srv in wanted:
+                if not isinstance(mcp_cfg.get(srv), dict) and isinstance(launch_mcp.get(srv), dict):
+                    mcp_cfg[srv] = dict(launch_mcp[srv])
+                if isinstance(mcp_cfg.get(srv), dict):
+                    mcp_cfg[srv].pop("disabled", None)
+            for srv, entry in mcp_cfg.items():
+                if srv not in wanted and isinstance(entry, dict):
+                    entry["disabled"] = True
+            updates[("mcp_servers",)] = mcp_cfg
+        if updates:
+            try:
+                _write_raw_config_values(updates)
+                for key in ("skills", "toolsets", "mcp_servers"):
+                    if (key == "skills" and isinstance(params.get("disabled_skills"), list)) or \
+                       (key == "toolsets" and isinstance(params.get("enabled_toolsets"), list)) or \
+                       (key == "mcp_servers" and want_mcp):
+                        applied[key] = True
+            except Exception:
+                for key in ("skills", "toolsets", "mcp_servers"):
+                    if (key == "skills" and isinstance(params.get("disabled_skills"), list)) or \
+                       (key == "toolsets" and isinstance(params.get("enabled_toolsets"), list)) or \
+                       (key == "mcp_servers" and want_mcp):
+                        applied[key] = False
 
 
 @_profile_handler("profiles.configure", 5064)

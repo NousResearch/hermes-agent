@@ -171,6 +171,26 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         "claude-3-5-haiku-20241022": ("0.80", "4.00", "0.08", "1.00"),
         "claude-3-haiku-20240307": ("0.25", "1.25", "0.03", "0.30"),
     }),
+    # Claude Fable 5 / 5.1 (platform.claude.com pricing table, 2026-09-07): $10 in /
+    # $50 out. Fable 5.1 cache hits bill at 0.025x input; Fable 5 at the standard 0.1x.
+    # Cache write (5m) is $12.50 for both. Was UNPRICED -> cost_status=unknown, $0.
+    ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-09", {
+        "claude-fable-5-1": ("10.00", "50.00", "0.25", "12.50"),
+        "claude-fable-5": ("10.00", "50.00", "1.00", "12.50"),
+    }),
+    # xAI Grok 4.6 (docs.x.ai/developers/models/grok-4.6, 2026-09-07): $2 in / $6 out,
+    # cached input $0.50; no separate cache-write rate (a miss bills as plain input).
+    # >200k-context requests bill at 2x; cumulative session counters can't recover the
+    # per-request tier, so the short-context row is the estimate.
+    ("xai", "https://docs.x.ai/developers/models/grok-4.6", "xai-pricing-2026-09", {
+        ("grok-4.6", "x-ai/grok-4.6"): ("2.00", "6.00", "0.50", "2.00"),
+    }),
+    # OpenAI GPT-6 Astra (developers.openai.com/api/docs/models/gpt-6-astra, 2026-09-05):
+    # $10 in / $50 out, cached $1, cache write 1.25x. Also keyed for the codex CLI's
+    # bare "custom" route so autoreview harness sessions price.
+    ("openai", "https://developers.openai.com/api/docs/models/gpt-6-astra", "openai-gpt-6-2026-09", {
+        "gpt-6-astra": ("10.00", "50.00", "1.00", "12.50"),
+    }),
     # Fast mode is a separate model id at a 2x premium.
     ("anthropic", "https://openrouter.ai/anthropic/claude-opus-4.8-fast", "anthropic-pricing-2026-05", {
         "claude-opus-4-8-fast": ("10.00", "50.00", "1.00", "12.50"),
@@ -315,6 +335,7 @@ def _first_nonzero(obj: Any, *paths: tuple[str, ...]) -> int:
 # api.openai.com). Google and Fireworks are matched by name OR host below.
 _SNAPSHOT_PROVIDER_ALIASES = {
     "anthropic": "anthropic", "openai": "openai", "openai-api": "openai", "minimax": "minimax", "minimax-cn": "minimax-cn",
+    "xai": "xai", "x-ai": "xai", "xai-oauth": "xai",
 }
 # AI Studio and Vertex host the same Gemini models (the Vertex "google/" vendor
 # prefix is stripped with the rest of the path).
@@ -359,6 +380,12 @@ def resolve_billing_route(
     if snapshot_provider:
         return BillingRoute(provider=snapshot_provider, model=bare, base_url=url, billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and base_url_hostname(base) in ("localhost", "127.0.0.1")):
+        # Third-party CLIs (codex/claude harness runs) report provider="custom" with no
+        # base_url; infer the snapshot family from the model name so those sessions price.
+        if not base:
+            for prefix, fam in (("gpt-", "openai"), ("o3", "openai"), ("claude-", "anthropic"), ("grok-", "xai")):
+                if bare.lower().startswith(prefix) and (fam, bare.lower()) in _OFFICIAL_DOCS_PRICING:
+                    return BillingRoute(provider=fam, model=bare, base_url=url, billing_mode="official_docs_snapshot")
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=url, billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=bare if model else "", base_url=url, billing_mode="unknown")
 

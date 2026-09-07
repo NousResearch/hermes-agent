@@ -260,16 +260,26 @@ def _peer_remove(args) -> int:
     return 0
 
 
+# Peers here are cross-machine DM targets (``bot_peers`` + api_server), a different
+# rail from A2A agents (``a2a_agents`` config + ``a2a_list``/``a2a_call`` tools); an
+# empty list says nothing about A2A mesh health (#105174).
+_A2A_DISAMBIGUATION_NOTE = (
+    "Note: these are bot-to-bot gateway peers (API-server DMs), not A2A agents. "
+    "For A2A peers use the a2a_list tool / a2a_agents config.")
+
+
 def _peer_list(args) -> int:
     peers = _load_peers()
     if not peers:
         print("No peers registered. Add one: hermes peer add <name> --url http://host:port --key <API_SERVER_KEY>")
+        print(_A2A_DISAMBIGUATION_NOTE)
         return 0
     for name in sorted(peers):
         entry = peers[name] if isinstance(peers[name], dict) else {}
         has_key = "key set" if _peer_secret(name) else f"NO KEY ({_peer_key_env(name)} unset)"
         note = f" — {entry.get('note')}" if entry.get("note") else ""
         print(f"{name}\t{entry.get('url', '?')}\t[{has_key}]{note}")
+    print(_A2A_DISAMBIGUATION_NOTE)
     return 0
 
 
@@ -411,7 +421,7 @@ def build_peer_parser(subparsers) -> None:
     add_p.add_argument("--key", default="", help="The peer's API_SERVER_KEY (stored in ~/.hermes/.env)")
     add_p.add_argument("--note", default="", help="Optional description")
 
-    peer_sub.add_parser("list", aliases=["ls"], help="List registered peers")
+    peer_sub.add_parser("list", aliases=["ls"], help="List registered bot-to-bot peers (not A2A agents)")
 
     rm_p = peer_sub.add_parser("remove", aliases=["rm"], help="Remove a peer")
     rm_p.add_argument("name", help="Peer name")

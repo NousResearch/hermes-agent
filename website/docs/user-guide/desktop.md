@@ -272,6 +272,13 @@ chats decide who replies: [Bot Mode: A Roster of Agents](./bot-mode.md).
 
 The app checks for updates in the background and offers a one-click update when one is ready.
 
+During a local update, detailed build output streams into the active profile's
+`logs/update.log`, including detached `--gateway` updates. It stays out of the
+terminal but is available for troubleshooting before the build finishes. The
+Windows hand-off counts new output in this log as progress; a child that produces
+no output is still subject to the idle watchdog. Process liveness alone does not
+reset that watchdog, and cancelling an update does not wait for its build to finish.
+
 The desktop app and the Hermes backend it talks to update on separate clocks — the app package on your machine, the backend wherever it runs. When more than one update target exists (a remote gateway, or several registered gateways), the update affordances (**Update now** on the About panel, the ⌘K **Update Hermes** row, and the update-ready toast) update **everything**: the connected backend first, then every other eligible registered gateway (Hermes Cloud entries are platform-managed and skipped), and the desktop app itself last, since applying the client update relaunches the app. Single-machine installs keep the one-button experience.
 
 After any backend update, the app also re-checks its own version and warns with a one-click **Update desktop app** action if the GUI is still behind — so updating a remote backend can never silently leave you on a stale desktop build.

@@ -216,6 +216,42 @@ def _format_async_delegation(evt: dict) -> str:
     return "\n".join(lines)
 
 
+def async_delegation_display_text(evt: dict) -> str:
+    """Compact UI title; the separate model notification retains all task evidence."""
+    raw_results = evt.get("results")
+    results = [r for r in raw_results if isinstance(r, dict)] if isinstance(raw_results, list) else []
+    results = results or [evt]
+    goals = evt.get("goals") or []
+    labels, titles = [], []
+    status_labels = {"failed": "Failed", "error": "Failed", "cancelled": "Cancelled",
+                     "interrupted": "Interrupted", "timeout": "Timed Out", "stalled": "Stalled",
+                     "unknown": "Unknown", "rejected": "Failed"}
+    for result in results:
+        status = result.get("status") or ("failed" if result.get("error") else "completed")
+        label = ("Incomplete" if _is_truncated(result) else "Completed") if status in _DONE else (
+            status_labels.get(status, "Incomplete"))
+        labels.append(label)
+        index = result.get("task_index", 0)
+        goal = goals[index] if 0 <= index < len(goals) else result.get("goal", "")
+        titles.append(" ".join(str(goal or "Background task").split()))
+    if len(results) == 1:
+        return f"Subagent Task {labels[0]}: {titles[0]}"
+    outcome = labels[0] if len(set(labels)) == 1 else "Finished with Issues"
+    title = " ".join(str(evt.get("group") or "").split()) or "; ".join(titles)
+    return f"Subagent Tasks {outcome}: {title} ({len(results)} tasks)"
+
+
+class SubagentNotification(str):
+    """Keep queued model text string-compatible, with a separate human preview."""
+
+    display_text: str
+
+    def __new__(cls, text: str, event: dict):
+        instance = super().__new__(cls, text)
+        instance.display_text = async_delegation_display_text(event)
+        return instance
+
+
 def _delegation_attribution_line(evt: dict) -> "str | None":
     """One-line provenance for a subagent-owned process event, else None. Such a process
     outlives the child and lands in the PARENT conversation, which would otherwise see an

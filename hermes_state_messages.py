@@ -1044,9 +1044,24 @@ class SessionMessagesMixin:
                 **({"replacement_message_id": replacement_message_id} if preserve_compaction_handoff else {})}
 
     def message_count(self, session_id: str = None) -> int:
-        """Count messages, optionally for a specific session."""
+        """Count messages, optionally for a specific session.
+
+        Results are cached for a short TTL (3s) to avoid redundant COUNT(*)
+        scans on the messages table during a single turn — the dashboard
+        Sessions view and `hermes sessions` call this on every render. Any
+        successful write (append / delete / compression row-move / hard-delete)
+        invalidates this DB's cache entries, so the count never goes stale past
+        a write; the TTL only guards against repeated reads between writes.
+        """
+        cache_key = f"{self.db_path}:msg_count:{session_id or '_all_'}"
+        from hermes_state import _metadata_cache  # deferred: avoids a top-level circular import
+        cached = _metadata_cache.get(cache_key)
+        if cached is not None:
+            return cached
         sql = "SELECT COUNT(*) FROM messages" + (" WHERE session_id = ?" if session_id else "")
-        return self._read_one(sql, (session_id,) if session_id else ())[0]
+        count = self._read_one(sql, (session_id,) if session_id else ())[0]
+        _metadata_cache.set(cache_key, count)
+        return count
 
     def has_platform_message_id(self, session_id: str, platform_message_id: str) -> bool:
         """True when *platform_message_id* exists (partial-index probe; the gateway's transient-failure dedupe).

@@ -814,6 +814,12 @@ class SessionDB(
                     self._try_wal_checkpoint()
                 if self._write_count % self._FTS_MERGE_EVERY_N_WRITES == 0:
                     self._try_incremental_merge_fts()
+                # Invalidate this DB's cached metadata (message counts, flags)
+                # so the next read picks up fresh values. Scoped to this db_path
+                # only — a write to one state.db must not nuke another DB's hot
+                # cache in a multi-DB process. The next message_count() call
+                # re-runs the COUNT(*) and repopulates the entry.
+                _metadata_cache.invalidate_prefix(f"{self.db_path}:")
                 return result
             except SessionCompressionInProgressError:
                 # Transient (see _COMPRESSION_BUSY_WAIT_S): a steer landing mid-compression must not abort.
@@ -1307,6 +1313,66 @@ import weakref  # noqa: F401,E402
 MAX_SAFE_EXPORT_MESSAGES = 20_000
 
 MAX_SAFE_RESUME_MESSAGES = 20_000
+
+
+class _SimpleTTLCache:
+    """Thread-safe, bounded TTL cache for small scalar query results (counts,
+    flags) that do not change within a single turn.
+
+    Uses a single lock — cached values are small and the lock is held for
+    microseconds. Bounded by maxsize (LRU-ish via oldest-timestamp eviction) and
+    a per-key TTL.
+    """
+    __slots__ = ("_data", "_times", "_lock", "_maxsize", "_ttl")
+
+    def __init__(self, maxsize: int = 256, ttl: float = 5.0):
+        self._data: Dict[str, Any] = {}
+        self._times: Dict[str, float] = {}
+        self._lock = threading.Lock()
+        self._maxsize = maxsize
+        self._ttl = ttl
+
+    def get(self, key: str) -> Any:
+        with self._lock:
+            val = self._data.get(key)
+            if val is None:
+                return None
+            if time.monotonic() - self._times.get(key, 0) > self._ttl:
+                self._data.pop(key, None)
+                self._times.pop(key, None)
+                return None
+            return val
+
+    def set(self, key: str, value: Any) -> None:
+        with self._lock:
+            if len(self._data) >= self._maxsize:
+                # Evict the oldest entry to stay bounded.
+                oldest = min(self._times, key=self._times.get)
+                self._data.pop(oldest, None)
+                self._times.pop(oldest, None)
+            self._data[key] = value
+            self._times[key] = time.monotonic()
+
+    def invalidate_prefix(self, prefix: str) -> None:
+        """Drop every key that starts with *prefix* (e.g. a db_path), leaving
+        other databases' entries intact. Used after a successful write so the
+        next read picks up fresh counts/flags without over-invalidating every
+        SessionDB in a multi-DB process."""
+        with self._lock:
+            stale = [k for k in self._data if k.startswith(prefix)]
+            for k in stale:
+                self._data.pop(k, None)
+                self._times.pop(k, None)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._data.clear()
+            self._times.clear()
+
+
+# Module-level cache shared by all SessionDB instances. Keys are prefixed with
+# the DB path (f"{db_path}:...") so invalidate_prefix can scope to one DB.
+_metadata_cache = _SimpleTTLCache(maxsize=512, ttl=3.0)
 
 
 _PLUGIN_COMPAT_LAZY = {

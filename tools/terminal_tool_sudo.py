@@ -8,6 +8,8 @@ import logging
 import os
 import platform
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -336,6 +338,57 @@ def _sudo_nopasswd_works() -> bool:
         return False
 
 
+def _script_available() -> bool:
+    """True when util-linux ``script`` (the PTY wrapper) is on PATH. Required for the
+    biometric sudo path — without a PTY the platform PAM stack cannot drive interactive
+    auth, so we degrade back to the password prompt when it is missing."""
+    try:
+        return shutil.which("script") is not None
+    except Exception:
+        return False
+
+
+def _sudo_biometric_path_available() -> bool:
+    """True when in-session sudo should run through the real platform PAM stack on a PTY
+    instead of a password box: ``HERMES_SUDO_BIOMETRIC=1`` on a local, interactive,
+    non-delegated, non-gateway session with util-linux ``script`` present.
+
+    Headless contexts (delegate_task children, cron, gateway/messaging sessions) never
+    take this path — there is no local console to touch a fingerprint reader, so they
+    keep failing gracefully exactly as they do today."""
+    if not env_var_enabled("HERMES_SUDO_BIOMETRIC"):
+        return False
+    if platform.system() == "Windows":
+        return False
+    if _in_delegated_child_context() or env_var_enabled("HERMES_GATEWAY_SESSION"):
+        return False
+    if not _script_available():
+        return False
+    from tools.terminal_tool import _tenv
+    if (_tenv("TERMINAL_ENV", "local").strip().lower() or "local") != "local":
+        return False
+    from tools.terminal_tool import _get_sudo_password_callback
+    return env_var_enabled("HERMES_INTERACTIVE") or _get_sudo_password_callback() is not None
+
+
+_SUDO_BIOMETRIC_BANNER = (
+    "printf '\\n\\a================================================\\n"
+    "  TOUCH YOUR FINGER NOW - fingerprint required for sudo\\n"
+    "================================================\\n\\n'; "
+)
+
+
+def _wrap_sudo_pty(command: str) -> str:
+    """Wrap *command* in ``script -qec ... /dev/null`` so the child gets a controlling PTY
+    and PAM can drive interactive auth (fingerprint first via pam_fprintd, password
+    fallback). A visible banner (plus terminal bell) is printed before the sudo command
+    so the user knows to touch the sensor inside PAM's prompt window — the fprintd prompt
+    itself is plain text inside the captured PTY and gives no on-screen cue. The
+    typescript is discarded to /dev/null; the child's stdout/stderr still streams to the
+    terminal tool's capture."""
+    return f"script -qec {shlex.quote(_SUDO_BIOMETRIC_BANNER + command)} /dev/null"
+
+
 def _rewrite_compound_background(command: str) -> str:
     """Wrap `A && B &` (or `A || B &`) to `A && { B & }` at depth 0. Bash binds `&&` tighter
     than `&`, so `A && B &` backgrounds a subshell that runs B in the foreground and waits for
@@ -421,6 +474,12 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     # sudoers NOPASSWD hosts must not be forced through the prompt or the -S pipe (local only).
     if not has_configured_password and not sudo_password and _sudo_nopasswd_works():
         return command, None
+
+    # Biometric PAM path (opt-in): hand sudo a real PTY so the platform PAM stack
+    # (pam_fprintd on Linux) drives fingerprint auth instead of a text password box.
+    # Password stays authoritative — a configured or session-cached password wins.
+    if not has_configured_password and not sudo_password and _sudo_biometric_path_available():
+        return _wrap_sudo_pty(command), None
 
     # delegate_task children inherit HERMES_INTERACTIVE=1 (and possibly a stale thread-local
     # callback on a recycled worker) but have no user on the other side — always headless;

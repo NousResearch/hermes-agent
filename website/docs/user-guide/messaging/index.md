@@ -14,6 +14,20 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/integrations/nous-portal) subscription bundles all of them.
 :::
 
+## Messaging status in Desktop and the dashboard
+
+Messaging status belongs to the selected profile on the selected machine. Credentials
+saved by `hermes gateway setup` can enable a credential-based platform without a
+`platforms` entry in `config.yaml`; an explicit `platforms.<name>.enabled: false`
+still disables it. A different profile never inherits the server process's credentials.
+Platforms without required credential fields are not enabled merely because that list
+is empty.
+
+Naming the server's own profile explicitly (for example `profile=default` on a
+default-profile server) gives the same status as an unscoped request. **Saved** means
+credentials are stored, not that the messaging gateway is running or the platform is
+connected. An enabled platform can correctly show **Messaging gateway stopped**.
+
 ## Platform Comparison
 
 | Platform | Voice | Images | Files | Threads | Reactions | Typing | Streaming |

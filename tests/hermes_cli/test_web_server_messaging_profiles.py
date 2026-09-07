@@ -268,43 +268,40 @@ class TestMultiplexPortBindingGuard:
             )
             assert resp.status_code == 200
 
+def test_named_current_home_matches_unscoped(client, isolated_profiles, monkeypatch):
+    from hermes_cli.web_server_profiles import _config_profile_scope, _hermes_home_scope
+    from hermes_constants import get_hermes_home
 
-class TestProfileDefaultOnDefaultHomeReportsEnvEnabled:
-    """``profile=default`` on a process whose HERMES_HOME IS the default home must
-    take the unscoped path, not the profile-scoped one.
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "root-token")
+    for scope in (None, "current", "default"):
+        response = client.get("/api/messaging/platforms", params={"profile": scope} if scope else {})
+        assert response.status_code == 200
+        assert _telegram(response.json())["enabled"] is True
+    with _hermes_home_scope(isolated_profiles["worker_alpha"]):
+        with _config_profile_scope("default") as scoped:
+            assert scoped is None
+            assert get_hermes_home() == isolated_profiles["default"]
 
-    The desktop app always sends ``profile=default``. ``_is_current_profile()`` only
-    recognized None/""/"current" — NOT "default" — so a single-profile install (the
-    standard ``hermes gateway setup`` flow: token in ``.env``, no ``platforms:``
-    section in ``config.yaml``) entered the scoped branch, which derives enablement
-    from ``config.yaml`` only and never calls ``load_gateway_config()``'s
-    env-override pass. Result: a platform connected via ``.env`` reported
-    ``enabled=false, state="disabled"`` while it was actually running. The unscoped
-    GET (no profile param) correctly reported ``enabled=true``. Issue #104614.
-    """
 
-    def test_default_profile_param_matches_unscoped_enablement(
-        self, client, isolated_profiles, monkeypatch
-    ):
-        # Simulate the gateway having loaded .env into os.environ at startup
-        # (load_hermes_dotenv in gateway/run.py): the dashboard process shares
-        # that environment, so the unscoped load_gateway_config() env-override
-        # pass sees the token and enables the platform.
-        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "root-token")
-
-        # config.yaml has NO platforms: section (isolated_profiles writes "{}"),
-        # so enablement can ONLY come from the env-override pass — exactly the
-        # standard setup flow the bug hits.
-
-        unscoped = client.get("/api/messaging/platforms")
-        assert unscoped.status_code == 200
-        telegram_unscoped = _telegram(unscoped.json())
-        assert telegram_unscoped["enabled"] is True
-
-        scoped_default = client.get(
-            "/api/messaging/platforms", params={"profile": "default"}
-        )
-        assert scoped_default.status_code == 200
-        telegram_scoped = _telegram(scoped_default.json())
-        assert telegram_scoped["enabled"] is True
-
+def test_scoped_enablement_uses_only_own_credentials(client, isolated_profiles, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "root-token")
+    worker = isolated_profiles["worker_alpha"]
+    params = {"profile": "worker_alpha"}
+    assert _telegram(client.get("/api/messaging/platforms", params=params).json())["enabled"] is False
+    (worker / ".env").write_text("TELEGRAM_BOT_TOKEN=worker-token\n", encoding="utf-8")
+    payload = client.get("/api/messaging/platforms", params=params).json()
+    assert _telegram(payload)["enabled"] is True
+    assert _telegram(payload)["configured"] is True
+    assert _telegram(payload)["state"] != "disabled"
+    from hermes_cli.web_server_messaging import _messaging_platform_catalog
+    empty = {entry["id"] for entry in _messaging_platform_catalog() if not entry["required_env"]}
+    for platform in payload["platforms"]:
+        if platform["id"] in empty:
+            assert platform["enabled"] is False
+            assert platform["configured"] is False
+    for enabled in (False, True):
+        (worker / "config.yaml").write_text(yaml.safe_dump({"platforms": {"telegram": {"enabled": enabled}}}), encoding="utf-8")
+        platform = _telegram(client.get("/api/messaging/platforms", params=params).json())
+        assert platform["enabled"] is enabled
+        assert platform["configured"] is True
+    assert "root-token" in (isolated_profiles["default"] / ".env").read_text(encoding="utf-8")

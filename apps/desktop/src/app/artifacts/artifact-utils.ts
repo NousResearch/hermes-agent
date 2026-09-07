@@ -177,7 +177,14 @@ function artifactHref(value: string): string {
     return value
   }
 
-  if (value.startsWith('file://') || value.startsWith('/') || isWindowsPath(value)) {
+  if (
+    value.startsWith('file://') ||
+    value.startsWith('/') ||
+    value.startsWith('~/') ||
+    value.startsWith('./') ||
+    value.startsWith('../') ||
+    isWindowsPath(value)
+  ) {
     return mediaExternalUrl(value)
   }
 

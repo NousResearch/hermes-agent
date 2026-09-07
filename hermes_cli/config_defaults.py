@@ -1170,9 +1170,9 @@ DEFAULT_CONFIG = {
             "keyword": "jarvis",
         },
     },
-    
+
     "human_delay": {"mode": "off", "min_ms": 800, "max_ms": 2500},
-    
+
     # Context engine — how the context window is managed near the token limit. "compressor" =
     # built-in lossy summarization; or a plugin name (e.g. "lcm") installed in
     # plugins/context_engine/<name>/ or ~/.hermes/plugins/.

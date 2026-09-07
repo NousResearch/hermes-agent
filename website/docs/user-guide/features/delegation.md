@@ -10,6 +10,12 @@ The `delegate_task` tool spawns child AIAgent instances with isolated context, i
 
 Top-level model calls run in the background automatically. Hermes returns a handle immediately so the conversation can continue, then posts the result back as a new message. An orchestrator subagent waits for its own workers so it can synthesize their results before returning.
 
+## Background process lifetime
+
+Background terminal processes belong to the agent that starts them. Closing a child during delegation teardown terminates its remaining processes, including work started in earlier turns, without stopping processes owned by the parent or sibling agents. Sharing a terminal environment does not transfer process ownership.
+
+A child should wait for its builds, tests, and other bounded background commands before returning its final summary. Start a CI watcher or server in the parent session if it must continue after the child finishes; returning a process ID does not transfer ownership to the parent.
+
 ## Single Task
 
 ```python

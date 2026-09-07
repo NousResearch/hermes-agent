@@ -1,6 +1,8 @@
-"""OpenAI/Anthropic wire-client lifecycle + credential refresh for ``AIAgent`` (``ClientLifecycleMixin``):
-shared primary client, single-slot per-request client caches (owner-thread close vs stranger-thread abort),
-credential refresh/rotation, route-derived default headers. Extracted from ``run_agent.py``, MRO unchanged."""
+"""Tool-resource teardown, wire-client lifecycle and credential refresh for ``AIAgent``.
+
+``ClientLifecycleMixin`` owns task cleanup, the shared primary client, per-request client caches
+(owner-thread close vs stranger-thread abort), credential rotation and route-derived headers.
+"""
 import logging
 import threading
 import time
@@ -63,6 +65,28 @@ def _valid_credential_pair(api_key: Any, base_url: Any) -> bool:
 
 
 class ClientLifecycleMixin:
+    def _close_task_resources(self, task_id: str) -> None:
+        """Release task resources without treating a shared environment as process ownership."""
+        from run_agent import _quietly, cleanup_browser, cleanup_vm
+
+        def kill_processes() -> None:
+            from tools.process_registry import process_registry
+            # A session can run several task IDs; delegated IDs also differ from session_id.
+            # Never match the environment key (e.g. "default"), shared by parent and siblings.
+            owners = getattr(self, "_process_owner_task_ids", ())
+            for process in process_registry.list_sessions():
+                if process["owner_task_id"] in owners and process["status"] == "running":
+                    process_registry.kill_process(
+                        process["session_id"], source="agent_close", consume_output=True,
+                    )
+
+        def release_computer_use() -> None:
+            from tools.computer_use.tool import release_computer_use_session
+            release_computer_use_session(task_id)
+
+        for step in (kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id), release_computer_use):
+            _quietly(step)
+
     def _client_log_context(self) -> str:
         thread = threading.current_thread()
         return (

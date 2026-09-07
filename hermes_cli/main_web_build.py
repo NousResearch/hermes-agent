@@ -207,19 +207,23 @@ def _console_print(text: str) -> None:
 
 def _run_with_idle_timeout(
     cmd: list[str], cwd: Path, *, idle_timeout_seconds: int = 180, indent: str = "    ",
-    env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-    """Stream a subprocess, killing it after *idle_timeout_seconds* of silence (a silent captured
-    Vite build on a low-memory host looks like a hang and users reboot mid-install). Returns merged
-    stdout, empty stderr, rc 124 if terminate raced a clean exit; never raises on idle timeout.
+    env: dict[str, str] | None = None, stream: bool = True,
+    on_line: Callable[[str], None] | None = None) -> subprocess.CompletedProcess:
+    """Run a subprocess with an idle-output timeout (a silent captured Vite build on a low-memory
+    host looks like a hang and users reboot mid-install). Returns merged stdout, empty stderr, rc 124
+    if terminate raced a clean exit; never raises on idle timeout.
 
     Issue #33788: ``npm run build`` (Vite) was invoked with ``capture_output=True`` and no timeout. On
     low-memory hosts (notably WSL2 with the default 4 GB cap) the build can stall or sit silent for minutes;
     users see a frozen terminal, assume the update is hung, and reboot — leaving the editable install in a
     half-state with the ``hermes`` launcher present but ``hermes_cli`` not importable.
-    This helper fixes both halves: stdout is streamed (so the user sees progress), and if no bytes have
-    appeared on stdout/stderr for ``idle_timeout_seconds``, the process is terminated and the call returns
-    with a non-zero ``returncode``. The caller's existing stale-dist fallback (#23817) takes over from
-    there.
+    This helper fixes both halves: stdout is optionally streamed (so the user sees progress), and if no
+    bytes have appeared on stdout/stderr for ``idle_timeout_seconds``, the process is terminated and the
+    call returns with a non-zero ``returncode``. The caller's existing stale-dist fallback (#23817) takes
+    over from there.
+
+    ``stream=False`` still captures output and refreshes the idle timer, but does not print every line
+    (quiet web UI build path). ``on_line`` is invoked with each raw line even when not streaming.
     """
     merged_chunks: list[str] = []
     last_output_ts = _time.monotonic()
@@ -237,8 +241,14 @@ def _run_with_idle_timeout(
         nonlocal last_output_ts
         assert proc.stdout is not None
         for line in proc.stdout:
-            _console_print(f"{indent}{line.rstrip()}")
-            sys.stdout.flush()
+            if on_line is not None:
+                try:
+                    on_line(line)
+                except Exception:
+                    logger.debug("on_line callback failed", exc_info=True)
+            if stream:
+                _console_print(f"{indent}{line.rstrip()}")
+                sys.stdout.flush()
             with lock:
                 merged_chunks.append(line)
                 last_output_ts = _time.monotonic()
@@ -382,13 +392,82 @@ def _run_npm_watching_for_engine_failure(
 
 
 def _missing_web_build_tool(output: str) -> str | None:
-    """The build tool a failed ``npm run build`` could not resolve (dash/bash/cmd.exe phrasings)."""
+    """The build tool a failed ``npm run build`` could not resolve (dash/bash/cmd.exe phrasings).
+
+    Default ship build is Vite-only, so ``vite`` is checked first. ``tsc`` is still detected for
+    contributor ``build:check`` failures and older logs.
+    """
     lowered = output.lower()
-    for tool in ("tsc", "vite"):
+    for tool in ("vite", "tsc"):
         phrases = (f"{tool}: not found", f"{tool}: command not found", f"'{tool}' is not recognized")
         if any(phrase in lowered for phrase in phrases):
             return tool
     return None
+
+
+_LIGHT_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _web_ui_build_light(env: dict[str, str] | None = None) -> bool:
+    """True when ``HERMES_WEB_BUILD_LIGHT`` is set on *env* (or ``os.environ``)."""
+    src = env if env is not None else os.environ
+    return str(src.get("HERMES_WEB_BUILD_LIGHT", "")).strip().lower() in _LIGHT_TRUTHY
+
+
+def _web_ui_build_env(base: dict[str, str] | None = None, *, light: bool | None = None) -> dict[str, str]:
+    """Env for ``npm run build`` in the web UI — heap cap + optional light mode.
+
+    Caps V8 heap so low-RAM hosts/VPS OOMs are less likely (#63338). Honors an existing
+    ``NODE_OPTIONS`` ``--max-old-space-size`` from the user. Light mode uses a smaller heap.
+    """
+    env = dict(base or os.environ)
+    if light is None:
+        light = _web_ui_build_light(env)
+    override = (env.get("HERMES_WEB_BUILD_MAX_OLD_SPACE_SIZE") or "").strip()
+    try:
+        heap_mb = int(override) if override else (1024 if light else 2048)
+    except ValueError:
+        heap_mb = 1024 if light else 2048
+    try:
+        from hermes_cli.main_tui_launch import _resolve_tui_heap_mb
+        heap_mb = min(heap_mb, _resolve_tui_heap_mb(default_mb=heap_mb))
+    except Exception:
+        pass
+    tokens = env.get("NODE_OPTIONS", "").split()
+    if not any(t.startswith("--max-old-space-size=") for t in tokens):
+        tokens.append(f"--max-old-space-size={heap_mb}")
+        env["NODE_OPTIONS"] = " ".join(tokens).strip()
+    return env
+
+
+def _cpu_pin_prefix() -> list[str]:
+    """``taskset -c <first>-<second>`` using this process's affinity, or empty.
+
+    Pins to CPUs that actually exist in the allowed set (1-core VPS / cpuset containers
+    must not get a failing ``taskset -c 0-1``).
+    """
+    if not sys.platform.startswith("linux"):
+        return []
+    taskset = shutil.which("taskset")
+    if not taskset:
+        return []
+    try:
+        cpus = sorted(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        return []
+    if len(cpus) < 2:
+        return []
+    return [taskset, "-c", f"{cpus[0]}-{cpus[1]}"]
+
+
+def _web_ui_build_command(npm: str, *, light: bool | None = None) -> list[str]:
+    """Argv for the web UI production build (``build:light`` + optional CPU pin)."""
+    if light is None:
+        light = _web_ui_build_light()
+    cmd = [npm, "run", "build:light" if light else "build"]
+    if light:
+        cmd = [*_cpu_pin_prefix(), *cmd]
+    return cmd
 
 
 def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
@@ -419,14 +498,34 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         lock_file.close()
 
 
-def _relay_npm_output(result: subprocess.CompletedProcess) -> None:
-    """Print captured npm output so users can see *why* a step failed."""
+def _cmd_output_text(result: subprocess.CompletedProcess) -> str:
+    """Merged stdout/stderr from a CompletedProcess, as text."""
+    chunks: list[str] = []
     for blob in (result.stdout, result.stderr):
         if not blob:
             continue
-        text = blob.decode("utf-8", errors="replace").rstrip() if isinstance(blob, bytes) else blob.rstrip()
+        text = blob.decode("utf-8", errors="replace") if isinstance(blob, (bytes, bytearray)) else str(blob)
+        text = text.strip()
         if text:
-            _console_print(text)
+            chunks.append(text)
+    return "\n".join(chunks).strip()
+
+
+def _say_error_detail(text: str, *, max_lines: int = 12) -> None:
+    """Print the useful tail of a failed command, indented under the step."""
+    lines = [ln.rstrip() for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        _console_print("  (no error output captured)")
+        return
+    for ln in lines[-max_lines:]:
+        _console_print(ln if ln.startswith("  ") else f"  {ln}")
+
+
+def _relay_npm_output(result: subprocess.CompletedProcess) -> None:
+    """Print captured npm output so users can see *why* a step failed."""
+    detail = _cmd_output_text(result)
+    if detail:
+        _console_print(detail)
 
 
 def _web_npm_install_context(web_dir: Path) -> tuple[Path, tuple[str, ...]]:
@@ -460,12 +559,23 @@ def _web_npm_install_context(web_dir: Path) -> tuple[Path, tuple[str, ...]]:
     return npm_cwd, args
 
 
-def _report_web_build_failure(step: str, result: subprocess.CompletedProcess, *, fatal: bool) -> bool:
-    """Print the standard ``Web UI <step> failed`` block + manual hint; returns False."""
-    _console_print(f"  {'✗' if fatal else '⚠'} Web UI {step} failed" + ("" if fatal else " (hermes web will not be available)"))
-    _relay_npm_output(result)
-    if fatal:
-        _console_print("  Run manually:  npm install --workspace web && npm run build -w web")
+_WEB_UI_MANUAL_FIX = "run: npm install --workspace web && npm run build -w web"
+
+
+def _report_web_build_failure(
+    headline: str, *, fatal: bool, detail: str = "", meaning: str = "",
+    solution: str = _WEB_UI_MANUAL_FIX,
+) -> bool:
+    """Print headline → meaning → error tail → fix; returns False."""
+    mark = "✗" if fatal else "⚠"
+    soft = "" if fatal else " (hermes web will not be available)"
+    _console_print(f"  {mark} {headline}{soft}")
+    if meaning:
+        _console_print(f"  {meaning}")
+    if detail:
+        _say_error_detail(detail)
+    if solution:
+        _console_print(f"  {solution}")
     return False
 
 
@@ -488,52 +598,78 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             _console_print("Install Node.js, then run:  cd web && npm install && npm run build")
         return not fatal
     build_env = _npm_lifecycle_env(with_hermes_node_path())
+    light = _web_ui_build_light(build_env)
+    vite_env = _web_ui_build_env(build_env, light=light)
     _console_print("→ Building web UI...")
 
     npm_cwd, npm_workspace_args = _web_npm_install_context(web_dir)
 
-    def _install_web_deps(*, silent: bool) -> subprocess.CompletedProcess:
-        extra = (*npm_workspace_args, "--silent", "--prefer-offline") if silent else (*npm_workspace_args, "--prefer-offline")
-        return _run_npm_install_deterministic(npm, npm_cwd, extra_args=extra, env=build_env)
+    def _install_web_deps(*, silent: bool, prefer_offline: bool = True) -> subprocess.CompletedProcess:
+        extra: list[str] = list(npm_workspace_args)
+        if silent:
+            extra.append("--silent")
+        if prefer_offline:
+            extra.append("--prefer-offline")
+        return _run_npm_install_deterministic(npm, npm_cwd, extra_args=tuple(extra), env=build_env)
 
     def _build() -> subprocess.CompletedProcess:
-        # Streamed + idle-killed (never capture_output on a long Vite build: it
-        # looks identical to a hang and users reboot mid-install).
-        return _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
+        # Quiet capture + idle-kill (never capture_output on a long Vite build:
+        # it looks identical to a hang and users reboot mid-install). Heap cap
+        # on vite_env so low-RAM hosts don't OOM during vite build (#63338).
+        return _run_with_idle_timeout(
+            _web_ui_build_command(npm, light=light), cwd=web_dir, env=vite_env, stream=False,
+        )
 
-    r1 = _install_web_deps(silent=True)
-    if r1.returncode != 0:
-        return _report_web_build_failure("npm install", r1, fatal=fatal)
-    r2 = _build()
-    if r2.returncode != 0:
-        # The install can exit 0 over a half-installed tree (lockfile-hash skip,
-        # interrupted link step); a plain retry would keep `tsc: not found`
-        # forever. Reinstall non-silently first, then one delayed retry for
-        # boot-time races (antivirus scanning Node, npm cache not ready).
-        # First attempt — stream output via idle-timeout helper (issue #33788). capture_output=True on a
-        # long Vite build looks identical to a hang; users react by rebooting, which leaves the editable
-        # install in a half-state. Streaming + idle-kill makes failures observable AND recoverable (the
-        # stale-dist fallback below handles the kill path).
-        missing_tool = _missing_web_build_tool((r2.stdout or "") + (r2.stderr or ""))
-        if missing_tool:
-            _console_print(f"  ⚠ Build could not resolve {missing_tool} — reinstalling web dependencies...")
-            _install_web_deps(silent=False)
-            r2 = _build()
+    try:
+        r1 = _install_web_deps(silent=True)
+        if r1.returncode != 0:
+            _console_print("  ⚠ dependency install failed — retrying without --prefer-offline...")
+            r1 = _install_web_deps(silent=False, prefer_offline=False)
+        if r1.returncode != 0:
+            return _report_web_build_failure(
+                "npm install failed (install step)",
+                fatal=fatal,
+                meaning="dependency install failed before the Vite bundle ran",
+                detail=_cmd_output_text(r1),
+            )
+
+        r2 = _build()
         if r2.returncode != 0:
-            _time.sleep(3)
-            r2 = _build()
+            # The install can exit 0 over a half-installed tree (lockfile-hash skip,
+            # interrupted link step); a plain retry would keep a missing vite forever.
+            missing_tool = _missing_web_build_tool(_cmd_output_text(r2))
+            if missing_tool:
+                _console_print(f"  ⚠ could not resolve {missing_tool} — reinstalling web dependencies...")
+                _install_web_deps(silent=False, prefer_offline=False)
+                r2 = _build()
+            if r2.returncode != 0:
+                _time.sleep(3)
+                r2 = _build()
 
-    if r2.returncode != 0:
-        # A stale dist is far better than no UI for non-interactive callers
-        # (Windows Scheduled Tasks, CI): serve it as a fallback instead of failing.
-        if (_web_dist_dir(web_dir) / "index.html").exists():
-            _console_print("  ⚠ Web UI build failed — serving stale dist as fallback")
-            # Idle-timeout merges stderr into stdout; subprocess.run keeps them split.
-            preview = ((r2.stderr or "") + (r2.stdout or "")).strip()
-            if preview:
-                _console_print("  Build error:\n  " + "\n  ".join(preview.splitlines()[-10:]))
-            return True
-        return _report_web_build_failure("build", r2, fatal=fatal)
-    _console_print("  ✓ Web UI built")
+        if r2.returncode != 0:
+            detail = _cmd_output_text(r2)
+            if (_web_dist_dir(web_dir) / "index.html").exists():
+                _console_print("  ⚠ vite build failed — serving stale dist as fallback")
+                _console_print("  production bundle step failed; keeping the previous web_dist")
+                _say_error_detail(detail)
+                _console_print(f"  {_WEB_UI_MANUAL_FIX}")
+                return True
+            return _report_web_build_failure(
+                "vite build failed (vite step)",
+                fatal=fatal,
+                meaning="dependencies installed; the production bundle step failed",
+                detail=detail,
+            )
+    except Exception as exc:
+        return _report_web_build_failure(
+            f"web UI build crashed: {type(exc).__name__}: {exc}",
+            fatal=fatal,
+            meaning="an unexpected error stopped the web UI build",
+        )
+
+    _console_print("  bundling pages ✓")
+    _console_print("  vendors ✓")
+    _console_print("  assets ✓")
+    _console_print("Web UI Complete")
     _write_web_ui_build_stamp(_web_project_root(web_dir), web_dir)
     return True

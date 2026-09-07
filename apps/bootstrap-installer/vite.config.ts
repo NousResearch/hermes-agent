@@ -12,6 +12,7 @@ import path from 'node:path'
 // `clearScreen: false` is the Tauri convention — they spawn vite as a child
 // process and want our errors to stay visible.
 
+const __dirname = import.meta.dirname
 const host = process.env.TAURI_DEV_HOST
 
 export default defineConfig({

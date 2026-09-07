@@ -10,6 +10,8 @@ function compilerPreset() {
 }
 import path from "path";
 
+const __dirname = import.meta.dirname;
+
 export default defineConfig({
   plugins: [react(), babel({ presets: [compilerPreset()] })],
   resolve: {

@@ -17,7 +17,7 @@ import time
 from hermes_cli.main_web_build import _run_with_idle_timeout
 
 
-def test_streams_output_and_returns_zero_on_success(tmp_path):
+def test_streams_output_and_returns_zero_on_success(tmp_path, capsys):
     script = tmp_path / "ok.py"
     script.write_text("print('line one'); print('line two')\n")
     result = _run_with_idle_timeout(
@@ -26,6 +26,9 @@ def test_streams_output_and_returns_zero_on_success(tmp_path):
     assert result.returncode == 0
     assert "line one" in result.stdout
     assert "line two" in result.stdout
+    out = capsys.readouterr().out
+    assert "line one" in out
+    assert "line two" in out
 
 
 def test_returns_127_when_binary_missing(tmp_path):
@@ -35,3 +38,33 @@ def test_returns_127_when_binary_missing(tmp_path):
         idle_timeout_seconds=5,
     )
     assert result.returncode == 127
+
+
+def test_stream_false_captures_without_printing(tmp_path, capsys):
+    script = tmp_path / "quiet.py"
+    script.write_text("print('hidden line')\n")
+    result = _run_with_idle_timeout(
+        [_sys.executable, str(script)],
+        cwd=tmp_path,
+        idle_timeout_seconds=10,
+        stream=False,
+    )
+    assert result.returncode == 0
+    assert "hidden line" in result.stdout
+    out = capsys.readouterr().out
+    assert "hidden line" not in out
+
+
+def test_on_line_callback_fires_even_when_not_streaming(tmp_path):
+    script = tmp_path / "cb.py"
+    script.write_text("print('via callback')\n")
+    seen: list[str] = []
+    result = _run_with_idle_timeout(
+        [_sys.executable, str(script)],
+        cwd=tmp_path,
+        idle_timeout_seconds=10,
+        stream=False,
+        on_line=seen.append,
+    )
+    assert result.returncode == 0
+    assert any("via callback" in line for line in seen)

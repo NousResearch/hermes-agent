@@ -532,6 +532,7 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
         name, candidates, check_fn=_make_check_fn(name), scope=_core._mcp_registry_scope, lazy=True)
     if registered:
         with _core._lock:
+            # Preserve the resolving snapshot until first use, even across env-file rotation.
             key = _server_key(name)
             _core._lazy_server_configs[key] = dict(config)
             _core._lazy_server_fingerprints[key] = config_fingerprint(config)

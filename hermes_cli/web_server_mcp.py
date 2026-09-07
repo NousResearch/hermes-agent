@@ -173,6 +173,6 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
             pass
         from hermes_cli.mcp_config import _sanitize_mcp_probe_error
 
-        flow.mark_error(_sanitize_mcp_probe_error(msg, cfg))
+        flow.mark_error(_sanitize_mcp_probe_error(exc, cfg, message=msg))
     finally:
         flow.mark_worker_done()

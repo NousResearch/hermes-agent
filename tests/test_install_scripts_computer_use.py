@@ -7,10 +7,48 @@ binary is still missing (see test_web_routers_tools_install_on_enable.py).
 """
 
 from pathlib import Path
+import json
+import shutil
+import subprocess
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 INSTALL_PS1 = REPO_ROOT / "scripts" / "install.ps1"
+
+
+def _run_native_cua(tmp_path, host, mode):
+    executable = shutil.which(host)
+    assert executable, f"Native installer matrix requires {host}"
+    result = subprocess.run(
+        [
+            executable,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(REPO_ROOT / "scripts/tests/test-install-ps1-cua-contract.ps1"),
+            "-WorkRoot",
+            str(tmp_path),
+            "-Mode",
+            mode,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    receipt = next(
+        line.split("=", 1)[1]
+        for line in result.stdout.splitlines()
+        if line.startswith("CUA_FIXTURE_RESULT=")
+    )
+    return json.loads(receipt), output
 
 
 class TestInstallSh:
@@ -43,7 +81,7 @@ class TestInstallSh:
         """Non-admin macOS accounts can't receive CuaDriver.app (#47865
         class) — skip cleanly instead of failing every install."""
         text = INSTALL_SH.read_text()
-        assert '[ -d /Applications ] && [ ! -w /Applications ]' in text
+        assert "[ -d /Applications ] && [ ! -w /Applications ]" in text
 
 
 class TestInstallPs1:
@@ -57,14 +95,27 @@ class TestInstallPs1:
         assert "function Install-CuaDriver {" in text
         assert "    Install-CuaDriver\n" in text
 
-    def test_install_is_timeboxed_above_upstream_lock_window(self) -> None:
-        text = INSTALL_PS1.read_text()
-        assert "Wait-Job $job -Timeout 660" in text
+    @pytest.mark.windows_only
+    @pytest.mark.parametrize("host", ["powershell.exe", "pwsh.exe"])
+    def test_install_is_timeboxed_above_upstream_lock_window(
+        self, tmp_path, host
+    ) -> None:
+        receipt, _ = _run_native_cua(tmp_path, host, "failure")
+        assert receipt["timeout"] >= 660
 
-    def test_install_is_best_effort(self) -> None:
-        text = INSTALL_PS1.read_text()
-        assert "Computer Use driver install timed out" in text
-        assert "hermes computer-use install" in text
+    @pytest.mark.windows_only
+    @pytest.mark.parametrize("host", ["powershell.exe", "pwsh.exe"])
+    @pytest.mark.parametrize("mode", ["failure", "timeout", "missing"])
+    def test_install_is_best_effort(self, tmp_path, host, mode) -> None:
+        receipt, output = _run_native_cua(tmp_path, host, mode)
+        assert receipt["completed"]
+        assert "hermes computer-use install" in output
+        expected = {
+            "failure": "failed (exit 7)",
+            "timeout": "timed out",
+            "missing": "did not produce a compatible runtime",
+        }
+        assert expected[mode] in output
 
     def test_install_rechecks_runtime_contract_before_success(self) -> None:
         text = INSTALL_PS1.read_text()

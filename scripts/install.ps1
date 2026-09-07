@@ -632,6 +632,245 @@ function Resolve-NpmCmd {
     return $npmExe
 }
 
+# Native work belongs to the installer until every descendant has exited.
+# Assign the suspended launcher to a job before it can create children. Closing
+# this private job is a final kill-on-close safeguard, never a process-name kill.
+function Initialize-InstallerNativeProcess {
+    if ('HermesInstaller.NativeCommand' -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+namespace HermesInstaller {
+    public sealed class NativeCommand : IDisposable {
+        [StructLayout(LayoutKind.Sequential)] struct Security {
+            public int Length; public IntPtr Descriptor; public int Inherit;
+        }
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct Startup {
+            public int Size; public string Reserved, Desktop, Title;
+            public int X, Y, XSize, YSize, XChars, YChars, Fill, Flags;
+            public short Show, ReservedSize; public IntPtr ReservedBytes, Input, Output, Error;
+        }
+        [StructLayout(LayoutKind.Sequential)] struct ProcessInfo {
+            public IntPtr Process, Thread; public int ProcessId, ThreadId;
+        }
+        [StructLayout(LayoutKind.Sequential)] struct BasicLimits {
+            public long ProcessTime, JobTime; public uint Flags;
+            public UIntPtr MinimumWorkingSet, MaximumWorkingSet;
+            public uint ActiveProcessLimit; public UIntPtr Affinity;
+            public uint PriorityClass, SchedulingClass;
+        }
+        [StructLayout(LayoutKind.Sequential)] struct IoCounters {
+            public ulong ReadOperations, WriteOperations, OtherOperations, ReadBytes, WriteBytes, OtherBytes;
+        }
+        [StructLayout(LayoutKind.Sequential)] struct ExtendedLimits {
+            public BasicLimits Basic; public IoCounters Io;
+            public UIntPtr ProcessMemory, JobMemory, PeakProcessMemory, PeakJobMemory;
+        }
+        [StructLayout(LayoutKind.Sequential)] struct Accounting {
+            public long UserTime, KernelTime, PeriodUserTime, PeriodKernelTime;
+            public uint PageFaults, TotalProcesses, ActiveProcesses, TerminatedProcesses;
+        }
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern IntPtr CreateJobObject(IntPtr attributes, string name);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool SetInformationJobObject(IntPtr job, int kind, ref ExtendedLimits value, uint length);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool QueryInformationJobObject(IntPtr job, int kind, out Accounting value, uint length, IntPtr returned);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool TerminateJobObject(IntPtr job, uint code);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool TerminateProcess(IntPtr process, uint code);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern uint ResumeThread(IntPtr thread);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool GetExitCodeProcess(IntPtr process, out uint code);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool CloseHandle(IntPtr handle);
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern IntPtr CreateFile(string name, uint access, uint share, ref Security security, uint creation, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern bool CreateProcess(string application, StringBuilder command, IntPtr processSecurity, IntPtr threadSecurity,
+            bool inherit, uint flags, IntPtr environment, string directory, ref Startup startup, out ProcessInfo process);
+
+        IntPtr job, process;
+        public int ProcessId { get; private set; }
+        static Exception Error(string action) { return new Win32Exception(Marshal.GetLastWin32Error(), action); }
+        static bool Valid(IntPtr handle) { return handle != IntPtr.Zero && handle != new IntPtr(-1); }
+        public static string Quote(string value) {
+            // CommandLineToArgvW/CRT quoting, including empty args and trailing backslashes.
+            var result = new StringBuilder("\""); int slashes = 0;
+            foreach (char c in value) {
+                if (c == '\\') { slashes++; continue; }
+                if (c == '"') { result.Append('\\', slashes * 2 + 1); result.Append(c); }
+                else { result.Append('\\', slashes); result.Append(c); }
+                slashes = 0;
+            }
+            result.Append('\\', slashes * 2); return result.Append('"').ToString();
+        }
+        public static NativeCommand Start(string executable, string[] arguments, string directory, string output, string error) {
+            var owner = new NativeCommand();
+            IntPtr input = IntPtr.Zero, stdout = IntPtr.Zero, stderr = IntPtr.Zero;
+            ProcessInfo info = new ProcessInfo();
+            try {
+                owner.job = CreateJobObject(IntPtr.Zero, null);
+                if (!Valid(owner.job)) throw Error("create installer process job");
+                var limits = new ExtendedLimits(); limits.Basic.Flags = 0x2000; // KILL_ON_JOB_CLOSE
+                if (!SetInformationJobObject(owner.job, 9, ref limits, (uint)Marshal.SizeOf(limits))) throw Error("configure installer process job");
+                var security = new Security { Length = Marshal.SizeOf(typeof(Security)), Inherit = 1 };
+                input = CreateFile("NUL", 0x80000000, 3, ref security, 3, 0, IntPtr.Zero);
+                stdout = CreateFile(output, 0x40000000, 7, ref security, 2, 0, IntPtr.Zero);
+                stderr = CreateFile(error, 0x40000000, 7, ref security, 2, 0, IntPtr.Zero);
+                if (!Valid(input) || !Valid(stdout) || !Valid(stderr)) throw Error("open installer process streams");
+                var startup = new Startup { Size = Marshal.SizeOf(typeof(Startup)), Flags = 0x100, Input = input, Output = stdout, Error = stderr };
+                var command = new StringBuilder(Quote(executable));
+                foreach (string argument in arguments) command.Append(' ').Append(Quote(argument));
+                // CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT.
+                if (!CreateProcess(executable, command, IntPtr.Zero, IntPtr.Zero, true, 0x08000404, IntPtr.Zero, directory, ref startup, out info)) throw Error("launch installer command");
+                owner.process = info.Process; owner.ProcessId = info.ProcessId;
+                if (!AssignProcessToJobObject(owner.job, owner.process)) throw Error("own installer command before execution");
+                if (ResumeThread(info.Thread) == UInt32.MaxValue) throw Error("resume installer command");
+                return owner;
+            } catch {
+                // An unassigned process is still suspended and has no descendants.
+                if (Valid(owner.process)) TerminateProcess(owner.process, 125);
+                owner.Dispose(); throw;
+            } finally {
+                if (Valid(info.Thread)) CloseHandle(info.Thread);
+                if (Valid(input)) CloseHandle(input);
+                if (Valid(stdout)) CloseHandle(stdout);
+                if (Valid(stderr)) CloseHandle(stderr);
+            }
+        }
+        public uint ActiveProcesses {
+            get {
+                Accounting value;
+                if (!QueryInformationJobObject(job, 1, out value, (uint)Marshal.SizeOf(typeof(Accounting)), IntPtr.Zero)) throw Error("observe installer process ownership");
+                return value.ActiveProcesses;
+            }
+        }
+        public int ExitCode {
+            get { uint value; if (!GetExitCodeProcess(process, out value)) throw Error("read installer exit code"); return unchecked((int)value); }
+        }
+        public void Terminate() { if (!TerminateJobObject(job, 124)) throw Error("terminate installer process job"); }
+        public void Dispose() {
+            if (Valid(job)) { CloseHandle(job); job = IntPtr.Zero; }
+            if (Valid(process)) { CloseHandle(process); process = IntPtr.Zero; }
+        }
+    }
+}
+'@
+}
+
+# A build gets a generous hard limit, not an output-idle limit: healthy compiler
+# and antivirus work can legitimately be quiet for minutes. Tests replace this
+# table in their isolated stage process; it is not a new user configuration API.
+$script:InstallerCommandTimeouts = @{
+    Desktop = 3600; Electron = 600; Packages = 600; NodeDeps = 600; ComputerUse = 660
+}
+
+function Invoke-ProcessWithWallClockTimeout {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [Parameter(Mandatory = $true)][ValidateRange(1, 86400)][int]$TimeoutSec,
+        [string]$RedirectStandardOutput,
+        [string]$RedirectStandardError,
+        [string]$WorkingDirectory = (Get-Location).Path,
+        [string]$Label = 'Installer command'
+    )
+    if ($script:InstallerNativeCleanupFailure) { throw $script:InstallerNativeCleanupFailure }
+    Initialize-InstallerNativeProcess
+    $temporary = @()
+    $owner = $null
+    $readers = @()
+    $buffer = New-Object char[] 4096
+    $output = [Text.StringBuilder]::new()
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $timedOut = $false
+    $lastProgress = 0.0
+    $cleanupError = $null
+    try {
+        if (-not $RedirectStandardOutput) { $RedirectStandardOutput = [IO.Path]::GetTempFileName(); $temporary += $RedirectStandardOutput }
+        if (-not $RedirectStandardError) { $RedirectStandardError = [IO.Path]::GetTempFileName(); $temporary += $RedirectStandardError }
+        if ([IO.Path]::GetFullPath($RedirectStandardOutput) -eq [IO.Path]::GetFullPath($RedirectStandardError)) { throw 'Native stdout and stderr paths must be distinct' }
+        $command = Get-Command $FilePath -CommandType Application, ExternalScript -ErrorAction Stop | Select-Object -First 1
+        $executable = $command.Source
+        if ([IO.Path]::GetExtension($executable) -in @('.ps1', '.cmd', '.bat')) {
+            # Passing an encoded script preserves paths/arguments without constructing
+            # a cmd.exe command string. The script host and native grandchildren all
+            # stay in the same job, even when a batch shim exits first.
+            $literalArgs = @($executable) + $ArgumentList | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }
+            $invocation = '$ProgressPreference = ''SilentlyContinue''; [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $global:LASTEXITCODE = 0; try { & ' + ($literalArgs -join ' ') + '; exit $global:LASTEXITCODE } catch { [Console]::Error.WriteLine([string]$_); exit 1 }'
+            $executable = Join-Path $PSHOME $(if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' })
+            $ArgumentList = @('-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-EncodedCommand', [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($invocation)))
+        }
+        $owner = [HermesInstaller.NativeCommand]::Start($executable, $ArgumentList, $WorkingDirectory, $RedirectStandardOutput, $RedirectStandardError)
+        foreach ($file in @($RedirectStandardOutput, $RedirectStandardError)) {
+            $stream = [IO.File]::Open($file, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+            $readers += [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
+        }
+        do {
+            foreach ($reader in $readers) {
+                # A continuously chatty child must not keep this drain busy
+                # forever and starve the deadline or ownership observation.
+                $count = $reader.Read($buffer, 0, $buffer.Length)
+                if ($count -gt 0) {
+                    $chunk = [string]::new($buffer, 0, $count)
+                    [void]$output.Append($chunk)
+                    Write-Host -NoNewline $chunk
+                }
+            }
+            $active = $owner.ActiveProcesses
+            if ($active -eq 0) { break }
+            if ($clock.Elapsed.TotalSeconds -ge $TimeoutSec) {
+                $timedOut = $true
+                $owner.Terminate()
+                $cleanup = [Diagnostics.Stopwatch]::StartNew()
+                while ($owner.ActiveProcesses -ne 0 -and $cleanup.Elapsed.TotalSeconds -lt 10) { Start-Sleep -Milliseconds 50 }
+                if ($owner.ActiveProcesses -ne 0) { throw 'Installer process job did not become empty after termination' }
+                Write-Warn "$Label timed out after ${TimeoutSec}s; its process tree has exited."
+                break
+            }
+            if ($clock.Elapsed.TotalSeconds - $lastProgress -ge 15) {
+                Write-Info "$Label is still running ($([int]$clock.Elapsed.TotalSeconds)s elapsed; ${TimeoutSec}s limit)."
+                $lastProgress = $clock.Elapsed.TotalSeconds
+            }
+            Start-Sleep -Milliseconds 100
+        } while ($true)
+        foreach ($reader in $readers) {
+            $chunk = $reader.ReadToEnd()
+            if ($chunk) { [void]$output.Append($chunk); Write-Host -NoNewline $chunk }
+        }
+        $code = if ($timedOut) { 124 } else { $owner.ExitCode }
+        $global:LASTEXITCODE = $code
+        return @{ TimedOut = $timedOut; ExitCode = $code; ProcessId = $owner.ProcessId; Output = $output.ToString(); CleanupComplete = $true }
+    } finally {
+        if ($owner) {
+            try {
+                if ($owner.ActiveProcesses -ne 0) {
+                    $owner.Terminate()
+                    $cleanup = [Diagnostics.Stopwatch]::StartNew()
+                    while ($owner.ActiveProcesses -ne 0 -and $cleanup.Elapsed.TotalSeconds -lt 10) { Start-Sleep -Milliseconds 50 }
+                    if ($owner.ActiveProcesses -ne 0) { throw 'Installer native process teardown could not be verified' }
+                }
+            } catch {
+                # Optional callers may catch an exception. No subsequent native
+                # attempt may start after cleanup failed, even in a fallback.
+                $script:InstallerNativeCleanupFailure = $_
+                $cleanupError = $_
+            } finally { $owner.Dispose() }
+        }
+        foreach ($reader in $readers) { $reader.Dispose() }
+        foreach ($file in $temporary) { Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue }
+        if ($cleanupError) { throw $cleanupError }
+    }
+}
+$script:InstallerNativeCleanupFailure = $null
 function Find-SystemBrowser {
     # Honor ONLY an explicit, user-set AGENT_BROWSER_EXECUTABLE_PATH override.
     #
@@ -1908,7 +2147,8 @@ function Test-Node {
             if ((Get-WindowsArch) -eq 'arm64') {
                 $wingetArgs += @('--architecture','arm64')
             }
-            winget @wingetArgs 2>&1 | Out-Null
+            $null = Invoke-ProcessWithWallClockTimeout -FilePath 'winget' -ArgumentList $wingetArgs `
+                -TimeoutSec $script:InstallerCommandTimeouts.Packages -Label 'Node.js winget install'
             $ErrorActionPreference = $prevEAP
             # Refresh PATH
             $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
@@ -2023,36 +2263,67 @@ function Install-SystemPackages {
         foreach ($pkg in $wingetPkgs) {
             $log = "$env:TEMP\hermes-winget-$($pkg -replace '[^A-Za-z0-9]','_')-$(Get-Random).log"
             $pkgLogs[$pkg] = $log
+            $stdOutPath = "$log.stdout.tmp"
+            $stdErrPath = "$log.stderr.tmp"
             # --source winget pins us to the github-backed source.  Without this,
             # a broken msstore source (cert validation failures like 0x8a15005e
             # are common on Windows-on-ARM and some corporate networks) makes
             # winget bail with "please specify --source" *before* attempting any
             # install -- and it exits 0, so the surrounding try/catch never fires.
             # We don't ship anything from msstore, so pinning is safe.
+            #
+            # Run through Invoke-ProcessWithWallClockTimeout: winget can hang
+            # indefinitely (a stalled source update, a stuck download, or a
+            # UAC prompt that never gets answered when the installer is
+            # invoked non-interactively via `irm | iex`), which previously
+            # froze the whole installer on "Installing ripgrep ... via
+            # winget..." forever (#78085). 600s mirrors the bash installer's
+            # NODE_DEPS_TIMEOUT default and the Playwright install guard --
+            # generous enough for a large ffmpeg download on a slow link, but
+            # it bounds the hang so the choco/scoop fallback (or the manual
+            # instructions below) actually runs instead of blocking forever.
+            $commonArgs = @("install", "--exact", "--id", $pkg, "--source", "winget", "--silent")
+            $agreementArgs = @("--accept-package-agreements", "--accept-source-agreements")
             try {
-                $output = winget install --exact --id $pkg --source winget --silent `
-                    --accept-package-agreements --accept-source-agreements 2>&1
-                $code = $LASTEXITCODE
-                $output | Out-File -FilePath $log -Encoding utf8
-                "winget exit: $code" | Out-File -FilePath $log -Encoding utf8 -Append
-                # 0x8A15002B (-1978335189) = APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE.
-                # winget treats `install` on a package it already has registered as
-                # an *upgrade*, finds no newer version, and bails with this code --
-                # even when the binary is gone from disk/PATH (stale registration,
-                # files removed outside winget, or a missing alias shim). We KNOW the
-                # command was missing (that's why we're here), so a plain install
-                # dead-ends forever. Force a reinstall to repair the registration so
-                # the shim reappears.
-                if ($code -eq -1978335189) {
-                    "-> already-installed/no-upgrade; retrying with --force" | Out-File -FilePath $log -Encoding utf8 -Append
-                    $output = winget install --exact --id $pkg --source winget --silent --force `
-                        --accept-package-agreements --accept-source-agreements 2>&1
-                    $output | Out-File -FilePath $log -Encoding utf8 -Append
-                    "winget exit (force): $LASTEXITCODE" | Out-File -FilePath $log -Encoding utf8 -Append
+                $wingetResult = Invoke-ProcessWithWallClockTimeout -FilePath "winget" `
+                    -ArgumentList ($commonArgs + $agreementArgs) -TimeoutSec $script:InstallerCommandTimeouts.Packages `
+                    -RedirectStandardOutput $stdOutPath -RedirectStandardError $stdErrPath
+                Get-Content -Path $stdOutPath, $stdErrPath -ErrorAction SilentlyContinue |
+                    Out-File -FilePath $log -Encoding utf8
+                Remove-Item -Path $stdOutPath, $stdErrPath -ErrorAction SilentlyContinue
+                if ($wingetResult.TimedOut) {
+                    "winget exit: <timed out after 600s>" | Out-File -FilePath $log -Encoding utf8 -Append
+                } else {
+                    $code = $wingetResult.ExitCode
+                    "winget exit: $code" | Out-File -FilePath $log -Encoding utf8 -Append
+                    # 0x8A15002B (-1978335189) = APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE.
+                    # winget treats `install` on a package it already has registered as
+                    # an *upgrade*, finds no newer version, and bails with this code --
+                    # even when the binary is gone from disk/PATH (stale registration,
+                    # files removed outside winget, or a missing alias shim). We KNOW the
+                    # command was missing (that's why we're here), so a plain install
+                    # dead-ends forever. Force a reinstall to repair the registration so
+                    # the shim reappears.
+                    if ($code -eq -1978335189) {
+                        "-> already-installed/no-upgrade; retrying with --force" | Out-File -FilePath $log -Encoding utf8 -Append
+                        $forceResult = Invoke-ProcessWithWallClockTimeout -FilePath "winget" `
+                            -ArgumentList ($commonArgs + @("--force") + $agreementArgs) -TimeoutSec $script:InstallerCommandTimeouts.Packages `
+                            -RedirectStandardOutput $stdOutPath -RedirectStandardError $stdErrPath
+                        Get-Content -Path $stdOutPath, $stdErrPath -ErrorAction SilentlyContinue |
+                            Out-File -FilePath $log -Encoding utf8 -Append
+                        Remove-Item -Path $stdOutPath, $stdErrPath -ErrorAction SilentlyContinue
+                        if ($forceResult.TimedOut) {
+                            "winget exit (force): <timed out after 600s>" | Out-File -FilePath $log -Encoding utf8 -Append
+                        } else {
+                            "winget exit (force): $($forceResult.ExitCode)" | Out-File -FilePath $log -Encoding utf8 -Append
+                        }
+                    }
                 }
             } catch {
                 $_ | Out-File -FilePath $log -Encoding utf8 -Append
                 "winget exit: <exception>" | Out-File -FilePath $log -Encoding utf8 -Append
+            } finally {
+                Remove-Item -Path $stdOutPath, $stdErrPath -ErrorAction SilentlyContinue
             }
         }
         # Refresh PATH so packages winget exposed via "command line aliases" in
@@ -2082,7 +2353,7 @@ function Install-SystemPackages {
     if ($hasChoco -and ($needRipgrep -or $needFfmpeg)) {
         Write-Info "Trying Chocolatey..."
         foreach ($pkg in $chocoPkgs) {
-            try { choco install $pkg -y 2>&1 | Out-Null } catch { }
+            try { $null = Invoke-ProcessWithWallClockTimeout -FilePath 'choco' -ArgumentList @('install', $pkg, '-y') -TimeoutSec $script:InstallerCommandTimeouts.Packages -Label "Chocolatey $pkg" } catch { }
         }
         Update-ProcessPathForPackages
         if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
@@ -2101,7 +2372,7 @@ function Install-SystemPackages {
     if ($hasScoop -and ($needRipgrep -or $needFfmpeg)) {
         Write-Info "Trying Scoop..."
         foreach ($pkg in $scoopPkgs) {
-            try { scoop install $pkg 2>&1 | Out-Null } catch { }
+            try { $null = Invoke-ProcessWithWallClockTimeout -FilePath 'scoop' -ArgumentList @('install', $pkg) -TimeoutSec $script:InstallerCommandTimeouts.Packages -Label "Scoop $pkg" } catch { }
         }
         Update-ProcessPathForPackages
         if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
@@ -2556,6 +2827,14 @@ function Install-Venv {
         return
     }
 
+    # Recover the original generation before discovery can fail. Keep recovery
+    # outside the new transaction's catch so a failed restore is never mistaken
+    # for a partial first install. Builds on the retry fix in #103771.
+    if (Get-PendingVenvBackup) {
+        Write-Warn "Reconciling unfinished venv transaction before retrying"
+        Restore-VenvBackup
+    }
+
     # Re-resolve the interpreter before creating the venv.  Under Hermes-Setup.exe
     # each stage runs in its own powershell.exe, so the fallback the `python`
     # stage picked (e.g. 3.12 when 3.11 is absent) did NOT propagate into this
@@ -2672,11 +2951,20 @@ function Install-Venv {
         # interpreter and no rollback source. Abort with the previous install
         # intact so the user can close holders and retry.
         $venvBackupName = "venv.stale.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
+        # Publish a complete recovery pointer before parking the original. A
+        # crash before publication leaves the original untouched; a crash after
+        # parking leaves an intact pointer to it (#103771).
+        Write-PendingVenvBackup -BackupName $venvBackupName
         try {
             Rename-Item -LiteralPath "venv" -NewName $venvBackupName -ErrorAction Stop
             $venvParked = $true
         } catch {
             $renameErr = $_.Exception.Message
+            try {
+                Restore-VenvBackup
+            } catch {
+                throw "Could not move the existing venv aside ($renameErr). Recovery failed: $($_.Exception.Message)"
+            }
             throw (
                 "Could not move the existing venv aside ($renameErr). " +
                 "A process still has the install directory open (often a non-Hermes " +
@@ -2732,21 +3020,11 @@ function Install-Venv {
     # committed after Install-Dependencies' baseline-import gate passes -- the
     # bootstrap runs the stages as separate processes, and every dependency
     # tier (or the import validation) can still fail after this stage
-    # succeeds. Record the parked backup so the dependency stage can restore
-    # it on failure and commit its cleanup only after validation (#83149).
+    # succeeds. The marker was published before parking the original so an
+    # interruption cannot strand the only rollback source without a pointer.
     if ($venvParked) {
-        Set-Content -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Value $venvBackupName -Encoding ascii
         Write-Info "Previous venv parked at $venvBackupName until the dependency install is verified"
     }
-
-    # Clean up parked venvs from previous installs whose handles have since
-    # been released. Best-effort -- a still-held tree just stays for next time.
-    # The backup parked THIS run is excluded: it is the rollback source until
-    # Install-Dependencies commits the transaction.
-    Get-ChildItem -Directory -Filter "venv.stale.*" -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -ne $venvBackupName } | ForEach-Object {
-            Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue
-        }
 
     # Neutralize any inherited UV_PYTHON (e.g. $env:UV_PYTHON = "3.14" left in
     # the user's shell). uv honours UV_PYTHON over an existing venv for the
@@ -2760,21 +3038,15 @@ function Install-Venv {
         $originalError = $_
         $rollbackError = $null
 
-        if ($venvParked -and $venvBackupName -and (Test-Path -LiteralPath $venvBackupName)) {
+        if ($venvParked) {
             try {
-                if (Test-Path -LiteralPath "venv") {
-                    $failedVenvName = "venv.failed.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
-                    Rename-Item -LiteralPath "venv" -NewName $failedVenvName -ErrorAction Stop
-                    Write-Warn "Failed replacement parked at $failedVenvName"
-                }
-                Rename-Item -LiteralPath $venvBackupName -NewName "venv" -ErrorAction Stop
-                Write-Warn "Restored previous virtual environment after failed recreate"
+                Restore-VenvBackup
             } catch {
                 $rollbackError = $_.Exception.Message
             }
 
             if ($rollbackError) {
-                throw "Virtual environment recreate failed: $($originalError.Exception.Message). Rollback failed: $rollbackError. Previous venv remains at $venvBackupName."
+                throw "Virtual environment recreate failed: $($originalError.Exception.Message). Rollback failed: $rollbackError. Recovery evidence was retained."
             }
         } elseif (-not $venvHadExistingVenv -and (Test-Path -LiteralPath "venv")) {
             # Preserve a partial first install too. This branch must not touch a
@@ -2812,60 +3084,157 @@ function Install-Venv {
     Write-Success "Virtual environment ready (Python $($resolvedPython.Version))"
 }
 
+function Get-VenvTransactionDirectory {
+    param([string]$LiteralPath)
+    try {
+        $item = Get-Item -LiteralPath $LiteralPath -Force -ErrorAction Stop
+    } catch [System.Management.Automation.ItemNotFoundException] {
+        return $null
+    }
+    if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Venv recovery requires an ordinary directory: $LiteralPath. Existing recovery evidence was retained."
+    }
+    return $item
+}
+
 function Get-PendingVenvBackup {
-    # Rollback source recorded by Install-Venv (#83149). Returns the parked
-    # directory name, or $null when there is nothing to roll back to. A marker
-    # pointing at a directory that no longer exists is stale -- drop it.
+    # Validate ownership before any provisioning or directory mutation. Accept
+    # only a complete installer-generated name, with an optional final newline
+    # for markers written by previous versions.
+    $live = Get-VenvTransactionDirectory -LiteralPath (Join-Path $InstallDir "venv")
     $markerPath = Join-Path $InstallDir "venv.pending-backup"
-    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { return $null }
-    $name = (Get-Content -LiteralPath $markerPath -ErrorAction SilentlyContinue | Select-Object -First 1)
-    if ($name) { $name = $name.Trim() }
-    if (-not $name -or -not (Test-Path -LiteralPath (Join-Path $InstallDir $name))) {
-        Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
+    try {
+        $marker = Get-Item -LiteralPath $markerPath -Force -ErrorAction Stop
+    } catch [System.Management.Automation.ItemNotFoundException] {
+        return $null
+    }
+    if ($marker.PSIsContainer -or ($marker.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Invalid venv recovery marker at $markerPath. Existing recovery evidence was retained."
+    }
+    # Get-Content auto-detects and strips a BOM even with -Encoding ascii. Decode
+    # the bytes directly so non-ASCII encodings cannot bypass the complete match.
+    [string]$content = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($markerPath))
+    $match = [regex]::Match($content, '\A(venv\.stale\.[0-9]{14}-[0-9a-f]{32})(?:\r?\n)?\z')
+    if (-not $match.Success) {
+        throw "Invalid venv recovery marker at $markerPath. Existing recovery evidence was retained."
+    }
+    $name = $match.Groups[1].Value
+    $backup = Get-VenvTransactionDirectory -LiteralPath (Join-Path $InstallDir $name)
+    if (-not $backup) {
+        if (-not $live) {
+            throw "Venv recovery cannot find the original at $name or the live venv. The marker was retained."
+        }
+        # Interrupted before parking, or after restoring but before clearing.
+        # The original remains at venv; never turn this state into a fresh install.
+        Remove-Item -LiteralPath $markerPath -Force -ErrorAction Stop
         return $null
     }
     return $name
 }
 
+function Write-PendingVenvBackup {
+    param([string]$BackupName)
+    $temporary = Join-Path $InstallDir ("venv.pending-backup.{0}.tmp" -f [Guid]::NewGuid().ToString("N"))
+    try {
+        Set-Content -LiteralPath $temporary -Value $BackupName -Encoding ascii -NoNewline -ErrorAction Stop
+        Rename-Item -LiteralPath $temporary -NewName "venv.pending-backup" -ErrorAction Stop
+    } finally {
+        if (Test-Path -LiteralPath $temporary) {
+            Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Complete-VenvTransaction {
-    # Commit: dependency install + baseline imports passed, so the previous
-    # venv is no longer needed as a rollback source. Best-effort delete; a
-    # tree still held open just stays parked for the next install's sweep.
     $backupName = Get-PendingVenvBackup
     if (-not $backupName) { return }
     $backupPath = Join-Path $InstallDir $backupName
-    Remove-Item -LiteralPath $backupPath -Recurse -Force -ErrorAction SilentlyContinue
-    if (Test-Path -LiteralPath $backupPath) {
-        Write-Warn "Old venv parked at $backupName (a process still holds files in it); it will be cleaned up on the next install"
+    # Commit before cleanup. An interruption during deletion must never leave
+    # a marker that can restore the partly deleted generation on the next run.
+    Remove-Item -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Force -ErrorAction Stop
+    try {
+        # Inspect one directory at a time so the preflight itself cannot follow
+        # a junction. Retain the whole backup if any descendant is a reparse
+        # point, or if inspection fails; this is optional cleanup of one owned tree.
+        $directories = New-Object 'System.Collections.Generic.Queue[string]'
+        $directories.Enqueue($backupPath)
+        while ($directories.Count -gt 0) {
+            $directory = $directories.Dequeue()
+            [void](Get-VenvTransactionDirectory -LiteralPath $directory)
+            foreach ($item in (Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop)) {
+                if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                    throw "The backup contains a reparse point at $($item.FullName)"
+                }
+                if ($item.PSIsContainer) { $directories.Enqueue($item.FullName) }
+            }
+        }
+        Remove-Item -LiteralPath $backupPath -Recurse -Force -ErrorAction Stop
+    } catch {
+        Write-Warn "Old venv retained at $backupName; cleanup was skipped or incomplete: $($_.Exception.Message)"
     }
-    Remove-Item -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Force -ErrorAction SilentlyContinue
 }
 
 function Restore-VenvBackup {
-    # Rollback: the dependency stage failed after Install-Venv replaced the
-    # venv. Park the unusable replacement and restore the previous working
-    # venv so Hermes (and the venv-blocker probe) stay usable (#83149).
     $backupName = Get-PendingVenvBackup
     if (-not $backupName) { return }
-    try {
-        if (Test-Path -LiteralPath (Join-Path $InstallDir "venv")) {
-            $failedVenvName = "venv.failed.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
-            Rename-Item -LiteralPath (Join-Path $InstallDir "venv") -NewName $failedVenvName -ErrorAction Stop
-            Write-Warn "Failed replacement parked at $failedVenvName"
-        }
-        Rename-Item -LiteralPath (Join-Path $InstallDir $backupName) -NewName "venv" -ErrorAction Stop
-        Remove-Item -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Force -ErrorAction SilentlyContinue
-        Write-Warn "Restored previous virtual environment after failed dependency install"
-    } catch {
-        Write-Warn "Could not restore previous venv (still parked at $backupName): $($_.Exception.Message)"
+    # Any failed rename or marker removal propagates. Keep the original and
+    # recovery pointer until restoration is complete, including process death
+    # between the final rename and marker removal.
+    if (Test-Path -LiteralPath (Join-Path $InstallDir "venv")) {
+        $failedVenvName = "venv.failed.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
+        Rename-Item -LiteralPath (Join-Path $InstallDir "venv") -NewName $failedVenvName -ErrorAction Stop
+        Write-Warn "Failed replacement parked at $failedVenvName"
     }
+    Rename-Item -LiteralPath (Join-Path $InstallDir $backupName) -NewName "venv" -ErrorAction Stop
+    Remove-Item -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Force -ErrorAction Stop
+    Write-Warn "Restored previous virtual environment"
+}
+
+function Assert-VenvBaselineImports {
+    $venvPython = "$InstallDir\venv\Scripts\python.exe"
+    if (-not (Test-Path $venvPython)) {
+        throw "Install reported success but $venvPython does not exist. The dependency sync likely landed in a sibling .venv\ directory. Re-run the installer; if it persists, close Hermes processes and preserve existing venv directories before retrying. Do not delete venv in place."
+    }
+    # Relax EAP=Stop while running the import probe.  Python writes
+    # deprecation warnings and import-system info to stderr; under
+    # EAP=Stop the 2>&1 merge wraps those as ErrorRecord objects and
+    # throws even when the imports succeed.  $LASTEXITCODE is the
+    # reliable signal (it's 0 iff the python invocation exited 0,
+    # regardless of what was written to stderr).
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $venvPython -c "import dotenv, openai, rich, prompt_toolkit" 2>&1 | Out-Null
+        $importExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+    if ($importExitCode -ne 0) {
+        $sibling = "$InstallDir\.venv"
+        $hint = if (Test-Path $sibling) {
+            "Detected sibling .venv\ at $sibling -- uv synced there instead of venv\. Close Hermes processes, preserve the existing venv, and rerun the installer so the transactional recovery path can move directories safely."
+        } else {
+            "Recover with: cd '$InstallDir'; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
+        }
+        throw "Baseline imports failed in $InstallDir\venv (dotenv/openai/rich/prompt_toolkit). The install completed but dependencies are not in the venv. $hint"
+    }
+    Write-Success "Baseline imports verified in venv"
 }
 
 function Install-Dependencies {
     Write-Info "Installing dependencies..."
     
     Push-Location $InstallDir
-    
+
+    try {
+    if (-not $NoVenv -and -not (Get-PendingVenvBackup)) {
+        # The bootstrap retries this exact stage after a no-frame host exit.
+        # Rollback may already have restored the original and cleared its marker;
+        # never let that retry install packages into the only working generation.
+        # Direct dependency-stage invocations need the same recovery boundary.
+        Install-Venv
+    }
+
     if (-not $NoVenv) {
         # Tell uv to install into our venv (no activation needed)
         $env:VIRTUAL_ENV = "$InstallDir\venv"
@@ -2896,11 +3265,8 @@ function Install-Dependencies {
     # when the lockfile is stale, missing, or out-of-sync with the
     # current extras spec, NOT because they're equivalent in posture.
     #
-    # Everything through the baseline-import gate runs inside the venv
-    # transaction opened by Install-Venv (#83149): on any failure the parked
-    # previous venv is restored before the error propagates, and the parked
-    # tree is deleted only after the imports prove the replacement usable.
-    try {
+    # All mandatory checks and dependency repairs remain inside the transaction
+    # opened by Install-Venv (#83149), including the dashboard syntax gate.
     if (Test-Path "uv.lock") {
         Write-Info "Trying tier: hash-verified (uv.lock) ..."
         # Critical flag choice: `--extra all`, NOT `--all-extras`.
@@ -3007,53 +3373,7 @@ except Exception:
         throw "Failed to install hermes-agent package even with no extras. Inspect the uv pip install output above."
     }
 
-    # Baseline-import gate. Even if a tier reported success above, the
-    # actual deps may have landed somewhere other than $InstallDir\venv\
-    # (e.g. uv 0.5+ syncing into a sibling .venv\ when UV_PROJECT_ENVIRONMENT
-    # isn't set, leaving venv\ empty and hermes.exe broken with
-    # `ModuleNotFoundError: No module named 'dotenv'` on first run).
-    # We probe via the venv's own python so a misdirected sync is caught
-    # here, not 30 seconds later when the user runs `hermes`.
-    if (-not $NoVenv) {
-        $venvPython = "$InstallDir\venv\Scripts\python.exe"
-        if (-not (Test-Path $venvPython)) {
-            throw "Install reported success but $venvPython does not exist. The dependency sync likely landed in a sibling .venv\ directory. Re-run the installer; if it persists, close Hermes processes and preserve existing venv directories before retrying. Do not delete venv in place."
-        }
-        # Relax EAP=Stop while running the import probe.  Python writes
-        # deprecation warnings and import-system info to stderr; under
-        # EAP=Stop the 2>&1 merge wraps those as ErrorRecord objects and
-        # throws even when the imports succeed.  $LASTEXITCODE is the
-        # reliable signal (it's 0 iff the python invocation exited 0,
-        # regardless of what was written to stderr).
-        $prevEAP = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        & $venvPython -c "import dotenv, openai, rich, prompt_toolkit" 2>&1 | Out-Null
-        $importExitCode = $LASTEXITCODE
-        $ErrorActionPreference = $prevEAP
-        if ($importExitCode -ne 0) {
-            $sibling = "$InstallDir\.venv"
-            $hint = if (Test-Path $sibling) {
-                "Detected sibling .venv\ at $sibling -- uv synced there instead of venv\. Close Hermes processes, preserve the existing venv, and rerun the installer so the transactional recovery path can move directories safely."
-            } else {
-                "Recover with: cd '$InstallDir'; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
-            }
-            throw "Baseline imports failed in $InstallDir\venv (dotenv/openai/rich/prompt_toolkit). The install completed but dependencies are not in the venv. $hint"
-        }
-        Write-Success "Baseline imports verified in venv"
-    }
-
-    # Commit the venv transaction: the dependency install completed and the
-    # baseline imports passed, so the previous venv is no longer needed as a
-    # rollback source (#83149).
-    Complete-VenvTransaction
-    } catch {
-        # Dependency install or import validation failed: restore the previous
-        # working venv (parked by Install-Venv) before surfacing the error, so
-        # a failed update leaves Hermes and its blocker probe usable.
-        Restore-VenvBackup
-        Pop-Location
-        throw
-    }
+    if (-not $NoVenv) { Assert-VenvBaselineImports }
 
     if (-not $NoVenv) {
         # uv on Windows can register hermes.exe in dist-info/RECORD but fail to
@@ -3136,11 +3456,28 @@ print(','.join(scripts))
         }
     }
     
-    Pop-Location
-    
+    if (-not $NoVenv) {
+        # Entry-point and optional web repairs can change dependencies after the
+        # first probe. Validate their final state before retiring the original.
+        Assert-VenvBaselineImports
+        Complete-VenvTransaction
+    }
+    } catch {
+        $originalError = $_
+        if (-not $NoVenv) {
+            try {
+                Restore-VenvBackup
+            } catch {
+                throw "Dependency installation failed: $($originalError.Exception.Message). Rollback failed: $($_.Exception.Message). Recovery evidence was retained."
+            }
+        }
+        throw $originalError
+    } finally {
+        Pop-Location
+    }
+
     Write-Success "All dependencies installed"
 }
-
 function Install-HermesCommandLaunchers {
     param(
         [Parameter(Mandatory=$true)] [string]$Root,
@@ -3491,56 +3828,10 @@ function Install-NodeDeps {
     # Chromium extraction (#76222, #84614) froze the installer forever -- one
     # user left it running 12+ hours overnight.  Same env override as bash
     # for very slow links.
-    $nodeDepsTimeoutSec = 600
-    if ($env:NODE_DEPS_TIMEOUT -match '^\d+$') {
-        $nodeDepsTimeoutSec = [int]$env:NODE_DEPS_TIMEOUT
-    }
-
-    # Helper: run a native command with a hard wall-clock timeout while
-    # still streaming its output live.  Returns the exit code, or 124 on
-    # timeout (the same convention as coreutils ``timeout`` and bash's
-    # run_with_timeout).
-    #
-    # Launcher notes: ``Start-Process -FilePath npm.cmd`` fails with
-    # ``%1 is not a valid Win32 application`` on some PowerShell versions
-    # because Start-Process bypasses cmd.exe / PATHEXT and expects a real
-    # PE file -- so route through cmd.exe, which IS a real PE, honours .cmd
-    # batch shims, and performs the stdout+stderr merge into the log file
-    # natively.  The parent then tails the log into the console each poll
-    # tick, preserving the live progress that makes a 3-minute download
-    # distinguishable from a hang (the whole reason _Run-NpmInstall streams
-    # output in the first place).  ``Wait-Job -Timeout`` was rejected: jobs
-    # swallow live output, and Stop-Job leaves the npm child running.
-    # taskkill /T kills the real process tree.  Works on Windows PowerShell
-    # 5.1 -- no pwsh-only primitives.
-    function _Invoke-NativeWithTimeout(
-        [string]$exePath, [string]$argLine, [string]$workDir,
-        [string]$logPath, [int]$timeoutSec
-    ) {
-        $cmdLine = "/d /s /c "" ""$exePath"" $argLine > ""$logPath"" 2>&1 """
-        $proc = Start-Process -FilePath $env:ComSpec -ArgumentList $cmdLine `
-            -WorkingDirectory $workDir -NoNewWindow -PassThru
-        $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSec)
-        $shown = 0
-        function _Drain-NewLines([string]$path, [ref]$count) {
-            $lines = @(Get-Content $path -ErrorAction SilentlyContinue)
-            if ($lines.Count -gt $count.Value) {
-                $lines[$count.Value..($lines.Count - 1)] | ForEach-Object {
-                    Write-Host "    $_" -ForegroundColor DarkGray
-                }
-                $count.Value = $lines.Count
-            }
-        }
-        while (-not $proc.HasExited) {
-            if ([DateTime]::UtcNow -gt $deadline) {
-                & taskkill /T /F /PID $proc.Id 2>&1 | Out-Null
-                return 124
-            }
-            Start-Sleep -Milliseconds 750
-            _Drain-NewLines $logPath ([ref]$shown)
-        }
-        _Drain-NewLines $logPath ([ref]$shown)
-        return $proc.ExitCode
+    $nodeDepsTimeoutSec = $script:InstallerCommandTimeouts.NodeDeps
+    $configuredTimeout = 0
+    if ([int]::TryParse($env:NODE_DEPS_TIMEOUT, [ref]$configuredTimeout) -and $configuredTimeout -ge 1 -and $configuredTimeout -le 86400) {
+        $nodeDepsTimeoutSec = $configuredTimeout
     }
 
     # Helper: run "npm install" in a given directory and surface the real
@@ -3566,8 +3857,10 @@ function Install-NodeDeps {
             # via the returned exit code, which is reliable regardless of
             # stderr noise.
             $ErrorActionPreference = "Continue"
-            $code = _Invoke-NativeWithTimeout $npmPath "install --silent" `
-                $installDir $logPath $nodeDepsTimeoutSec
+            $result = Invoke-ProcessWithWallClockTimeout -FilePath $npmPath -ArgumentList @('install', '--silent') `
+                -WorkingDirectory $installDir -TimeoutSec $nodeDepsTimeoutSec -Label "$label npm install"
+            [IO.File]::WriteAllText($logPath, $result.Output)
+            $code = $result.ExitCode
             $ErrorActionPreference = $prevEAP
             if ($code -eq 0) {
                 Write-Success "$label dependencies installed"
@@ -3674,8 +3967,10 @@ function Install-NodeDeps {
                     # the same 600s guard via run_playwright_install since
                     # #39219.
                     $ErrorActionPreference = "Continue"
-                    $pwCode = _Invoke-NativeWithTimeout $npxExe "--yes playwright install chromium" `
-                        $InstallDir $pwLog $nodeDepsTimeoutSec
+                    $result = Invoke-ProcessWithWallClockTimeout -FilePath $npxExe -ArgumentList @('--yes', 'playwright', 'install', 'chromium') `
+                        -WorkingDirectory $InstallDir -TimeoutSec $nodeDepsTimeoutSec -Label 'Playwright Chromium install'
+                    [IO.File]::WriteAllText($pwLog, $result.Output)
+                    $pwCode = $result.ExitCode
                     $ErrorActionPreference = $prevEAP
                     if ($pwCode -eq 0) {
                         Write-Success "Playwright Chromium installed (browser tools ready)"
@@ -3845,16 +4140,14 @@ function Install-CuaDriver {
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        # Same upstream installer `hermes computer-use install` runs. Bounded
-        # via a background job: the upstream installer serializes with its own
-        # lock (600s stale window), so the ceiling sits above that -- matching
-        # Hermes' _CUA_INSTALLER_TIMEOUT (660s).
-        $job = Start-Job -ScriptBlock {
-            Invoke-RestMethod -UseBasicParsing "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1" | Invoke-Expression
-        }
-        if (Wait-Job $job -Timeout 660) {
-            Receive-Job $job -ErrorAction SilentlyContinue | Out-Null
-            Remove-Job $job -Force -ErrorAction SilentlyContinue
+        # Keep the downloader and every installer descendant under the same
+        # native ownership/deadline contract as other optional dependencies.
+        $command = "`$ProgressPreference = 'SilentlyContinue'; Invoke-RestMethod -UseBasicParsing 'https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1' | Invoke-Expression"
+        $hostExe = Join-Path $PSHOME $(if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' })
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        $result = Invoke-ProcessWithWallClockTimeout -FilePath $hostExe -ArgumentList @('-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-EncodedCommand', $encoded) `
+            -TimeoutSec $script:InstallerCommandTimeouts.ComputerUse -Label 'Computer Use driver install'
+        if (-not $result.TimedOut -and $result.ExitCode -eq 0) {
             $installedCuaDriver = Get-Command cua-driver -ErrorAction SilentlyContinue
             if ($installedCuaDriver -and (Test-CuaDriverRuntimeContract -DriverPath $installedCuaDriver.Source)) {
                 Write-Success "Computer Use driver installed (enable via 'hermes tools' -> Computer Use)"
@@ -3863,9 +4156,8 @@ function Install-CuaDriver {
                 Write-Info "Install later with: hermes computer-use install"
             }
         } else {
-            Stop-Job $job -ErrorAction SilentlyContinue
-            Remove-Job $job -Force -ErrorAction SilentlyContinue
-            Write-Warn "Computer Use driver install timed out -- it will install on demand when you enable the tool."
+            $reason = if ($result.TimedOut) { 'timed out' } else { "failed (exit $($result.ExitCode))" }
+            Write-Warn "Computer Use driver install $reason -- it will install on demand when you enable the tool."
             Write-Info "Install later with: hermes computer-use install"
         }
     } catch {
@@ -3875,7 +4167,6 @@ function Install-CuaDriver {
         $ErrorActionPreference = $prevEAP
     }
 }
-
 # Clear the cached Electron download + any half-written unpacked output so the
 # next `npm run pack` re-downloads and re-stages from scratch. A corrupt zip in
 # the per-user Electron download cache - most often a partial download resumed
@@ -3965,11 +4256,9 @@ function Restore-ElectronDist {
     $prevMirror = $env:ELECTRON_MIRROR
     if ($Mirror) { $env:ELECTRON_MIRROR = $Mirror }
     try {
-        # Out-Host so the downloader's progress shows on the console WITHOUT
-        # leaking into this function's return value (PowerShell returns every
-        # object left on the output stream, so a bare pipe here would make the
-        # boolean below ambiguous).
-        & $node.Source $installer 2>&1 | ForEach-Object { "$_" } | Out-Host
+        $result = Invoke-ProcessWithWallClockTimeout -FilePath $node.Source -ArgumentList @($installer) `
+            -TimeoutSec $script:InstallerCommandTimeouts.Electron -WorkingDirectory $InstallDir -Label 'Electron download'
+        if ($result.TimedOut) { return $false }
     } catch {
     } finally {
         $env:ELECTRON_MIRROR = $prevMirror
@@ -4108,12 +4397,16 @@ function Install-Desktop {
         # is the artifact), but on failure we scan $npmOut for the TLS-trust
         # signature so corporate-proxy users get the NODE_EXTRA_CA_CERTS hint
         # instead of an opaque "exit 1" (issue #38016).
-        & $npmExe ci 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
-        $code = $LASTEXITCODE
+        $result = Invoke-ProcessWithWallClockTimeout -FilePath $npmExe -ArgumentList @('ci') `
+            -TimeoutSec $script:InstallerCommandTimeouts.Desktop -WorkingDirectory $InstallDir -Label 'Desktop npm ci'
+        $npmOut = $result.Output
+        $code = $result.ExitCode
         if ($code -ne 0) {
             Write-Info "  npm ci failed (exit $code) -- retrying with npm install..."
-            & $npmExe install 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
-            $code = $LASTEXITCODE
+            $result = Invoke-ProcessWithWallClockTimeout -FilePath $npmExe -ArgumentList @('install') `
+                -TimeoutSec $script:InstallerCommandTimeouts.Desktop -WorkingDirectory $InstallDir -Label 'Desktop npm install'
+            $npmOut = $result.Output
+            $code = $result.ExitCode
         }
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {
@@ -4205,8 +4498,10 @@ function Install-Desktop {
         $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
         $env:WIN_CSC_LINK = ""
         $env:WIN_CSC_KEY_PASSWORD = ""
-        & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
-        $code = $LASTEXITCODE
+        $result = Invoke-ProcessWithWallClockTimeout -FilePath $npmExe -ArgumentList @('run', 'pack') `
+            -TimeoutSec $script:InstallerCommandTimeouts.Desktop -WorkingDirectory $desktopDir -Label 'Desktop packaging'
+        [IO.File]::WriteAllText($buildLog, $result.Output)
+        $code = $result.ExitCode
         if ($code -ne 0) {
             $purged = @()
             $restored = $false
@@ -4217,8 +4512,10 @@ function Install-Desktop {
             if ($restored) {
                 Write-Warn "Desktop build failed - refreshed the Electron download, retrying once:"
                 foreach ($p in $purged) { Write-Info "  - $p" }
-                & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
-                $code = $LASTEXITCODE
+                $result = Invoke-ProcessWithWallClockTimeout -FilePath $npmExe -ArgumentList @('run', 'pack') `
+                    -TimeoutSec $script:InstallerCommandTimeouts.Desktop -WorkingDirectory $desktopDir -Label 'Desktop packaging'
+                [IO.File]::WriteAllText($buildLog, $result.Output)
+                $code = $result.ExitCode
             }
         }
         if ($code -ne 0 -and -not $env:ELECTRON_MIRROR) {
@@ -4232,8 +4529,10 @@ function Install-Desktop {
             $prevMirror = $env:ELECTRON_MIRROR
             $env:ELECTRON_MIRROR = $mirror
             try {
-                & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
-                $code = $LASTEXITCODE
+                $result = Invoke-ProcessWithWallClockTimeout -FilePath $npmExe -ArgumentList @('run', 'pack') `
+                    -TimeoutSec $script:InstallerCommandTimeouts.Desktop -WorkingDirectory $desktopDir -Label 'Desktop packaging'
+                [IO.File]::WriteAllText($buildLog, $result.Output)
+                $code = $result.ExitCode
             } finally {
                 $env:ELECTRON_MIRROR = $prevMirror
             }
@@ -4863,6 +5162,7 @@ function Invoke-Stage {
 
     try {
         & $StageDef.Worker
+        if ($script:InstallerNativeCleanupFailure) { throw $script:InstallerNativeCleanupFailure }
         $result.ok = $true
         if ($script:_StageSkippedReason) {
             $result.skipped = $true

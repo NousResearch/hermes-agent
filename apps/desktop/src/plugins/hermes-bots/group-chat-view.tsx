@@ -97,7 +97,7 @@ import { sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
 import { displayName, slugify, stripPreviewMarkdown } from './labels'
-import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
+import { botRosterMeta, groupTranscriptSpeakerMeta, setBotsWorkspaceOwner } from './routing'
 import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
 
@@ -938,7 +938,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // One log entry, rendered exactly as before conversation folding existed.
   const renderEntry = (entry: GroupMessage, index: number) => {
     const isUser = entry.from.kind === 'user'
-    const meta = isUser || entry.from.source ? null : allMeta[entry.from.name]
+    const meta = groupTranscriptSpeakerMeta(entry, members, allMeta)
 
     // Match this speaker back to its member descriptor so display
     // names and disambiguating handles come from the roster (the
@@ -974,8 +974,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
 
     // Speaker avatar: same appearance pipeline as the roster
     // (custom image/pet, else deterministic shape+color face).
-    // Remote speakers have no local meta and get the
-    // deterministic face for their name — stable per bot.
+    // Source-qualified speakers use owner-aware botRosterMeta (#96432).
     // Non-null exactly when !isUser — the user's own lines carry no avatar.
     const appearance = isUser ? null : botAppearance(entry.from.name, meta)
     const image = appearance?.image ?? null

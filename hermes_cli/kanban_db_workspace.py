@@ -544,6 +544,10 @@ def set_branch_name(conn: sqlite3.Connection, task_id: str, branch_name: str) ->
     _set_task_column(conn, task_id, "branch_name", str(branch_name))
 
 
+def set_project_id(conn: sqlite3.Connection, task_id: str, project_id: str) -> None:
+    _set_task_column(conn, task_id, "project_id", str(project_id))
+
+
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
 from hermes_cli import kanban_db as _kb  # noqa: E402

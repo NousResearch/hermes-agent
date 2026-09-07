@@ -509,8 +509,9 @@ _DESCRIPTION_HEAD = (
     "(limit in the tasks description).\n\n"
     "Runs in the background: dispatch returns immediately with live transcript paths, and each completed unit "
     "re-enters the conversation on its own — an ungrouped task as soon as IT finishes, tasks sharing a `group` "
-    "together once all of them finish. Handle each result as it lands. Do NOT wait or poll; continue "
-    "other work. While children run, `action` (list/steer/stop) controls them live — steer when a transcript shows a "
+    "together once all of them finish. Choose groups by how you want to use the results (see `group`). "
+    "No need to wait or poll; continue other work while results are pending. "
+    "While children run, `action` (list/steer/stop) controls them live — steer when a transcript shows a "
     "child drifting.\n\n"
     "USE FOR: reasoning-heavy subtasks, work that would flood your context with intermediate data, or independent "
     "parallel workstreams.\n"
@@ -599,10 +600,12 @@ DELEGATE_TASK_SCHEMA = {
                         ),
                         "group": _p(
                             "string",
-                            "Optional completion group. Tasks sharing a group wait for each other and return as ONE "
-                            "message (use when you must compare or merge their results); a task without a group "
-                            "returns on its own the moment it finishes. Independent work (separate PR reviews, "
-                            "unrelated fixes) should stay ungrouped so nothing waits for the slowest sibling.",
+                            "Optional result-delivery bucket within this call; all tasks still run in parallel. "
+                            "Use the same group when you want to review results together (comparison, synthesis, "
+                            "or one coordinated decision): ONE message arrives after all tasks in that group finish. "
+                            "Omit when each result is useful to act on separately: it arrives as soon as that task "
+                            "finishes. Different groups report independently. This does not order execution; if B "
+                            "needs A's output, dispatch B after A returns.",
                         ),
                     },
                     "required": ["goal"],

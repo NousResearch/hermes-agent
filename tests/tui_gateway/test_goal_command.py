@@ -467,3 +467,64 @@ moa:
     # Bare /moa is usage-only now; switching to a preset is via the model picker.
     assert "error" in r
     assert "model_override" not in s
+
+
+@pytest.mark.parametrize("method", ["command.dispatch", "slash.exec"])
+def test_goal_draft_uses_session_profile_without_blocking_rpc_reader(
+    server, session, monkeypatch, tmp_path, method,
+):
+    from hermes_cli import goals
+    from hermes_constants import get_hermes_home
+    import hermes_state
+
+    # Restore call-time profile resolution; conftest pins this constant to one DB.
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+    sid, key, record = session
+    secondary = tmp_path / "secondary"
+    secondary.mkdir()
+    (secondary / "config.yaml").write_text("goals:\n  max_turns: 37\n", encoding="utf-8")
+    record["profile_home"] = str(secondary)
+    started, release, returned, replied = (threading.Event() for _ in range(4))
+    observed, frames = [], []
+
+    def draft(objective):
+        observed.append(get_hermes_home())
+        started.set()
+        assert release.wait(10)
+        return goals.GoalContract(verification="tests pass")
+
+    def write(frame):
+        frames.append(frame)
+        if frame.get("id") == "draft":
+            replied.set()
+        return True
+
+    monkeypatch.setattr(goals, "draft_contract", draft)
+    transport = types.SimpleNamespace(write=write)
+    params = {"session_id": sid, "name": "goal", "arg": "draft profile objective"}
+    if method == "slash.exec":
+        params = {"session_id": sid, "command": "/goal draft profile objective"}
+
+    def dispatch():
+        server.dispatch({"id": "draft", "method": method, "params": params}, transport)
+        returned.set()
+
+    caller = threading.Thread(target=dispatch)
+    caller.start()
+    try:
+        assert started.wait(5)
+        assert returned.wait(2), "draft blocked the transport reader"
+        ping = server.dispatch({"id": "ping", "method": "ping", "params": {}}, transport)
+        assert ping["id"] == "ping" and "result" in ping
+    finally:
+        release.set()
+        caller.join(5)
+    assert replied.wait(5)
+    assert observed == [secondary]
+    assert goals.load_goal(key) is None, "goal leaked into the launch profile"
+    with server._session_profile_runtime_scope(record):
+        state = goals.load_goal(key)
+        assert state.goal == "profile objective"
+        assert state.max_turns == 37 and state.contract.verification == "tests pass"
+    result = next(frame["result"] for frame in frames if frame.get("id") == "draft")
+    assert result["type"] == "send" and result["message"] == state.goal

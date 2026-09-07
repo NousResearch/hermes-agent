@@ -1421,6 +1421,7 @@ DEFAULT_CONFIG = {
     "discord": {
         "require_mention": True,  # require @mention to respond in server channels
         "free_response_channels": "",  # comma-separated channel IDs answered without mention
+        "force_thread_channels": "",  # comma-separated channel IDs (or *) where free-response channels still auto-thread
         "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)
         "auto_thread": True,  # auto-create threads on @mention in channels (like Slack)
         "thread_require_mention": False,  # require @mention in threads too (multi-bot threads)

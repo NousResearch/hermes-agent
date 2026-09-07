@@ -306,102 +306,59 @@ class GatewayStartupMixin:
 
     def _schedule_flood_redelivery(self, platform, *, profile: Optional[str] = None, error: str = "",
                                    wait_seconds: Optional[float] = None):
-        """Retry a flood-refused final reply once the platform's penalty has passed.
-
-        Adapters fail a flood-controlled final send closed as ``flood_control:<seconds>`` so the send
-        coroutine never sleeps a long penalty (#91969), on the understanding that the delivery ledger
-        owns the wait. Nothing did: the row sat in ``failed`` until the next restart's sweep, which then
-        redelivered it hours late under the "gateway restarted during delivery" marker. This arms one
-        timer per adapter identity that runs the existing runtime sweep after the wait (read from
-        ``error``, or given as ``wait_seconds`` for rows already in the ledger). The sweep claims every
-        row whose own deadline has passed and leaves the rest, and the timer re-arms for whatever is
-        still waiting, so a capped sleep or a shorter sibling never sends early. Bounded like every
-        redelivery by the ledger's attempts cap and stale cutoff. Returns the delay, or None when a timer
-        for this identity is already waiting with an earlier or equal deadline."""
-        from gateway.delivery_ledger import flood_retry_delay, flood_wait_seconds
-        pvalue = getattr(platform, "value", str(platform))
-        key = (pvalue, profile or "default")
+        """Wake one deadline-driven ledger worker per bot identity, never sleep in a send."""
+        from gateway.delivery_ledger import flood_retry_delay, flood_wait_seconds, pending_flood_retries
+        target = platform if isinstance(platform, Platform) else Platform(str(platform))
+        key = (target.value, profile or "default")
         pending = getattr(self, "_flood_redelivery_tasks", None)
         if pending is None:
             pending = self._flood_redelivery_tasks = {}
-        slots = getattr(self, "_flood_redelivery_slots", None)
-        if slots is None:
-            slots = self._flood_redelivery_slots = {}
-        existing = pending.get(key)
-        try:
-            caller_task = asyncio.current_task()
-        except RuntimeError:
-            caller_task = None
-        delay = flood_retry_delay(wait_seconds if wait_seconds is not None else flood_wait_seconds(error))
-        due_at = time.time() + delay
-        # One live timer per identity, except that the running timer itself (a refusal during its sweep,
-        # rows still inside their wait afterwards) may arm its successor into the slot: a timer must never
-        # block its own re-arm, and the slot stays occupied until the task ends so nothing observing it
-        # mistakes a sweep in progress for a finished timer. A timer still asleep is replaced by a shorter
-        # one (a 10s refusal must not wait behind a 185s sibling); the shorter timer re-arms for the longer
-        # row after its sweep, so the longer wait is kept, only not imposed on both.
-        if existing is not None and not existing.done() and existing is not caller_task:
-            waiting = slots.get(key)
-            if waiting is None or not waiting["sleeping"] or due_at >= waiting["due_at"] - 1.0:
-                return None
-            existing.cancel()
-        slot = {"due_at": due_at, "sleeping": True}
+            self._flood_redelivery_wakes = {}
+        wakes = self._flood_redelivery_wakes
+        if key in pending:
+            # Remember refusals arriving during a threaded SELECT or a send. An empty stale
+            # snapshot cannot retire this worker until it has observed the wake.
+            wakes[key].set()
+            return None
+        wake = wakes[key] = asyncio.Event()
 
         async def _redeliver_after_wait():
             try:
-                await asyncio.sleep(delay)
-                slot["sleeping"] = False
-                if not getattr(self, "_running", True):
-                    return
-                target = platform if isinstance(platform, Platform) else Platform(pvalue)
-                await self._redeliver_failed_obligations_for_platform(target, profile=profile)
-                self._arm_flood_timers_for_waiting_rows()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.debug("flood-control redelivery for %s failed", key, exc_info=True)
+                while getattr(self, "_running", False):
+                    wake.clear()
+                    waiting = await asyncio.to_thread(pending_flood_retries)
+                    deadlines = [r["not_before"] for r in waiting
+                                 if (r["platform"], r["profile"]) == key]
+                    if not deadlines:
+                        if wake.is_set():
+                            continue
+                        return
+                    delay = flood_retry_delay(min(deadlines) - time.time())
+                    try:
+                        await asyncio.wait_for(wake.wait(), timeout=delay)
+                        continue  # A shorter sibling may now be due first.
+                    except asyncio.TimeoutError:
+                        pass
+                    if getattr(self, "_running", False):
+                        await self._redeliver_failed_obligations_for_platform(target, profile=profile)
             finally:
-                if pending.get(key) is asyncio.current_task():
-                    pending.pop(key, None)
-                    slots.pop(key, None)
+                pending.pop(key, None)
+                wakes.pop(key, None)
 
-        try:
-            task = asyncio.get_running_loop().create_task(
-                _redeliver_after_wait(), name="flood-redelivery:%s:%s" % key)
-        except RuntimeError:
-            return None
+        task = asyncio.create_task(_redeliver_after_wait(), name="flood-redelivery:%s:%s" % key)
         pending[key] = task
-        slots[key] = slot
-        logger.info("Flood control refused a final reply on %s (%s); ledger redelivery scheduled in %.0fs",
-                    key[0], key[1], delay)
-        return delay
+        # The gateway's ordinary shutdown drain must cancel sleeping timers too.
+        background = getattr(self, "_background_tasks", None)
+        if background is not None:
+            self._track_task_in(background, task)
+        return flood_retry_delay(wait_seconds if wait_seconds is not None else flood_wait_seconds(error))
 
-    def _arm_flood_timers_for_waiting_rows(self) -> int:
-        """Arm a redelivery timer for every adapter identity that still owns a flood-refused row: rows
-        adopted from a dead owner at boot, rows a sweep skipped because their wait had not passed, rows
-        refused again on redelivery. Best-effort; returns how many timers were armed.
-
-        The ledger read is synchronous on purpose. A running timer clears its slot right after this
-        call, and a concurrent flood refusal's ``_schedule_flood_redelivery`` is declined while that
-        slot is occupied; reading in a worker thread would let that refusal's row be recorded during
-        the yield, after this snapshot was taken but before the slot is freed, and its timer request
-        would be lost. A single indexed SELECT on a small table does not need to leave the loop."""
-        try:
-            from gateway.delivery_ledger import pending_flood_retries
-            waiting = pending_flood_retries()
-        except Exception:
-            logger.debug("could not list waiting flood-refused rows", exc_info=True)
-            return 0
-        armed = 0
-        now = time.time()
-        for item in waiting:
-            try:
-                if self._schedule_flood_redelivery(
-                        item["platform"], profile=item["profile"], wait_seconds=item["not_before"] - now) is not None:
-                    armed += 1
-            except Exception:
-                logger.debug("could not arm a flood redelivery timer for %r", item, exc_info=True)
-        return armed
+    async def _arm_flood_timers_for_waiting_rows(self) -> None:
+        """Recover adopted, newly refused and unsent released rows without blocking the loop."""
+        from gateway.delivery_ledger import pending_flood_retries
+        for row in await asyncio.to_thread(pending_flood_retries):
+            self._schedule_flood_redelivery(row["platform"], profile=row["profile"],
+                                            wait_seconds=row["not_before"] - time.time())
 
     async def _redeliver_claimed_obligations(self, claimed: list) -> int:
         """Redeliver final responses for claimed rows (network half of the split): runs inside the
@@ -447,7 +404,7 @@ class GatewayStartupMixin:
         # Whatever is still waiting on a flood penalty (adopted at boot, skipped as not yet due, refused
         # again just now) gets a timer, so no flood-refused reply waits for the next restart.
         with _log_suppressed(logging.DEBUG, "arming flood redelivery timers failed", exc_info=True):
-            self._arm_flood_timers_for_waiting_rows()
+            await self._arm_flood_timers_for_waiting_rows()
         return redelivered
 
     async def _obligation_adapter(self, row: dict):

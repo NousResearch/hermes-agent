@@ -246,6 +246,12 @@ Semantics are honest at-least-once:
   may not have received it) is redelivered with a visible
   "♻️ Recovered reply — … may be a duplicate" prefix. Ambiguity is labeled,
   never silently resent.
+- A final send refused by a **platform rate limit** is retried automatically
+  after the recorded penalty expires, without requiring a reconnect or restart.
+  A restart during the penalty adopts the stored reply without spending a retry
+  attempt or re-running the agent. Retries retain the original bot profile, chat
+  and thread. A rate-limit recovery prefix warns that earlier chunks may already
+  have arrived; the ledger cannot infer partial delivery from message length.
 - Redelivery is bounded: 3 attempts, 24-hour freshness, then the row is
   abandoned. Delivered rows are pruned after 7 days.
 

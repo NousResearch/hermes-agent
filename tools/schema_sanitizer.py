@@ -283,6 +283,16 @@ def _sanitize_node(node: Any, path: str) -> Any:
             # Bool ``additionalProperties`` is valid; bool ``items`` is non-standard but preserved.
             out[key] = value if isinstance(value, bool) else _sanitize_node(value, f"{path}.{key}")
         elif key in _NON_SCHEMA_LIST_KEYS:
+            # FastAPI/Pydantic-style emitters (e.g. docling's MCP server) write a BOOLEAN
+            # ``required`` flag inside property schemas. That is not valid JSON Schema — optionality
+            # lives in the parent object's ``required`` array — and strict OpenAI-compatible
+            # validators reject the whole request over it (one bad tool poisons every turn, #104796).
+            # Drop it, but only on nodes that are NOT schemas: at the data level (inside ``enum``
+            # / ``examples`` payloads) a key named ``required`` with a bool value is legitimate.
+            if key == "required" and isinstance(value, bool) and _SCHEMA_MARKERS & node.keys():
+                logger.debug("schema_sanitizer[%s]: dropped non-schema boolean "
+                             "'required': %r from property schema", path, value)
+                continue
             if key == "required" and prop_renames and isinstance(value, list):
                 out[key] = [prop_renames.get(r, r) if isinstance(r, str) else r for r in value]
             else:

@@ -881,6 +881,10 @@ hermes skills update react --force   # Overwrite a skill you've edited locally
 
 This uses the stored source identifier plus the current upstream bundle content hash to detect drift.
 
+Checks skip network requests for missing or non-directory installs (`orphaned`) and unsafe or unresolvable recorded paths (`invalid_install`). Missing-directory entries can be removed with `hermes skills uninstall <name>`; invalid paths require inspecting and repairing the active profile's `skills/.hub/lock.json` before retrying. No entries are removed automatically.
+
+Remote fetch waiting shares a 30-second budget across the check, rather than spending 30 seconds per skill. Entries not fetched within that budget report `unavailable`, including healthy entries later in the list; checking a specific name avoids waiting behind earlier entries. This is a caller-wait limit, not cancellation or a strict whole-command deadline: local filesystem work is outside the guarantee. At most one update fetch runs in a process. A timed-out synchronous adapter may continue in its daemon thread with its request context; subsequent checks in that process report `unavailable` while it remains active, rather than accumulating more workers. Capacity returns when the adapter exits; a permanently stuck adapter requires restarting that process.
+
 Skills you have edited locally (the on-disk content no longer matches the hash recorded at install time) are **skipped** by `hermes skills update` so your changes are never silently overwritten. Pass `--force` to replace them with the upstream version anyway.
 
 :::tip GitHub rate limits

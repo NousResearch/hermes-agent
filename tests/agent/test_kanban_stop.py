@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from agent.kanban_stop import (
@@ -54,7 +56,11 @@ def test_nudge_when_no_terminal_tool(clear_kanban_env):
     assert "protocol violation" in nudge.lower() or "protocol" in nudge.lower()
 
 
-def test_no_nudge_after_kanban_complete(clear_kanban_env):
+@pytest.mark.parametrize("tool", [
+    "kanban_complete", "kanban_block", "kanban_request_review", "kanban_request_changes",
+])
+@pytest.mark.parametrize("receipt", ["success", "failed", "attempt", "malformed", "foreign", "unnamed"])
+def test_only_successful_terminal_result_suppresses_legacy_nudge(clear_kanban_env, tool, receipt):
     clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
     messages = [
         {
@@ -64,14 +70,26 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
                 {
                     "id": "1",
                     "type": "function",
-                    "function": {"name": "kanban_complete", "arguments": "{}"},
+                    "function": {"name": tool, "arguments": "{}"},
                 }
             ],
         },
-        {"role": "tool", "name": "kanban_complete", "tool_call_id": "1", "content": "done"},
+        {"role": "tool", "name": "kanban_complete", "tool_call_id": "1", "content": '{"ok": true, "task_id": "t_abc"}'},
     ]
-    assert session_called_kanban_terminal(messages) is True
-    assert build_kanban_stop_nudge(messages=messages) is None
+    messages[-1]["name"] = tool
+    if receipt == "attempt":
+        messages.pop()
+    elif receipt == "failed":
+        messages[-1]["content"] = '{"error": "rejected"}'
+    elif receipt == "malformed":
+        messages[-1]["content"] = "done"
+    elif receipt == "foreign":
+        messages[-1]["content"] = json.dumps({"ok": True, "task_id": "t_other"})
+    elif receipt == "unnamed":
+        messages[-1].pop("name")
+    succeeded = receipt in {"success", "unnamed"}
+    assert session_called_kanban_terminal(messages) is succeeded
+    assert (build_kanban_stop_nudge(messages=messages) is None) is succeeded
 
 
 

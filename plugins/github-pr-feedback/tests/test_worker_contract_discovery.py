@@ -34,6 +34,24 @@ def test_doctor_checks_worker_plugin_opt_in_without_changing_profile(tmp_path, p
     assert profile.read_bytes() == before
 
 
+def test_doctor_checks_worker_plugin_opt_in_after_env_expansion(tmp_path, monkeypatch):
+    profile = tmp_path / "profiles/worker/config.yaml"
+    profile.parent.mkdir(parents=True)
+    profile.write_text(yaml.safe_dump({"plugins": {
+        "enabled": ["github-pr-feedback"],
+        "disabled": ["${WORKER_DISABLED_PLUGIN}"],
+    }}))
+    monkeypatch.setenv("WORKER_DISABLED_PLUGIN", "github-pr-feedback")
+    policy = SimpleNamespace(assignee="worker", assignee_rules=(), routing_rules=(),
+                             local_ci_audit=None, repair_steward=None, targets={}, board="repairs",
+                             merge_policies=lambda: (), release_policies=lambda: ())
+    runner = SimpleNamespace(which=lambda name: None)
+
+    checks = DoctorProbe(tmp_path, runner).checks(policy, tmp_path / "ledger.sqlite3")
+
+    assert checks.get("worker_completion_policy") == "failed"
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 def test_real_worker_discovery_enforces_control_home_receipt(tmp_path, monkeypatch, enabled):
     from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, plugins

@@ -404,7 +404,7 @@ class WisdomConsentRequest(BaseModel):
     model_config = {"extra": "forbid"}
     interaction_id: str = Field(min_length=1, max_length=64)
     session_id: str = Field(min_length=1, max_length=256)
-    action: Literal["inspect", "defer", "confirm"]
+    action: str = Field(pattern=r"^(inspect(?:\.[0-9]{1,4})?|defer|confirm)$")
     profile: Optional[str] = None
 
 

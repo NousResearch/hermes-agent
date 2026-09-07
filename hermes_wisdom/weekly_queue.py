@@ -152,37 +152,9 @@ def enqueue_weekly_review(
 
 
 def _session_call(runtime):
-    def call(messages, schema):
-        from agent.auxiliary_client import call_llm, extract_content_or_reasoning
+    from .agent_led.agent import session_model_call
 
-        if not runtime.get("model") or not runtime.get("provider"):
-            raise ValueError("weekly review requires an active session model")
-        response = call_llm(
-            provider=runtime["provider"],
-            model=runtime["model"],
-            main_runtime=runtime,
-            tools=[],
-            messages=messages,
-            temperature=0,
-            timeout=45,
-            max_tokens=6000,
-            extra_body={
-                "response_format": {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "wisdom_weekly_review",
-                        "strict": True,
-                        "schema": schema,
-                    },
-                }
-            },
-        )
-        choices = getattr(response, "choices", []) or []
-        if choices and getattr(choices[0].message, "tool_calls", None):
-            raise ValueError("weekly review requested disallowed tools")
-        return extract_content_or_reasoning(response)
-
-    return call
+    return session_model_call(runtime, name="wisdom_weekly_review")
 
 
 def process_weekly_review(

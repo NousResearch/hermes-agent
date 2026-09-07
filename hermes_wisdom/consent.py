@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -54,6 +55,8 @@ def public_plan(plan: dict[str, Any]) -> dict[str, Any]:
         "hashes",
         "content_hash",
         "manifest_hash",
+        "sharing_stage",
+        "file_names",
     )
     return {key: plan[key] for key in keys if key in plan}
 
@@ -96,6 +99,30 @@ class WisdomConsent:
             )
             if event.get("organization_id") != self.service.store.active_org_id():
                 raise WisdomConflict("candidate belongs to a different organization")
+            if reference.get("content_hash") not in {None, source_hash}:
+                raise WisdomConflict("candidate changed after recommendation")
+            existing = self.service.store.latest_draft_for_source(skill_id, source_hash)
+            editorial = (
+                self.service.store.candidate_editorial_metadata(
+                    skill_id, content_hash=source_hash
+                )
+                or {}
+            )
+            if existing is None:
+                return "share", {
+                    "skill_id": skill_id,
+                    "slug": name,
+                    "event_id": event_id,
+                    "source_hash": source_hash,
+                    "allowed": True,
+                    "sharing_stage": "prepare",
+                    **editorial,
+                }
+            if (
+                reference.get("prepared_draft_id")
+                and existing["id"] != reference["prepared_draft_id"]
+            ):
+                raise WisdomConflict("the prepared contribution changed")
             prepared = self.service.prepare_candidate(event_id)
             if prepared["stage"] == "review":
                 review = prepared["review"]
@@ -114,6 +141,8 @@ class WisdomConsent:
                 "slug": name,
                 "event_id": event_id,
                 "source_hash": source_hash,
+                "sharing_stage": "approve",
+                "file_names": [item["path"] for item in checks.get("files", [])],
                 "hashes": hashes,
                 **(
                     self.service.store.candidate_editorial_metadata(
@@ -122,6 +151,11 @@ class WisdomConsent:
                     or {}
                 ),
                 "security_check": checks.get("security_check"),
+                **{
+                    key: checks[key]
+                    for key in ("editorial_name", "editorial_description")
+                    if checks.get(key)
+                },
                 "professionalism_check": checks.get("professionalism_check"),
                 "requirements": checks.get("system_specification")
                 or checks.get("systemSpec"),
@@ -284,6 +318,83 @@ class WisdomConsent:
     def resolve(
         self, org: str, interaction_id: str, actor: ConsentActor, action: str
     ) -> dict[str, Any]:
+        page = re.fullmatch(r"inspect(?:\.([0-9]{1,4}))?", action)
+        result = self._resolve(
+            org, interaction_id, actor, "inspect" if page else action
+        )
+        if page and result["operation"] == "publish" and result["state"] == "pending":
+            return self._inspect_package(org, interaction_id, result, int(page[1] or 0))
+        return result
+
+    def _inspect_package(self, org, interaction_id, result, page):
+        from .contract import author_description_hash, sha256_address
+        from .package import verify_content_files
+
+        with self.service.store.transaction() as db:
+            self.queue._check_org(db, org)
+            plan = json.loads(
+                db.execute(
+                    "SELECT plan_json FROM wisdom_consent WHERE id=? AND organization_id=?",
+                    (interaction_id, org),
+                ).fetchone()[0]
+            )
+        prepared = self.service.prepare_candidate(plan["event_id"])
+        if prepared["stage"] == "prepared":
+            review = prepared["prepared"]
+            description = review["drafted_description"]
+        else:
+            review = prepared["review"]
+            description = review["draft"]["authorDescription"]
+        files = [
+            (item["path"], "file", item["content_utf8"].encode("utf-8"))
+            for item in review["files"]
+        ]
+        _, content_hash = verify_content_files(files)
+        hashes = {
+            "content": content_hash,
+            "author_description": author_description_hash(description),
+            "package_manifest": sha256_address(
+                next(body for name, _, body in files if name == "skill.manifest.json")
+            ),
+        }
+        if hashes != plan["hashes"]:
+            raise WisdomConflict(
+                "the review package changed; request a fresh consent control"
+            )
+        # Small sequential pages preserve every byte without overflowing native
+        # message limits. This private action never inserts file text into a model.
+        pages = []
+        for name, _, body in [
+            ("Author description", "file", description.encode("utf-8")),
+            *files,
+        ]:
+            text = re.sub(
+                r"[\x00-\x08\x0b-\x1f\x7f-\x9f]",
+                lambda match: f"\\u{ord(match[0]):04x}",
+                body.decode("utf-8"),
+            )
+            for start in range(0, max(1, len(text)), 1000):
+                pages.append({
+                    "path": name,
+                    "content": text[start : start + 1000],
+                    "hash": sha256_address(body),
+                })
+        if page >= len(pages):
+            raise WisdomNotFound("review page not found")
+        self.queue._require_org(org)
+        return {
+            **result,
+            "inspection": {
+                **pages[page],
+                "page": page,
+                "page_count": len(pages),
+                "description": description,
+            },
+        }
+
+    def _resolve(
+        self, org: str, interaction_id: str, actor: ConsentActor, action: str
+    ) -> dict[str, Any]:
         """Called only from authenticated button/CLI handlers, never a model tool."""
         self.service.require_setup()
         now = self.queue.clock()
@@ -338,6 +449,34 @@ class WisdomConsent:
                 return {**self.project(value), "state": "expired"}
             if "confirm" not in self.project(value)["actions"]:
                 return {**self.project(value), "state": "needs_review"}
+            if value["operation"] == "share":
+                # Consent authorizes local packaging only. Queue creation and
+                # acceptance commit together, so repeated clicks cannot fork work.
+                plan = value["plan"]
+                identity = self.queue.enqueue(
+                    org,
+                    f"share-package:{interaction_id}",
+                    {
+                        "kind": "share_package",
+                        "event_id": plan["event_id"],
+                        "content_hash": plan["source_hash"],
+                        "consent_id": interaction_id,
+                        "user_requested": True,
+                    },
+                    origin_session=actor.session_key,
+                    _db=db,
+                )
+                outcome = {
+                    "operation": "share",
+                    "packaging_state": "queued",
+                    "assessment_id": identity,
+                    "published": False,
+                }
+                db.execute(
+                    "UPDATE wisdom_consent SET state='completed',result_json=?,updated_at=? WHERE id=?",
+                    (json.dumps(outcome), now, interaction_id),
+                )
+                return {**self.project(value), "state": "completed", "result": outcome}
             db.execute(
                 "UPDATE wisdom_consent SET state='applying',updated_at=? WHERE id=?",
                 (now, interaction_id),
@@ -347,8 +486,24 @@ class WisdomConsent:
         try:
             plan = value["plan"]
             if value["operation"] == "publish":
+
+                def check_authority():
+                    self.service.require_setup()
+                    self.queue._require_org(org)
+                    if self.queue.clock() >= value["expires_at"]:
+                        raise WisdomConflict("consent expired before publication")
+
+                _, refreshed = self._plan({
+                    "kind": "candidate",
+                    "event_id": plan["event_id"],
+                    "content_hash": plan["source_hash"],
+                })
+                if _signature(refreshed) != _signature(plan):
+                    raise WisdomConflict("the prepared package changed; review again")
                 result = self.service.approve_candidate(
-                    plan["event_id"], expected_hashes=plan["hashes"]
+                    plan["event_id"],
+                    expected_hashes=plan["hashes"],
+                    _pre_upload_guard=check_authority,
                 )
             else:
                 ref = {

@@ -297,7 +297,7 @@ def build_wisdom_parser(subparsers) -> None:
     add("inbox", "Read agent advice and pending native consent")
     consent = add("consent", "Inspect or confirm an exact local interaction")
     consent.add_argument("interaction_id")
-    consent.add_argument("action", choices=["inspect", "defer", "confirm"], default="inspect", nargs="?")
+    consent.add_argument("action", default="inspect", nargs="?", metavar="inspect[.PAGE]|defer|confirm")
     scan = add("scan", "Run local policy and advisory scans")
     scan.add_argument("skill", nargs="?")
     suggest = add("suggest", "Browse candidates or submit an owner-private draft")

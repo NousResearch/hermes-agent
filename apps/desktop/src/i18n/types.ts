@@ -82,6 +82,10 @@ export interface WisdomTranslations {
   reviewFirst: string
   notNow: string
   yes: string
+  share: string
+  sharePreparationNotice: string
+  reviewPreviousPage: string
+  reviewNextPage: string
   muteNotificationsSoon: string
   unmuteNotificationsSoon: string
   openCollective: string

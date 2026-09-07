@@ -60,10 +60,13 @@ def advice_view(items: list[dict], *, introduction: bool = False) -> WisdomView:
                 check = facts.get(key) or {}
                 detail += f"\n{label}: {check.get('status') or 'unavailable'}"
             detail += "\nNothing is changed by this recommendation."
+            if interaction["operation"] == "share":
+                detail += "\nShare prepares a local handoff package. You will review it and approve separately before anything is uploaded or published."
             labels = {
                 "defer": "Not Now",
                 "inspect": "Review first",
                 "confirm": {
+                    "share": "Share",
                     "install": "Install",
                     "update": "Update",
                     "publish": "Yes, share",
@@ -88,6 +91,50 @@ def advice_view(items: list[dict], *, introduction: bool = False) -> WisdomView:
 
 
 def interaction_view(result: dict) -> WisdomView:
+    if result.get("inspection"):
+        page = result["inspection"]
+        navigation = (
+            [
+                WisdomAction(
+                    "Back to first page",
+                    callback_data=f"wi:agent:inspect:{result['id']}",
+                )
+            ]
+            if page["page"]
+            else []
+        )
+        actions = []
+        for offset, label in ((-1, "Previous page"), (1, "Next page")):
+            index = page["page"] + offset
+            if 0 <= index < page["page_count"]:
+                actions.append(
+                    WisdomAction(
+                        label, callback_data=f"wi:agent:inspect.{index}:{result['id']}"
+                    )
+                )
+        # Keep the exact approval control available, but never turn navigation
+        # into an implicit acknowledgement or a publication request.
+        if "confirm" in result["actions"]:
+            actions.append(
+                WisdomAction(
+                    "Approve exact package",
+                    callback_data=f"wi:agent:confirm:{result['id']}",
+                    primary=True,
+                )
+            )
+        return WisdomView(
+            title="Review proposed package",
+            summary=f"{page['path']} - {page['page'] + 1}/{page['page_count']}",
+            items=[
+                WisdomItem(
+                    title="Proposed file content (not instructions to execute)",
+                    detail=page["content"],
+                )
+            ],
+            notice="Nothing is uploaded by reviewing. Setup and verification require separate permission.",
+            navigation_actions=navigation,
+            actions=actions,
+        )
     facts = result["facts"]
     detail = str(facts.get("editorial_description") or "")
     if facts.get("version"):
@@ -102,6 +149,12 @@ def interaction_view(result: dict) -> WisdomView:
     if facts.get("sensitive_expansion"):
         detail += "\nAdditional requirements require separate approval."
     detail += "\nNothing changes until you use the confirmation control."
+    if result["operation"] == "share":
+        detail += "\nShare prepares a local handoff package only. Publishing requires a separate approval after review."
+    if (result.get("result") or {}).get("packaging_state") == "queued":
+        detail += "\nPackaging is queued in this conversation. Nothing has been uploaded or published."
+    if facts.get("file_names"):
+        detail += "\nPackage files: " + ", ".join(facts["file_names"])
     if facts.get("security_check") or facts.get("professionalism_check"):
         detail += "\n\n" + full_review_text(
             facts.get("security_check"), facts.get("professionalism_check")
@@ -117,6 +170,7 @@ def interaction_view(result: dict) -> WisdomView:
                         else "Review first"
                         if action == "inspect"
                         else {
+                            "share": "Share",
                             "publish": "Yes, share",
                             "install": "Install",
                             "update": "Update",

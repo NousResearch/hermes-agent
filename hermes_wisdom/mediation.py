@@ -318,7 +318,10 @@ class WisdomMediation:
     ) -> list[dict[str, Any]]:
         """Check current policy at assessment and delivery boundaries."""
         recommendations = [
-            job for job in jobs if job["reference"]["kind"] in {"candidate", "skill"}
+            job
+            for job in jobs
+            if job["reference"]["kind"] in {"candidate", "skill"}
+            and not job["reference"].get("user_requested")
         ]
         if recommendations:
             from .agent_led.policy import load_policy
@@ -334,7 +337,9 @@ class WisdomMediation:
             allowed_jobs = []
             for job in jobs:
                 reference = job["reference"]
-                if reference["kind"] not in {"candidate", "skill"}:
+                if reference["kind"] not in {"candidate", "skill"} or reference.get(
+                    "user_requested"
+                ):
                     allowed_jobs.append(job)
                     continue
                 event_type = (
@@ -393,8 +398,19 @@ class WisdomMediation:
         self.service.require_setup()
         claimed = self.queue.claim(org, actor.session_key)
         from .weekly_queue import process_weekly_review
+        from .share_queue import process_share_package
 
-        for job in claimed:
+        for index, job in enumerate(claimed):
+            if job["reference"]["kind"] == "share_package":
+                try:
+                    claimed[index] = process_share_package(
+                        self, org, job, runtime=runtime
+                    )
+                except Exception as exc:
+                    self.queue.fail(
+                        org, job["id"], job["lease_token"], type(exc).__name__
+                    )
+                continue
             if job["reference"]["kind"] != "weekly_review":
                 continue
             try:
@@ -402,7 +418,12 @@ class WisdomMediation:
             except Exception as exc:
                 self.queue.fail(org, job["id"], job["lease_token"], type(exc).__name__)
         jobs = self._eligible_jobs(
-            org, [job for job in claimed if job["reference"]["kind"] != "weekly_review"]
+            org,
+            [
+                job
+                for job in claimed
+                if job["reference"]["kind"] not in {"weekly_review", "share_package"}
+            ],
         )
         pending = [job for job in jobs if job["state"] == "assessing"]
         if pending:

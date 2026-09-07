@@ -216,11 +216,13 @@ export interface WisdomConsentInteraction {
   id: string
   assessment_id: string
   state: string
-  operation: 'install' | 'update' | 'publish'
+  operation: 'share' | 'install' | 'update' | 'publish'
   expires_at: number
   actions: ('defer' | 'inspect' | 'confirm')[]
   deferred?: boolean
   deferred_surfaces?: string[]
+  inspection?: { path: string; content: string; hash: string; description: string; page: number; page_count: number }
+  result?: { packaging_state?: 'queued' | 'ready' | 'failed' }
   facts: {
     slug?: string
     version?: number
@@ -231,6 +233,7 @@ export interface WisdomConsentInteraction {
     sensitive_expansion?: string[]
     security_check?: WisdomReviewCheck | null
     professionalism_check?: WisdomReviewCheck | null
+    file_names?: string[]
   }
 }
 
@@ -289,7 +292,7 @@ export const getWisdomMediation = (profile?: ProfileScope): Promise<WisdomMediat
   request('/api/wisdom/mediation', profile)
 
 export const resolveWisdomConsent = (
-  interactionId: string, sessionId: string, action: 'inspect' | 'defer' | 'confirm', profile?: ProfileScope
+  interactionId: string, sessionId: string, action: 'inspect' | `inspect.${number}` | 'defer' | 'confirm', profile?: ProfileScope
 ): Promise<WisdomConsentInteraction> => request('/api/wisdom/consent', profile, {
   method: 'POST', body: { interaction_id: interactionId, session_id: sessionId, action }
 })

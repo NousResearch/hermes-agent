@@ -1493,6 +1493,10 @@ export const ru = defineLocale({
       reviewFirst: 'Сначала проверить',
       notNow: 'Не сейчас',
       yes: 'Да',
+      share: 'Поделиться',
+      reviewPreviousPage: 'Предыдущая страница проверки',
+      reviewNextPage: 'Следующая страница проверки',
+      sharePreparationNotice: 'Будет подготовлен локальный пакет. Перед загрузкой или публикацией вы отдельно проверите и одобрите его.',
       muteNotificationsSoon: 'Отключить уведомления (скоро)',
       unmuteNotificationsSoon: 'Включить уведомления (скоро)'
     },

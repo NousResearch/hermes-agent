@@ -851,7 +851,7 @@ def test_telegram_candidate_publish_uses_normal_review_and_approval(
     monkeypatch.setattr(
         service,
         "draft_candidate",
-        lambda _event_id: {
+        lambda _event_id, *, expected_hashes=None, _pre_upload_guard=None: {
             "draft_id": "draft-1",
             "skill_name": "telegram-skill",
             "state": "ready",

@@ -280,10 +280,11 @@ def test_prepare_reuses_weekly_advice_and_native_exact_plan(weekly, monkeypatch)
     items = mediation.prepare(
         "org-1", actor, runtime={}, history=[], assessor=no_second_model
     )
-    assert len(items) == 1 and items[0]["interaction"]["operation"] == "publish"
+    assert len(items) == 1 and items[0]["interaction"]["operation"] == "share"
     assert items[0]["interaction"]["actions"][-1] == "confirm"
     no_second_model.assert_not_called()
     service.approve_candidate.assert_not_called()
+    service.prepare_candidate.assert_not_called()
 
 
 def test_failed_model_uses_bounded_retries_then_one_manual_fallback(

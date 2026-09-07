@@ -37,6 +37,42 @@ SHARE_PACKAGING_PROMPT = "wisdom_share_packaging.md"
 ModelCall = Callable[[list[dict[str, str]], dict[str, Any]], str]
 
 
+def session_model_call(runtime, *, name: str, max_tokens: int = 6000) -> ModelCall:
+    """Bounded tool-free work on the selected conversation's model route."""
+
+    def call(messages, schema):
+        from agent.auxiliary_client import call_llm, extract_content_or_reasoning
+
+        if not runtime.get("model") or not runtime.get("provider"):
+            raise ValueError("Wisdom work requires an active session model")
+        response = call_llm(
+            provider=runtime["provider"],
+            model=runtime["model"],
+            main_runtime=runtime,
+            tools=[],
+            messages=messages,
+            temperature=0,
+            timeout=45,
+            max_tokens=max_tokens,
+            extra_body={
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": name,
+                        "strict": True,
+                        "schema": schema,
+                    },
+                }
+            },
+        )
+        choices = getattr(response, "choices", []) or []
+        if choices and getattr(choices[0].message, "tool_calls", None):
+            raise ValueError("Wisdom work requested disallowed tools")
+        return extract_content_or_reasoning(response)
+
+    return call
+
+
 def load_prompt(name: str) -> str:
     path = PROMPTS_DIR / name
     return path.read_text(encoding="utf-8")
@@ -80,7 +116,9 @@ def _run(
         {"role": "system", "content": load_prompt(prompt_name)},
         {
             "role": "user",
-            "content": json.dumps(model_safe_data(payload), sort_keys=True, ensure_ascii=True, default=str),
+            "content": json.dumps(
+                model_safe_data(payload), sort_keys=True, ensure_ascii=True, default=str
+            ),
         },
     ]
     schema = model.model_json_schema()
@@ -92,7 +130,10 @@ def _run(
         except SchemaRejected as exc:
             last_error = exc
             logger.warning(
-                "Agent-led %s output rejected on attempt %d: %s", prompt_name, attempt, exc
+                "Agent-led %s output rejected on attempt %d: %s",
+                prompt_name,
+                attempt,
+                exc,
             )
             messages = [
                 *messages[:2],
@@ -101,10 +142,13 @@ def _run(
                     "role": "user",
                     "content": (
                         "Your previous output failed validation: "
-                        + json.dumps([
-                            {"type": error.get("type"), "loc": error.get("loc")}
-                            for error in exc.errors
-                        ], default=str)[:2000]
+                        + json.dumps(
+                            [
+                                {"type": error.get("type"), "loc": error.get("loc")}
+                                for error in exc.errors
+                            ],
+                            default=str,
+                        )[:2000]
                         + ". Return corrected strict JSON only."
                     ),
                 },

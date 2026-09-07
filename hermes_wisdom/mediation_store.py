@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -196,10 +197,10 @@ class MediationStore:
         reference: dict[str, Any],
         *,
         origin_session: str | None = None,
+        _db: sqlite3.Connection | None = None,
     ) -> str:
-        self._require_org(org)
         now = self.clock()
-        with self.store.transaction() as db:
+        with self.store.transaction() if _db is None else nullcontext(_db) as db:
             self._check_org(db, org)
             db.execute(
                 """INSERT INTO wisdom_assessment
@@ -221,6 +222,17 @@ class MediationStore:
                 "SELECT id FROM wisdom_assessment WHERE organization_id=? AND event_key=?",
                 (org, event_key),
             ).fetchone()[0]
+
+    def check_claim(self, db, org: str, assessment_id: str, token: str) -> None:
+        from .client import WisdomConflict
+
+        self._check_org(db, org)
+        if not db.execute(
+            """SELECT 1 FROM wisdom_assessment WHERE id=? AND organization_id=?
+            AND state='assessing' AND lease_token=? AND lease_until>?""",
+            (assessment_id, org, token, self.clock()),
+        ).fetchone():
+            raise WisdomConflict("Wisdom assessment ownership changed")
 
     def claim(self, org: str, session_key: str) -> list[dict[str, Any]]:
         """Elect one eligible session, then fence every row with a fresh token."""

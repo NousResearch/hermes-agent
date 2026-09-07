@@ -1,6 +1,5 @@
-import { AlertTriangle, CheckCircle2, CircleHelp, Loader2, XCircle } from 'lucide-react'
-
 import type { WisdomReviewCheck, WisdomReviewCheckRow, WisdomReviewStatus } from '@/hermes'
+import { AlertCircle, AlertTriangle, CheckCircle2, HelpCircle, Loader2 } from '@/lib/icons'
 
 const PROFESSIONALISM_LABELS: Record<string, string> = {
   profanity_or_abuse: 'Profanity or abusive language',
@@ -19,7 +18,7 @@ function StatusIcon({ status }: { status: WisdomReviewStatus }) {
   }
 
   if (status === 'blocked') {
-    return <XCircle aria-hidden className="size-3" />
+    return <AlertCircle aria-hidden className="size-3" />
   }
 
   if (status === 'pending' || status === 'retry' || status === 'running') {
@@ -30,7 +29,7 @@ function StatusIcon({ status }: { status: WisdomReviewStatus }) {
     return <AlertTriangle aria-hidden className="size-3" />
   }
 
-  return <CircleHelp aria-hidden className="size-3" />
+  return <HelpCircle aria-hidden className="size-3" />
 }
 
 function tone(status: WisdomReviewStatus): string {

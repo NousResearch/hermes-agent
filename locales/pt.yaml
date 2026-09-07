@@ -60,6 +60,7 @@ gateway:
 
   approve:
     no_pending:            "Não há nenhum comando pendente para aprovar."
+    self_forbidden:        "⛔ O solicitante não pode aprovar o próprio pedido. Outra pessoa precisa responder."
     once_singular:         "✅ Comando aprovado. O agente está a retomar..."
     once_plural:           "✅ Comandos aprovados ({count} comandos). O agente está a retomar..."
     session_singular:      "✅ Comando aprovado (padrão aprovado para esta sessão). O agente está a retomar..."

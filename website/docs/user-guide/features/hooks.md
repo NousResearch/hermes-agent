@@ -438,9 +438,9 @@ Payload fields below are the exact event-specific fields supplied by each call s
 
 | Hook | Category | Exact timing and return behavior | Explicit payload fields | Privacy / sensitivity |
 |---|---|---|---|---|
-| [`pre_tool_call`](#pre_tool_call) | Directive/control | Once before execution; first valid `block` or `approve` directive wins, and `modify` returns are shallow-merged into the tool arguments. | `tool_name`, `args`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `middleware_trace` | Raw arguments may contain user content, paths, commands, or secrets. |
-| `post_tool_call` | Observer | After blocked, error, or successful result; return ignored. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message`, `middleware_trace` | Result/error text may contain arbitrary tool or user content and secrets. |
-| `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; first string replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | Exposes the full model-bound result and arguments. |
+| [`pre_tool_call`](#pre_tool_call) | Directive/control | Once before execution; first valid `block` or `approve` directive wins, and `modify` returns are shallow-merged into the tool arguments. | `tool_name`, `args`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `middleware_trace`, `user_id`, `user_name`, `platform`, `chat_id`, `chat_type`, `thread_id`, `gateway_session_key` | Raw arguments may contain user content, paths, commands, or secrets. |
+| `post_tool_call` | Observer | After blocked, error, or successful result; return ignored. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message`, `middleware_trace`, `user_id`, `user_name`, `platform`, `chat_id`, `chat_type`, `thread_id`, `gateway_session_key` | Result/error text may contain arbitrary tool or user content and secrets. |
+| `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; first string replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message`, `user_id`, `user_name`, `platform`, `chat_id`, `chat_type`, `thread_id`, `gateway_session_key` | Exposes the full model-bound result and arguments. |
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
@@ -465,8 +465,8 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `pre_gateway_dispatch` | Directive/control | Incoming non-internal message before auth/pairing/dispatch; first valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
 | `gateway_platform_event` | Observer | After the gateway's profile-scoped authorization succeeds, when a supported platform-native event is normalized at the gateway boundary (Telegram: reactions, message edits; Discord: message edits/deletes, thread created/renamed); return ignored. | `platform`, `event_type`, `payload` (event-type-specific dict — see the per-event contracts below) | Normalized plain-dict envelope only; raw SDK objects, adapter handles, and bot clients are never exposed. |
 | `pre_command` | Observer | Recognized slash command about to be dispatched, before the handler runs, on CLI and gateway cold-path dispatch; return ignored in v1 (directive-shaped dicts are logged at debug). Gateway running-agent intercept commands (`/stop`, `/approve` during an active run) are deliberately excluded — control-plane escape hatches must stay outside plugin reach. | `surface` (`"cli"` \| `"gateway"`), `command` (canonical name), `alias_used`, `args_raw`, `session_key`, `platform` | `args_raw` may contain user content or secrets typed after the command. |
-| `pre_approval_request` | Observer | Before prompted or smart approval; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id` | Command may contain secrets; smart observer preparation force-redacts, but surfaces do not all have identical redaction. |
-| `post_approval_response` | Observer | After a decision, timeout, or gateway notification failure; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id`, `choice`; smart path may add `decided_by` | Same command sensitivity plus decision metadata. |
+| `pre_approval_request` | Observer | Before prompted or smart approval; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id`, `user_id`, `user_name`, `platform`, `chat_id` | Command may contain secrets; smart observer preparation force-redacts, but surfaces do not all have identical redaction. |
+| `post_approval_response` | Observer | After a decision, timeout, or gateway notification failure; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id`, `user_id`, `user_name`, `platform`, `chat_id`, `choice`; smart decisions and gateway human decisions (Discord Allow/Deny buttons, `/approve`, `/deny`) may add `decided_by` | Same command sensitivity plus decision metadata. |
 | `kanban_task_claimed` | Observer | After claim commit, in dispatcher process before worker spawn; return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id` | Board/task/profile/assignee identifiers. |
 | `kanban_task_completed` | Observer | After completion and cleanup, usually in worker process; return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `summary` | Summary may contain project/user content. |
 | `kanban_task_blocked` | Observer | After a blocked transition; the dependency-wait path fires before its transaction exits. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `reason` | Reason may contain project/user content. |
@@ -541,6 +541,15 @@ def my_callback(tool_name: str, args: dict, task_id: str, **kwargs):
 | `tool_name` | `str` | Name of the tool about to execute (e.g. `"terminal"`, `"web_search"`, `"read_file"`) |
 | `args` | `dict` | The arguments the model passed to the tool |
 | `task_id` | `str` | Session/task identifier. Empty string if not set. |
+| `user_id` | `str` | Platform user id of the acting principal (the sender of the message that triggered this tool call). Empty string outside the gateway. |
+| `user_name` | `str` | Display name of the acting principal. Empty string if unknown. |
+| `platform` | `str` | Platform of the executing agent (e.g. `"discord"`, `"telegram"`, `"cli"`, `"cron"`, `"subagent"`). Empty string only when neither an agent nor a session context is known. |
+| `chat_id` | `str` | Platform chat/channel id the call originates from. Empty string if unknown. |
+| `chat_type` | `str` | Chat kind (`"dm"`, `"group"`, `"channel"`, ...). Empty string if unknown. |
+| `thread_id` | `str` | Platform thread/topic id, when the chat is threaded. Empty string otherwise. |
+| `gateway_session_key` | `str` | Stable per-chat gateway session key (e.g. `agent:main:discord:channel:123`). Empty string outside the gateway. |
+
+The identity keys (`user_id`, `user_name`, `chat_id`, `chat_type`, `thread_id`, `gateway_session_key`) come from the per-message session context when it is set (a cached gateway agent is shared by every sender of a chat, so this is the per-message truth), falling back to the principal the agent runs for (a cron job's creator) and then to the identity the agent was constructed with (subagents), and are empty strings outside the gateway. `platform` reflects the executing agent instead: a delegate child reports `"subagent"` even inside a gateway turn (it runs under a copy of the parent's session context, so the sender keys still name the delegating human), a cron job reports `"cron"`. Every key is always present, so hooks can enforce per-user policy without `kwargs.get()` guards.
 
 **Fires:** In `model_tools.py`, inside `handle_function_call()`, before the tool's handler runs. Fires once per tool call — if the model calls 3 tools in parallel, this fires 3 times.
 
@@ -623,6 +632,7 @@ def my_callback(tool_name: str, args: dict, result: str, task_id: str,
 | `result` | `str` | The tool's return value (always a JSON string) |
 | `task_id` | `str` | Session/task identifier. Empty string if not set. |
 | `duration_ms` | `int` | How long the tool's dispatch took, in milliseconds (measured with `time.monotonic()` around `registry.dispatch()`). |
+| `user_id`, `user_name`, `platform`, `chat_id`, `chat_type`, `thread_id`, `gateway_session_key` | `str` | The acting principal, with the same values and precedence as in [`pre_tool_call`](#pre_tool_call): per-message session context first, then the agent's construction identity, else `""`. |
 
 **Fires:** In `model_tools.py`, inside `handle_function_call()`, after the tool's handler returns. Fires once per tool call. Does **not** fire if the tool raised an unhandled exception (the error is caught and returned as an error JSON string instead, and `post_tool_call` fires with that error string as `result`).
 
@@ -1296,6 +1306,10 @@ def my_callback(
 | `pattern_keys` | `list[str]` | All pattern keys that matched |
 | `session_key` | `str` | Session identifier, useful for scoping notifications per-chat |
 | `surface` | `str` | `"cli"` for interactive CLI/TUI prompts, `"gateway"` for async platform approvals, or `"smart"` for auxiliary-LLM auto approve/deny decisions |
+| `user_id` | `str` | Platform user id of the requester (the sender whose turn raised the approval), from the per-message session context. Empty string outside the gateway (CLI, tests). |
+| `user_name` | `str` | Display name of the requester. Empty string if unknown. |
+| `platform` | `str` | Gateway platform of the requester (e.g. `"discord"`); distinct from `surface`. Empty string outside the gateway. |
+| `chat_id` | `str` | Platform chat/channel id the request was raised in. Empty string if unknown. |
 
 **Return value:** ignored. Hooks here are observer-only; they cannot veto or pre-answer the approval. Use [`pre_tool_call`](#pre_tool_call) to block a tool before it reaches the approval system.
 
@@ -1344,7 +1358,7 @@ Same kwargs as `pre_approval_request`, plus:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `choice` | `str` | Prompted surfaces use `"once"`, `"session"`, `"always"`, `"deny"`, `"timeout"`, or `"notify_failed"`; smart decisions use `"smart_approve"` or `"smart_deny"` |
-| `decided_by` | `str` | `"aux_llm"` for smart decisions; absent on prompted surfaces |
+| `decided_by` | `str` | `"aux_llm"` for smart decisions; `"<platform>:<user_id>"` (e.g. `"discord:1234"`) when a gateway human decision identifies the decider (Discord buttons, `/approve`, `/deny`, bare-word replies); absent on CLI/TUI prompts, timeouts, `notify_failed`, and resolvers that do not pass it |
 
 **Return value:** ignored.
 

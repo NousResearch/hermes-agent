@@ -15,14 +15,59 @@ from importlib import import_module
 from typing import Any, Callable, Dict, Optional, Tuple
 
 
+# ``(hook key, HERMES_SESSION_* var, agent attribute)`` for the principal (who is acting) fields.
+_PRINCIPAL_HOOK_FIELDS: Tuple[Tuple[str, str, str], ...] = (
+    ("user_id", "HERMES_SESSION_USER_ID", "_user_id"),
+    ("user_name", "HERMES_SESSION_USER_NAME", "_user_name"),
+    ("platform", "HERMES_SESSION_PLATFORM", "platform"),
+    ("chat_id", "HERMES_SESSION_CHAT_ID", "_chat_id"),
+    ("chat_type", "HERMES_SESSION_CHAT_TYPE", "_chat_type"),
+    ("thread_id", "HERMES_SESSION_THREAD_ID", "_thread_id"),
+    ("gateway_session_key", "HERMES_SESSION_KEY", "_gateway_session_key"),
+)
+
+
+def principal_hook_fields(agent=None) -> Dict[str, str]:
+    """Principal identity kwargs for tool hooks (all coerced to ``""``).
+
+    Identity keys: the per-message session ContextVar wins when non-empty (a cached gateway
+    agent is shared by every sender of a chat, so its construction identity may be stale);
+    else ``agent._principal_identity`` (a hook-only principal, e.g. the cron job's creator,
+    that must not become the agent's own identity); else the agent's construction identity
+    (subagent contexts leave the vars blank); else ``""`` (CLI, no gateway).
+
+    ``platform`` is a property of the executing agent (gateway surface / ``"cron"`` /
+    ``"subagent"``), not of the sender: a delegate child runs under a copy of the parent's
+    gateway context, so the ContextVar would report the human's platform and hide that a
+    subagent is acting. The agent's value wins; the ContextVar is the fallback.
+    """
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:  # gateway package unavailable: agent attrs only
+        get_session_env = None
+    principal = getattr(agent, "_principal_identity", None) or {}
+    fields: Dict[str, str] = {}
+    for key, env_name, attr in _PRINCIPAL_HOOK_FIELDS:
+        value = (getattr(agent, attr, "") or "") if key == "platform" else ""
+        if not value and get_session_env is not None:
+            try:
+                value = get_session_env(env_name, "") or ""
+            except Exception:
+                value = ""
+        fields[key] = str(value or principal.get(key, "") or getattr(agent, attr, "") or "")
+    return fields
+
+
 def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) -> Dict[str, str]:
-    """Identity kwargs every tool hook/middleware call carries (all coerced to ``""``)."""
+    """Identity kwargs every tool hook/middleware call carries (all coerced to ``""``):
+    the call/turn ids plus the principal fields of :func:`principal_hook_fields`."""
     return {
         "task_id": effective_task_id or "",
         "session_id": getattr(agent, "session_id", "") or "",
         "tool_call_id": tool_call_id or "",
         "turn_id": getattr(agent, "_current_turn_id", "") or "",
         "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
+        **principal_hook_fields(agent),
     }
 
 

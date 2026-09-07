@@ -588,6 +588,14 @@ class _CallIds:
     tool_call_id: Optional[str] = None
     turn_id: Optional[str] = None
     api_request_id: Optional[str] = None
+    # Principal (who is acting): see agent.inline_tool_executors.principal_hook_fields.
+    user_id: Optional[str] = None
+    user_name: Optional[str] = None
+    platform: Optional[str] = None
+    chat_id: Optional[str] = None
+    chat_type: Optional[str] = None
+    thread_id: Optional[str] = None
+    gateway_session_key: Optional[str] = None
 
     def hook_kwargs(self) -> Dict[str, str]:
         """Same fields with None -> "" (hook/middleware wire contract)."""
@@ -618,6 +626,9 @@ def _emit_post_tool_call_hook(
     turn_id: Optional[str] = None, api_request_id: Optional[str] = None, duration_ms: int = 0,
     status: Optional[str] = None, error_type: Optional[str] = None, error_message: Optional[str] = None,
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
+    user_id: Optional[str] = None, user_name: Optional[str] = None, platform: Optional[str] = None,
+    chat_id: Optional[str] = None, chat_type: Optional[str] = None, thread_id: Optional[str] = None,
+    gateway_session_key: Optional[str] = None,
 ) -> None:
     """Emit the ``post_tool_call`` observer hook; gated on has_hook, and ok/error
     fields are derived from the result only past that gate when status is None."""
@@ -629,9 +640,11 @@ def _emit_post_tool_call_hook(
             return
         if status is None:
             status, error_type, error_message = _tool_result_observer_fields(function_name, result)
+        ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id, user_id, user_name,
+                       platform, chat_id, chat_type, thread_id, gateway_session_key)
         invoke_hook(
             "post_tool_call", tool_name=function_name, args=function_args, result=result,
-            **_CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id).hook_kwargs(),
+            **ids.hook_kwargs(),
             duration_ms=duration_ms, status=status, error_type=error_type, error_message=error_message,
             middleware_trace=list(middleware_trace or []),
         )
@@ -805,6 +818,9 @@ def handle_function_call(
     skip_pre_tool_call_hook: bool = False, skip_tool_request_middleware: bool = False,
     skip_tool_execution_middleware: bool = False, tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None, disabled_toolsets: Optional[List[str]] = None,
+    user_id: Optional[str] = None, user_name: Optional[str] = None, platform: Optional[str] = None,
+    chat_id: Optional[str] = None, chat_type: Optional[str] = None, thread_id: Optional[str] = None,
+    gateway_session_key: Optional[str] = None,
 ) -> str:
     """Route a tool call through hooks/middleware to the registry; returns a JSON string.
 
@@ -812,14 +828,21 @@ def handle_function_call(
     enabled_tools picks execute_code's sandbox tools (default: the process-global
     ``_last_resolved_tool_names``). skip_pre_tool_call_hook: caller already fired
     it (single-fire contract). enabled/disabled_toolsets scope the Tool Search
-    bridge catalog to this session's grant (None = unrestricted).
+    bridge catalog to this session's grant (None = unrestricted). user_id ..
+    gateway_session_key are the acting principal for hooks; when none is given
+    they come from the session ContextVars (``principal_hook_fields``).
     """
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
     trace = list(tool_request_middleware_trace or [])
     function_name = _LEGACY_TOOL_ALIASES.get(function_name, function_name)
-    ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id)
+    principal = dict(user_id=user_id, user_name=user_name, platform=platform, chat_id=chat_id,
+                     chat_type=chat_type, thread_id=thread_id, gateway_session_key=gateway_session_key)
+    if all(v is None for v in principal.values()):
+        from agent.inline_tool_executors import principal_hook_fields
+        principal = principal_hook_fields(None)
+    ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id, **principal)
     start = time.monotonic()
 
     def _emit(result: Any, **extra: Any) -> Any:

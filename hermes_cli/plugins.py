@@ -1771,12 +1771,15 @@ def clear_thread_tool_whitelist() -> None:
 def _get_pre_tool_call_directive_details(
     tool_name: str, args: Optional[Dict[str, Any]], task_id: str = "", session_id: str = "",
     tool_call_id: str = "", turn_id: str = "", api_request_id: str = "",
-    middleware_trace: Optional[List[Dict[str, Any]]] = None,
+    middleware_trace: Optional[List[Dict[str, Any]]] = None, user_id: str = "", user_name: str = "",
+    platform: str = "", chat_id: str = "", chat_type: str = "", thread_id: str = "",
+    gateway_session_key: str = "",
 ) -> _PreToolCallDirective:
     """Check ``pre_tool_call`` hooks for ``{"action": "block", "message"}`` (veto; message becomes
     the tool result) or ``{"action": "approve", "message", "rule_key"?}`` (escalate ANY tool to the
     human-approval gate; ``rule_key`` picks the ``[a]lways`` allowlist grain). First valid directive
-    wins; irrelevant returns are ignored."""
+    wins; irrelevant returns are ignored. ``user_id`` .. ``gateway_session_key`` identify the acting
+    principal (``""`` outside the gateway) so hooks can enforce per-user policy."""
     allowed = getattr(_thread_tool_whitelist, "allowed", None)
     if allowed is not None and tool_name not in allowed:
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
@@ -1786,6 +1789,8 @@ def _get_pre_tool_call_directive_details(
         "pre_tool_call", tool_name=tool_name, args=args if isinstance(args, dict) else {},
         task_id=task_id, session_id=session_id, tool_call_id=tool_call_id, turn_id=turn_id,
         api_request_id=api_request_id, middleware_trace=list(middleware_trace or []),
+        user_id=user_id, user_name=user_name, platform=platform, chat_id=chat_id, chat_type=chat_type,
+        thread_id=thread_id, gateway_session_key=gateway_session_key,
     )
     modified_args: Optional[Dict[str, Any]] = None
     for result in hook_results:

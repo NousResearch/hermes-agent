@@ -5546,6 +5546,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 allowed_role_ids=self._allowed_role_ids, require_admin=require_admin,
                 admin_user_ids=admin_user_ids, allow_permanent=allow_permanent,
                 allow_session=allow_session, smart_denied=smart_denied,
+                requester_user_id=(metadata or {}).get("requester_user_id"),
             )
             send_kwargs: Dict[str, Any] = {"content": content, "embed": embed, "view": view}
             if mention_content:
@@ -6321,11 +6322,14 @@ def _define_discord_view_classes() -> None:
             self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None,
             require_admin: bool = False, admin_user_ids: Optional[set] = None,
             allow_permanent: bool = True, allow_session: bool = True, smart_denied: bool = False,
+            requester_user_id: Optional[str] = None,
         ):
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
             self.require_admin = require_admin
             self.admin_user_ids = {str(a).strip() for a in (admin_user_ids or set()) if str(a).strip()}
+            # Discord id of the sender whose turn raised the prompt (None when unknown).
+            self.requester_user_id = str(requester_user_id).strip() if requester_user_id else None
             if smart_denied or not allow_session:
                 self.remove_item(self.allow_session)
                 self.remove_item(self.allow_always)
@@ -6356,6 +6360,25 @@ def _define_discord_view_classes() -> None:
                 )
             return False
 
+        def _is_forbidden_self_approval(self, interaction: discord.Interaction) -> bool:
+            """True when ``approvals.forbid_self_approval`` is on and the clicker is the requester
+            (four-eyes in shared channels). Applies to admins too — combined with
+            ``require_admin_for_exec_approval`` it means "another admin must approve"."""
+            from tools.approval import forbid_self_approval_enabled  # read per click, like the allowlist mirrors
+            if not self.requester_user_id or not forbid_self_approval_enabled():
+                return False
+            uid = str(getattr(getattr(interaction, "user", None), "id", "") or "")
+            return uid == self.requester_user_id
+
+        async def _gate(self, interaction: discord.Interaction, *, resolved_msg: Optional[str], unauth_msg: str) -> bool:
+            if not await super()._gate(interaction, resolved_msg=resolved_msg, unauth_msg=unauth_msg):
+                return False
+            if self._is_forbidden_self_approval(interaction):
+                await interaction.response.send_message(
+                    "The requester cannot approve their own request.", ephemeral=True)
+                return False
+            return True
+
         async def _resolve(self, interaction: discord.Interaction, choice: str, color: discord.Color, label: str):
             """Resolve the approval via the gateway approval queue and update the embed."""
             if not await self._gate(
@@ -6368,7 +6391,7 @@ def _define_discord_view_classes() -> None:
             # wait timed out (count == 0) must not claim "Approved".
             try:
                 from tools.approval import resolve_gateway_approval
-                count = resolve_gateway_approval(self.session_key, choice)
+                count = resolve_gateway_approval(self.session_key, choice, decided_by=f"discord:{interaction.user.id}")
                 logger.info(
                     "Discord button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                     count, self.session_key, choice, interaction.user.display_name,

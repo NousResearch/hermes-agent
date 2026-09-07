@@ -24,7 +24,7 @@ logger = logging.getLogger("tools.approval")
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason", "acknowledged")
+    __slots__ = ("event", "data", "result", "reason", "acknowledged", "decided_by")
 
     def __init__(self, data: dict):
         self.event = threading.Event()
@@ -34,6 +34,15 @@ class _ApprovalEntry:
         self.result: str | None = None  # "once"|"session"|"always"|"deny"
         # Free-text reason from ``/deny <reason>`` so the agent can adapt, not just hear "denied".
         self.reason: str | None = None
+        # Who answered (``"<platform>:<user_id>"``) when the resolver knows; None for legacy callers.
+        self.decided_by: str | None = None
+
+
+def _decided_by(entry) -> dict:
+    """``post_approval_response`` extra for a human decision; empty when the resolver did not say
+    (keeps the smart-approve ``decided_by="aux_llm"`` contract untouched)."""
+    decided_by = getattr(entry, "decided_by", None)
+    return {"decided_by": decided_by} if decided_by else {}
 
 
 def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str) -> str:
@@ -99,7 +108,7 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
     if choice == "once":
         # The post hook fires for the fresh prompt's own lifecycle, not here.
         return None
-    return _finish(payload, resolved, choice, getattr(leader, "reason", None), coalesced=True)
+    return _finish(payload, resolved, choice, getattr(leader, "reason", None), coalesced=True, **_decided_by(leader))
 
 
 def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *, surface: str = "gateway") -> dict:
@@ -126,16 +135,25 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         "session_key": session_key, "surface": surface,
     }
     keys = list(approval_data.get("pattern_keys") or [])
+    # Requester identity from the per-message session contextvars ("" when unknown): recorded on the entry
+    # so the gateway prompt knows who asked (the self-approval guard compares it against the decider), and
+    # part of the coalescing match so a different sender never rides along on someone else's prompt (the
+    # prompt names only the leader's requester). Outside the gateway both sides are ("", "").
+    requester = (_ctx._session_env("HERMES_SESSION_USER_ID"), _ctx._session_env("HERMES_SESSION_PLATFORM"))
     with _approval._lock:
         leader = next((e for e in _approval._gateway_queues.get(session_key, [])
                        if e.data.get("command") == approval_data.get("command")
-                       and list(e.data.get("pattern_keys") or []) == keys), None)
+                       and list(e.data.get("pattern_keys") or []) == keys
+                       and (str(e.data.get("requester_user_id") or ""),
+                            str(e.data.get("requester_platform") or "")) == requester), None)
     if leader is not None:
         adopted = _await_coalesced_leader(session_key, leader, payload)
         if adopted is not None:
             return adopted
 
     entry = _ApprovalEntry(approval_data)
+    entry.data.setdefault("requester_user_id", requester[0])
+    entry.data.setdefault("requester_platform", requester[1])
     with _approval._lock:
         _approval._gateway_queues.setdefault(session_key, []).append(entry)
 
@@ -164,4 +182,4 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         entry.result = "deny"
         entry.event.set()
     _drop_entry()
-    return _finish(payload, state != "timeout", entry.result, entry.reason)
+    return _finish(payload, state != "timeout", entry.result, entry.reason, **_decided_by(entry))

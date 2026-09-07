@@ -402,6 +402,19 @@ class GatewayBusySessionMixin:
                 _match = self._PLAINTEXT_APPROVAL_WORDS.get(_raw_text)
                 if _match is not None:
                     _verb, _normalized_args = _match
+                    # Same admin gating as a typed /approve or /deny (run_inbound.py applies
+                    # _check_slash_access to slash commands): a bare "yes" must not let a
+                    # non-admin resolve an approval that /approve would refuse them.
+                    _denied = self._check_slash_access(event.source, _verb)
+                    if _denied:
+                        logger.info(
+                            "Plain-text approval response denied by slash access: session=%s verb=%s user=%s",
+                            session_key, _verb, event.source.user_id,
+                        )
+                        _adapter = self._adapter_for_source(event.source)
+                        if _adapter:
+                            await self._send_busy_reply(event, _adapter, _denied, plain_anchor=True)
+                        return True
                     _approval_handler = (
                         self._handle_approve_command if _verb == "approve" else self._handle_deny_command
                     )

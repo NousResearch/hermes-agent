@@ -34,6 +34,7 @@ from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
     InlineToolContext,
     emit_terminal_post_tool_call,
+    principal_hook_fields,
     tool_hook_ids,
 )
 from agent.tool_dispatch_helpers import (
@@ -1536,6 +1537,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
                 tool_request_middleware_trace=list(middleware_trace),
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                **principal_hook_fields(agent),
             )
 
     return _SequentialDispatch(

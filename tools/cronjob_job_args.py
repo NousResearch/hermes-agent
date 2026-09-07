@@ -36,6 +36,10 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
         "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME") or None, "thread_id": thread_id,
         # Lets a delivery mirror resolve the participant's session in per-user-isolated groups.
         "user_id": get_session_env("HERMES_SESSION_USER_ID") or None,
+        # Creator identity + chat shape: forwarded onto the cron agent as its principal
+        # (see cron.scheduler._cron_principal_kwargs) and read by DM-shape delivery gates.
+        "user_name": get_session_env("HERMES_SESSION_USER_NAME") or None,
+        "chat_type": get_session_env("HERMES_SESSION_CHAT_TYPE") or None,
         # Workspace/server scope (Slack team, Discord guild...): Slack session keys embed it,
         # so a continuable cron seed built without it would never resolve a scoped reply.
         "scope_id": get_session_env("HERMES_SESSION_SCOPE_ID") or None,

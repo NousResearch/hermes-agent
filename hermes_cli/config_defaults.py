@@ -1526,6 +1526,10 @@ DEFAULT_CONFIG = {
         "cron_mode": "deny",
         "single_query_mode": "deny",
         "unattended_mode": "deny",
+        # Gateway approvals: the sender whose turn raised the prompt may not answer it themselves — Discord
+        # buttons, typed /approve and /deny, bare-word replies (four-eyes in shared channels). Applies to
+        # admins too; with require_admin_for_exec_approval on, a different admin must approve.
+        "forbid_self_approval": False,
         # Extra rules appended to the smart-approval guardian's SYSTEM prompt, e.g. "Always ESCALATE
         # commands touching /etc".
         "smart_policy": "",

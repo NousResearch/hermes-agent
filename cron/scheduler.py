@@ -2237,10 +2237,32 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     return setup
 
 
+# Origin keys exposed to the tool-call hooks as the cron principal (tool hook kwarg names).
+_CRON_PRINCIPAL_KEYS = ("user_id", "user_name", "chat_id", "chat_type", "thread_id")
+
+
+def _cron_principal_kwargs(job: dict) -> dict:
+    """Principal identity for the cron agent's tool-call hooks from the job's origin (the creating
+    user/chat), non-empty values only. It is stored as ``agent._principal_identity`` and consulted
+    ONLY by ``principal_hook_fields`` so plugins can attribute a fire to whoever scheduled it — never
+    as ``agent._user_id`` etc. (those would re-scope memory providers and stamp the cron session row
+    with the creator), and deliberately NOT the HERMES_SESSION_* ContextVars (see ``_CronRunScope``).
+    ``platform`` stays ``"cron"``: the origin user is the principal, not a live sender.
+    Origin-less jobs yield ``{}``."""
+    from cron.scheduler_delivery import _resolve_origin
+    origin = _resolve_origin(job) or {}
+    kwargs = {}
+    for key in _CRON_PRINCIPAL_KEYS:
+        value = origin.get(key)
+        if value is not None and str(value) != "":
+            kwargs[key] = str(value)
+    return kwargs
+
+
 def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup, *, workdir, session_id, session_db):
     runtime = setup.runtime
     pr = _cfg.get("provider_routing") or {}
-    return AIAgent(
+    agent = AIAgent(
         model=setup.model,
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
@@ -2272,6 +2294,10 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         session_id=session_id,
         session_db=session_db,
     )
+    principal = _cron_principal_kwargs(job)
+    if principal:
+        agent._principal_identity = principal  # hook-only attribution; see _cron_principal_kwargs
+    return agent
 
 
 class _FireAudit:

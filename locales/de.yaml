@@ -60,6 +60,7 @@ gateway:
 
   approve:
     no_pending:            "Kein ausstehender Befehl zum Genehmigen."
+    self_forbidden:        "⛔ Der Anfragende darf seine eigene Anfrage nicht genehmigen. Jemand anderes muss antworten."
     once_singular:         "✅ Befehl genehmigt. Der Agent wird fortgesetzt..."
     once_plural:           "✅ Befehle genehmigt ({count} Befehle). Der Agent wird fortgesetzt..."
     session_singular:      "✅ Befehl genehmigt (Muster für diese Sitzung genehmigt). Der Agent wird fortgesetzt..."

@@ -100,6 +100,23 @@ def _execute(command: str, **ctx_kwargs):
     return execute_command(command, CommandContext(surface="gateway", **ctx_kwargs))
 
 
+def _approval_decided_by(source) -> Optional[str]:
+    """``"<platform>:<user_id>"`` of the ``/approve`` / ``/deny`` sender for the approval
+    audit trail (``post_approval_response`` ``decided_by``); None when either part is unknown."""
+    platform = getattr(getattr(source, "platform", None), "value", None)
+    user_id = getattr(source, "user_id", None)
+    return f"{platform}:{user_id}" if platform and user_id else None
+
+
+def _approval_refuse_requester(source) -> Optional[tuple]:
+    """``refuse_requester`` for ``resolve_gateway_approval``: the ``/approve`` / ``/deny`` sender when
+    ``approvals.forbid_self_approval`` is on, so the sender whose turn raised the prompt cannot answer
+    it by text either (typed command or bare "yes"/"no" routed here by the busy handler)."""
+    from tools.approval import requester_to_refuse
+    return requester_to_refuse(getattr(getattr(source, "platform", None), "value", None),
+                               getattr(source, "user_id", None))
+
+
 def _restart_notify_payload(event: MessageEvent) -> dict:
     """Requester routing info so the new gateway process can notify them once back online."""
     source = event.source
@@ -1127,7 +1144,7 @@ class GatewaySlashCommandsMixin(
     async def _handle_approve_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /approve — unblock waiting agent thread(s). They block inside tools/approval.py;
         signalling the event resumes them so the command executes inline (same flow as the CLI)."""
-        from tools.approval import resolve_gateway_approval
+        from tools.approval import SelfApprovalForbidden, resolve_gateway_approval
         session_key, stale = self._blocking_approval_or_stale(event, "gateway.approval_expired",
                                                               "gateway.approve.no_pending")
         if stale:
@@ -1136,7 +1153,12 @@ class GatewaySlashCommandsMixin(
         args = event.get_command_args().strip().lower().split()
         choices = {_APPROVE_CHOICE_BY_ARG[a] for a in args if a in _APPROVE_CHOICE_BY_ARG}
         choice = "always" if "always" in choices else "session" if "session" in choices else "once"
-        count = resolve_gateway_approval(session_key, choice, resolve_all="all" in args)
+        try:
+            count = resolve_gateway_approval(session_key, choice, resolve_all="all" in args,
+                                             decided_by=_approval_decided_by(event.source),
+                                             refuse_requester=_approval_refuse_requester(event.source))
+        except SelfApprovalForbidden:
+            return t("gateway.approve.self_forbidden")
         if not count:
             return t("gateway.approve.no_pending")
         confirmation_text = t(f"gateway.approve.{choice}_{'plural' if count > 1 else 'singular'}", count=count)
@@ -1150,7 +1172,7 @@ class GatewaySlashCommandsMixin(
         ``/deny <reason>`` (or ``/deny all <reason>``) attaches a one-line reason that is relayed back to
         the agent so it can adapt instead of only hearing "denied". Ported from qwibitai/nanoclaw#2832.
         """
-        from tools.approval import resolve_gateway_approval
+        from tools.approval import SelfApprovalForbidden, resolve_gateway_approval
         session_key, stale = self._blocking_approval_or_stale(event, "gateway.deny.stale",
                                                               "gateway.deny.no_pending")
         if stale:
@@ -1161,7 +1183,12 @@ class GatewaySlashCommandsMixin(
         tokens = raw_args.split()
         resolve_all = bool(tokens) and tokens[0].lower() == "all"
         reason = (raw_args[len(tokens[0]):].strip() if resolve_all else raw_args)[:280].strip()
-        count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all, reason=reason or None)
+        try:
+            count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all, reason=reason or None,
+                                             decided_by=_approval_decided_by(event.source),
+                                             refuse_requester=_approval_refuse_requester(event.source))
+        except SelfApprovalForbidden:
+            return t("gateway.approve.self_forbidden")
         if not count:
             return t("gateway.deny.no_pending")
         logger.info("User denied %d dangerous command(s) via /deny%s", count,

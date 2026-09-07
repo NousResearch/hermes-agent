@@ -50,6 +50,14 @@ def _is_interactive_cli() -> bool:
     return is_truthy_value(ctx_val) if ctx_val is not None else env_var_enabled("HERMES_INTERACTIVE")
 
 
+# Requester identity forwarded to approval hooks (hook kwarg -> session var). Read from the per-message
+# session contextvars, not the agent: cached agents in shared threads keep the FIRST sender's ids.
+_REQUESTER_IDENTITY_FIELDS = (
+    ("user_id", "HERMES_SESSION_USER_ID"), ("user_name", "HERMES_SESSION_USER_NAME"),
+    ("platform", "HERMES_SESSION_PLATFORM"), ("chat_id", "HERMES_SESSION_CHAT_ID"),
+)
+
+
 def _fire_approval_hook(hook_name: str, **kwargs) -> None:
     """Invoke a plugin lifecycle hook (pre_approval_request / post_approval_response).
 
@@ -66,6 +74,8 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
         kwargs.setdefault("tool_call_id", _approval_tool_call_id.get())
         if _approval_session_id.get():
             kwargs.setdefault("session_id", _approval_session_id.get())
+        for key, env_name in _REQUESTER_IDENTITY_FIELDS:
+            kwargs.setdefault(key, _session_env(env_name))  # "" when unknown (CLI, tests)
         invoke_hook(hook_name, **kwargs)
     except Exception as exc:
         # invoke_hook() swallows per-callback errors; this is the dispatch layer itself failing.

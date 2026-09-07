@@ -60,6 +60,7 @@ gateway:
 
   approve:
     no_pending:            "沒有待批准的指令。"
+    self_forbidden:        "⛔ 請求者不能批准自己的請求。需要由其他人來回應。"
     once_singular:         "✅ 指令已批准。代理正在恢復…"
     once_plural:           "✅ 指令已批准（{count} 條指令）。代理正在恢復…"
     session_singular:      "✅ 指令已批准（本次工作階段內允許該模式）。代理正在恢復…"

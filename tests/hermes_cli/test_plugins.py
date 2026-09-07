@@ -1357,6 +1357,13 @@ class TestPreToolCallDirective:
                     "tool_call_id": "call-1",
                     "turn_id": "",
                     "api_request_id": "",
+                    "user_id": "",
+                    "user_name": "",
+                    "platform": "",
+                    "chat_id": "",
+                    "chat_type": "",
+                    "thread_id": "",
+                    "gateway_session_key": "",
                     "middleware_trace": [],
                 },
             )

@@ -60,6 +60,7 @@ gateway:
 
   approve:
     no_pending:            "Nincs jóváhagyásra váró parancs."
+    self_forbidden:        "⛔ A kérelmező nem hagyhatja jóvá a saját kérését. Valaki másnak kell válaszolnia."
     once_singular:         "✅ Parancs jóváhagyva. Az ügynök folytatja..."
     once_plural:           "✅ Parancsok jóváhagyva ({count} parancs). Az ügynök folytatja..."
     session_singular:      "✅ Parancs jóváhagyva (minta jóváhagyva ehhez a munkamenethez). Az ügynök folytatja..."

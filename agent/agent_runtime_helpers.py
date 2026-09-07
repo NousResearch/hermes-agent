@@ -2167,12 +2167,10 @@ def switch_model(
 def _pre_tool_block_message(agent, function_name, function_args, effective_task_id, tool_call_id, middleware_trace):
     """Plugin pre-tool-call hook verdict: ``(block_message, function_args)``; failures never block."""
     try:
+        from agent.inline_tool_executors import tool_hook_ids
         from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
         block_message, modified_args = _dispatch_pre_tool_call_hooks(
-            function_name, function_args, task_id=effective_task_id or "",
-            session_id=getattr(agent, "session_id", "") or "", tool_call_id=tool_call_id or "",
-            turn_id=getattr(agent, "_current_turn_id", "") or "",
-            api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+            function_name, function_args, **tool_hook_ids(agent, effective_task_id, tool_call_id),
             middleware_trace=list(middleware_trace),
         )
         return block_message, (modified_args if modified_args is not None else function_args)
@@ -2190,7 +2188,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     no display logic. Used by the concurrent path; the sequential path keeps its own inline
     invocation for display."""
     from agent.inline_tool_executors import (
-        InlineToolContext, emit_terminal_post_tool_call, resolve_invoke_tool_executor, tool_hook_ids
+        InlineToolContext, emit_terminal_post_tool_call, principal_hook_fields,
+        resolve_invoke_tool_executor, tool_hook_ids,
     )
     if not isinstance(function_args, dict):
         function_args = {}
@@ -2246,6 +2245,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 tool_request_middleware_trace=list(_tool_middleware_trace),
+                **principal_hook_fields(agent),
             )
             if skip_tool_execution_middleware:
                 dispatch_kwargs["skip_tool_execution_middleware"] = True

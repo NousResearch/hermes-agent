@@ -75,6 +75,7 @@ gateway:
 
   approve:
     no_pending:            "No pending command to approve."
+    self_forbidden:        "⛔ The requester cannot approve their own request. Someone else must answer this prompt."
     once_singular:         "✅ Command approved. The agent is resuming..."
     once_plural:           "✅ Commands approved ({count} commands). The agent is resuming..."
     session_singular:      "✅ Command approved (pattern approved for this session). The agent is resuming..."

@@ -60,6 +60,7 @@ gateway:
 
   approve:
     no_pending:            "승인 대기 중인 명령이 없습니다."
+    self_forbidden:        "⛔ 요청자는 자신의 요청을 승인할 수 없습니다. 다른 사람이 응답해야 합니다."
     once_singular:         "✅ 명령이 승인되었습니다. 에이전트가 재개됩니다..."
     once_plural:           "✅ 명령이 승인되었습니다 ({count}개). 에이전트가 재개됩니다..."
     session_singular:      "✅ 명령이 승인되었습니다 (이 세션 동안 패턴 승인됨). 에이전트가 재개됩니다..."

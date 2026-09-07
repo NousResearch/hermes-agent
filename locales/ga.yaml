@@ -64,6 +64,7 @@ gateway:
 
   approve:
     no_pending:            "Níl aon ordú ag fanacht le ceadú."
+    self_forbidden:        "⛔ Ní féidir leis an iarrthóir a iarratas féin a cheadú. Caithfidh duine eile freagra a thabhairt."
     once_singular:         "✅ Ordú ceadaithe. Tá an gníomhaire ag atosú..."
     once_plural:           "✅ Orduithe ceadaithe ({count} ordú). Tá an gníomhaire ag atosú..."
     session_singular:      "✅ Ordú ceadaithe (patrún ceadaithe don seisiún seo). Tá an gníomhaire ag atosú..."

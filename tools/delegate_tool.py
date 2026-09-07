@@ -150,6 +150,22 @@ def _apply_child_compression_cap(child, delegation_cfg: dict) -> None:
         cc._apply_threshold_tokens_cap()
 
 
+def _parent_identity_kwargs(parent_agent) -> Dict[str, Any]:
+    """Gateway identity (user/chat/thread) the child inherits from its parent, so the child's tool-call
+    hooks attribute work to the delegating user. Same forwarding as the gateway's background-task agent
+    (gateway/run_turn.py); ``platform`` stays ``"subagent"``. NOT ``gateway_session_key``: it is the
+    per-chat routing identity, and a keyed ``subagent`` session row would shadow the parent chat in
+    ``list_gateway_sessions`` / ``find_latest_gateway_session_for_peer`` (newest row per key wins)."""
+    from agent.agent_init import _GATEWAY_IDENTITY_PARAMS
+    kwargs: Dict[str, Any] = {}
+    for name in _GATEWAY_IDENTITY_PARAMS:
+        if name == "gateway_session_key":
+            continue
+        value = getattr(parent_agent, f"_{name}", None)
+        if value is not None:
+            kwargs[name] = value
+    return kwargs
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -226,6 +242,7 @@ def _build_child_agent(
                 **rt, max_iterations=max_iterations, prefill_messages=getattr(parent_agent, "prefill_messages", None),
                 enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                 ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
+                **_parent_identity_kwargs(parent_agent),
                 skip_context_files=True, skip_memory=True, clarify_callback=None,
                 thinking_callback=(
                     (lambda text: _safe_progress(child_progress_cb, "_thinking", text) if text else None)

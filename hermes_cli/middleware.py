@@ -6,6 +6,7 @@ wrapping the actual execution callback. Agent-loop call sites and plugins share 
 
 from __future__ import annotations
 
+import inspect
 import logging
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -45,6 +46,27 @@ def middleware_payload(**kwargs: Any) -> Dict[str, Any]:
     kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
     kwargs.setdefault("middleware_schema_version", MIDDLEWARE_SCHEMA_VERSION)
     return kwargs
+
+
+def invoke_with_declared_kwargs(callback: Callable, payload: Dict[str, Any]) -> Any:
+    """Call *callback* with *payload*, withholding additive fields from narrow signatures.
+
+    Hook and middleware payloads evolve additively: a ``**kwargs`` callback gets everything, a
+    callback with an explicit parameter list only the fields it declares (so a new payload field
+    cannot turn a policy callback into a ``TypeError`` that is logged and skipped, fail-open). A
+    callable without an introspectable signature is called with the full payload as before.
+    """
+    try:
+        parameters = inspect.signature(callback).parameters
+    except (TypeError, ValueError):
+        return callback(**payload)  # no introspectable signature: historical behavior
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return callback(**payload)
+    keyword_kinds = {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+    return callback(**{
+        name: value for name, value in payload.items()
+        if name in parameters and parameters[name].kind in keyword_kinds
+    })
 
 
 def _safe_copy(payload: Any) -> Any:
@@ -197,7 +219,7 @@ def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwarg
         call_kwargs[payload_key] = payload
         call_kwargs["next_call"] = next_call
         try:
-            return callback(**call_kwargs)
+            return invoke_with_declared_kwargs(callback, call_kwargs)
         except _DownstreamExecutionError as exc:
             raise exc.original
         except Exception as exc:

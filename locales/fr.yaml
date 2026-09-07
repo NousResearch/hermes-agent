@@ -60,6 +60,7 @@ gateway:
 
   approve:
     no_pending:            "Aucune commande en attente d'approbation."
+    self_forbidden:        "⛔ Le demandeur ne peut pas approuver sa propre demande. Quelqu'un d'autre doit répondre."
     once_singular:         "✅ Commande approuvée. L'agent reprend..."
     once_plural:           "✅ Commandes approuvées ({count} commandes). L'agent reprend..."
     session_singular:      "✅ Commande approuvée (modèle approuvé pour cette session). L'agent reprend..."

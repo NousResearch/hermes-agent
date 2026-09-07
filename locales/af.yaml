@@ -60,6 +60,7 @@ gateway:
 
   approve:
     no_pending:            "Geen hangende opdrag om goed te keur nie."
+    self_forbidden:        "⛔ Die aanvraer kan nie sy eie versoek goedkeur nie. Iemand anders moet antwoord."
     once_singular:         "✅ Opdrag goedgekeur. Die agent gaan voort..."
     once_plural:           "✅ Opdragte goedgekeur ({count} opdragte). Die agent gaan voort..."
     session_singular:      "✅ Opdrag goedgekeur (patroon goedgekeur vir hierdie sessie). Die agent gaan voort..."

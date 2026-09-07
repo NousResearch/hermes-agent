@@ -60,6 +60,7 @@ gateway:
 
   approve:
     no_pending:            "Onaylanacak bekleyen komut yok."
+    self_forbidden:        "⛔ Talep sahibi kendi talebini onaylayamaz. Bu isteği başka biri yanıtlamalı."
     once_singular:         "✅ Komut onaylandı. Ajan devam ediyor..."
     once_plural:           "✅ Komutlar onaylandı ({count} komut). Ajan devam ediyor..."
     session_singular:      "✅ Komut onaylandı (desen bu oturum için onaylandı). Ajan devam ediyor..."

@@ -134,15 +134,58 @@ def unregister_gateway_notify(session_key: str) -> None:
         entry.event.set()
 
 
+def forbid_self_approval_enabled() -> bool:
+    """``approvals.forbid_self_approval`` (default False): the sender whose turn raised an exec
+    approval may not answer it themselves (four-eyes in shared channels). Read per decision."""
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config() or {}
+        raw = (cfg.get("approvals", {}) or {}).get("forbid_self_approval", False)
+    except Exception:
+        return False
+    return raw is True or str(raw).strip().lower() in {"true", "1", "yes", "on"}
+
+
+def requester_to_refuse(platform: Optional[str], user_id) -> Optional[tuple]:
+    """``(platform, user_id)`` of a decider for ``resolve_gateway_approval(refuse_requester=...)``
+    when ``approvals.forbid_self_approval`` is on and the decider is known; None otherwise."""
+    if not user_id or not forbid_self_approval_enabled():
+        return None
+    return (str(platform or ""), str(user_id))
+
+
+class SelfApprovalForbidden(Exception):
+    """A pending approval was raised by the decider's own turn and ``approvals.forbid_self_approval``
+    is on; nothing was resolved (the prompt stays pending for someone else)."""
+
+
+def _requested_by(entry, decider: tuple) -> bool:
+    """True when *entry* records *decider* (``(platform, user_id)``) as its requester. The platform is
+    compared only when both sides know it (entries queued outside the gateway carry ``""``)."""
+    platform, user_id = decider
+    data = getattr(entry, "data", None) or {}
+    requester_user_id = str(data.get("requester_user_id") or "")
+    requester_platform = str(data.get("requester_platform") or "")
+    if not user_id or requester_user_id != user_id:
+        return False
+    return not requester_platform or not platform or requester_platform == platform
+
+
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
                              reason: Optional[str] = None,
-                             request_id: Optional[str] = None) -> int:
+                             request_id: Optional[str] = None,
+                             decided_by: Optional[str] = None,
+                             refuse_requester: Optional[tuple] = None) -> int:
     """Unblock waiting agent thread(s) from the gateway's /approve or /deny handler.
 
     *resolve_all* resolves every pending approval (``/approve all``); otherwise the oldest
     (FIFO) or the one matching *request_id*. *reason* is the ``/deny <reason>`` free text,
-    relayed to the agent in the BLOCKED message. Returns the number resolved.
+    relayed to the agent in the BLOCKED message. *decided_by* (``"<platform>:<user_id>"``)
+    names the human who answered; it reaches ``post_approval_response``. *refuse_requester*
+    (``(platform, user_id)`` of the decider, see :func:`requester_to_refuse`) raises
+    :class:`SelfApprovalForbidden` — resolving nothing — when any targeted approval was raised
+    by that decider's own turn. Returns the number resolved.
     """
     with _lock:
         queue = _gateway_queues.get(session_key)
@@ -152,12 +195,14 @@ def resolve_gateway_approval(session_key: str, choice: str,
             targets = [entry for entry in queue if entry.data.get("request_id") == request_id]
             if not targets:
                 return 0
-            queue[:] = [entry for entry in queue if entry not in targets]
         elif resolve_all:
             targets = list(queue)
-            queue.clear()
         else:
-            targets = [queue.pop(0)]
+            targets = queue[:1]
+        # Checked under the lock, before anything is popped: a refused decision leaves the queue as is.
+        if refuse_requester is not None and any(_requested_by(entry, refuse_requester) for entry in targets):
+            raise SelfApprovalForbidden("The requester cannot approve their own request.")
+        queue[:] = [entry for entry in queue if entry not in targets]
         if not queue:
             _gateway_queues.pop(session_key, None)
 
@@ -165,6 +210,8 @@ def resolve_gateway_approval(session_key: str, choice: str,
         entry.result = choice
         if reason:
             entry.reason = reason
+        if decided_by:
+            entry.decided_by = decided_by
         entry.event.set()
     return len(targets)
 

@@ -35,6 +35,18 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+# Identity a fresh agent takes from ``SessionSource`` (see ``TurnRunner._build_fresh_agent``).
+_AGENT_IDENTITY_ATTRS = ("user_id", "user_id_alt", "user_name", "chat_id", "chat_name", "chat_type", "thread_id")
+
+
+def _refresh_cached_agent_identity(agent, source) -> None:
+    """Point a reused agent's ``_user_id`` etc. at the current message's sender. Cached agents in
+    shared threads serve multiple senders; identity must follow the current message."""
+    for name in _AGENT_IDENTITY_ATTRS:
+        if hasattr(agent, f"_{name}"):
+            setattr(agent, f"_{name}", getattr(source, name, None))
+
+
 class TurnRunner:
     """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
 
@@ -932,6 +944,9 @@ class TurnRunner:
                     with suppress(KeyError):
                         cache.move_to_end(ctx.session_key)
                 self._runner._init_cached_agent_for_turn(out.agent, ctx._interrupt_depth)
+                # Cached agents in shared threads serve multiple senders; identity must follow the
+                # current message, or tools/hooks attribute this turn to whoever built the agent.
+                _refresh_cached_agent_identity(out.agent, ctx.source)
                 # Cached agent may have been created with old config.
                 out.agent.max_iterations = max_iterations
                 logger.debug("Reusing cached agent for session %s", ctx.session_key)
@@ -1245,13 +1260,17 @@ class TurnRunner:
         cmd = _redact_approval_command(approval_data.get("command", ""))
         desc = approval_data.get("description", "dangerous command")
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
+        # Who asked, for the adapter's self-approval guard (``approvals.forbid_self_approval``): the entry
+        # carries the per-message session identity; the turn source is the fallback.
+        metadata = dict(ctx._status_thread_metadata or {})
+        metadata["requester_user_id"] = approval_data.get("requester_user_id") or getattr(ctx.source, "user_id", None)
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if getattr(type(adapter), "send_exec_approval", None) is not None:
             try:
                 fut = self._schedule(
                     adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
+                        description=desc, metadata=metadata, **flags,
                     ),
                     "send_exec_approval scheduling error",
                 )

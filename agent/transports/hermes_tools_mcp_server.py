@@ -28,14 +28,7 @@ from agent.transports.hermes_tools_mcp_server_shims import stateless_shim_defini
 logger = logging.getLogger(__name__)
 
 # JSON Schema type -> Python type mapping for signature generation
-_JSON_TO_PY = {
-    "string": str,
-    "integer": int,
-    "number": float,
-    "boolean": bool,
-    "array": list,
-    "object": dict,
-}
+_JSON_TO_PY = {"string": str, "integer": int, "number": float, "boolean": bool, "array": list, "object": dict}
 
 # This launcher's public surface: the default (Codex) profile. A host selects a
 # profile at launch (``--profile claude-agent-sdk``); unknown values keep this
@@ -54,20 +47,9 @@ def _signature_from_schema(schema: dict | None) -> tuple[inspect.Signature, dict
         if pname.startswith("_"):
             continue
         py = _JSON_TO_PY.get((pspec or {}).get("type"), Any)
-        ann, default = (
-            (py, inspect.Parameter.empty)
-            if pname in required
-            else (Optional[py], None)
-        )
+        ann, default = (py, inspect.Parameter.empty) if pname in required else (Optional[py], None)
         annots[pname] = ann
-        params.append(
-            inspect.Parameter(
-                pname,
-                inspect.Parameter.KEYWORD_ONLY,
-                annotation=ann,
-                default=default,
-            )
-        )
+        params.append(inspect.Parameter(pname, inspect.Parameter.KEYWORD_ONLY, annotation=ann, default=default))
     return inspect.Signature(params, return_annotation=str), annots
 
 

@@ -9,6 +9,10 @@ import pytest
 
 
 _FIRE = """
+import json
+import os
+from pathlib import Path
+import subprocess
 import sys
 from cron import jobs, scheduler
 from cron.scheduler_provider import InProcessCronScheduler
@@ -17,7 +21,23 @@ if sys.argv[1] == 'builtin':
 else:
     provider = InProcessCronScheduler()
     for job in jobs.load_jobs():
-        provider.fire_due(job['id'], force=sys.argv[1] == 'manual')
+        if sys.argv[1] != 'worker':
+            provider.fire_due(job['id'], force=sys.argv[1] == 'manual')
+            continue
+        from cron.executions import mark_execution_handoff_pending
+        claim = provider.claim_fire(job['id'])
+        if claim is None:
+            continue
+        mark_execution_handoff_pending(claim['execution_id'])
+        home = Path(os.environ['HERMES_HOME'])
+        payload = home / (claim['execution_id'] + '.json')
+        ack = home / (claim['execution_id'] + '.ready')
+        payload.write_text(json.dumps({'job': claim, 'profile_home': str(home),
+                                       'multiplex_active': False}))
+        subprocess.run([sys.executable, '-m', 'cron.scheduler',
+                        '--external-worker-file', str(payload), '--ack-file', str(ack)],
+                       stdin=subprocess.DEVNULL, check=True, timeout=60)
+        assert json.loads(ack.read_text())['pid'] != os.getpid()
 """
 
 
@@ -32,7 +52,7 @@ def _fire(home, mode):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.parametrize('mode', ['builtin', 'provider'])
+@pytest.mark.parametrize('mode', ['builtin', 'provider', 'worker'])
 def test_completed_occurrence_survives_restart_and_prestamp_rollback(tmp_path, mode):
     from datetime import timedelta
     from hermes_time import now

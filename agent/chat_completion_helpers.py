@@ -1712,28 +1712,6 @@ def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> 
             logger.debug("Fallback to %s/%s: could not attach credential pool: %s", fb_provider, fb_model, exc)
 
 
-_RATE_LIMIT_FAILOVER_REASONS = frozenset({FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit})
-
-
-def _arm_rate_limit_cooldown(agent, reason: "FailoverReason | None") -> int | None:
-    """Arm the primary's exponential cooldown (60s → 2m → ... → 4h cap) on CONSECUTIVE rate-limits;
-    restore_primary_runtime resets the counter. Only when leaving the primary: chain-switching from
-    an active fallback means the primary was not the 429 source, so its cooldown is left alone.
-    Return the armed cooldown in seconds, or None when no cooldown was armed."""
-    if reason not in _RATE_LIMIT_FAILOVER_REASONS:
-        return None
-    current_provider = (getattr(agent, "provider", "") or "").strip().lower()
-    primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
-    if getattr(agent, "_fallback_activated", False) and not (primary_provider and current_provider == primary_provider):
-        return None
-    backoff_count = getattr(agent, "_rate_limit_backoff_count", 0)
-    agent._rate_limit_backoff_count = backoff_count + 1
-    backoff_seconds = min(60 * (2 ** backoff_count), 14400)
-    agent._rate_limited_until = time.monotonic() + backoff_seconds
-    logging.info("Rate-limit backoff level %d: cooldown %d s (%.1f min, backoff#%d)", backoff_count, backoff_seconds, backoff_seconds / 60, backoff_count + 1)
-    return backoff_seconds
-
-
 def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
     """Chain exhausted (always False). A non-empty chain walked on a non-rate-limit failure arms a
     short cooldown so next turn's restore_primary_runtime stays gated instead of replaying the whole
@@ -1842,22 +1820,11 @@ def _buffer_fallback_notice(agent, notice: str) -> None:
         agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
 
 
-def _format_rate_limit_cooldown_suffix(backoff_seconds: int) -> str:
-    """Render an armed rate-limit cooldown as a user-facing duration (" Primary retried in ~16 min.").
-
-    The stored deadline is monotonic-based, so it is rendered as a duration, never as a
-    wall-clock time (unsafe across suspend)."""
-    if backoff_seconds < 60:
-        return f" Primary retried in ~{max(1, int(round(backoff_seconds)))} s."
-    if backoff_seconds < 3600:
-        return f" Primary retried in ~{max(1, int(round(backoff_seconds / 60)))} min."
-    return f" Primary retried in ~{max(1, int(round(backoff_seconds / 3600)))} h."
-
-
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
+    from agent.fallback_cooldown import _arm_rate_limit_cooldown
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason)
     if agent._fallback_index >= len(agent._fallback_chain):
         return _fallback_chain_exhausted(agent, reason)
@@ -1935,7 +1902,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "
             f"({_fallback_reason_text(reason)}); using {fb_model} via {fb_provider}.")
         if cooldown_seconds is not None:
-            notice += _format_rate_limit_cooldown_suffix(cooldown_seconds)
+            remaining = max(0, math.ceil(agent._rate_limited_until - time.monotonic()))
+            notice += f" Primary retry eligible in ~{remaining} s; recovery is not guaranteed."
         _buffer_fallback_notice(agent, notice)
         # ``_fallback_activated`` is also reused by `/model --once` restoration; separate
         # provenance so the restore path only emits a recovery notice after a real fallback.

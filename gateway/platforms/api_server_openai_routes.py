@@ -713,6 +713,9 @@ class OpenAICompatRoutesMixin:
                 if isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__tool_progress__":
                     # Custom event: tool lifecycle for frontends without markers in history.
                     await response.write(_sse_frame(delta[1], event="hermes.tool.progress"))
+                elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__reasoning__":
+                    # Keep live reasoning in its own OpenAI-compatible delta field.
+                    await response.write(_sse_frame(_chunk({"reasoning_content": delta[1]})))
                 else:
                     await response.write(_sse_frame(_chunk({"content": delta})))
             # The agent can fail after the queue drains (task raises / result flagged failed or

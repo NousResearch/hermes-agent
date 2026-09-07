@@ -14,7 +14,7 @@ import pytest
 
 from tools.delegate_tool import _register_subagent, _unregister_subagent
 from tools.process_registry import ProcessRegistry, process_registry, _handle_process
-from tools.process_registry_notifications import format_process_notification
+from tools.process_registry_notifications import _process_accounting_lines, format_process_notification
 
 
 class _Parent:
@@ -99,6 +99,19 @@ def test_handoff_refuses_exited_foreign_or_non_child_callers(clean_queue):
         process_registry.wait(done.id, timeout=10)
         assert "error" in json.loads(_handle_process(
             {"action": "handoff", "session_id": done.id, "data": "x"}, task_id=sid))
+
+        # A notify process that exited while the child was alive and was never read is reported to the parent;
+        # the one the child waited on (read) is not.
+        unread = process_registry.spawn_local("echo UNREAD_RESULT", task_id=sid, owner_task_id=sid)
+        unread.notify_on_complete = True
+        deadline = time.time() + 10
+        while not unread.exited and time.time() < deadline:
+            time.sleep(0.05)
+        ids = [s.id for s in process_registry.unread_completions_owned_by(sid)]
+        assert ids == [unread.id]
+        assert "UNREAD_RESULT" in _process_accounting_lines(
+            {"unread_completions": [{"session_id": unread.id, "command": "echo", "exit_code": 0,
+                                     "output_tail": unread.output_buffer}]})[0]
 
         foreign = process_registry.spawn_local("sleep 30", task_id=other, owner_task_id=other)
         assert "error" in json.loads(_handle_process(

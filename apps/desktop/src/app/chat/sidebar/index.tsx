@@ -175,7 +175,12 @@ import {
   useRepoWorktreeMap
 } from './projects'
 import { WorktreeDialog } from './projects/worktree-dialog'
-import { SidebarBlankState, SidebarLoadErrorState, SidebarPinnedEmptyState, SidebarSessionSkeletons } from './section-states'
+import {
+  SidebarBlankState,
+  SidebarLoadErrorState,
+  SidebarPinnedEmptyState,
+  SidebarSessionSkeletons
+} from './section-states'
 import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
@@ -987,8 +992,12 @@ export function ChatSidebar({
 
   // Entering a project lazily hydrates its full lanes (repo -> lane -> sessions)
   // from the backend — same grouping/ids as the overview, just with rows.
-  const { project: enteredProjectTree, failed: projectLoadFailed, loading: projectLoading, retry: retryProject } =
-    useEnteredProjectSessions(enteredProjectId, gatewayReady, projectTree, `${activeConnectionId}:${profileScope}`)
+  const {
+    project: enteredProjectTree,
+    failed: projectLoadFailed,
+    loading: projectLoading,
+    retry: retryProject
+  } = useEnteredProjectSessions(enteredProjectId, gatewayReady, projectTree, `${activeConnectionId}:${profileScope}`)
 
   // Prefer the hydrated tree; fall back to the overview node (empty lanes) while
   // the drill-in fetch is in flight, so the header/structure render immediately.

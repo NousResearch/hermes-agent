@@ -1,3 +1,4 @@
+import '@/styles.css'
 import { createRoot } from 'react-dom/client'
 import type { ReactNode } from 'react'
 import { QueryClientProvider } from '@tanstack/react-query'

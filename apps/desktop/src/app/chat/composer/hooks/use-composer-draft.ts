@@ -122,6 +122,14 @@ export function useComposerDraft({
   sessionIdRef.current = sessionId
   const queueEditStateRef = useRef<QueueEditState | null>(queueEditRef.current)
   queueEditStateRef.current = queueEditRef.current
+  // Suppresses the debounced stash while the swap effect is actively resuming
+  // a different session. Without this, `resumeSession` paints the selection
+  // and syncs the (empty initial) composer runtime before the swap effect's
+  // `takeSessionDraft` runs — the runtime's `sync()` schedules `stashAt(scope, '')`
+  // which fires 250 ms later and clobbers the draft the swap cleanup already
+  // saved (#104995). Set by the swap effect on entry, cleared by the effect's
+  // cleanup synchronously before it reads `syncDraftFromEditor()`.
+  const resumingSessionRef = useRef(false)
 
   const [focusRequestId, setFocusRequestId] = useState(0)
 
@@ -321,6 +329,10 @@ export function useComposerDraft({
         return
       }
 
+      if (resumingSessionRef.current) {
+        return
+      }
+
       const scope = draftScopeRef.current
       const entry = { scope, text }
       pendingDraftPersistRef.current = entry
@@ -411,11 +423,13 @@ export function useComposerDraft({
     window.clearTimeout(draftPersistTimerRef.current)
     pendingDraftPersistRef.current = null
     draftScopeRef.current = activeQueueSessionKey
+    resumingSessionRef.current = true
 
     const { attachments, text } = takeSessionDraft(activeQueueSessionKey)
     loadIntoComposer(text, attachments)
 
     return () => {
+      resumingSessionRef.current = false
       const latestText = syncDraftFromEditor()
       const editing = queueEditStateRef.current
 

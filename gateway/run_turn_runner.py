@@ -1126,6 +1126,7 @@ class TurnRunner:
             mem_notif = "on" if mem_notif else "off"
         agent.memory_notifications = str(mem_notif).lower() if mem_notif else "on"
         agent.clarify_callback = self._clarify_callback_sync
+        agent.user_input_callback = self._user_input_callback_sync
         # Thinking between tool calls is independent of tool_progress mode (Mattermost opts in
         # per platform so global scratch-text doesn't leak into threads).
         agent.thinking_progress = ctx._thinking_enabled
@@ -1166,6 +1167,30 @@ class TurnRunner:
                 cancelled_flag["cancelled"] = True
             logger.warning("%s boundary timed out or failed: %s", reason, err)
             return False
+
+    def _user_input_callback_sync(self, request: dict) -> None:
+        """Schedule a durable user-input request on the platform adapter without blocking the agent."""
+        ctx = self._ctx
+        adapter = ctx._status_adapter
+        if not self._status_live() or adapter is None or not isinstance(request, dict):
+            return
+        send_user_input = getattr(adapter, "send_user_input", None)
+        if not callable(send_user_input):
+            logger.debug("Adapter %s has no user-input renderer", type(adapter).__name__)
+            return
+
+        async def _deliver() -> None:
+            try:
+                await send_user_input(
+                    chat_id=ctx._status_chat_id,
+                    request=dict(request),
+                    session_key=ctx.session_key or "",
+                    metadata=ctx._status_thread_metadata,
+                )
+            except Exception:
+                logger.debug("user-input request delivery failed", exc_info=True)
+
+        self._schedule(_deliver(), "user_input_callback scheduling error")
 
     def _clarify_callback_sync(self, question: str, choices, multi_select: bool = False) -> str:
         """Present a clarify prompt and block on a response (clarify_tool's synchronous contract):

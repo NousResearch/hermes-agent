@@ -67,6 +67,55 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ showReasoning: true })
   })
 
+  it('opens a non-blocking native user-input request in the prompt zone', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: {
+        context: 'Pick the implementation path',
+        questions: [{ allow_free_text: false, id: 'path', options: ['A', 'B'], text: 'Which path?' }],
+        request_id: 'input-1',
+        session_id: 's1'
+      },
+      session_id: 's1',
+      type: 'user_input.request'
+    } as any)
+
+    expect(getOverlayState().userInput).toMatchObject({ requestId: 'input-1', sessionId: 's1' })
+    expect(getOverlayState().userInput?.questions[0]?.options).toEqual(['A', 'B'])
+    expect(getUiState().status).toBe('waiting for user input…')
+  })
+
+  it('clears only the matching native user-input answer event and preserves deferred honesty', () => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+
+    const request = {
+      payload: {
+        questions: [{ id: 'path', options: ['A'], text: 'Which path?' }],
+        request_id: 'input-1',
+        session_id: 's1'
+      },
+      session_id: 's1',
+      type: 'user_input.request'
+    }
+
+    onEvent(request as any)
+    onEvent({ payload: { accepted: true, delivery: 'deferred', request_id: 'input-1', status: 'answered' }, session_id: 's2', type: 'user_input.answer' } as any)
+    expect(getOverlayState().userInput).not.toBeNull()
+
+    onEvent({ payload: { accepted: true, delivery: 'deferred', request_id: 'input-1', status: 'answered' }, session_id: 's1', type: 'user_input.answer' } as any)
+    expect(getOverlayState().userInput).toBeNull()
+    expect(getUiState().status).toBe('answer recorded; resume not confirmed')
+
+    onEvent(request as any)
+    onEvent({ payload: { accepted: false, request_id: 'input-1', session_id: 's1', status: 'expired' }, session_id: 's1', type: 'user_input.answer' } as any)
+    expect(getOverlayState().userInput).toBeNull()
+    expect(getUiState().status).toBe('user-input request expired')
+  })
+
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {
     const appended: Msg[] = []
 

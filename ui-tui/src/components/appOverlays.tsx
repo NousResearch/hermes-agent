@@ -16,7 +16,7 @@ import { OverlayHint } from './overlayControls.js'
 import { listRowStyle } from './overlayPrimitives.js'
 import { PetPicker } from './petPicker.js'
 import { PluginsHub } from './pluginsHub.js'
-import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
+import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt, UserInputPrompt } from './prompts.js'
 import { SkillsHub } from './skillsHub.js'
 import { SubscriptionOverlay } from './subscriptionOverlay.js'
 import { WidgetGrid, type WidgetGridWidget } from './widgetGrid.js'
@@ -61,10 +61,11 @@ export function PromptZone({
   onClarifyAnswer,
   onClarifyQuestionAnswer,
   onSecretSubmit,
-  onSudoSubmit
+  onSudoSubmit,
+  onUserInputAnswer
 }: Pick<
   AppOverlaysProps,
-  'cols' | 'onApprovalChoice' | 'onClarifyAnswer' | 'onClarifyQuestionAnswer' | 'onSecretSubmit' | 'onSudoSubmit'
+  'cols' | 'onApprovalChoice' | 'onClarifyAnswer' | 'onClarifyQuestionAnswer' | 'onSecretSubmit' | 'onSudoSubmit' | 'onUserInputAnswer'
 >) {
   const overlay = useStore($overlayState)
   const theme = useStore($uiTheme)
@@ -158,6 +159,20 @@ export function PromptZone({
           label={overlay.secret.prompt}
           onSubmit={onSecretSubmit}
           sub={`for ${overlay.secret.envVar}`}
+          t={theme}
+        />
+      </PromptCell>
+    )
+  }
+
+  if (overlay.userInput) {
+    return (
+      <PromptCell cols={cols} id="user-input">
+        <UserInputPrompt
+          cols={cols}
+          onAnswer={onUserInputAnswer}
+          onCancel={() => patchOverlayState({ userInput: null })}
+          req={overlay.userInput}
           t={theme}
         />
       </PromptCell>

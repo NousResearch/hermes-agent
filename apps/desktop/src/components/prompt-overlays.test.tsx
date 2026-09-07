@@ -6,11 +6,12 @@ import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $secretRequest, $sudoRequest, clearAllPrompts, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import { $activeSessionId } from '@/store/session'
+import { setUserInputRequest } from '@/store/user-input'
 
-import { PromptOverlays } from './prompt-overlays'
+import { PromptOverlays, UserInputDock } from './prompt-overlays'
 
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: vi.fn() }))
-vi.mock('@/store/notifications', () => ({ notifyError: vi.fn() }))
+vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
 
 function renderPrompts(sessionId: string | null = 's1') {
   render(
@@ -63,5 +64,26 @@ describe('PromptOverlays', () => {
     await waitFor(() => expect($secretRequest.get()).toBeNull())
     expect(request).toHaveBeenCalledWith('secret.respond', { request_id: 'secret-1', value: '' })
     expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('mounts native user input in the session composer dock instead of the viewport', () => {
+    $activeSessionId.set('s1')
+    setUserInputRequest({
+      requestId: 'input-1',
+      sessionId: 's1',
+      questions: [{ id: 'choice', options: ['yes'], text: 'Choose one' }]
+    })
+
+    render(
+      <I18nProvider configClient={null}>
+        <UserInputDock sessionId="s1" />
+      </I18nProvider>
+    )
+
+    const card = screen.getByRole('region')
+    const dock = card.parentElement
+    expect(dock?.className).toContain('flex')
+    expect(dock?.className).not.toContain('absolute')
+    expect(dock?.className).not.toContain('fixed')
   })
 })

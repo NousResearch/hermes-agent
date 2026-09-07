@@ -133,6 +133,32 @@ def _memory(agent, args: dict, ctx: InlineToolContext) -> Any:
     return result
 
 
+def _check_user_input(agent, args: dict, ctx: InlineToolContext) -> Any:
+    return _call_tool(
+        "tools.user_input_tool", "check_user_input", args,
+        (("request_id", "request_id", ""),),
+        session_id=getattr(agent, "session_id", "") or "",
+        session_db=getattr(agent, "_session_db", None),
+    )
+
+
+def _request_user_input(agent, args: dict, ctx: InlineToolContext) -> Any:
+    return _call_tool(
+        "tools.user_input_tool", "request_user_input", args,
+        (("questions", "questions"), ("context", "context", ""),
+         ("timeout_s", "timeout_s", 3600)),
+        session_id=getattr(agent, "session_id", "") or "",
+        turn_id=getattr(agent, "_current_turn_id", "") or "",
+        session_db=getattr(agent, "_session_db", None),
+        session_key=getattr(agent, "_gateway_session_key", "") or "",
+        source=getattr(agent, "platform", "") or "",
+        user_id=getattr(agent, "_user_id", "") or "",
+        chat_id=getattr(agent, "_chat_id", "") or "",
+        thread_id=getattr(agent, "_thread_id", "") or "",
+        callback=getattr(agent, "user_input_callback", None),
+    )
+
+
 _read_preview = _callback_tool(
     "tools.read_preview_tool", "read_preview_tool", "read_preview_callback",
     ("start", "start"), ("count", "count"),
@@ -169,6 +195,8 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         ("questions", "questions"),
         callback=lambda agent, ctx: agent.clarify_callback,
     ),
+    "request_user_input": _request_user_input,
+    "check_user_input": _check_user_input,
     "read_terminal": _callback_tool(
         "tools.read_terminal_tool", "read_terminal_tool", "read_terminal_callback",
         ("start_line", "start_line"), ("count", "count"),

@@ -5,6 +5,7 @@ import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, u
 import { useTourMarker } from '@/app/chat/tour-marker'
 import { useHudComposerDrag } from '@/app/hud/composer-drag'
 import { composerFill, composerFloatingStrip, composerSurfaceGlass } from '@/components/chat/composer-dock'
+import { UserInputDock } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
 import { useI18n } from '@/i18n'
@@ -1183,6 +1184,7 @@ export function ChatBar({
               : undefined
           }
         >
+          <UserInputDock sessionId={sessionId ?? null} />
           {/* Aligned to the composer SURFACE, which sits inside the composer's
               5px transparent grab margin — so both strips carry the same inset
               and share one left edge with it. */}

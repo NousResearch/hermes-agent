@@ -14,6 +14,12 @@ import { setMcpSetupRequest } from '@/store/mcp-setup'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { receiveApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import { requestScrollToBottom } from '@/store/thread-scroll'
+import {
+  clearUserInputRequest,
+  normalizeUserInputRequest,
+  setUserInputRequest,
+  userInputRequestsForSession
+} from '@/store/user-input'
 
 import type { GatewayEventContext } from './types'
 
@@ -23,6 +29,41 @@ import type { GatewayEventContext } from './types'
 export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, occurredAt } = ctx
   const { activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall } = deps
+
+  if (event.type === 'user_input.request') {
+    const request = normalizeUserInputRequest(payload, sessionId)
+
+    if (request) {
+      setUserInputRequest(request)
+
+      if (sessionId) {
+        updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+      }
+
+      dispatchNativeNotification({
+        body: request.context || request.questions.map(question => question.text).join(' · '),
+        kind: 'input',
+        sessionId,
+        title: 'Hermes needs your input'
+      })
+    }
+
+    return true
+  }
+
+  if (event.type === 'user_input.answer') {
+    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+    if (sessionId && requestId) {
+      clearUserInputRequest(sessionId, requestId)
+      updateSessionState(sessionId, state => ({
+        ...state,
+        needsInput: userInputRequestsForSession(sessionId).length > 0
+      }))
+    }
+
+    return true
+  }
 
   if (event.type === 'clarify.request') {
     // Surface the clarify tool's overlay. The Python side is blocked on

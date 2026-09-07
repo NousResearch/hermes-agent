@@ -22,7 +22,7 @@ _HERMES_CORE_TOOLS = [
     "text_to_speech",
     "todo_list", "memory",
     "session_search",
-    "clarify",
+    "clarify", "request_user_input", "check_user_input",
     "execute_code", "delegate_task",
     "cronjob_manage",
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
@@ -63,7 +63,10 @@ def _core_without(*excluded, kanban=True):
 
 # Coding posture: everything you reach for while pairing on code; drops messaging,
 # tts, image_gen, home-assistant, cron, kanban and computer-use.
-_CODING_TOOLS = _core_without("image_generate", "text_to_speech", "cronjob_manage", "computer_use", *_HA_TOOLS, kanban=False)
+_CODING_TOOLS = _core_without(
+    "image_generate", "text_to_speech", "cronjob_manage", "computer_use",
+    "clarify", "request_user_input", "check_user_input", *_HA_TOOLS, kanban=False
+)
 
 # Core toolset definitions: individual tools or references to other toolsets.
 TOOLSETS = {
@@ -137,7 +140,11 @@ TOOLSETS = {
          "annotate_preview", "read_window_below", "focus_pane", "react_to_message",
          "setup_mcp", "gui_tour", "show_tip"],
     ),
-    "clarify": _ts("Ask the user clarifying questions (multiple-choice or open-ended)", ["clarify"]),
+    "clarify": _ts(
+        "Ask the user clarifying questions (multiple-choice or open-ended), or create "
+        "durable non-blocking structured user-input requests",
+        ["clarify", "request_user_input", "check_user_input"],
+    ),
     "code_execution": _ts("Run Python scripts that call tools programmatically (reduces LLM round trips)", ["execute_code"]),
     "delegation": _ts("Spawn subagents with isolated context for complex subtasks", ["delegate_task"]),
     "homeassistant": _ts("Home Assistant smart home control and monitoring", _HA_TOOLS),
@@ -182,13 +189,13 @@ TOOLSETS = {
     # coding posture minus the interactive clarify UI.
     "hermes-acp": _ts(
         "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without "
-        "messaging, audio, or clarify UI",
-        [t for t in _CODING_TOOLS if t != "clarify"],
+        "messaging, audio, or interactive user-input UI",
+        [t for t in _CODING_TOOLS if t not in {"clarify", "request_user_input", "check_user_input"}],
     ),
     "hermes-api-server": _ts(
         "OpenAI-compatible API server — full agent tools accessible via HTTP (no "
-        "interactive UI tools like clarify or send_message)",
-        _core_without("text_to_speech", "clarify", "computer_use", kanban=False),
+        "interactive UI tools like clarify or user-input requests)",
+        _core_without("text_to_speech", "clarify", "request_user_input", "check_user_input", "computer_use", kanban=False),
     ),
     "hermes-cli": _bundle("Full interactive CLI toolset - all default tools plus cronjob management"),
 

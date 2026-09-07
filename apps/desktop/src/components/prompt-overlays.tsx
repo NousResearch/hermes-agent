@@ -14,6 +14,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { UserInputCard } from '@/components/user-input-card'
 import { useI18n } from '@/i18n'
 import { isMissingPendingPromptRequest } from '@/lib/gateway-rpc'
 import { triggerHaptic } from '@/lib/haptics'
@@ -236,6 +237,14 @@ function SecretDialog({ sessionId }: { sessionId: string | null }) {
         </form>
       </DialogContent>
     </Dialog>
+  )
+}
+
+export function UserInputDock({ sessionId }: { sessionId: string | null }) {
+  return (
+    <div className="flex justify-end px-[5px] pb-2">
+      <UserInputCard sessionId={sessionId} />
+    </div>
   )
 }
 

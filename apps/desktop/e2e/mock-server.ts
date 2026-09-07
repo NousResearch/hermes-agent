@@ -123,6 +123,9 @@ let _verificationStopIndex = 0
 /** Per-server counter for the task-panel warm-resume script. */
 let _taskPanelResumeIndex = 0
 
+/** Per-server counter for the native structured user-input script. */
+let _nativeUserInputIndex = 0
+
 /** User messages received by the mock, for E2E assertions on real submits. */
 const _receivedUserTexts: string[] = []
 
@@ -135,6 +138,7 @@ function resetScriptIndex(): void {
   _correctionSwitchIndex = 0
   _verificationStopIndex = 0
   _taskPanelResumeIndex = 0
+  _nativeUserInputIndex = 0
   _receivedUserTexts.length = 0
 }
 
@@ -357,6 +361,51 @@ const BATCH_CLARIFY_TURN: ScriptedTurn = {
   toolCalls: [{ name: 'clarify', args: { questions: BATCH_CLARIFY_QUESTIONS } }],
 }
 
+/** Native asynchronous structured-input trigger for Desktop E2E. */
+export const NATIVE_USER_INPUT_TRIGGER = 'E2E_NATIVE_USER_INPUT_TRIGGER'
+export const NATIVE_USER_INPUT_QUESTIONS = [
+  {
+    id: 'drink',
+    text: 'Which drink should Hermes prepare?',
+    options: ['Coffee', 'Tea'],
+    allow_free_text: false,
+  },
+  {
+    id: 'note',
+    text: 'Any short note for the next turn?',
+    options: [],
+    allow_free_text: true,
+  },
+]
+
+const NATIVE_USER_INPUT_SCRIPT: ScriptedTurn[] = [
+  {
+    text: '',
+    toolCalls: [{
+      name: 'request_user_input',
+      args: {
+        questions: NATIVE_USER_INPUT_QUESTIONS,
+        context: 'The answer is saved without blocking the rest of the workspace.',
+        timeout_s: 300,
+      },
+    }],
+  },
+  { text: 'Native user input was recorded and the turn resumed.' },
+]
+
+function includesNativeUserInputTrigger(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return value.includes(NATIVE_USER_INPUT_TRIGGER)
+  }
+  if (Array.isArray(value)) {
+    return value.some(includesNativeUserInputTrigger)
+  }
+  if (value && typeof value === 'object') {
+    return Object.values(value).some(includesNativeUserInputTrigger)
+  }
+  return false
+}
+
 function includesBatchClarifyTrigger(value: unknown): boolean {
   if (typeof value === 'string') {
     return value.includes(BATCH_CLARIFY_TRIGGER)
@@ -494,6 +543,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           const isCorrectionSwitchTrigger = messages.some(
             message => typeof message?.content === 'string' && message.content.includes(CORRECTION_SWITCH_TRIGGER),
           )
+          const isNativeUserInputTrigger = includesNativeUserInputTrigger(parsed.messages)
 
           if (isTaskPanelResumeTrigger) {
             const turn =
@@ -514,6 +564,19 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
               void heldStreamReleased.then(respond)
             } else {
               respond()
+            }
+            return
+          }
+
+          if (isNativeUserInputTrigger) {
+            const hasToolResult = Array.isArray(parsed.messages)
+              && parsed.messages.some((message: { role?: string }) => message?.role === 'tool')
+            const turn = NATIVE_USER_INPUT_SCRIPT[_nativeUserInputIndex] ?? NATIVE_USER_INPUT_SCRIPT[NATIVE_USER_INPUT_SCRIPT.length - 1]
+            _nativeUserInputIndex = hasToolResult ? NATIVE_USER_INPUT_SCRIPT.length - 1 : 1
+            if (stream) {
+              streamScriptedTurn(res, model, turn)
+            } else {
+              nonStreamingScriptedTurn(res, model, turn)
             }
             return
           }

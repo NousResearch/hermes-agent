@@ -10,6 +10,7 @@ import { patchUiState, resetUiState } from '../app/uiStore.js'
 import {
   hydrateLiveSessionInflight,
   liveSessionInflightMessages,
+  pendingUserInputFromResponse,
   scheduleResumeScrollToBottom,
   signalFreshSessionBoundary,
   writeActiveSessionFile
@@ -26,6 +27,30 @@ describe('fresh session boundary', () => {
     expect(signalFreshSessionBoundary('old-session', 'new-session')).toBe(false)
     expect(onFreshSessionStarted).toHaveBeenCalledOnce()
     expect(onFreshSessionStarted).toHaveBeenCalledWith('new-session')
+  })
+})
+
+describe('durable user-input replay', () => {
+  it('returns the first valid pending request and drops malformed or terminal rows', () => {
+    expect(pendingUserInputFromResponse({
+      requests: [
+        { request_id: 'bad', session_id: 's1', status: 'answered', questions: [] },
+        {
+          context: 'Choose',
+          expires_at: 123,
+          questions: [{ allow_free_text: false, default: 'A', id: 'choice', options: ['A', 'B'], text: 'Path?' }],
+          request_id: 'good',
+          session_id: 's1',
+          status: 'pending'
+        }
+      ]
+    }, 's1')).toEqual({
+      context: 'Choose',
+      expiresAt: 123,
+      questions: [{ allowFreeText: false, defaultValue: 'A', id: 'choice', options: ['A', 'B'], text: 'Path?' }],
+      requestId: 'good',
+      sessionId: 's1'
+    })
   })
 })
 

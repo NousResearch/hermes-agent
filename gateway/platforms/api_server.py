@@ -68,7 +68,9 @@ _STATIC_FEATURE_FLAGS = {
     "run_status": True, "run_events_sse": True, "run_stop": True, "run_steer": True,
     "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
     "session_resources": True, "model_options": True, "session_chat": True,
-    "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
+    "session_chat_streaming": True, "session_user_input": True,
+    "session_user_input_pending": True, "session_user_input_answer": True,
+    "session_fork": True, "session_model_lock": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
@@ -93,6 +95,8 @@ _CAPABILITY_ENDPOINTS = (
     ("session_fork", ("POST", "/api/sessions/{session_id}/fork")),
     ("session_chat", ("POST", "/api/sessions/{session_id}/chat")),
     ("session_chat_stream", ("POST", "/api/sessions/{session_id}/chat/stream")),
+    ("session_user_input_pending", ("GET", "/api/sessions/{session_id}/user-input/pending")),
+    ("session_user_input_answer", ("POST", "/api/sessions/{session_id}/user-input/{request_id}/answer")),
     ("session_model_lock", ("POST", "/api/sessions/{session_id}/model")),
     ("browser_control_register", ("POST", "/v1/browser-control/register")),
     ("browser_control_ws", ("GET", "/v1/browser-control/ws")),
@@ -1142,6 +1146,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
+        self._session_event_queues: Dict[str, set[_SessionEventQueue]] = {}
         _api_runs._initialize_run_state(self, store_factory=RunIdempotencyStore)
         self._session_db: Optional[Any] = None  # explicit override (tests/manual wiring)
         self._session_dbs: Dict[str, Any] = {}  # per-profile-home SessionDB cache
@@ -1531,6 +1536,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
+            ("GET", "/api/sessions/{session_id}/user-input/pending", self._handle_session_user_input_pending),
+            ("POST", "/api/sessions/{session_id}/user-input/{request_id}/answer", self._handle_session_user_input_answer),
             ("POST", "/api/sessions/{session_id}/model", self._handle_session_model_lock),
             ("POST", "/v1/chat/completions", self._handle_chat_completions),
             ("POST", "/v1/responses", self._handle_responses),
@@ -2100,7 +2107,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _create_agent(
         self, ephemeral_system_prompt: Optional[str] = None, session_id: Optional[str] = None,
         stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
-        tool_complete_callback=None, gateway_session_key: Optional[str] = None,
+        tool_complete_callback=None, user_input_callback=None, gateway_session_key: Optional[str] = None,
         requested_model: Optional[str] = None, requested_provider: Optional[str] = None,
         model_options: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None,
         session_model: Optional[str] = None, confirmed_runtime_lock: bool = False,
@@ -2153,6 +2160,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "tool_progress_callback": tool_progress_callback,
             "tool_start_callback": tool_start_callback,
             "tool_complete_callback": tool_complete_callback,
+            "user_input_callback": user_input_callback,
             "session_db": self._ensure_session_db(),
             # Same fallback provider chain as Telegram/Discord/Slack.
             "fallback_model": None if confirmed_runtime_lock else GatewayRunner._load_fallback_model(),
@@ -3116,6 +3124,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         message_id = f"msg_{uuid.uuid4().hex}"
         run_id = f"run_{uuid.uuid4().hex}"
         events = _SessionEventQueue(session_id, run_id)
+        self._register_session_event_queue(events)
         queue, _event_payload = events.queue, events.payload
         # Claim ownership inside the request's profile scope before any run-keyed state
         # exists, so /v1/runs/{id}* control is confined to the starting profile.
@@ -3134,6 +3143,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
                 events.enqueue(event_type, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
 
+        def _user_input(request_payload: Dict[str, Any]) -> None:
+            if isinstance(request_payload, dict):
+                events.enqueue("user_input.request", dict(request_payload))
+
         async def _run_and_signal() -> None:
             try:
                 await queue.put(_event_payload("run.started", {
@@ -3144,7 +3157,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 history = await self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
                     conversation_history=history, stream_delta_callback=_delta,
-                    tool_progress_callback=_tool_progress, active_run_id=run_id, **ctx["run_kwargs"])
+                    tool_progress_callback=_tool_progress, user_input_callback=_user_input,
+                    active_run_id=run_id, **ctx["run_kwargs"])
                 is_dict = isinstance(result, dict)
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if is_dict else "")
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
@@ -3212,6 +3226,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             raise
         except Exception as exc:
             logger.debug("[api_server] session SSE stream error: %s", exc)
+        finally:
+            self._unregister_session_event_queue(events)
         return response
 
     async def _drain_session_stream_task_on_disconnect(
@@ -3230,6 +3246,152 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if not task.done():
             with suppress(Exception):
                 await (asyncio.shield(task) if shield_wait else task)
+
+    @staticmethod
+    def _validate_user_input_request_id(value: Any) -> Optional["web.Response"]:
+        request_id = str(value or "").strip()
+        if not request_id or len(request_id) > 256 or re.search(r"[\r\n\x00]", request_id):
+            return _error_response(
+                "Invalid user-input request ID", 400, code="invalid_user_input_request")
+        return None
+
+    def _active_agent_for_user_input(
+        self, session_id: str, turn_id: Optional[str] = None
+    ) -> Optional[Any]:
+        """Return the live API agent for an input request, only on exact session/turn match."""
+        seen: set[int] = set()
+        agents = (
+            *self._active_run_agents.values(),
+            *self._shutdown_interruptible_agents.values(),
+        )
+        for agent in agents:
+            if agent is None or id(agent) in seen:
+                continue
+            seen.add(id(agent))
+            if str(getattr(agent, "session_id", "") or "") != session_id:
+                continue
+            if turn_id and str(getattr(agent, "_current_turn_id", "") or "") != turn_id:
+                continue
+            return agent
+        return None
+
+    def _register_session_event_queue(self, events: _SessionEventQueue) -> None:
+        session_id = str(events.session_id or '').strip()
+        if not session_id:
+            return
+        self._session_event_queues.setdefault(session_id, set()).add(events)
+
+    def _unregister_session_event_queue(self, events: _SessionEventQueue) -> None:
+        session_id = str(events.session_id or '').strip()
+        queues = self._session_event_queues.get(session_id)
+        if not queues:
+            return
+        queues.discard(events)
+        if not queues:
+            self._session_event_queues.pop(session_id, None)
+
+    def _broadcast_session_event(
+        self, session_id: str, name: str, payload: Dict[str, Any]
+    ) -> None:
+        """Publish a scoped terminal event to currently open session streams only."""
+        queues = tuple(self._session_event_queues.get(str(session_id or '').strip(), ()))
+        for events in queues:
+            events.enqueue(name, dict(payload))
+
+    @_require_auth
+    async def _handle_session_user_input_pending(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/{session_id}/user-input/pending — replay durable requests."""
+        session_id = request.match_info["session_id"]
+        _, err = await self._get_existing_session_or_404(session_id)
+        if err is not None:
+            return err
+        db = await self._ensure_session_db_async()
+        if db is None:
+            return self._session_db_unavailable()
+        try:
+            from tools.user_input_tool import list_pending_user_inputs
+            pending = await asyncio.to_thread(
+                list_pending_user_inputs, session_id, session_db=db)
+        except Exception:
+            logger.exception("[%s] pending user-input lookup failed", self.name)
+            return _error_response(
+                "Failed to list pending user-input requests", 500,
+                code="user_input_pending_failed")
+        return web.json_response({"object": "list", "session_id": session_id, "data": pending})
+
+    @_require_auth
+    async def _handle_session_user_input_answer(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions/{session_id}/user-input/{request_id}/answer."""
+        session_id = request.match_info["session_id"]
+        _, err = await self._get_existing_session_or_404(session_id)
+        if err is not None:
+            return err
+        request_id = str(request.match_info.get("request_id") or "").strip()
+        request_err = self._validate_user_input_request_id(request_id)
+        if request_err is not None:
+            return request_err
+        body, err = await self._read_json_body(request)
+        if err is not None:
+            return err
+        answers = body.get("answers")
+        # Accept the public record's singular ``answer`` spelling as a safe
+        # compatibility alias, while all first-party clients send ``answers``.
+        if answers is None and isinstance(body.get("answer"), dict):
+            answers = body["answer"]
+        if not isinstance(answers, dict):
+            return _error_response(
+                "answers must be an object", 400, code="invalid_user_input_answer")
+        raw_turn_id = body.get("turn_id")
+        if raw_turn_id is not None and not isinstance(raw_turn_id, str):
+            return _error_response(
+                "turn_id must be a string", 400, code="invalid_user_input_turn")
+        turn_id = raw_turn_id.strip() if isinstance(raw_turn_id, str) else None
+        if turn_id and (len(turn_id) > 256 or re.search(r"[\r\n\x00]", turn_id)):
+            return _error_response(
+                "Invalid turn ID", 400, code="invalid_user_input_turn")
+        db = await self._ensure_session_db_async()
+        if db is None:
+            return self._session_db_unavailable()
+        if not turn_id:
+            with suppress(Exception):
+                pending_record = await asyncio.to_thread(
+                    db.get_pending_user_input, request_id, session_id=session_id)
+                if pending_record:
+                    stored_turn_id = str(pending_record.get("turn_id") or "").strip()
+                    if stored_turn_id:
+                        turn_id = stored_turn_id
+        agent = self._active_agent_for_user_input(session_id, turn_id)
+        try:
+            from tools.user_input_tool import answer_user_input
+            result = await asyncio.to_thread(
+                answer_user_input,
+                request_id,
+                answers,
+                session_id=session_id,
+                session_db=db,
+                turn_id=turn_id,
+                agent=agent,
+            )
+        except Exception:
+            logger.exception("[%s] user-input answer failed", self.name)
+            return _error_response(
+                "Failed to answer user-input request", 500,
+                code="user_input_answer_failed")
+        if result.get("status") == "not_found":
+            return _error_response(
+                "User-input request not found for this session", 404,
+                code="user_input_not_found")
+        if result.get("status") == "invalid":
+            return _error_response(
+                result.get("error", "Invalid user-input answer"), 400,
+                code="invalid_user_input_answer")
+        event_payload = {
+            key: result[key]
+            for key in ("request_id", "status", "answer", "accepted", "delivery", "turn_id")
+            if key in result
+        }
+        self._broadcast_session_event(session_id, "user_input.answer", event_payload)
+        return web.json_response(result)
 
     @_require_auth
     async def _handle_session_model_lock(self, request: "web.Request") -> "web.Response":
@@ -3624,7 +3786,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self, user_message: str, conversation_history: List[Dict[str, str]],
         ephemeral_system_prompt: Optional[str] = None, session_id: Optional[str] = None,
         stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
-        tool_complete_callback=None, agent_ref: Optional[list] = None, active_run_id: Optional[str] = None,
+        tool_complete_callback=None, user_input_callback=None, agent_ref: Optional[list] = None, active_run_id: Optional[str] = None,
         gateway_session_key: Optional[str] = None, requested_model: Optional[str] = None,
         requested_provider: Optional[str] = None, model_options: Optional[Dict[str, Any]] = None,
         route: Optional[Dict[str, Any]] = None, session_model: Optional[str] = None,
@@ -3654,6 +3816,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         ephemeral_system_prompt=ephemeral_system_prompt, session_id=session_id,
                         stream_delta_callback=stream_delta_callback, tool_progress_callback=tool_progress_callback,
                         tool_start_callback=tool_start_callback, tool_complete_callback=tool_complete_callback,
+                        user_input_callback=user_input_callback,
                         gateway_session_key=gateway_session_key, requested_model=requested_model,
                         requested_provider=requested_provider, model_options=model_options, route=route,
                         session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock)
@@ -3936,6 +4099,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         files, #37011).
         """
         self._mark_disconnected()
+        self._session_event_queues.clear()
         if self._response_store is not None:
             try:
                 self._response_store.close()

@@ -36,7 +36,8 @@ def consent(tmp_path):
         "compatibility": {"outcome": "compatible"},
     }
     service.version_detail.return_value = {
-        "version": {"security_check": {"status": "pass"}}
+        "skill": {"id": "skill", "state": "active"},
+        "version": {"version": 1, "security_check": {"status": "pass"}},
     }
     service.install_apply.return_value = {"state": "active"}
     instance = WisdomConsent(service, clock=lambda: now[0])

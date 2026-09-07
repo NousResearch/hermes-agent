@@ -234,6 +234,60 @@ class MediationStore:
                 (org, event_key),
             ).fetchone()[0]
 
+    def reconcile_feed(self, org: str, event_id: str, reference: dict[str, Any]) -> str:
+        """Repair old recommendation/notice classification without another delivery."""
+        with self.store.transaction() as db:
+            identity = self.enqueue(org, f"feed:{event_id}", reference, _db=db)
+            row = db.execute(
+                "SELECT reference_json,state FROM wisdom_assessment WHERE id=?",
+                (identity,),
+            ).fetchone()
+            if json.loads(row["reference_json"]).get("kind") == reference["kind"]:
+                return identity
+            # A send in flight is uncertain, not permission to send again.
+            terminal = row["state"] in {
+                "delivering",
+                "delivered",
+                "delivery_uncertain",
+                "retired",
+            }
+            db.execute(
+                """UPDATE wisdom_assessment SET reference_json=?,updated_at=?
+                WHERE id=?""",
+                (json.dumps(reference, sort_keys=True), self.clock(), identity),
+            )
+            if not terminal:
+                db.execute(
+                    """UPDATE wisdom_assessment SET state='pending',advice_json=NULL,
+                    lease_token=NULL,lease_until=NULL,attempts=0,available_at=? WHERE id=?""",
+                    (self.clock(), identity),
+                )
+            db.execute(
+                "UPDATE wisdom_consent SET state='stale' WHERE assessment_id=? AND state='pending'",
+                (identity,),
+            )
+            return identity
+
+    def retire(self, org: str, job: dict[str, Any]) -> bool:
+        """Fence terminal arrival invalidation against a replacement owner."""
+        now = self.clock()
+        with self.store.transaction() as db:
+            self._check_org(db, org)
+            changed = bool(
+                db.execute(
+                    """UPDATE wisdom_assessment SET state='retired',lease_token=NULL,
+                lease_until=NULL,updated_at=? WHERE id=? AND organization_id=?
+                AND lease_token=? AND lease_until>? AND state IN ('assessing','ready','fallback')""",
+                    (now, job["id"], org, job["lease_token"], now),
+                ).rowcount
+            )
+            if changed:
+                db.execute(
+                    "UPDATE wisdom_consent SET state='stale' WHERE assessment_id=? AND state='pending'",
+                    (job["id"],),
+                )
+            return changed
+
     def check_claim(self, db, org: str, assessment_id: str, token: str) -> None:
         from .client import WisdomConflict
 

@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .consent import ConsentActor, WisdomConsent
 from .contract import author_description_hash
+from .client import WisdomNotFound
 from .mediation_store import MediationStore
 from .preferences import WisdomPreferences, suppression_key
 
@@ -25,6 +26,21 @@ def delivery_mode(config: dict[str, Any] | None = None) -> str:
         config = _config()
     value = (config.get("notifications") or {}).get("delivery_mode", "fixed")
     return value if value in {"fixed", "agent"} else "fixed"
+
+
+def _feed_reference(event: dict[str, Any]) -> dict[str, Any]:
+    actionable = (
+        event.get("category") in {"new_skill", "update_available"}
+        and type(event.get("version")) is int
+        and event["version"] > 0
+    )
+    return {
+        "kind": "skill" if actionable else "notice",
+        "event_id": event["event_id"],
+        "skill_id": event["skill_id"],
+        "version": event.get("version"),
+        "notification": event,
+    }
 
 
 class Advice(BaseModel):
@@ -210,16 +226,10 @@ class WisdomMediation:
                 origin_session=event.get("session_id") or "unaddressed",
             )
         for event in self.service.notifications(mark_seen=False)["events"]:
-            self.queue.enqueue(
+            self.queue.reconcile_feed(
                 org,
-                f"feed:{event['event_id']}",
-                {
-                    "kind": "skill" if event.get("version") else "notice",
-                    "event_id": event["event_id"],
-                    "skill_id": event["skill_id"],
-                    "version": event.get("version"),
-                    "notification": event,
-                },
+                event["event_id"],
+                _feed_reference(event),
             )
         with self.service.store.transaction() as db:
             outcomes = [
@@ -267,21 +277,10 @@ class WisdomMediation:
             )
             info["professionalism_check"] = review.get("result") if review else None
         elif reference["kind"] == "skill":
-            detail = self.service.version_detail(
-                reference["skill_id"], reference["version"]
-            )
-            # Never expose the full local installation record (contains paths).
-            info = {
-                key: detail[key]
-                for key in (
-                    "version",
-                    "local_compatibility",
-                    "security_check",
-                    "professionalism_check",
-                )
-                if key in detail
-            }
-            info["notification"] = reference["notification"]
+            if "arrival_facts" in job:
+                info = job["arrival_facts"]
+            else:
+                info = self._skill_facts(job)
         else:
             info = {"notification": reference["notification"]}
         installed = [
@@ -313,6 +312,94 @@ class WisdomMediation:
             raise ValueError("Wisdom inspection exceeds the bounded context limit")
         return result
 
+    def _skill_facts(self, job: dict[str, Any]) -> dict[str, Any]:
+        reference = job["reference"]
+        detail = self.service.version_detail(
+            reference["skill_id"], reference["version"]
+        )
+        skill, version = detail.get("skill") or {}, detail.get("version") or {}
+        if (
+            skill.get("id") != reference["skill_id"]
+            or type(version.get("version")) is not int
+            or version["version"] != reference["version"]
+        ):
+            raise ValueError("Wisdom arrival metadata identity mismatch")
+        if skill.get("state") in {"archived", "taken_down"}:
+            raise WisdomNotFound("Wisdom arrival is no longer available")
+        if skill.get("state") != "active":
+            raise ValueError("Wisdom arrival lifecycle is unavailable")
+        # Only exact-version metadata is authoritative. The feed's catalogue
+        # projection can describe a newer version of the same skill.
+        return {
+            "version": {
+                key: version.get(key)
+                for key in (
+                    "version",
+                    "content_hash",
+                    "author_description",
+                    "system_spec",
+                    "editorial_name",
+                    "editorial_description",
+                    "security_check",
+                    "professionalism_check",
+                    "published_at",
+                    "published_by_user_id",
+                )
+            },
+            "local_compatibility": detail.get("local_compatibility"),
+            "notification": {
+                key: value
+                for key, value in reference.get("notification", {}).items()
+                if key
+                in {
+                    "category",
+                    "kind",
+                    "skill_id",
+                    "skill_name",
+                    "version",
+                    "editorial_name",
+                    "editorial_description",
+                    "occurred_at",
+                }
+            },
+        }
+
+    def _current_feed_jobs(
+        self, org: str, jobs: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        current = []
+        for job in jobs:
+            reference = job["reference"]
+            if reference["kind"] != "skill" or not job["event_key"].startswith("feed:"):
+                current.append(job)
+                continue
+            notification = reference.get("notification")
+            if notification and _feed_reference(notification)["kind"] != "skill":
+                self.queue.reconcile_feed(
+                    org, reference["event_id"], _feed_reference(notification)
+                )
+                continue
+            try:
+                installation = self.service.store.installation(reference["skill_id"])
+                if (
+                    installation
+                    and installation["state"] == "active"
+                    and installation["version"] >= reference["version"]
+                ):
+                    self.queue.retire(org, job)
+                    continue
+                job["arrival_facts"] = self._skill_facts(job)
+            except WisdomNotFound:
+                self.queue.retire(org, job)
+                continue
+            except Exception:
+                # A transport/schema failure cannot prove removal or authorize
+                # stale advice. Keep the event and any completed assessment.
+                self.queue.defer_for_preferences(org, job, 0)
+                continue
+            current.append(job)
+        return current
+
     def _eligible_jobs(
         self, org: str, jobs: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
@@ -342,12 +429,17 @@ class WisdomMediation:
                 ):
                     allowed_jobs.append(job)
                     continue
+                installation = (
+                    self.service.store.installation(reference["skill_id"])
+                    if reference["kind"] == "skill"
+                    else None
+                )
                 event_type = (
                     "skill_ready_to_share"
                     if reference["kind"] == "candidate"
                     else (
                         "update_available"
-                        if self.service.store.installation(reference["skill_id"])
+                        if installation and installation["state"] == "active"
                         else "teammate_published"
                     )
                 )
@@ -382,7 +474,10 @@ class WisdomMediation:
             for job in jobs:
                 self.queue.defer_for_preferences(org, job, 0)
             return []
-        eligible = {job["id"] for job in self._eligible_jobs(org, jobs)}
+        eligible = {
+            job["id"]
+            for job in self._current_feed_jobs(org, self._eligible_jobs(org, jobs))
+        }
         return [
             item
             for item in items
@@ -425,6 +520,7 @@ class WisdomMediation:
                 if job["reference"]["kind"] not in {"weekly_review", "share_package"}
             ],
         )
+        jobs = self._current_feed_jobs(org, jobs)
         pending = [job for job in jobs if job["state"] == "assessing"]
         if pending:
             try:

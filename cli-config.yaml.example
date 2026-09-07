@@ -301,6 +301,15 @@ model:
 #
 #   # Data policy: "allow" (default) or "deny" to exclude providers that may store data
 #   # data_collection: "deny"
+#
+#   # Per-model overrides: same keys, applied only when the agent is on that model.
+#   # Unset keys inherit the flat values above; model matching tolerates common
+#   # prefixes and dot/dash spelling variants.
+#   # models:
+#   #   "openai/gpt-6-astra":
+#   #     only: ["openai"]
+#   #   "anthropic/claude-fable-5.1":
+#   #     only: ["anthropic"]
 
 # =============================================================================
 # OpenRouter Response Caching (only applies when using OpenRouter)

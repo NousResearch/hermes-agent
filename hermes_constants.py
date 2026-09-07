@@ -941,6 +941,22 @@ def resolve_per_model_reasoning_effort(model: str, overrides: dict | None) -> di
     return None
 
 
+def resolve_per_model_provider_routing(model: str, models: dict | None) -> dict:
+    """Return the sparse ``provider_routing.models.<id>`` entry for *model*.
+
+    Matching follows the same spelling-tolerant variants as reasoning overrides;
+    only explicitly supplied keys are returned so flat routing values remain the
+    fallback for every unset field.
+    """
+    if not model or not isinstance(models, dict):
+        return {}
+    for variant in _canonical_model_variants(model):
+        entry = models.get(variant)
+        if isinstance(entry, dict):
+            return entry
+    return {}
+
+
 def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
     """Effective reasoning config for *model*: per-model override, then global ``agent.reasoning_effort``.
 

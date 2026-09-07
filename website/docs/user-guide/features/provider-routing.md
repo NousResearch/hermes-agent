@@ -102,6 +102,34 @@ provider_routing:
   data_collection: "deny"
 ```
 
+### Per-model overrides (`models`)
+
+Pin a different OpenRouter provider set per model. Each entry accepts the same
+`sort` / `only` / `ignore` / `order` / `require_parameters` / `data_collection`
+keys. An unset key falls through to the flat `provider_routing` value.
+
+```yaml
+provider_routing:
+  sort: "price"
+  models:
+    "openai/gpt-6-astra":
+      only: ["openai"]
+    "anthropic/claude-fable-5.1":
+      only: ["anthropic"]
+    "moonshotai/kimi-k2.6":
+      order: ["moonshotai", "together"]
+      sort: "throughput"
+```
+
+Model matching is spelling-tolerant like `agent.reasoning_overrides`, including
+common `openrouter/` prefixes and dot/dash variants. The active model is resolved
+at the shared provider-preference chokepoint, so `/model` changes, fallback model
+changes, cron jobs and delegated workers receive the matching overlay.
+
+These per-model values control OpenRouter's internal provider selection only.
+They are not sent to Nous Portal or direct provider connections, and they are
+separate from Hermes `fallback_providers` and delegated provider/model pins.
+
 ## Practical Examples
 
 ### Optimize for Cost

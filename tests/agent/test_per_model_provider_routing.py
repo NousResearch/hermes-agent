@@ -8,7 +8,9 @@ from types import SimpleNamespace
 import pytest
 
 from agent import chat_completion_helpers as cch
+from agent.profile_runtime_scope import profile_runtime_scope
 from agent.transports.chat_completions import ChatCompletionsTransport
+from hermes_constants import get_hermes_home
 
 
 def _agent(model, **flat):
@@ -103,6 +105,33 @@ def test_delegated_target_profile_routing_does_not_leak_parent_model_rules(monke
     )
     parent = _agent("shared/model", providers_allowed=["parent"])
     assert cch._provider_preferences_for_agent(parent)["only"] == ["target"]
+
+
+def test_target_profile_scope_selects_target_config_for_same_model(monkeypatch, tmp_path):
+    import hermes_cli.config as config_mod
+
+    target_home = tmp_path / "target-profile"
+    parent_home = get_hermes_home()
+
+    def config_for_active_home():
+        if get_hermes_home() == target_home:
+            return {"provider_routing": {"models": {"shared/model": {"only": ["target"]}}}}
+        return {"provider_routing": {"models": {"shared/model": {"only": ["parent"]}}}}
+
+    monkeypatch.setattr(config_mod, "load_config_readonly", config_for_active_home)
+    agent = _agent("shared/model", providers_allowed=["flat-parent"])
+    assert cch._provider_preferences_for_agent(agent)["only"] == ["parent"]
+    with profile_runtime_scope(target_home, {"TARGET_SECRET": "target"}, hydrate_secrets=False):
+        assert get_hermes_home() == target_home
+        assert cch._provider_preferences_for_agent(agent)["only"] == ["target"]
+    assert get_hermes_home() == parent_home
+
+
+def test_fallback_model_change_re_resolves_model_specific_overlay(routing_cfg):
+    agent = _agent("openai/gpt-6-astra")
+    assert cch._provider_preferences_for_agent(agent)["only"] == ["openai"]
+    agent.model = "anthropic/claude-fable-5.1"
+    assert cch._provider_preferences_for_agent(agent)["only"] == ["anthropic"]
 
 
 def test_openrouter_payload_contains_provider_routing_only_for_openrouter():

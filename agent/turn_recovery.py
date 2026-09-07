@@ -892,7 +892,8 @@ def log_api_error_attempt(
 
     if agent._is_openrouter_url() and "support tool use" in error_msg:
         _blines(agent, f"   💡 No OpenRouter providers for {_model} support tool calling with your current settings.")
-        if agent.providers_allowed:
+        from agent.chat_completion_helpers import _provider_preferences_for_agent
+        if _provider_preferences_for_agent(agent).get("only"):
             _blines(
                 agent,
                 "      Your provider_routing.only restriction is filtering out tool-capable providers.",

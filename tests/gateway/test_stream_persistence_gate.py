@@ -57,7 +57,15 @@ async def test_stream_consumer_waits_when_persistence_fails_closed():
 
 
 @pytest.mark.asyncio
-async def test_streaming_tts_aborts_without_start_when_persistence_fails():
+@pytest.mark.parametrize("result", [
+    {"failed": True},
+    {"interrupted": True, "completed": True, "final_response": "partial"},
+    {"completed": False, "final_response": "partial"},
+    {"completed": True, "final_response": ""},
+    {"completed": True, "final_response": "(empty)"},
+    {"completed": True, "final_response": "answer", "persistence_confirmed": False},
+])
+async def test_streaming_tts_aborts_without_start_when_result_is_not_persisted(result):
     runner = GatewayRunner.__new__(GatewayRunner)
     consumer = MagicMock()
     consumer._task = None
@@ -73,9 +81,9 @@ async def test_streaming_tts_aborts_without_start_when_persistence_fails():
     await runner._run_agent_finalize_streaming_tts(
         turn_ctx,
         adapter=MagicMock(),
-        result={"failed": True},
+        result=result,
     )
 
-    consumer.abort.assert_called_once_with("persistence failed before streaming TTS start")
+    consumer.abort.assert_called_once_with("turn result unavailable or persistence failed before streaming TTS start")
     consumer.start.assert_not_called()
     consumer.finish.assert_not_called()

@@ -5,6 +5,7 @@ import {
   markerPath,
   readLiveUpdateMarker,
   releaseUpdateMarkerIfOwnedBy,
+  transferUpdateMarkerIfOwnedBy,
   type UpdateMarkerClaim,
   type UpdateMarkerState
 } from './update-marker'
@@ -16,6 +17,11 @@ import {
 } from './update-preflight'
 import type { VenvBlockerScanResult } from './venv-blocker-scan'
 import { queryProcessCreatedAt } from './windows-process-identity'
+import {
+  runUpdaterHandoffTransaction,
+  type UpdaterHandoffObservation,
+  type UpdaterHandoffResult
+} from './windows-update-orchestration'
 
 /**
  * Handoff ack sidecar (#B4) — `<marker>.ack`, three lines:
@@ -243,6 +249,111 @@ export function discardUpdateHandoffAck(
     // A missing or locked ack is not a failure: the nonce is single-use, so a
     // leftover file can never authenticate the next handoff.
   }
+}
+
+export interface RecoveryHandoffRestoration<TChild> {
+  /** null when the spawn itself threw. */
+  child: TChild | null
+  /** The generation we captured, or null if we never got one. */
+  createdAt: number | null
+  /** True only if the repair claim was handed to the child before the abort. */
+  markerTransferred: boolean
+}
+
+export interface RecoveryUpdaterHandoffDeps<TChild, TValue> {
+  hermesHome: string
+  /** Single-use nonce handed to this updater through its environment. */
+  nonce: string
+  /** Unix seconds captured before the spawn; earlier claims are not ours. */
+  startedAfter: number
+  /**
+   * The marker claim the Desktop holds on the full-repair path, or null on the
+   * gentle path where the staged updater claims the marker itself. Its
+   * presence is what makes the handoff a repair handoff.
+   */
+  repairClaim: UpdateMarkerClaim | null
+  spawn: () => TChild
+  observe: (child: TChild) => Promise<UpdaterHandoffObservation>
+  /** PID from OUR spawn handle, or null when the child never started. */
+  childPid: (child: TChild) => number | null
+  /** Kernel creation time of the spawned generation; read once, before any check. */
+  captureCreatedAt: (child: TChild, pid: number) => Promise<number | null>
+  isChildGenerationActive: (child: TChild) => boolean
+  commit: (child: TChild) => TValue | Promise<TValue>
+  restore: (restoration: RecoveryHandoffRestoration<TChild>) => void | Promise<void>
+  authenticationError: string
+  authenticate?: (deps: RecoveryUpdaterAuthenticationDeps) => Promise<boolean>
+  transferMarker?: (
+    hermesHome: string,
+    owner: UpdateMarkerClaim,
+    next: { pid: number; startedAt: number }
+  ) => Promise<boolean>
+}
+
+/**
+ * The bootstrap-recovery handoff, as one transaction.
+ *
+ * Recovery runs before any window exists, so it cannot go through
+ * applyWindowsUpdate (no progress channel, no preflight, and on the repair
+ * path the marker is already held). What it must not do is re-derive the
+ * handoff for itself: the version that lived in main.ts transferred the marker
+ * to the child and then treated the resulting marker as proof the child had
+ * claimed it (#B4).
+ *
+ * The order is the contract. Capture the spawned generation, authenticate
+ * against evidence the child alone could produce, and only then hand over the
+ * marker. A failed transfer fails the handoff, so the gate never ends up owned
+ * by a process we did not authenticate.
+ */
+export async function runRecoveryUpdaterHandoff<TChild, TValue>(
+  deps: RecoveryUpdaterHandoffDeps<TChild, TValue>
+): Promise<UpdaterHandoffResult<TValue>> {
+  const authenticate = deps.authenticate ?? authenticateRecoveryUpdaterHandoff
+  const transferMarker = deps.transferMarker ?? transferUpdateMarkerIfOwnedBy
+  let createdAt: number | null = null
+  let markerTransferred = false
+
+  return runUpdaterHandoffTransaction<TChild, TValue>({
+    spawn: deps.spawn,
+    observe: deps.observe,
+    authenticate: async child => {
+      const pid = deps.childPid(child)
+
+      if (pid === null) { return false }
+
+      createdAt = await deps.captureCreatedAt(child, pid)
+
+      if (createdAt === null) { return false }
+
+      const authenticated = await authenticate({
+        hermesHome: deps.hermesHome,
+        nonce: deps.nonce,
+        childPid: pid,
+        childCreatedAt: createdAt,
+        desktopHoldsMarker: deps.repairClaim !== null,
+        startedAfter: deps.startedAfter,
+        isChildGenerationActive: () => deps.isChildGenerationActive(child)
+      })
+
+      if (!authenticated) { return false }
+
+      if (deps.repairClaim) {
+        // A hand-over of the gate, never evidence for it.
+        markerTransferred = await transferMarker(
+          deps.hermesHome,
+          deps.repairClaim,
+          { pid, startedAt: createdAt }
+        )
+
+        if (!markerTransferred) { return false }
+      }
+
+      return true
+    },
+    commit: deps.commit,
+    restore: child => deps.restore({ child, createdAt, markerTransferred }),
+    authenticationError: deps.authenticationError
+  })
 }
 
 export type WindowsUpdatePhase = 'idle' | 'updating' | 'restoring'

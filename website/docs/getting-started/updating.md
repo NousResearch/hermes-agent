@@ -100,6 +100,16 @@ The same inventory is embedded in every real update's receipt (`~/.hermes/logs/u
 
 Every `hermes update` run writes a machine-readable receipt to `~/.hermes/logs/update_receipts/` (last 20 kept, `latest.json` always points at the most recent): the pre-update fleet plan, each step taken, anything skipped and why, the gateway restart outcome, and the final fleet version matrix. After the restart phase the updater compares each live gateway's running code against the freshly updated checkout and prints a per-profile matrix — a gateway still serving pre-update code is reported loudly with the exact restart command, and the update exits non-zero so automation never treats a mixed-version fleet as healthy. Both `--plan` and the fleet check ask each running gateway directly over its local control socket (`gateway.sock` in the profile's data directory, a named pipe on Windows) when available, so version and supervisor information comes from the gateway itself; gateways from older versions are still discovered through their state files as before.
 
+### Interrupted gateway restarts
+
+If an earlier update pulled code but did not finish restarting the fleet, the next
+`hermes update` retries even when the checkout is already current. An empty process
+scan does not prove recovery: failed systemd units and installed launchd jobs may
+have no live PID. The pending restart marker is retained if supervisor discovery
+fails, a restart fails, or a requested service cannot be verified active. The update
+exits nonzero and reports the affected services; recover them with the printed
+commands and retry `hermes update`.
+
 ### Full pre-update backup: `--backup`
 
 For high-value profiles (production gateways, shared team installs) you can opt into a full pre-pull backup of `HERMES_HOME` (config, auth, sessions, skills, pairing):

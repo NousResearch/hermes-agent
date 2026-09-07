@@ -292,7 +292,7 @@ _CLI_FAMILIES: dict[str, tuple[_CliSurface, str]] = {
     "memory": (_sub("memory", "build_memory_parser", "cmd_memory"), "status, *off, *reset"),
     "auth": (
         _sub("auth", "build_auth_parser", "cmd_auth"),
-        "list, status, *reset, *add, *remove, *logout, spotify status, *spotify login, "
+        "list, status, *reset, *priority, *add, *remove, *logout, spotify status, *spotify login, "
         "*spotify logout"),
     "pairing": (
         _sub("pairing", "build_pairing_parser", "cmd_pairing"),

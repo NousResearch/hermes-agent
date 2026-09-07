@@ -7,7 +7,7 @@ import logging
 import os
 import time
 import uuid
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
@@ -19,7 +19,8 @@ except ImportError:
     RequestKey = None  # type: ignore[assignment,misc]
 
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
-from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
+from gateway.platforms.api_server_run_idempotency import GroupRunFreezeError, TERMINAL_STATUSES
+from gateway.platforms.api_server_run_scope import room_run_scope_key
 
 
 logger = logging.getLogger("gateway.platforms.api_server")
@@ -97,12 +98,14 @@ def _initialize_run_state(self, *, store_factory) -> None:
 
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
+    from gateway.platforms.api_server_group_owner_stop import http_routes as owner_stop_routes
+
     return [
         ("POST", "/v1/runs", self._handle_runs), ("GET", "/v1/runs/{run_id}", self._handle_get_run),
         ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
         ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
         ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
-        ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run)]
+        ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run), *owner_stop_routes(self)]
 
 
 def _idempotency_capabilities(self, *, store_type) -> dict[str, Any]:
@@ -190,9 +193,7 @@ def _run_idempotency_scope(self, request: "web.Request", *, _api_server) -> str:
     if self._room_grant_token(request):
         claims = self._room_grant_claims(request, permission=_room_permission_for(request))
         _remember_room_retention(request, claims)
-        parts = (claims[k] for k in (
-            "room_id", "home_install_id", "authority_gateway_id", "authority_epoch",
-            "member_id", "target_install_id", "target_profile"))
+        return room_run_scope_key(claims)
     else:
         parts = (_api_server._api_request_profile.get() or "default",
                  self._expected_api_key() or "unauthenticated-test-listener")
@@ -322,6 +323,7 @@ class _RunLaunch:
     request_profile: Any
     browser_control_principal: Any
     browser_control_transport_family: Any
+    room_scope: Optional[str] = None
 
     @property
     def approval_session_key(self) -> str:
@@ -369,6 +371,9 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         v if isinstance(v, dict) else None for v in (
             (body.get("hosted_room_dispatch"), body.get("_room_execution_policy"))
             if isinstance(body, dict) else (None, None)))
+    if self._room_grant_token(request) and self._run_idempotency_store.durable is not True:
+        return _json_error(_openai_error, "Durable storage is required before this Bot can accept group work.",
+                           code="group_stop_storage_unavailable", status=503)
     idempotency_key = request.headers.get("Idempotency-Key", "").strip()
     if len(idempotency_key) > 255 or any(ord(ch) < 33 or ord(ch) > 126 for ch in idempotency_key):
         return _json_error(
@@ -431,10 +436,16 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     initial_status = self._set_run_status(
         run_id, "queued", created_at=created_at, session_id=session_id, model=body.get("model", self._model_name))
     if idempotency_key:
-        outcome, record = self._run_idempotency_store.reserve(
-            idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
-            owner_pid=self._run_owner_pid, owner_started=self._run_owner_started,
-            retention_until=_room_retention_until(request))
+        try:
+            outcome, record = self._run_idempotency_store.reserve(
+                idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
+                owner_pid=self._run_owner_pid, owner_started=self._run_owner_started,
+                retention_until=_room_retention_until(request))
+        except GroupRunFreezeError as exc:
+            _forget_run(
+                self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
+                self._run_statuses, self._run_owners)
+            return _json_error(_openai_error, str(exc), code=exc.code, status=exc.status)
         if outcome != "created":
             _forget_run(
                 self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
@@ -450,7 +461,8 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
-        browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get())
+        browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
+        room_scope=idempotency_scope if self._room_grant_token(request) else None)
     self._activate_admitted_request()
     task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
     with suppress(TypeError):
@@ -559,7 +571,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
 
     try:
         self._set_run_status(run_id, "running")
-        if run_id in self._stopping_run_ids:
+        if run_id in self._stopping_run_ids or (run.room_scope and _scope_is_frozen(self, run.room_scope)):
             _finish("cancelled")
             return
         with self._profile_scope(run.request_profile):
@@ -703,7 +715,8 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
 
 def _mark_run_event(self, run_id: str, name: str, **fields: Any) -> None:
     """Record a control-plane event on the run status and (best effort) its SSE stream."""
-    self._set_run_status(run_id, "running", last_event=name)
+    status = "stopping" if run_id in self._stopping_run_ids else "running"
+    self._set_run_status(run_id, status, last_event=name)
     q = self._run_streams.get(run_id)
     if q is not None:
         with suppress(Exception):
@@ -749,8 +762,16 @@ async def _handle_run_approval(self, request: "web.Request", *, _api_server) -> 
             return _json_error(_openai_error, message, code=code, status=status)
     try:
         from tools.approval import resolve_gateway_approval
-        resolved = resolve_gateway_approval(
-            approval_session_key, choice, resolve_all=resolve_all, request_id=request_id or None)
+        gate = (self._run_idempotency_store.group_control_open(self._run_idempotency_scope(request))
+                if room_scoped and choice != "deny" else nullcontext(True))
+        with gate as allowed_control:
+            if allowed_control is not True:
+                return _json_error(_openai_error, "The owner stopped this participant's group work.",
+                                   code="group_work_frozen", status=409)
+            resolved = resolve_gateway_approval(
+                approval_session_key, choice, resolve_all=resolve_all, request_id=request_id or None)
+    except GroupRunFreezeError as exc:
+        return _json_error(_openai_error, str(exc), code=exc.code, status=exc.status)
     except Exception as exc:
         logger.exception("[api_server] approval resolution failed for run %s", run_id)
         return _json_error(_openai_error, str(exc), status=500)
@@ -800,11 +821,16 @@ async def _handle_steer_run(self, request: "web.Request", *, _api_server) -> "we
 
 async def _handle_stop_run(self, request: "web.Request", *, _api_server) -> "web.Response":
     """POST /v1/runs/{run_id}/stop — interrupt a running agent."""
-    _openai_error = _api_server._openai_error
     run_id, status, agent, task, err = _load_owned_run(
         self, request, _api_server=_api_server, permission="stop", active_fallback=True)
     if err is not None:
         return err
+    return _stop_loaded_run(self, run_id, status, agent, task, _api_server=_api_server)
+
+
+def _stop_loaded_run(self, run_id, status, agent, task, *, _api_server):
+    """Control already-authorized local work; callers retain ownership checks."""
+    _openai_error = _api_server._openai_error
     if status.get("status") in TERMINAL_STATUSES:
         return web.json_response(status)
     if agent is None and task is None:
@@ -822,6 +848,28 @@ async def _handle_stop_run(self, request: "web.Request", *, _api_server) -> "web
     return web.json_response({"run_id": run_id, "status": "stopping"})
 
 
+def _scope_is_frozen(self, scope: str) -> bool:
+    checker = getattr(self._run_idempotency_store, "is_scope_frozen", None)
+    return callable(checker) and checker(scope) is True
+
+
+def _consume_owner_stop_intents(self):
+    from gateway.platforms import api_server
+
+    if self._run_idempotency_store.durable is not True:
+        return
+    for run_id in list(self._active_run_tasks):
+        scope = self._run_owners.get(run_id)
+        if not scope or run_id in self._stopping_run_ids or not _scope_is_frozen(self, scope):
+            continue
+        status = self._run_statuses.get(run_id)
+        if status is None:
+            continue
+        _stop_loaded_run(self, run_id, status, self._active_run_agents.get(run_id),
+                         self._active_run_tasks.get(run_id), _api_server=api_server)
+        _unregister_approval_notify(self._run_approval_sessions.get(run_id))
+
+
 async def _sweep_orphaned_runs(self) -> None:
     """Periodically expire transport buffers and terminal status records."""
     while True:
@@ -833,6 +881,10 @@ def _sweep_orphaned_runs_once(self, now: Optional[float] = None) -> None:
     """Expire old SSE buffers without treating transport age as run age."""
     if now is None:
         now = time.time()
+    try:
+        _consume_owner_stop_intents(self)
+    except Exception:
+        logger.exception("[api_server] could not confirm participant Stop intents")
     for run_id, created_at in list(self._run_streams_created.items()):
         if now - created_at <= self._RUN_STREAM_TTL or run_id in self._run_stream_subscribers:
             continue

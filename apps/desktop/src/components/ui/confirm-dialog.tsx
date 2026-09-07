@@ -38,8 +38,8 @@ interface ConfirmSecondaryAction {
   onClick: () => void
 }
 
-// Shared confirmation dialog: opens focused on Confirm, Enter confirms (from
-// anywhere in the dialog), Esc/Cancel/backdrop dismiss. Owns the pending → done
+// Shared confirmation dialog: opens focused on Confirm; other focused controls
+// keep their native keyboard action. Esc/Cancel/backdrop dismiss. Owns the pending → done
 // → close beat and inline error, so callers pass only an async onConfirm that
 // does the work.
 export function ConfirmDialog({
@@ -130,8 +130,16 @@ export function ConfirmDialog({
       <DialogContent
         className="max-w-md"
         onKeyDown={event => {
-          // Enter/Space confirm regardless of which button holds focus
-          // (preventDefault stops a focused Cancel from swallowing it).
+          // A keyboard user who moved to Cancel/secondary must not confirm.
+          const control =
+            event.target instanceof Element
+              ? event.target.closest('button, a[href], input, textarea, select, [contenteditable], [role="button"]')
+              : null
+
+          if (control && control !== confirmRef.current) {
+            return
+          }
+
           if ((event.key === 'Enter' || event.key === ' ') && !busy) {
             event.preventDefault()
             void run()

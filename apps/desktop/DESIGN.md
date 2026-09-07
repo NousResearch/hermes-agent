@@ -204,7 +204,8 @@ Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
   master/detail empties with an icon and action. Don't hand-roll a third
   centered empty.
 - **Confirmation:** `ConfirmDialog` is the only way we ask "are you sure". It
-  opens focused on Confirm, so `Enter` confirms and `Esc` cancels, and it owns
+  opens focused on Confirm, so `Enter` confirms and `Esc` cancels; moving focus
+  to Cancel or another control preserves that control's keyboard action. It owns
   the pending → done → close beat and the inline error — a call site passes an
   async `onConfirm` and nothing else. A third way out (e.g. "Remove from
   sidebar" beside "Delete worktree") goes in the one `secondaryAction` slot.

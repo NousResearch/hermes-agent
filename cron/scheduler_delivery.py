@@ -841,15 +841,20 @@ _IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
 
 def _send_media_via_adapter(
     adapter, chat_id: str, media_files: list, metadata: dict | None, loop, job: dict, platform=None,
-) -> list:
+) -> list[tuple[str, bool, str]]:
     """Send MEDIA files as native attachments (routed by extension, as in
-    _process_message_background). Returns per-file error strings so a dropped attachment surfaces
-    in run status, not just the gateway log."""
+    _process_message_background).
+
+    Returns ``(path, is_voice, error)`` tuples only for failures eligible for standalone
+    fallback. A timeout is fallback-eligible only when ``future.cancel()`` proves dispatch
+    never started; if cancel fails the send is already in flight and retrying would duplicate
+    the attachment.
+    """
     from gateway.platforms.base import (
         BasePlatformAdapter, should_send_media_as_audio, validate_media_delivery_path)
     from agent.async_utils import safe_schedule_threadsafe
     job_ref = {"id": job.get("id", "?")}
-    errors: list = []
+    failures: list[tuple[str, bool, str]] = []
     requested = [(str(p), v) for p, v in (media_files or [])]
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
     # Report paths the safety filter dropped (missing file, denied prefix, strict-mode miss).
@@ -860,13 +865,14 @@ def _send_media_via_adapter(
         except Exception:
             dropped = True
         if dropped:
-            errors.append(f"attachment dropped by media path policy: {raw_path}")
+            failures.append(
+                (raw_path, False, f"attachment dropped by media path policy: {raw_path}"))
 
     route_platform = platform if platform is not None else getattr(adapter, "platform", None)
-    for media_path, _is_voice in media_files:
+    for media_path, is_voice in media_files:
         try:
             ext = _sched.Path(media_path).suffix.lower()
-            if should_send_media_as_audio(route_platform, ext, is_voice=_is_voice):
+            if should_send_media_as_audio(route_platform, ext, is_voice=is_voice):
                 method, path_kw = "send_voice", "audio_path"
             elif ext in _VIDEO_EXTS:
                 method, path_kw = "send_video", "video_path"
@@ -878,26 +884,33 @@ def _send_media_via_adapter(
                 chat_id=chat_id, metadata=metadata, **{path_kw: media_path})
             future = safe_schedule_threadsafe(coro, loop)
             if future is None:
-                _note_target_error(
-                    job_ref, f"cannot send media {media_path}: gateway loop unavailable", errors)
-                return errors
+                msg = f"cannot send media {media_path}: gateway loop unavailable"
+                _note_target_error(job_ref, msg, [])
+                failures.append((media_path, is_voice, msg))
+                continue
             try:
                 # Large attachments can exceed 30s; configurable via _get_media_send_timeout().
                 result = future.result(timeout=_script._get_media_send_timeout())
             except TimeoutError:
-                future.cancel()
-                raise
+                if future.cancel():
+                    raise
+                logger.warning(
+                    "Job '%s': media send for %s timed out after dispatch; "
+                    "skipping fallback to avoid duplicate delivery",
+                    job_ref["id"], media_path)
+                continue
             if result and not getattr(result, "success", True):
-                _note_target_error(
-                    job_ref,
-                    f"media send failed for {media_path}: {getattr(result, 'error', 'unknown')}",
-                    errors,
-                )
+                msg = (
+                    f"media send failed for {media_path}: "
+                    f"{getattr(result, 'error', 'unknown')}")
+                _note_target_error(job_ref, msg, [])
+                failures.append((media_path, is_voice, msg))
         except Exception as e:
             # TimeoutError etc. have an empty str(); fall back to the class name.
-            _note_target_error(
-                job_ref, f"failed to send media {media_path}: {str(e) or type(e).__name__}", errors)
-    return errors
+            msg = f"failed to send media {media_path}: {str(e) or type(e).__name__}"
+            _note_target_error(job_ref, msg, [])
+            failures.append((media_path, is_voice, msg))
+    return failures
 
 
 def _result_field(send_result, key: str, default=None):
@@ -1238,7 +1251,8 @@ def _live_send_text(
 
 
 def _live_send_media(
-    t: _TargetDelivery, media_metadata: dict, media_files: list, delivery_errors: list) -> None:
+    t: _TargetDelivery, media_metadata: dict, media_files: list,
+) -> list[tuple[str, bool, str]]:
     """Send extracted media as native attachments with the same routing as the text send."""
     routed_media_metadata = dict(media_metadata or {})
     if t.is_relay:
@@ -1249,13 +1263,10 @@ def _live_send_media(
                 routed_media_metadata["user_id"] = logical_home.user_id
             if logical_home.scope_id:
                 routed_media_metadata["scope_id"] = logical_home.scope_id
-    _media_errors = _send_media_via_adapter(
+    return _send_media_via_adapter(
         t.runtime_adapter, t.chat_id, media_files, routed_media_metadata or None, t.loop, t.job,
         platform=t.platform,
     )
-    # Surface per-file failures into run status: text delivered but attachment lost is not ok.
-    for _me in _media_errors:
-        delivery_errors.append(f"{_me} (target {t.where})")
 
 
 def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> None:
@@ -1310,13 +1321,19 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
 def _deliver_via_live_adapter(
     t: _TargetDelivery, cleaned_text: str, media_files: list, *, target_errors: list,
     delivery_errors: list, unverified_targets: list,
-) -> bool:
-    """Deliver one target via the live gateway adapter; True once delivered. ``target_errors`` =
+) -> tuple[bool, list]:
+    """Deliver one target via the live gateway adapter.
+
+    Returns ``(delivered, fallback_media)`` where ``fallback_media`` is the attachment list
+    standalone should retry when ``delivered`` is False (only cancel-proven-not-dispatched
+    failures; in-flight timeouts are omitted to avoid duplicates). ``target_errors`` =
     this lane's soft failures (surfaced only if standalone also fails); ``delivery_errors`` =
-    partial failures (media, thread fallback) that surface even on success."""
+    partial failures (media, thread fallback) that surface even on success.
+    """
     job = t.job
     route_thread_id, route_metadata, media_metadata = _live_route_metadata(t)
     delivered = False
+    fallback_media = list(media_files)
     try:
         # Send cleaned text (MEDIA tags stripped) through the gateway's DeliveryRouter so it gets
         # the same platform routing as live messages (Telegram's three-mode topic routing).
@@ -1344,7 +1361,15 @@ def _deliver_via_live_adapter(
         # payload is already assumed delivered (#38922). Record the skipped attachments so the drop is
         # visible rather than silently lost.
         if adapter_ok and not timed_out and media_files:
-            _live_send_media(t, media_metadata, media_files, delivery_errors)
+            media_failures = _live_send_media(t, media_metadata, media_files)
+            if media_failures:
+                for _path, _is_voice, error in media_failures:
+                    delivery_errors.append(f"{error} (target {t.where})")
+                # Retry only attachments whose live send is confirmed not to have completed;
+                # in-flight timeouts are omitted by _send_media_via_adapter.
+                fallback_media = [
+                    (path, is_voice) for path, is_voice, _error in media_failures]
+                adapter_ok = False
         elif timed_out and media_files:
             _note_target_error(
                 job,
@@ -1369,7 +1394,7 @@ def _deliver_via_live_adapter(
         if not any(err_msg in err for err in target_errors):
             target_errors.append(err_msg)
         _warn_live_lane_failure(job, err_msg, t.is_relay)
-    return delivered
+    return delivered, fallback_media
 
 
 def _standalone_send(
@@ -1691,14 +1716,18 @@ def _deliver_result(
         if t is None:
             continue
         target_errors: list = []
-        delivered = t.live_adapter_ready and _deliver_via_live_adapter(
-            t, cleaned_delivery_content, media_files,
-            target_errors=target_errors, delivery_errors=delivery_errors,
-            unverified_targets=unverified_targets,
-        )
+        fallback_media = media_files
+        if t.live_adapter_ready:
+            delivered, fallback_media = _deliver_via_live_adapter(
+                t, cleaned_delivery_content, media_files,
+                target_errors=target_errors, delivery_errors=delivery_errors,
+                unverified_targets=unverified_targets,
+            )
+        else:
+            delivered = False
         if not delivered:
             _deliver_standalone(
-                t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
+                t, cleaned_delivery_content, fallback_media, target_errors, delivery_errors)
 
     # Filter-time drops apply to every target; report them once.
     delivery_errors.extend(policy_drop_errors)

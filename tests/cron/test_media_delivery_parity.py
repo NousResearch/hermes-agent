@@ -182,13 +182,13 @@ class TestLiveAdapterMediaFailuresSurfaced:
 
             t = threading.Thread(target=loop.run_forever, daemon=True)
             t.start()
-            errors = _send_media_via_adapter(
+            failures = _send_media_via_adapter(
                 FailingAdapter(), "D01", [(media_file, False)], None, loop, slack_job
             )
-            assert errors, (
+            assert failures, (
                 "a failed media send must be returned to the caller, not only logged"
             )
-            assert any("upload rejected" in e for e in errors)
+            assert any("upload rejected" in reason for _path, _voice, reason in failures)
         finally:
             loop.call_soon_threadsafe(loop.stop)
             t.join(timeout=5)
@@ -209,12 +209,12 @@ class TestLiveAdapterMediaFailuresSurfaced:
 
             t = threading.Thread(target=loop.run_forever, daemon=True)
             t.start()
-            errors = _send_media_via_adapter(
+            failures = _send_media_via_adapter(
                 NeverCalledAdapter(), "D01",
                 [("/nonexistent/definitely-missing.pdf", False)],
                 None, loop, slack_job,
             )
-            assert errors, "a filtered-out MEDIA path must be reported, not silent"
+            assert failures, "a filtered-out MEDIA path must be reported, not silent"
         finally:
             loop.call_soon_threadsafe(loop.stop)
             t.join(timeout=5)

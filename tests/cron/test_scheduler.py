@@ -1879,6 +1879,92 @@ class TestSendMediaViaAdapter:
         adapter.send_voice.assert_called_once()
         adapter.send_image_file.assert_called_once()
 
+    def test_failed_media_result_preserves_retry_identity(self, tmp_path, monkeypatch):
+        from concurrent.futures import Future
+
+        adapter = MagicMock()
+        adapter.send_image_file = AsyncMock()
+        photo_path = self._safe_media_path(tmp_path, monkeypatch, "failed.jpg")
+        completed = Future()
+        completed.set_result(MagicMock(success=False, error="upload rejected"))
+
+        def fake_schedule(coro, _loop):
+            coro.close()
+            return completed
+
+        with patch("agent.async_utils.safe_schedule_threadsafe", side_effect=fake_schedule):
+            failures = _send_media_via_adapter(
+                adapter,
+                "123",
+                [(str(photo_path), False)],
+                None,
+                MagicMock(),
+                {"id": "media-failure"},
+            )
+
+        assert failures[0][:2] == (str(photo_path), False)
+        assert "upload rejected" in failures[0][2]
+
+    def test_in_flight_timeout_is_not_fallback_eligible(self, tmp_path, monkeypatch):
+        adapter = MagicMock()
+        adapter.send_image_file = AsyncMock()
+        photo_path = self._safe_media_path(tmp_path, monkeypatch, "in-flight.jpg")
+        in_flight = MagicMock()
+        in_flight.result.side_effect = TimeoutError("timed out")
+        in_flight.cancel.return_value = False
+
+        def fake_schedule(coro, _loop):
+            coro.close()
+            return in_flight
+
+        with patch("agent.async_utils.safe_schedule_threadsafe", side_effect=fake_schedule):
+            failures = _send_media_via_adapter(
+                adapter,
+                "123",
+                [(str(photo_path), False)],
+                None,
+                MagicMock(),
+                {"id": "media-in-flight"},
+            )
+
+        in_flight.cancel.assert_called_once_with()
+        assert failures == []
+
+    def test_dispatch_never_started_timeout_is_fallback_eligible(self, tmp_path, monkeypatch):
+        from concurrent.futures import Future
+
+        adapter = MagicMock()
+        adapter.send_image_file = AsyncMock()
+        photo_path = self._safe_media_path(tmp_path, monkeypatch, "wedged.jpg")
+        wedged = Future()
+        cancel_calls = []
+        original_cancel = wedged.cancel
+
+        def tracking_cancel():
+            cancel_calls.append(True)
+            return original_cancel()
+
+        wedged.cancel = tracking_cancel
+        wedged.result = MagicMock(side_effect=TimeoutError("timed out"))
+
+        def fake_schedule(coro, _loop):
+            coro.close()
+            return wedged
+
+        with patch("agent.async_utils.safe_schedule_threadsafe", side_effect=fake_schedule):
+            failures = _send_media_via_adapter(
+                adapter,
+                "123",
+                [(str(photo_path), False)],
+                None,
+                MagicMock(),
+                {"id": "media-wedged"},
+            )
+
+        assert cancel_calls == [True]
+        assert failures[0][0] == str(photo_path)
+        assert "timed out" in failures[0][2]
+
 
 class TestParallelTick:
     """Verify that tick() runs due jobs concurrently and isolates ContextVars."""
@@ -2220,12 +2306,14 @@ class TestSendMediaTimeoutCancelsFuture:
         job = {"id": "media-timeout"}
 
         with patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
-            # Should not raise — the except Exception clause swallows the timeout
-            _send_media_via_adapter(adapter, "chat-1", media_files, None, loop, job)
+            # Should not raise — cancel-success timeouts become fallback-eligible failures.
+            failures = _send_media_via_adapter(adapter, "chat-1", media_files, None, loop, job)
 
         # 1. The timed-out future was cancelled (the bug fix)
         assert timeout_cancel_calls == [True], "future.cancel() must fire on TimeoutError"
-        # 2. Second file still got dispatched — one timeout doesn't abort the batch
+        # 2. First file is fallback-eligible; second file still got dispatched.
+        assert failures[0][0] == str(slow.resolve())
+        assert "timed out" in failures[0][2]
         adapter.send_video.assert_called_once()
         assert adapter.send_video.call_args[1]["video_path"] == str(fast.resolve())
 

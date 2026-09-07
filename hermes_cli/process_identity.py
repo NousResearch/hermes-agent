@@ -191,9 +191,11 @@ def _pid_alive_matches(pid: int, create_time: Optional[float]) -> Optional[bool]
 def register_self(purpose: str, *, project_root: Optional[Path] = None, detail: Optional[dict] = None) -> bool:
     """Record this process in the machine spawn ledger. Best-effort.
 
-    Called at the top of every long-lived entry point; dead ``(pid, create_time)`` entries are
-    pruned on every write. ``detail`` may carry ``host``/``port``/``profile`` so the update
-    pipeline can relaunch a manually-started serve with its real bind address.
+    Called at the top of every entry point the update/sweep pipeline needs to classify —
+    long-lived (serve/dashboard backend, gateway run loop) and one-shot (non-interactive
+    ``-q``/``--query`` runs that back cron jobs and kanban workers). Dead ``(pid, create_time)``
+    entries are pruned on every write. ``detail`` may carry ``host``/``port``/``profile`` so the
+    update pipeline can relaunch a manually-started serve with its real bind address.
     """
     tag = parse_spawn_tag(os.environ.get(SPAWN_ENV_VAR))
     spawner_pid, spawner_create = (tag.spawner_pid, tag.spawner_create) if tag else _desktop_spawner_identity()

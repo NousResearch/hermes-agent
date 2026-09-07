@@ -1,0 +1,4 @@
+interface:
+  display_name: 'Huawei Cloud CLI And Auth'
+  short_description: 'Use KooCLI safely without exposing credentials.'
+  default_prompt: 'Use $huaweicloud-cli-and-auth to check KooCLI setup safely.'

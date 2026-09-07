@@ -186,12 +186,22 @@ class CLIStatusBarMixin:
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
+        # ── KENSEI CUSTOM (restored): provider + reasoning effort for status bar ──
+        provider_name = (getattr(agent, "provider", None) or getattr(self, "provider", None) or "")
+        reasoning_cfg = getattr(self, "reasoning_config", None)
+        reasoning_effort = ""
+        if isinstance(reasoning_cfg, dict) and reasoning_cfg.get("enabled") is not False:
+            reasoning_effort = str(reasoning_cfg.get("effort", "") or "")
+        # ── END KENSEI CUSTOM ──
         prompt_start = getattr(self, "_prompt_start_time", None)
         turn_live = prompt_start is not None
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            # ── KENSEI CUSTOM (restored): provider + reasoning effort ──
+            "provider_name": provider_name,
+            "reasoning_effort": reasoning_effort,
             # ── KENSEI CUSTOM: agent mode in status bar ──
             "agent_mode": self._detect_current_mode(),
             # ── END KENSEI CUSTOM ──
@@ -997,10 +1007,28 @@ class CLIStatusBarMixin:
                 add(name, style(count) if callable(style) else style, f"{glyph} {count}")
 
         if _ok("model"):
+            _bar_width = width if width else self._get_tui_terminal_width()
+            wide = _bar_width >= 76
+            effort = snapshot.get("reasoning_effort", "")
+            provider = snapshot.get("provider_name", "")
             if styled:
-                segs.append([(_SB, " ⚕ "), (_STRONG, model_short)])
+                model_frags = [(_SB, " ⚕ "), (_STRONG, model_short)]
+                # ── KENSEI CUSTOM (restored): reasoning effort + provider ──
+                if effort and effort != "default":
+                    model_frags.append((_STRONG, f" 🧠{effort}"))
+                if provider and provider != "auto" and wide:
+                    model_frags.append((_DIM, f" ({provider})"))
+                # ── END KENSEI CUSTOM ──
+                segs.append(model_frags)
             else:
-                segs.append([("", f"⚕ {model_short}")])
+                model_text = f"⚕ {model_short}"
+                # ── KENSEI CUSTOM (restored): reasoning effort + provider ──
+                if effort and effort != "default":
+                    model_text += f" 🧠{effort}"
+                if provider and provider != "auto" and wide:
+                    model_text += f" ({provider})"
+                # ── END KENSEI CUSTOM ──
+                segs.append([("", model_text)])
             # ── KENSEI CUSTOM: mode badge (all width tiers; appended right after model) ──
             _MODE_FRAGS = {
                 "plan": ("class:status-bar-good", " 📋 Plan"),

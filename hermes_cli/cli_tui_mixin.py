@@ -267,6 +267,51 @@ class CLITuiMixin:
         # RMS 0-32767 → index 0-7; typical speech is 500-5000, display caps at ~8000.
         return " ▁▂▃▄▅▆▇"[min(rec.current_rms, 8000) * 7 // 8000]
 
+    # ── KENSEI CUSTOM (restored): peer-presence line UNDER the input textbox (G7) ──
+    def _get_peer_presence_fragments(self):
+        """Peer-presence line rendered UNDER the input textbox (G7).
+
+        Three-state ambient indicator: ``● N Live`` (green) · ``○ M Idle``
+        (grey) · ``× K Offline`` (red). Rendered only when >= 2 live sessions
+        are open (single session = you only = no signal). Live = OPEN
+        interactive sessions (probe-live, cli/tui/desktop) regardless of
+        mid-turn state — a session you have open counts as live.
+        """
+        try:
+            from hermes_cli.peer_presence import peer_presence_summary
+
+            peer = peer_presence_summary(force=True)
+            if peer is None:
+                return []
+            live = int(peer.get("live_count") or 0)
+            if live < 2:
+                return []
+            active = int(peer.get("active_count") or 0)
+            idle = int(peer.get("idle_count") or 0)
+            offline = int(peer.get("offline_count") or 0)
+            frags = [("class:peer-presence-label", " peers ")]
+            frags.append(("class:peer-presence-live", f"● {live} Live"))
+            if active and active < live:
+                frags.append(("class:peer-presence-working", f" ({active} working)"))
+            if idle:
+                frags.append(("class:peer-presence-idle", f" ○ {idle} Idle"))
+            if offline:
+                frags.append(("class:peer-presence-off", f" × {offline} Offline"))
+            # Profile badge: show the ACTIVE profile so the session identity
+            # is unambiguous (issue 3).
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+
+                profile = get_active_profile_name()
+                if profile and profile != "default":
+                    frags.append(("class:peer-presence-profile", f" [{profile}]"))
+            except Exception:
+                pass
+            return frags
+        except Exception:
+            return []
+    # ── END KENSEI CUSTOM ──
+
     def _get_tui_prompt_fragments(self):
         """prompt_toolkit fragments for the current interactive state."""
         symbol, state_suffix = self._get_tui_prompt_symbols()
@@ -308,7 +353,7 @@ class CLITuiMixin:
         try:
             from hermes_cli.peer_presence import peer_presence_pill
 
-            pill = peer_presence_pill()
+            pill = peer_presence_pill(force=True)  # KENSEI CUSTOM: fresh every repaint
             if pill:
                 return [("class:peer-presence", pill + " ")] + [("class:prompt", symbol)]
         except Exception:
@@ -410,6 +455,7 @@ class CLITuiMixin:
             image_bar,
             input_area,
             input_rule_bot,
+            peer_presence_bar,  # KENSEI CUSTOM (G7): under the input textbox
             voice_status_bar,
             completions_menu]
         return [item for item in ordered if item is not None]
@@ -2068,6 +2114,23 @@ class CLITuiMixin:
             filter=Condition(
                 lambda: cli_ref._status_bar_visible
                 and not getattr(cli_ref, "_status_bar_suppressed_after_resize", False)))
+        # ── KENSEI CUSTOM (restored): peer-presence line UNDER the input textbox (G7) ──
+        # A dedicated 1-line ambient indicator below the input, separate from
+        # the status bar. Renders only when >= 2 sessions are known (the
+        # fragment method returns [] otherwise, so the window collapses).
+        peer_presence_bar = ConditionalContainer(
+            Window(
+                content=FormattedTextControl(lambda: cli_ref._get_peer_presence_fragments()),
+                height=1,
+                wrap_lines=False,
+            ),
+            filter=Condition(
+                lambda: cli_ref._status_bar_visible
+                and not getattr(cli_ref, "_status_bar_suppressed_after_resize", False)
+            ),
+        )
+        # ── END KENSEI CUSTOM ──
+
         # Stash browse panel — just above the status bar, Ctrl+S on an empty composer with 2+ drafts.
         self._stash_panel_widget = ConditionalContainer(
             Window(FormattedTextControl(self._get_stash_panel_display_fragments), wrap_lines=False),
@@ -2090,6 +2153,7 @@ class CLITuiMixin:
             input_area=input_area,
             input_rule_bot=input_rule_bot,
             voice_status_bar=voice_status_bar,
+            peer_presence_bar=peer_presence_bar,  # KENSEI CUSTOM (G7)
             completions_menu=CompletionsMenu(max_height=12, scroll_offset=1))))
         self._tui_set_base_style()
         return layout, PTStyle.from_dict(self._build_tui_style_dict())

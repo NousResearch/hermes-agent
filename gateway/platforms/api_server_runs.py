@@ -849,6 +849,128 @@ async def _handle_run_approval(self, request: "web.Request", *, _api_server) -> 
         "resolved": resolved})
 
 
+
+async def _handle_run_clarification(self, request: "web.Request", *, _api_server) -> "web.Response":
+    """POST /v1/runs/{run_id}/clarification — answer one exact, run-bound clarification."""
+    _openai_error = _api_server._openai_error
+    run_id, _, _, _, err = _load_owned_run(
+        self, request, _api_server=_api_server, permission="approve", active_fallback=True)
+    if err is not None:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_error(_openai_error, "Invalid JSON", status=400)
+    if not isinstance(body, dict):
+        return _json_error(_openai_error, "JSON body must be an object", status=400)
+    request_id = body.get("request_id")
+    if not isinstance(request_id, str) or not _api_server._RUN_CLARIFY_REQUEST_ID_RE.fullmatch(request_id):
+        return _json_error(
+            _openai_error, "Invalid clarification request_id",
+            code="invalid_clarification_request_id", status=400)
+    response = body.get("response")
+    if not isinstance(response, dict):
+        return _json_error(
+            _openai_error, "Clarification response must be an object",
+            code="invalid_clarification_response", status=400)
+    clarify_session_key = self._run_clarify_sessions.get(run_id)
+    if not clarify_session_key:
+        return _json_error(
+            _openai_error, f"Run has no active clarification session: {run_id}",
+            code="clarification_not_active", status=409)
+    from tools import clarify_gateway
+    pending = clarify_gateway.get_pending_by_id(request_id, session_key=clarify_session_key)
+    if pending is None:
+        return _json_error(
+            _openai_error,
+            "Clarification is stale, unknown, resolved, or belongs to another run",
+            code="clarification_not_pending", status=409)
+    response_type = response.get("type")
+    pending_choices = list(pending.get("choices") or [])
+    pending_multi = bool(pending.get("multi_select"))
+
+    def _choice_index(choice_id: Any) -> int:
+        match = re.fullmatch(r"choice-([1-4])", str(choice_id or ""))
+        return int(match.group(1)) - 1 if match else -1
+
+    if response_type == "choice":
+        if pending_multi:
+            return _json_error(
+                _openai_error, "Multi-select clarification requires response.type 'choices'",
+                code="invalid_clarification_response_type", status=400)
+        choice_id = response.get("choice_id")
+        index = _choice_index(choice_id)
+        if index < 0 or index >= len(pending_choices):
+            return _json_error(
+                _openai_error, "Invalid clarification choice_id",
+                code="invalid_clarification_choice", status=400)
+        answer = str(pending_choices[index])
+        response_summary: Dict[str, Any] = {"type": "choice", "choice_id": choice_id}
+    elif response_type == "choices":
+        if not pending_multi:
+            return _json_error(
+                _openai_error, "Clarification is not multi-select; use response.type 'choice'",
+                code="invalid_clarification_response_type", status=400)
+        choice_ids = response.get("choice_ids")
+        if not isinstance(choice_ids, list) or not choice_ids:
+            return _json_error(
+                _openai_error, "Multi-select clarification requires a non-empty choice_ids list",
+                code="invalid_clarification_choice", status=400)
+        if len(choice_ids) > len(pending_choices):
+            return _json_error(
+                _openai_error, "Too many clarification choice_ids",
+                code="invalid_clarification_choice", status=400)
+        selected_labels: List[str] = []
+        seen_ids: set[str] = set()
+        for raw_id in choice_ids:
+            choice_id = str(raw_id or "")
+            if choice_id in seen_ids:
+                return _json_error(
+                    _openai_error, "Duplicate clarification choice_id",
+                    code="invalid_clarification_choice", status=400)
+            index = _choice_index(choice_id)
+            if index < 0 or index >= len(pending_choices):
+                return _json_error(
+                    _openai_error, "Invalid clarification choice_id",
+                    code="invalid_clarification_choice", status=400)
+            seen_ids.add(choice_id)
+            selected_labels.append(str(pending_choices[index]))
+        answer = json.dumps(selected_labels, ensure_ascii=False)
+        response_summary = {"type": "choices", "choice_ids": [str(cid) for cid in choice_ids]}
+    elif response_type == "text":
+        text_value = response.get("text")
+        if not isinstance(text_value, str) or not text_value.strip():
+            return _json_error(
+                _openai_error, "Clarification text must be a non-empty string",
+                code="invalid_clarification_response", status=400)
+        if len(text_value) > _api_server._RUN_CLARIFY_MAX_RESPONSE_CHARS:
+            return _json_error(
+                _openai_error,
+                f"Clarification text exceeds {_api_server._RUN_CLARIFY_MAX_RESPONSE_CHARS} characters",
+                code="clarification_text_too_long", status=400)
+        answer = text_value.strip()
+        response_summary = {"type": "text"}
+    else:
+        return _json_error(
+            _openai_error, "Clarification response type must be 'choice', 'choices', or 'text'",
+            code="invalid_clarification_response_type", status=400)
+    if not clarify_gateway.resolve_gateway_clarify(
+        request_id, answer, session_key=clarify_session_key,
+    ):
+        return _json_error(
+            _openai_error, "Clarification is no longer pending",
+            code="clarification_not_pending", status=409)
+    self._set_run_status(run_id, "running", last_event="clarify.responded", awaiting_user=False)
+    q = self._run_streams.get(run_id)
+    event = _run_event(run_id, "clarify.responded", request_id=request_id, **response_summary)
+    if q is not None:
+        with suppress(Exception):
+            q.put_nowait(event)
+    return web.json_response({
+        "object": "hermes.run.clarification_response", "run_id": run_id, "request_id": request_id,
+        **response_summary})
+
+
 async def _handle_steer_run(self, request: "web.Request", *, _api_server) -> "web.Response":
     """POST /v1/runs/{run_id}/steer — inject guidance into a running agent."""
     _openai_error = _api_server._openai_error

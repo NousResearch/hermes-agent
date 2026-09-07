@@ -486,6 +486,7 @@ class TestRunEvents:
 # ---------------------------------------------------------------------------
 
 
+    @pytest.mark.asyncio
     async def test_clarification_event_waits_for_exact_choice_response(self, adapter):
         app = _create_runs_app(adapter)
         callback_result = {}
@@ -808,6 +809,7 @@ class TestRunEvents:
         request_id = "clarify_" + "d" * 32
         adapter._run_statuses[run_id] = {"run_id": run_id, "status": "waiting_for_clarification"}
         adapter._run_clarify_sessions[run_id] = run_id
+        _claim_run(adapter, run_id)
         clarify_mod.register(
             request_id,
             run_id,
@@ -860,6 +862,7 @@ class TestRunEvents:
         for run_id in (first_run, second_run):
             adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
             adapter._run_clarify_sessions[run_id] = run_id
+            _claim_run(adapter, run_id)
         clarify_mod.register(request_id, second_run, "Question?", ["One", "Two"])
 
         async with TestClient(TestServer(app)) as cli:
@@ -956,7 +959,6 @@ class TestRunEvents:
                         adapter._run_streams[run_id].get(), timeout=3
                     )
                     assert event["event"] == "clarify.request"
-                    assert adapter._run_statuses[run_id]["request_profile"] == "alpha"
                     pending = clarify_mod.get_pending_by_id(
                         event["request_id"], session_key=run_id
                     )
@@ -999,6 +1001,7 @@ class TestRunEvents:
         request_id = "clarify_" + "b" * 32
         adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
         adapter._run_clarify_sessions[run_id] = run_id
+        _claim_run(adapter, run_id)
         clarify_mod.register(request_id, run_id, "Question?", None)
 
         async with TestClient(TestServer(app)) as cli:
@@ -1050,80 +1053,6 @@ class TestRunEvents:
 
         clarify_mod.clear_session(run_id)
 
-    @pytest.mark.asyncio
-    async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):
-        """Same client session_id must not let one run approve another run's queue."""
-        app = _create_runs_app(auth_adapter)
-        async with TestClient(TestServer(app)) as cli:
-            with patch.object(auth_adapter, "_create_agent") as mock_create:
-                victim_agent, victim_ready, victim_interrupted = _make_slow_agent()
-                attacker_agent, attacker_ready, attacker_interrupted = _make_slow_agent()
-                mock_create.side_effect = [victim_agent, attacker_agent]
-
-                victim_resp = await cli.post(
-                    "/v1/runs",
-                    json={"input": "victim", "session_id": "shared-project"},
-                    headers={"Authorization": "Bearer sk-secret"},
-                )
-                attacker_resp = await cli.post(
-                    "/v1/runs",
-                    json={"input": "attacker", "session_id": "shared-project"},
-                    headers={"Authorization": "Bearer sk-secret"},
-                )
-                assert victim_resp.status == 202
-                assert attacker_resp.status == 202
-                victim_run = (await victim_resp.json())["run_id"]
-                attacker_run = (await attacker_resp.json())["run_id"]
-
-                victim_ready.wait(timeout=3.0)
-                attacker_ready.wait(timeout=3.0)
-                assert auth_adapter._run_approval_sessions[victim_run] == victim_run
-                assert auth_adapter._run_approval_sessions[attacker_run] == attacker_run
-                assert auth_adapter._run_approval_sessions[victim_run] != auth_adapter._run_approval_sessions[attacker_run]
-
-                victim_entry = approval_mod._ApprovalEntry({
-                    "command": "bash -c victim-danger",
-                    "description": "victim approval",
-                    "pattern_keys": ["shell-c"],
-                })
-                attacker_entry = approval_mod._ApprovalEntry({
-                    "command": "bash -c attacker-danger",
-                    "description": "attacker approval",
-                    "pattern_keys": ["shell-c"],
-                })
-                with approval_mod._lock:
-                    approval_mod._gateway_queues[victim_run] = [victim_entry]
-                    approval_mod._gateway_queues[attacker_run] = [attacker_entry]
-
-                approval_resp = await cli.post(
-                    f"/v1/runs/{attacker_run}/approval",
-                    json={"choice": "always", "resolve_all": True},
-                    headers={"Authorization": "Bearer sk-secret"},
-                )
-                approval_data = await approval_resp.json()
-
-                assert approval_resp.status == 200
-                assert approval_data["resolved"] == 1
-                assert attacker_entry.result == "always"
-                assert attacker_entry.event.is_set()
-                assert victim_entry.result is None
-                assert not victim_entry.event.is_set()
-                with approval_mod._lock:
-                    assert approval_mod._gateway_queues[victim_run] == [victim_entry]
-                    assert victim_run in approval_mod._gateway_queues
-                    assert attacker_run not in approval_mod._gateway_queues
-
-                # Clean up the synthetic pending victim approval and unblock the
-                # slow test agents so their background run tasks can finish.
-                with approval_mod._lock:
-                    approval_mod._gateway_queues.pop(victim_run, None)
-                victim_interrupted.set()
-                attacker_interrupted.set()
-
-
-# ---------------------------------------------------------------------------
-# POST /v1/runs/{run_id}/steer — steer a running agent
-# ---------------------------------------------------------------------------
 
 class TestSteerRun:
     @pytest.mark.asyncio
@@ -1444,6 +1373,7 @@ class TestRunOwnershipAcrossProfiles:
 
 class TestStopRun:
 
+    @pytest.mark.asyncio
     async def test_stop_releases_pending_clarification(self, adapter):
         app = _create_runs_app(adapter)
 

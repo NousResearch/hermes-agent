@@ -12,9 +12,13 @@ here (they're stdin-driven curses prompts).
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 import pytest
 
-from hermes_cli.config import DEFAULT_CONFIG, load_config
+from hermes_constants import VALID_REASONING_EFFORTS
+from hermes_cli.config import DEFAULT_CONFIG, load_config, save_config
+import hermes_cli.main_provider_setup as provider_setup
 from hermes_cli.main_provider_setup import _AUX_TASKS, _DELEGATION_TASK_KEY, _delegation_cfg_as_task, _format_aux_current, _reset_aux_to_auto, _save_aux_choice
 
 
@@ -194,3 +198,111 @@ def test_leave_unchanged_replaces_cancel_label(tmp_path, monkeypatch):
     assert "Leave unchanged" in labels
     assert "Cancel" not in labels, "Cancel label should be replaced"
     assert any("Configure auxiliary models" in label for label in labels)
+
+
+@pytest.mark.parametrize("route", ["auto", "provider", "custom"])
+@pytest.mark.parametrize(
+    ("effort_choice", "expected_effort", "cancelled"),
+    [
+        ("high", "high", False),
+        ("", "", False),
+        (None, "low", False),
+        (provider_setup._CANCELLED, "low", True),
+    ],
+)
+def test_delegation_route_and_reasoning_are_saved_atomically(
+    tmp_path, monkeypatch, route, effort_choice, expected_effort, cancelled
+):
+    """Every delegation route shares select/inherit/skip/cancel semantics."""
+    _isolate_home(tmp_path, monkeypatch)
+    cfg = load_config()
+    cfg["model"] = {"default": "parent-model", "provider": "parent-provider"}
+    cfg["auth"] = {"active_provider": "parent-provider"}
+    cfg["delegation"].update(
+        {
+            "provider": "old-provider",
+            "model": "old-model",
+            "base_url": "https://old.example/v1",
+            "api_key": "old-key",
+            "reasoning_effort": "low",
+            "max_concurrent_children": 7,
+        }
+    )
+    save_config(cfg)
+    original = deepcopy(load_config())
+
+    route_index = {"auto": 0, "provider": 1, "custom": 2}[route]
+    monkeypatch.setattr(provider_setup, "_prompt_provider_choice", lambda *_args, **_kwargs: route_index)
+    monkeypatch.setattr("hermes_cli.inventory.build_aux_picker_rows", lambda **_kwargs: [object()])
+    monkeypatch.setattr(
+        "hermes_cli.inventory.format_aux_picker_entries",
+        lambda *_args, **_kwargs: [("openrouter", "OpenRouter", ["child-model"])],
+    )
+    monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda *_args, **_kwargs: "child-model")
+    monkeypatch.setattr("hermes_cli.models_pricing.get_pricing_for_provider", lambda *_args: {})
+    custom_answers = iter(["https://new.example/v1", "custom-model", "new-key"])
+    monkeypatch.setattr(provider_setup, "_ask", lambda *_args, **_kwargs: next(custom_answers))
+
+    effort_prompts = []
+
+    def choose_effort(efforts, current_effort="", **kwargs):
+        effort_prompts.append((tuple(efforts), current_effort, kwargs))
+        return effort_choice
+
+    monkeypatch.setattr(provider_setup, "_prompt_reasoning_effort_selection", choose_effort)
+
+    provider_setup._aux_select_for_task(_DELEGATION_TASK_KEY)
+
+    persisted = load_config()
+    assert effort_prompts == [
+        (
+            tuple(VALID_REASONING_EFFORTS),
+            "low",
+            {"allow_inherit": True, "distinguish_cancel": True},
+        )
+    ]
+    assert persisted["model"] == original["model"]
+    assert persisted["auth"] == original["auth"]
+    if cancelled:
+        assert persisted["delegation"] == original["delegation"]
+        return
+
+    expected_routes = {
+        "auto": {"provider": "", "model": "", "base_url": "", "api_key": ""},
+        "provider": {
+            "provider": "openrouter",
+            "model": "child-model",
+            "base_url": "",
+            "api_key": "",
+        },
+        "custom": {
+            "provider": "custom",
+            "model": "custom-model",
+            "base_url": "https://new.example/v1",
+            "api_key": "new-key",
+        },
+    }
+    delegation = persisted["delegation"]
+    assert {key: delegation[key] for key in expected_routes[route]} == expected_routes[route]
+    assert delegation["reasoning_effort"] == expected_effort
+    assert delegation["max_concurrent_children"] == 7
+
+
+@pytest.mark.parametrize(
+    ("selected_index", "expected"),
+    [(-1, provider_setup._CANCELLED), (8, ""), (9, None)],
+)
+def test_delegation_reasoning_prompt_distinguishes_cancel_inherit_and_skip(
+    monkeypatch, selected_index, expected
+):
+    """The shared reasoning picker can expose delegation-only atomic choices."""
+    monkeypatch.setattr(provider_setup, "_radiolist", lambda *_args: selected_index)
+
+    result = provider_setup._prompt_reasoning_effort_selection(
+        VALID_REASONING_EFFORTS,
+        current_effort="low",
+        allow_inherit=True,
+        distinguish_cancel=True,
+    )
+
+    assert result is expected or result == expected

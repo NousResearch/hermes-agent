@@ -105,11 +105,14 @@ def _format_aux_current(task_cfg: dict) -> str:
 
 def _delegation_cfg_as_task(cfg: dict) -> dict:
     """Project the top-level ``delegation`` section into aux-task shape (provider/model/
-    base_url/api_key); an empty provider means "inherit parent" and renders as "auto"."""
+    base_url/api_key/reasoning); an empty provider means "inherit parent" and renders as "auto"."""
     d = cfg.get("delegation")
     if not isinstance(d, dict):
         d = {}
-    return {k: str(d.get(k) or "").strip() for k in ("provider", "model", "base_url", "api_key")}
+    return {
+        k: str(d.get(k) or "").strip()
+        for k in ("provider", "model", "base_url", "api_key", "reasoning_effort")
+    }
 
 
 def _aux_task_cfg(cfg: dict, task: str) -> dict:
@@ -128,9 +131,10 @@ def _aux_task_display_name(task: str) -> str:
 
 
 def _save_aux_choice(task: str, *, provider: str, model: str = "", base_url: str = "",
-                     api_key: str = "") -> None:
+                     api_key: str = "", reasoning_effort: str | None = None) -> None:
     """Persist an aux task's four routing fields (timeout etc. untouched; main model config never
-    modified). ``delegation`` writes the top-level section, with "auto" stored as an empty provider."""
+    modified). ``delegation`` writes the top-level section, with "auto" stored as an empty provider;
+    a non-None reasoning effort updates its independent override in the same save."""
     from hermes_cli.config import load_config, save_config
     cfg = load_config()
     if task == _DELEGATION_TASK_KEY:
@@ -142,7 +146,34 @@ def _save_aux_choice(task: str, *, provider: str, model: str = "", base_url: str
     entry["model"] = model or ""
     entry["base_url"] = base_url or ""
     entry["api_key"] = api_key or ""
+    if task == _DELEGATION_TASK_KEY and reasoning_effort is not None:
+        entry["reasoning_effort"] = reasoning_effort
     save_config(cfg)
+
+
+def _save_aux_route(task: str, task_cfg: dict, **route) -> bool:
+    """Prompt for delegation reasoning, then atomically persist the pending route."""
+    reasoning_effort = None
+    if task == _DELEGATION_TASK_KEY:
+        from hermes_constants import VALID_REASONING_EFFORTS
+
+        _say(
+            "",
+            "  Configure reasoning for delegated subagents.",
+            "  Hermes requests this level; providers may map it to a supported wire level.",
+            "",
+        )
+        reasoning_effort = _prompt_reasoning_effort_selection(
+            VALID_REASONING_EFFORTS,
+            current_effort=str(task_cfg.get("reasoning_effort") or "").strip().lower(),
+            allow_inherit=True,
+            distinguish_cancel=True,
+        )
+        if reasoning_effort is _CANCELLED:
+            print("No change.")
+            return False
+    _save_aux_choice(task, reasoning_effort=reasoning_effort, **route)
+    return True
 
 
 def _reset_aux_to_auto() -> int:
@@ -244,16 +275,16 @@ def _aux_select_for_task(task: str) -> None:
     if slug == "__back__":
         return
     if slug == "__auto__":
-        _save_aux_choice(task, provider="auto", model="", base_url="", api_key="")
-        print(f"{display_name}: reset to auto.")
+        if _save_aux_route(task, task_cfg, provider="auto", model="", base_url="", api_key=""):
+            print(f"{display_name}: reset to auto.")
     elif slug == "__custom__":
         _aux_flow_custom_endpoint(task, task_cfg)
     else:
-        _aux_flow_provider_model(task, slug, models, current_model)
+        _aux_flow_provider_model(task, slug, models, current_model, task_cfg)
 
 
 def _aux_flow_provider_model(task: str, provider_slug: str, curated_models: list,
-                             current_model: str = "") -> None:
+                             current_model: str = "", task_cfg: dict | None = None) -> None:
     """Prompt for a model under an already-authenticated provider, save to aux."""
     from hermes_cli.auth import _prompt_model_selection
     from hermes_cli.models_pricing import get_pricing_for_provider
@@ -278,7 +309,15 @@ def _aux_flow_provider_model(task: str, provider_slug: str, curated_models: list
             print("No change.")
             return
 
-    _save_aux_choice(task, provider=provider_slug, model=selected or "", base_url="", api_key="")
+    if not _save_aux_route(
+        task,
+        task_cfg or {},
+        provider=provider_slug,
+        model=selected or "",
+        base_url="",
+        api_key="",
+    ):
+        return
     if selected:
         print(f"{display_name}: {provider_slug} · {selected}")
     else:
@@ -309,7 +348,10 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
     if api_key is None:
         return
 
-    _save_aux_choice(task, provider="custom", model=model, base_url=url, api_key=api_key)
+    if not _save_aux_route(
+        task, task_cfg, provider="custom", model=model, base_url=url, api_key=api_key
+    ):
+        return
     print(f"{display_name}: custom ({_short_url(url)})" + (f" · {model}" if model else ""))
 
 
@@ -523,8 +565,10 @@ def _remove_custom_provider(config):
     print(f'✅ Removed "{removed_name}" from custom providers.')
 
 
-def _prompt_reasoning_effort_selection(efforts, current_effort=""):
-    """Prompt for a reasoning effort. Returns effort, 'none', or None to keep current."""
+def _prompt_reasoning_effort_selection(
+    efforts, current_effort="", *, allow_inherit=False, distinguish_cancel=False
+):
+    """Prompt for reasoning; delegation can distinguish inherit, skip, and cancellation."""
     deduped = list(dict.fromkeys(str(effort).strip().lower() for effort in efforts if str(effort).strip()))
     canonical_order = ("minimal", "low", "medium", "high", "xhigh", "max", "ultra")
     ordered = [effort for effort in canonical_order if effort in deduped]
@@ -536,34 +580,57 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
         return f"{effort}  ← currently in use" if effort == current_effort else effort
 
     disable_label = "Disable reasoning"
+    inherit_label = "Inherit parent"
+    if allow_inherit and not current_effort:
+        inherit_label += "  ← currently in use"
     skip_label = "Skip (keep current)"
     if current_effort == "none":
         default_idx = len(ordered)
     elif current_effort in ordered:
         default_idx = ordered.index(current_effort)
+    elif allow_inherit:
+        default_idx = len(ordered) + 1
     elif "medium" in ordered:
         default_idx = ordered.index("medium")
     else:
         default_idx = 0
 
     n = len(ordered)
-    idx = _radiolist("Select reasoning effort:", [_label(effort) for effort in ordered] + [disable_label, skip_label],
-                     default_idx)
+    extra_choices = [disable_label]
+    if allow_inherit:
+        extra_choices.append(inherit_label)
+    extra_choices.append(skip_label)
+    idx = _radiolist(
+        "Select reasoning effort:",
+        [_label(effort) for effort in ordered] + extra_choices,
+        default_idx,
+    )
     if idx is not None:
         if idx < 0:
-            return None
+            return _CANCELLED if distinguish_cancel else None
         print()
     else:
         print("Select reasoning effort:")
         for i, effort in enumerate(ordered, 1):
             print(f"  {i}. {_label(effort)}")
-        _say(f"  {n + 1}. {disable_label}", f"  {n + 2}. {skip_label}", "")
-        idx = _ask_index(f"Choice [1-{n + 2}] (default: keep current): ", n + 2, echo_cancel=False)
-        if idx is None or idx is _CANCELLED:
+        for offset, label in enumerate(extra_choices, 1):
+            print(f"  {n + offset}. {label}")
+        print()
+        count = n + len(extra_choices)
+        idx = _ask_index(
+            f"Choice [1-{count}] (default: keep current): ", count, echo_cancel=False
+        )
+        if idx is _CANCELLED:
+            return _CANCELLED if distinguish_cancel else None
+        if idx is None:
             return None
     if idx < n:
         return ordered[idx]
-    return "none" if idx == n else None
+    if idx == n:
+        return "none"
+    if allow_inherit and idx == n + 1:
+        return ""
+    return None
 
 
 def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "", existing_source: str = "") -> tuple:

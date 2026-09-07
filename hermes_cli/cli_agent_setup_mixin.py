@@ -496,10 +496,20 @@ class CLIAgentSetupMixin:
                 self._session_db = SessionDB()
             except Exception as e:
                 logger.warning("SQLite session store not available — session will NOT be indexed: %s", e)
-        if (
-            self._resumed and self._session_db and not self.conversation_history
-            and not self._load_resumed_history_late()):
-            return False
+        if self._resumed and self._session_db and not self.conversation_history:
+            if not self._load_resumed_history_late():
+                return False
+            # The late resume just restored the session's model/provider onto self, but every
+            # caller resolved credentials and snapshotted its route BEFORE this call — so the
+            # overrides still name the ambient config default and the agent would be built on
+            # it while "Model restored from session" is printed. Do what the startup-resume
+            # path does after its restore: re-resolve credentials for the restored provider
+            # (normalizes the model for it too), then re-derive the route.
+            if not self._ensure_runtime_credentials():
+                return False
+            route = self._resolve_turn_agent_config("")
+            model_override, runtime_override = route["model"], route["runtime"]
+            request_overrides = route["request_overrides"]
         try:
             runtime = runtime_override or _current_runtime(self)
             effective_model = model_override or self.model

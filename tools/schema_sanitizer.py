@@ -24,13 +24,64 @@ def _empty_object() -> dict:
     return {"type": "object", "properties": {}}
 
 
+_SCHEMA_MAP_KEYS = frozenset({
+    "properties", "patternProperties", "$defs", "definitions",
+    "dependentSchemas", "dependencies",
+})
+_SCHEMA_CHILD_KEYS = frozenset({
+    "items", "additionalItems", "additionalProperties", "contains", "propertyNames",
+    "not", "if", "then", "else", "unevaluatedItems", "unevaluatedProperties",
+    "contentSchema",
+})
+_SCHEMA_ARRAY_KEYS = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
+
+
+def _schema_child_slots(key, value):
+    """Child locations for one schema keyword; None denotes a single schema.
+
+    Dependencies' property-name arrays are data, but legacy tuple items and
+    bare-string/boolean schemas still occupy schema positions.
+    """
+    if key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
+        return {name for name, child in value.items()
+                if not (key == "dependencies" and isinstance(child, list))}
+    if (key in _SCHEMA_ARRAY_KEYS or key == "items") and isinstance(value, list):
+        return range(len(value))
+    if key in _SCHEMA_CHILD_KEYS:
+        return (None,)
+    return ()
+
+
+def _map_schema_children(node, transform, *, path=None):
+    """Copy schema children through *transform*, and literal data without rewriting it.
+
+    Path-aware transforms receive the child's diagnostic path as a second argument.
+    """
+    def visit(child, suffix):
+        return transform(child) if path is None else transform(child, f"{path}.{suffix}")
+
+    out = {}
+    for key, value in node.items():
+        slots = _schema_child_slots(key, value)
+        if slots == (None,):
+            out[key] = visit(value, key)
+        elif slots:
+            entries = value.items() if isinstance(value, dict) else enumerate(value)
+            mapped = {slot: visit(child, f"{key}.{slot}") if slot in slots
+                      else copy.deepcopy(child) for slot, child in entries}
+            out[key] = mapped if isinstance(value, dict) else list(mapped.values())
+        else:
+            out[key] = copy.deepcopy(value)
+    return out
+
+
 def _rewrite(schema: Any, fn: Callable[[dict], Any]) -> Any:
-    """Bottom-up map over a schema tree: lists/dicts recurse, then *fn* sees each dict."""
+    """Bottom-up map over schema nodes, leaving keyed maps and literal data intact."""
     if isinstance(schema, list):
         return [_rewrite(item, fn) for item in schema]
     if not isinstance(schema, dict):
         return schema
-    return fn({k: _rewrite(v, fn) for k, v in schema.items()})
+    return fn(_map_schema_children(schema, lambda child: _rewrite(child, fn)))
 
 
 def sanitize_property_key(key: str) -> str:
@@ -120,9 +171,11 @@ _TOP_LEVEL_FORBIDDEN_KEYS = ("allOf", "anyOf", "oneOf", "enum", "not")
 
 
 def _strip_top_level_combinators(params: dict, *, path: str = "<tool>") -> dict:
-    """Drop combinators from the TOP level only (Codex rejects them there). They are usually
-    conditional-required hints, so validity is unchanged (handlers re-validate); nested ones
-    stay."""
+    """Drop TOP-level combinators for Codex compatibility; nested ones stay.
+
+    This deliberately relaxes the provider-visible schema. Server-side validation
+    must still enforce the original constraints, including conditional requirements.
+    """
     if not isinstance(params, dict):
         return params
     out = dict(params)
@@ -212,8 +265,6 @@ def collapse_const_unions(schema: Any) -> Any:
 
 
 _BARE_TYPE_NAMES = frozenset({"object", "string", "number", "integer", "boolean", "array", "null"})
-# Values that are NOT schemas (recursing would treat a required name like "path" as a bare schema).
-_NON_SCHEMA_LIST_KEYS = frozenset({"required", "enum", "examples", "dependentRequired"})
 
 
 def _normalize_type_array(value: list, out: dict) -> None:
@@ -228,7 +279,13 @@ def _normalize_type_array(value: list, out: dict) -> None:
     if len(non_null) == 1:
         out["type"] = non_null[0]
     else:
-        out["anyOf"] = [{"type": t} for t in non_null]
+        type_union = [{"type": t} for t in non_null]
+        if "anyOf" in out:
+            # JSON Schema siblings are conjunctive. Do not overwrite an
+            # existing constrained union when expressing the type restriction.
+            out.setdefault("allOf", []).append({"anyOf": type_union})
+        else:
+            out["anyOf"] = type_union
     if has_null:
         out.setdefault("nullable", True)
 
@@ -237,7 +294,7 @@ def _sanitize_node(node: Any, path: str) -> Any:
     """Recursively sanitize a JSON-Schema fragment: bare-string schemas → ``{"type": <value>}``
     (unknown strings → permissive object); object nodes gain ``properties: {}``; ``type`` arrays
     are normalized; property keys are renamed to the provider-safe pattern and ``required``
-    follows, with entries missing from ``properties`` pruned.
+    follows. Required names need not have locally declared ``properties``.
 
     - Normalizes ``type: [X, "null"]`` arrays to single ``type: X`` (keeping ``nullable: true`` as a hint),
     and multi-type arrays like ``["number", "string"]`` to an ``anyOf`` of single-type schemas so no branch
@@ -256,48 +313,19 @@ def _sanitize_node(node: Any, path: str) -> Any:
         return [_sanitize_node(item, f"{path}[{i}]") for i, item in enumerate(node)]
     if not isinstance(node, dict):
         return node
-    # Renames computed up front so ``required`` remaps even when it precedes ``properties``.
-    props_in = node.get("properties")
-    prop_renames = (_rename_property_keys(props_in, f"{path}.properties")
-                    if isinstance(props_in, dict) else {})
-    out: dict = {}
-    for key, value in node.items():
-        # JSON Schema ``type`` arrays (e.g. ``["number", "string"]``, common in MCP tool schemas) are
-        # rejected by several tool-call backends: * llama.cpp's grammar generator only accepts a singular
-        # string type. * Gemini (including OpenAI-compatible transports such as GitHub Copilot proxying to
-        # Gemini) rejects the array form outright — plain @ai-sdk/google rewrites it, but the
-        # OpenAI-compatible path forwards it verbatim and the backend 400s. Normalize per the SDK's
-        # behavior: * single non-null type → ``type: X`` (+ ``nullable: true`` if the array also contained
-        # "null"). No data lost. * multiple non-null types → ``anyOf`` of single-type schemas, so EVERY
-        # branch survives instead of silently dropping all but the first. ``null`` is lifted into
-        # ``nullable: true``. * all-null / empty → ``type: "null"`` (or object fallback). Ported from
-        # anomalyco/opencode#31877.
-        if key == "type" and isinstance(value, list):
-            _normalize_type_array(value, out)
-        elif key in {"properties", "$defs", "definitions"} and isinstance(value, dict):
-            renames = prop_renames if key == "properties" else {}
-            out[key] = {
-                renames.get(k, k): _sanitize_node(v, f"{path}.{key}.{renames.get(k, k)}")
-                for k, v in value.items()}
-        elif key in {"items", "additionalProperties"}:
-            # Bool ``additionalProperties`` is valid; bool ``items`` is non-standard but preserved.
-            out[key] = value if isinstance(value, bool) else _sanitize_node(value, f"{path}.{key}")
-        elif key in _NON_SCHEMA_LIST_KEYS:
-            if key == "required" and prop_renames and isinstance(value, list):
-                out[key] = [prop_renames.get(r, r) if isinstance(r, str) else r for r in value]
-            else:
-                out[key] = copy.deepcopy(value) if isinstance(value, (list, dict)) else value
-        else:  # anyOf/oneOf/allOf and any other nested schema recurse (lists index the path)
-            out[key] = _sanitize_node(value, f"{path}.{key}") if isinstance(value, (dict, list)) else value
+    out = _map_schema_children(node, _sanitize_node, path=path)
+    props = out.get("properties")
+    if isinstance(props, dict):
+        renames = _rename_property_keys(props, f"{path}.properties")
+        out["properties"] = {renames.get(key, key): value for key, value in props.items()}
+        required = out.get("required")
+        if renames and isinstance(required, list):
+            out["required"] = [renames.get(r, r) if isinstance(r, str) else r for r in required]
+    if isinstance(out.get("type"), list):
+        _normalize_type_array(out.pop("type"), out)
     if out.get("type") == "object":
         if not isinstance(out.get("properties"), dict):
             out["properties"] = {}
-        if isinstance(out.get("required"), list):
-            valid = [r for r in out["required"] if isinstance(r, str) and r in out["properties"]]
-            if valid:
-                out["required"] = valid
-            else:
-                del out["required"]
     return out
 
 
@@ -307,12 +335,13 @@ _SCHEMA_MARKERS = frozenset({"type", "anyOf", "oneOf", "allOf"})  # a node with 
 
 
 def _dict_nodes(node: Any):
-    """Pre-order walk over every dict node (yielded before its values, so it may be mutated)."""
-    if isinstance(node, dict):
-        yield node
-    children = node.values() if isinstance(node, dict) else node if isinstance(node, list) else ()
-    for child in children:
-        yield from _dict_nodes(child)
+    """Pre-order walk over schema dicts only; recovery may mutate each yielded node."""
+    if not isinstance(node, dict):
+        return
+    yield node
+    for key, value in node.items():
+        for slot in _schema_child_slots(key, value):
+            yield from _dict_nodes(value if slot is None else value[slot])
 
 
 def _reactive_strip(

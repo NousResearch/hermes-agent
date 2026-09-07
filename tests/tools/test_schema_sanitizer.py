@@ -146,14 +146,16 @@ def test_non_dict_parameters_gets_default_object_schema():
     assert out[0]["function"]["parameters"] == {"type": "object", "properties": {}}
 
 
-def test_required_pruned_to_existing_properties():
+def test_required_preserved_without_local_property_declarations():
     tools = [_tool("t", {
         "type": "object",
         "properties": {"name": {"type": "string"}},
         "required": ["name", "missing_field"],
     })]
     out = sanitize_tool_schemas(tools)
-    assert out[0]["function"]["parameters"]["required"] == ["name"]
+    # JSON Schema permits required names without local properties. Pruning them
+    # accepts objects rejected by the server and breaks conditional requirements.
+    assert out[0]["function"]["parameters"]["required"] == ["name", "missing_field"]
 
 
 def test_well_formed_schema_unchanged():

@@ -2,12 +2,14 @@
 compatibility, mcp__server__tool naming, utility-tool schemas, include/exclude filters and
 description injection scanning."""
 
+import copy
 import logging
 import fnmatch
 import re
 from typing import Any, List
 from tools.ansi_strip import strip_unicode_tags
 from tools.mcp_tool_common import mcp_field
+from tools.schema_sanitizer import _map_schema_children
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -49,16 +51,10 @@ def _rewrite_local_refs(node):
     ``properties``/``patternProperties``: a parameter legitimately named ``definitions``
     rewritten to ``$defs`` would 400 the whole tool array (Anthropic/OpenAI forbid ``$`` in
     property names)."""
-    if isinstance(node, list):
-        return [_rewrite_local_refs(item) for item in node]
     if not isinstance(node, dict):
-        return node
-    normalized = {}
-    for key, value in node.items():
-        if key in ("properties", "patternProperties") and isinstance(value, dict):
-            normalized[key] = {name: _rewrite_local_refs(schema) for name, schema in value.items()}
-        else:
-            normalized["$defs" if key == "definitions" else key] = _rewrite_local_refs(value)
+        return copy.deepcopy(node)
+    normalized = {"$defs" if key == "definitions" else key: value
+                  for key, value in _map_schema_children(node, _rewrite_local_refs).items()}
     ref = normalized.get("$ref")
     if isinstance(ref, str) and ref.startswith("#/definitions/"):
         normalized["$ref"] = "#/$defs/" + ref[len("#/definitions/"):]
@@ -66,28 +62,19 @@ def _rewrite_local_refs(node):
 
 
 def _repair_object_shape(node):
-    """Recursively fill a missing object ``type``, ensure ``properties`` (so ``required``
-    can't dangle) and prune ``required`` to names present in ``properties`` (Gemini 400s
-    otherwise)."""
-    if isinstance(node, list):
-        return [_repair_object_shape(item) for item in node]
+    """Fill missing object shapes without weakening independent ``required`` constraints.
+
+    ``required`` neither declares an object type nor needs local ``properties``:
+    parent/peer schemas can declare the names, including inside conditionals.
+    """
     if not isinstance(node, dict):
-        return node
-    repaired = {k: _repair_object_shape(v) for k, v in node.items()}
-    if not repaired.get("type") and ("properties" in repaired or "required" in repaired):
+        return copy.deepcopy(node)
+    repaired = _map_schema_children(node, _repair_object_shape)
+    if not repaired.get("type") and "properties" in repaired:
         repaired["type"] = "object"
     if repaired.get("type") == "object":
         if not isinstance(repaired.get("properties"), dict):
             repaired["properties"] = {}
-        required = repaired.get("required")
-        if isinstance(required, list):
-            props = repaired.get("properties") or {}
-            valid = [r for r in required if isinstance(r, str) and r in props]
-            if len(valid) != len(required):
-                if valid:
-                    repaired["required"] = valid
-                else:
-                    repaired.pop("required", None)
     return repaired
 
 
@@ -102,8 +89,8 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
 
     * Missing or ``null`` ``type`` on an object-shaped node is coerced to ``"object"`` (some servers omit
     it). See PR #4897. * When an ``object`` node lacks ``properties``, an empty ``properties`` dict is added
-    so ``required`` entries don't dangle. * ``required`` arrays are pruned to only names that exist in
-    ``properties``; otherwise Google AI Studio / Gemini 400s with ``property is not defined``. See PR #4651.
+    for provider compatibility. * ``required`` constraints are preserved even without locally declared
+    properties; pruning them changes valid JSON Schema semantics (including ``not`` and ``if``).
     * MCP/Pydantic optional fields commonly arrive as ``anyOf: [{...}, {"type": "null"}], default: null``.
     """
     if not schema:

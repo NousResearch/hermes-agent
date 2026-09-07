@@ -42,7 +42,7 @@ vi.mock('@/hermes', () => ({
   },
   setApiRequestConnection: vi.fn()
 }))
-vi.mock('@/store/session', () => ({ setGatewayState: vi.fn() }))
+vi.mock('@/store/session', () => ({ setConnection: vi.fn(), setGatewayState: vi.fn() }))
 vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
 
 const {
@@ -57,7 +57,9 @@ const {
   pruneSecondaryGateways,
   requestGatewayForAgent,
   requestGatewayForProfile,
-  setPrimaryGateway
+  retainGatewayForAgent,
+  setPrimaryGateway,
+  setPrimaryGatewayConnection
 } = await import('./gateway')
 
 function installDesktop(getConnection: ReturnType<typeof vi.fn>): void {
@@ -190,6 +192,73 @@ describe('requestGatewayForProfile', () => {
 })
 
 describe('requestGatewayForAgent', () => {
+  it('reuses the active primary socket when its registry connection owns the session', async () => {
+    const primary = makePrimary()
+
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }) => ({
+      connectionId,
+      port: 5151,
+      profile,
+      token: 'secondary-token'
+    }))
+
+    setPrimaryGateway(primary as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'remote-primary' })
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(),
+      getConnectionFor,
+      getGatewayWsUrlFor: vi.fn(async () => ({ ok: true as const, wsUrl: 'wss://remote.invalid/api/ws' })),
+      touchBackend: vi.fn(async () => undefined)
+    }
+    await ensureGatewayForProfile('default')
+
+    await openGatewayForAgent('remote-primary', 'default')
+    await ensureGatewayForAgent('remote-primary', 'default')
+
+    const result = await requestGatewayForAgent('remote-primary', 'default', 'session.resume', {
+      session_id: 'stored-session'
+    })
+
+    expect(result).toEqual({
+      method: 'session.resume',
+      params: { session_id: 'stored-session' }
+    })
+    expect(primary.request).toHaveBeenCalledWith('session.resume', { session_id: 'stored-session' })
+    expect(getConnectionFor).not.toHaveBeenCalled()
+    expect(secondaryGateways).toHaveLength(0)
+    expect($gateway.get()).toBe(primary)
+  })
+
+  it('keeps another profile on the same registry source isolated from the primary', async () => {
+    const primary = makePrimary()
+
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }) => ({
+      connectionId,
+      port: 5151,
+      profile,
+      token: 'secondary-token'
+    }))
+
+    setPrimaryGateway(primary as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'remote-primary' })
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(),
+      getConnectionFor,
+      getGatewayWsUrlFor: vi.fn(async () => ({ ok: true as const, wsUrl: 'wss://remote.invalid/api/ws' })),
+      touchBackend: vi.fn(async () => undefined)
+    }
+
+    await requestGatewayForAgent('remote-primary', 'research', 'session.resume', {
+      session_id: 'research-session'
+    })
+
+    expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'remote-primary', profile: 'research' })
+    expect(primary.request).not.toHaveBeenCalled()
+    expect(secondaryGateways).toHaveLength(1)
+  })
+
   it('leases separate registry sockets for duplicate profile names without changing the active gateway', async () => {
     const primary = makePrimary()
     const getConnection = vi.fn(async (profile: null | string) => ({ port: 4242, profile, token: 'legacy-token' }))
@@ -272,6 +341,7 @@ describe('requestGatewayForAgent', () => {
 
   it('evicts registry sockets when their source is edited or removed', async () => {
     const primary = makePrimary()
+
     const getConnectionFor = vi.fn(async ({ connectionId, profile }) => ({ connectionId, port: 5151, profile }))
     const onActiveConnectionInvalidated = vi.fn()
 
@@ -368,5 +438,243 @@ describe('requestGatewayForAgent', () => {
     expect(secondaryGateways[0].close).toHaveBeenCalled()
     expect(onActiveConnectionChanged).not.toHaveBeenCalled()
     expect($gateway.get()).toBe(primary)
+  })
+
+  it('does not activate or publish a source whose activation owner aborted while dialing', async () => {
+    const primary = makePrimary()
+    const onActiveConnectionChanged = vi.fn()
+    const controller = new AbortController()
+
+    setPrimaryGateway(primary as never, 'default')
+    configureGatewayRegistry({ onActiveConnectionChanged, onEvent: vi.fn() })
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(async profile => ({ port: 4242, profile })),
+      getConnectionFor: vi.fn(async ({ connectionId, profile }) => ({ connectionId, port: 5151, profile })),
+      getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
+        ok: true as const,
+        wsUrl: `ws://${connectionId}/${profile}`
+      })),
+      touchBackend: vi.fn(async () => undefined)
+    }
+    await ensureGatewayForProfile('default')
+
+    let releaseConnect: () => void = () => undefined
+    connectGate = new Promise<void>(resolve => {
+      releaseConnect = resolve
+    })
+    const abandoned = ensureGatewayForAgent('source-b', 'default', { signal: controller.signal })
+    await vi.waitFor(() => expect(secondaryGateways[0]?.connect).toHaveBeenCalledOnce())
+
+    controller.abort()
+    releaseConnect()
+
+    expect(await abandoned).toBe(false)
+    expect(onActiveConnectionChanged).not.toHaveBeenCalled()
+    expect($gateway.get()).toBe(primary)
+  })
+})
+
+describe('retainGatewayForAgent (#93602)', () => {
+  function installRegistryDesktop() {
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(async (profile: null | string) => ({ port: 4242, profile, token: 't' })),
+      getConnectionFor: vi.fn(async ({ connectionId, profile }) => ({ connectionId, port: 5151, profile })),
+      getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
+        ok: true as const,
+        wsUrl: `ws://${connectionId}/${profile}`
+      })),
+      touchBackend: vi.fn(async () => undefined)
+    }
+  }
+
+  it('holds the registry socket across multiple leased requests — no mid-turn disposal', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installRegistryDesktop()
+    await ensureGatewayForProfile('default')
+
+    const release = await retainGatewayForAgent('mini', 'helper')
+
+    // The whole member-turn RPC sequence: each call takes and releases its own
+    // per-request lease. Without the retain, refcount 0 between calls disposes
+    // the socket and the runtime session with it.
+    await requestGatewayForAgent('mini', 'helper', 'session.create', { title: 'g' })
+    await requestGatewayForAgent('mini', 'helper', 'image.attach_bytes', { session_id: 'rt-1' })
+    await requestGatewayForAgent('mini', 'helper', 'prompt.submit', { session_id: 'rt-1', text: 'hi' })
+
+    expect(secondaryGateways).toHaveLength(1)
+    expect(secondaryGateways[0].close).not.toHaveBeenCalled()
+    expect(secondaryGateways[0].request).toHaveBeenCalledTimes(3)
+
+    release()
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
+  })
+
+  it('release is idempotent — a double release never underflows into a foreign disposal', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installRegistryDesktop()
+    await ensureGatewayForProfile('default')
+
+    const release = await retainGatewayForAgent('mini', 'helper')
+    release()
+    release()
+
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
+
+    // A fresh retain still works after the double release.
+    const again = await retainGatewayForAgent('mini', 'helper')
+    await requestGatewayForAgent('mini', 'helper', 'prompt.submit', { session_id: 'rt-2', text: 'hi' })
+    expect(secondaryGateways[1].close).not.toHaveBeenCalled()
+    again()
+    expect(secondaryGateways[1].close).toHaveBeenCalledOnce()
+  })
+
+  it('without the retain, the leased socket closes after each request (the #93602 race)', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installRegistryDesktop()
+    await ensureGatewayForProfile('default')
+
+    await requestGatewayForAgent('mini', 'helper', 'session.create', { title: 'g' })
+
+    // Refcount hit 0 → disposed: this is the socket close that reaps the
+    // runtime session server-side and makes the later prompt.submit 4001.
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
+  })
+
+  it('plain-profile retain leases the pooled profile socket and releases it', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop(
+      vi.fn(async (profile: null | string) =>
+        profile ? { port: 5151, profile, token: 'secondary-token' } : { port: 4242, token: 'primary-token' }
+      )
+    )
+    await ensureGatewayForProfile('default')
+
+    const release = await retainGatewayForAgent(null, 'worker')
+    await requestGatewayForProfile('worker', 'session.create', { title: 'g' })
+    await requestGatewayForProfile('worker', 'prompt.submit', { session_id: 'rt-1', text: 'hi' })
+
+    expect(secondaryGateways).toHaveLength(1)
+    expect(secondaryGateways[0].close).not.toHaveBeenCalled()
+
+    release()
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
+  })
+})
+
+describe('attached shared-remote group turns (#96493)', () => {
+  function installAttachedSharedRemote() {
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(async (profile: null | string) => ({ port: 4242, profile, token: 't' })),
+      getConnectionFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+        connectionId,
+        port: 9119,
+        profile,
+        sharedRemote: true
+      })),
+      getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+        ok: true as const,
+        wsUrl: `ws://${connectionId}/${profile}`
+      })),
+      touchBackend: vi.fn(async () => undefined)
+    }
+  }
+
+  it('reuses the primary socket for a named profile on the attached shared remote', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'homelab' })
+    installAttachedSharedRemote()
+    await ensureGatewayForProfile('default')
+
+    const release = await retainGatewayForAgent('homelab', 'voter')
+    await requestGatewayForAgent('homelab', 'voter', 'session.create', { title: 'Group: room' })
+    await requestGatewayForAgent('homelab', 'voter', 'prompt.submit', { session_id: 'rt-1', text: 'hi' })
+
+    expect(secondaryGateways).toHaveLength(0)
+    expect(primary.request).toHaveBeenCalledTimes(2)
+    expect(primary.request).toHaveBeenNthCalledWith(1, 'session.create', {
+      title: 'Group: room',
+      profile: 'voter'
+    })
+    expect(primary.request).toHaveBeenNthCalledWith(2, 'prompt.submit', {
+      session_id: 'rt-1',
+      text: 'hi',
+      profile: 'voter'
+    })
+
+    release()
+    expect(secondaryGateways).toHaveLength(0)
+  })
+
+  it('still dials a secondary when the attached source is not a shared remote', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'homelab' })
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(async (profile: null | string) => ({ port: 4242, profile, token: 't' })),
+      getConnectionFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+        connectionId,
+        port: 5151,
+        profile,
+        sharedRemote: false
+      })),
+      getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+        ok: true as const,
+        wsUrl: `ws://${connectionId}/${profile}`
+      })),
+      touchBackend: vi.fn(async () => undefined)
+    }
+    await ensureGatewayForProfile('default')
+
+    await requestGatewayForAgent('homelab', 'voter', 'session.create', { title: 'g' })
+
+    expect(secondaryGateways).toHaveLength(1)
+    expect(primary.request).not.toHaveBeenCalled()
+  })
+
+  it('reuses the primary when the shared-remote probe fails instead of dialing a ghost secondary', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'homelab' })
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(async (profile: null | string) => ({ port: 4242, profile, token: 't' })),
+      getConnectionFor: vi.fn(async () => {
+        throw new Error('Timed out connecting to profile "voter"')
+      }),
+      getGatewayWsUrlFor: vi.fn(async () => ({ ok: true as const, wsUrl: 'ws://homelab/voter' })),
+      touchBackend: vi.fn(async () => undefined)
+    }
+    await ensureGatewayForProfile('default')
+
+    await requestGatewayForAgent('homelab', 'voter', 'session.create', { title: 'g' })
+
+    expect(secondaryGateways).toHaveLength(0)
+    expect(primary.request).toHaveBeenCalledOnce()
+  })
+
+  it('openGatewayForAgent and ensureGatewayForAgent do not dial a secondary', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'homelab' })
+    installAttachedSharedRemote()
+    await ensureGatewayForProfile('default')
+
+    await openGatewayForAgent('homelab', 'voter')
+    expect(await ensureGatewayForAgent('homelab', 'voter')).toBe(true)
+    expect(secondaryGateways).toHaveLength(0)
+  })
+
+  it('ensureGatewayForAgent is false when the attached primary socket is closed', async () => {
+    const primary = { connectionState: 'closed', request: vi.fn() }
+    setPrimaryGateway(primary as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'homelab' })
+    installAttachedSharedRemote()
+
+    expect(await ensureGatewayForAgent('homelab', 'voter')).toBe(false)
+    expect(secondaryGateways).toHaveLength(0)
   })
 })

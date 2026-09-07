@@ -15,7 +15,7 @@ Infographics: 21 layouts x 21 styles (信息图, 可视化).
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/creative/baoyu-infographic` |
+| Path | `skills/creative\baoyu-infographic` |
 | Version | `1.56.1` |
 | Author | 宝玉 (JimLiu) |
 | License | MIT |

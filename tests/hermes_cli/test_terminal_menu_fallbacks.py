@@ -4,6 +4,8 @@ cannot initialize (e.g. non-TTY, curses unavailable, terminal error)."""
 import subprocess
 from types import SimpleNamespace
 
+import pytest
+
 from hermes_cli.config import load_config, save_config
 
 
@@ -11,6 +13,46 @@ def _raise_menu(*args, **kwargs):
     # Mimic curses_radiolist hitting an unrecoverable terminal error so the
     # caller's except clause routes to the numbered-input fallback.
     raise subprocess.CalledProcessError(2, ["tput", "clear"])
+
+
+@pytest.mark.parametrize(
+    ("sequence", "expected"),
+    [
+        ("\x1b[27u", "cancel"),
+        ("\x1b[D", "back"),
+        ("\x1b[99;5u", "cancel"),
+    ],
+)
+def test_scoped_numbered_input_handles_navigation_keys(sequence, expected):
+    """The curses fallback stays escapable on POSIX and native Windows."""
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input.defaults import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    from hermes_cli.curses_ui import (
+        MenuNavigationStart,
+        _NUMBERED_BACK_ENABLED,
+        _NumberedNavigation,
+        _read_numbered_input,
+        reset_menu_navigation_handler,
+        set_menu_navigation_handler,
+    )
+
+    def handler(event, *_args):
+        return MenuNavigationStart(allow_back=True) if event == "begin" else None
+
+    token = set_menu_navigation_handler(handler)
+    back_token = _NUMBERED_BACK_ENABLED.set(True)
+    try:
+        with create_pipe_input() as pipe_input:
+            pipe_input.send_text(sequence)
+            with create_app_session(input=pipe_input, output=DummyOutput()):
+                result = _read_numbered_input("Choice: ")
+    finally:
+        _NUMBERED_BACK_ENABLED.reset(back_token)
+        reset_menu_navigation_handler(token)
+
+    assert result is getattr(_NumberedNavigation, expected.upper())
 
 
 
@@ -71,7 +113,7 @@ def test_prompt_model_selection_fallback_uses_line_editor_for_custom_model(
 
 
 def test_remove_custom_provider_falls_back_on_menu_runtime_error(tmp_path, monkeypatch):
-    from hermes_cli.main import _remove_custom_provider
+    from hermes_cli.main_provider_setup import _remove_custom_provider
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", _raise_menu)

@@ -74,6 +74,10 @@ Set up the cron job:
 For cron monitoring jobs, instruct the agent to respond with only `[SILENT]` when nothing changed. Cron delivery treats `[SILENT]` as the quiet marker, so you only get notified when something actually happens — no spam on quiet hours.
 :::
 
+:::tip Keeping failure notices out of shared channels
+`[SILENT]` only applies to successful runs — when a job hard-fails, the engine posts a `⚠️ Cron 'X' failed…` notice to the job's delivery target. For jobs that deliver into busy shared channels, set `--failure-deliver local` to suppress those notices entirely (run state stays visible in `hermes cron list` and run history), or point failures at an ops channel with `--failure-deliver slack:C_OPS`. Same grammar as `--deliver`; omit it and failures follow `--deliver` as before.
+:::
+
 ---
 
 ## Pattern 2: Weekly Report
@@ -246,6 +250,28 @@ The `--deliver` flag controls where results go:
 | `slack` | `--deliver slack` | Your Slack home channel |
 | Specific chat | `--deliver telegram:-1001234567890` | A specific Telegram group |
 | Threaded | `--deliver telegram:-1001234567890:17585` | A specific Telegram topic thread |
+| Bot Chat | `--deliver bot-chat` | Inject output into this profile's canonical Bot Chat — the bot reads it and responds |
+| Bot Chat (named) | `--deliver bot-chat:research` | Another local profile's Bot Chat |
+
+### Bot Chat delivery
+
+`bot-chat` targets deliver the job's output **into a profile's canonical "Bot
+Chat" session as a real message** — the bot receives it like any other message,
+acts on anything that needs action, and responds in that chat. This is the
+target to use when you want a bot to *see and react to* scheduled output
+instead of just having it archived in Run history.
+
+Things to know:
+
+- **Machine-local.** The profile must exist on the machine running the
+  scheduler (`hermes profile list`). Names are validated at create time;
+  profiles on other gateways/machines cannot be targeted.
+- **Costs a bot turn.** Each delivery runs a full agent turn in the target
+  bot's Bot Chat — budget accordingly for high-frequency jobs.
+- **Combinable.** `--deliver bot-chat,telegram` posts to the bot AND your
+  Telegram home channel. The `all` token never expands to bot-chat targets.
+- The delivered message is prefixed so the bot knows it came from a scheduled
+  job, not from you.
 
 ---
 

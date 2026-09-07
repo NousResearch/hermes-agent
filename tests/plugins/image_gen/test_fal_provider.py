@@ -35,13 +35,13 @@ class TestFalImageGenProviderSurface:
 
     def test_default_model_matches_legacy(self):
         from plugins.image_gen.fal import FalImageGenProvider
-        from tools.image_generation_tool import DEFAULT_MODEL
+        from tools.image_generation_catalog import DEFAULT_MODEL
 
         assert FalImageGenProvider().default_model() == DEFAULT_MODEL
 
     def test_list_models_uses_legacy_catalog(self):
         from plugins.image_gen.fal import FalImageGenProvider
-        from tools.image_generation_tool import FAL_MODELS
+        from tools.image_generation_catalog import FAL_MODELS
 
         provider = FalImageGenProvider()
         models = provider.list_models()

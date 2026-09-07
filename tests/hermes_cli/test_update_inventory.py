@@ -58,7 +58,12 @@ class TestCollectInventory:
         assert by_profile["work"].pid == 200
         assert by_profile["work"].supervisor == "manual"
         assert by_profile["work"].code_sha is None  # pre-stamp gateway
-        assert "hermes -p work gateway restart" in by_profile["work"].restart_via
+        assert by_profile["work"].restart_via == "manual"
+        from hermes_cli.update_inventory import describe_restart_mechanism
+
+        assert "hermes -p work gateway restart" in describe_restart_mechanism(
+            by_profile["work"].restart_via, "work"
+        )
 
     def test_docker_install_not_updatable_in_place(self, fleet, monkeypatch):
         monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda *a, **k: "docker")

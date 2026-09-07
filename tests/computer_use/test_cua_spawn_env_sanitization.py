@@ -5,15 +5,16 @@ PR #58889 fixed the CLI-fallback transport; review of that fix found four
 sibling spawn sites still handing the third-party ``cua-driver`` binary the
 full parent environment (provider API keys included):
 
-- ``cua_backend._resolve_mcp_invocation`` (``cua-driver manifest``) — no
+- ``cua_backend_driver._resolve_mcp_invocation`` (``cua-driver manifest``) — no
   ``env=`` at all
-- ``cua_backend.cua_driver_update_check`` (``check-update --json``) —
+- ``cua_backend_driver.cua_driver_update_check`` (``check-update --json``) —
   telemetry env but no secret sanitization
 - ``doctor._drive_health_report`` (``<binary> mcp``) — telemetry env only
 - ``permissions._run`` (every permission probe) — telemetry env only
 """
 
 import json
+import os
 from unittest.mock import MagicMock
 
 SECRET = "sk-super-secret-should-not-leak"
@@ -42,9 +43,22 @@ def _assert_sanitized(captured):
     assert env is not None, "subprocess must receive an explicit env="
     assert "ANTHROPIC_API_KEY" not in env
     # Sanitization filters secrets, not everything — ordinary vars survive.
-    assert env.get("PATH") == "/usr/bin:/bin"
+    _assert_path_preserved(env)
     # Confirms the telemetry helper still ran (default: telemetry disabled).
     assert env.get("CUA_DRIVER_RS_TELEMETRY_ENABLED") == "0"
+
+
+def _assert_path_preserved(env):
+    """Original PATH entries survive sanitization; the hermes console-script
+    dir may be prepended (see _sanitize_subprocess_env, issue #92998) so we
+    assert the contract, not byte equality."""
+    from tools.environments.local import _resolve_hermes_bin_dir
+
+    path_val = env.get("PATH", "")
+    assert path_val.endswith("/usr/bin:/bin"), path_val
+    hermes_bin = _resolve_hermes_bin_dir()
+    if hermes_bin and path_val != "/usr/bin:/bin":
+        assert path_val.startswith(hermes_bin + os.pathsep), path_val
 
 
 def _patch_windows_hide_flags(monkeypatch, module):
@@ -68,6 +82,7 @@ def test_resolve_mcp_invocation_sanitizes_env(monkeypatch):
     monkeypatch.delenv("HERMES_CUA_TELEMETRY", raising=False)
 
     from tools.computer_use import cua_backend
+    from tools.computer_use import cua_backend_driver
 
     captured = {}
     _patch_windows_hide_flags(monkeypatch, cua_backend)
@@ -76,7 +91,7 @@ def test_resolve_mcp_invocation_sanitizes_env(monkeypatch):
         cua_backend.subprocess, "run", _capture_run(captured, stdout=manifest)
     )
 
-    cmd, args = cua_backend._resolve_mcp_invocation("cua-driver")
+    cmd, args = cua_backend_driver._resolve_mcp_invocation("cua-driver")
     assert cmd == "cua-driver"
     _assert_sanitized(captured)
     assert captured["creationflags"] == CREATE_NO_WINDOW
@@ -88,6 +103,7 @@ def test_update_check_sanitizes_env(monkeypatch):
     monkeypatch.delenv("HERMES_CUA_TELEMETRY", raising=False)
 
     from tools.computer_use import cua_backend
+    from tools.computer_use import cua_backend_driver
 
     captured = {}
     _patch_windows_hide_flags(monkeypatch, cua_backend)
@@ -99,13 +115,13 @@ def test_update_check_sanitizes_env(monkeypatch):
     # PATH is pinned to /usr/bin:/bin above, so the driver won't resolve;
     # pin it so the check reaches the (sanitized) subprocess spawn.
     monkeypatch.setattr(
-        cua_backend, "resolve_cua_driver_cmd", lambda *a, **k: "cua-driver"
+        cua_backend_driver, "resolve_cua_driver_cmd", lambda *a, **k: "cua-driver"
     )
     monkeypatch.setattr(
         cua_backend.subprocess, "run", _capture_run(captured, stdout=payload)
     )
 
-    cua_backend.cua_driver_update_check(timeout=1.0)
+    cua_backend_driver.cua_driver_update_check(timeout=1.0)
     _assert_sanitized(captured)
     assert captured["creationflags"] == CREATE_NO_WINDOW
 
@@ -115,14 +131,14 @@ def test_cli_fallback_sanitizes_env_and_hides_console_on_windows(monkeypatch):
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.delenv("HERMES_CUA_TELEMETRY", raising=False)
 
-    from tools.computer_use import cua_backend
+    from tools.computer_use import cua_backend, cua_backend_driver, cua_backend_session
 
     captured = {}
-    _patch_windows_hide_flags(monkeypatch, cua_backend)
+    _patch_windows_hide_flags(monkeypatch, cua_backend_session)
     # Hermetic CI has no cua-driver binary; pin the resolver so the test
     # exercises the spawn-env path instead of the install-hint early exit.
     monkeypatch.setattr(
-        cua_backend, "resolve_cua_driver_cmd", lambda override=None: "cua-driver"
+        cua_backend_driver, "resolve_cua_driver_cmd", lambda override=None: "cua-driver"
     )
     monkeypatch.setattr(
         cua_backend.subprocess,
@@ -211,7 +227,7 @@ def test_doctor_sanitized_env_helper(monkeypatch):
 
     env = doctor._sanitized_cua_env()
     assert "ANTHROPIC_API_KEY" not in env
-    assert env.get("PATH") == "/usr/bin:/bin"
+    _assert_path_preserved(env)
     assert env.get("CUA_DRIVER_RS_TELEMETRY_ENABLED") == "0"
 
     # The Popen spawn site must actually use the sanitized helper.

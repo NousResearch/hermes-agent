@@ -259,6 +259,95 @@ Returns a machine-readable description of the API server's stable surface for ex
 
 Use this endpoint when integrating dashboards, browser UIs, or control planes so they can discover whether the running Hermes version supports runs, streaming, cancellation, and session continuity without depending on private Python internals.
 
+## Browser-extension control
+
+Hermes can route browser tools through an authenticated extension that controls
+the browser session associated with the current Hermes session. The feature is
+disabled by default; set `browser.extension_control.enabled` to `true` to opt in:
+
+```yaml
+browser:
+  extension_control:
+    enabled: true
+```
+
+The local API path also requires the API server bearer key. A controller may
+register only for an existing server session. Hermes derives the controller
+principal from authenticated server state; a client-supplied `principal_id` is
+ignored.
+
+Discover the live contract through `GET /v1/capabilities`. The
+`browser_extension_control` object reports whether the feature is enabled, the
+protocol version, transport names, and the exact capability allowlist:
+
+```text
+controller.noop
+browser_back
+browser_click
+browser_navigate
+browser_press
+browser_screenshot
+browser_scroll
+browser_snapshot
+browser_tab_activate
+browser_tabs
+browser_type
+```
+
+Requested capabilities outside that list are filtered out. Raw CDP, arbitrary
+script evaluation, console access, uploads, image extraction, and vision are not
+part of the controller protocol.
+
+When a request has no bound controller identity, or when the feature is disabled,
+Hermes preserves the existing browser backend. Once the gateway binds a
+controller principal and transport family to the request, that extension lane
+is authoritative: missing, ambiguous, disconnected, or incapable controllers
+fail closed instead of silently switching to a different local/cloud browser.
+After an exact controller is selected, its result or error is authoritative and
+Hermes never retries the same action through another backend.
+
+### Local API registration
+
+1. Send an authenticated `POST /v1/browser-control/register` with
+   `protocol_version`, `session_id`, `controller_id`, `browser_profile_id`, and
+   the requested `capabilities`.
+2. Hermes returns a single-use ticket with a 30-second TTL and the filtered,
+   server-bound controller scope.
+3. Open `GET /v1/browser-control/ws` with both WebSocket subprotocols:
+   `hermes-browser-control-v1` and
+   `hermes-browser-control-ticket.<ticket>`.
+
+The ticket is never accepted in the query string. Unknown, expired, reused, or
+malformed tickets fail before WebSocket upgrade.
+
+### Controller frames
+
+Hermes sends `browser.controller.command` frames containing `command_id`,
+`action`, immutable `arguments`, browser/controller ids, and the originating
+`tool_call_id`. The controller replies with `browser.controller.result`, the
+same `command_id`, an exact boolean `ok`, and either `result` or `error`.
+Cancellation and timeout emit `browser.controller.cancel`; late results are
+ignored.
+
+An unexpected socket loss marks the controller offline and preserves work
+already in flight until each command's original deadline. A reconnect with the
+same principal, profile, session, controller id, browser profile, and transport
+identity refreshes the transport without admitting new work before any deferred
+cancels are flushed. Negotiated capabilities may change on that reconnect; they
+are not an identity field. A different controller id or browser profile in the
+same authenticated session lane is a hard replacement: old pending work is
+cancelled before the successor becomes routable. Send
+`browser.controller.detach` on the authenticated controller transport for an
+intentional hard detach — that immediately cancels pending work. Merely closing
+the socket is treated as a recoverable disconnect.
+
+The authenticated dashboard transport exposes the same registration, result,
+heartbeat, capability, and ownership semantics over its Gateway RPC/event
+channel. In both transports, selection requires one unambiguous exact match on
+principal, profile, session, controller, browser profile, transport family, and
+capability. Once selected, a controller failure is authoritative and is never
+retried through a different browser backend.
+
 ## Per-request model selection
 
 Authenticated clients can override Hermes' default model selection per request
@@ -355,6 +444,13 @@ Create a new agent run. Returns a `run_id` that can be used to subscribe to prog
 
 Runs accept a simple `input` string and optional `session_id`, `instructions`, `conversation_history`, or `previous_response_id`. When `session_id` is provided, Hermes surfaces it in the run status so external UIs can correlate runs with their own conversation IDs.
 
+For safely retryable creation, send an `Idempotency-Key` header (1–255 visible ASCII characters). Hermes durably reserves the key before starting work. An identical retry returns the original `run_id` with HTTP 202 and `Idempotency-Replayed: true`, including after a gateway restart and after the run has completed, failed, or been cancelled. Reusing the same key with a different JSON payload returns HTTP 409 with code `idempotency_key_conflict`. Keys are isolated by authenticated API profile/credential and retained for 24 hours after their last status update; clients should use unique, unguessable keys and must not reuse them for unrelated operations. Requests without the header retain the legacy behavior and always create a new run.
+
+When `session_id` identifies an existing Hermes session and no explicit
+`conversation_history` or `previous_response_id` is supplied, the run loads
+that session's active transcript. Session turn leases serialize concurrent
+writers and refresh the transcript after a contended wait.
+
 ### GET /v1/runs/\{run_id\}
 
 Poll the current run state. This is useful for dashboards that need status without holding an SSE connection open, or for UIs that reconnect after navigation.
@@ -381,8 +477,9 @@ When the agent delegates work to background subagents, the stream also carries
 `subagent.start` and `subagent.complete` lifecycle events, so clients can
 observe delegation outcomes — including timeouts and failures — instead of the
 run going silent while a child works. The `subagent.complete` payload carries
-the child's status, summary, duration, token/cost figures, and a
-`child_session_id` for correlation; free-text fields pass forced secret
+the child's status, summary, duration, token/cost figures, a
+`child_session_id` for correlation, and the `delegation_id` of the batch it
+belongs to (so concurrent or nested fan-outs stay distinguishable); free-text fields pass forced secret
 redaction before leaving the process. Per-tool child events
 (`subagent.tool`, progress ticks) are intentionally **not** forwarded — they
 are high-volume UI noise; use the per-child live transcript files for
@@ -532,6 +629,10 @@ to the routed profile**:
 - Unprefixed routes and `/p/default/...` keep using the default profile's key.
 - A named profile with no `API_SERVER_KEY` of its own fails closed — its
   prefix is unreachable until you set one.
+- Runs are per-profile scoped: `/v1/runs/{run_id}` and its `events`, `stop`,
+  `steer`, and `approval` routes only answer for the profile that created
+  the run (including runs started via `/api/sessions/{id}/chat/stream`);
+  another profile's run id returns `404`, never `403`.
 
 :::warning Breaking change (July 2026)
 Before this fix, a valid default-profile key was accepted on any

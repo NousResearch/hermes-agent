@@ -2772,7 +2772,7 @@ class TestAuxiliaryAuthRefreshRetry:
         ):
             from agent.auxiliary_client import _refresh_provider_credentials
 
-            assert _refresh_provider_credentials("anthropic") is True
+            assert _refresh_provider_credentials("anthropic", failed_api_key="expired-token") is True
 
         mock_refresh_oauth.assert_called_once_with("refresh-token", use_json=False)
         mock_write.assert_called_once_with("fresh-token", "refresh-token-2", 9999999999999)

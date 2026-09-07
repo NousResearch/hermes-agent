@@ -689,14 +689,25 @@ def list_profiles() -> List[ProfileInfo]:
     """Return info for all profiles, including the default."""
     profiles = []
     default_home = _get_default_hermes_home()
-    if default_home.is_dir():
-        profiles.append(_profile_info("default", default_home, is_default=True))
     named = _iter_named_profile_dirs()
-    if named:
-        alias_map = build_alias_map()  # ONCE, not per profile (was the dominant cost)
-        for entry in named:
-            alias_name = alias_map.get(normalize_profile_name(entry.name))
-            profiles.append(_profile_info(entry.name, entry, is_default=False, alias_name=alias_name))
+    alias_map = build_alias_map() if (default_home.is_dir() or named) else {}
+    # ONCE, not per profile (was the dominant cost); the default gets the same
+    # lookup so a wrapper targeting it (``hermes profile alias default --name x``)
+    # is reported instead of silently dropped.
+    if default_home.is_dir():
+        profiles.append(
+            _profile_info(
+                "default",
+                default_home,
+                is_default=True,
+                alias_name=alias_map.get("default"),
+            )
+        )
+    for entry in named:
+        alias_name = alias_map.get(normalize_profile_name(entry.name))
+        profiles.append(
+            _profile_info(entry.name, entry, is_default=False, alias_name=alias_name)
+        )
     return profiles
 
 

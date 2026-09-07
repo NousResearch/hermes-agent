@@ -705,6 +705,36 @@ class TestFindAliasForProfile:
         assert info.alias_path.name == "qiaobusi"
 
 
+    def test_list_profiles_surfaces_default_alias(self, profile_env):
+        """A wrapper activating the root/default profile is reported on its row —
+        ``hermes profile alias default --name coach`` is a supported operation."""
+        from hermes_cli.profiles import create_wrapper_script, list_profiles
+        create_wrapper_script("coach", target="default")
+        info = next(p for p in list_profiles() if p.is_default)
+        assert info.alias_name == "coach"
+        assert info.alias_path is not None
+        assert info.alias_path.name == "coach"
+
+
+    def test_list_profiles_default_without_wrapper_stays_barren(self, profile_env):
+        from hermes_cli.profiles import list_profiles
+        info = next(p for p in list_profiles() if p.is_default)
+        assert info.alias_name is None
+        assert info.alias_path is None
+
+
+    def test_profile_list_table_renders_default_alias(self, profile_env, capsys):
+        from hermes_cli.profile_cmd import _profile_list
+        from hermes_cli.profiles import create_wrapper_script
+        create_wrapper_script("coach", target="default")
+        _profile_list(None)
+        out = capsys.readouterr().out
+        default_row = next(
+            line for line in out.splitlines() if line.lstrip(" ◆").startswith("default")
+        )
+        assert "coach" in default_row
+
+
 # ===================================================================
 # TestRenameProfile
 # ===================================================================

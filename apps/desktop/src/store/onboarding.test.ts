@@ -7,12 +7,15 @@ import type { OAuthProvider } from '@/types/hermes'
 
 import {
   $desktopOnboarding,
+  confirmOnboardingModel,
   type DesktopOnboardingState,
+  finishOnboardingConnectors,
   type OnboardingContext,
   refreshOnboarding,
   requestDesktopOnboarding,
   saveOnboardingLocalEndpoint,
-  submitOnboardingCode
+  submitOnboardingCode,
+  toggleOnboardingConnector
 } from './onboarding'
 
 function baseState(overrides: Partial<DesktopOnboardingState> = {}): DesktopOnboardingState {
@@ -642,6 +645,101 @@ describe('saveOnboardingLocalEndpoint', () => {
     expect(result.ok).toBe(false)
     expect(result.message).toContain('No provider can serve the selected model.')
     expect($desktopOnboarding.get().configured).not.toBe(true)
+  })
+})
+
+describe('the connector step', () => {
+  // Checking an app here declares intent, not a connection. These pin that
+  // distinction: the list must land in mcp.connectors (which the agent reads
+  // at session start) and never in mcp_servers, or a first-run user gets a
+  // pile of OAuth tabs before they have typed anything.
+  function atConnectorStep() {
+    $desktopOnboarding.set(
+      baseState({
+        flow: {
+          currentModel: 'hermes-4',
+          label: 'Nous Portal',
+          providerSlug: 'nous',
+          saving: false,
+          status: 'confirming_model'
+        },
+        requested: true
+      })
+    )
+
+    confirmOnboardingModel(onboardingContext(emptyOpenRouterGateway()))
+  }
+
+  it('accepting the model advances to the picker instead of finishing', () => {
+    atConnectorStep()
+
+    const state = $desktopOnboarding.get()
+
+    expect(state.flow.status).toBe('choosing_connectors')
+    expect(state.configured).not.toBe(true)
+  })
+
+  it('toggling adds and removes a connector', () => {
+    atConnectorStep()
+
+    toggleOnboardingConnector('linear')
+    toggleOnboardingConnector('notion')
+    toggleOnboardingConnector('linear')
+
+    const { flow } = $desktopOnboarding.get()
+
+    expect(flow.status === 'choosing_connectors' && flow.selected).toEqual(['notion'])
+  })
+
+  it('saves the selection as intent under mcp.connectors, not as servers', async () => {
+    const calls: { path: string; body?: unknown }[] = []
+    installApiMock(async request => {
+      calls.push(request as { path: string; body?: unknown })
+
+      return { ok: true }
+    })
+
+    atConnectorStep()
+    toggleOnboardingConnector('linear')
+    toggleOnboardingConnector('notion')
+
+    await finishOnboardingConnectors(onboardingContext(emptyOpenRouterGateway()))
+
+    const write = calls.find(call => call.path === '/api/config')
+
+    expect(write?.body).toEqual({ config: { mcp: { connectors: ['linear', 'notion'] } } })
+    expect(calls.some(call => call.path === '/api/mcp/servers')).toBe(false)
+    expect($desktopOnboarding.get().configured).toBe(true)
+  })
+
+  it('skipping writes nothing and still finishes', async () => {
+    const calls: { path: string }[] = []
+    installApiMock(async request => {
+      calls.push(request as { path: string })
+
+      return { ok: true }
+    })
+
+    atConnectorStep()
+    await finishOnboardingConnectors(onboardingContext(emptyOpenRouterGateway()))
+
+    expect(calls.some(call => call.path === '/api/config')).toBe(false)
+    expect($desktopOnboarding.get().configured).toBe(true)
+  })
+
+  it('a failed save does not strand the user on the last screen', async () => {
+    // The list is a convenience — losing it must not block reaching chat.
+    installApiMock(async () => {
+      throw new Error('disk full')
+    })
+    const notifyError = vi.spyOn(notifications, 'notifyError').mockReturnValue('')
+
+    atConnectorStep()
+    toggleOnboardingConnector('linear')
+    await finishOnboardingConnectors(onboardingContext(emptyOpenRouterGateway()))
+
+    expect(notifyError).toHaveBeenCalled()
+    expect($desktopOnboarding.get().configured).toBe(true)
   })
 })
 

@@ -5,7 +5,9 @@ import asyncio
 import json
 import logging
 import time
-from typing import Callable, List, Optional
+import webbrowser
+from typing import Any, Callable, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 from tools.mcp_tool_common import _MISSING, _exc_str, _safe_numeric, _sanitize_error, mcp_field, _core
 from tools.mcp_tool_schema import _normalize_mcp_input_schema
 
@@ -226,6 +228,83 @@ class SamplingHandler:
         return self._build_text_result(choice, response)
 
 
+_elicitation_input_cb: Optional[Callable[..., str]] = None
+
+# A form the user answers one field at a time stops being a form and becomes an interrogation; the spec's own
+# guidance is that elicitation collects a little, not a lot. Servers asking for more are declined.
+_ELICIT_MAX_FIELDS = 8
+_TRUTHY = ("yes", "y", "true", "1", "on")
+
+
+def set_elicitation_input_callback(cb: Optional[Callable[..., str]]) -> None:
+    """Register how this surface asks the user for one value. The contract is the clarify tool's callback —
+    ``cb(question, choices)`` returning the user's text — because on every surface that wires one it IS the clarify
+    bridge: a form field and a clarify question are the same interaction. Left unset, a server that asks for fields
+    is declined, which is what happened everywhere before this existed."""
+    global _elicitation_input_cb
+    _elicitation_input_cb = cb
+
+
+def _elicitation_fields(schema: Any) -> List[Dict[str, Any]]:
+    """Flatten an elicitation schema (spec: flat object of primitives) into ordered, askable fields."""
+    props = schema.get("properties") if isinstance(schema, dict) else None
+    if not isinstance(props, dict):
+        return []
+    declared = schema.get("required")
+    required = set(declared) if isinstance(declared, list) else set()
+    fields: List[Dict[str, Any]] = []
+    for name, spec in props.items():
+        spec = spec if isinstance(spec, dict) else {}
+        choices = spec.get("enum")
+        fields.append({
+            "name": str(name), "required": name in required, "type": str(spec.get("type") or "string"),
+            "title": str(spec.get("title") or name), "description": str(spec.get("description") or ""),
+            "enum": [str(c) for c in choices] if isinstance(choices, list) else [],
+        })
+    return fields
+
+
+def _elicitation_question(field: Dict[str, Any]) -> Tuple[str, Optional[List[str]]]:
+    """The one line the user reads, and the choices to offer for it."""
+    parts = [field["title"]]
+    if field["description"]:
+        parts.append(f"— {field['description']}")
+    if not field["required"]:
+        parts.append("(optional)")
+    question = " ".join(parts)
+    if field["enum"]:
+        return question, list(field["enum"])
+    if field["type"] == "boolean":
+        return question, ["Yes", "No"]
+    return question, None
+
+
+def _elicitation_value(field: Dict[str, Any], answer: str) -> Any:
+    """Put the user's text back into the declared type. ``None`` = nothing usable (blank, or a non-number);
+    whether that is fatal depends on whether the field was required."""
+    text = (answer or "").strip()
+    if not text:
+        return None
+    kind = field["type"]
+    if kind == "boolean":
+        return text.lower() in _TRUTHY
+    if kind in ("number", "integer"):
+        try:
+            number = float(text)
+        except ValueError:
+            return None
+        return int(number) if kind == "integer" else number
+    return text
+
+
+def _elicitation_wants_fields(schema: Any) -> bool:
+    """True when the server asked for data (a schema with properties is a form), not just a yes."""
+    if not isinstance(schema, dict):
+        return False
+    properties = schema.get("properties")
+    return isinstance(properties, dict) and bool(properties)
+
+
 def _format_elicitation_schema_summary(schema: dict, server_name: str) -> str:
     """Flat-object requested_schema -> readable field list so the user knows what they're approving."""
     props = schema.get("properties") if isinstance(schema, dict) else None
@@ -240,15 +319,18 @@ def _format_elicitation_schema_summary(schema: dict, server_name: str) -> str:
 
 
 class ElicitationHandler:
-    """``elicitation_callback`` for one MCP server. Form-mode routes through Hermes' approval system
-    (CLI, TUI, Telegram, ...); URL-mode is declined. Fail-closed: any timeout, exception or unexpected
-    state returns decline/cancel, never a silent accept."""
+    """``elicitation_callback`` for one MCP server. A bare confirmation routes through
+ Hermes' approval system (CLI, TUI, Telegram, ...); a schema with fields is collected one question at a time
+ through the surface's clarify bridge (``set_elicitation_input_callback``), or declined where none is wired;
+ URL-mode hands the user off to the server's own page after showing them the domain. Fail-closed: any
+ timeout, exception or unexpected state returns decline/cancel, never a silent accept."""
 
     # asyncio-side safety net over the approval's own input() timeout so the MCP loop never blocks
     # indefinitely if the inner timeout is bypassed.
     _OUTER_TIMEOUT_GRACE_SECONDS = 5
-    # consent answer -> (ElicitResult action, metric); anything else declines.
-    _ANSWER_RESULTS = {"accept": ("accept", "accepted"), "cancel": ("cancel", "errors")}
+    # consent answer -> (ElicitResult action, metric); anything else declines. ``error`` (we never managed to
+    # ask) is counted as our fault, not a user refusal, but travels as decline — only cancel is worth a retry.
+    _ANSWER_RESULTS = {"accept": ("accept", "accepted"), "cancel": ("cancel", "errors"), "error": ("decline", "errors")}
 
     def __init__(self, server_name: str, config: dict, owner: Optional["MCPServerTask"] = None):
         self.server_name = server_name
@@ -279,31 +361,134 @@ class ElicitationHandler:
             return lambda: request_elicitation_consent(message, description, **kwargs)
         return lambda: captured.copy().run(request_elicitation_consent, message, description, **kwargs)
 
+    async def _ask(self, message: str, description: str) -> str:
+        """Put the request to the user; return ``accept`` / ``decline`` / ``cancel``, or ``error`` when we never
+        managed to ask (still declined, but counted as our fault, not a user refusal). Never raises: an
+        elicitation that blows up must still answer the server or the tool call hangs."""
+        logger.info("MCP server '%s' elicitation request: %s", self.server_name, _sanitize_error(message)[:200])
+        try:  # lazy import inside avoids import-order coupling with early-bootstrap tools.approval
+            invoke_consent = self._consent_thunk(message, description)
+        except Exception as exc:  # pragma: no cover -- defensive
+            logger.error("MCP server '%s' elicitation: approval system unavailable: %s", self.server_name, exc)
+            return "error"
+        try:  # off-thread: inline, the sync consent flow would freeze the MCP loop and every RPC on it
+            return await asyncio.wait_for(
+                asyncio.to_thread(invoke_consent), timeout=self.timeout + self._OUTER_TIMEOUT_GRACE_SECONDS)
+        except asyncio.TimeoutError:
+            logger.warning("MCP server '%s' elicitation timed out after %ds", self.server_name, int(self.timeout))
+            return "cancel"
+        except Exception as exc:
+            logger.error("MCP server '%s' elicitation failed: %s", self.server_name, exc, exc_info=True)
+            return "error"
+
+    def _refuse(self, answer: str):
+        """Non-accept answer -> the server's result. ``cancel`` and ``error`` both count as errors, but only
+        ``cancel`` travels as cancel: it is the one the server may usefully retry."""
+        return self._result(*self._ANSWER_RESULTS.get(answer, ("decline", "declined")))
+
+    async def _ask_field(self, question: str, choices: Optional[List[str]]) -> Optional[str]:
+        """Ask one question on whatever surface is listening. ``None`` = no answer (no surface wired, timed out,
+        raised) — same fail-closed rule as consent."""
+        cb = _elicitation_input_cb
+        if cb is None:
+            return None
+        from tools.clarify_tool import TIMEOUT_RESPONSE
+        captured = getattr(self.owner, "_pending_call_context", None) if self.owner else None
+
+        def _invoke() -> str:
+            return cb(question, choices) if captured is None else captured.copy().run(cb, question, choices)
+
+        try:
+            answer = await asyncio.wait_for(
+                asyncio.to_thread(_invoke), timeout=self.timeout + self._OUTER_TIMEOUT_GRACE_SECONDS)
+        except asyncio.TimeoutError:
+            logger.warning("MCP server '%s' elicitation field timed out after %ds", self.server_name, int(self.timeout))
+            return None
+        except Exception as exc:
+            logger.error("MCP server '%s' elicitation field failed: %s", self.server_name, exc, exc_info=True)
+            return None
+        text = str(answer or "")
+        # The clarify bridges answer a timeout with prose telling the agent to use its judgement — right for a
+        # tool call, wrong for a form field where it would be stored as the value.
+        return None if text.strip() == TIMEOUT_RESPONSE else text
+
+    async def _collect_fields(self, message: str, fields: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Ask for each field and build the content payload. ``None`` = the user stopped (walked away, or left a
+        required field blank) and the caller declines; an optional field left blank is simply absent."""
+        if _elicitation_input_cb is None:
+            return None
+        content: Dict[str, Any] = {}
+        for index, field in enumerate(fields):
+            question, choices = _elicitation_question(field)
+            if index == 0 and message:  # the server's own sentence leads — once, not above every field
+                question = f"{message}\n\n{question}"
+            answer = await self._ask_field(question, choices)
+            if answer is None:
+                return None
+            value = _elicitation_value(field, answer)
+            if value is None:
+                if field["required"]:
+                    return None
+                continue
+            content[field["name"]] = value
+        return content
+
+    async def _handle_url_mode(self, params):
+        """Send the user to the server's own page (OAuth consent, payment, account linking) after telling them
+        where. Naming the host in the consent text is the security boundary: the URL arrives from the server and
+        the user is about to be asked for credentials on the other end. Accept means "the user has been sent
+        there", not "the flow finished" — the server announces that via notifications/elicitation/complete."""
+        url = str(getattr(params, "url", "") or "")
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            # No answer the user gives makes `file:` or `javascript:` safe here.
+            logger.warning("MCP server '%s' requested URL-mode elicitation with an unusable URL (%s); declining",
+                           self.server_name, _sanitize_error(url)[:120])
+            return self._result("decline", "declined")
+        message = getattr(params, "message", "") or (
+            f"MCP server '{self.server_name}' needs you to finish something in your browser")
+        description = (f"Opens {parsed.netloc} in your browser.\n\nFull address: {url}\n\n"
+                       f"Only continue if you expect '{self.server_name}' to send you to {parsed.netloc}.")
+        answer = await self._ask(message, description)
+        if answer != "accept":
+            return self._refuse(answer)
+        try:
+            opened = await asyncio.to_thread(webbrowser.open, url)
+        except Exception as exc:
+            logger.warning("MCP server '%s' URL-mode elicitation: could not open a browser: %s", self.server_name, exc)
+            opened = False
+        if not opened:
+            # Headless / no browser: the user consented and read the address, so the flow can complete by hand.
+            logger.info("MCP server '%s' URL-mode elicitation: no browser opened; the user must visit %s themselves",
+                        self.server_name, url)
+        return self._result("accept", "accepted")
+
+    async def _handle_form_mode(self, message: str, schema: Any):
+        """Collect the fields the server asked for, or decline honestly: accepting with empty content is a lie the
+        server cannot detect (by spec, accept means the user supplied this data)."""
+        fields = _elicitation_fields(schema)
+        if len(fields) > _ELICIT_MAX_FIELDS:
+            logger.info("MCP server '%s' elicitation asked for %d fields (max %d); declining",
+                        self.server_name, len(fields), _ELICIT_MAX_FIELDS)
+            return self._result("decline", "declined")
+        logger.info("MCP server '%s' elicitation asking for %d field(s)", self.server_name, len(fields))
+        content = await self._collect_fields(message, fields)
+        if content is None:
+            return self._result("decline", "declined")
+        self.metrics["accepted"] += 1
+        return _core.ElicitResult(action="accept", content=content)
+
     async def __call__(self, context, params):
         """SDK elicitation callback (``ElicitationFnT``). Returns ElicitResult or ErrorData."""
         self.metrics["requests"] += 1
-        if getattr(params, "mode", "form") == "url":  # OAuth/payment: needs a browser + elicitation/complete; unsupported
-            logger.info("MCP server '%s' requested URL-mode elicitation; declining "
-                        "(URL-mode elicitation not implemented)", self.server_name)
-            return self._result("decline", "declined")
-
+        if getattr(params, "mode", "form") == "url":
+            return await self._handle_url_mode(params)
         message = getattr(params, "message", "") or f"MCP server '{self.server_name}' is requesting your approval"
         # ``requestedSchema`` on mcp 1.x, ``requested_schema`` on 2.0 (aliases don't apply to attribute
         # access) — read both or the user approves without seeing the fields.
         schema = getattr(params, "requestedSchema", None) or getattr(params, "requested_schema", None) or {}
-        logger.info("MCP server '%s' elicitation request: %s", self.server_name, _sanitize_error(message)[:200])
-        try:  # lazy import inside avoids import-order coupling with early-bootstrap tools.approval
-            invoke_consent = self._consent_thunk(message, _format_elicitation_schema_summary(schema, self.server_name))
-        except Exception as exc:  # pragma: no cover -- defensive
-            logger.error("MCP server '%s' elicitation: approval system unavailable: %s", self.server_name, exc)
-            return self._result("decline", "errors")
-        try:  # off-thread: inline, the sync consent flow would freeze the MCP loop and every RPC on it
-            answer = await asyncio.wait_for(
-                asyncio.to_thread(invoke_consent), timeout=self.timeout + self._OUTER_TIMEOUT_GRACE_SECONDS)
-        except asyncio.TimeoutError:
-            logger.warning("MCP server '%s' elicitation timed out after %ds", self.server_name, int(self.timeout))
-            return self._result("cancel", "errors")
-        except Exception as exc:
-            logger.error("MCP server '%s' elicitation failed: %s", self.server_name, exc, exc_info=True)
-            return self._result("decline", "errors")
-        return self._result(*self._ANSWER_RESULTS.get(answer, ("decline", "declined")))
+        if _elicitation_wants_fields(schema):
+            return await self._handle_form_mode(message, schema)
+        # Nothing asked for: "may this happen?" is the whole question and a consent dialog answers it exactly.
+        answer = await self._ask(message, _format_elicitation_schema_summary(schema, self.server_name))
+        return self._result("accept", "accepted") if answer == "accept" else self._refuse(answer)

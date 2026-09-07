@@ -11,21 +11,72 @@ import { $gateway } from './gateway'
  */
 export interface McpSetupRequest {
   requestId: string
-  /** Catalog name (install) or mcp_servers config name (enable/authorize). */
+  /** First connector — kept alongside `servers` for anything reading a scalar. */
   server: string
-  action: 'authorize' | 'enable' | 'install'
-  /** Agent-supplied one-liner: why this server helps right now. */
+  /** Every connector the card should offer, in the order the agent asked. */
+  servers: string[]
+  /** `connect` lets the card resolve the step from each connector's real
+   *  state; the others are the agent naming one specific step. */
+  action: 'authorize' | 'connect' | 'enable' | 'install'
+  /** Agent-supplied one-liner: why these help right now. */
   reason: string
+  /** Prerequisites the agent wrote for a connector that has none of its own.
+   *  A reviewed connector's manifest steps always win — those were checked;
+   *  these are the model's best account of an unreviewed setup, which still
+   *  beats the same account buried in a chat message above the card. */
+  steps: string[]
   sessionId: string | null
 }
 
-/** The card's answer, serialized back through `mcp.setup.respond`. */
-export interface McpSetupOutcome {
-  status: 'authorized' | 'declined' | 'enabled' | 'error' | 'installed'
+/** One connector's result inside a card's answer. */
+export interface McpConnectorOutcome {
   server: string
+  status: 'connected' | 'declined' | 'error'
   detail?: string
-  /** Tool names now available (OAuth flows report them). */
+  /** Tool names the connector brought in, when the flow learned them. */
   tools?: string[]
+  /** The failure was a refusal, not a fault: wrong key, expired grant, or a
+   *  grant that never covered the tools. Asking again is the fix, so the card
+   *  offers access rather than a retry. */
+  needsAuth?: boolean
+}
+
+/** The card's answer, serialized back through `mcp.setup.respond`.
+ *  `status` is the aggregate; `connectors` is the per-row truth. */
+export interface McpSetupOutcome {
+  status: 'connected' | 'declined' | 'error' | 'partial'
+  server: string
+  connectors: McpConnectorOutcome[]
+  detail?: string
+}
+
+/**
+ * Fold each connector card's result into the one answer the tool gets.
+ *
+ * The aggregate is derived, never authoritative: `connectors` is the truth and
+ * `status` only summarizes it, so two of three connecting reports `partial`
+ * with both successes intact rather than collapsing to a single verdict.
+ *
+ * A connector with no result was never connected — its card was dismissed, or
+ * the user walked away from the whole set — so it reports `declined`.
+ */
+export function buildSetupOutcome(input: {
+  names: string[]
+  results: Record<string, McpConnectorOutcome>
+  server: string
+}): McpSetupOutcome {
+  const { names, results, server } = input
+
+  const connectors: McpConnectorOutcome[] = names.map(name => results[name] ?? { server: name, status: 'declined' })
+
+  const connected = connectors.filter(connector => connector.status === 'connected').length
+  const failed = connectors.some(connector => connector.status === 'error')
+
+  return {
+    connectors,
+    server,
+    status: connected === 0 ? (failed ? 'error' : 'declined') : failed ? 'partial' : 'connected'
+  }
 }
 
 const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
@@ -107,7 +158,11 @@ export async function skipMcpSetupRequest(sessionId: string | null | undefined):
   try {
     await $gateway.get()?.request('mcp.setup.respond', {
       request_id: request.requestId,
-      result: JSON.stringify({ server: request.server, status: 'declined' })
+      result: JSON.stringify({
+        connectors: request.servers.map(server => ({ server, status: 'declined' })),
+        server: request.server,
+        status: 'declined'
+      })
     })
   } catch {
     // The tool times out on its own; a failed skip must never swallow the

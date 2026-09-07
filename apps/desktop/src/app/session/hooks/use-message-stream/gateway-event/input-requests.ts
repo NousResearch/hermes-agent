@@ -192,31 +192,54 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'mcp.setup.request') {
-    // setup_mcp tool (desktop GUI): the agent proposed an MCP server and
-    // the Python side is blocked on mcp.setup.respond. Park the request
+    // setup_mcp tool (desktop GUI): the agent proposed one or more connectors
+    // and the Python side is blocked on mcp.setup.respond. Park the request
     // per-session (like clarify) and upsert a stable pending tool row so
     // the inline consent card has somewhere to render even when the
     // tool.start event was missed (stream reconnect / hydration race).
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
     const server = typeof payload?.server === 'string' ? payload.server : ''
-    const rawAction = typeof payload?.action === 'string' ? payload.action : 'install'
-    const action = rawAction === 'enable' || rawAction === 'authorize' ? rawAction : 'install'
+
+    // `servers` is the current contract; `server` alone is what an older
+    // backend sends, and it still has to raise a working single-row card.
+    const listed = Array.isArray(payload?.servers)
+      ? payload.servers.filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
+      : []
+
+    const servers = listed.length > 0 ? listed : server ? [server] : []
+    const rawAction = typeof payload?.action === 'string' ? payload.action : 'connect'
+
+    const action =
+      rawAction === 'enable' || rawAction === 'authorize' || rawAction === 'install' ? rawAction : 'connect'
+
     const reason = typeof payload?.reason === 'string' ? payload.reason : ''
 
-    if (requestId && server) {
-      setMcpSetupRequest({ action, reason, requestId, server, sessionId: sessionId ?? null })
+    const steps = Array.isArray(payload?.steps)
+      ? payload.steps.filter((step): step is string => typeof step === 'string' && step.trim() !== '')
+      : []
+
+    if (requestId && servers.length > 0) {
+      setMcpSetupRequest({
+        action,
+        reason,
+        requestId,
+        server: server || servers[0]!,
+        servers,
+        sessionId: sessionId ?? null,
+        steps
+      })
 
       if (sessionId) {
         upsertToolCall(
           sessionId,
-          { args: { action, reason, server }, name: 'setup_mcp', tool_id: requestId },
+          { args: { action, reason, server, servers }, name: 'setup_mcp', tool_id: requestId },
           'running'
         )
         updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
       }
 
       dispatchNativeNotification({
-        body: reason || server,
+        body: reason || servers.join(', '),
         kind: 'input',
         sessionId,
         title: translateNow('notifications.native.inputTitle')

@@ -6,6 +6,7 @@ import asyncio
 import contextvars
 import inspect
 import json
+import re
 import time
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -24,8 +25,14 @@ logger = logging.getLogger("tools.mcp_tool")
 _MISSING = object()
 
 _NEEDS_REAUTH_MSG = (
-    "MCP server '{s}' requires re-authentication. Run `hermes mcp login {s}` (or delete the tokens file under "
-    "~/.hermes/mcp-tokens/ and restart). Do NOT retry this tool — ask the user to re-authenticate.")
+    "MCP server '{s}' requires re-authentication. Call setup_mcp with servers=['{s}'] and action='authorize' if you "
+    "have that tool — it signs the user in without leaving the conversation. Otherwise ask them to run `hermes mcp "
+    "login {s}`. Do NOT retry this tool first.")
+_INSUFFICIENT_SCOPE_MSG = (
+    "MCP server '{s}' authenticated, but the access it was granted does not cover {op}.{scopes} Re-authorize it to "
+    "grant the wider access — call setup_mcp with servers=['{s}'] and action='authorize' if you have that tool, "
+    "otherwise ask the user to run `hermes mcp login {s}`. Do NOT retry this tool first; the same grant will be "
+    "refused again.")
 _STDIO_NO_RESPAWN_MSG = (
     "MCP server '{s}' stdio subprocess had exited (this is not a timeout — the call never reached the server). A "
     "respawn was requested but no fresh session came back within {t:.0f}s. Wait a few seconds before retrying; if it "
@@ -137,10 +144,35 @@ def _retry_once(server_name: str, retry_call, op_description: str, what: str):
     return result
 
 
+def _insufficient_scope(exc: BaseException) -> Optional[str]:
+    """The scopes a server says we're missing, or None. RFC 6750 spells it in the challenge —
+    ``WWW-Authenticate: Bearer error="insufficient_scope", scope="docs.readonly"`` — usually as 403, not 401. The
+    ordinary recovery is actively wrong here: a refresh yields a token with the same scopes, the retry fails
+    identically, the breaker trips. Only a fresh consent asking for more fixes it. An empty string means
+    "insufficient scope, server didn't say which" — callers test ``is not None``."""
+    response = getattr(exc, "response", None)
+    if response is None:
+        return None
+    try:
+        headers = getattr(response, "headers", None)
+        challenge = str(headers.get("www-authenticate", "") or "") if headers is not None else ""
+    except Exception:
+        challenge = ""
+    if "insufficient_scope" not in challenge.lower():
+        return None
+    match = re.search(r'scope="([^"]*)"', challenge)
+    return match.group(1) if match else ""
+
+
 def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str):
     """OAuth recovery + one retry; None when *exc* is not an auth error. ``handle_401`` decides
     viability; if viable, signal a reconnect (fresh credentials), wait ready, retry once. Any
     failure returns the structured ``needs_reauth`` error so the model stops refreshing."""
+    missing_scope = _insufficient_scope(exc)
+    if missing_scope is not None:  # skip recovery outright — only the user can widen the grant
+        return _strike(server_name, _INSUFFICIENT_SCOPE_MSG.format(
+            s=server_name, op=op_description, scopes=f" It asks for: {missing_scope}." if missing_scope else ""),
+            needs_reauth=True, server=server_name)
     if not _is_auth_error(exc):
         return None
     from tools.mcp_oauth_manager import get_manager

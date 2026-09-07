@@ -329,6 +329,7 @@ def _catalog_entry_json(entry: Any, installed: bool, enabled: bool) -> Dict[str,
         "name": entry.name,
         "description": entry.description,
         "source": entry.source,
+        "homepage": entry.homepage,
         "transport": transport.type,
         "auth_type": getattr(auth, "type", "none"),
         # Env vars the user must supply (names + prompts only, never values).
@@ -347,6 +348,8 @@ def _catalog_entry_json(entry: Any, installed: bool, enabled: bool) -> Dict[str,
         "bootstrap": list(install.bootstrap) if install else [],
         "default_enabled": list(entry.tools.default_enabled) if entry.tools.default_enabled is not None else None,
         "post_install": entry.post_install or "",
+        # What the user has to go do themselves before this can work.
+        "setup": [step.text for step in entry.setup],
         # Composer-suggestion triggers (desktop brand pills), only when the
         # manifest declares a `suggest` block.
         "suggest": {"keywords": list(entry.suggest.keywords), "hosts": list(entry.suggest.hosts)} if entry.suggest else None,
@@ -354,6 +357,21 @@ def _catalog_entry_json(entry: Any, installed: bool, enabled: bool) -> Dict[str,
         "installed": installed,
         "enabled": enabled,
     }
+
+
+@router.get("/api/mcp/registry/search")
+async def search_mcp_registry(q: str = "", limit: int = 12):
+    """Search the official MCP Registry for hosted connectors — the tier below the reviewed catalog. Results are
+    remote endpoints only (never a package launcher; hermes_cli.mcp_registry owns that filter), each labeled
+    ``verified`` when the publisher's registry namespace owns the endpoint's domain, else ``community``.
+    Never raises for a registry failure: degrading to the reviewed catalog is correct, a 500 would break the
+    consent card and the composer for a purely optional lookup."""
+    try:
+        from hermes_cli import mcp_registry
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Registry unavailable: {exc}")
+    entries = await asyncio.to_thread(mcp_registry.search, q, max(1, min(50, limit)))
+    return {"entries": [entry.as_dict() for entry in entries]}
 
 
 @router.get("/api/mcp/catalog")

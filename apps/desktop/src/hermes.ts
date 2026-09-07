@@ -70,6 +70,8 @@ export type {
   LogsResponse,
   McpCatalogEntry,
   McpCatalogResponse,
+  McpRegistryEntry,
+  McpRegistrySearchResponse,
   McpServerSummary,
   McpServerTestResponse,
   MemoryProviderConfig,

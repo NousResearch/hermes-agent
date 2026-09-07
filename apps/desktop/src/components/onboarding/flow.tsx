@@ -22,6 +22,7 @@ import {
   submitOnboardingCode
 } from '@/store/onboarding'
 
+import { ConnectorsPanel } from './connectors'
 import { DecodedLabel, GlyphText, HackeryButton, useScramble } from './glyph'
 import { providerTitle } from './providers'
 
@@ -53,6 +54,10 @@ export function FlowPanel({
 
   if (flow.status === 'confirming_model') {
     return <ConfirmingModelPanel flow={flow} leaving={leaving} onBegin={onBegin} profile={ctx.profile} />
+  }
+
+  if (flow.status === 'choosing_connectors') {
+    return <ConnectorsPanel flow={flow} leaving={leaving} onBegin={onBegin} />
   }
 
   if (flow.status === 'error') {
@@ -227,7 +232,8 @@ function ConfirmingModelPanel({
 }) {
   const { t } = useI18n()
   const scrambledModel = useScramble(flow.currentModel, leaving)
-  const scrambledBegin = useScramble(t.onboarding.startChatting, leaving)
+  // Not "Start chatting" — the connector picker comes after this.
+  const scrambledBegin = useScramble(t.common.continue, leaving)
   // Local state controls whether the model picker dialog is open.
   // We reuse the existing ModelPickerDialog component (the same picker
   // available from the chat shell) rather than building an inline

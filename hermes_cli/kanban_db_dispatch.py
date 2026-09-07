@@ -1672,8 +1672,19 @@ def _dispatch_lane_task(
     ):
         if str(Path(owner["workspace_path"]).resolve()) == physical_workspace:
             result.workspace_collisions.append((claimed.id, owner["id"], physical_workspace))
-            _kb.block_task(conn, claimed.id, reason=f"workspace_in_use: {owner['id']} owns {physical_workspace}")
-            result.auto_blocked.append(claimed.id)
+            # Contention is a scheduling delay, not a failed worker attempt.
+            with _kb.write_txn(conn):
+                retry_status = _kb._retry_status_for_run(conn, claimed.id)
+                conn.execute(
+                    "UPDATE tasks SET status=?, claim_lock=NULL, claim_expires=NULL, "
+                    "worker_pid=NULL WHERE id=? AND status='running'",
+                    (retry_status, claimed.id),
+                )
+                payload = {"owner": owner["id"], "workspace": physical_workspace}
+                run_id = _kb._end_run(
+                    conn, claimed.id, outcome="workspace_deferred", metadata=payload,
+                )
+                _kb._append_event(conn, claimed.id, "workspace_deferred", payload, run_id=run_id)
             return False
     _kbw.set_workspace_path(conn, claimed.id, str(workspace))
     if claimed.workspace_kind == "worktree":

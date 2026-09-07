@@ -240,3 +240,30 @@ def test_parent_worktree_deferred_until_children_done(
         assert kb.complete_task(conn, child, summary="child done")
     # last child terminal -> deferred parent worktree reaped
     assert not parent_wt.exists()
+
+
+def test_explicit_board_base_keeps_carried_source_across_worker_profiles(repo, kanban_home, monkeypatch, tmp_path):
+    import json
+    _git('-C', str(repo), 'switch', '-c', 'carried-integration')
+    (repo / 'carried.txt').write_text('required project capability\n')
+    _git('-C', str(repo), 'add', 'carried.txt')
+    _git('-C', str(repo), 'commit', '-m', 'carried integration')
+    expected = _git('-C', str(repo), 'rev-parse', 'HEAD').strip()
+    (repo / 'unrelated-wip.txt').write_text('preserve\n')
+    (kanban_home / 'config.yaml').write_text(json.dumps({'kanban': {'worktree_base_refs': {str(repo.resolve()): 'carried-integration'}}}))
+    monkeypatch.setenv('HERMES_KANBAN_HOME', str(kanban_home))
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'worker-profile'))
+    wt = _make_worktree(repo, 't_carried')
+    assert _git('-C', str(wt), 'rev-parse', 'HEAD').strip() == expected
+    assert (wt / 'carried.txt').read_text() == 'required project capability\n'
+    assert not (wt / 'unrelated-wip.txt').exists()
+    assert (repo / 'unrelated-wip.txt').read_text() == 'preserve\n'
+
+
+def test_invalid_explicit_board_base_does_not_fall_back(repo, kanban_home, monkeypatch):
+    import json
+    (kanban_home / 'config.yaml').write_text(json.dumps({'kanban': {'worktree_base_refs': {str(repo.resolve()): 'missing-carried-branch'}}}))
+    monkeypatch.setenv('HERMES_KANBAN_HOME', str(kanban_home))
+    with pytest.raises(ValueError, match='does not resolve'):
+        _make_worktree(repo, 't_missing_base')
+    assert not _branch_exists(repo, 'wt/t_missing_base')

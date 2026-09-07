@@ -45,7 +45,7 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
 }
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).
-_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call"}
+_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call", "pre_kanban_complete"}
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
 _HOOK_CALLER_THREAD_HOOKS: Set[str] = {"subagent_stop"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
@@ -167,8 +167,8 @@ class PluginDispatchMixin:
         """Call all callbacks for *hook_name*; return their non-``None`` results.
 
         Payloads evolve additively: ``**kwargs`` callbacks get everything, narrow signatures only
-        what they declare. Each callback is isolated. Bounded hooks and ``pre_tool_call`` run under
-        ``plugins.hook_callback_timeout`` (worker abandoned, never joined); ``pre_tool_call`` fails
+        what they declare. Each callback is isolated. Bounded hooks and policy hooks run under
+        ``plugins.hook_callback_timeout`` (worker abandoned, never joined); policy hooks fail
         closed with a block directive, others skip. ``_HOOK_CALLER_THREAD_HOOKS`` always run on the
         caller thread. ``pre_llm_call`` may return ``{"context": "..."}`` (or a str) to inject.
         """
@@ -196,6 +196,8 @@ class PluginDispatchMixin:
             except Exception as exc:
                 logger.warning(
                     "Hook '%s' callback %s raised: %s", hook_name, getattr(cb, "__name__", repr(cb)), exc)
+                if fail_closed:
+                    results.append({"action": "block", "message": f"{hook_name} callback failed: {exc}"})
         return results
 
     def _run_hook_callback_bounded(

@@ -52,12 +52,17 @@ def _enable_wal_with_bounded_retry(connection: sqlite3.Connection) -> None:
         return
     assert last_error is not None
     raise last_error
-try:  # Hermes supplies the profile-aware source of truth at runtime.
-    from hermes_constants import get_hermes_home
+try:  # Hermes supplies the shared control-plane root at runtime.
+    from hermes_constants import get_default_hermes_root
 except ImportError:  # Standalone unit tests remain dependency-free.
 
-    def get_hermes_home() -> Path:
-        return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    def get_default_hermes_root() -> Path:
+        configured = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        return (
+            configured.parent.parent
+            if configured.parent.name == "profiles"
+            else configured
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,6 +362,13 @@ class FeedbackLedger:
             )
             """)
         self._connection.execute("""
+            CREATE TABLE IF NOT EXISTS merge_opt_outs (
+                repository TEXT NOT NULL,
+                pr_number INTEGER NOT NULL,
+                PRIMARY KEY (repository, pr_number)
+            )
+            """)
+        self._connection.execute("""
             CREATE TABLE IF NOT EXISTS merge_enrollments (
                 repository TEXT NOT NULL,
                 pr_number INTEGER NOT NULL,
@@ -457,7 +469,11 @@ class FeedbackLedger:
 
     @classmethod
     def current_profile_path(cls) -> Path:
-        return get_hermes_home() / "github-pr-feedback" / "ledger.sqlite3"
+        # Audit workers run under their assignee profile, but their governed
+        # audit command is deliberately pinned to the shared control home.
+        # Reconciliation must read that same ledger; a profile-local path
+        # makes valid worker receipts appear as ci_receipt_missing.
+        return get_default_hermes_root() / "github-pr-feedback" / "ledger.sqlite3"
 
     @contextmanager
     def _transaction(self) -> Iterator[None]:
@@ -645,6 +661,17 @@ class FeedbackLedger:
             command_evidence=command_evidence,
         )
 
+    def has_pending_mutation(self, repository: str, pr_number: int) -> bool:
+        """A push may advance the head before its repair acknowledgement returns."""
+        return self._connection.execute(
+            "SELECT 1 FROM feedback_receipts WHERE repository = ? AND pr_number = ? "
+            "AND feedback_kind NOT IN ('pr_local_ci', 'pr_actions_needed') "
+            "AND NOT (feedback_kind = 'pr_repair' AND feedback_id LIKE 'report:%') "
+            "AND status IN ('claimed', 'completed') "
+            "AND action_status IN ('pending', 'resolving') LIMIT 1",
+            (repository, pr_number),
+        ).fetchone() is not None
+
     def claim(
         self,
         receipt: FeedbackReceipt,
@@ -659,6 +686,10 @@ class FeedbackLedger:
         claimed_at = _aware_utc(claimed_at, "claimed_at")
         stale_before = _aware_utc(stale_before, "stale_before")
         with self._transaction():
+            if receipt.feedback_kind == "pr_local_ci" and self.has_pending_mutation(
+                receipt.repository, receipt.pr_number
+            ):
+                return None
             serialized_repair = not (
                 receipt.feedback_kind == "pr_repair"
                 and (
@@ -903,6 +934,52 @@ class FeedbackLedger:
             return None
         return PendingTaskBinding(receipt, row[0].strip())
 
+    def pending_task_bindings_for_pr(
+        self, repository: str, pr_number: int
+    ) -> tuple[PendingTaskBinding, ...]:
+        """Return pending mutable dispatches for every observed PR identity."""
+
+        rows = self._connection.execute(
+            "SELECT feedback_kind, feedback_id, head_sha, task_id "
+            "FROM feedback_receipts WHERE repository = ? AND pr_number = ? "
+            "AND feedback_kind != 'pr_local_ci' "
+            "AND NOT (feedback_kind = 'pr_repair' AND feedback_id LIKE 'report:%') "
+            "AND status = 'completed' AND action_status = 'pending' "
+            "AND task_id IS NOT NULL ORDER BY claimed_at, head_sha, feedback_kind, feedback_id",
+            (repository, pr_number),
+        )
+        return tuple(
+            PendingTaskBinding(
+                FeedbackReceipt(repository, pr_number, str(kind), str(feedback_id), str(head_sha)),
+                str(task_id).strip(),
+            )
+            for kind, feedback_id, head_sha, task_id in rows
+            if isinstance(task_id, str) and task_id.strip()
+        )
+
+    def supersede_stale_dispatch(
+        self,
+        receipt: FeedbackReceipt,
+        *,
+        task_id: str,
+        reason: str,
+    ) -> bool:
+        """Retire a blocked dispatch after canonical PR identity changed."""
+
+        task_id = task_id.strip() if isinstance(task_id, str) else ""
+        reason = reason.strip() if isinstance(reason, str) else ""
+        if not task_id or not reason:
+            raise ValueError("task_id and reason must be non-empty")
+        with self._transaction():
+            updated = self._connection.execute(
+                "UPDATE feedback_receipts SET action_status = 'superseded', last_error = ? "
+                "WHERE repository = ? AND pr_number = ? AND feedback_kind = ? "
+                "AND feedback_id = ? AND head_sha = ? AND task_id = ? "
+                "AND status = 'completed' AND action_status = 'pending'",
+                (reason[:1000], *receipt.key, task_id),
+            )
+            return updated.rowcount == 1
+
     def reopen_archived_exact_dispatch(
         self,
         receipt: FeedbackReceipt,
@@ -918,6 +995,10 @@ class FeedbackLedger:
             raise ValueError("claim owner and exact archived binding must be valid")
         claimed_at = _aware_utc(claimed_at, "claimed_at")
         with self._transaction():
+            if receipt.feedback_kind == "pr_local_ci" and self.has_pending_mutation(
+                receipt.repository, receipt.pr_number
+            ):
+                return None
             row = self._connection.execute(
                 "SELECT task_id, status, action_status, lease_version "
                 "FROM feedback_receipts WHERE repository = ? AND pr_number = ? "
@@ -971,6 +1052,10 @@ class FeedbackLedger:
             raise ValueError("claim owner and exact blocked binding must be valid")
         claimed_at = _aware_utc(claimed_at, "claimed_at")
         with self._transaction():
+            if receipt.feedback_kind == "pr_local_ci" and self.has_pending_mutation(
+                receipt.repository, receipt.pr_number
+            ):
+                return None
             row = self._connection.execute(
                 "SELECT task_id, status, action_status, lease_version "
                 "FROM feedback_receipts WHERE repository = ? AND pr_number = ? "
@@ -1272,6 +1357,10 @@ class FeedbackLedger:
         if max_attempts is not None and max_attempts < 1:
             raise ValueError("max_attempts must be positive")
         with self._transaction():
+            if receipt.feedback_kind == "pr_local_ci" and self.has_pending_mutation(
+                receipt.repository, receipt.pr_number
+            ):
+                return None
             row = self._connection.execute(
                 "SELECT attempts, claimed_at, lease_version FROM feedback_receipts WHERE repository = ? AND pr_number = ? "
                 "AND feedback_kind = ? AND feedback_id = ? AND head_sha = ? AND status = 'failed'",
@@ -1871,8 +1960,9 @@ class FeedbackLedger:
         *,
         enrolled_at: datetime,
         enrolled_by: str,
-    ) -> None:
-        """Persist explicit operator intent for one configured pull request."""
+        automatic: bool = False,
+    ) -> bool:
+        """Enroll a configured PR; automatic admission must respect durable opt-outs."""
 
         if (
             not repository
@@ -1884,12 +1974,25 @@ class FeedbackLedger:
             raise ValueError("merge enrollment identity is invalid")
         timestamp = _aware_utc(enrolled_at, "enrolled_at")
         with self._transaction():
+            opted_out = self._connection.execute(
+                "SELECT 1 FROM merge_opt_outs WHERE repository = ? AND pr_number = ?",
+                (repository, pr_number),
+            ).fetchone()
+            if automatic and opted_out is not None:
+                return False
+            if not automatic:
+                self._connection.execute(
+                    "DELETE FROM merge_opt_outs WHERE repository = ? AND pr_number = ?",
+                    (repository, pr_number),
+                )
             self._connection.execute(
                 "INSERT INTO merge_enrollments (repository, pr_number, enrolled_at, enrolled_by) "
                 "VALUES (?, ?, ?, ?) ON CONFLICT(repository, pr_number) DO UPDATE SET "
                 "enrolled_at = excluded.enrolled_at, enrolled_by = excluded.enrolled_by",
                 (repository, pr_number, timestamp.isoformat(), enrolled_by.strip()),
             )
+
+        return True
 
     def unenroll_merge_pr(self, repository: str, pr_number: int) -> None:
         """Remove explicit merge intent; deleting a missing enrollment is idempotent."""
@@ -1909,6 +2012,10 @@ class FeedbackLedger:
             ).fetchone()
             if in_progress is not None:
                 raise LedgerStateError("merge_in_progress")
+            self._connection.execute(
+                "INSERT OR IGNORE INTO merge_opt_outs(repository, pr_number) VALUES (?, ?)",
+                (repository, pr_number),
+            )
             self._connection.execute(
                 "DELETE FROM merge_enrollments WHERE repository = ? AND pr_number = ?",
                 (repository, pr_number),

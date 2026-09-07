@@ -577,7 +577,7 @@ _COMMENT_FIELDS = ("author", "body", "created_at")
 _EVENT_FIELDS = ("kind", "payload", "created_at", "run_id")
 _ATTACHMENT_FIELDS = tuple(
     "id filename content_type size uploaded_by stored_path created_at".split())
-_CREATED_FIELDS = ("status", "workspace_kind", "workspace_path", "project_id")
+_CREATED_FIELDS = ("status", "assignee", "workspace_kind", "workspace_path", "project_id", "max_retries", "max_runtime_seconds")
 
 
 def _fields(obj: Any, names: tuple[str, ...]) -> dict[str, Any]:
@@ -1170,6 +1170,11 @@ def _handle_create(args: dict, **kw) -> str:
     assignee = args.get("assignee")
     _check(assignee, "assignee is required — name the profile that should execute this "
                      "task (the dispatcher will only spawn tasks with an assignee)")
+    from hermes_cli.profiles import normalize_profile_name, profile_exists
+
+    assignee = normalize_profile_name(str(assignee))
+    _check(profile_exists(assignee), f"assignee profile {assignee!r} does not exist; "
+           "select an installed profile from hermes kanban assignees before creating work")
     # Prefer the request-scoped api_server origin binding over HERMES_SESSION_ID: the env
     # var is clobbered with a subagent's internal id whenever a child agent is constructed
     # in-process, which would stamp — and later wake — the wrong session.
@@ -1193,11 +1198,12 @@ def _handle_create(args: dict, **kw) -> str:
     _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
     with _board(args.get("board")) as (kb, conn):
-        if project_id is None and workspace_kind is None and workspace_path is None:
-            self_tid = os.environ.get("HERMES_KANBAN_TASK")
-            self_task = kb.get_task(conn, self_tid) if self_tid else None
-            if self_task is not None and self_task.project_id:
-                project_id, project_source_task_id = self_task.project_id, self_task.id
+        self_tid = os.environ.get("HERMES_KANBAN_TASK")
+        self_task = kb.get_task(conn, self_tid) if self_tid else None
+        if self_task is not None:
+            project_source_task_id = self_task.id
+            if project_id is None and workspace_kind is None and workspace_path is None:
+                project_id = self_task.project_id
         new_tid = kb.create_task(
             conn, title=str(title).strip(), body=args.get("body"), assignee=str(assignee),
             parents=tuple(parents), tenant=args.get("tenant") or os.environ.get("HERMES_TENANT"),
@@ -1207,6 +1213,7 @@ def _handle_create(args: dict, **kw) -> str:
             project_source_task_id=project_source_task_id, triage=triage,
             idempotency_key=args.get("idempotency_key"),
             max_runtime_seconds=_opt_int(args.get("max_runtime_seconds")), skills=skills,
+            max_retries=_opt_int(args.get("max_retries")),
             model_override=model_override, provider_override=provider_override,
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
             initial_status=str(args.get("initial_status") or "running"),

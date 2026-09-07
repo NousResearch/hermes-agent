@@ -66,6 +66,23 @@ def configured_policy(tmp_path: Path):
     )
 
 
+def test_empty_branch_prefixes_admit_any_branch(tmp_path: Path) -> None:
+    repository_path = tmp_path / "widgets"
+    initialize_git_worktree(repository_path)
+    raw = enabled_raw_config(repository_path)
+    raw["repositories"][0]["branch_prefixes"] = []
+
+    policy = load_policy(raw)
+
+    admission = policy.admit(
+        admitted_pr(head_ref_name="external/contributor-branch"),
+        Reviewer("trusted-reviewer", "MEMBER"),
+        receipt(),
+    )
+
+    assert admission.admitted
+
+
 def initialize_git_worktree(path: Path) -> None:
     subprocess.run(
         ["git", "init", "--quiet", str(path)],
@@ -173,6 +190,22 @@ def test_enabled_policy_parses_release_maintenance_lane_matrix(tmp_path: Path) -
         "pytest",
         "-q",
     )
+
+
+def test_enabled_policy_parses_multiple_release_maintenance_lanes(
+    tmp_path: Path,
+) -> None:
+    repository_path = tmp_path / "widgets"
+    initialize_git_worktree(repository_path)
+    raw = enabled_release_maintenance_config(repository_path)
+    release_policy = raw.pop("release_maintenance")
+    raw["release_maintenances"] = [release_policy]
+
+    policy = load_policy(raw)
+
+    assert policy.release_maintenance is None
+    assert [item.repository for item in policy.release_policies()] == ["acme/widgets"]
+    assert policy.release_policy_for("acme/widgets") is not None
 
 
 def test_release_maintenance_rejects_a_protected_runtime_command(tmp_path: Path) -> None:
@@ -417,6 +450,22 @@ def test_disabled_post_merge_hook_requires_only_explicit_enabled_flag(
 
     assert policy.merge_maintainer is not None
     assert policy.merge_maintainer.post_merge is None
+
+
+def test_disabled_merge_maintainer_entry_is_ignored_in_policy_list(
+    tmp_path: Path,
+) -> None:
+    repository_path = tmp_path / "widgets"
+    deployment_path = tmp_path / "deployment"
+    initialize_git_worktree(repository_path)
+    initialize_git_worktree(deployment_path)
+    raw = enabled_merge_config(repository_path, deployment_path)
+    raw.pop("merge_maintainer")
+    raw["merge_maintainers"] = [{"enabled": False}]
+
+    policy = load_policy(raw)
+
+    assert policy.merge_policies() == ()
 
 
 def test_budget_exhausted_substitution_requires_audit_only_required_no_post_ci(
@@ -1453,16 +1502,17 @@ def test_policy_accepts_a_linked_git_worktree(tmp_path: Path) -> None:
     assert policy.enabled is True
 
 
-def test_ledger_uses_profile_scoped_hermes_home(
+def test_ledger_uses_shared_control_home_for_profile_workers(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "pr-local-ci-auditor"))
     monkeypatch.setattr(
-        "github_pr_feedback.ledger.get_hermes_home", lambda: tmp_path / "profile"
+        "github_pr_feedback.ledger.get_default_hermes_root", lambda: tmp_path
     )
 
     ledger = FeedbackLedger.for_current_profile()
 
-    assert ledger.path == tmp_path / "profile" / "github-pr-feedback" / "ledger.sqlite3"
+    assert ledger.path == tmp_path / "github-pr-feedback" / "ledger.sqlite3"
     ledger.close()
 
 

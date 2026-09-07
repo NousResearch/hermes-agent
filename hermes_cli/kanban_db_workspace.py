@@ -408,7 +408,9 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
     if _git_branch_exists(repo_root, branch_name):
         args = ["worktree", "add", str(target), branch_name]
     else:
-        base_ref, _ = resolve_worktree_base(str(repo_root), prefer_current_upstream=False)
+        base_ref = _configured_worktree_base(repo_root)
+        if base_ref is None:
+            base_ref, _ = resolve_worktree_base(str(repo_root), prefer_current_upstream=False)
         args = ["worktree", "add", "--no-track", "-b", branch_name, str(target), base_ref]
     result = _git(repo_root, *args, timeout=60)
     if result.returncode != 0:
@@ -417,6 +419,28 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
             f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
         )
     bootstrap_worktree_environments(repo_root, target)
+
+
+def _configured_worktree_base(repo_root: Path) -> Optional[str]:
+    """A shared-board source choice must survive the worker's profile boundary."""
+    import yaml
+
+    config_path = _kb.kanban_home() / "config.yaml"
+    if not config_path.is_file():
+        return None
+    config = yaml.safe_load(config_path.read_text()) or {}
+    refs = (config.get("kanban") or {}).get("worktree_base_refs", {})
+    if not isinstance(refs, dict):
+        raise ValueError("kanban.worktree_base_refs must map repository paths to Git refs")
+    ref = refs.get(str(repo_root.resolve()))
+    if ref is None:
+        return None
+    if not isinstance(ref, str) or not ref.strip() or ref.startswith("-"):
+        raise ValueError("configured Kanban worktree base must be a Git ref")
+    result = _git(repo_root, "rev-parse", "--verify", "--end-of-options", ref + "^{commit}", timeout=20)
+    if result.returncode:
+        raise ValueError(f"configured Kanban worktree base does not resolve: {ref}")
+    return result.stdout.strip()
 
 
 def _anchored_worktree(repo_root: Path, task_id: str, branch_name: str) -> tuple[Path, str]:

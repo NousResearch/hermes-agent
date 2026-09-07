@@ -7,6 +7,7 @@ import subprocess
 import threading
 
 from github_pr_feedback.controller import FeedbackReceipt, PreparedWorktree
+from github_pr_feedback.controller import _reconcile_stale_dispatches
 from github_pr_feedback.github_client import (
     CheckState,
     PullRequestMergeState,
@@ -39,6 +40,29 @@ def merge_state(
         merged=False,
         merge_commit_oid=None,
     )
+
+
+def test_stale_dispatch_reconciliation_accepts_merge_state_repository() -> None:
+    class Ledger:
+        def __init__(self) -> None:
+            self.repositories: list[str] = []
+
+        def pending_task_bindings_for_pr(self, repository: str, number: int):
+            self.repositories.append(repository)
+            return ()
+
+    class Kanban:
+        def task_details(self, board: str, task_id: str):
+            return None
+
+        def task_status(self, board: str, task_id: str):
+            return "blocked"
+
+    ledger = Ledger()
+    assert _reconcile_stale_dispatches(
+        ledger, Kanban(), merge_state(), board="repairs"
+    ) == 0
+    assert ledger.repositories == ["acme/widgets"]
 
 
 def policy(
@@ -141,6 +165,9 @@ def test_repair_triggers_does_not_treat_action_required_as_a_repair_trigger() ->
 
 
 class GitHub:
+    def get_branch_head(self, repository: str, branch: str):
+        return "b" * 40
+
     def list_open_pull_requests(self, repository: str, owner: str):
         from github_pr_feedback.policy import PullRequest
 
@@ -323,7 +350,7 @@ def test_repair_controller_dedupes_exact_head_and_preserves_merge_authority(
     task = kanban.tasks[0]
     assert task.assignee == "pr-repair-steward"
     assert task.initial_status == "running"
-    assert task.max_runtime_seconds == 1200
+    assert task.max_runtime_seconds == 60 * 60
     assert "git merge --no-ff --no-edit" in task.instructions
     assert "Commit the resolved merge before running base-relative" in task.instructions
     assert "Do not merge the pull request" in task.instructions
@@ -333,6 +360,15 @@ def test_repair_controller_dedupes_exact_head_and_preserves_merge_authority(
     assert task.evidence["expected_base_sha"] == "b" * 40
     assert task.evidence["expected_head_branch"] == "codex/fix"
     assert task.evidence["expected_head_repository"] == "acme/widgets"
+    import re
+    import shlex
+
+    push = re.search(r"`(git push [^`]+)`", task.instructions)
+    assert push is not None
+    assert shlex.split(push.group(1)) == [
+        "git", "push", f"https://github.com/{task.evidence['expected_head_repository']}.git",
+        f"HEAD:refs/heads/{task.evidence['expected_head_branch']}",
+    ]
     assert task.evidence["expected_head_sha"] == SHA
     identity_command = (
         "github-pr-feedback inspect-pr --repository acme/widgets --pr-number 17"
@@ -383,6 +419,20 @@ def test_repair_controller_escalates_an_action_required_pr_instead_of_repairing_
     assert "action_required" in task.instructions
     assert "Do not push, edit, approve, or merge" in task.instructions
     assert task.evidence["reason"] == "github_check_action_required"
+    ledger.close()
+
+
+def test_scoped_conflict_dispatch_does_not_create_actions_escalation(tmp_path: Path) -> None:
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    kanban = Kanban()
+    controller = RepairController(
+        policy(tmp_path), ledger, ActionRequiredGitHub(), kanban, LocalGit(),
+        clock=lambda: datetime(2026, 8, 25, 12, 0, tzinfo=UTC),
+    )
+    result = controller.scan(conflicts_only=True, scoped_target=("acme/widgets", 17, SHA))
+    assert result.created == 0
+    assert result.skipped.get("action_required") == 1
+    assert not kanban.tasks
     ledger.close()
 
 
@@ -502,7 +552,7 @@ def test_terminal_refresh_binding_does_not_hold_slot_before_archived_recovery(
     ).scan()
 
     assert result.created == 1
-    assert result.skipped == {"base_refresh_serialized": 1}
+    assert result.skipped == {"duplicate": 1}
     assert [task.evidence["pr_number"] for task in kanban.tasks] == [18]
     assert any(
         binding.task_id == "repair-task"
@@ -541,7 +591,7 @@ def test_old_head_terminal_binding_does_not_hold_current_refresh_slot(
 
     assert result.created == 1
     assert result.skipped["base_refresh_serialized"] == 1
-    assert [task.evidence["pr_number"] for task in kanban.tasks] == [18]
+    assert [task.evidence["pr_number"] for task in kanban.tasks] == [17]
     ledger.close()
 
 
@@ -614,7 +664,7 @@ def test_unrelated_pending_feedback_does_not_consume_the_base_refresh_slot(
     ).scan()
 
     assert result.created == 1
-    assert result.skipped["base_refresh_serialized"] == 1
+    assert result.skipped["duplicate"] == 1
     assert kanban.tasks[0].evidence["pr_number"] == 18
     ledger.close()
 
@@ -756,4 +806,185 @@ def test_report_only_receipt_does_not_block_later_active_repair(tmp_path: Path) 
     assert report.created == 1
     assert active.created == 1
     assert [task.initial_status for task in kanban.tasks] == ["blocked", "running"]
+    ledger.close()
+
+
+def test_conflict_repair_pins_current_branch_tip_without_merge_policy(tmp_path):
+    class MovedBase(GitHub):
+        def get_branch_head(self, repository, branch):
+            return "c" * 40
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    kanban = Kanban()
+    result = RepairController(policy(tmp_path), ledger, MovedBase(), kanban, LocalGit()).scan()
+    assert result.created == 1
+    assert kanban.tasks[0].evidence["target_base_sha"] == "c" * 40
+    assert "c" * 40 in kanban.tasks[0].instructions
+    ledger.close()
+
+
+def test_explicit_repair_retry_revalidates_receipt_and_recovers_failed_environment(tmp_path):
+    class RecoveringGit(LocalGit):
+        broken = True
+        def prepare_receipt_worktree(self, path, receipt):
+            if self.broken:
+                raise RuntimeError('missing pinned environment')
+            return super().prepare_receipt_worktree(path, receipt)
+    ledger = FeedbackLedger(tmp_path / 'ledger.sqlite3')
+    kanban, local_git = Kanban(), RecoveringGit()
+    controller = RepairController(policy(tmp_path), ledger, GitHub(), kanban, local_git)
+    receipt = FeedbackReceipt('acme/widgets', 17, 'pr_repair',
+                              'repair:merge_conflict:target-base:' + 'b' * 40, SHA)
+    assert controller.scan().skipped['dispatch_failed'] == 1
+    local_git.broken = False
+    assert controller.scan().created == 0
+    assert controller.scan(retry_receipt=replace(receipt, head_sha='c' * 40)).created == 0
+    assert controller.scan(retry_receipt=receipt).created == 1
+    assert controller.scan(retry_receipt=receipt).created == 0
+    assert len(kanban.tasks) == 1
+    ledger.close()
+
+
+def test_repair_card_acquires_pinned_base_after_mutable_branch_advances(
+    tmp_path: Path,
+) -> None:
+    configured = policy(tmp_path, merge_maintainer=True)
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    kanban = Kanban()
+
+    remote = tmp_path / "remote.git"
+    source = tmp_path / "source"
+    subprocess.run(["git", "init", "--bare", "--quiet", str(remote)], check=True)
+    subprocess.run(["git", "init", "--quiet", str(source)], check=True)
+    subprocess.run(
+        ["git", "-C", str(source), "config", "user.name", "test"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(source), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    (source / "state").write_text("base A\n")
+    subprocess.run(["git", "-C", str(source), "add", "state"], check=True)
+    subprocess.run(
+        ["git", "-C", str(source), "commit", "--quiet", "-m", "A"], check=True
+    )
+    target_base_sha = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "-C", str(source), "branch", "-M", "stable"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(source), "push", "--quiet", str(remote), "stable"],
+        check=True,
+    )
+    (source / "state").write_text("base B\n")
+    subprocess.run(
+        ["git", "-C", str(source), "commit", "--quiet", "-am", "B"], check=True
+    )
+    advanced_base_sha = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "-C", str(source), "push", "--quiet", str(remote), "stable"],
+        check=True,
+    )
+
+    class MovingBaseGitHub(BehindBaseGitHub):
+        def get_branch_head(self, repository: str, branch: str):
+            return target_base_sha
+
+    result = RepairController(
+        configured,
+        ledger,
+        MovingBaseGitHub(),
+        kanban,
+        LocalGit(),
+    ).scan()
+
+    assert result.created == 1
+    instructions = kanban.tasks[0].instructions
+    assert (
+        "git fetch --quiet --no-tags --no-recurse-submodules "
+        f"https://github.com/acme/widgets.git {target_base_sha}"
+    ) in instructions
+    assert f"git cat-file -e {target_base_sha}^{{commit}}" in instructions
+    assert "refs/heads/stable" not in instructions
+    assert "`FETCH_HEAD`" not in instructions
+
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "--quiet", str(remote), str(clone)], check=True)
+    assert (
+        subprocess.run(
+            ["git", "-C", str(clone), "rev-parse", "refs/remotes/origin/stable"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == advanced_base_sha
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(clone),
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-recurse-submodules",
+            str(remote),
+            target_base_sha,
+        ],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(clone), "cat-file", "-e", f"{target_base_sha}^{{commit}}"],
+        check=True,
+    )
+    ledger.close()
+
+
+def test_scoped_repair_dispatch_does_not_read_or_dispatch_other_prs(tmp_path, monkeypatch, capsys):
+    class ScopedGitHub(GitHub):
+        def list_open_pull_requests(self, repository, owner):
+            listed = super().list_open_pull_requests(repository, owner)[0]
+            return (replace(listed, number=18), listed)
+
+        def get_merge_state(self, repository, number):
+            assert number == 17
+            return super().get_merge_state(repository, number)
+
+    import argparse
+    import json
+    from github_pr_feedback import cli, repair_controller
+
+    configured = policy(tmp_path)
+    kanban = Kanban()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(cli, "_load_policy_from_context", lambda ctx: configured)
+    monkeypatch.setattr(cli, "_github_client", lambda policy: ScopedGitHub())
+    monkeypatch.setattr(cli, "KanbanSubprocessClient", lambda: kanban)
+    monkeypatch.setattr(repair_controller, "PooledLocalGitRepository", lambda *args: LocalGit())
+    parser = argparse.ArgumentParser()
+    cli.setup_cli(None, parser)
+    args = parser.parse_args(["dispatch-repair", "--repository", "acme/widgets",
+                              "--pr-number", "17", "--head-sha", SHA])
+    assert cli.handle_cli_with_context(None, args) == 0
+    assert json.loads(capsys.readouterr().out)["created"] == 1
+    assert len(kanban.tasks) == 1
+
+
+def test_scoped_repair_rejects_changed_expected_head(tmp_path):
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    kanban = Kanban()
+    controller = RepairController(policy(tmp_path), ledger, GitHub(), kanban, LocalGit())
+    result = controller.scan(conflicts_only=True, scoped_target=("acme/widgets", 17, "f" * 40))
+    assert result.created == 0
+    assert result.skipped["head_changed"] == 1
+    assert not kanban.tasks
     ledger.close()

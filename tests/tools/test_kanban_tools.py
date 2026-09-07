@@ -55,6 +55,8 @@ def worker_env(monkeypatch, tmp_path):
     monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
     from pathlib import Path as _Path
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    for name in ("test-worker", "peer", "reviewer", "qa"):
+        (home / "profiles" / name).mkdir(parents=True)
 
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
@@ -1437,6 +1439,7 @@ def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env,
     # home to avoid mkdir() colliding with the worker's directory.
     home = tmp_path / "gate-home" / ".hermes"
     home.mkdir(parents=True)
+    (home / "profiles" / "peer").mkdir(parents=True)
     (home / "config.yaml").write_text(
         "kanban:\n  auto_subscribe_on_create: false\n"
     )
@@ -1641,5 +1644,35 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert [a.filename for a in atts] == ["spec.pdf"]
         assert atts[0].content_type == "application/pdf"
         assert Path(atts[0].stored_path).read_bytes() == payload
+    finally:
+        conn.close()
+
+
+def test_create_rejects_missing_profile_without_leaving_a_card(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    conn = kbc.connect()
+    try:
+        before = len(kb.list_tasks(conn))
+        result = json.loads(kt._handle_create({"title": "unroutable", "assignee": "missing-profile"}))
+        assert "error" in result
+        assert "profile" in str(result).lower()
+        assert len(kb.list_tasks(conn)) == before
+    finally:
+        conn.close()
+
+
+def test_create_preserves_explicit_failure_budget(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    result = json.loads(kt._handle_create({"title": "bounded", "assignee": "peer", "max_retries": 1}))
+    assert result["ok"]
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, result["task_id"]).max_retries == 1
     finally:
         conn.close()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .ci_contract import manifest_path as ci_manifest_path
+
 import hashlib
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -92,7 +94,7 @@ class GroupedCICoordinator:
                 raise ValueError("each exact PR head may be queued only once")
             worktrees.add(job.worktree)
             identities.add(job.identity)
-            manifest = job.worktree / "tests/manifests/test_lanes.toml"
+            manifest = ci_manifest_path(job.worktree)
             if not manifest.is_file():
                 raise ValueError("CI lane manifest is unavailable")
             key = CIGroupKey(

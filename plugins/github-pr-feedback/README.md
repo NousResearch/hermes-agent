@@ -240,6 +240,34 @@ hermes github-pr-feedback merge-disable --repository owner/repository --pr-numbe
 outcome is ambiguous remains eligible for verification even if the PR is no longer open
 or its enrollment was later removed; this readback is required to reconcile durable state.
 
+Before dispatching local CI, obsolete duplicate review/comment dispatches are reconciled
+only when the same immutable feedback identity has already been acknowledged and the old
+Kanban task is done or archived. The canonical PR head/base is reread before the exact
+ledger transition. Active, unknown, or unacknowledged work remains pending; this recovery
+creates no CI receipt and does not satisfy any merge gate.
+
+Repair task completion is also checked at Kanban's shared completion boundary. A task
+bound to a review/comment or repair dispatch cannot become done until its durable action
+is acknowledged or superseded. This covers both `kanban_complete` and CLI completion;
+a local commit, a summary, or an earlier plugin approval cannot satisfy the contract.
+If the push, factual reply, or acknowledgement cannot finish, block the task with the
+actual cause. CI tasks retain their separate exact-receipt contract. Advisory `pr_repair`
+`report:*` tasks are excluded, matching their existing non-mutating admission contract.
+If the control ledger cannot be read, the registered policy rejects completion rather
+than guessing that a task is unbound. A successfully read ledger with no matching repair
+binding leaves ordinary Kanban completion unchanged. The acknowledgement is recorded by
+`complete-feedback` before its downstream CI handoff; the worker then completes Kanban.
+
+PR intake prefers older PR numbers and places an open parent before its child when
+canonical repository/branch identities establish that dependency. Repair inspection
+rotates a durable 12-PR window across the catalogue, so repeated updates to newer PRs
+cannot exclude older work forever. Independent repairs remain concurrent within the
+configured worker limits; inexpensive clean-base refreshes retain priority among
+independent candidates. Merge evaluation uses the same dependency order after any
+outstanding merge-write verification. Every existing enrollment, exact-head, review,
+and CI gate still applies. Shared-base PRs need an explicit stack to express dependencies
+that cannot be determined from their GitHub base branches.
+
 `scan` is safe to repeat. It records durable receipt state and creates one
 Kanban card only for feedback that passes all admission checks. By default the
 card starts `blocked`. With the explicit `auto_dispatch: true` opt-in, it starts
@@ -332,6 +360,14 @@ PRs carrying a `sweeper:risk-*`, `sweeper:blast-broad`,
 `sweeper:blast-massive`, or `telemetry` label also require the explicit
 `ci-reviewed` label. This gate is evaluated again on both exact-head snapshots;
 task prose cannot satisfy it.
+
+An audit may complete or block its calling worker only when the ledger binds that worker task to the exact `pr_local_ci` dispatch (repository, PR, head, and base). A feedback worker may run the same audit and receive its typed result without losing its repair/acknowledgement lifecycle. The audit never signals its terminal parent; normal dispatcher lease handling owns worker shutdown after the result has returned.
+
+Required local audits (`local_ci_audit.required_for_open_prs`) are scheduled independently of administrator-only Actions-settings access. During execution, a settings-only permission denial conservatively treats Actions as enabled and still reads the actual checks and statuses. Authentication failures remain failures. This does not substitute a local receipt for hosted checks or change merge gates.
+
+Local CI admission follows the PR's work dependencies, not its position on the board. A canonical conflict or a pending repair/feedback acknowledgement defers the audit, including a pending mutation recorded against an earlier head of the same PR. Independent PRs remain parallel. Completion markers from the configured Hermes identity are receipts rather than new repair requests; ordinary actionable bot feedback remains eligible.
+
+The sequence is repair, focused verification, verified push/reply, feedback acknowledgement, then exact-head local CI. A requested Codex review may run alongside CI. Acknowledgement records the repair, not CI or review approval; merge still requires the independent current-head gates above. A later review finding re-enters the repair sequence and invalidates old-head CI evidence.
 
 When `allow_budget_exhausted_local_ci` is enabled together with required,
 audit-only, no-post local CI, the same exact-head receipt may substitute for
@@ -495,3 +531,26 @@ The wrapper refuses an unset, relative, missing, or non-executable
 `github-pr-feedback scan`. It does not accept arguments, start a model, or
 create webhooks. GitHub remains read-only unless the strict merge maintainer is
 explicitly enabled and not in report-only mode.
+
+### Scoped conflict dispatch
+
+`hermes github-pr-feedback dispatch-repair --repository OWNER/REPO --pr-number N --head-sha FULL_SHA`
+revalidates one open PR and dispatches only its confirmed merge conflict through the existing repair controller. The expected head must still match. Repository/branch admission, immutable current-base acquisition, worktree preparation, receipt deduplication and scan locking are preserved. It does not audit CI, approve or merge, and does not resolve existing blocked cards. Archive an obsolete receipt card only with verified supersession evidence; a passing focused repair is not a full CI receipt.
+
+Repair completion policies also gate the shared `request_review` transition. A worker must finish its durable push/reply/acknowledgement contract before handing the implementation to an independent reviewer; review and CI still remain separate requirements. Original dispatch identities remain provenance, not evidence that the published repair still has its original head.
+
+### Retire a misclassified automation receipt
+
+`retire-feedback --self-receipt` accepts the existing exact repository, PR, feedback kind/id, and receipt-head arguments. It requires an admitted OPEN PR at that head and a freshly fetched comment authored by the configured automation identity that satisfies the same high-confidence completed-work classifier used by intake. It rechecks both PR identity and comment contents before retiring only that exact ledger dispatch as superseded. External findings, actionable bot comments, missing comments, and changed heads remain pending. The default retirement command still requires verified PR closure. Neither path creates repair-success or CI evidence; after successful retirement, the exact card may be completed as non-actionable with this reason.
+
+## Worker completion-policy readiness
+
+Each configured assignee profile must explicitly enable `github-pr-feedback`.
+Profiles have independent plugin opt-in lists: enabling it in the control profile
+alone does not load completion hooks in a worker. `doctor` reports
+`worker_completion_policy: failed` when a configured worker lacks this opt-in or
+explicitly disables it. Enable it through that profile's `hermes -p <profile>
+plugins enable github-pr-feedback` command before dispatch. The worker still
+uses its own model configuration; its completion hook reads the task's trusted
+control-home ledger. Real-discovery tests cover both the missing-hook failure
+and the enabled policy, rather than manually registering a test callback.

@@ -675,3 +675,37 @@ def test_pool_excludes_case_colliding_tracked_paths_on_case_insensitive_fs(
     )
     assert result.stdout == ""
     ledger.close()
+
+
+def test_worktree_selects_matching_owned_interpreter_and_preserves_unknown_link(tmp_path):
+    import sys
+    repo = initialized_repository(tmp_path)
+    workspace = initialized_repository(tmp_path / 'target')
+    current = repo / '.venv' / 'bin'
+    current.mkdir(parents=True)
+    (current / 'python').write_text('#!/bin/sh\nprintf "0.0.0\\n"\n')
+    (current / 'python').chmod(0o755)
+    matching = repo / 'venv-preserved' / 'bin'
+    matching.mkdir(parents=True)
+    (matching / 'python').symlink_to(sys.executable)
+    (workspace / '.python-version').write_text('.'.join(map(str, sys.version_info[:3])))
+    (workspace / '.venv').symlink_to(current.parent)
+    LocalGitRepository._link_governed_venv(repo, workspace)
+    assert (workspace / '.venv').resolve() == matching.parent
+    other = tmp_path / 'other'
+    other.mkdir()
+    (workspace / '.venv').unlink()
+    (workspace / '.venv').symlink_to(other)
+    with pytest.raises(RuntimeError, match='inconsistent'):
+        LocalGitRepository._link_governed_venv(repo, workspace)
+    assert (workspace / '.venv').resolve() == other
+
+
+def test_missing_matching_environment_does_not_link_wrong_interpreter(tmp_path):
+    repo = initialized_repository(tmp_path)
+    workspace = initialized_repository(tmp_path / 'target')
+    make_governed_venv(repo)
+    (workspace / '.python-version').write_text('0.0.0')
+    with pytest.raises(RuntimeError, match='matches Python'):
+        LocalGitRepository._link_governed_venv(repo, workspace)
+    assert not (workspace / '.venv').is_symlink()

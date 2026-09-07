@@ -1825,7 +1825,7 @@ def test_dispatch_max_in_progress_blocks_review_when_at_limit(
     assert review_task.status == "review"
 
 
-def test_dispatch_blocks_second_worker_from_shared_directory(
+def test_dispatch_defers_second_worker_until_shared_directory_is_free(
     kanban_home, all_assignees_spawnable, tmp_path,
 ):
     """Two workers must never execute concurrently in one physical checkout."""
@@ -1874,8 +1874,16 @@ def test_dispatch_blocks_second_worker_from_shared_directory(
         (contender, owner, str(shared.resolve()))
     ]
     assert contender_task is not None
-    assert contender_task.status == "blocked"
-    assert contender in result.auto_blocked
+    assert contender_task.status == "ready"
+    assert contender not in result.auto_blocked
+    with _hermes_cli_kanban_db_connect.connect() as conn:
+        assert conn.execute("SELECT consecutive_failures FROM tasks WHERE id=?", (contender,)).fetchone()[0] == 0
+        kb.complete_task(conn, owner, result="owner finished")
+        resumed = _hermes_cli_kanban_db_dispatch.dispatch_once(
+            conn, spawn_fn=fake_spawn, max_in_progress=2, reconcile_orphans=False,
+        )
+        assert [item[0] for item in resumed.spawned] == [contender]
+        assert kb.get_task(conn, contender).status == "running"
 
 # Review column dispatch
 # ---------------------------------------------------------------------------

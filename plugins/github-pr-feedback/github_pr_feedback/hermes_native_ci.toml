@@ -1,0 +1,9 @@
+schema = "hermes-native-ci-v1"
+coverage = "host-native; platform-specific acceptance remains separate"
+owner = "github-pr-feedback"
+required_commands = ["git diff --check", "uv lock --check", "uv sync --locked --check (CI extras)", "bash scripts/run_tests.sh"]
+changed_packages = ["apps/desktop", "apps/shared", "ui-tui", "web", "website"]
+# Full Python runner with its host markers, plus every declared quality/build
+# script in each changed JS package. No focused test can replace this contract.
+[lanes.host_native]
+ci_status = "required"

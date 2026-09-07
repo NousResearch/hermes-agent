@@ -285,7 +285,7 @@ function ModelResults({
   // In-flight local downloads render as disabled progress rows: inside the
   // Local group when it exists, else as their own group (first download —
   // nothing staged yet, so the backend reports no Local provider at all).
-  const visibleDownloads = downloads.filter(job => !q || (job.target || '').toLowerCase().includes(q))
+  const visibleDownloads = downloads.filter(job => !q || foldIncludes(job.target || '', q))
   const hasLocalGroup = configured.some(p => p.slug === LOCAL_PROVIDER_SLUG)
 
   return (

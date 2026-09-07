@@ -8,9 +8,14 @@ from contextlib import contextmanager
 from copy import copy
 
 from gateway.hosted_room_peer import GatewayRoomCatalog, HostedMemberDispatch
+from gateway.hosted_rooms import HostedRoomError
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 
 logger = logging.getLogger("tui_gateway.hosted_room_service")
+
+
+class PeerRoomRouteChangedError(RuntimeError):
+    """The observed bearer or target changed before a guarded operation."""
 
 
 @contextmanager
@@ -196,8 +201,18 @@ class _RouteStatusPeerClient:
                                                 error_code="room_capability_catalog_changed",
                                                 not_admitted=True,
                                             )
-                                    if self._before_admission is not None:
-                                        self._before_admission(grant)
+                                    try:
+                                        if self._before_admission is not None:
+                                            self._before_admission(grant)
+                                    except PeerRoomRouteChangedError as exc:
+                                        if name in {
+                                            "read_artifact", "acknowledge_artifacts",
+                                            "discard_artifacts", "stage_attachments",
+                                        }:
+                                            # Keep the Files publication conflict contract without
+                                            # bypassing target/lease checks to reach the later CAS.
+                                            raise HostedRoomError("peer route changed during reconnect") from exc
+                                        raise
                                     rotation_started = True
                                     if self._initial_grant is None:
                                         self._on_refreshed(replacement, refreshed_catalog)

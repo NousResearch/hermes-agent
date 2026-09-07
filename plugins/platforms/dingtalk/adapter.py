@@ -418,6 +418,111 @@ class DingTalkAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """DingTalk does not support typing indicators."""
 
+    async def send_voice(
+        self, chat_id: str, audio_path: str, caption: Optional[str] = None,
+        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs,
+    ) -> SendResult:
+        """Reply with sampleAudio using only a recent inbound bot conversation.
+
+        Captions are separate text messages: sampleAudio has no caption/reply field.
+        Caller metadata cannot override the verified route or supply a recipient.
+        """
+        from plugins.platforms.dingtalk.voice import prepare_voice
+
+        message = self._message_contexts.get(chat_id)
+        webhook = self._get_valid_webhook(chat_id)
+        if (message is None or not webhook
+                or webhook[0] != getattr(message, "session_webhook", None)):
+            return SendResult(success=False, error="DingTalk native voice requires a recent bot-conversation context.")
+        conversation_type = str(getattr(message, "conversation_type", ""))
+        conversation_id = getattr(message, "conversation_id", "") or ""
+        sender_id = getattr(message, "sender_id", "") or ""
+        staff_id = getattr(message, "sender_staff_id", "") or ""
+        if conversation_type not in {"1", "2"} or (conversation_id or sender_id) != chat_id:
+            return SendResult(success=False, error="DingTalk native voice conversation route is invalid.")
+        is_group = conversation_type == "2"
+        if not (conversation_id if is_group else staff_id):
+            return SendResult(success=False, error="DingTalk native voice recipient identity is unavailable.")
+        if not self._is_user_allowed(sender_id, staff_id) or (
+            is_group and self._dingtalk_allowed_chats() and chat_id not in self._dingtalk_allowed_chats()
+        ):
+            return SendResult(success=False, error="DingTalk native voice recipient is not allowed.")
+        if not self.is_connected or not self._http_client:
+            return SendResult(success=False, error="DingTalk adapter is not connected.")
+        if not self._robot_code:
+            return SendResult(success=False, error="DingTalk robot code is not configured.")
+        try:
+            media, duration_ms = await prepare_voice(audio_path)
+        except ValueError as exc:
+            return SendResult(success=False, error=str(exc))
+        token = await self._get_access_token()
+        if not token:
+            return SendResult(success=False, error="DingTalk access token is unavailable.")
+        # Preparation can take time; do not fall back to proactive sending if the
+        # original context expired while ffmpeg was running.
+        if self._get_valid_webhook(chat_id) != webhook:
+            return SendResult(success=False, error="DingTalk native voice reply context expired or changed.")
+        try:
+            uploaded = await self._voice_request(
+                "https://oapi.dingtalk.com/media/upload", "media upload",
+                params={"access_token": token}, data={"type": "voice"},
+                files={"media": ("voice.amr", media, "audio/amr")},
+            )
+            media_id = uploaded.get("media_id")
+            if not isinstance(media_id, str) or not media_id.strip():
+                raise ValueError("DingTalk voice media upload returned no media identifier.")
+            payload = {
+                "robotCode": self._robot_code, "msgKey": "sampleAudio",
+                "msgParam": json.dumps({"mediaId": media_id, "duration": str(duration_ms)}, separators=(",", ":")),
+            }
+            if is_group:
+                route = "groupMessages/send"
+                payload["openConversationId"] = conversation_id
+            else:
+                route = "oToMessages/batchSend"
+                payload["userIds"] = [staff_id]
+            sent = await self._voice_request(
+                f"https://api.dingtalk.com/v1.0/robot/{route}", "send",
+                headers={"x-acs-dingtalk-access-token": token}, json=payload,
+            )
+            if not is_group and (sent.get("invalidStaffIdList") or sent.get("flowControlledStaffIdList")):
+                raise ValueError("DingTalk voice recipient is invalid or rate limited.")
+            process_key = sent.get("processQueryKey")
+            if not isinstance(process_key, str) or not process_key.strip():
+                raise ValueError("DingTalk voice send returned no task identifier.")
+        except ValueError as exc:
+            return SendResult(success=False, error=str(exc))
+        if caption:
+            # Use only the captured trusted webhook, not caller-supplied metadata.
+            caption_result = await self.send(chat_id, caption, reply_to=reply_to, metadata={"session_webhook": webhook[0]})
+            if not caption_result.success:
+                # The voice has been accepted. A failure here must not invite
+                # callers to resend it and create a duplicate voice message.
+                logger.warning("[%s] Native voice sent, but its separate text caption failed", self.name)
+                return SendResult(
+                    success=True, message_id=process_key,
+                    raw_response={"voice_sent": True, "caption_sent": False},
+                )
+        return SendResult(success=True, message_id=process_key)
+
+    async def _voice_request(self, url: str, stage: str, **kwargs) -> dict:
+        """HTTP 2xx alone is not acceptance; never surface credential-bearing responses."""
+        try:
+            response = await self._http_client.post(url, timeout=30.0, **kwargs)
+        except Exception:
+            raise ValueError(f"DingTalk voice {stage} request failed.") from None
+        if not 200 <= response.status_code < 300:
+            raise ValueError(f"DingTalk voice {stage} failed (HTTP {response.status_code}).")
+        try:
+            data = response.json()
+        except ValueError:
+            raise ValueError(f"DingTalk voice {stage} returned an invalid response.") from None
+        if not isinstance(data, dict):
+            raise ValueError(f"DingTalk voice {stage} returned an invalid response.")
+        if any(data.get(key) not in (None, "", 0, "0") for key in ("code", "errcode")):
+            raise ValueError(f"DingTalk voice {stage} was rejected; check app permissions and recipient access.")
+        return data
+
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None, metadata=None) -> SendResult:
         """Render a remote image inline via markdown (session webhook has no native attachments)."""
         image_block = f"![image]({image_url})"
@@ -515,8 +620,9 @@ class DingTalkAdapter(BasePlatformAdapter):
             return None
         try:
             return await asyncio.to_thread(self._stream_client.get_access_token)
-        except Exception as e:
-            logger.error("[%s] Failed to get access token: %s", self.name, e)
+        except Exception:
+            # SDK errors can include credential-bearing request URLs or bodies.
+            logger.error("[%s] Failed to get access token", self.name)
             return None
 
     async def _send_emotion(self, open_msg_id: str, open_conversation_id: str, emoji_name: str, *, recall: bool = False) -> None:

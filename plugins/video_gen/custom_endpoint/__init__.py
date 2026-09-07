@@ -147,6 +147,9 @@ class CustomEndpointVideoGenProvider(VideoGenProvider):
         return self._default_model
 
     def capabilities(self) -> Dict[str, Any]:
+        # Every axis _build_dynamic_video_schema reads must be present.
+        # supports_seed must be True: generate() has `seed: Optional[int]` and
+        # forwards it on the wire (tests/tools/test_video_generate_schema.py).
         return {
             "modalities": ["text"],
             "aspect_ratios": list(self._caps.get("aspect_ratios", ["16:9", "9:16", "1:1"])),
@@ -155,6 +158,8 @@ class CustomEndpointVideoGenProvider(VideoGenProvider):
             "min_duration": self._caps.get("min_duration", 1),
             "supports_audio": self._caps.get("supports_audio", False),
             "supports_negative_prompt": self._caps.get("supports_negative_prompt", False),
+            "supports_seed": True,
+            "supports_upscale": False,
             "max_reference_images": 0,
         }
 

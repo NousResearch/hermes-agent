@@ -140,6 +140,23 @@ def test_provider_default_model_falls_back_to_first():
     assert p.default_model() == "free-video-model"
 
 
+def test_provider_capabilities_declare_schema_axes():
+    """Fleet contract: every axis _build_dynamic_video_schema reads."""
+    p = ce_video_plugin.CustomEndpointVideoGenProvider(
+        "my-gateway", _VALID_CONFIG["providers"]["my-gateway"]
+    )
+    caps = p.capabilities()
+    for axis in (
+        "modalities", "aspect_ratios", "resolutions",
+        "max_duration", "min_duration", "supports_audio",
+        "supports_negative_prompt", "supports_seed", "supports_upscale",
+        "max_reference_images",
+    ):
+        assert axis in caps, axis
+    assert caps["supports_seed"] is True
+    assert caps["supports_upscale"] is False
+
+
 def test_provider_is_available_with_key_env(monkeypatch):
     p = ce_video_plugin.CustomEndpointVideoGenProvider(
         "my-gateway", _VALID_CONFIG["providers"]["my-gateway"]

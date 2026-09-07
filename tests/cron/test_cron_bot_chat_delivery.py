@@ -145,7 +145,7 @@ def test_deliver_runs_canonical_bot_chat_lane():
     assert not any("the output" in str(a) for a in argv)
 
 
-def test_deliver_named_profile_uses_p_flag_and_clears_home():
+def test_deliver_named_profile_anchors_profile_lookup_to_scheduler_root():
     calls = {}
 
     def fake_run(argv, **kwargs):
@@ -155,14 +155,31 @@ def test_deliver_named_profile_uses_p_flag_and_clears_home():
 
     with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
          mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
-         mock.patch.dict(sched.os.environ, {"HERMES_HOME": "/tmp/other-profile"}):
+         mock.patch.object(sched_delivery, "get_default_hermes_root", return_value="/srv/hermes"), \
+         mock.patch.dict(sched.os.environ, {
+             "HOME": "/srv/hermes/profiles/owner/home",
+             "HERMES_HOME": "/srv/hermes/profiles/owner",
+         }):
         err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "research")
 
     assert err is None
     argv = calls["argv"]
     assert argv[1:3] == ["-p", "research"]
-    # -p owns resolution; the scheduler's own HERMES_HOME must not leak in.
-    assert "HERMES_HOME" not in calls["kwargs"]["env"]
+    assert calls["kwargs"]["env"]["HERMES_HOME"] == "/srv/hermes"
+
+
+def test_deliver_named_profile_failure_reports_profile_root():
+    with mock.patch.object(
+        sched.subprocess, "run", return_value=_completed(returncode=1, stderr="profile missing")
+    ), mock.patch.object(
+        sched_delivery.shutil, "which", return_value="/usr/bin/hermes"
+    ), mock.patch.object(
+        sched_delivery, "get_default_hermes_root", return_value="/srv/hermes"
+    ):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "research")
+
+    assert err is not None
+    assert "Hermes root /srv/hermes" in err
 
 
 def test_deliver_failure_returns_error_string():

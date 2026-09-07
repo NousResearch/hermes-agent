@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Any, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_constants import get_default_hermes_root
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
@@ -666,10 +667,13 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
         return msg
 
     env = os.environ.copy()
+    profile_root = None
     if profile:
         argv += ["-p", profile]
-        # -p owns profile resolution; this scheduler's HERMES_HOME must not shadow it.
-        env.pop("HERMES_HOME", None)
+        profile_root = get_default_hermes_root()
+        # The child may inherit a profile-scoped HOME. Pin profile discovery to the scheduler's
+        # already-resolved root so -p cannot search a nested, unrelated profiles directory.
+        env["HERMES_HOME"] = str(profile_root)
 
     # Prefix marks this as scheduled output, not the human (Bot Mode sender-attribution).
     message = (
@@ -698,6 +702,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
             tail = (result.stderr or result.stdout or "").strip()[-500:]
             return _fail(
                 f"bot-chat delivery to profile '{profile_label}' failed (exit {result.returncode})"
+                + (f" using Hermes root {profile_root}" if profile_root is not None else "")
                 + (f": {tail}" if tail else ""))
         logger.info("Job '%s': delivered to Bot Chat of profile '%s'", job_id, profile_label)
         return None

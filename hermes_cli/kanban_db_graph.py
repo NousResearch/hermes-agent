@@ -5,30 +5,33 @@ import sqlite3
 import time
 from typing import Any, Optional
 
-def _initial_task_status(
-    conn: sqlite3.Connection, parents: tuple[str, ...], initial_status: str, triage: bool,
-) -> str:
-    """Status for a new task: ``blocked``/``triage`` when parked by the caller,
-    else ``ready`` unless a parent is not yet ``done`` (-> ``todo``). Parent ids
-    are validated in every mode (even triage) so link rows never dangle."""
-    from hermes_cli.kanban_db import _missing_task_ids
+def initial_task_state(
+    conn: sqlite3.Connection, parents: tuple[str, ...], initial_status: str,
+    triage: bool, tenant: Optional[str],
+) -> tuple[str, Optional[str]]:
+    """Resolve state and tenant under the creator's write transaction.
 
+    Parent order breaks ties in this soft namespace; explicit tenant wins.
+    Validate parents even for parked tasks so links never dangle.
+    """
+    rows = {}
     if parents:
-        missing = _missing_task_ids(conn, parents)
+        rows = {row["id"]: row for row in conn.execute(
+            "SELECT id, status, tenant FROM tasks WHERE id IN "
+            "(" + ",".join("?" * len(parents)) + ")", parents,
+        )}
+        missing = [pid for pid in parents if pid not in rows]
         if missing:
             raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
+        if tenant is None:
+            tenant = next((rows[pid]["tenant"] for pid in parents if rows[pid]["tenant"]), None)
     if initial_status == "blocked":
-        return "blocked"
+        return "blocked", tenant
     if triage:
-        return "triage"
-    if parents:
-        rows = conn.execute(
-            "SELECT status FROM tasks WHERE id IN "
-            "(" + ",".join("?" * len(parents)) + ")", parents,
-        ).fetchall()
-        if any(r["status"] != "done" for r in rows):
-            return "todo"
-    return "ready"
+        return "triage", tenant
+    if any(row["status"] != "done" for row in rows.values()):
+        return "todo", tenant
+    return "ready", tenant
 
 
 def _validate_children_graph(children: list) -> None:
@@ -77,7 +80,7 @@ def decompose_triage_task(
     ``children``: dicts of ``title`` (required), ``body``, ``assignee``,
     ``parents`` (indices into this list), optional workspace overrides.
     Returns child ids in input order, or None when the root is missing / not
-    in triage. Atomic: a malformed entry aborts the whole fan-out.
+    in triage, or has already decomposed. Atomic: malformed entries abort fan-out.
     """
     from hermes_cli.kanban_db import (
         _canonical_assignee, _link, _append_event, _insert_comment,
@@ -99,6 +102,13 @@ def decompose_triage_task(
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if root_row is None or root_row["status"] != "triage":
+            return None
+        # Dependency links alone do not imply lineage. The completion event is
+        # committed with the graph, and survives re-triage or unlinking.
+        if conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'decomposed' LIMIT 1",
+            (task_id,),
+        ).fetchone():
             return None
         child_ids = [
             _insert_decomposed_child(conn, task_id, root_row, child, author, now)
@@ -185,5 +195,3 @@ def _insert_decomposed_child(
     )
     _inherit_notify_subs(conn, new_id, (root_id,), created_at=now)
     return new_id
-
-

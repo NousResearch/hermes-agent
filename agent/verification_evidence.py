@@ -501,10 +501,9 @@ def _insert_evidence(evidence: VerificationEvidence) -> dict[str, Any]:
             " changed_paths_json = '[]'",
             (e.session_id, e.root, event_id),
         )
-        # ``hermes verify`` proves the workspace, not a session. Share the
-        # pointer with every session that already has a row for this root so
-        # a CLI run under ``default`` can clear an editing session's stale flag.
-        if e.kind == "verify":
+        # A full passing ``hermes verify`` proves the workspace. Partial or
+        # failed runs must not wipe another session's edit record (#103650).
+        if e.kind == "verify" and e.status == "passed" and e.scope == "full":
             conn.execute(
                 "UPDATE verification_state"
                 " SET last_event_id = ?, last_edit_at = NULL, changed_paths_json = '[]'"
@@ -555,17 +554,18 @@ def mark_workspace_edited(
 def _newest_workspace_verify(
     conn: sqlite3.Connection, *, root: str, since: str | None
 ) -> Optional[sqlite3.Row]:
-    """Latest ``hermes verify`` event for ``root``, optionally not older than ``since``."""
+    """Latest full passing ``hermes verify`` for ``root``, optionally not older than ``since``."""
     if since:
         return conn.execute(
             "SELECT * FROM verification_events"
-            " WHERE root = ? AND kind = 'verify' AND created_at >= ?"
+            " WHERE root = ? AND kind = 'verify' AND status = 'passed' AND scope = 'full'"
+            " AND created_at >= ?"
             " ORDER BY id DESC LIMIT 1",
             (root, since),
         ).fetchone()
     return conn.execute(
         "SELECT * FROM verification_events"
-        " WHERE root = ? AND kind = 'verify'"
+        " WHERE root = ? AND kind = 'verify' AND status = 'passed' AND scope = 'full'"
         " ORDER BY id DESC LIMIT 1",
         (root,),
     ).fetchone()

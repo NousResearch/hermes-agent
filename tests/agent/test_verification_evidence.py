@@ -308,6 +308,35 @@ def test_workspace_verify_clears_stale_on_other_session(tmp_path, monkeypatch):
     assert status["evidence"]["canonical_command"] == "hermes verify"
 
 
+def test_targeted_partial_verify_does_not_clear_other_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+    record_verify_run(root=tmp_path, session_id="s-edit", ok=True)
+    mark_workspace_edited(session_id="s-edit", cwd=tmp_path, paths=[str(tmp_path / "a.py")])
+    assert verification_status(session_id="s-edit", cwd=tmp_path)["status"] == "stale"
+
+    record_verify_run(root=tmp_path, session_id=None, ok=True, scope="targeted")
+
+    status = verification_status(session_id="s-edit", cwd=tmp_path)
+    assert status["status"] == "stale"
+
+
+def test_failed_verify_does_not_erase_other_session_edit_record(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _python_project(tmp_path)
+    mark_workspace_edited(session_id="s-edit", cwd=tmp_path, paths=[str(tmp_path / "a.py")])
+
+    record_verify_run(root=tmp_path, session_id=None, ok=False)
+
+    row = sqlite3.connect(home / "verification_evidence.db").execute(
+        "SELECT last_edit_at, changed_paths_json FROM verification_state WHERE session_id='s-edit'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] is not None
+    assert verification_status(session_id="s-edit", cwd=tmp_path)["status"] != "passed"
+
+
 def test_older_workspace_verify_does_not_clear_later_edit(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     _python_project(tmp_path)

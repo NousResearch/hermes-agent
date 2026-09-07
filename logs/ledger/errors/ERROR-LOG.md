@@ -59,7 +59,13 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
 
 - **Opened:** 2026-09-07 · **Base:** hermes@a7198a8855 (0 behind upstream/main)
 - **Run:** RUN-2026-09-07-003
-- **Source:** post-rebase test run for `CHG-2026-09-07-010` (the `upstream/main` sync).
+- **Source:** post-rebase test run for `CHG-2026-09-07-010` (the `upstream/main`
+  sync). Already flagged informally in the `RUN-2026-09-07-002` handoff note
+  (`IDENTITY-RUNTIME_2026-09-07.md`, "two pre-existing Windows test issues") at the
+  old base `hermes@61d30533f7` — so it **predates the sync**; logged as its own
+  `ERR-` now because the 333-commit sync widened it (upstream `b818085298`
+  "repoint … 13 tests" touched `test_doctor_journal_modes.py`) and it now aborts
+  collection of the whole `tests/hermes_cli/` directory, not just one file.
 - **Confidence:** Confirmed Fact — reproduced this session: `uv run --extra dev
   python -m pytest tests/hermes_cli/` aborts with
   `ERROR collecting tests/hermes_cli/test_doctor_journal_modes.py … AttributeError:

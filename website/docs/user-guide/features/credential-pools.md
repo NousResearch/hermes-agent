@@ -65,16 +65,18 @@ hermes auth list
 Output:
 ```
 openrouter (2 credentials):
-  #1  OPENROUTER_API_KEY   api_key env:OPENROUTER_API_KEY ←
-  #2  backup-key           api_key manual
+  #1  OPENROUTER_API_KEY   api_key id=ab12cd34 priority=0 env:OPENROUTER_API_KEY ←
+  #2  backup-key           api_key id=ef56gh78 priority=1 manual
 
 anthropic (3 credentials):
-  #1  hermes_pkce          oauth   hermes_pkce ←
-  #2  claude_code          oauth   claude_code
-  #3  ANTHROPIC_API_KEY    api_key env:ANTHROPIC_API_KEY
+  #1  hermes_pkce          oauth   id=ab12cd34 priority=0 hermes_pkce ←
+  #2  claude_code          oauth   id=cd34ef56 priority=1 claude_code
+  #3  ANTHROPIC_API_KEY    api_key id=ef56gh78 priority=2 env:ANTHROPIC_API_KEY
 ```
 
-The `←` marks the currently selected credential.
+The `←` marks the currently selected credential. `id=` is the entry id accepted by
+`hermes auth remove <provider> <target>` when a label is ambiguous, and `priority=` is
+the order the pool tries credentials in under the `fill_first` strategy.
 
 ## Interactive Management
 

@@ -58,7 +58,7 @@ import { $groupChats, $groupChatWorkspace } from './group-chat'
 import { botGroups, groupLastActivity } from './group-membership'
 import { toggleGroupChatPinned } from './group-pin'
 import { $activeGroupMemberKeys } from './group-presence'
-import { fallbackSelectionAfterHide, isBotHidden, isBotPinned } from './hidden-bots'
+import { fallbackSelectionAfterHide, isBotHidden, isBotPinned, isBotPrivate } from './hidden-bots'
 import { useBots } from './i18n'
 import { displayName, stripPreviewMarkdown } from './labels'
 import { duplicateBot } from './profile-ops'
@@ -120,6 +120,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   const meta = botRosterMeta(bot, allMeta)
   const hidden = isBotHidden(bot, allMeta)
   const pinned = isBotPinned(bot, allMeta)
+  const isPrivate = isBotPrivate(bot, allMeta)
   const sourceStatus = botSourceStatus(bot)
   const groups = botGroups(meta)
   const last = bot.last_session
@@ -339,6 +340,24 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
           }}
         >
           {pinned ? b.bot.unpin : b.bot.pinToTop}
+        </ContextMenuItem>
+        <ContextMenuItem
+          onSelect={() => {
+            void ensureBotMetadata(bot)
+              .then(current => {
+                const wasPrivate = Boolean(current.private)
+                void saveBotMeta(bot, {
+                  private: !wasPrivate
+                })
+                host.notify({
+                  kind: 'info',
+                  message: `${displayName(bot, current)} ${wasPrivate ? b.roster.madePublic : b.roster.madePrivate}`
+                })
+              })
+              .catch(error => host.notifyError?.(error, 'Could not load bot metadata'))
+          }}
+        >
+          {isPrivate ? b.roster.makePublic : b.roster.makePrivate}
         </ContextMenuItem>
         <ContextMenuItem
           onSelect={() => {

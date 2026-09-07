@@ -1414,7 +1414,7 @@ async def test_recursive_queued_followup_forwards_volatile_context(
 
 
 @pytest.mark.asyncio
-async def test_recursive_queued_followup_refreshes_context_at_dispatch(
+async def test_recursive_queued_followup_keeps_non_live_volatile_context_static(
     monkeypatch, tmp_path
 ):
     QueuedEphemeralContextAgent.calls = []
@@ -1431,10 +1431,10 @@ async def test_recursive_queued_followup_refreshes_context_at_dispatch(
     )
 
     assert result["final_response"] == "final response 2"
-    assert RevokingContextProgressAdapter.refresh_calls == 1
+    assert RevokingContextProgressAdapter.refresh_calls == 0
     assert QueuedEphemeralContextAgent.calls == [
         ("hello", None),
-        ("queued follow-up", None),
+        ("queued follow-up", "Location: 1.0, 2.0"),
     ]
 
 

@@ -83,6 +83,10 @@ class MessageEvent:
     # only the original event text, so it cannot alter the cached system prefix
     # or leak into later transcript replay.
     ephemeral_user_context: Optional[str] = None
+    # Adapter-owned, non-serializable capability used to resolve volatile
+    # context once when a foreground worker starts. It must never contain the
+    # context itself (notably, location coordinates).
+    ephemeral_context_ref: Any = field(default=None, repr=False, compare=False)
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""

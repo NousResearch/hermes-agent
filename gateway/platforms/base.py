@@ -1677,16 +1677,7 @@ def copy_ephemeral_context_metadata(source: MessageEvent, target: MessageEvent) 
     metadata identifies whether and how that snapshot may be refreshed at the
     final dispatch boundary.
     """
-    for attr in (
-        "_telegram_background_location_subject_key",
-        "_telegram_background_location_bot_scope",
-        "_telegram_background_location_state_path",
-        "_telegram_background_location_state_incarnation",
-        "_telegram_background_location_base_context",
-        "_ephemeral_context_refresh_unsafe",
-    ):
-        if hasattr(source, attr):
-            setattr(target, attr, getattr(source, attr))
+    target.ephemeral_context_ref = source.ephemeral_context_ref
 
 
 def merge_pending_message_event(
@@ -4010,23 +4001,6 @@ class BasePlatformAdapter(ABC):
         # Reuse the interrupt event handle_message() installed; new Event only if removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
-        refresh_ephemeral_context = getattr(
-            self, "_refresh_ephemeral_user_context_for_dispatch", None
-        )
-        if callable(refresh_ephemeral_context):
-            try:
-                refreshed = refresh_ephemeral_context(event)
-                if inspect.isawaitable(refreshed):
-                    await refreshed
-            except Exception:
-                # A fallible platform-state lookup must never replay an older,
-                # potentially revoked value already carried by a queued event.
-                event.ephemeral_user_context = None
-                logger.warning(
-                    "[%s] Could not refresh volatile user context; dropping it",
-                    self.name,
-                    exc_info=True,
-                )
         _thread_metadata = _thread_metadata_for_event(event)
         typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
         try:

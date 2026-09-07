@@ -1187,21 +1187,6 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         if _released:
             print(f"✓ Released {_released} memory-store connection(s) held by this process")
 
-    # Retire sensitive Telegram location snapshots held by this process. A
-    # separate long-lived multiplex process also fences itself by checking the
-    # profile directory incarnation before every read/write.
-    with contextlib.suppress(Exception):
-        from plugins.platforms.telegram.telegram_background_locations import (
-            release_background_location_states_under,
-        )
-
-        _released_locations = release_background_location_states_under(profile_dir)
-        if _released_locations:
-            print(
-                "✓ Released "
-                f"{_released_locations} background-location state cache(s)"
-            )
-
     # 3. Remove wrapper script
     if has_wrapper and remove_wrapper_script(canon):
         print(f"✓ Removed {wrapper_path}")

@@ -6367,11 +6367,6 @@ class TelegramAdapter(TelegramBackgroundLocationsMixin, BasePlatformAdapter):
                 await self._persist_background_location(
                     update, msg, polling_admission=polling_admission
                 )
-                if is_stop:
-                    for state_path, subject_key in self._background_location_stopped_subject_keys(msg):
-                        self._scrub_queued_background_location_context(
-                            subject_key, state_path
-                        )
             return
 
         if not self._is_user_authorized_from_message(msg):
@@ -6436,10 +6431,6 @@ class TelegramAdapter(TelegramBackgroundLocationsMixin, BasePlatformAdapter):
         event.text = "\n".join(parts)
         event = self._apply_telegram_group_observe_attribution(event)
         if background_locations_configured:
-            # An explicit fixed pin is authoritative for this batched turn.
-            # Prevent an adjacent text fragment's ambient live-share marker
-            # from attaching a second set of coordinates at dispatch.
-            event._ephemeral_context_refresh_unsafe = True  # type: ignore[attr-defined]
             # Reuse the short, sender-scoped text batch window so a user can
             # send "find coffee near me" and a pin as one ordinary turn.
             self._enqueue_text_event(event)

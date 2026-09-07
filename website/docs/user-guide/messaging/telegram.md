@@ -157,38 +157,26 @@ With this option enabled:
 - accepted active live-location updates, plus the matching edited stop update,
   do not start an agent turn or trigger a reply;
 - only the latest live-location lifecycle record for each Telegram
-  bot/sender/chat tuple is retained in the profile state file; stopped and
-  expired shares keep a coordinate-free marker so stale Telegram retries
-  cannot reactivate them;
-- the state is stored profile-locally at
-  `$HERMES_HOME/state/telegram_background_locations/<bot-scope>.json` with exact
-  coordinates, Telegram sender/chat/message/update/thread identifiers,
-  timestamps, accuracy, and live-only heading/proximity/live-period metadata;
-- the gateway refreshes its in-memory state view after at most 30 seconds, so
-  deleting or editing that file takes effect without restarting the gateway;
-- finite shares are replaced by coordinate-free expiry markers at their
-  deadline even when no later Telegram traffic arrives;
-- a later text message or command from the same sender receives the latest live
-  snapshot as ephemeral user-side context for that turn. Questions such as
+  bot/sender/chat tuple lives in the running adapter's RAM. It is discarded on
+  reconnect or restart; older `telegram_background_locations` files are no
+  longer read and may be removed manually;
+- a later foreground text question or command from the same sender snapshots
+  the latest live location when its worker begins. Questions such as
   "Where am I?" or "What's nearby?" can therefore use it without changing the
   cached system prompt or cached-agent signature, or writing the injected live
   context to the Hermes conversation transcript or its `api_content` sidecar.
 
 The live snapshot is appended only to the current API-copy user message, after
-normal per-turn user-message composition. It is intentionally not replayed on
-historical API messages: a later Telegram turn gets the then-current live
-snapshot from adapter state instead. This preserves a byte-stable system prompt
-and does not add a cross-process replay store for coordinates. Because the
-prior turn's location suffix is deliberately absent from its historical wire
-copy, the provider can reuse the older stable prefix but not the location-bearing
-tail of the immediately preceding request.
+normal per-turn user-message composition. It remains fixed for that turn's
+retries and tool calls; stopping sharing after the turn starts prevents later
+turns from receiving location but does not cancel the authorized running turn.
+`/bg`, `/btw`, automatic goal resumes, internal events, media-only events, and
+proxy/API-server paths do not receive ambient live-location context.
 
 Records are scoped to the configured Telegram bot identity, sender, and chat;
 forum/group topics are isolated from one another, while private-chat topics
-share the same sender/chat location.
-Rotating a token for the same numeric bot ID preserves its state; switching the
-profile to a different bot does not expose the prior bot's records. Legacy
-unscoped state from older versions is ignored. Location posts sent through a
+share the same sender/chat location. Reconnecting, restarting, replacing the
+adapter, or rotating its token discards the RAM state. Location posts sent through a
 shared `sender_chat` persona (including anonymous-admin/on-behalf-of messages)
 are not retained because Telegram does not expose a stable individual identity
 for safely attaching them to a later turn. Records are not currently available
@@ -198,16 +186,15 @@ Telegram business-account messages are also ignored for this feature because
 the current session identity does not include a business-connection ID.
 
 Temporary live-location records are attached only until Telegram's
-`live_period` expires. Stopping a live share removes its retained coordinates;
-`0x7FFFFFFF` live shares remain active until explicitly stopped. A fixed pin or
-venue does not replace a retained live snapshot because it is its own normal
-conversation turn.
+`live_period` expires. Stopping a live share removes its retained coordinates
+for future turns; `0x7FFFFFFF` shares remain active until explicitly stopped.
+A fixed pin or venue does not replace a retained live snapshot because it is
+its own normal conversation turn.
 
-If long polling loses continuity, Hermes suppresses the retained coordinates
-from queued turns and replaces active records with coordinate-free restart
-markers before polling can become healthy again. A fresh live-location edit is
-required before coordinates become available after that reconnect. The same
-fail-closed invalidation applies when conflict recovery intentionally drops
+If long polling loses continuity, Hermes discards retained coordinates before
+polling can become healthy again. A fresh live-location edit is required before
+coordinates become available after that reconnect. The same fail-closed
+invalidation applies when conflict recovery intentionally drops
 Telegram's queued updates.
 
 The state file is written with owner-only permissions on POSIX systems because

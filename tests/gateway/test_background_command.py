@@ -153,16 +153,14 @@ class TestRunBackgroundTask:
         assert "failed" in call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "").lower()
 
     @pytest.mark.asyncio
-    async def test_missing_adapter_drops_marked_location_but_preserves_base_context(self):
+    async def test_auxiliary_dispatch_does_not_re_resolve_event_context(self):
         runner = _make_runner()
         event = _make_event(text="/bg hello")
-        event.ephemeral_user_context = "weather\n\nLocation: 1.0, 2.0"
-        event._telegram_background_location_base_context = "weather"
-        event._telegram_background_location_subject_key = "subject"
+        event.ephemeral_context_ref = object()
 
         await runner._refresh_event_ephemeral_user_context(event)
 
-        assert event.ephemeral_user_context == "weather"
+        assert event.ephemeral_user_context is None
 
     @pytest.mark.asyncio
     async def test_successful_task_sends_result(self):
@@ -228,7 +226,7 @@ class TestRunBackgroundTask:
         mock_agent_instance.close.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_task_refreshes_location_context_before_model_dispatch(self):
+    async def test_task_does_not_refresh_live_location_before_model_dispatch(self):
         runner = _make_runner()
         source = SessionSource(
             platform=Platform.TELEGRAM,
@@ -246,12 +244,6 @@ class TestRunBackgroundTask:
         mock_adapter.extract_images = MagicMock(return_value=([], "done"))
         mock_adapter.toolsets_for_source = MagicMock(return_value=None)
 
-        async def revoke_context(target):
-            target.ephemeral_user_context = None
-
-        mock_adapter._refresh_ephemeral_user_context_for_dispatch = AsyncMock(
-            side_effect=revoke_context
-        )
         runner.adapters[Platform.TELEGRAM] = mock_adapter
 
         with patch(
@@ -274,11 +266,9 @@ class TestRunBackgroundTask:
                 context_event=event,
             )
 
-        mock_adapter._refresh_ephemeral_user_context_for_dispatch.assert_awaited_once_with(
-            event
-        )
         agent.run_conversation.assert_called_once_with(
-            user_message="say hello", task_id="bg_test"
+            user_message="say hello", task_id="bg_test",
+            ephemeral_user_context="Location: 40.4168, -3.7038",
         )
 
 
@@ -405,7 +395,7 @@ class TestHandleBtwCommand:
         assert "it was foo.py" in sent_text
 
     @pytest.mark.asyncio
-    async def test_side_question_refreshes_location_before_model_dispatch(self):
+    async def test_side_question_does_not_receive_ambient_live_location(self):
         runner = _make_runner()
         store = AsyncMock()
         store.get_or_create_session.return_value = MagicMock(session_id="s1")
@@ -420,15 +410,9 @@ class TestHandleBtwCommand:
         )
         mock_adapter = AsyncMock()
 
-        async def revoke_context(target):
-            target.ephemeral_user_context = None
-
-        mock_adapter._refresh_ephemeral_user_context_for_dispatch = AsyncMock(
-            side_effect=revoke_context
-        )
         runner._adapter_for_source = MagicMock(return_value=mock_adapter)
         event = _make_event(text="/btw which file?")
-        event.ephemeral_user_context = "Location: 1.0, 2.0"
+        event.ephemeral_context_ref = object()
 
         with patch(
             "agent.side_question.answer_side_question", return_value="foo.py"
@@ -437,9 +421,6 @@ class TestHandleBtwCommand:
             for task in list(runner._background_tasks):
                 await task
 
-        mock_adapter._refresh_ephemeral_user_context_for_dispatch.assert_awaited_once_with(
-            event
-        )
         assert "ephemeral_user_context" not in mock_answer.call_args.kwargs
 
     @pytest.mark.asyncio

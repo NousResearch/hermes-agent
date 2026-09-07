@@ -49,62 +49,21 @@ class GatewayTurnMixin:
     async def _refresh_event_ephemeral_user_context(
         self, event: Optional[MessageEvent]
     ) -> None:
-        """Refresh platform-owned volatile context at an auxiliary dispatch edge.
-
-        Foreground turns call this again after their final pre-agent hook;
-        detached ``/bg`` and ``/btw`` work calls it after its own scheduling
-        boundary. Any lookup failure fails closed rather than replaying the
-        value captured when the command was first received.
-        """
-        if event is None:
-            return
-
-        def drop_stale_context() -> None:
-            if hasattr(event, "_telegram_background_location_subject_key"):
-                event.ephemeral_user_context = getattr(
-                    event, "_telegram_background_location_base_context", None
-                )
-
-        adapter = self._adapter_for_source(event.source)
-        refresh = getattr(adapter, "_refresh_ephemeral_user_context_for_dispatch", None)
-        if not callable(refresh):
-            drop_stale_context()
-            return
-        try:
-            refreshed = refresh(event)
-            if inspect.isawaitable(refreshed):
-                await refreshed
-        except Exception:
-            drop_stale_context()
-            logger.warning(
-                "Could not refresh volatile user context for auxiliary dispatch; "
-                "dropping it",
-                exc_info=True,
-            )
+        """Compatibility no-op: ambient context is foreground-only."""
+        return None
 
     def _resolve_event_ephemeral_user_context_sync(
         self, event: Optional[MessageEvent]
     ) -> Optional[str]:
-        """Resolve volatile context at the provider-request boundary.
-
-        This runs in the agent worker thread on every tool-loop request. A
-        platform adapter can therefore revoke a previously captured value
-        synchronously when a stop or receive-path failure arrives after the
-        gateway's last awaited refresh.
-        """
+        """Resolve one adapter reference exactly once at foreground turn start."""
         if event is None:
             return None
         current = getattr(event, "ephemeral_user_context", None)
-        location_marker = "_telegram_background_location_subject_key"
         adapter = self._adapter_for_source(event.source)
         resolver = getattr(
             adapter, "_resolve_ephemeral_user_context_for_dispatch_sync", None
         )
         if not callable(resolver):
-            if hasattr(event, location_marker):
-                return getattr(
-                    event, "_telegram_background_location_base_context", None
-                )
             return current if isinstance(current, str) and current.strip() else None
         try:
             resolved = resolver(event)
@@ -114,19 +73,15 @@ class GatewayTurnMixin:
                 "dropping it",
                 exc_info=True,
             )
-            return getattr(
-                event, "_telegram_background_location_base_context", None
-            )
+            return None
         return resolved if isinstance(resolved, str) and resolved.strip() else None
 
     def _event_ephemeral_user_context_supplier(
         self, event: Optional[MessageEvent]
     ) -> Optional[Callable[[], Optional[str]]]:
-        if event is None or not hasattr(
-            event, "_telegram_background_location_subject_key"
-        ):
-            return None
-        return lambda: self._resolve_event_ephemeral_user_context_sync(event)
+        # A supplier would re-resolve mutable location state between tool calls.
+        # Foreground turns instead pass the one static snapshot captured below.
+        return None
 
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
@@ -2028,11 +1983,10 @@ class GatewayTurnMixin:
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
-            # Intake-time attachment is only a snapshot. Session resolution,
-            # transcript work, media preparation, and hooks above all yield;
-            # re-resolve immediately before the model boundary so a stop
-            # received during that work wins.
-            await self._refresh_event_ephemeral_user_context(event)
+            # Resolve the adapter-owned reference once, after all foreground
+            # preparation and immediately before entering the agent. A stop
+            # after this point affects the next turn, not this authorized one.
+            event.ephemeral_user_context = self._resolve_event_ephemeral_user_context_sync(event)
 
             # Capture the launch session id so post-run compression publication is identity-guarded
             # (a /new may move session_entry.session_id while the old run is still unwinding).
@@ -2049,9 +2003,6 @@ class GatewayTurnMixin:
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 message_type=event.message_type,
                 ephemeral_user_context=getattr(event, "ephemeral_user_context", None),
-                ephemeral_user_context_supplier=(
-                    self._event_ephemeral_user_context_supplier(event)
-                ),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 

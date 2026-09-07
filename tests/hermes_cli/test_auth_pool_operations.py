@@ -110,3 +110,9 @@ def test_refresh_rejects_ambiguous_and_non_oauth_targets():
     write_credential_pool("openrouter", rows[:1])
     with pytest.raises(SystemExit, match="not a refreshable"):
         auth_commands.auth_refresh_command(SimpleNamespace(provider="openrouter", target=None))
+    # Nous's resolver refreshes only its singleton, never an independent pool grant.
+    write_credential_pool("nous", _rows())
+    before = read_credential_pool("nous")
+    with pytest.raises(SystemExit, match="not a refreshable"):
+        auth_commands.auth_refresh_command(SimpleNamespace(provider="nous", target="row0"))
+    assert read_credential_pool("nous") == before

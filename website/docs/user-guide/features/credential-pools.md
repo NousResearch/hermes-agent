@@ -123,6 +123,12 @@ Type [1/2]:
 | `hermes auth reset <provider> <target>` | Clear the cooldown on one credential by index, id, or label |
 | `hermes auth refresh <provider> [target]` | Refresh one OAuth credential's tokens and return it to rotation (proves the grant is alive; the next request re-checks quota) |
 
+For Nous, `auth refresh` supports only the login's `device_code` singleton.
+Independent Nous pool accounts are rejected before refresh; their tokens and
+cooldowns are preserved. Reauthenticate with `hermes auth add nous --type oauth`
+to update the singleton; this does not refresh an independent account. Other
+providers retain their existing source-specific refresh support.
+
 ## Rotation Strategies
 
 Priority positions are zero-based and clamp to the pool's ends; displayed targets

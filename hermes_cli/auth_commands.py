@@ -532,6 +532,12 @@ def auth_refresh_command(args) -> None:
         raise SystemExit(
             f"{provider} credential #{index} ({matched.label}) is not a refreshable OAuth "
             f"credential.")
+    # Nous's resolver is singleton-bound, not an independent-account refresher.
+    if provider == "nous" and matched.source != "device_code":
+        raise SystemExit(
+            f"nous credential #{index} ({matched.label}) is not a refreshable OAuth "
+            "credential: only the device_code singleton supports refresh. "
+            "Reauthenticate with `hermes auth add nous --type oauth`.")
     refreshed = pool.try_refresh_matching(credential_id=matched.id)
     if refreshed is None:
         after = next((e for e in pool.entries() if e.id == matched.id), None)

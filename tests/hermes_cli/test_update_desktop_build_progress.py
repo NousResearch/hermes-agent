@@ -21,10 +21,11 @@ def test_streams_lines_and_prints_progress_while_the_build_runs(monkeypatch):
     terminal = io.StringIO()
     log = io.StringIO()
     monkeypatch.setattr(sys, "stdout", _UpdateOutputStream(terminal, log))
+    # The cadence is a module constant, not a parameter: production callers
+    # pass nothing, so the seam belongs here rather than in the signature.
+    monkeypatch.setattr(update_cmd, "_LOGGED_SUBPROCESS_PROGRESS_SECONDS", 0.1)
 
-    result = update_cmd._run_logged_subprocess(
-        [sys.executable, "-c", SLOW_CHILD], progress_every=0.1
-    )
+    result = update_cmd._run_logged_subprocess([sys.executable, "-c", SLOW_CHILD])
 
     assert result.returncode == 0
     assert all(f"build line {i}" in result.stdout for i in range(4))
@@ -48,7 +49,8 @@ def test_quick_child_prints_no_progress_line(monkeypatch):
 def test_falls_back_to_the_log_file_when_the_mirror_is_off(monkeypatch, tmp_path: Path):
     plain = io.StringIO()
     monkeypatch.setattr(sys, "stdout", plain)
-    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: tmp_path)
+    # update_cmd re-exports get_hermes_home precisely so it can be patched here.
+    monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: tmp_path)
 
     result = update_cmd._run_logged_subprocess(
         [sys.executable, "-c", "print('gateway-mode build')"]
@@ -61,7 +63,8 @@ def test_falls_back_to_the_log_file_when_the_mirror_is_off(monkeypatch, tmp_path
 
 def test_nonzero_exit_and_output_survive(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(sys, "stdout", io.StringIO())
-    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: tmp_path)
+    # update_cmd re-exports get_hermes_home precisely so it can be patched here.
+    monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: tmp_path)
 
     result = update_cmd._run_logged_subprocess(
         [sys.executable, "-c", "import sys; print('boom'); sys.exit(3)"]

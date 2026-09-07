@@ -489,7 +489,8 @@ DEFAULT_CONFIG = {
         # detects the change and prints /reload-mcp guidance.
         "auto_reload_on_config_change": True,
         # Per-server MCP circuit breaker (closed -> open short-circuit -> half-open probe). Defaults
-        # match the historical hardcoded values. enabled=false keeps error tracking for diagnostics
+        # mirror _CIRCUIT_BREAKER_DEFAULT_* in tools/mcp_tool.py (the canonical fallback source when
+        # config read fails) — keep them in sync. enabled=false keeps error tracking for diagnostics
         # but never short-circuits calls.
         "circuit_breaker": {
             "enabled": True,

@@ -433,7 +433,8 @@ _server_breaker_opened_at: Dict[str, float] = {}
 
 # Circuit breaker settings — read from config on each check (lightweight, no caching).
 # Defaults match the historical hardcoded values for backward compatibility.
-# These module-level constants are only used as fallbacks if config read fails.
+# These module-level constants are only used as fallbacks if config read fails, and mirror
+# mcp.circuit_breaker.* in hermes_cli/config_defaults.py (the canonical merge source) — keep in sync.
 _CIRCUIT_BREAKER_DEFAULT_ENABLED = True
 _CIRCUIT_BREAKER_DEFAULT_THRESHOLD = 3
 _CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC = 60.0

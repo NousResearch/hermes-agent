@@ -1485,6 +1485,7 @@ platform_toolsets:
 #       log_level: "info"       # audit verbosity
 
 # MCP runtime behavior (distinct from mcp_servers: server definitions above).
+# Defaults mirror _CIRCUIT_BREAKER_DEFAULT_* in tools/mcp_tool.py (canonical fallback) — keep in sync.
 # mcp:
 #   circuit_breaker:
 #     enabled: true          # false = never short-circuit calls (errors still tracked for diagnostics)

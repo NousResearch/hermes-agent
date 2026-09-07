@@ -11,7 +11,8 @@ import re
 from typing import Any, Callable, Optional
 
 from agent.reasoning_effort import (
-    ACTUAL_RELAY_EFFORTS, XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort,
+    ACTUAL_RELAY_EFFORTS, CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS,
+    XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort,
     # Same declared vocabulary + shared clamp as the main Codex transport (agent.reasoning_effort):
     # per-model — "max" is gpt-5.6-only, "minimal"/"ultra" always rejected (live-verified, #68365).
     codex_supported_efforts,
@@ -226,7 +227,9 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
         declared = _profile_declared_efforts(params.get("provider"), model, params.get("base_url"))
         if declared is not None and not declared:
             reasoning_enabled = False
-        supported = declared or codex_supported_efforts(model)
+        supported = declared or _codex_efforts_for_route(
+            model, params.get("base_url"), is_codex_backend=params.get("is_codex_backend") is True
+        )
     return clamp_effort(reasoning_effort, supported), reasoning_enabled
 
 
@@ -260,6 +263,54 @@ def _default_prompt_cache_retention_for_request(model: str, base_url: Any) -> Op
         return None
     normalized = str(model or "").strip().lower().replace("_", "-")
     return "24h" if _EXTENDED_PROMPT_CACHE_MODEL_RE.search(normalized) else None
+
+
+def _is_astra_model(model: Any) -> bool:
+    return str(model or "").strip().lower().rsplit("/", 1)[-1] in ("gpt-6-astra", "gpt-6-astra-900k")
+
+
+def _is_official_openai_responses_route(model: Any, base_url: Any) -> bool:
+    """Astra cache semantics apply only to the official OpenAI API host."""
+    if not _is_astra_model(model):
+        return False
+    from utils import base_url_hostname
+
+    # Astra's account-gated cache contract is for the canonical API origin only.
+    # Do not extend it to subdomains (or lookalike hosts) by suffix matching.
+    return base_url_hostname(str(base_url or "")).lower() == "api.openai.com"
+
+
+def _codex_efforts_for_route(model: Any, base_url: Any, *, is_codex_backend: bool = False) -> tuple[str, ...]:
+    """Keep Astra's new vocabulary off unrelated Responses-compatible endpoints."""
+    if _is_astra_model(model) and not (
+        is_codex_backend or _is_official_openai_responses_route(model, base_url)
+    ):
+        return CODEX_LEGACY_EFFORTS
+    return codex_supported_efforts(str(model or ""))
+
+
+def _sanitize_astra_request_kwargs(kwargs: dict[str, Any], model: Any, base_url: Any) -> None:
+    """Apply Astra's model-specific restrictions after all request overrides are merged."""
+    if not _is_astra_model(model):
+        return
+    if not _is_official_openai_responses_route(model, base_url):
+        kwargs.pop("prompt_cache_options", None)
+        return
+    reasoning = kwargs.get("reasoning")
+    requested = reasoning.get("effort") if isinstance(reasoning, dict) else None
+    normalized = str(requested or "").strip().lower()
+    effort = "low" if normalized in {"", "none", "minimal", "disabled", "off"} else clamp_effort(
+        requested, CODEX_ASTRA_EFFORTS
+    )
+    kwargs["reasoning"] = {**(reasoning if isinstance(reasoning, dict) else {}), "effort": effort}
+    kwargs["reasoning"].setdefault("summary", "auto")
+    for key in ("temperature", "top_p", "top_logprobs", "logprobs"):
+        kwargs.pop(key, None)
+    include = kwargs.get("include")
+    if isinstance(include, list):
+        kwargs["include"] = [item for item in include if "logprob" not in str(item).lower()]
+    kwargs["prompt_cache_options"] = {"ttl": "30m"}
+    kwargs.pop("prompt_cache_retention", None)
 
 
 def _content_cache_key(instructions: str, tools: Optional[list[dict[str, Any]]], scope_id: str = "") -> Optional[str]:
@@ -448,10 +499,12 @@ class ResponsesApiTransport(ProviderTransport):
             native_compaction_eligible=_native_compaction_active(kwargs.get("context_management")),
         )
 
-    def convert_tools(self, tools: Optional[list[dict[str, Any]]]) -> Any:
+    def convert_tools(self, tools: Optional[list[dict[str, Any]]], **kwargs) -> Any:
         """Convert OpenAI tool schemas to Responses API function definitions."""
         from agent.codex_responses_adapter import _responses_tools
 
+        if kwargs.get("async_tools") is True:
+            return _responses_tools(tools, async_tools=True)
         return _responses_tools(tools)
 
     def build_kwargs(
@@ -500,7 +553,18 @@ class ResponsesApiTransport(ProviderTransport):
         native_compaction_active = _native_compaction_active(context_management)
 
         reasoning_effort, reasoning_enabled = _resolve_reasoning(model, params)
-        response_tools, self._last_wire_aliases = _alias_wire_tools(self.convert_tools(tools), params, is_xai_responses)
+        # The marker is emitted only for exact direct Astra turns whose midstream executor
+        # was admitted by the caller.  Keep the internal hint out of returned kwargs so the
+        # normal Responses preflight contract remains unchanged.
+        async_tools = (
+            params.get("midstream_executor_active") is True
+            and str(model or "").strip().lower().rsplit("/", 1)[-1] == "gpt-6-astra"
+            and not is_codex_backend and not is_xai_responses and not is_github_responses
+            and _is_official_openai_responses_route(model, params.get("base_url"))
+        )
+        response_tools, self._last_wire_aliases = _alias_wire_tools(
+            self.convert_tools(tools, async_tools=async_tools), params, is_xai_responses
+        )
 
         # Lazy: provider plugins import this transport during model_metadata init.
         from agent.model_metadata import strip_codex_context_variant_suffix as _strip_ctx_variant
@@ -543,6 +607,8 @@ class ResponsesApiTransport(ProviderTransport):
         ))
         if params.get("request_overrides"):
             kwargs.update(params["request_overrides"])
+
+        _sanitize_astra_request_kwargs(kwargs, model, params.get("base_url"))
 
         _bound_prompt_cache_key_field(kwargs)
 
@@ -610,6 +676,8 @@ class ResponsesApiTransport(ProviderTransport):
                 provider_data = {
                     key: getattr(tc, key) for key in ("call_id", "response_item_id") if getattr(tc, key, None)
                 }
+                if getattr(tc, "async", False) is True or getattr(tc, "async_", False) is True:
+                    provider_data["async"] = True
                 has_fn = hasattr(tc, "function")
                 name = tc.function.name if has_fn else getattr(tc, "name", "")
                 # Undo only aliases THIS request emitted; the legacy map is for normalize-only call sites.

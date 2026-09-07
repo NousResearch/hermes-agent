@@ -55,6 +55,7 @@ export function PluginInstallModal() {
   const [forceReinstall, setForceReinstall] = useState(false)
   const [installing, setInstalling] = useState(false)
   const [installError, setInstallError] = useState<string | null>(null)
+  const [installedPlugin, setInstalledPlugin] = useState<string | null>(null)
   const probeToken = useRef(0)
 
   const resetState = useCallback(() => {
@@ -66,6 +67,7 @@ export function PluginInstallModal() {
     setForceReinstall(false)
     setInstalling(false)
     setInstallError(null)
+    setInstalledPlugin(null)
   }, [])
 
   const applyLegacyHint = useCallback((payload: PluginInstallRequest, detected: ProbeResult) => {
@@ -200,6 +202,11 @@ export function PluginInstallModal() {
             notify({ kind: 'warning', message: warning })
           }
         } else {
+          if (result.installed) {
+            setInstalledPlugin(result.pluginName ?? request.repo)
+            errors.push(t.settings.plugins.agent.setupInstalled)
+          }
+
           errors.push(result.error || m.agentFailed)
         }
       }
@@ -400,6 +407,18 @@ export function PluginInstallModal() {
         )}
 
         <DialogFooter>
+          {installedPlugin && (
+            <Button
+              disabled={busy}
+              onClick={() => {
+                handleClose()
+                navigate(`/settings?tab=plugins&plugin=${encodeURIComponent(installedPlugin)}`)
+              }}
+              variant="secondary"
+            >
+              {t.settings.plugins.agent.reviewSetup}
+            </Button>
+          )}
           <Button disabled={busy} onClick={handleClose} variant="outline">
             {t.common.cancel}
           </Button>

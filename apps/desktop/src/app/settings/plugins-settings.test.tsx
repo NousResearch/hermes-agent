@@ -1,8 +1,9 @@
 import { QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { requestGateway, getProfiles } = vi.hoisted(() => ({
+const { requestGateway, getProfiles, rawGateway } = vi.hoisted(() => ({
+  rawGateway: { current: undefined as undefined | { request: ReturnType<typeof vi.fn> } },
   requestGateway: vi.fn(),
   getProfiles: vi.fn<() => Promise<{ profiles: { name: string; is_default: boolean }[] }>>(async () => ({
     profiles: []
@@ -10,7 +11,7 @@ const { requestGateway, getProfiles } = vi.hoisted(() => ({
 }))
 
 vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
-  useGatewayRequest: () => ({ requestGateway })
+  useGatewayRequest: () => ({ requestGateway, gateway: rawGateway.current })
 }))
 
 vi.mock('@/hermes', async importOriginal => ({
@@ -49,6 +50,7 @@ const renderSettings = () =>
 
 beforeEach(() => {
   requestGateway.mockReset()
+  rawGateway.current = undefined
   getProfiles.mockReset()
   getProfiles.mockResolvedValue({ profiles: [] })
   queryClient.clear()
@@ -230,4 +232,136 @@ describe('PluginsSettings', () => {
       })
     )
   })
+})
+
+it('reviews exact native setup, keeps enable off while busy, surfaces failure and retries', async () => {
+  const row = { ...legacyRow, key: 'native-fixture' }
+
+  const proposal = {
+    ok: false,
+    status: 'consent_required',
+    error: 'Review setup',
+    setup: {
+      revision: 'v1-hash',
+      ready: false,
+      summary: 'Install fixture runtime',
+      details: ['https://example.com/runtime.zip', '/fixture/profile/bin/runtime']
+    },
+    consent: { key: row.key, hermes_home: '/fixture/profile', revision: 'v1-hash' }
+  }
+
+  $agentPlugins.set([row])
+  requestGateway.mockRejectedValueOnce(Object.assign(new Error('Review setup'), { data: proposal }))
+  renderSettings()
+  fireEvent.click(screen.getByRole('switch', { name: 'Enable Legacy plugin' }))
+  expect(await screen.findByText('Install fixture runtime')).toBeTruthy()
+  expect(screen.getByText('https://example.com/runtime.zip')).toBeTruthy()
+  expect(screen.getByText('/fixture/profile/bin/runtime')).toBeTruthy()
+  expect(requestGateway).toHaveBeenCalledTimes(1)
+  let fail!: (reason: Error) => void
+  requestGateway.mockImplementationOnce(
+    () =>
+      new Promise((_resolve, reject) => {
+        fail = reject
+      })
+  )
+  fireEvent.click(screen.getByRole('button', { name: 'Set up and enable' }))
+  await waitFor(() =>
+    expect(requestGateway).toHaveBeenLastCalledWith(
+      'plugins.manage',
+      {
+        action: 'toggle',
+        key: row.key,
+        enable: true,
+        setup_consent: proposal.consent
+      },
+      360000
+    )
+  )
+  expect($agentPlugins.get()[0].status).toBe('disabled')
+  expect((screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement).disabled).toBe(true)
+  fail(new Error('Runtime verification failed; install fixture-library and retry'))
+  expect(await screen.findByText('Runtime verification failed; install fixture-library and retry')).toBeTruthy()
+  requestGateway.mockResolvedValueOnce({ ok: true, plugin: { ...row, status: 'enabled' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Set up and enable' }))
+  await waitFor(() => expect($agentPlugins.get()[0].status).toBe('enabled'))
+})
+
+it('canceling setup does not send consent', async () => {
+  $agentPlugins.set([{ ...legacyRow, key: 'native-fixture' }])
+  requestGateway.mockRejectedValueOnce(
+    Object.assign(new Error('Review setup'), {
+      data: {
+        status: 'consent_required',
+        setup: { revision: 'v1', ready: false, summary: 'Native setup', details: [] },
+        consent: { key: 'native-fixture', hermes_home: '/fixture/profile', revision: 'v1' }
+      }
+    })
+  )
+  renderSettings()
+  fireEvent.click(screen.getByRole('switch', { name: 'Enable Legacy plugin' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
+  expect(requestGateway).toHaveBeenCalledTimes(1)
+  expect($agentPlugins.get()[0].status).toBe('disabled')
+})
+
+it('drops a pending consent dialog when the active profile changes', async () => {
+  const row = { ...legacyRow, key: 'native-fixture' }
+  $agentPlugins.set([row])
+  requestGateway.mockRejectedValueOnce(
+    Object.assign(new Error('Review setup'), {
+      data: {
+        status: 'consent_required',
+        setup: { revision: 'v1', ready: false, summary: 'Native setup', details: [] },
+        consent: { key: row.key, hermes_home: '/fixture/profile', revision: 'v1' }
+      }
+    })
+  )
+  renderSettings()
+  fireEvent.click(screen.getByRole('switch', { name: 'Enable Legacy plugin' }))
+  expect(await screen.findByText('Native setup')).toBeTruthy()
+  act(() => $activeGatewayProfile.set('other'))
+  await waitFor(() => expect(screen.queryByText('Native setup')).toBeNull())
+  expect(requestGateway).toHaveBeenCalledTimes(1)
+})
+
+it('keeps reviewed consent on the captured raw gateway and requires a second review for a changed revision', async () => {
+  const row = { ...legacyRow, key: 'native-fixture' }
+
+  const proposal = (revision: string) => ({
+    status: 'consent_required',
+    setup: { revision, ready: false, summary: 'Native setup', details: [] },
+    consent: { key: row.key, hermes_home: '/fixture/profile', revision }
+  })
+
+  const original = vi.fn().mockRejectedValueOnce(Object.assign(new Error('Review setup'), { data: proposal('v1') }))
+  const other = vi.fn()
+  rawGateway.current = { request: original }
+  $agentPlugins.set([row])
+  renderSettings()
+  fireEvent.click(screen.getByRole('switch', { name: 'Enable Legacy plugin' }))
+  expect(await screen.findByText('v1')).toBeTruthy()
+  rawGateway.current = { request: other }
+  act(() => $agentPlugins.set([{ ...row, description: 'New connection row' }]))
+  original.mockRejectedValueOnce(Object.assign(new Error('Revision changed; review again'), { data: proposal('v2') }))
+  fireEvent.click(screen.getByRole('button', { name: 'Set up and enable' }))
+  expect(await screen.findByText('Revision changed; review again')).toBeTruthy()
+  expect(screen.getByText('v2')).toBeTruthy()
+  expect(original).toHaveBeenCalledTimes(2)
+  expect(other).not.toHaveBeenCalled()
+  expect(requestGateway).not.toHaveBeenCalled()
+  original.mockResolvedValueOnce({ ok: true, plugin: { ...row, status: 'enabled' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Set up and enable' }))
+  await waitFor(() =>
+    expect(original).toHaveBeenLastCalledWith(
+      'plugins.manage',
+      {
+        action: 'toggle',
+        key: row.key,
+        enable: true,
+        setup_consent: proposal('v2').consent
+      },
+      360000
+    )
+  )
 })

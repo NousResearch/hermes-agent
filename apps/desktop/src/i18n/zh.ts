@@ -452,6 +452,12 @@ export const zh: Translations = {
         search: '搜索插件…',
         noMatches: '没有匹配的插件。',
         toggleFailed: (name: string) => `无法切换 ${name}`,
+        setupInstalled: '文件已安装；启用状态未更改。打开插件设置并启用此插件以查看或重试设置。',
+        reviewSetup: '在插件中查看设置',
+        setupTitle: '原生插件设置',
+        setupConfirm: '设置并启用',
+        setupBusy: '正在设置…',
+        setupTrust: '这将在选定后端运行受信任的插件代码。现有会话保持不变；重启网关后生效。',
         updateBackendToManage: '请更新 Hermes 后端以便在桌面端管理此插件。',
         sources: { bundled: '内置', user: '用户', git: 'git', project: '项目', entrypoint: 'pip' }
       },

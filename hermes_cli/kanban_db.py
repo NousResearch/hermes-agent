@@ -259,6 +259,84 @@ def _fire_dispatch_tick_hook(
         _log.debug("kanban dispatch tick hook failed: %s", exc)
 
 
+def fire_pre_dispatch_claim_hook(
+    conn: sqlite3.Connection, task_id: str, *, board: Optional[str],
+    assignee: Optional[str], lane: str,
+) -> Optional[dict]:
+    """``pre_dispatch_claim`` policy gate — DISPATCHER, AFTER check_respawn_guard,
+    BEFORE claim_task. Returns the first ``{"action": "block", "reason": str}``
+    directive from any registered callback, or ``None`` (proceed to claim).
+
+    Fails OPEN: a raising plugin or hook-infra error returns ``None``, so
+    dispatch proceeds with default behaviour. No-op (short-circuits on
+    has_hook) when nothing subscribes — dispatch stays byte-for-byte
+    unchanged without a plugin.
+
+    Fires between transactions so no write lock is held; a callback may
+    read on ``conn`` but must wrap any write in ``write_txn(conn)``.
+    """
+    if not _kanban_observer_consumed("pre_dispatch_claim"):
+        return None
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+
+        results = invoke_hook(
+            "pre_dispatch_claim", task_id=task_id,
+            board=board or get_current_board(), assignee=assignee,
+            lane=lane, profile_name=_hook_profile_name(),
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.debug("pre_dispatch_claim hook failed: %s", exc)
+        return None
+    for result in results:
+        if isinstance(result, dict) and result.get("action") == "block":
+            reason = result.get("reason")
+            return {"action": "block", "reason": reason if isinstance(reason, str) else ""}
+    return None
+
+
+def _force_block_from_policy(
+    conn: sqlite3.Connection, task_id: str, reason: str, *, lane: str,
+) -> bool:
+    """Force a not-yet-claimed ``ready``/``review`` row into ``blocked`` because a
+    ``pre_dispatch_claim`` plugin vetoed the claim. Returns True when THIS
+    call moved the row, False when it lost the race (another dispatcher /
+    worker claimed or blocked it first).
+
+    The conditional UPDATE is the atomic compare-and-swap — keyed on the
+    exact pre-claim source status plus ``claim_lock IS NULL`` so it can
+    never stomp a row that has already advanced. Mirrors ``block_task``'s
+    field-clear / run-close / blocked-event pattern and fires
+    ``kanban_task_blocked`` post-commit.
+    """
+    source_status = "review" if lane == "review" else "ready"
+    reason = (reason or "blocked by pre_dispatch_claim policy")[:500]
+    with write_txn(conn):
+        moved = conn.execute(
+            "UPDATE tasks "
+            "   SET status = 'blocked', claim_lock = NULL, claim_expires = NULL, "
+            "       worker_pid = NULL, block_kind = 'capability', "
+            "       last_failure_error = ? "
+            " WHERE id = ? AND status = ? AND claim_lock IS NULL",
+            (reason, task_id, source_status),
+        ).rowcount == 1
+        if not moved:
+            return False
+        run_id = _end_or_synthesize_run(
+            conn, task_id, outcome="blocked", status="blocked",
+            summary=reason, synthesize=bool(reason),
+        )
+        _append_event(
+            conn, task_id, "blocked",
+            {"reason": reason, "kind": "capability", "source": "pre_dispatch_claim",
+             "source_status": source_status},
+            run_id=run_id,
+        )
+        blocked_task = get_task(conn, task_id)
+    _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
+    return True
+
+
 # Claim window before the next tick reclaims a running task; long workers
 # ``heartbeat_claim`` or raise it via HERMES_KANBAN_CLAIM_TTL_SECONDS.
 DEFAULT_CLAIM_TTL_SECONDS = 15 * 60

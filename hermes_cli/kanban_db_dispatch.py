@@ -1547,6 +1547,26 @@ def _dispatch_lane_task(
         result.spawned.append((task_id, assignee, ""))
         _count_spawn(assignee)
         return True
+    # pre_dispatch_claim policy gate: AFTER the respawn guard, BEFORE we claim.
+    # A user-space plugin may force this row into 'blocked' instead of spawning;
+    # fails OPEN (a broken/raising plugin proceeds to claim). Never runs in the
+    # dry_run path. Hook payload is documented in hermes_cli.plugins.VALID_HOOKS.
+    directive = _kb.fire_pre_dispatch_claim_hook(
+        conn, task_id, board=board, assignee=assignee, lane=lane,
+    )
+    if directive is not None:
+        if _kb._force_block_from_policy(conn, task_id, directive.get("reason") or "", lane=lane):
+            result.auto_blocked.append(task_id)
+        # Whether we won the race or lost it, the dispatcher does not proceed
+        # to spawn this task. The race-lost case still falls through to the
+        # normal claim path below because the row's status is no longer 'ready'/
+        # 'review' and the upcoming claim will return None (already-claimed/
+        # blocked elsewhere), so this return-False is safe in both branches.
+        # We still return False above the claim call to keep the no-spawn
+        # invariant; the claim attempt is skipped entirely so we never
+        # double-spawn against a row that was just blocked.
+        # (See UPSTREAM_PR_PROPOSAL.md for the full rationale.)
+        return False
     claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
     claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
     if claimed is None:

@@ -177,6 +177,18 @@ VALID_HOOKS: Set[str] = {
     # hooks.md). Other event types and hook names land here only together with real fire-sites and payload
     # contracts; no inert VALID_HOOKS surface is registered ahead of implementation.
     "gateway_platform_event",
+    # pre_dispatch_claim: fired in the DISPATCHER inside _dispatch_lane_task, AFTER
+    # check_respawn_guard and BEFORE claim_task, once per would-be claim (both
+    # "ready" and "review" lanes; NOT dry_run). Fires between transactions — no
+    # dispatch write lock is held, so a callback may read on `conn` and may write
+    # ONLY inside kanban_db.write_txn(conn). Kwargs: task_id, conn, board, lane
+    # ("ready"|"review"), assignee, profile_name. Return None -> proceed with
+    # claim+spawn; {"action": "block", "reason"} -> dispatcher force-trips the
+    # row to status='blocked', records reason in last_failure_error, emits a
+    # spawn_policy_blocked event, and skips claim+spawn. First directive wins.
+    # Fails OPEN: a callback that raises, or hook infra that is unavailable,
+    # proceeds with default behaviour.
+    "pre_dispatch_claim",
     # pre_command: BEFORE a recognized slash command's handler on CLI and gateway canonical dispatch;
     # returns IGNORED in v1. Deliberately NOT fired for the gateway's running-agent intercept path
     # (/stop, /approve, busy_policy) — a slow/hostile plugin must not touch the operator's escape

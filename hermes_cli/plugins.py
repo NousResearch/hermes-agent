@@ -1156,7 +1156,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # also stale, the callback is quarantined until plugins are reloaded.
         self._hook_running_callbacks: Dict[tuple, Tuple[object, float]] = {}
         self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
-        self._hook_stale_retries: Set[tuple] = set()
+        self._hook_abandoned_tokens: Dict[tuple, Set[object]] = {}
         self._hook_quarantined_callbacks: Set[tuple] = set()
         self._hook_timeout_lock = threading.Lock()
         self._hook_timeout_suppression_seconds = _HOOK_TIMEOUT_SUPPRESSION_SECONDS

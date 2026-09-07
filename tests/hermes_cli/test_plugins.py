@@ -1193,27 +1193,44 @@ class TestForceReloadSymmetry:
         now = 0.0
         monkeypatch.setattr(dispatch_mod.time, "monotonic", lambda: now)
 
-        release_first = threading.Event()
+        releases = [threading.Event(), threading.Event()]
+        first_finished = threading.Event()
         starts = []
 
         def policy(**_kwargs):
-            starts.append(len(starts) + 1)
-            if len(starts) == 1:
-                release_first.wait(timeout=10.0)
+            generation = len(starts)
+            starts.append(generation + 1)
+            if generation == 0:
+                releases[0].wait(timeout=10.0)
+                first_finished.set()
+            elif generation == 2:
+                releases[1].wait(timeout=10.0)
             return None
 
         mgr = PluginManager()
         mgr._hooks["pre_tool_call"] = [policy]
 
-        assert mgr.invoke_hook("pre_tool_call") == [
-            {"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}
-        ]
+        blocked = [{"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}]
+        try:
+            assert mgr.invoke_hook("pre_tool_call") == blocked
 
-        now = 60.2
-        assert mgr.invoke_hook("pre_tool_call") == []
-        assert starts == [1, 2]
-        assert "remained running for 60.2s; abandoning stale worker token and retrying" in caplog.text
-        release_first.set()
+            now = 60.2
+            assert mgr.invoke_hook("pre_tool_call") == []
+            assert starts == [1, 2]
+            assert "remained running for 60.2s; abandoning stale worker token and retrying" in caplog.text
+
+            assert mgr.invoke_hook("pre_tool_call") == blocked
+            now = 120.3
+            assert mgr.invoke_hook("pre_tool_call") == blocked
+            assert starts == [1, 2, 3]
+
+            releases[0].set()
+            assert first_finished.wait(timeout=2.0)
+            assert mgr.invoke_hook("pre_tool_call") == blocked
+            assert starts == [1, 2, 3]
+        finally:
+            for release in releases:
+                release.set()
 
     def test_pre_tool_call_quarantines_repeated_hung_workers(self, monkeypatch, caplog):
         """Repeated permanent hangs get one retry, then stay fail closed without more workers."""

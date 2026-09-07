@@ -230,7 +230,7 @@ class PluginDispatchMixin:
                         "Hook '%s' callback %s skipped while still running (age %.1fs)",
                         hook_name, callback_name, running_age)
                     return _HOOK_SKIPPED
-                if callback_key in self._hook_stale_retries:
+                if self._hook_abandoned_tokens.get(callback_key):
                     self._hook_quarantined_callbacks.add(callback_key)
                     logger.error(
                         "Hook '%s' callback %s replacement remained running for %.1fs; "
@@ -242,7 +242,7 @@ class PluginDispatchMixin:
                     "token and retrying", hook_name, callback_name, running_age)
                 if self._hook_running_callbacks.get(callback_key) == (running_token, running_since):
                     self._hook_running_callbacks.pop(callback_key, None)
-                    self._hook_stale_retries.add(callback_key)
+                    self._hook_abandoned_tokens.setdefault(callback_key, set()).add(running_token)
             if suppressed_until is not None:
                 self._hook_timeout_suppressed_until.pop(callback_key, None)
             self._hook_running_callbacks[callback_key] = (token, started_at)
@@ -257,7 +257,11 @@ class PluginDispatchMixin:
                 running = self._hook_running_callbacks.get(callback_key)
                 if running is not None and running[0] is token:
                     self._hook_running_callbacks.pop(callback_key, None)
-                    self._hook_stale_retries.discard(callback_key)
+                abandoned = self._hook_abandoned_tokens.get(callback_key)
+                if abandoned is not None:
+                    abandoned.discard(token)
+                    if not abandoned:
+                        self._hook_abandoned_tokens.pop(callback_key, None)
 
         def _runner() -> None:
             try:

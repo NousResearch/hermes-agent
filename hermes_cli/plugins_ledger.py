@@ -298,6 +298,6 @@ class PluginLedgerMixin:
         with self._hook_timeout_lock:
             self._hook_running_callbacks.clear()
             self._hook_timeout_suppressed_until.clear()
-            self._hook_stale_retries.clear()
+            self._hook_abandoned_tokens.clear()
             self._hook_quarantined_callbacks.clear()
         self._discovered = False

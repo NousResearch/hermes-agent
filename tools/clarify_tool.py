@@ -85,7 +85,7 @@ def _flatten_choice(c) -> str:
 def _with_recommended(choice: Choice) -> Choice:
     """Return ``choice`` with the recommendation suffix on its label (copied)."""
     if isinstance(choice, dict):
-        return {"label": f"{choice['label']} {RECOMMENDED_LABEL}",
+        return {"label": f"{choice.get('label', '')} {RECOMMENDED_LABEL}",
                 "description": choice.get("description", "")}
     return f"{choice} {RECOMMENDED_LABEL}"
 

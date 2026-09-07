@@ -127,6 +127,10 @@ DEFAULT_CONFIG = {
         # "auto" = gpt/codex/grok/deepseek/kimi/qwen/glm/minimax/mimo/mistral; true/false = force;
         # or a list of model-name substrings.
         "execution_guidance": "auto",
+        # Opt-in compact system prompt for tool-enabled qwen3.5 sessions on a
+        # strict loopback endpoint. Other models and non-loopback endpoints
+        # always retain the normal prompt; disabled by default.
+        "local_compact_prompt": False,
         # When the model narrates an action ("I'll go check the logs...") but emits no tool call,
         # inject a "continue now, execute the tools" nudge and loop (max 2 nudges/turn). Corrective
         # sibling of tool_use_enforcement. "auto" = codex_responses api_mode only; true = all

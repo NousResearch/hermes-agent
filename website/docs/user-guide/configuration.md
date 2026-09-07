@@ -1820,6 +1820,25 @@ The injected block covers:
 
 The gate is independent of `tool_use_enforcement` — either can be on without the other. The guidance is chosen once at session start keyed on the model name, so the system prompt stays byte-stable (and prompt-cache-friendly) for the life of the conversation. Gemini/Gemma are excluded from the auto list because they receive the more specific Google operational guidance; Claude is excluded because it doesn't exhibit these failure modes — opt any model in with `true` or a substring list.
 
+## Compact Prompt for Local qwen3.5
+
+Some small local models can call tools reliably with a concise agent prompt but
+degrade when the full Hermes scaffold is present. Hermes provides an explicit,
+profile-scoped compatibility option for this case:
+
+```yaml
+agent:
+  local_compact_prompt: true
+```
+
+The option defaults to `false` and currently activates only for tool-enabled
+qwen3.5 sessions whose provider endpoint is literal loopback (`localhost`,
+`127.0.0.1`, or `::1`). Cloud, LAN, other-model, and tool-free sessions keep the
+normal Hermes prompt. The compact prompt keeps Hermes identity and execution,
+tool-use, and no-fabrication discipline; profile-local ephemeral system
+instructions are still appended. It does not alter tool schemas, and it does
+not guarantee that every small model will become a reliable agent.
+
 ## Tool-Loop Guardrails
 
 Hermes detects when the agent is stuck in an unproductive tool-calling loop — the same tool call failing repeatedly, the same tool failing over and over, or an idempotent call returning the same result with no progress. By default it injects a **warning** into the tool result so the model self-corrects. Interactive CLI, TUI, Desktop, and ACP sessions remain warning-only because a person can intervene; unattended gateway and cron sessions enable hard stops by default.

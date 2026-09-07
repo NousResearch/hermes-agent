@@ -1303,6 +1303,13 @@ def _apply_agent_section(agent, _agent_cfg):
     # of each other (gates in agent/system_prompt.py).
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
     agent._execution_guidance = _agent_section.get("execution_guidance", "auto")
+    # Explicit compatibility mode for small local models that are degraded by
+    # the full agent scaffold.  Prompt assembly applies stricter model,
+    # endpoint, and tool-session gates; this profile-scoped switch alone is not
+    # sufficient to activate the compact prompt.
+    agent._local_compact_prompt = (
+        _agent_section.get("local_compact_prompt", False) is True
+    )
 
     # Wall-clock run budget from config — only when the constructor arg was not given.
     if agent.run_budget_seconds is None:

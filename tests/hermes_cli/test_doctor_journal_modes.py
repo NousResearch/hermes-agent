@@ -453,3 +453,64 @@ class TestSizeAndRepairHint:
 
     def test_size_failure_does_not_crash(self, tmp_path, capsys):
         assert doctor_platform._format_db_size(tmp_path / "gone.db") == "size unknown"
+
+
+class TestConfiguredDeleteNeverApplied:
+    """A configured ``delete`` that the runtime refused to apply.
+
+    An operator sets ``database.journal_mode: delete`` precisely because the store sits on a
+    filesystem where WAL is not durability-safe (macOS virtiofs, NFS, SMB). The runtime then
+    declines to downgrade a database that is ALREADY WAL, because a live downgrade under open
+    connections can corrupt it — and it says so only via a once-per-process log line. Without a
+    doctor check the operator believes the setting took effect while the hazard is still live.
+    """
+
+    @staticmethod
+    def _configured(monkeypatch, mode):
+        monkeypatch.setattr("hermes_state_wal.resolve_journal_mode", lambda: mode)
+
+    def test_wal_on_disk_with_delete_configured_warns(self, tmp_path, capsys, monkeypatch):
+        self._configured(monkeypatch, "delete")
+        _make_db(tmp_path / "state.db", journal_mode="WAL")
+
+        doctor_platform._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
+
+        out = capsys.readouterr().out
+        assert "despite database.journal_mode=delete" in out
+        assert "never applied" in out
+        # The remediation must name the offline step; the setting alone will not convert it.
+        assert "PRAGMA journal_mode=DELETE" in out
+        assert "gateway stop" in out
+
+    def test_rollback_on_disk_with_delete_configured_is_quiet(self, tmp_path, capsys, monkeypatch):
+        """The setting DID apply — this is the healthy state and must not nag."""
+        self._configured(monkeypatch, "delete")
+        _make_db(tmp_path / "state.db")
+
+        doctor_platform._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
+
+        out = capsys.readouterr().out
+        assert "state.db: rollback journal mode" in out
+        assert "despite database.journal_mode=delete" not in out
+
+    def test_wal_on_disk_with_wal_configured_is_not_a_mismatch(self, tmp_path, capsys, monkeypatch):
+        """WAL configured and WAL on disk is intended, not a failed setting."""
+        self._configured(monkeypatch, "wal")
+        _make_db(tmp_path / "state.db", journal_mode="WAL")
+
+        doctor_platform._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
+
+        out = capsys.readouterr().out
+        assert "despite database.journal_mode=delete" not in out
+        assert "state.db: WAL journal mode" in out
+
+    def test_mismatch_also_reports_the_reset_bug_exposure(self, tmp_path, capsys, monkeypatch):
+        """Both hazards at once: the mismatch message must not swallow the exposure."""
+        self._configured(monkeypatch, "delete")
+        _make_db(tmp_path / "state.db", journal_mode="WAL")
+
+        doctor_platform._report_database_journal_modes(tmp_path, VULNERABLE)
+
+        out = capsys.readouterr().out
+        assert "despite database.journal_mode=delete" in out
+        assert "WAL-reset bug" in out

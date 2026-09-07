@@ -90,16 +90,18 @@ def _format_db_size(db_path: Path) -> str:
 
 
 def _report_database_journal_modes(hermes_home: Path | None = None, version_info: tuple[int, ...] | None = None) -> None:
-    """List each database's journal mode; warn on WAL under a vulnerable SQLite."""
+    """List each database's journal mode; warn on WAL under a vulnerable SQLite, and on a
+    configured ``delete`` that never took effect."""
     from hermes_cli.doctor import HERMES_HOME
-    from hermes_state_wal import _wal_reset_repair_hint, is_sqlite_wal_reset_vulnerable
+    from hermes_state_wal import _wal_reset_repair_hint, is_sqlite_wal_reset_vulnerable, resolve_journal_mode
     vulnerable = is_sqlite_wal_reset_vulnerable(version_info)
+    configured = resolve_journal_mode()
     try:
         databases = _hermes_database_paths(hermes_home if hermes_home is not None else HERMES_HOME)
     except Exception as exc:
         check_warn(f"Could not list Hermes databases: {exc}")
         return
-    exposed = []
+    exposed, unapplied = [], []
     for name, path in databases:
         if not path.is_file():
             continue
@@ -110,6 +112,15 @@ def _report_database_journal_modes(hermes_home: Path | None = None, version_info
                 check_warn(f"{name}: journal mode could not be read", f"({error}; cannot rule out WAL exposure)")
             else:
                 check_info(f"{name}: journal mode could not be read ({error})")
+        elif mode == "wal" and configured == "delete":
+            # An operator who set journal_mode=delete did so BECAUSE this store is on a filesystem
+            # where WAL is unsafe, and the runtime never downgrades a database that is already WAL
+            # (a live downgrade under open connections can corrupt it). That refusal is only logged
+            # once per process, so without this check the operator believes they are protected.
+            unapplied.append(name)
+            check_warn(f"{name} is in WAL mode ({size}) despite database.journal_mode=delete",
+                       "(the setting never applied; an existing WAL database is never live-downgraded"
+                       + (", and it is also exposed to the WAL-reset bug)" if vulnerable else ")"))
         elif mode == "wal" and vulnerable:
             exposed.append(name)
             check_warn(f"{name} is in WAL mode ({size})", "(exposed to the WAL-reset bug until SQLite is upgraded)")
@@ -117,6 +128,9 @@ def _report_database_journal_modes(hermes_home: Path | None = None, version_info
             check_info(f"{name}: WAL journal mode ({size})")
         else:
             check_info(f"{name}: rollback journal mode ({size}{', not exposed' if vulnerable else ''})")
+    if unapplied:
+        check_info("To apply journal_mode=DELETE: stop every connection to the database "
+                   "(`hermes gateway stop`), then run a one-time offline `PRAGMA journal_mode=DELETE` on the file.")
     if exposed:
         check_info(f"To clear the exposure: {_wal_reset_repair_hint()}")
 

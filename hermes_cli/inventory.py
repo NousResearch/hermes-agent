@@ -269,7 +269,45 @@ def _reasoning_catalog_reader(slug: str):
     return read
 
 
+def _picker_metadata_from_info(info: Any) -> dict[str, Any]:
+    """Project models.dev facts into the small, optional picker contract."""
+    return {
+        "context_window": info.context_window,
+        "max_input_tokens": info.max_input,
+        "max_output_tokens": info.max_output,
+        "supports_tools": bool(info.tool_call),
+        "supports_vision": bool(info.supports_vision()),
+        "supports_pdf": bool(info.supports_pdf()),
+        "supports_audio_input": bool(info.supports_audio_input()),
+        "structured_output": bool(info.structured_output),
+        "input_modalities": list(info.input_modalities),
+        "output_modalities": list(info.output_modalities),
+    }
+
+
 def _apply_capabilities(rows: list[dict]) -> None:
+    """Attach capability and rich metadata maps to each provider row.
+    `fast` mirrors ``model_supports_fast_mode`` (the same gate the runtime
+    enforces). `reasoning` comes from the models.dev catalog when known and
+    defaults to True otherwise — the effort dial is broadly accepted and a
+    no-op on models that ignore it, whereas hiding it from a capable-but-
+    uncatalogued model is the worse failure.
+    The separate ``metadata`` map projects the richer models.dev record already
+    used by Hermes into an optional picker contract. Unknown models are simply
+    omitted; no parallel catalog or hardcoded fallback is introduced.
+    Aggregators that publish per-model reasoning detail add
+    `can_disable_reasoning`, False on reasoning-mandatory routes whose upstream
+    answers a disable with HTTP 400. Omitted when the catalog doesn't say,
+    which the UI reads as "no restriction known". Such a catalog also overrides
+    `reasoning` itself when it reports a route that takes no reasoning
+    parameter — a definitive negative from the provider actually serving the
+    model outranks the models.dev inference.
+    The catalog's `supported_efforts` list is deliberately NOT forwarded: it
+    under-reports. The Portal accepts and honors levels a route doesn't
+    advertise (``z-ai/glm-5.3`` publishes ``max, high, low`` yet serves
+    ``minimal`` at its lowest thinking), so filtering the picker by that list
+    would hide levels that demonstrably work.
+    """
     """Attach ``{model: {fast, reasoning, ...}}`` per row. ``reasoning`` defaults True when the catalog is
     silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
     serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
@@ -277,13 +315,15 @@ def _apply_capabilities(rows: list[dict]) -> None:
     from hermes_cli.models import model_supports_fast_mode
 
     try:
-        from agent.models_dev import get_model_capabilities
+        from agent.models_dev import get_model_capabilities, get_model_info
     except Exception:
         get_model_capabilities = None  # type: ignore[assignment]
+        get_model_info = None  # type: ignore[assignment]
 
     for row in rows:
         slug = row.get("slug") or ""
         caps: dict[str, dict[str, Any]] = {}
+        metadata: dict[str, dict[str, Any]] = {}
         read_reasoning_catalog = _reasoning_catalog_reader(slug.lower())
 
         for model in row.get("models") or []:
@@ -296,6 +336,19 @@ def _apply_capabilities(rows: list[dict]) -> None:
                 except Exception:
                     reasoning = True
 
+            if get_model_info is not None and slug:
+                try:
+                    info = get_model_info(slug, model)
+                    if info is None and "/" in model:
+                        info = get_model_info("openrouter", model)
+                    if info is not None:
+                        metadata[model] = _picker_metadata_from_info(info)
+                except Exception:
+                    pass
+            entry: dict[str, Any] = {
+                "fast": bool(model_supports_fast_mode(model)),
+                "reasoning": reasoning,
+            }
             entry: dict[str, Any] = {"fast": bool(model_supports_fast_mode(model)), "reasoning": reasoning}
 
             if reasoning and read_reasoning_catalog is not None:
@@ -313,6 +366,7 @@ def _apply_capabilities(rows: list[dict]) -> None:
             caps[model] = entry
 
         row["capabilities"] = caps
+        row["metadata"] = metadata
 
 
 # Newest N models per lab an aggregator row features by default (older tail behind search/show-all);

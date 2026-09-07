@@ -11,9 +11,9 @@ import { releaseTypingFocus } from '@/components/ui/keyboard-first'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
-import { formatModelStatusLabel } from '@/lib/model-status-label'
+import { modelBaseId, modelDisplayParts } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
-import { $currentModelSource, $defaultReasoningEffort, setModelPickerOpen } from '@/store/session'
+import { $currentModelSource, setModelPickerOpen } from '@/store/session'
 
 import { onComposerModelMenuRequest } from './focus'
 import { useComposerScope } from './scope'
@@ -54,14 +54,15 @@ export function ModelPill({
   const viewProvider = useStore(view.$provider)
   const currentModel = model.model || viewModel
   const currentProvider = model.provider || viewProvider
-  const fastMode = useStore(view.$fast)
-  const reasoningEffort = useStore(view.$reasoningEffort)
   const modelSource = useStore($currentModelSource)
-  const defaultEffort = useStore($defaultReasoningEffort)
   const runtimeId = useStore(view.$runtimeId)
+  const fastMode = useStore(view.$fast)
   const [open, setOpen] = useState(false)
   const scope = useComposerScope()
   const hasLiveMenu = Boolean(model.modelMenuContent)
+  // Fast is on when the speed=fast param is active OR the active id is a
+  // `…-fast` variant — the pretty display name alone hides that variant.
+  const fastActive = fastMode || /-fast$/i.test(modelBaseId(currentModel))
 
   // The `composer.modelPicker` hotkey, routed to exactly one surface (the pane
   // under the pointer, else the active composer — see requestModelMenuToggle).
@@ -101,7 +102,8 @@ export function ModelPill({
     <>
       {currentModel.trim() ? (
         <span className="truncate">
-          {formatModelStatusLabel(currentModel, { defaultEffort, fastMode, reasoningEffort })}
+          {modelDisplayParts(currentModel).name}
+          {fastActive ? <span className="text-(--ui-text-tertiary)"> Fast</span> : null}
         </span>
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />

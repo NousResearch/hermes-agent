@@ -2679,6 +2679,31 @@ export interface Translations {
       ultra: string
       updateFailed: string
       fastFailed: string
+      detailsTitle: string
+      model: string
+      provider: string
+      inputs: string
+      optionsFree: string
+      modalityText: string
+      modalityImage: string
+      modalityAudio: string
+      modalityVideo: string
+      modalityPdf: string
+      contextWindow: string
+      maxOutput: string
+      tokens: (value: string) => string
+      vision: string
+      pdf: string
+      audio: string
+      tools: string
+      structuredOutput: string
+      pricing: string
+      pricingFree: string
+      pricingInput: string
+      pricingOutput: string
+      pricingPerMtok: (price: string) => string
+      cachedInput: string
+      detailsUnavailable: string
     }
     gatewayMenu: {
       gateway: string

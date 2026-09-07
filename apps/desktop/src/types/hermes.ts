@@ -396,6 +396,19 @@ export interface ModelPricing {
   was_output?: string
 }
 
+export interface ModelPickerMetadata {
+  context_window?: number
+  input_modalities?: string[]
+  max_input_tokens?: number
+  max_output_tokens?: number
+  output_modalities?: string[]
+  structured_output?: boolean
+  supports_audio_input?: boolean
+  supports_pdf?: boolean
+  supports_tools?: boolean
+  supports_vision?: boolean
+}
+
 export interface ModelOptionProvider {
   is_current?: boolean
   models?: string[]
@@ -429,6 +442,9 @@ export interface ModelOptionProvider {
    *  exposes this as `api_url`; model assignments send it back as `base_url`
    *  so switching providers does not discard the selected local endpoint. */
   api_url?: string
+  /** Rich facts projected from Hermes' existing models.dev registry. Unknown
+   *  models are omitted rather than guessed or maintained in a second catalog. */
+  metadata?: Record<string, ModelPickerMetadata>
   /** Per-model pricing keyed by model id (present when the picker requested
    *  pricing and the provider supports live pricing). */
   pricing?: Record<string, ModelPricing>

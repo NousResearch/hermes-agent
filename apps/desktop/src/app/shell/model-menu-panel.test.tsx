@@ -1,12 +1,18 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { useState } from 'react'
+import { createElement, useState } from 'react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useModelControls } from '@/app/session/hooks/use-model-controls'
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
+import { $modelPresets, getModelPreset } from '@/store/model-presets'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
-import { $activeSessionId, $currentModel, $currentProvider } from '@/store/session'
+import {
+  $activeSessionId,
+  $currentModel,
+  $currentProvider,
+  setCurrentReasoningEffort
+} from '@/store/session'
 
 import { ModelMenuPanel } from './model-menu-panel'
 
@@ -40,8 +46,28 @@ vi.mock('@/hermes', () => ({
 const MOA_PROVIDER = { models: ['default', 'BeastMode'], name: 'Mixture of Agents', slug: 'moa' }
 
 const DEEPSEEK_PROVIDER = {
-  models: ['deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner'],
+  capabilities: {
+    'deepseek-v4-pro': { fast: false, reasoning: true }
+  },
+  metadata: {
+    'deepseek-chat-free': {
+      context_window: 65536,
+      input_modalities: ['text']
+    },
+    'deepseek-v4-pro': {
+      context_window: 200000,
+      input_modalities: ['text', 'image', 'pdf'],
+      max_output_tokens: 32000,
+      supports_pdf: true,
+      supports_tools: true,
+      supports_vision: true
+    }
+  },
+  models: ['deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner', 'deepseek-chat-free'],
   name: 'DeepSeek',
+  pricing: {
+    'deepseek-v4-pro': { cache: null, free: false, input: '$0.50', output: '$1.50' }
+  },
   slug: 'deepseek'
 }
 
@@ -89,6 +115,84 @@ function renderPanel(onSelectModel = vi.fn()) {
 
   return { onSelectModel, content }
 }
+
+function renderReasoningPanel(
+    requestGateway = vi.fn(async (method: string) => {
+      if (method === 'model.options') {
+        return getGlobalModelOptions()
+      }
+
+      throw new Error(`unexpected gateway method: ${method}`)
+    })
+  ) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+  const content = render(
+    <QueryClientProvider client={client}>
+      <DropdownMenu open>
+        <DropdownMenuContent>
+          {createElement(ModelMenuPanel, {
+            onSelectModel: vi.fn(),
+            requestGateway,
+            ...{ mode: 'reasoning' }
+          })}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </QueryClientProvider>
+  )
+
+  return { content, requestGateway }
+}
+
+describe('ModelMenuPanel reasoning mode', () => {
+  it('updates the active session from a dedicated effort menu', async () => {
+    $currentProvider.set('deepseek')
+    $currentModel.set('deepseek-v4-pro')
+    setCurrentReasoningEffort('high')
+    const { requestGateway } = renderReasoningPanel()
+
+    expect(await screen.findByText('Effort')).toBeTruthy()
+    fireEvent.click(screen.getByText('Low'))
+
+    await vi.waitFor(() => {
+      expect(requestGateway).toHaveBeenCalledWith('config.set', {
+        key: 'reasoning',
+        session_id: 'runtime-1',
+        value: 'low'
+      })
+    })
+  })
+
+  // The session's provider may be a canonical alias (e.g. `custom:<key>`) while
+  // the catalog row's slug is what preset reads key on. Persisting under the
+  // alias would strand the preset — the effort would never be restored when
+  // that model is picked from its row again.
+  it('records the effort preset under the row slug when the session provider is an alias', async () => {
+    const ALIASED_PROVIDER = {
+      ...DEEPSEEK_PROVIDER,
+      aliases: ['deepseek'],
+      slug: 'custom:deepseek-key'
+    }
+
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [ALIASED_PROVIDER, GOOGLE_PROVIDER, MOA_PROVIDER]
+    })
+    $currentProvider.set('deepseek')
+    $currentModel.set('deepseek-v4-pro')
+    setCurrentReasoningEffort('high')
+    renderReasoningPanel()
+
+    expect(await screen.findByText('Effort')).toBeTruthy()
+    fireEvent.click(screen.getByText('Low'))
+
+    await vi.waitFor(() => {
+      // TEMP-DIAG
+      console.log('PRESET-KEYS:', JSON.stringify(Object.keys($modelPresets.get())))
+      console.log('PRESETS:', JSON.stringify($modelPresets.get()))
+      expect(getModelPreset('custom:deepseek-key', 'deepseek-v4-pro')).toEqual({ effort: 'low' })
+    })
+  })
+})
 
 describe('ModelMenuPanel MoA presets', () => {
   it('selecting a MoA preset switches PERSISTENTLY via onSelectModel (not the one-shot dispatch)', async () => {
@@ -161,6 +265,52 @@ describe('ModelMenuPanel current selection', () => {
 
     expect(currentRow?.querySelector('.codicon-check')).not.toBeNull()
     expect(staleRow?.querySelector('.codicon-check')).toBeNull()
+  })
+})
+
+describe('ModelMenuPanel model metadata', () => {
+  it('summarizes registry metadata on each model row', async () => {
+    const { content } = renderPanel()
+
+    const row = (await content.findByText(/Deepseek V4 Pro/i)).closest('[role="menuitem"]')
+
+    expect(row?.textContent).toContain('200K')
+    expect(row?.textContent).toContain('Vision')
+    expect(row?.textContent).toContain('Tools')
+  })
+
+  it('shows complete model facts in the hover panel', async () => {
+    const { content } = renderPanel()
+    const row = (await content.findByText(/Deepseek V4 Pro/i)).closest('[role="menuitem"]')
+
+    expect(row).not.toBeNull()
+    fireEvent.pointerMove(row!, { pointerType: 'mouse' })
+
+    expect(await screen.findByText('Context window')).toBeTruthy()
+    expect(screen.getByText('200K tokens')).toBeTruthy()
+    expect(screen.getByText('Max output')).toBeTruthy()
+    expect(screen.getByText('32K tokens')).toBeTruthy()
+    expect(screen.getByText('Model')).toBeTruthy()
+    expect(screen.getByText('Provider')).toBeTruthy()
+    expect(screen.getAllByText('DeepSeek').length).toBeGreaterThan(0)
+    expect(screen.getByText('Inputs')).toBeTruthy()
+    expect(screen.getByText('text, image, PDF')).toBeTruthy()
+    expect(screen.getByText('Input')).toBeTruthy()
+    expect(screen.getByText('$0.50 / Mtok')).toBeTruthy()
+    expect(screen.getByText('Output')).toBeTruthy()
+    expect(screen.getByText('$1.50 / Mtok')).toBeTruthy()
+  })
+
+  it('derives a Free pricing row from the -free model id suffix', async () => {
+    const { content } = renderPanel()
+    const row = (await content.findByText(/Deepseek Chat Free/i)).closest('[role="menuitem"]')
+
+    expect(row).not.toBeNull()
+    fireEvent.pointerMove(row!, { pointerType: 'mouse' })
+
+    expect(await screen.findByText('Pricing')).toBeTruthy()
+    expect(screen.getByText('Free')).toBeTruthy()
+    expect(screen.getByText('65.5K tokens')).toBeTruthy()
   })
 })
 

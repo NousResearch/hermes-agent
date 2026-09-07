@@ -1475,12 +1475,24 @@ def run_conversation(
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
     # app-server subprocess (see agent/transports/codex_app_server_session.py).
     if agent.api_mode == "codex_app_server":
+        from agent.turn_context import build_api_messages
+
+        api_messages, instructions = build_api_messages(
+            agent, [s.messages[s.current_turn_user_idx]], current_turn_user_idx=0,
+            ext_prefetch_cache=s._ext_prefetch_cache, plugin_user_context=s._plugin_user_context,
+            moa_config=s.moa_config, active_system_prompt=s.active_system_prompt,
+        )
         return agent._run_codex_app_server_turn(
             user_message=s.user_message, original_user_message=s.original_user_message,
             messages=s.messages, effective_task_id=s.effective_task_id,
             should_review_memory=s._should_review_memory,
+            api_messages=api_messages, instructions=instructions,
+            current_turn_user_idx=s.current_turn_user_idx,
         )
 
+    from agent.codex_runtime import invalidate_codex_session
+
+    invalidate_codex_session(agent)
     while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         if _run_phase(begin_iteration, agent, s).action == "break":
             break

@@ -49,7 +49,7 @@ def _make_turn():
 def _make_agent(session_db=None, session_id="sess-codex"):
     agent = MagicMock()
     # Pre-seed the session so run_codex_app_server_turn skips the spawn block.
-    agent._codex_session = MagicMock()
+    agent._codex_session = MagicMock(_instructions=None)
     agent._codex_session.run_turn.return_value = _make_turn()
     agent.tool_progress_callback = None
     agent._iters_since_skill = 0
@@ -128,7 +128,7 @@ def test_codex_turn_persists_each_message_exactly_once():
             session_id=sid,
         )
         agent._session_db_created = True
-        agent._codex_session = MagicMock()
+        agent._codex_session = MagicMock(_instructions=None)
         agent._codex_session.run_turn.return_value = _make_turn()
         agent.tool_progress_callback = None
 
@@ -147,6 +147,7 @@ def test_codex_turn_persists_each_message_exactly_once():
             messages=messages,
             effective_task_id="task-1",
         )
+        assert result["completed"] is True
         assert result["agent_persisted"] is True
 
         rows = db.get_messages(sid, include_inactive=True)

@@ -385,6 +385,10 @@ class AIAgent(
         With ``previous_messages`` / ``old_session_id`` / ``carry_over_context`` the context engine gets the
         full transition lifecycle instead of a bare reset.
         """
+        if getattr(self, "_codex_session", None) is not None:
+            from agent.codex_runtime import _close_codex_session
+
+            _close_codex_session(self)
         for counter in (
             "session_total_tokens", "session_input_tokens", "session_output_tokens", "session_prompt_tokens",
             "session_completion_tokens", "session_cache_read_tokens", "session_cache_write_tokens",

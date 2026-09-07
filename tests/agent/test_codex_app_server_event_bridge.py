@@ -329,6 +329,9 @@ class TestBridgeWiredInRuntime:
             def __init__(self, **kwargs):
                 captured.update(kwargs)
 
+            def ensure_started(self):
+                return "th1"
+
             def run_turn(self, user_input, **_):
                 from agent.transports.codex_app_server_session import TurnResult
                 return TurnResult(
@@ -350,6 +353,7 @@ class TestBridgeWiredInRuntime:
         # Minimal stub agent — the runtime only touches a handful of
         # attributes and we mock the heavy ones to keep the test fast.
         agent = SimpleNamespace(
+            model="gpt-5.4",
             session_cwd=None,
             _codex_session=None,
             tool_progress_callback=MagicMock(),
@@ -373,7 +377,7 @@ class TestBridgeWiredInRuntime:
             _session_db=None,
         )
 
-        codex_runtime.run_codex_app_server_turn(
+        result = codex_runtime.run_codex_app_server_turn(
             agent,
             user_message="hi",
             original_user_message="hi",
@@ -381,6 +385,7 @@ class TestBridgeWiredInRuntime:
             effective_task_id="t",
         )
 
+        assert result["completed"]
         assert "on_event" in captured, (
             "run_codex_app_server_turn must pass on_event=<bridge> to the "
             "session — without it the gateway sees no live progress (#33200)"

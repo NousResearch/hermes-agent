@@ -30,6 +30,7 @@ class FakeClient:
         self.codex_bin = codex_bin
         self.codex_home = codex_home
         self.requests: list[tuple[str, dict]] = []
+        self.instructions_seen: list[str] = []
         self.notifications_responses: list[dict] = []
         self.responses: list[tuple[Any, dict]] = []
         self.error_responses: list[tuple[Any, int, str]] = []
@@ -186,6 +187,18 @@ class TestLifecycle:
 # ---- turn loop ----
 
 class TestRunTurn:
+    @pytest.mark.parametrize(("selected", "wire_value"), [
+        ("default", None), ("priority", "fast"), ("fast", "fast"), ("flex", "flex"),
+    ])
+    def test_service_tier_uses_values_supported_by_minimum_codex(self, selected, wire_value):
+        client = FakeClient()
+        client.queue_notification("turn/completed", turn={"id": "turn-fake-001", "status": "completed"})
+        result = make_session(client).run_turn("Continue.", service_tier=selected)
+
+        assert result.error is None
+        params = next(params for method, params in client.requests if method == "turn/start")
+        assert params["serviceTier"] == wire_value
+
     def test_simple_text_turn_returns_final_message(self):
         client = FakeClient()
         client.queue_notification("turn/started", threadId="t", turn={"id": "tu1"})
@@ -520,6 +533,23 @@ class TestCompactThread:
 # ---- approval bridge ----
 
 class TestServerRequestRouting:
+
+    def test_codex_runtime_permissions_denial_grants_nothing(self):
+        client = FakeClient()
+        session = make_session(client)
+        session.ensure_started()
+        session._handle_server_request({
+            "method": "item/permissions/requestApproval", "id": "permissions-1",
+            "params": {
+                "threadId": "thread-fake-001", "turnId": "turn-fake-001",
+                "itemId": "permissions-item", "cwd": "/tmp", "startedAtMs": 1,
+                "permissions": {"network": {"enabled": True}},
+            },
+        })
+
+        assert client.responses == [
+            ("permissions-1", {"permissions": {}, "scope": "turn"})
+        ]
 
 
 
@@ -910,4 +940,3 @@ class TestClassifyOAuthFailure:
         assert _classify_oauth_failure() is None
         assert _classify_oauth_failure("") is None
         assert _classify_oauth_failure("", None) is None  # type: ignore[arg-type]
-

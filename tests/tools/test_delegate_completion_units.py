@@ -2,6 +2,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 from typing import Any, cast
+import json
+import sqlite3
 
 from tools import async_delegation as ad
 from tools import delegate_tool_dispatch as dispatch
@@ -136,3 +138,48 @@ def test_child_completion_preserves_task_index_and_group_in_published_event(monk
 def test_partial_child_persistence_and_failed_child_notice_are_first_class():
     assert callable(getattr(ad, "record_unit_child", None))
     assert callable(getattr(ad, "publish_child_failure_notice", None))
+
+
+def test_child_result_is_redacted_and_idempotent_in_durable_ledger(tmp_path, monkeypatch):
+    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
+    record = {
+        "delegation_id": "durable-unit",
+        "session_key": "session",
+        "origin_ui_session_id": "ui",
+        "parent_session_id": "parent",
+        "origin_session_id": "origin",
+        "dispatched_at": 1.0,
+        "goal": "child",
+        "status": "running",
+        "goals": ["child"],
+        "is_batch": True,
+    }
+    with ad._records_lock:
+        ad._records[record["delegation_id"]] = dict(record)
+    try:
+        ad._persist_dispatch(record)
+        assert ad.record_unit_child(
+            "durable-unit", 0, {"status": "completed", "summary": "sk-test-secret"}
+        )
+        assert ad.record_unit_child(
+            "durable-unit", 0, {"status": "completed", "summary": "replacement"}
+        )
+        with sqlite3.connect(tmp_path / "state.db") as conn:
+            raw = conn.execute(
+                "SELECT child_results_json FROM async_delegations WHERE delegation_id=?",
+                ("durable-unit",),
+            ).fetchone()[0]
+        stored = json.loads(raw)
+        assert list(stored) == ["0"]
+        assert stored["0"]["summary"] != "sk-test-secret"
+        assert stored["0"]["summary"] != "replacement"
+    finally:
+        with ad._records_lock:
+            ad._records.pop("durable-unit", None)
+
+
+def test_failed_child_notice_keeps_task_index_group_and_error():
+    notice = ad.publish_child_failure_notice("unit-1", 3, "tool failed", "research")
+    assert notice["task_index"] == 3
+    assert notice["group"] == "research"
+    assert notice["error"] == "tool failed"

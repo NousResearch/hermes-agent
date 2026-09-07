@@ -85,6 +85,9 @@ _EMPTY_DIR_PROTECTED_TOP_LEVEL = frozenset({
     "logs", "memories", "sessions", "cron", "cronjobs",
     "cache", "skills", "plugins", "disk-cleanup", "optional-skills",
     "hermes-agent", "backups", "profiles", ".worktrees",
+    # Bare git shadow stores: refs/ and objects/ are legitimately empty on a
+    # fresh store, and deleting them makes git report "not a git repository".
+    "checkpoints",
     "patches", "projects", "skins", "themes", "contributors"})
 
 _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({

@@ -295,7 +295,13 @@ class PluginLedgerMixin:
         ):
             container.clear()
         self._context_engine = None
-        with self._hook_timeout_lock:
-            self._hook_running_callbacks.clear()
+        with self._hook_timeout_running_cond:
+            # ``_hook_running_callbacks`` is physical truth: a torn-down generation's worker may
+            # still be executing, and only its own finally removes its entry. Bumping the epoch
+            # makes earlier-epoch overlap waiters abandon slot takeover instead of treating the
+            # still-occupied slot as free and racing the old worker (#104763 review).
+            self._hook_dispatch_epoch += 1
             self._hook_timeout_suppressed_until.clear()
+            # Wake overlap waiters so teardown does not leave them sleeping to their deadline.
+            self._hook_timeout_running_cond.notify_all()
         self._discovered = False

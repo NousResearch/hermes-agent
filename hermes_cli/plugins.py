@@ -1152,10 +1152,21 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._event_worker: Optional[threading.Thread] = None
         self._emit_depth = threading.local()
         # In-flight / recently-timed-out hook callbacks keyed by (hook_name, id(cb)) so a stuck
-        # policy hook cannot spawn a new abandoned thread on every fire.
-        self._hook_running_callbacks: Dict[tuple, object] = {}
+        # policy hook cannot spawn a new abandoned thread on every fire. The value carries the
+        # holder's monotonic start so overlap waiters judge the *holder's* age, never their own
+        # arrival time (#104763 review). Entries are physical truth: only the worker's own
+        # finally removes one (the abandoned worker's stack keeps its callback alive, so id()
+        # cannot be recycled underneath a live key); teardown bumps ``_hook_dispatch_epoch``
+        # instead of clearing the map.
+        self._hook_running_callbacks: Dict[tuple, tuple] = {}
         self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
         self._hook_timeout_lock = threading.Lock()
+        # Overlap waiters serialize behind a still-running callback on this condition, which shares
+        # ``_hook_timeout_lock`` (see plugins_dispatch._run_hook_callback_bounded).
+        self._hook_timeout_running_cond = threading.Condition(self._hook_timeout_lock)
+        # Bumped by teardown (``unload_all``): waiters that entered an older epoch abandon slot
+        # takeover rather than racing a torn-down generation's still-executing worker.
+        self._hook_dispatch_epoch = 0
         self._hook_timeout_suppression_seconds = _HOOK_TIMEOUT_SUPPRESSION_SECONDS
         # Ledger per plugin (ownership) plus global order (reverse teardown across plugins). Process-
         # global registries are shared across profiles while several managers coexist, so the ledger

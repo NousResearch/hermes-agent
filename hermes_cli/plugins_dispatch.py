@@ -138,6 +138,9 @@ class _QueuedPluginEvent:
 _HOOK_CALLBACK_TIMEOUT_SECS = 30.0
 _MAX_HOOK_CALLBACK_TIMEOUT_SECS = 600.0
 _HOOK_SKIPPED = object()  # returned by _run_hook_callback_bounded on skip/timeout
+# An overlapping invocation of a still-running callback waits up to one resolved callback timeout
+# plus this grace for it to finish before treating it as hung (#104750).
+_HOOK_OVERLAP_GRACE_SECONDS = 5.0
 
 
 def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
@@ -202,22 +205,58 @@ class PluginDispatchMixin:
         self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float
     ) -> Any:
         """Run one callback on a daemon worker with a wall-clock cap; ``_HOOK_SKIPPED`` when
-        suppressed, still running, timed out (worker abandoned, never joined), or the worker
-        could not be started. Exceptions propagate."""
+        suppressed, timed out, the worker could not be started, or a previous overlapping
+        invocation never returned (worker abandoned, never joined). A still-running overlapping
+        invocation is serialized behind, not dropped (#104750). Exceptions propagate."""
         callback_name = getattr(cb, "__name__", repr(cb))
         callback_key = (hook_name, id(cb))
         token = object()
-        with self._hook_timeout_lock:
+        # ``_hook_timeout_running_cond`` shares ``_hook_timeout_lock`` so overlap waiters and the
+        # runner's finally cooperate under one lock.
+        with self._hook_timeout_running_cond:
             suppressed_until = self._hook_timeout_suppressed_until.get(callback_key)
-            running = callback_key in self._hook_running_callbacks
-            if (suppressed_until is not None and suppressed_until > time.monotonic()) or running:
-                logger.warning(
-                    "Hook '%s' callback %s skipped after previous "
-                    "timeout or while still running", hook_name, callback_name)
-                return _HOOK_SKIPPED
             if suppressed_until is not None:
+                if suppressed_until > time.monotonic():
+                    logger.warning(
+                        "Hook '%s' callback %s skipped: suppressed after previous "
+                        "timeout", hook_name, callback_name)
+                    return _HOOK_SKIPPED
                 self._hook_timeout_suppressed_until.pop(callback_key, None)
-            self._hook_running_callbacks[callback_key] = token
+            # Overlap with a live invocation of the same callback: serialize behind it (keeps the
+            # no-concurrent-self guarantee) instead of dropping the event. Skip only once the
+            # holder is known hung — it timed out while we waited, or it outlived one callback
+            # timeout plus grace measured from *its own* start. The wait budget tracks the
+            # current holder rather than this waiter's arrival, so a chain of healthy holders
+            # under backlog never gets misclassified as hung (#104763 review).
+            entered_epoch = self._hook_dispatch_epoch
+            while True:
+                entry = self._hook_running_callbacks.get(callback_key)
+                if entry is None:
+                    break
+                remaining = entry[1] + timeout + _HOOK_OVERLAP_GRACE_SECONDS - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._hook_timeout_running_cond.wait(remaining)
+                if self._hook_dispatch_epoch != entered_epoch:
+                    # Teardown (``unload_all``) invalidated this dispatch generation: the holder
+                    # may still be physically executing for the old generation, so never take
+                    # over its slot.
+                    logger.warning(
+                        "Hook '%s' callback %s skipped: dispatch generation torn down",
+                        hook_name, callback_name)
+                    return _HOOK_SKIPPED
+                peer_suppressed = self._hook_timeout_suppressed_until.get(callback_key)
+                if peer_suppressed is not None and peer_suppressed > time.monotonic():
+                    return _HOOK_SKIPPED
+            if callback_key in self._hook_running_callbacks:
+                self._hook_timeout_suppressed_until[callback_key] = (
+                    time.monotonic() + self._hook_timeout_suppression_seconds)
+                logger.warning(
+                    "Hook '%s' callback %s skipped: previous overlapping invocation "
+                    "still running after its timeout window",
+                    hook_name, callback_name)
+                return _HOOK_SKIPPED
+            self._hook_running_callbacks[callback_key] = (token, time.monotonic())
 
         context = contextvars.copy_context()
         done = threading.Event()
@@ -225,9 +264,15 @@ class PluginDispatchMixin:
         failure: Dict[str, Exception] = {}
 
         def _release_token() -> None:
-            with self._hook_timeout_lock:
-                if self._hook_running_callbacks.get(callback_key) is token:
+            # The runner's finally never runs when OS thread creation fails, so the start-failure
+            # path reuses this release (#104651). It runs under the condition (the shared
+            # critical section) and wakes overlap waiters after removing the entry, whether the
+            # removal comes from a finished worker or a failed start (#104763 review interlock).
+            with self._hook_timeout_running_cond:
+                entry = self._hook_running_callbacks.get(callback_key)
+                if entry is not None and entry[0] is token:
                     self._hook_running_callbacks.pop(callback_key, None)
+                self._hook_timeout_running_cond.notify_all()
 
         def _runner() -> None:
             try:
@@ -248,10 +293,12 @@ class PluginDispatchMixin:
                 hook_name, callback_name, exc)
             return _HOOK_SKIPPED
         if not done.wait(timeout=timeout):  # do not join — that would reintroduce the hang
-            with self._hook_timeout_lock:
+            with self._hook_timeout_running_cond:
                 # See #6622.
                 self._hook_timeout_suppressed_until[callback_key] = (
                     time.monotonic() + self._hook_timeout_suppression_seconds)
+                # Wake overlap waiters: the peer they are serializing behind is now hung.
+                self._hook_timeout_running_cond.notify_all()
             logger.warning(
                 "Hook '%s' callback %s timed out after %gs — skipping", hook_name, callback_name, timeout)
             return _HOOK_SKIPPED

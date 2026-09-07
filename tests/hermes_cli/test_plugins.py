@@ -1265,6 +1265,305 @@ class TestForceReloadSymmetry:
         assert _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE in result
         hold.set()
 
+    def test_overlapping_observer_invocation_serializes_instead_of_dropping(self, monkeypatch):
+        """#104750: a second fire while the callback is still running must serialize
+        behind it and still deliver, not be dropped as a skip."""
+        import time
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
+        )
+
+        first_started = threading.Event()
+        release = threading.Event()
+        runs = []
+        lock = threading.Lock()
+
+        def slow_observer(**_kwargs):
+            first = False
+            with lock:
+                if not runs:
+                    first = True
+                runs.append(1)
+            if first:
+                first_started.set()
+                release.wait(timeout=10.0)
+            return {"delivered": True}
+
+        mgr = PluginManager()
+        mgr._hooks["post_tool_call"] = [slow_observer]
+
+        results_a, results_b = [], []
+
+        def fire_a():
+            results_a.extend(mgr.invoke_hook("post_tool_call", tool_name="t", args={}, result="{}"))
+
+        def fire_b():
+            results_b.extend(mgr.invoke_hook("post_tool_call", tool_name="t", args={}, result="{}"))
+
+        t_a = threading.Thread(target=fire_a)
+        t_a.start()
+        assert first_started.wait(timeout=2.0)
+        t_b = threading.Thread(target=fire_b)
+        t_b.start()
+        time.sleep(0.1)  # let B reach the overlap wait
+        release.set()
+        t_a.join(timeout=10.0)
+        t_b.join(timeout=10.0)
+
+        assert results_a == [{"delivered": True}]
+        assert results_b == [{"delivered": True}]
+        assert len(runs) == 2
+
+    def test_overlapping_pre_tool_call_not_blocked_as_timeout(self, monkeypatch):
+        """#104750: an overlapping pre_tool_call still within its timeout must not be
+        converted into a block directive."""
+        import time
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
+        )
+
+        first_started = threading.Event()
+        release = threading.Event()
+        runs = []
+        lock = threading.Lock()
+
+        def slow_policy(**_kwargs):
+            first = False
+            with lock:
+                if not runs:
+                    first = True
+                runs.append(1)
+            if first:
+                first_started.set()
+                release.wait(timeout=10.0)
+            return None  # allow
+
+        mgr = PluginManager()
+        mgr._hooks["pre_tool_call"] = [slow_policy]
+
+        results = {}
+
+        def fire(tag):
+            results[tag] = mgr.invoke_hook("pre_tool_call", tool_name="web_search", args={})
+
+        t_a = threading.Thread(target=fire, args=("a",))
+        t_a.start()
+        assert first_started.wait(timeout=2.0)
+        t_b = threading.Thread(target=fire, args=("b",))
+        t_b.start()
+        time.sleep(0.1)  # let B reach the overlap wait
+        release.set()
+        t_a.join(timeout=10.0)
+        t_b.join(timeout=10.0)
+
+        assert results["a"] == []  # policy returned None → allow
+        assert results["b"] == []  # overlap must not produce a block directive
+        assert len(runs) == 2
+
+    def test_overlap_waiter_released_when_peer_times_out(self, monkeypatch):
+        """A waiter serializing behind a callback that then times out is released at
+        the peer's timeout, not held to its own wait deadline."""
+        import time
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.5
+        )
+
+        hold = threading.Event()
+
+        def hung(**_kwargs):
+            hold.wait(timeout=10.0)
+            return None
+
+        mgr = PluginManager()
+        mgr._hooks["post_tool_call"] = [hung]
+
+        results_a, results_b = [], []
+
+        def fire_a():
+            results_a.extend(mgr.invoke_hook("post_tool_call"))
+
+        def fire_b():
+            results_b.extend(mgr.invoke_hook("post_tool_call"))
+
+        t_a = threading.Thread(target=fire_a)
+        t_a.start()
+        time.sleep(0.1)  # ensure A registered the running callback
+        t_b = threading.Thread(target=fire_b)
+        t_b.start()
+        t0 = time.monotonic()
+        t_b.join(timeout=10.0)
+        elapsed = time.monotonic() - t0
+        t_a.join(timeout=10.0)
+
+        assert results_a == []  # timed out → skipped
+        assert results_b == []  # released by the peer-timeout notify → skipped
+        assert elapsed >= 0.2  # B really serialized behind the running peer
+        assert elapsed < 5.0
+        hold.set()
+
+    def test_overlap_wait_deadline_treats_never_returning_peer_as_hung(self, monkeypatch):
+        """If a peer invocation never returns and its suppression window has lapsed, the
+        waiter gives up once the peer's own age reaches one callback timeout + grace
+        (measured from the peer's start, not the waiter's arrival) and re-arms suppression
+        (#104750; holder-tracked budget per the #104763 review)."""
+        import time
+
+        import hermes_cli.plugins_dispatch as dispatch_mod
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.3
+        )
+        monkeypatch.setattr(dispatch_mod, "_HOOK_OVERLAP_GRACE_SECONDS", 0.2)
+
+        hold = threading.Event()
+        starts = []
+
+        def hung(**_kwargs):
+            starts.append(1)
+            hold.wait(timeout=10.0)
+            return None
+
+        mgr = PluginManager()
+        mgr._hooks["post_tool_call"] = [hung]
+
+        assert mgr.invoke_hook("post_tool_call") == []  # first fire times out
+        mgr._hook_timeout_suppressed_until.clear()  # simulate the 60s window lapsing
+
+        t0 = time.monotonic()
+        assert mgr.invoke_hook("post_tool_call") == []  # waits out the holder's window, then skips
+        elapsed = time.monotonic() - t0
+
+        assert len(starts) == 1  # no second worker for the same callback
+        # The first fire already burned most of its own 0.3s timeout before this waiter
+        # arrived, so the waiter only waits out the remainder of the holder's 0.5s window.
+        assert elapsed >= 0.12  # it really serialized behind the stuck peer
+        assert mgr._hook_timeout_suppressed_until  # suppression re-armed for fast skips
+
+        t1 = time.monotonic()
+        assert mgr.invoke_hook("post_tool_call") == []
+        assert time.monotonic() - t1 < 0.5  # suppressed now → immediate skip
+        hold.set()
+
+    def test_overlap_backlog_of_healthy_fires_all_deliver(self, monkeypatch):
+        """#104763 review matrix (a): 3+ overlapping fires where each invocation completes
+        below the callback timeout, but the cumulative serialized backlog exceeds one
+        timeout + grace. Every event must deliver, timeout suppression must stay empty,
+        and the same callback must never run concurrently."""
+        import time
+
+        import hermes_cli.plugins_dispatch as dispatch_mod
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.2
+        )
+        monkeypatch.setattr(dispatch_mod, "_HOOK_OVERLAP_GRACE_SECONDS", 0.25)
+
+        first_started = threading.Event()
+        lock = threading.Lock()
+        active = [0]
+        peak = [0]
+        runs = [0]
+
+        def slow_observer(**_kwargs):
+            with lock:
+                runs[0] += 1
+                active[0] += 1
+                peak[0] = max(peak[0], active[0])
+                first = runs[0] == 1
+            if first:
+                first_started.set()
+            time.sleep(0.6)  # healthy: well below the 1.2s timeout
+            with lock:
+                active[0] -= 1
+            return {"delivered": True}
+
+        mgr = PluginManager()
+        mgr._hooks["post_tool_call"] = [slow_observer]
+
+        results = {}
+        FIRES = 5
+
+        def fire(tag):
+            results[tag] = mgr.invoke_hook("post_tool_call", tool_name="t", args={}, result="{}")
+
+        threads = [threading.Thread(target=fire, args=(f"fire_{i}",)) for i in range(FIRES)]
+        threads[0].start()
+        assert first_started.wait(timeout=2.0)
+        for t in threads[1:]:
+            t.start()
+        for t in threads:
+            t.join(timeout=10.0)
+        assert not any(t.is_alive() for t in threads)
+
+        assert results == {f"fire_{i}": [{"delivered": True}] for i in range(FIRES)}
+        assert runs[0] == FIRES  # no event dropped despite backlog > timeout + grace
+        assert peak[0] == 1  # serialization: same callback never ran concurrently
+        assert mgr._hook_timeout_suppressed_until == {}  # no false hung classification
+        assert mgr._hook_running_callbacks == {}  # every worker cleaned up its entry
+
+    def test_unload_all_waiter_never_takes_over_old_generation_slot(self, monkeypatch):
+        """#104763 review matrix (b): a waiter serializing behind a running invocation must
+        not execute the callback when ``unload_all`` tears the dispatch generation down —
+        the old worker may still be physically executing, so the slot must not be treated
+        as free; teardown bumps the epoch instead of clearing physical truth."""
+        import time
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
+        )
+
+        first_started = threading.Event()
+        release = threading.Event()
+        lock = threading.Lock()
+        active = [0]
+        peak = [0]
+        runs = [0]
+
+        def held_observer(**_kwargs):
+            with lock:
+                runs[0] += 1
+                active[0] += 1
+                peak[0] = max(peak[0], active[0])
+                first = runs[0] == 1
+            if first:
+                first_started.set()
+                release.wait(timeout=10.0)
+            with lock:
+                active[0] -= 1
+            return {"delivered": True}
+
+        mgr = PluginManager()
+        mgr._hooks["post_tool_call"] = [held_observer]
+
+        results = {}
+
+        def fire(tag):
+            results[tag] = mgr.invoke_hook("post_tool_call", tool_name="t", args={}, result="{}")
+
+        t_a = threading.Thread(target=fire, args=("a",))
+        t_a.start()
+        assert first_started.wait(timeout=2.0)
+        t_b = threading.Thread(target=fire, args=("b",))
+        t_b.start()
+        time.sleep(0.3)  # let B reach the overlap wait behind the running A
+        assert mgr._hook_running_callbacks  # A still physically holds the slot
+
+        mgr.unload()
+        assert mgr._hook_dispatch_epoch == 1
+        t_b.join(timeout=10.0)
+
+        release.set()
+        t_a.join(timeout=10.0)
+
+        assert results["b"] == []  # B skipped via the epoch bump, never executed the callback
+        assert results["a"] == [{"delivered": True}]  # A's own outcome unaffected
+        assert runs[0] == 1  # exactly one physical execution across the teardown
+        assert peak[0] == 1  # max same-callback concurrency stayed 1
+        assert mgr._hook_running_callbacks == {}  # A's worker finally removed its own entry
+
     def test_force_reload_of_one_profile_does_not_orphan_another(self, monkeypatch):
         """Real two-manager regression: force-reloading profile A's plugin
         manager must leave profile B's shell hook registered exactly once —

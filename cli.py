@@ -2956,7 +2956,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         if self._active_session_lease is not None:
             return True
         try:
-            from hermes_cli.active_sessions import try_acquire_active_session
+            from hermes_cli.active_sessions import format_refusal_stderr, try_acquire_active_session
 
             lease, message = try_acquire_active_session(
                 session_id=self.session_id,
@@ -2970,7 +2970,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
             logger.warning("Failed to claim active session slot: %s", exc)
             return True
         if message:
-            print(message, file=sys.stderr) if stderr else self._console_print(f"[bold red]{message}[/]")
+            print(format_refusal_stderr(message), file=sys.stderr) if stderr else self._console_print(f"[bold red]{message}[/]")
             return False
         self._active_session_lease = lease
         with suppress(Exception):

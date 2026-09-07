@@ -766,11 +766,14 @@ def _get_or_create_env(task_id: str):
             # override collapses to the shared "default" id and is not found.
             # Add an isolation key (env_type/*_image, as RL and benchmark
             # harnesses do) and the raw id survives, so the same host path
-            # reaches _create_environment. That half, and switching this lookup
-            # to resolve_task_overrides(), change container behaviour and are
-            # deliberately left to the follow-up card (t_e4c0a0b2); this branch
-            # is scoped to the ssh leak and leaves every other backend byte for
-            # byte as it was.
+            # reaches _create_environment for a container backend too.
+            #
+            # Two things are deliberately NOT done here: adding the container
+            # guard, and reading the override through resolve_task_overrides()
+            # (which finds the raw key first, so it would also start finding
+            # overrides this site currently misses). Both change container
+            # behaviour, and this change is scoped to the ssh leak -- every
+            # other backend is byte for byte as it was.
             if cwd != config["cwd"]:
                 logger.info(
                     "Ignoring host cwd override %r for ssh backend "

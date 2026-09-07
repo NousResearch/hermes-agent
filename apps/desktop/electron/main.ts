@@ -392,6 +392,7 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
+import { isValidUpdateBranchRef, updateBranchRefPattern } from './update-branch-ref'
 import {
   compareApiUrl,
   parseCompareBehindCount,
@@ -399,7 +400,6 @@ import {
   resolveCommitLogSelection,
   shouldCountCommits
 } from './update-count'
-import { isValidUpdateBranchRef, updateBranchRefPattern } from './update-branch-ref'
 import { waitForLocalBackendClearance } from './update-gate'
 import {
   acquireUpdateMarker,
@@ -3190,6 +3190,7 @@ async function resolveHealedBranch(updateRoot, branch) {
 
   const originUrl = await getOriginUrl(updateRoot)
   const remote = isOfficialSshRemote(originUrl) ? OFFICIAL_REPO_HTTPS_URL : 'origin'
+
   const probe = await runGit(['ls-remote', '--exit-code', '--heads', remote, updateBranchRefPattern(branch)], {
     cwd: updateRoot
   })
@@ -4026,6 +4027,7 @@ async function releaseBackendLock(updateRoot, tag): Promise<{ unlocked: boolean;
   killHermesOwnedVenvDaemons(updateRoot)
 
   const shim = venvHermesShimPath(updateRoot)
+
   // Bounded for a 300 ms poll: stop at the first definite lock, and run the
   // Restart Manager attribution at most once per gate run.
   const gateLockProbe = createInstallLockGateProbe({

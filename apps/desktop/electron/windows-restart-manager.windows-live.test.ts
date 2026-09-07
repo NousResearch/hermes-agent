@@ -19,8 +19,8 @@ import { promisify } from 'node:util'
 
 import { afterAll, describe, it } from 'vitest'
 
-import { queryWindowsProcessCreatedAt } from './windows-process-identity'
 import { windowsPowerShellExecutable, windowsSystem32Dir, windowsSystem32Executable } from './windows-powershell-path'
+import { queryWindowsProcessCreatedAt } from './windows-process-identity'
 import {
   buildRestartManagerScript,
   listRestartManagerHoldersForResources,

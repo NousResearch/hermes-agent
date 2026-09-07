@@ -290,7 +290,7 @@ ${RESTART_MANAGER_NATIVE_SOURCE}
 "@
 # No cached assembly: see RESTART_MANAGER_NATIVE_SOURCE. Add-Type compiles into
 # the compiler's own randomly named temp output, which no other process can
-# predict; a deterministic %TEMP%\HermesRm-<hash>.dll was loadable code that
+# predict; a deterministic %TEMP%HermesRm-<hash>.dll was loadable code that
 # nothing verified.
 Add-Type -TypeDefinition $rmSource
 ${RESTART_MANAGER_ATTRIBUTION_FUNCTION}

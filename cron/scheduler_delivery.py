@@ -1389,7 +1389,8 @@ def _resolve_named_dm_topic(t: _TargetDelivery, topic_name: str, metadata: dict,
 
 def _live_send_media(
     t: _TargetDelivery, media_metadata: dict, media_files: list, delivery_errors: list,
-    unverified_targets: list, topic_name: Optional[str] = None) -> None:
+    unverified_targets: list, topic_name: Optional[str] = None,
+) -> list[tuple[str, bool, str]]:
     """Send extracted media as native attachments with the same routing as the text send."""
     routed_media_metadata = dict(media_metadata or {})
     if t.is_relay:
@@ -1400,22 +1401,24 @@ def _live_send_media(
                 routed_media_metadata["user_id"] = logical_home.user_id
             if logical_home.scope_id:
                 routed_media_metadata["scope_id"] = logical_home.scope_id
-    _media_errors = _send_media_via_adapter(
+    failures = _send_media_via_adapter(
         t.runtime_adapter, t.chat_id, media_files, routed_media_metadata or None, t.loop, t.job,
         platform=t.platform, force_document=t.force_document,
     )
-    if (topic_name and len(media_files) == sum("thread not found" in e.lower() for e in _media_errors)
+    if (topic_name and len(media_files) == sum(
+            "thread not found" in err.lower() for _p, _v, err in failures)
             and _resolve_named_dm_topic(t, topic_name, routed_media_metadata, delivery_errors,
                                         len(media_files), refresh=True)):
         # The named topic vanished (a media-only job never runs the router's text refresh): recreate once.
-        _media_errors = _send_media_via_adapter(
+        failures = _send_media_via_adapter(
             t.runtime_adapter, t.chat_id, media_files, routed_media_metadata, t.loop, t.job,
             platform=t.platform, force_document=t.force_document)
     if t.job.pop("_media_ack_lost", False) and t.where not in unverified_targets:
         unverified_targets.append(t.where)
     # Surface per-file failures into run status: text delivered but attachment lost is not ok.
-    for _me in _media_errors:
-        delivery_errors.append(f"{_me} (target {t.where})")
+    for _path, _is_voice, error in failures:
+        delivery_errors.append(f"{error} (target {t.where})")
+    return failures
 
 
 def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> None:
@@ -1470,13 +1473,18 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
 def _deliver_via_live_adapter(
     t: _TargetDelivery, cleaned_text: str, media_files: list, *, target_errors: list,
     delivery_errors: list, unverified_targets: list,
-) -> bool:
-    """Deliver one target via the live gateway adapter; True once delivered. ``target_errors`` =
-    this lane's soft failures (surfaced only if standalone also fails); ``delivery_errors`` =
-    partial failures (media, thread fallback) that surface even on success."""
+) -> tuple[bool, list]:
+    """Deliver one target via the live gateway adapter.
+
+    Returns ``(delivered, fallback_media)``. ``fallback_media`` is what standalone retries when
+    ``delivered`` is False: sends that never started and other hard failures, not in-flight
+    timeouts. ``target_errors`` surface only if standalone also fails; ``delivery_errors``
+    (media, thread fallback) surface even on success.
+    """
     job = t.job
     route_thread_id, route_metadata, media_metadata = _live_route_metadata(t)
     delivered = False
+    fallback_media = list(media_files)
     try:
         # Send cleaned text (MEDIA tags stripped) through the gateway's DeliveryRouter so it gets
         # the same platform routing as live messages (Telegram's three-mode topic routing).
@@ -1505,7 +1513,13 @@ def _deliver_via_live_adapter(
             adapter_ok = _resolve_named_dm_topic(
                 t, topic_name, media_metadata, delivery_errors, len(media_files), refresh=False) or bool(text_to_send)
         if adapter_ok and not timed_out and media_files:
-            _live_send_media(t, media_metadata, media_files, delivery_errors, unverified_targets, topic_name)
+            media_failures = _live_send_media(
+                t, media_metadata, media_files, delivery_errors, unverified_targets, topic_name)
+            if media_failures:
+                # In-flight timeouts are omitted by _send_media_via_adapter.
+                fallback_media = [
+                    (path, is_voice) for path, is_voice, _error in media_failures]
+                adapter_ok = False
         elif timed_out and media_files:
             _note_target_error(job, f"{len(media_files)} media attachment(s) not delivered to {t.where} "
                                "(live adapter confirmation timed out)", delivery_errors)
@@ -1524,7 +1538,7 @@ def _deliver_via_live_adapter(
         if not any(err_msg in err for err in target_errors):
             target_errors.append(err_msg)
         _warn_live_lane_failure(job, err_msg, t.is_relay)
-    return delivered
+    return delivered, fallback_media
 
 
 def _deliver_standalone(
@@ -1886,12 +1900,16 @@ def _deliver_result(
             continue
         t.force_document = "[[as_document]]" in content  # the job output, never the wrapped job name
         target_errors: list = []
-        delivered = t.live_adapter_ready and _deliver_via_live_adapter(
-            t, cleaned_delivery_content, media_files,
-            target_errors=target_errors, delivery_errors=delivery_errors,
-            unverified_targets=unverified_targets,
+        delivered, fallback_media = (
+            _deliver_via_live_adapter(
+                t, cleaned_delivery_content, media_files,
+                target_errors=target_errors, delivery_errors=delivery_errors,
+                unverified_targets=unverified_targets,
+            )
+            if t.live_adapter_ready else (False, media_files)
         )
-        reached += bool(delivered or _deliver_standalone(t, cleaned_delivery_content, media_files, target_errors, delivery_errors))
+        reached += bool(delivered or _deliver_standalone(
+            t, cleaned_delivery_content, fallback_media, target_errors, delivery_errors))
 
     # Filter-time drops apply to every target; report them once. A run whose every target was
     # suppressed sent nothing, so there is no drop to report.

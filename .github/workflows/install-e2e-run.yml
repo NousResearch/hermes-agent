@@ -88,6 +88,10 @@ jobs:
             --route '${{ inputs.route }}' \
             --install-ref '${{ inputs.install-ref }}'
         env:
+          # checkout already fetched full history and tags. Let each matrix leg
+          # resolve its starting release from that local repository instead of
+          # fanning out unauthenticated GitHub fetches that can return 429.
+          HERMES_DEV_SANDBOX_UPSTREAM: ${{ github.workspace }}
           # Outside the workspace on purpose: the script creates this directory
           # up front, and an untracked dir inside the repo makes the worktree
           # dirty -- which dev-sandbox reacts to by snapshotting the working

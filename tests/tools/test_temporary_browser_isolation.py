@@ -478,4 +478,3 @@ class TestRealBrowserIsolationE2E:
             cleanup_browser(norm_task)
             cleanup_browser(temp_task)
             unmark_session_ephemeral(temp_task, force=True)
-

@@ -188,4 +188,3 @@ def test_dump_api_request_debug_ephemeral_no_disk_leak(tmp_path, monkeypatch):
     content = result_path_normal.read_text(encoding="utf-8")
     assert sentinel_norm in content, "Normal debug dump file does not contain request payload"
     assert sentinel_norm in stdout_capture_normal.getvalue(), "Normal debug dump was not printed to stdout"
-

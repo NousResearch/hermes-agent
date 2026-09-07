@@ -133,3 +133,140 @@ def test_resolve_last_session_real_db_prefers_workspace(monkeypatch, tmp_path):
     )
     monkeypatch.setattr("hermes_state.SessionDB", lambda: real_db(db_path=state_db))
     assert _resolve_last_session("cli") == "repo_a"
+
+
+# ---------------------------------------------------------------------------
+# Family fallback (-c across cli/webui/tui): workspace-first ordering.
+# A preferred-source session in another repository must never beat an
+# alternate-interface session in the current workspace (#47214).
+# ---------------------------------------------------------------------------
+
+
+def _real_db_fixture(tmp_path, monkeypatch):
+    """Seed a real SessionDB in tmp_path and point _resolve_last_session at it.
+
+    Returns (db, repo_a) with repo_a created on disk; callers create rows with
+    git_repo_root/cwd and SQL-bump started_at for deterministic MRU ordering.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    repo_a = tmp_path / "repo-a"
+    repo_a.mkdir(exist_ok=True)
+    state_db = tmp_path / "state.db"
+
+    import hermes_state
+
+    real_db = hermes_state.SessionDB
+    db = real_db(db_path=state_db)
+
+    def _stamp(sid, at):
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (at, sid))
+            db._conn.commit()
+
+    def _use_repo_a():
+        monkeypatch.chdir(repo_a)
+        monkeypatch.setattr(
+            "hermes_cli.main.subprocess.run",
+            lambda cmd, **kw: __import__("subprocess").CompletedProcess(
+                cmd, 0, stdout=str(repo_a), stderr=""
+            ),
+        )
+        monkeypatch.setattr("hermes_state.SessionDB", lambda: real_db(db_path=state_db))
+
+    return db, repo_a, _stamp, _use_repo_a
+
+
+def test_family_prefers_current_workspace_over_foreign_preferred_source(tmp_path, monkeypatch):
+    """Reviewer case: local webui in /repo-a must beat a foreign cli in /repo-b."""
+    db, repo_a, _stamp, _use_repo_a = _real_db_fixture(tmp_path, monkeypatch)
+    try:
+        db.create_session("local_webui", source="webui", cwd=str(repo_a), git_repo_root=str(repo_a))
+        db.create_session("foreign_cli", source="cli", cwd="/other/repo-b", git_repo_root="/other/repo-b")
+        _stamp("local_webui", 1000.0)
+        _stamp("foreign_cli", 9000.0)
+        _use_repo_a()
+        from hermes_cli.main import _resolve_last_session
+
+        assert _resolve_last_session(("cli", "webui", "tui")) == "local_webui"
+    finally:
+        db.close()
+
+
+def test_family_tui_first_variant_prefers_local_webui(tmp_path, monkeypatch):
+    db, repo_a, _stamp, _use_repo_a = _real_db_fixture(tmp_path, monkeypatch)
+    try:
+        db.create_session("local_webui", source="webui", cwd=str(repo_a), git_repo_root=str(repo_a))
+        db.create_session("foreign_tui", source="tui", cwd="/other/repo-b", git_repo_root="/other/repo-b")
+        _stamp("local_webui", 1000.0)
+        _stamp("foreign_tui", 9000.0)
+        _use_repo_a()
+        from hermes_cli.main import _resolve_last_session
+
+        assert _resolve_last_session(("tui", "webui", "cli")) == "local_webui"
+    finally:
+        db.close()
+
+
+def test_family_interface_preference_within_workspace(tmp_path, monkeypatch):
+    """Inside one workspace, launching CLI prefers the cli session even when a
+    webui session is newer (interface preference preserved inside the scope)."""
+    db, repo_a, _stamp, _use_repo_a = _real_db_fixture(tmp_path, monkeypatch)
+    try:
+        db.create_session("ws_cli", source="cli", cwd=str(repo_a), git_repo_root=str(repo_a))
+        db.create_session("ws_webui", source="webui", cwd=str(repo_a), git_repo_root=str(repo_a))
+        _stamp("ws_cli", 100.0)
+        _stamp("ws_webui", 5000.0)
+        _use_repo_a()
+        from hermes_cli.main import _resolve_last_session
+
+        assert _resolve_last_session(("cli", "webui", "tui")) == "ws_cli"
+        assert _resolve_last_session(("tui", "webui", "cli")) == "ws_webui"
+    finally:
+        db.close()
+
+
+def test_family_falls_back_globally_when_workspace_empty(tmp_path, monkeypatch):
+    db, repo_a, _stamp, _use_repo_a = _real_db_fixture(tmp_path, monkeypatch)
+    try:
+        db.create_session("global_cli", source="cli", cwd="/other/repo-b", git_repo_root="/other/repo-b")
+        db.create_session("global_webui", source="webui", cwd="/third/repo-c", git_repo_root="/third/repo-c")
+        _stamp("global_cli", 9000.0)
+        _stamp("global_webui", 7000.0)
+        _use_repo_a()
+        from hermes_cli.main import _resolve_last_session
+
+        assert _resolve_last_session(("cli", "webui", "tui")) == "global_cli"
+    finally:
+        db.close()
+
+
+def test_family_never_picks_automation_sessions(tmp_path, monkeypatch):
+    """A cron session in the current workspace is not a resume candidate."""
+    db, repo_a, _stamp, _use_repo_a = _real_db_fixture(tmp_path, monkeypatch)
+    try:
+        db.create_session("ws_cron", source="cron", cwd=str(repo_a), git_repo_root=str(repo_a))
+        _stamp("ws_cron", 9000.0)
+        _use_repo_a()
+        from hermes_cli.main import _resolve_last_session
+
+        assert _resolve_last_session(("cli", "webui", "tui")) is None
+        assert _resolve_last_session("cli") is None
+    finally:
+        db.close()
+
+
+def test_latest_session_id_uses_interface_family(tmp_path, monkeypatch):
+    db, repo_a, _stamp, _use_repo_a = _real_db_fixture(tmp_path, monkeypatch)
+    try:
+        db.create_session("older_cli", source="cli", cwd="/other/repo-b", git_repo_root="/other/repo-b")
+        db.create_session("newer_tui", source="tui", cwd="/other/repo-b", git_repo_root="/other/repo-b")
+        _stamp("older_cli", 100.0)
+        _stamp("newer_tui", 9000.0)
+        _use_repo_a()
+        from hermes_cli.main import _latest_session_id
+
+        assert _latest_session_id(use_tui=False) == "older_cli"  # cli preferred in CLI mode
+        assert _latest_session_id(use_tui=True) == "newer_tui"  # tui preferred in TUI mode
+    finally:
+        db.close()

@@ -6,6 +6,8 @@ server.py the same way (tests monkeypatching ``server.X`` still intercept)."""
 
 import contextlib
 
+from hermes_cli.session_listing import AUTOMATION_SOURCES
+
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -130,8 +132,10 @@ def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=
             "source": row.get("source") or ""}
 
 
-# Hidden from human listings (sub-agent runs, kanban workers); a deny-list so new platforms surface automatically.
-_LISTING_DENY_SOURCES = frozenset({"kanban", "tool"})
+# Hidden from human listings (automation producers); a deny-list so new
+# human surfaces/platforms appear automatically. Shares the one reviewed
+# policy constant with the CLI /resume picker and gateway /sessions.
+_LISTING_DENY_SOURCES = AUTOMATION_SOURCES
 
 
 def _denied_source(row: dict) -> bool:

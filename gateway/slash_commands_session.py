@@ -969,7 +969,11 @@ class GatewaySessionCommandsMixin:
         if not self._session_db:
             return self._session_db_unavailable_reply()
         from hermes_cli.session_listing import (
-            format_gateway_session_listing, parse_session_listing_args, query_session_listing)
+            AUTOMATION_SOURCES,
+            format_gateway_session_listing,
+            parse_session_listing_args,
+            query_session_listing,
+        )
         try:
             include_all, include_unnamed, target, search_query = parse_session_listing_args(
                 event.get_command_args().strip())
@@ -996,7 +1000,10 @@ class GatewaySessionCommandsMixin:
             include_all_sources=cross_origin, include_unnamed=include_unnamed,
             search_query=search_query,
             # Search filters in SQL: over-fetch so origin-invisible matches don't consume the page.
-            limit=50 if search_query else 10, exclude_sources=["tool"])
+            limit=50 if search_query else 10,
+            # Same policy as the CLI /resume picker: hide automation/internal sources
+            # (cron/tool/kanban/subagent), keep every human conversation surface visible.
+            exclude_sources=sorted(AUTOMATION_SOURCES))
         if not cross_origin:
             rows = [row for row in rows if await self._resume_row_visible(source, row, allow_all=False)]
         rows = rows[:10]

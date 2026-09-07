@@ -14,6 +14,7 @@ from functools import partial
 from pathlib import Path
 
 from hermes_cli.sessions_cmd_browse import _relative_time, _session_browse_picker
+from hermes_cli.session_listing import AUTOMATION_SOURCES
 
 
 def get_hermes_home():
@@ -244,8 +245,8 @@ def _cmd_import(args):
 # -- handlers that receive an open SessionDB ----------------------------------
 
 def _default_exclude(args):
-    """Hide third-party tool sessions by default, but honour explicit --source."""
-    return None if getattr(args, "source", None) else ["tool"]
+    """Hide automation-source sessions (cron/tool/kanban/subagent) by default, but honour explicit --source."""
+    return None if getattr(args, "source", None) else sorted(AUTOMATION_SOURCES)
 
 
 def _cmd_list(db, args):

@@ -1163,30 +1163,47 @@ def _session_db():
 
 
 def _latest_session_id(use_tui: bool) -> Optional[str]:
-    """MRU session for the active interface; a TUI launch falls back to the CLI MRU."""
-    last_id = _resolve_last_session(source="tui" if use_tui else "cli")
-    if not last_id and use_tui:
-        last_id = _resolve_last_session(source="cli")
-    return last_id
+    """MRU session for the active interface, falling back across the local
+    interactive family (cli/webui/tui).
+
+    A chat started in the webui or the desktop TUI is continuable from any
+    local surface. Webui sessions were tagged ``tui`` in older builds and
+    ``webui`` in newer ones, so both are in the family. Gateway and
+    automation sessions are never picked here (use the ``/resume`` picker).
+    """
+    family = ("tui", "webui", "cli") if use_tui else ("cli", "webui", "tui")
+    return _resolve_last_session(source=family)
 
 
-def _resolve_last_session(source: str = "cli") -> Optional[str]:
-    """Look up the most recently-used session ID for a source.
+def _resolve_last_session(source: str | tuple[str, ...] = "cli") -> Optional[str]:
+    """Look up the most recently-used session ID for a source (or family).
 
     Scoped to the current workspace first (git repo root, else cwd) so
     ``hermes -c`` from repo A continues repo A's last session rather than the
     global MRU. Falls back to the unscoped MRU when no session matches the
     current workspace, preserving the old behaviour for fresh directories.
+
+    ``source`` may be a single source tag or a tuple of tags tried in order
+    (interface preference). A tuple is resolved workspace-first across the
+    whole family, then globally across the family, so a preferred-source
+    session in another repository can never beat an alternate-interface
+    session in the current workspace; interface preference is preserved
+    inside each scope.
     """
+    sources = (source,) if isinstance(source, str) else source
     with _session_db() as db:
         ws_key = _resolve_workspace_key()
         if ws_key:
-            sessions = db.search_sessions(source=source, limit=1, workspace_key=ws_key)
+            # Pass 1: every permitted source against the current workspace.
+            for src in sources:
+                sessions = db.search_sessions(source=src, limit=1, workspace_key=ws_key)
+                if sessions:
+                    return sessions[0]["id"]
+        # Pass 2: global MRU across the family, same preference order.
+        for src in sources:
+            sessions = db.search_sessions(source=src, limit=1)
             if sessions:
                 return sessions[0]["id"]
-        # Fallback: global MRU for this source.
-        sessions = db.search_sessions(source=source, limit=1)
-        return sessions[0]["id"] if sessions else None
     return None
 
 

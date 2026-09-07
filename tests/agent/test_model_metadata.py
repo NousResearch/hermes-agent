@@ -534,6 +534,7 @@ class TestCodexOAuthContextLength:
             "gpt-5.6-sol-2026-07-09",  # dated snapshot via gpt-5.6 family prefix
             "gpt-5.4",
             "gpt-daybreak-blue-latest",  # Sol alias; exact verified slug
+            "gpt-6-astra",  # 917K accepted / 931K rejected live, Sep 2026
         ],
     )
     def test_900k_variant_slug_bumped_to_live_verified_900k(self, slug):
@@ -567,6 +568,7 @@ class TestCodexOAuthContextLength:
             "gpt-5.6-luna",
             "gpt-5.4",
             "gpt-daybreak-blue-latest",
+            "gpt-6-astra",
         ],
     )
     def test_base_slug_keeps_advertised_272k(self, slug):
@@ -691,6 +693,10 @@ class TestCodexOAuthContextLength:
         ("gpt-5.6-luna-900k",             True,  900_000, "gpt-5.6-luna"),
         ("gpt-5.4-900k",                  True,  900_000, "gpt-5.4"),
         ("gpt-daybreak-blue-latest-900k", True,  900_000, "gpt-daybreak-blue-latest"),
+        ("gpt-6-astra-900k",              True,  900_000, "gpt-6-astra"),
+        ("gpt-6-astra-2026-09-01-900k",   True,  900_000, "gpt-6-astra-2026-09-01"),
+        # Astra Pro is public-API only (Codex OAuth 400s it) — no variant
+        ("gpt-6-astra-pro-900k",          False, 272_000, "gpt-6-astra-pro-900k"),
         # dated snapshot of a routable 5.6 base
         ("gpt-5.6-sol-2026-07-09-900k",   True,  900_000, "gpt-5.6-sol-2026-07-09"),
         # vendor-namespaced variant (display/aux callers) resolves too

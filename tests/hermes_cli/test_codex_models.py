@@ -42,7 +42,7 @@ def test_picker_synthesizes_900k_variants_for_verified_slugs():
     in the list as the cheaper 272K default."""
     model_ids = get_codex_model_ids()  # offline curated path
 
-    for base in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4"):
+    for base in ("gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4"):
         assert base in model_ids
         assert f"{base}-900k" in model_ids
         assert model_ids.index(f"{base}-900k") == model_ids.index(base) + 1

@@ -20,13 +20,6 @@ def _emit(value: Any, *, as_json: bool) -> None:
         print(value)
 
 
-def _cli_sender(event: Any) -> None:
-    """Default delivery for CLI-triggered weekly reviews: print the notice."""
-    from hermes_wisdom.agent_led.render import render_plain
-
-    print(render_plain(event))
-
-
 def cmd_wisdom(args: argparse.Namespace) -> int:
     from hermes_wisdom.client import WisdomError
     from hermes_wisdom.package import PackagePolicyError
@@ -200,14 +193,9 @@ def cmd_wisdom(args: argparse.Namespace) -> int:
         elif command == "browse":
             result = {"skills": service.search_skills(getattr(args, "query", None))}
         elif command == "review-week":
-            from hermes_wisdom.agent_led.weekly import run_weekly_review
+            from hermes_wisdom.weekly_queue import enqueue_weekly_review
 
-            result = run_weekly_review(
-                store=service.store,
-                service=service,
-                force=bool(getattr(args, "force", False)),
-                sender=None if getattr(args, "dry_run", False) else _cli_sender,
-            )
+            result = enqueue_weekly_review(service, dry_run=bool(getattr(args, "dry_run", False)))
         elif command == "act":
             from hermes_wisdom.agent_led.actions import handle_action
 
@@ -397,13 +385,13 @@ def build_wisdom_parser(subparsers) -> None:
     browse = add("browse", "Search the organization catalog by keyword")
     browse.add_argument("query", nargs="?")
     review_week = add(
-        "review-week", "Run the agent-led weekly review of your recently used skills"
+        "review-week", "Queue this week's review for the active private agent session"
     )
     review_week.add_argument(
-        "--force", action="store_true", help="Run even if the weekly interval has not elapsed"
+        "--force", action="store_true", help="Compatibility flag; does not bypass the weekly cap or consent"
     )
     review_week.add_argument(
-        "--dry-run", action="store_true", help="Build recommendations without delivering them"
+        "--dry-run", action="store_true", help="Preview local evidence without queueing or calling a model"
     )
     act = add("act", "Resolve an agent-led recommendation button target")
     act.add_argument("target")

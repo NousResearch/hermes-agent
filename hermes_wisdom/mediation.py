@@ -177,7 +177,16 @@ class WisdomMediation:
         # Consent can enqueue a preference after its assessment was delivered.
         # Reconcile it even when no new recommendation needs assessment.
         WisdomPreferences(self.service, clock=self.queue.clock).flush(org)
-        candidates = self.service.local_candidate_events()
+        from .weekly_queue import enqueue_weekly_review
+
+        enqueue_weekly_review(self.service)
+        # Deterministic qualification remains local evidence/manual activity.
+        # Only the leased weekly selection creates proactive candidate advice.
+        candidates = [
+            event
+            for event in self.service.local_candidate_events()
+            if (event.get("payload") or {}).get("agent_led_weekly")
+        ]
         self.queue.retire_candidates(
             org,
             {
@@ -196,6 +205,7 @@ class WisdomMediation:
                     "kind": "candidate",
                     "event_id": event["id"],
                     "content_hash": event["content_hash"],
+                    "local_skill_id": event["skill_id"],
                 },
                 origin_session=event.get("session_id") or "unaddressed",
             )
@@ -346,7 +356,10 @@ class WisdomMediation:
                     or not policy.notification_defaults.get(event_type, False)
                     or (
                         event_type == "skill_ready_to_share"
-                        and policy.max_candidates == 0
+                        and (
+                            policy.max_candidates == 0
+                            or reference.get("weekly_rank", 0) > policy.max_candidates
+                        )
                     )
                 ):
                     self.queue.defer_for_preferences(org, job, suppressed_until)
@@ -378,7 +391,19 @@ class WisdomMediation:
         self, org: str, actor: ConsentActor, *, runtime, history, assessor=assess
     ) -> list[dict[str, Any]]:
         self.service.require_setup()
-        jobs = self._eligible_jobs(org, self.queue.claim(org, actor.session_key))
+        claimed = self.queue.claim(org, actor.session_key)
+        from .weekly_queue import process_weekly_review
+
+        for job in claimed:
+            if job["reference"]["kind"] != "weekly_review":
+                continue
+            try:
+                process_weekly_review(self, org, job, runtime=runtime, history=history)
+            except Exception as exc:
+                self.queue.fail(org, job["id"], job["lease_token"], type(exc).__name__)
+        jobs = self._eligible_jobs(
+            org, [job for job in claimed if job["reference"]["kind"] != "weekly_review"]
+        )
         pending = [job for job in jobs if job["state"] == "assessing"]
         if pending:
             try:
@@ -460,6 +485,7 @@ class WisdomMediation:
                     },
                 }
                 for row in self.queue.assessments(org)[-100:]
+                if row["reference"]["kind"] != "weekly_review"
             ],
             "interactions": self.consent.pending(org),
         }

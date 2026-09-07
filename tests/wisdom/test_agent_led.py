@@ -27,7 +27,6 @@ from hermes_wisdom.agent_led.schemas import (
     parse_share_package,
 )
 from hermes_wisdom.agent_led.share_flow import ShareFlow, scan_credentials
-from hermes_wisdom.agent_led.weekly import run_weekly_review
 from hermes_wisdom.qualification import record_successful_use
 from hermes_wisdom.store import WisdomStore
 
@@ -126,23 +125,6 @@ def test_policy_defaults_and_local_override(monkeypatch):
     assert custom.window_days == 14
     assert custom.min_aggregate_count == 1  # floor
     assert custom.source == "local_config"
-
-
-@pytest.mark.parametrize("policy", [
-    AgentLedPolicy(max_candidates=0),
-    AgentLedPolicy(notification_defaults={"skill_ready_to_share": False}),
-])
-def test_weekly_org_policy_gate_runs_before_model_or_delivery(tmp_path, policy):
-    def unexpected(*args, **kwargs):
-        raise AssertionError("disabled recommendations must not call the model or sender")
-
-    result = run_weekly_review(
-        store=_store(tmp_path), policy=policy, model_call=unexpected,
-        sender=unexpected, force=True, state_path=tmp_path / "weekly.json",
-    )
-    assert result["ran"] is False
-    assert result["skipped_reason"] == "organization_notifications_disabled"
-    assert not (tmp_path / "weekly.json").exists()
 
 
 def test_policy_server_block_wins(monkeypatch):
@@ -507,124 +489,6 @@ def test_teammate_event_requires_relevance():
     )
     with pytest.raises(ValueError):
         teammate_event(rec, organization_id="o", recipient_id="r")
-
-
-# ---------------------------------------------------------------------------
-# weekly job: end to end with a fake agent
-# ---------------------------------------------------------------------------
-
-def test_weekly_review_end_to_end(monkeypatch, tmp_path):
-    skills = tmp_path / "skills"
-    _skill(skills, "notes")
-    _make_eligible(monkeypatch, skills)
-    store = _store(tmp_path)
-    _use(store, "notes", [0, 1, 2], per_day=3)
-    history = SuggestionHistory(tmp_path / "h.json")
-    ledger = DeliveryLedger(tmp_path / "ledger.json")
-    seen: list[dict] = []
-
-    def model_call(messages, schema):
-        payload = json.loads(messages[1]["content"])
-        seen.append(payload)
-        cand = payload["candidates"][0]
-        # Agent lies about the count; the job must overwrite it with ledger truth.
-        return _review_json(cand["skill_name"], cand["content_hash"], count=999)
-
-    delivered: list = []
-    log = run_weekly_review(
-        store=store, policy=AgentLedPolicy(), history=history, ledger=ledger,
-        sender=delivered.append, model_call=model_call, now=NOW, skills_root=skills,
-        state_path=tmp_path / "state.json", organization={"id": "org-1", "name": "Acme"},
-    )
-    assert log["ran"] and log["considered"] == ["notes"] and log["selected"] == ["notes"]
-    assert log["delivery"][0]["delivered"] is True
-    assert seen[0]["organization"]["name"] == "Acme"
-    assert "You used this skill 9 times in the last 7 days." in delivered[0].notice.lines[4]
-    # Suggested only after successful delivery; a second run is not due and stays quiet.
-    assert history.recently_suggested("notes", delivered[0].rendering_hints["content_hash"], cooldown_days=14, at=NOW)
-    second = run_weekly_review(
-        store=store, policy=AgentLedPolicy(), history=history, ledger=ledger,
-        sender=delivered.append, model_call=model_call, now=NOW + timedelta(hours=1), skills_root=skills,
-        state_path=tmp_path / "state.json", organization={"id": "org-1"},
-    )
-    assert second["skipped_reason"] == "not_due" and len(delivered) == 1
-
-
-def test_weekly_review_failed_delivery_does_not_mark_suggested(monkeypatch, tmp_path):
-    skills = tmp_path / "skills"
-    _skill(skills, "notes")
-    _make_eligible(monkeypatch, skills)
-    store = _store(tmp_path)
-    _use(store, "notes", [0, 1, 2], per_day=3)
-    history = SuggestionHistory(tmp_path / "h.json")
-
-    def model_call(messages, schema):
-        cand = json.loads(messages[1]["content"])["candidates"][0]
-        return _review_json(cand["skill_name"], cand["content_hash"])
-
-    def broken(_e):
-        raise RuntimeError("offline")
-
-    log = run_weekly_review(
-        store=store, policy=AgentLedPolicy(delivery_retries=1), history=history,
-        ledger=DeliveryLedger(tmp_path / "l.json"), sender=broken, model_call=model_call,
-        now=NOW, skills_root=skills, state_path=tmp_path / "s.json", organization={"id": "org-1"},
-        sleep=lambda _s: None,
-    )
-    assert log["delivery"][0]["delivered"] is False
-    assert history.snapshot()["suggested"] == {}
-
-
-def test_signed_out_user_gets_nothing_and_no_replay(monkeypatch, tmp_path):
-    skills = tmp_path / "skills"
-    _skill(skills, "notes")
-    _make_eligible(monkeypatch, skills)
-    store = _store(tmp_path, signed_in=False)
-    # Usage while signed out is not even recorded by qualification.
-    assert record_successful_use("notes", store=store, at=NOW) is None
-    called = {"agent": 0, "sender": 0}
-
-    def model_call(messages, schema):
-        called["agent"] += 1
-        return "{}"
-
-    def sender(_e):
-        called["sender"] += 1
-
-    log = run_weekly_review(
-        store=store, policy=AgentLedPolicy(), history=SuggestionHistory(tmp_path / "h.json"),
-        ledger=DeliveryLedger(tmp_path / "l.json"), sender=sender, model_call=model_call,
-        now=NOW, skills_root=skills, state_path=tmp_path / "s.json", force=True,
-    )
-    assert log["skipped_reason"] == "signed_out" and log["ran"] is False
-    assert called == {"agent": 0, "sender": 0}
-    assert not (tmp_path / "s.json").exists()  # nothing queued for later replay
-    assert not (tmp_path / "l.json").exists()
-
-
-def test_weekly_review_disabled_flag(monkeypatch, tmp_path):
-    store = _store(tmp_path)
-    log = run_weekly_review(
-        store=store, policy=AgentLedPolicy(enabled=False), history=SuggestionHistory(tmp_path / "h.json"),
-        ledger=DeliveryLedger(tmp_path / "l.json"), sender=lambda _e: None, model_call=lambda m, s: "{}",
-        now=NOW, state_path=tmp_path / "s.json", force=True,
-    )
-    assert log["skipped_reason"] == "agent_led_disabled"
-
-
-def test_weekly_review_rejects_agent_garbage(monkeypatch, tmp_path):
-    skills = tmp_path / "skills"
-    _skill(skills, "notes")
-    _make_eligible(monkeypatch, skills)
-    store = _store(tmp_path)
-    _use(store, "notes", [0, 1, 2], per_day=3)
-    sent: list = []
-    log = run_weekly_review(
-        store=store, policy=AgentLedPolicy(), history=SuggestionHistory(tmp_path / "h.json"),
-        ledger=DeliveryLedger(tmp_path / "l.json"), sender=sent.append, model_call=lambda m, s: "nope",
-        now=NOW, skills_root=skills, state_path=tmp_path / "s.json", organization={"id": "org-1"},
-    )
-    assert log["skipped_reason"].startswith("agent_output_rejected") and sent == []
 
 
 # ---------------------------------------------------------------------------

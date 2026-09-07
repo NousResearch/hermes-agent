@@ -33436,28 +33436,6 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
     PASTE_SWEEP_EVERY = 60   # ticks — once per hour
     CURATOR_EVERY = 60       # ticks — poll hourly (inner gate handles the real cadence)
 
-    def _agent_led_home_sender(adapters, loop):
-        """Return a sync sender that posts an agent-led event to the Telegram
-        home channel, or ``None`` when no capable adapter/home chat exists.
-        Returning ``None`` makes the weekly job record events as pending
-        instead of marking them suggested."""
-        adapter = (adapters or {}).get("telegram") if isinstance(adapters, dict) else None
-        send = getattr(adapter, "send_wisdom_agent_recommendation", None)
-        if adapter is None or not callable(send):
-            return None
-        try:
-            home = adapter.config.get_home_channel("telegram") if hasattr(adapter, "config") else None
-        except Exception:
-            home = None
-        chat_id = getattr(home, "chat_id", None)
-        if not chat_id:
-            return None
-
-        def _send(event):
-            future = asyncio.run_coroutine_threadsafe(send(str(chat_id), event), loop)
-            future.result(timeout=60)
-
-        return _send
     AUTO_ARCHIVE_EVERY = 60  # ticks — poll hourly (state_meta gate owns the real cadence)
     MEMORY_TRIM_EVERY = 1    # shared helper cooldown bounds actual allocator work
     MISFIRE_SWEEP_EVERY = 5  # ticks — every 5 minutes (grace window gates real work)
@@ -33564,14 +33542,12 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
                 maybe_pull_skills()
             except Exception as e:
                 logger.debug("Sync pull tick error: %s", e)
-            # Collective Wisdom agent-led weekly review. Internally gated by
-            # wisdom.agent_led.enabled, the review interval, and an active
-            # (signed-in) organization; signed-out profiles produce nothing.
+            # Queue local evidence only. The active private session owns model
+            # assessment and delivery, including per-profile reconciliation.
             try:
-                from hermes_wisdom.agent_led.weekly import maybe_run_weekly_review
-                maybe_run_weekly_review(
-                    sender=_agent_led_home_sender(adapters, loop)
-                )
+                from hermes_wisdom.service import WisdomService
+                from hermes_wisdom.weekly_queue import enqueue_weekly_review
+                enqueue_weekly_review(WisdomService())
             except Exception as e:
                 logger.debug("Wisdom agent-led review tick error: %s", e)
 

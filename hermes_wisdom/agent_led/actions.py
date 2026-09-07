@@ -12,11 +12,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .history import SuggestionHistory
+from .history import SuggestionHistory, history_path
 from .notify import STALE_ACTION_MESSAGE, DeliveryLedger
 from .policy import load_policy
 from .templates import mute_duration_days, render_mute_options
-from .weekly import _ledger_path
 
 
 def handle_action(
@@ -29,7 +28,7 @@ def handle_action(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Return a structured outcome; never raises for stale/duplicate presses."""
-    ledger_obj = ledger or DeliveryLedger(_ledger_path())
+    ledger_obj = ledger or DeliveryLedger(history_path().parent / "agent_led_delivery.json")
     hist = history or SuggestionHistory()
     current = now or datetime.now(timezone.utc)
     resolved = ledger_obj.resolve_action(target, at=current)

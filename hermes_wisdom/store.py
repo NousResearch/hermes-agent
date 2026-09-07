@@ -7,7 +7,7 @@ import os
 import sqlite3
 import threading
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -726,10 +726,11 @@ class WisdomStore:
         session_id: str | None,
         task_id: str | None,
         qualification: str,
+        _db: sqlite3.Connection | None = None,
     ) -> str | None:
         event_id = str(uuid.uuid4())
         now = utc_now()
-        with self.transaction() as db:
+        with (self.transaction() if _db is None else nullcontext(_db)) as db:
             organization_id: str | None = None
             if kind == "wisdom.candidate":
                 organization = db.execute(

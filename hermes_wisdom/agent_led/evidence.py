@@ -94,9 +94,9 @@ def read_frontmatter(skill_path: Path) -> dict[str, Any]:
 
 def dependency_hints(frontmatter: dict[str, Any]) -> tuple[list[str], list[str]]:
     hermes_meta = (frontmatter.get("metadata") or {}).get("hermes") or {}
-    env = _string_list(frontmatter.get("required_environment_variables")) or _string_list(
-        hermes_meta.get("required_environment_variables")
-    )
+    env = _string_list(
+        frontmatter.get("required_environment_variables")
+    ) or _string_list(hermes_meta.get("required_environment_variables"))
     commands = _string_list(frontmatter.get("required_commands")) or _string_list(
         hermes_meta.get("required_commands")
     )
@@ -107,7 +107,9 @@ def _listing(root: Path, sub: str) -> list[str]:
     folder = root / sub
     if not folder.is_dir():
         return []
-    return sorted(str(p.relative_to(root)) for p in folder.rglob("*") if p.is_file())[:50]
+    return sorted(str(p.relative_to(root)) for p in folder.rglob("*") if p.is_file())[
+        :50
+    ]
 
 
 def is_excluded_path(path: Path, *, skills_root: Path | None = None) -> str | None:
@@ -122,7 +124,9 @@ def is_excluded_path(path: Path, *, skills_root: Path | None = None) -> str | No
     return None
 
 
-def provenance_exclusion(skill_name: str, path: Path, *, skills_root: Path | None = None) -> str | None:
+def provenance_exclusion(
+    skill_name: str, path: Path, *, skills_root: Path | None = None
+) -> str | None:
     if is_bundled(skill_name):
         return "bundled"
     if is_hub_installed(skill_name):
@@ -130,7 +134,13 @@ def provenance_exclusion(skill_name: str, path: Path, *, skills_root: Path | Non
     return is_excluded_path(path, skills_root=skills_root)
 
 
-def windowed_usage(store: WisdomStore, *, since_day: str, timezone_name: str) -> dict[str, dict[str, Any]]:
+def windowed_usage(
+    store: WisdomStore,
+    *,
+    since_day: str,
+    timezone_name: str,
+    through_day: str | None = None,
+) -> dict[str, dict[str, Any]]:
     """Per-skill day->count map for local skills used on/after ``since_day``."""
     rows: dict[str, dict[str, Any]] = {}
     with store.transaction() as db:
@@ -138,11 +148,13 @@ def windowed_usage(store: WisdomStore, *, since_day: str, timezone_name: str) ->
             "SELECT s.id, s.canonical_path, u.day_local, u.use_count "
             "FROM usage_day u JOIN local_skill s ON s.id=u.skill_id "
             "WHERE s.deleted_at IS NULL AND s.source_kind='local' "
-            "AND u.timezone_name=? AND u.day_local>=? ORDER BY s.id, u.day_local",
-            (timezone_name, since_day),
+            "AND u.timezone_name=? AND u.day_local>=? AND (? IS NULL OR u.day_local<=?) ORDER BY s.id, u.day_local",
+            (timezone_name, since_day, through_day, through_day),
         )
         for skill_id, canonical_path, day, count in cursor.fetchall():
-            entry = rows.setdefault(str(skill_id), {"path": str(canonical_path), "days": {}})
+            entry = rows.setdefault(
+                str(skill_id), {"path": str(canonical_path), "days": {}}
+            )
             entry["days"][str(day)] = int(count)
     return rows
 
@@ -151,7 +163,7 @@ def build_evidence(
     *,
     store: WisdomStore,
     policy: AgentLedPolicy,
-    history: SuggestionHistory,
+    history: SuggestionHistory | None,
     organization: dict[str, Any] | None = None,
     at: datetime | None = None,
     skills_root: Path | None = None,
@@ -161,7 +173,12 @@ def build_evidence(
     profile_tz, timezone_name = _qualification._profile_timezone()
     today = now.astimezone(profile_tz).date()
     start_day = today - timedelta(days=policy.window_days - 1)
-    usage = windowed_usage(store, since_day=start_day.isoformat(), timezone_name=timezone_name)
+    usage = windowed_usage(
+        store,
+        since_day=start_day.isoformat(),
+        timezone_name=timezone_name,
+        through_day=today.isoformat(),
+    )
 
     excluded: dict[str, list[str]] = {
         "bundled": [],
@@ -193,14 +210,19 @@ def build_evidence(
             excluded["below_min_count"].append(skill_name)
             continue
         content_hash, _tree = _qualification.snapshot_tree(path)
-        if history.is_suppressed(skill_name, content_hash, at=now):
+        if history is not None and history.is_suppressed(
+            skill_name, content_hash, at=now
+        ):
             excluded["dismissed"].append(skill_name)
             continue
-        if history.previously_handled(skill_name, content_hash):
+        if history is not None and history.previously_handled(skill_name, content_hash):
             excluded["previously_handled"].append(skill_name)
             continue
-        if history.recently_suggested(
-            skill_name, content_hash, cooldown_days=policy.resuggest_cooldown_days, at=now
+        if history is not None and history.recently_suggested(
+            skill_name,
+            content_hash,
+            cooldown_days=policy.resuggest_cooldown_days,
+            at=now,
         ):
             excluded["recently_suggested"].append(skill_name)
             continue

@@ -11,7 +11,6 @@ from hermes_wisdom.agent_led.policy import load_policy
 from hermes_wisdom.agent_led.schemas import SchemaRejected
 from hermes_wisdom.agent_led.share_flow import ShareFlow, _list_files
 from hermes_wisdom.agent_led.templates import render_share
-from hermes_wisdom.agent_led.weekly import _safety
 
 
 @pytest.mark.parametrize("value", [
@@ -119,20 +118,11 @@ def test_manual_prerequisites_require_confirmation(tmp_path):
 
 
 def test_missing_safety_service_is_not_success():
-    assert _safety(None, "skill", "hash") == (None, [])
     notice = render_share(editorial_name="Skill", description="Description", count_7d=3,
                           specific_work="work", audience="team", reason="helpful")
     assert "Checks unavailable" in notice.text
     assert "✓" not in notice.text
     assert notice.actions[-1].id == "share"
-
-
-def test_failed_safety_service_is_not_success():
-    class Failed:
-        def finish_candidate_professionalism_review(self, **kwargs):
-            raise OSError("offline")
-
-    assert _safety(Failed(), "skill", "hash") == (None, [])
 
 
 def test_policy_cannot_enable_proactive_review_in_fixed_mode(monkeypatch):

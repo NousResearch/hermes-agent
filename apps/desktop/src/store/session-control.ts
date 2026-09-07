@@ -84,14 +84,35 @@ export interface SessionControlSnapshot {
   updated_at: number
 }
 
+export interface GoalCreateArgs {
+  prompt: string
+  criteria?: string[]
+  max_turns?: number
+}
+
+export interface LoopCreateArgs {
+  prompt: string
+  interval_seconds: number
+  run_limit?: number
+  stop_condition?: string
+}
+
+export interface HeartbeatCreateArgs {
+  prompt: string
+  interval_seconds: number
+}
+
 export type SessionControlAction =
   | 'goal.clear'
+  | 'goal.create'
   | 'goal.pause'
   | 'goal.resume'
   | 'goal.unwait'
   | 'heartbeat.clear'
+  | 'heartbeat.create'
   | 'heartbeat.pause'
   | 'heartbeat.resume'
+  | 'loop.create'
   | 'loop.pause'
   | 'loop.resume'
   | 'loop.stop'
@@ -99,7 +120,12 @@ export type SessionControlAction =
   | 'subgoal.clear'
   | 'subgoal.remove'
 
-export type SessionControlActionArgs = { index: number } | { text: string }
+export type SessionControlActionArgs =
+  | { index: number }
+  | { text: string }
+  | GoalCreateArgs
+  | LoopCreateArgs
+  | HeartbeatCreateArgs
 
 export interface SessionControlDispatch {
   display: string | null

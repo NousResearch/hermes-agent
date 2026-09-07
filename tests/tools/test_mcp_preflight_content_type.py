@@ -37,6 +37,7 @@ def _make_task(name: str = "probe_srv") -> MCPServerTask:
     """Minimal MCPServerTask without running the heavy __init__."""
     task = MCPServerTask.__new__(MCPServerTask)
     task.name = name
+    task._redaction_values = ()
     return task
 
 
@@ -130,6 +131,19 @@ def test_non_mcp_content_type_raises(content_type):
     msg = str(exc_info.value)
     assert "bad_srv" in msg
     assert "application/json" in msg and "text/event-stream" in msg
+
+
+def test_non_mcp_error_does_not_echo_url_secrets():
+    task = _make_task("private_srv")
+    with _serve(_handler(status=200, content_type="text/html")) as base:
+        private_url = f"{base}/server-secret-value?api_key=another-secret-value"
+        with pytest.raises(NonMcpEndpointError) as exc_info:
+            asyncio.run(task._preflight_content_type(private_url, timeout=5.0))
+
+    msg = str(exc_info.value)
+    assert "server-secret-value" not in msg
+    assert "another-secret-value" not in msg
+    assert "configured URL" in msg
 
 
 # ---------------------------------------------------------------------------

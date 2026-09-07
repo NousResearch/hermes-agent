@@ -78,7 +78,7 @@ def _mcp_image_extension_for_mime_type(mime_type: str) -> str:
     return mimetypes.guess_extension(normalized) or ".png"
 
 
-def _decode_block_b64(data, what: str, label: str, *, cap_what: Optional[str] = None,
+def _decode_block_b64(data, what: str, *, cap_what: Optional[str] = None,
                       cap_suffix: str = "", decode_fail: str = "") -> Tuple[Optional[bytes], str]:
     """Base64-decode one block payload: ``(bytes, "")`` or ``(None, inline_marker)``. With
     ``cap_what`` the payload is rejected on b64 length BEFORE decoding and on decoded size
@@ -88,7 +88,8 @@ def _decode_block_b64(data, what: str, label: str, *, cap_what: Optional[str] = 
     try:
         raw_bytes = base64.b64decode(data)
     except (TypeError, ValueError) as exc:
-        logger.warning("MCP %s decode failed (%s): %s", what, label, exc)
+        # MIME/URI labels and decoder exceptions can echo server payloads.
+        logger.warning("MCP %s decode failed (%s)", what, type(exc).__name__)
         return None, decode_fail
     if cap_what and len(raw_bytes) > _MCP_RESOURCE_MAX_BYTES:
         return None, f"[MCP {cap_what} too large to cache: {len(raw_bytes)} bytes{cap_suffix}]"
@@ -107,7 +108,7 @@ def _write_block_cache(writer: str, what: str, skip_label: str, *args,
         logger.debug("MCP %s caching skipped — gateway.platforms.base unavailable", skip_label)
         return None, unavailable
     except Exception as exc:
-        logger.warning("MCP %s cache failed: %s", what, exc)
+        logger.warning("MCP %s cache failed (%s)", what, type(exc).__name__)
         return None, failed
 
 
@@ -122,7 +123,7 @@ def _cache_mcp_media_block(block, kind: str, writer: str, ext_for, *, cap_what: 
     mime = _base_mime(mcp_field(block, "mime_type", "mimeType"))
     if data is None or not mime.startswith(f"{kind}/"):
         return ""
-    raw_bytes, err = _decode_block_b64(data, f"{kind} block", mime, cap_what=cap_what)
+    raw_bytes, err = _decode_block_b64(data, f"{kind} block", cap_what=cap_what)
     if raw_bytes is None:
         return err
     path, err = _write_block_cache(writer, f"{kind} block", kind, raw_bytes, ext=ext_for(mime))
@@ -217,7 +218,7 @@ def _render_mcp_resource_block(block, server_name: str = "") -> str:
     uri = str(getattr(resource, "uri", "") or "")
     mime = str(mcp_field(resource, "mime_type", "mimeType", "") or "")
     raw_bytes, err = _decode_block_b64(
-        blob, "embedded resource", mime or uri, cap_what="embedded resource", cap_suffix=f", uri={uri}",
+        blob, "embedded resource", cap_what="embedded resource", cap_suffix=f", uri={uri}",
         decode_fail=f"[MCP embedded resource could not be decoded: {mime or uri}]")
     if raw_bytes is None:
         return err

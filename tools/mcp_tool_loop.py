@@ -14,7 +14,7 @@ import os
 import threading
 import time
 from typing import Any, Coroutine, Optional
-from tools.mcp_tool_common import _core
+from tools.mcp_tool_common import _core, _sanitize_error
 from tools import mcp_tool_lifecycle as _lifecycle
 
 logger = logging.getLogger("tools.mcp_tool")
@@ -233,7 +233,8 @@ def _signal_reconnect_and_wait(server_name: str, srv: Any, *, op_description: st
             reconnect_event.set()
 
     old_session = getattr(srv, "session", None)
-    logger.info("MCP server '%s': %s requesting transport reconnect", server_name, op_description)
+    logger.info("MCP server '%s': %s requesting transport reconnect", server_name,
+                _sanitize_error(op_description, getattr(srv, "_redaction_values", ())))
     loop.call_soon_threadsafe(_request_reconnect)
     return _wait_for_server_session_ready(srv, old_session=old_session, timeout=timeout)
 

@@ -322,7 +322,8 @@ class TestCacheLoadDescriptionScan:
              pytest.raises(RuntimeError):
             _mcp_registration._register_from_cache_sync("playwright", config, entry)
 
-        mock_scan.assert_called_once_with("playwright", "browser_navigate", "Navigate")
+        from tools.mcp_tool_config import _mcp_redaction_values
+        mock_scan.assert_called_once_with("playwright", "browser_navigate", "Navigate", _mcp_redaction_values(config))
 
 
 class TestResolveServerLazy:

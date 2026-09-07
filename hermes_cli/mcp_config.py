@@ -232,16 +232,9 @@ def _apply_mcp_preset(
 def _resolve_mcp_server_config(config: dict) -> dict:
     """Resolve ``${ENV}`` placeholders in a server config before connecting.
 
-    Mirrors ``_load_mcp_config()`` in ``tools/mcp_tool.py``; without it the discovery probe sent
-    literal placeholders in header templates and auth-requiring servers returned 401.
-
-    Mirrors ``_load_mcp_config()`` in ``tools/mcp_tool.py``: load ``~/.hermes/.env`` into ``os.environ`` and
-    recursively interpolate any ``${VAR}`` placeholders. The CLI builds header templates like
-    ``Authorization: Bearer ${MCP_X_API_KEY}`` but the probe path never resolved them, so the discovery
-    probe sent the literal placeholder and auth-requiring servers (e.g. n8n) returned 401 — while runtime
-    tool loading worked because it interpolates. (#37792)
+    Initialize the active profile fallback, then resolve the server's isolated
+    env-file overlay through tools.mcp_tool_config, just like runtime discovery.
     """
-    from tools.mcp_tool_config import _interpolate_env_vars
     from agent.secret_scope import current_secret_scope
 
     if current_secret_scope() is None:
@@ -250,7 +243,23 @@ def _resolve_mcp_server_config(config: dict) -> dict:
             load_hermes_dotenv()
         except Exception:  # pragma: no cover — defensive
             pass
-    return _interpolate_env_vars(config)
+    from tools.mcp_tool_config import _resolve_mcp_server_config as _resolve_config
+
+    return _resolve_config(config)
+
+
+def _sanitize_mcp_probe_error(exc: object, config: dict, *, message: Optional[str] = None) -> str:
+    """Keep the probe's snapshot even when its caller holds an unresolved config.
+
+    Humanized OAuth text must retain the original exception as the snapshot carrier.
+    """
+    from tools.mcp_tool_config import _mcp_redaction_values
+    from tools.mcp_tool_common import _sanitize_error
+
+    values = getattr(exc, "_mcp_redaction_values", None)
+    if values is None:
+        values = _mcp_redaction_values(config)
+    return _sanitize_error(str(exc) if message is None else message, values)
 
 
 def _probe_single_server(
@@ -270,7 +279,15 @@ def _probe_single_server(
     from tools.mcp_tool_lifecycle import _stop_mcp_loop_if_idle
     from tools.mcp_tool_common import _parse_boolish
 
+    from tools.mcp_tool_config import _mcp_redaction_values
+
     config = _resolve_mcp_server_config(config)
+    redaction_values = _mcp_redaction_values(config)
+    resolved_issues = validate_mcp_server_entry(name, config)
+    if resolved_issues:
+        error = ValueError("; ".join(resolved_issues))
+        error._mcp_redaction_values = redaction_values
+        raise error
     if connect_timeout is None:
         try:
             connect_timeout = max(1.0, float(config.get("connect_timeout", 30)))
@@ -330,7 +347,11 @@ def _probe_single_server(
     try:
         _run_on_mcp_loop(_probe(), timeout=connect_timeout + 10)
     except BaseException as exc:
-        raise _unwrap_exception_group(exc) from None
+        root = _unwrap_exception_group(exc)
+        # Callers still hold the unresolved dict; keep this attempt's tuple on the
+        # original exception so its type and structured OAuth/HTTP details survive.
+        root._mcp_redaction_values = redaction_values
+        raise root from None
     finally:
         _stop_mcp_loop_if_idle()
     return tools_found
@@ -486,7 +507,7 @@ def cmd_mcp_add(args):
     try:
         tools = _probe_single_server(name, server_config)
     except Exception as exc:
-        _error(f"Failed to connect: {exc}")
+        _error(f"Failed to connect: {_sanitize_mcp_probe_error(exc, server_config)}")
         if _confirm("Save config anyway (you can test later)?", default=False):
             server_config["enabled"] = False
             if _save_mcp_server(name, server_config):
@@ -610,7 +631,10 @@ def cmd_mcp_test(args):
     try:
         tools = _probe_single_server(name, cfg)
     except Exception as exc:
-        _error(f"Connection failed ({(time.monotonic() - start) * 1000:.0f}ms): {exc}")
+        _error(
+            f"Connection failed ({(time.monotonic() - start) * 1000:.0f}ms): "
+            f"{_sanitize_mcp_probe_error(exc, cfg)}"
+        )
         return
     _success(f"Connected ({(time.monotonic() - start) * 1000:.0f}ms)")
     _success(f"Tools discovered: {len(tools)}")
@@ -692,7 +716,10 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
             humanized = humanize_oauth_registration_error(name, exc, server_url=url)
         except Exception:
             humanized = None
-        _error(f"Authentication failed: {humanized or exc}")
+        _error(
+            "Authentication failed: "
+            f"{_sanitize_mcp_probe_error(exc, server_config, message=humanized or None)}"
+        )
         return False
 
 
@@ -787,7 +814,7 @@ def cmd_mcp_configure(args):
     try:
         all_tools = _probe_single_server(name, cfg)
     except Exception as exc:
-        _error(f"Failed to connect: {exc}")
+        _error(f"Failed to connect: {_sanitize_mcp_probe_error(exc, cfg)}")
         return
     if not all_tools:
         _warning("Server reports no tools.")

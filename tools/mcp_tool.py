@@ -301,7 +301,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         "_recycled_reason", "initialize_result", "_ping_unsupported", "_list_cache_meta",
         "_reconnect_retries", "_session_proven", "_was_parked", "_inflight_tasks", "_reconnecting",
         "_suspect_reason", "_teardown_race", "_permanent_grace_used", "_stdio_child_pids",
-        "_ever_connected")
+        "_ever_connected", "_redaction_values")
 
     def __init__(self, name: str):
         self.name = name
@@ -353,6 +353,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         # fail in-flight calls FAST when the child dies instead of waiting out the full tool timeout
         # (#81995).
         self._stdio_child_pids: Set[int] = set()
+        self._redaction_values: tuple[str, ...] = ()
         self._auth_type: str = ""
         self._refresh_lock = asyncio.Lock()
         # A stdio session is one JSON-RPC stream (a concurrent list_tools can wedge a tool

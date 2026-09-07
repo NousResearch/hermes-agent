@@ -171,6 +171,41 @@ Note this is distinct from `${INSTALL_DIR}` in catalog manifests, which is
 substituted at install-time with the path the catalog cloned the entry's
 repo into.
 
+### Per-server env files
+
+Use `env_file` when one MCP server should resolve credentials from a project-
+specific env file instead of the active profile's `~/.hermes/.env`:
+
+```yaml
+mcp_servers:
+  project_api:
+    url: "https://mcp.example.com/mcp"
+    env_file: "/home/user/projects/acme/.env.hermes"
+    headers:
+      Authorization: "Bearer ${ACME_MCP_TOKEN}"
+```
+
+Hermes reads that file into an isolated mapping. It does not add the values to
+`os.environ`, and another MCP server cannot inherit them accidentally. Values
+from `env_file` take precedence when resolving this server's `${VAR}`
+placeholders; explicit literal values already present in `env` or `headers`
+remain unchanged. If the file is missing or unreadable, Hermes logs a warning
+and falls back to the active profile secret scope or process environment. CLI
+and dashboard probe errors, catalog probes, and runtime discovery logs redact
+exact values from the same file read that resolved the server configuration. This
+redaction snapshot stays with that connection attempt, even if the file is later
+rotated, deleted, or becomes unreadable; error handling does not reopen the file.
+The same snapshot protects Hermes-owned MCP log notifications, transport and
+recovery diagnostics, and sampling/elicitation diagnostics before truncation.
+Exact values are also recognized in Python-repr and JSON-escaped error text.
+Successful tool payloads, tool identifiers, and consent requests remain unchanged;
+this is not a filter for arbitrary third-party subprocess stderr (`mcp-stderr.log`).
+
+Relative paths resolve from `TERMINAL_CWD` when it points to a valid directory,
+otherwise from the Hermes process working directory. Prefer an absolute path
+for gateways and cron jobs, where the process working directory may differ
+from an interactive shell.
+
 ### Updating tool selection later
 
 ```bash

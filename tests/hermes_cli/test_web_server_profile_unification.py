@@ -227,6 +227,39 @@ class TestProfileScopedMcp:
         assert resp.status_code == 200
         assert resp.json()["tools"] == [{"name": "tool-a", "description": "desc"}]
 
+    def test_mcp_test_error_redacts_server_env_file_values(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        worker_home = isolated_profiles["worker_beta"]
+        env_file = worker_home / "server.env"
+        env_file.write_text(
+            "MCP_PRIVATE_TOKEN=server-secret-value\n", encoding="utf-8"
+        )
+        (worker_home / "config.yaml").write_text(
+            yaml.safe_dump({
+                "mcp_servers": {
+                    "private": {
+                        "url": "https://example.invalid/${MCP_PRIVATE_TOKEN}",
+                        "env_file": str(env_file),
+                    },
+                },
+            }),
+            encoding="utf-8",
+        )
+        async def fail_connect(_name, config):
+            raise RuntimeError(f"request failed at /{config['url'].rsplit('/', 1)[-1]}")
+
+        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", fail_connect)
+
+        response = client.post(
+            "/api/mcp/servers/private/test", params={"profile": "worker_beta"}
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ok"] is False
+        assert "server-secret-value" not in body["error"]
+        assert "[REDACTED]" in body["error"]
+
 
 class TestProfileScopedModel:
     def test_model_set_main_scoped(self, client, isolated_profiles):

@@ -476,7 +476,10 @@ def _probe_tools(name: str) -> Optional[List[tuple]]:
         tools = _probe_single_server(name, server_cfg)
         return list(tools) if tools is not None else []
     except Exception as exc:
-        _say(f"  Probe failed: {exc}", Colors.YELLOW)
+        from hermes_cli.mcp_config import _sanitize_mcp_probe_error
+
+        error = _sanitize_mcp_probe_error(exc, server_cfg)
+        _say(f"  Probe failed: {error}", Colors.YELLOW)
         return None
 
 

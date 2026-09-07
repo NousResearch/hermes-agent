@@ -69,14 +69,14 @@ def _convert_sampling_message(msg) -> List[dict]:
     return out
 
 
-def _parse_tool_call_arguments(server_name: str, args) -> dict:
+def _parse_tool_call_arguments(server_name: str, args, redaction_values=()) -> dict:
     """LLM tool_calls arguments -> dict; malformed JSON / non-dicts become ``{"_raw": ...}``, not dropped."""
     if isinstance(args, str):
         try:
             return json.loads(args)
         except (json.JSONDecodeError, ValueError):
             logger.warning("MCP server '%s': malformed tool_calls arguments from LLM (wrapping as raw): %.100s",
-                           server_name, args)
+                           server_name, _sanitize_error(args, redaction_values))
             return {"_raw": args}
     return args if isinstance(args, dict) else {"_raw": str(args)}
 
@@ -90,8 +90,9 @@ class SamplingHandler:
     _STOP_REASON_MAP = {"stop": "endTurn", "length": "maxTokens", "tool_calls": "toolUse"}
     _LOG_LEVELS = {"debug": logging.DEBUG, "info": logging.INFO, "warning": logging.WARNING}
 
-    def __init__(self, server_name: str, config: dict):
+    def __init__(self, server_name: str, config: dict, redaction_values=()):
         self.server_name = server_name
+        self._redaction_values = tuple(redaction_values)
         self.max_rpm = _safe_numeric(config.get("max_rpm", 10), 10, int)
         self.timeout = _safe_numeric(config.get("timeout", 30), 30, float)
         self.max_tokens_cap = _safe_numeric(config.get("max_tokens_cap", 4096), 4096, int)
@@ -133,11 +134,12 @@ class SamplingHandler:
     def _fail(self, message: str):
         """Count an error and return the ErrorData for it."""
         self.metrics["errors"] += 1
-        return self._error(message)
+        return self._error(_sanitize_error(message, self._redaction_values))
 
     def _log_response(self, response, suffix: str = "", *args) -> None:
         logger.log(self.audit_level, "MCP server '%s' sampling response: model=%s, tokens=%s" + suffix,
-                   self.server_name, response.model, getattr(getattr(response, "usage", None), "total_tokens", "?"), *args)
+                   self.server_name, _sanitize_error(response.model, self._redaction_values),
+                   getattr(getattr(response, "usage", None), "total_tokens", "?"), *args)
 
     def _build_tool_use_result(self, choice, response):
         """CreateMessageResultWithTools from a tool_calls response, under ``max_tool_rounds`` (0 disables)."""
@@ -149,7 +151,8 @@ class SamplingHandler:
                 f"Tool loops disabled for server '{self.server_name}' (max_tool_rounds=0)" if self.max_tool_rounds == 0
                 else f"Tool loop limit exceeded for server '{self.server_name}' (max {self.max_tool_rounds} rounds)")
         content_blocks = [_core.ToolUseContent(type="tool_use", id=tc.id, name=tc.function.name,
-                                               input=_parse_tool_call_arguments(self.server_name, tc.function.arguments))
+                                               input=_parse_tool_call_arguments(
+                                                   self.server_name, tc.function.arguments, self._redaction_values))
                           for tc in choice.message.tool_calls]
         self._log_response(response, ", tool_calls=%d", len(content_blocks))
         return _core.CreateMessageResultWithTools(
@@ -178,7 +181,7 @@ class SamplingHandler:
         resolved_model = self._resolve_model(mcp_field(params, "model_preferences", "modelPreferences")) or ""
         if self.allowed_models and resolved_model and resolved_model not in self.allowed_models:
             logger.warning("MCP server '%s' requested model '%s' not in allowed_models",
-                           self.server_name, resolved_model)
+                           self.server_name, _sanitize_error(resolved_model, self._redaction_values))
             return None, self._fail(f"Model '{resolved_model}' not allowed for server "
                                     f"'{self.server_name}'. Allowed: {', '.join(self.allowed_models)}")
         return resolved_model, None
@@ -198,7 +201,7 @@ class SamplingHandler:
             "parameters": _normalize_mcp_input_schema(mcp_field(t, "input_schema", "inputSchema"))}}
             for t in server_tools] if server_tools else None
         logger.log(self.audit_level, "MCP server '%s' sampling request: model=%s, max_tokens=%d, messages=%d",
-                   self.server_name, resolved_model, max_tokens, len(messages))
+                   self.server_name, _sanitize_error(resolved_model, self._redaction_values), max_tokens, len(messages))
         return lambda: call_llm(task="mcp", model=resolved_model or None, messages=messages, max_tokens=max_tokens,
                                 temperature=getattr(params, "temperature", None), tools=tools, timeout=self.timeout)
 
@@ -213,7 +216,7 @@ class SamplingHandler:
         except asyncio.TimeoutError:
             return self._fail(f"Sampling LLM call timed out after {self.timeout}s for server '{self.server_name}'")
         except Exception as exc:
-            return self._fail(f"Sampling LLM call failed: {_sanitize_error(_exc_str(exc))}")
+            return self._fail(f"Sampling LLM call failed: {_exc_str(exc)}")
         # Empty choices happen on content filtering / provider errors.
         if not getattr(response, "choices", None):
             return self._fail(f"LLM returned empty response (no choices) for server '{self.server_name}'")
@@ -256,6 +259,7 @@ class ElicitationHandler:
         self.timeout = _safe_numeric(config.get("timeout", 300), 300, float)
         # Back-reference for the agent's contextvars snapshot; optional for isolated unit tests.
         self.owner = owner
+        self._redaction_values = tuple(getattr(owner, "_redaction_values", ()))
         self.metrics = {"requests": 0, "accepted": 0, "declined": 0, "errors": 0}
 
     def session_kwargs(self) -> dict:
@@ -291,11 +295,13 @@ class ElicitationHandler:
         # ``requestedSchema`` on mcp 1.x, ``requested_schema`` on 2.0 (aliases don't apply to attribute
         # access) — read both or the user approves without seeing the fields.
         schema = getattr(params, "requestedSchema", None) or getattr(params, "requested_schema", None) or {}
-        logger.info("MCP server '%s' elicitation request: %s", self.server_name, _sanitize_error(message)[:200])
+        logger.info("MCP server '%s' elicitation request: %s", self.server_name,
+                    _sanitize_error(message, self._redaction_values)[:200])
         try:  # lazy import inside avoids import-order coupling with early-bootstrap tools.approval
             invoke_consent = self._consent_thunk(message, _format_elicitation_schema_summary(schema, self.server_name))
         except Exception as exc:  # pragma: no cover -- defensive
-            logger.error("MCP server '%s' elicitation: approval system unavailable: %s", self.server_name, exc)
+            logger.error("MCP server '%s' elicitation: approval system unavailable (%s): %s", self.server_name,
+                         type(exc).__name__, _sanitize_error(_exc_str(exc), self._redaction_values))
             return self._result("decline", "errors")
         try:  # off-thread: inline, the sync consent flow would freeze the MCP loop and every RPC on it
             answer = await asyncio.wait_for(
@@ -304,6 +310,7 @@ class ElicitationHandler:
             logger.warning("MCP server '%s' elicitation timed out after %ds", self.server_name, int(self.timeout))
             return self._result("cancel", "errors")
         except Exception as exc:
-            logger.error("MCP server '%s' elicitation failed: %s", self.server_name, exc, exc_info=True)
+            logger.error("MCP server '%s' elicitation failed (%s): %s", self.server_name,
+                         type(exc).__name__, _sanitize_error(_exc_str(exc), self._redaction_values))
             return self._result("decline", "errors")
         return self._result(*self._ANSWER_RESULTS.get(answer, ("decline", "declined")))

@@ -920,9 +920,9 @@ def _invalidate_tokens_on_client_change(
             logger.warning("MCP OAuth '%s': could not remove stale %s after client change: %s", storage._server_name, path.name, exc)
     if removed:
         logger.warning(
-            "MCP OAuth '%s': configured OAuth client changed (client_id %r -> %r); discarded tokens minted under "
+            "MCP OAuth '%s': configured OAuth client changed; discarded tokens minted under "
             "the previous client. Re-authorize with: hermes mcp login %s",
-            storage._server_name, old_client_id, new_client_id, storage._server_name)
+            storage._server_name, storage._server_name)
 
 
 def _maybe_preregister_client(storage: "HermesTokenStorage", cfg: dict, client_metadata: "OAuthClientMetadata") -> None:
@@ -940,7 +940,7 @@ def _maybe_preregister_client(storage: "HermesTokenStorage", cfg: dict, client_m
         "token_endpoint_auth_method": client_metadata.token_endpoint_auth_method,
         **{key: cfg[key] for key in ("client_secret", "client_name", "scope") if cfg.get(key)}}
     _write_json(storage._client_info_path(), _model_json(info_cls.model_validate(info_dict)))
-    logger.debug("Pre-registered client_id=%s for '%s'", client_id, storage._server_name)
+    logger.debug("Pre-registered OAuth client for '%s'", storage._server_name)
 
 
 def humanize_oauth_registration_error(

@@ -8,7 +8,7 @@ import importlib
 import logging
 import os
 import re
-from typing import Any, List, Optional
+from typing import Any, Iterable, List, Optional
 from urllib.parse import urlparse
 from tools.mcp_tool_common import _sanitize_error, _core
 
@@ -108,13 +108,13 @@ def _validate_remote_mcp_url(server_name: str, url: Any) -> str:
     try:
         parsed = urlparse(stripped)
     except Exception as exc:  # urlparse is very permissive — belt and braces
-        raise _bad(f"{stripped!r} ({exc})") from exc
+        raise _bad("could not parse url") from exc
     if parsed.scheme.lower() not in {"http", "https"}:
-        raise _bad(f"scheme must be http or https, got {parsed.scheme!r} ({stripped!r})")
+        raise _bad("scheme must be http or https")
     if not parsed.netloc:
-        raise _bad(f"missing host ({stripped!r})")
+        raise _bad("missing host")
     if not parsed.hostname:  # ``urlparse`` accepts ``http://:8080`` (empty host, explicit port)
-        raise _bad(f"missing hostname ({stripped!r})")
+        raise _bad("missing hostname")
     return stripped
 
 
@@ -171,7 +171,7 @@ def _resolve_identity_header(server_name: str, config: dict):
         from hermes_cli.profiles import get_active_profile_name
         return (name.strip(), get_active_profile_name())
     if value_from != "static":
-        return _ignore("value_from must be 'static' or 'profile' (got %r)", value_from)
+        return _ignore("value_from must be 'static' or 'profile'")
     value = raw.get("value")
     if not isinstance(value, str) or not value.strip():
         return _ignore("with value_from: static requires a non-empty string 'value'")
@@ -185,8 +185,8 @@ def _apply_identity_header(server_name: str, config: dict, headers: dict) -> dic
     if name is None:
         return headers
     if any(key.lower() == name.lower() for key in headers):
-        logger.debug("MCP server '%s': identity_header '%s' already set via explicit "
-                     "headers config — keeping the explicit value", server_name, name)
+        logger.debug("MCP server '%s': identity_header already set via explicit "
+                     "headers config — keeping the explicit value", server_name)
     else:
         headers[name] = value
     return headers
@@ -218,7 +218,7 @@ def _exc_children(exc: BaseException) -> List[BaseException]:
     return list(nested) if nested else [c for c in (exc.__cause__, exc.__context__) if isinstance(c, BaseException)]
 
 
-def _format_connect_error(exc: BaseException) -> str:
+def _format_connect_error(exc: BaseException, redaction_values: Iterable[str] = ()) -> str:
     """Render nested MCP connection errors into an actionable short message."""
     def _find_missing(current: BaseException) -> Optional[str]:
         if isinstance(current, FileNotFoundError):
@@ -231,18 +231,18 @@ def _format_connect_error(exc: BaseException) -> str:
 
     def _flatten_messages(current: BaseException) -> List[str]:
         # A group's own str() is opaque — only its children speak.
-        text = "" if getattr(current, "exceptions", None) else str(current).strip()
+        text = "" if getattr(current, "exceptions", None) else _sanitize_error(str(current), redaction_values).strip()
         messages = ([text] if text else []) + [m for child in _exc_children(current) for m in _flatten_messages(child)]
         return messages or [current.__class__.__name__]
     missing = _find_missing(exc)
     if not missing:
-        return _sanitize_error("; ".join(list(dict.fromkeys(_flatten_messages(exc)))[:3]))
+        return _sanitize_error("; ".join(list(dict.fromkeys(_flatten_messages(exc)))[:3]), redaction_values)
     message = f"missing executable '{missing}'"
     if os.path.basename(missing) in {"npx", "npm", "node"}:
         message += (" (ensure Node.js is installed and PATH includes its bin directory, "
                     "or set mcp_servers.<name>.command to an absolute path and include "
                     "that directory in mcp_servers.<name>.env.PATH)")
-    return _sanitize_error(message)
+    return _sanitize_error(message, redaction_values)
 
 
 def _optional_types(module: str, *names: str) -> list:

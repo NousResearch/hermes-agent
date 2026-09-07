@@ -10,12 +10,24 @@ from typing import Iterable, Optional
 from tools.mcp_tool_errors import _is_method_not_found_error, _unwrap_exception_group
 from tools.mcp_tool_schema import mcp_prefixed_tool_name
 from tools.mcp_tool_registration import _forget_mcp_tool_server
-from tools.mcp_tool_common import _core
+from tools.mcp_tool_common import _core, _exc_str, _sanitize_error
 from tools import mcp_tool_registration as _registration
 
 logger = logging.getLogger("tools.mcp_tool")
 
 _KEEPALIVE_RPC_TIMEOUT = 30.0
+
+
+def _sanitize_log_data(data, redaction_values):
+    """Redact JSON leaves/keys before serialization can escape secret characters."""
+    if isinstance(data, dict):
+        return {_sanitize_log_data(key, redaction_values): _sanitize_log_data(value, redaction_values)
+                for key, value in data.items()}
+    if isinstance(data, (list, tuple)):
+        return [_sanitize_log_data(value, redaction_values) for value in data]
+    if data is None or isinstance(data, (bool, int, float)):
+        return data
+    return _sanitize_error(str(data), redaction_values)
 
 
 class MCPServerHealthMixin:
@@ -64,8 +76,9 @@ class MCPServerHealthMixin:
         async def _run():
             try:
                 await self._refresh_tools()
-            except Exception:
-                logger.exception("MCP server '%s': dynamic tool refresh failed", self.name)
+            except Exception as exc:
+                logger.error("MCP server '%s': dynamic tool refresh failed (%s): %s", self.name,
+                             type(exc).__name__, _sanitize_error(_exc_str(exc), self._redaction_values))
         task = asyncio.create_task(_run())
         self._pending_refresh_tasks.add(task)
         task.add_done_callback(self._pending_refresh_tasks.discard)
@@ -82,19 +95,23 @@ class MCPServerHealthMixin:
         async def _on_log(params):
             try:
                 level = _core._MCP_LOG_LEVEL_MAP.get(str(getattr(params, "level", "info")).lower(), logging.INFO)
-                data = getattr(params, "data", None)
+                data = _sanitize_log_data(getattr(params, "data", None), self._redaction_values)
                 if not isinstance(data, str):
                     try:
                         data = json.dumps(data, ensure_ascii=False, default=str)
                     except (TypeError, ValueError):
                         data = str(data)
+                    # Numeric JSON scalars can also reflect a configured string value.
+                    data = _sanitize_error(data, self._redaction_values)
                 if len(data) > 2000:  # cap payloads so a chatty server can't flood agent.log
                     data = data[:2000] + "... [truncated]"
                 logger_name = getattr(params, "logger", None)
-                origin = f"{self.name}/{logger_name}" if logger_name else self.name
+                origin = _sanitize_error(f"{self.name}/{logger_name}" if logger_name else self.name,
+                                         self._redaction_values)
                 logger.log(level, "MCP server log [%s]: %s", origin, data)
-            except Exception:
-                logger.debug("Failed to handle MCP log notification from '%s'", self.name, exc_info=True)
+            except Exception as exc:
+                logger.debug("Failed to handle MCP log notification from '%s' (%s): %s", self.name,
+                             type(exc).__name__, _sanitize_error(_exc_str(exc), self._redaction_values))
         return _on_log
 
     def _make_message_handler(self):
@@ -102,7 +119,8 @@ class MCPServerHealthMixin:
         async def _handler(message):
             try:
                 if isinstance(message, Exception):
-                    logger.debug("MCP message handler (%s): exception: %s", self.name, message)
+                    logger.debug("MCP message handler (%s): exception (%s): %s", self.name,
+                                 type(message).__name__, _sanitize_error(_exc_str(message), self._redaction_values))
                     return
                 if not (_core._MCP_NOTIFICATION_TYPES and isinstance(message, _core.ServerNotification)):
                     return
@@ -119,8 +137,9 @@ class MCPServerHealthMixin:
                     logger.debug("MCP server '%s': prompts/list_changed (ignored)", self.name)
                 elif isinstance(payload, _core.ResourceListChangedNotification):
                     logger.debug("MCP server '%s': resources/list_changed (ignored)", self.name)
-            except Exception:
-                logger.exception("Error in MCP message handler for '%s'", self.name)
+            except Exception as exc:
+                logger.error("Error in MCP message handler for '%s' (%s): %s", self.name,
+                             type(exc).__name__, _sanitize_error(_exc_str(exc), self._redaction_values))
         return _handler
 
     def _deregister_owned(self, tool_names: Iterable[str]) -> None:
@@ -150,7 +169,8 @@ class MCPServerHealthMixin:
             self._deregister_owned(old_tool_names - set(registered_names))
             self._registered_tool_names = registered_names
             new_tool_names = set(registered_names)
-            changes = [f"{label}: {', '.join(sorted(names))}" for label, names in
+            # Registry normalization changes secret bytes; report counts, not those names.
+            changes = [f"{label}: {len(names)}" for label, names in
                        (("added", new_tool_names - old_tool_names), ("removed", old_tool_names - new_tool_names)) if names]
             if changes:
                 logger.warning("MCP server '%s': tools changed dynamically — %s. "
@@ -216,6 +236,7 @@ class MCPServerHealthMixin:
         The NEXT call verifies via :meth:`ensure_healthy` and recycles the transport if the probe fails,
         instead of the connection silently staying poisoned until process restart (#81051/#77765/#84132).
         """
+        reason = _sanitize_error(reason, self._redaction_values) if reason else reason
         if self._suspect_reason is None and reason:
             logger.warning("MCP server '%s': connection marked suspect (%s); next call will health-check it",
                            self.name, reason)
@@ -238,7 +259,8 @@ class MCPServerHealthMixin:
             root = _unwrap_exception_group(exc)
             logger.warning("MCP server '%s': suspect connection (%s) failed health check (%s: %s) — "
                            "requesting reconnect (state: suspect → degraded)",
-                           self.name, reason, type(root).__name__, root)
+                           self.name, reason, type(root).__name__,
+                           _sanitize_error(_exc_str(root), self._redaction_values))
             self._suspect_reason = None
             self.mark_suspect(f"health check failed after {reason}")
             self.session = None

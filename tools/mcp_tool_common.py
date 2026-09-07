@@ -1,12 +1,13 @@
 """Small pure helpers shared by the tools.mcp_tool_* modules: SDK 1.x/2.x field access,
 error-text sanitising, numeric/bool coercion, timeouts and jitter. No origin state."""
 
+import json
 import logging
 import math
 import os
 import random
 import re
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -82,16 +83,43 @@ def _env_ref_name(ref: str) -> str:
     return ref
 
 
-def _sanitize_error(text: str) -> str:
-    """Replace credential-like patterns with [REDACTED] before text reaches the LLM."""
-    return _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
+def _sanitize_error(text: str, redaction_values: Iterable[str] = ()) -> str:
+    """Strip credential-like patterns from error text before returning to LLM.
+
+    Replaces tokens, keys, and other secrets with [REDACTED] to prevent
+    accidental credential exposure in tool error responses. Callers that load
+    isolated per-server values can pass them explicitly so opaque credentials
+    are removed even when they do not match a known token shape.
+    """
+    # Pattern replacement can split an opaque value containing e.g. "token=...".
+    # Remove complete configured values first, while exact matching is possible.
+    sanitized = text
+    values = {
+        str(value)
+        for value in redaction_values
+        if value is not None and str(value)
+    }
+    # Exceptions and JSON error payloads may already contain escaped strings.
+    # Match these bounded representations without decoding or changing diagnostics.
+    values = {variant for value in values for variant in (
+        value, repr(value)[1:-1], json.dumps(value)[1:-1],
+        # A surrounding string containing both quotes forces single-quoted repr.
+        repr(value)[1:-1].replace("'", "\\'") if repr(value).startswith('"') else repr(value)[1:-1],
+        json.dumps(value, ensure_ascii=False)[1:-1],
+    )}
+    if values:
+        pattern = "|".join(re.escape(value) for value in sorted(values, key=len, reverse=True))
+        sanitized = re.sub(pattern, "[REDACTED]", sanitized)
+    return _CREDENTIAL_PATTERN.sub("[REDACTED]", sanitized)
+
 
 
 def _exc_str(exc: BaseException) -> str:
     """Non-empty string for *exc*: some exceptions (``anyio.ClosedResourceError``) carry no
     message, so fall back to ``repr`` to keep diagnostics."""
-    text = str(exc).strip()
-    return text or repr(exc)
+    # Preserve whitespace until the caller has redacted exact configured values.
+    text = str(exc)
+    return text if text.strip() else repr(exc)
 
 
 def _prepend_path(env: dict, directory: str) -> dict:
@@ -133,7 +161,7 @@ def _parse_boolish(value: Any, default: bool = True) -> bool:
             return True
         if lowered in _FALSE_WORDS:
             return False
-    logger.warning("MCP config expected a boolean-ish value, got %r; using default=%s", value, default)
+    logger.warning("MCP config expected a boolean-ish value; using default=%s", default)
     return default
 
 
@@ -148,9 +176,9 @@ def _get_lifecycle_seconds(config: dict, key: str) -> Optional[float]:
     try:
         seconds = float(raw)
     except (TypeError, ValueError):
-        logger.warning("MCP config %s must be a number of seconds; ignoring %r", key, raw)
+        logger.warning("MCP config %s must be a number of seconds; ignoring invalid value", key)
         return None
     if seconds < 0:
-        logger.warning("MCP config %s must be positive; ignoring %r", key, raw)
+        logger.warning("MCP config %s must be positive; ignoring invalid value", key)
         return None
     return seconds or None

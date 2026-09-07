@@ -45,6 +45,22 @@ def _declared_hooks(plugin_dir: Path) -> set[str] | None:
     return None
 
 
+def _runtime_manifest_present(plugin_dir: Path) -> bool:
+    """Match runtime discovery: malformed YAML is dropped, other overrides win."""
+    if (plugin_dir / "plugin.json").is_file():
+        return True
+    for filename in ("plugin.yaml", "plugin.yml"):
+        manifest = plugin_dir / filename
+        if not manifest.is_file():
+            continue
+        try:
+            data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError, yaml.YAMLError):
+            return False
+        return isinstance(data, dict) and data.get("name") == _PLUGIN_NAME
+    return False
+
+
 def _resolved_declared_hooks(
     home: Path, project_root: Path | None = None
 ) -> tuple[set[str] | None, str]:
@@ -70,7 +86,7 @@ def _resolved_declared_hooks(
         for category in categories
     )
     for candidate, key in candidates:
-        if candidate.exists():
+        if candidate.exists() and _runtime_manifest_present(candidate):
             # Override manifests are untrusted declarations. Do not claim the
             # worker is protected unless the bundled artifact is the one in use;
             # importing override code here would execute it during doctor checks.

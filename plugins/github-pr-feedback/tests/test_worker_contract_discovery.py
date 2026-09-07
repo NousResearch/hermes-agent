@@ -112,6 +112,21 @@ def test_worker_readiness_rejects_user_override_without_completion_hooks(tmp_pat
     assert not (plugin / "executed").exists()
 
 
+def test_worker_readiness_ignores_malformed_user_override(tmp_path, monkeypatch):
+    from github_pr_feedback.worker_contract import worker_contract_enabled
+
+    worker = tmp_path / "profiles/worker"
+    worker.mkdir(parents=True)
+    (worker / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": ["github-pr-feedback"], "disabled": []}}))
+    plugin = worker / "plugins/github-pr-feedback"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text("name: github-pr-feedback\nprovides_hooks: [\n")
+    monkeypatch.setattr(importlib.metadata, "entry_points", lambda: [])
+
+    assert worker_contract_enabled(tmp_path, "worker") is True
+
+
 def test_worker_readiness_rejects_portable_manifest_hooks(tmp_path, monkeypatch):
     import github_pr_feedback.worker_contract as worker_contract
 

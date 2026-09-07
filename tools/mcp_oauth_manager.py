@@ -8,6 +8,7 @@ than an await + refresh round-trip."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 import threading
@@ -24,6 +25,64 @@ try:
     _SDK_BASES: tuple = (_SDKOAuthClientProvider,)
 except ImportError:  # pragma: no cover — SDK required in CI; module must still import
     _SDK_BASES = ()
+
+try:
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover — Windows: no cross-process refresh lock, behaviour unchanged
+    _fcntl = None
+
+# Longest a process waits for a sibling's in-flight refresh before proceeding unguarded.
+_REFRESH_LOCK_TIMEOUT_S = 20.0
+
+
+class _RefreshFileLock:
+    """Cross-process exclusive lock (``flock``) on ``<tokens>.json.lock``, held only for the
+    duration of one refresh-token exchange. Two Hermes processes (gateway + desktop backend,
+    or gateway + CLI) share one tokens file; an authorization server that ROTATES refresh
+    tokens (single use) rejects the second process's refresh with 400 when both race, and the
+    SDK then clears tokens that a sibling had just validly written. Serialising the exchange,
+    and re-reading disk once the lock is held, turns that race into a plain adopt-from-disk."""
+
+    def __init__(self, path: Path):
+        self._path = path
+        self._fh = None
+
+    @property
+    def held(self) -> bool:
+        return self._fh is not None
+
+    def _acquire_blocking(self, timeout: float) -> bool:
+        import time
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(self._path, "a+")  # noqa: SIM115 — closed in release()
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+                self._fh = fh
+                return True
+            except OSError:
+                if time.monotonic() >= deadline:
+                    fh.close()
+                    return False
+                time.sleep(0.1)
+
+    async def acquire(self, timeout: float = _REFRESH_LOCK_TIMEOUT_S) -> bool:
+        if _fcntl is None or self._fh is not None:
+            return self._fh is not None
+        try:
+            return await asyncio.to_thread(self._acquire_blocking, timeout)
+        except OSError:
+            return False
+
+    def release(self) -> None:
+        fh, self._fh = self._fh, None
+        if fh is None:
+            return
+        with contextlib.suppress(OSError):
+            _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
+        with contextlib.suppress(OSError):
+            fh.close()
 
 
 @dataclass
@@ -62,6 +121,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         self._hermes_home = ""
         # A config-supplied client_id rejected as invalid_client means the *config* is wrong — only DCR clients auto-heal.
         self._hermes_preregistered = preregistered
+        self._hermes_refresh_lock: Optional[_RefreshFileLock] = None
 
     def _hermes_storage(self):
         """The context storage when it is a ``HermesTokenStorage``, else None."""
@@ -70,6 +130,74 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
 
     def _log_nonfatal(self, what: str, exc: BaseException) -> None:
         logger.debug("MCP OAuth '%s': %s failed (non-fatal): %s", self._hermes_server_name, what, exc)
+
+    # ── cross-process refresh serialisation ────────────────────────────────────────────
+
+    def _hermes_needs_refresh(self) -> bool:
+        ctx = self.context
+        return bool(ctx.current_tokens) and not ctx.is_token_valid() and ctx.can_refresh_token()
+
+    async def _hermes_reload_tokens_from_disk(self, *, other_than: str | None = None) -> bool:
+        """Re-read the tokens file and adopt it when it carries a refresh token different from the
+        one in memory and from ``other_than`` (a token just rejected), i.e. a sibling process
+        refreshed. True if a newer pair was adopted."""
+        storage = self._hermes_storage()
+        if storage is None:
+            return False
+        try:
+            disk = await storage.get_tokens()
+        except Exception as exc:  # pragma: no cover — corrupt/absent file already logged by storage
+            self._log_nonfatal("token reload from disk", exc)
+            return False
+        mem = getattr(self.context.current_tokens, "refresh_token", None)
+        if disk is None or not disk.refresh_token or disk.refresh_token in (mem, other_than):
+            return False
+        self.context.current_tokens = disk
+        if disk.expires_in is not None:
+            self.context.update_token_expiry(disk)
+        logger.info("MCP OAuth '%s': adopted tokens refreshed by another process", self._hermes_server_name)
+        return True
+
+    async def _hermes_guard_refresh(self) -> None:
+        """Called once tokens are loaded and a refresh looks necessary. Take the cross-process lock,
+        then re-check disk: if a sibling already refreshed, adopt its pair and release (no refresh
+        needed). Otherwise keep the lock until ``_handle_refresh_response`` runs."""
+        storage = self._hermes_storage()
+        if storage is None or _fcntl is None:
+            return
+        lock = getattr(self, "_hermes_refresh_lock", None)  # tests may build via __new__
+        if lock is None:
+            lock = self._hermes_refresh_lock = _RefreshFileLock(storage._tokens_path().with_suffix(".json.lock"))
+        if lock.held:
+            return
+        if not await lock.acquire():
+            logger.warning("MCP OAuth '%s': refresh lock busy for %.0fs, refreshing unguarded",
+                           self._hermes_server_name, _REFRESH_LOCK_TIMEOUT_S)
+            return
+        await self._hermes_reload_tokens_from_disk()
+        if not self._hermes_needs_refresh():
+            lock.release()
+
+    def _hermes_release_refresh_lock(self) -> None:
+        lock = getattr(self, "_hermes_refresh_lock", None)
+        if lock is not None and lock.held:
+            lock.release()
+
+    async def _handle_refresh_response(self, response) -> bool:
+        """On a rejected refresh, prefer a sibling's freshly written tokens over clearing ours: with
+        rotating refresh tokens a 400 usually means *our* copy went stale, not that the grant died."""
+        sent = getattr(self.context.current_tokens, "refresh_token", None)
+        try:
+            ok = await super()._handle_refresh_response(response)
+            if ok:
+                return True
+            if await self._hermes_reload_tokens_from_disk(other_than=sent):
+                logger.info("MCP OAuth '%s': refresh rejected (%s) but disk holds a newer pair; using it",
+                            self._hermes_server_name, getattr(response, "status_code", "?"))
+                return self.context.is_token_valid()
+            return False
+        finally:
+            self._hermes_release_refresh_lock()
 
     async def _initialize(self) -> None:
         """Load stored state, seed ``token_expiry_time``, restore/prefetch metadata. The SDK's
@@ -94,6 +222,11 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 await self._prefetch_oauth_metadata()
             except Exception as exc:  # pragma: no cover — the SDK's 401-branch discovery runs next request
                 self._log_nonfatal("pre-flight metadata discovery", exc)
+        if self._hermes_needs_refresh():
+            try:
+                await self._hermes_guard_refresh()
+            except Exception as exc:  # pragma: no cover — lock is an optimisation, never a blocker
+                self._log_nonfatal("refresh lock", exc)
 
     async def _prefetch_oauth_metadata(self) -> None:
         """Fetch PRM + ASM from the well-known endpoints before the first request, via the SDK's own URL
@@ -207,6 +340,10 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             await get_manager().invalidate_if_disk_changed(self._hermes_server_name, hermes_home=self._hermes_home)
         except Exception as exc:  # pragma: no cover — defensive
             self._log_nonfatal("pre-flow disk-watch", exc)
+        # An initialised provider about to refresh must go through ``_initialize`` again so the
+        # cross-process refresh guard (lock + disk re-read) runs before the SDK builds the request.
+        if getattr(self, "_initialized", False) and self._hermes_needs_refresh():
+            self._initialized = False
         # Bridge the bidirectional generator by hand: a naive ``async for item in inner: yield
         # item`` DISCARDS the responses httpx sends back via ``asend``, and the SDK crashes on None.
         # Manually bridge the bidirectional generator protocol. httpx's auth_flow driver
@@ -256,6 +393,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 import anyio
                 with anyio.CancelScope(shield=True):
                     await self.context.lock.acquire()
+            self._hermes_release_refresh_lock()  # never hold the file lock past one flow
         if retry_after_concurrent_auth:
             yield request
             self._persist_oauth_metadata_if_changed()

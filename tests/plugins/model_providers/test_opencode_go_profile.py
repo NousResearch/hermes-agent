@@ -253,3 +253,12 @@ class TestOpenCodeGoFullKwargsIntegration:
         )
         assert "extra_body" not in kwargs
         assert kwargs["reasoning_effort"] == "high"
+
+
+class TestOpenCodeGoVisionToolMessages:
+    """OpenCode Go provider profile declares supports_vision_tool_messages=False (#104731)."""
+
+    def test_supports_vision_true_and_tool_messages_false(self, opencode_go_profile):
+        assert opencode_go_profile.supports_vision is True
+        assert opencode_go_profile.supports_vision_tool_messages is False
+

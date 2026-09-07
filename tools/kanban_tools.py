@@ -1666,6 +1666,32 @@ def _handle_link(args: dict, **kw) -> str:
         return tool_error(f"kanban_link: {e}")
 
 
+def _handle_unlink(args: dict, **kw) -> str:
+    """Remove one dependency using the audited kernel, orchestrators only."""
+    delegated_err = _reject_delegated_child_mutation("kanban_unlink")
+    if delegated_err:
+        return delegated_err
+    guard = _require_orchestrator_tool("kanban_unlink")
+    if guard:
+        return guard
+    # Schema checks can be cached; re-check opt-in at the mutation boundary.
+    if not _check_kanban_orchestrator_mode():
+        return tool_error("kanban_unlink requires an explicitly configured Kanban orchestrator")
+    parent_id, child_id = args.get("parent_id"), args.get("child_id")
+    if any(not isinstance(value, str) or not value.strip() for value in (parent_id, child_id)):
+        return tool_error("both parent_id and child_id must be non-empty strings")
+    try:
+        kb, conn = _connect(board=args.get("board"))
+        try:
+            removed = kb.unlink_tasks(conn, parent_id=parent_id, child_id=child_id)
+            return _ok(parent_id=parent_id, child_id=child_id, removed=removed)
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.exception("kanban_unlink failed")
+        return tool_error(f"kanban_unlink: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
@@ -2468,6 +2494,35 @@ registry.register(
     handler=_handle_unblock,
     check_fn=_check_kanban_orchestrator_mode,
     emoji="▶",
+)
+
+KANBAN_UNLINK_SCHEMA = {
+    "name": "kanban_unlink",
+    "description": (
+        "Remove exactly one parent-to-child dependency edge. Orchestrator-only; "
+        "not available to task workers or delegated agents. May immediately "
+        "release the child for dispatch; inspect its prerequisites first. "
+        "Preserves other edges and task completion state. Idempotent: removed "
+        "is false when the edge does not exist."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "parent_id": {"type": "string", "description": "Parent task id."},
+            "child_id": {"type": "string", "description": "Child task id."},
+            "board": _board_schema_prop(),
+        },
+        "required": ["parent_id", "child_id"],
+    },
+}
+
+registry.register(
+    name="kanban_unlink",
+    toolset="kanban",
+    schema=KANBAN_UNLINK_SCHEMA,
+    handler=_handle_unlink,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🔗",
 )
 
 registry.register(

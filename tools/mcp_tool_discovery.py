@@ -264,7 +264,7 @@ def _ensure_lazy_server_connected(server_name: str) -> bool:
         for tool_name in phantom_names:
             _registration._deregister_mcp_tool_all_scopes(key, tool_name)
         logger.info("MCP server '%s': deregistered %d phantom cached tool(s) not served live (stale schema-cache "
-                    "fingerprint %s): %s", server_name, len(phantom_names), stale_fingerprint, ", ".join(phantom_names))
+                    "fingerprint %s)", server_name, len(phantom_names), stale_fingerprint)
     return server is not None and server.session is not None
 
 
@@ -317,8 +317,9 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     _adopt_server(name, server)
     registered_names = _registration._register_server_tools(name, server, config)
     server._registered_tool_names = list(registered_names)
-    logger.info("MCP server '%s' (%s): registered %d tool(s): %s", name,
-                "HTTP" if "url" in config else "stdio", len(registered_names), ", ".join(registered_names))
+    # Registry names are normalized (potentially changing credential bytes).
+    logger.info("MCP server '%s' (%s): registered %d tool(s)", name,
+                "HTTP" if "url" in config else "stdio", len(registered_names))
     return registered_names
 
 
@@ -385,7 +386,8 @@ def _register_lazy_from_cache(new_servers: Dict[str, dict]) -> Tuple[Dict[str, d
         try:
             names = _registration._register_from_cache_sync(name, cfg, entry)
         except Exception as exc:
-            logger.warning("Failed lazy MCP registration for '%s': %s", name, exc)
+            logger.warning("Failed lazy MCP registration for '%s': %s", name,
+                           _sanitize_error(_exc_str(exc), _config._mcp_redaction_values(cfg)))
             with _core._lock:
                 _core._server_connecting.add(_server_key(name))
             continue

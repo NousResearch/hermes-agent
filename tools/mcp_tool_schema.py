@@ -8,7 +8,7 @@ import fnmatch
 import re
 from typing import Any, List
 from tools.ansi_strip import strip_unicode_tags
-from tools.mcp_tool_common import mcp_field
+from tools.mcp_tool_common import mcp_field, _sanitize_error
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -29,7 +29,7 @@ _MCP_INJECTION_PATTERNS = [
         (r"import\s+(subprocess|os|shutil|socket)", "dangerous import reference"))]
 
 
-def _scan_mcp_description(server_name: str, tool_name: str, description: str) -> List[str]:
+def _scan_mcp_description(server_name: str, tool_name: str, description: str, redaction_values=()) -> List[str]:
     """Scan a tool description for injection patterns; returns finding strings (empty =
     clean) and logs a warning when any match."""
     if not description:
@@ -37,7 +37,8 @@ def _scan_mcp_description(server_name: str, tool_name: str, description: str) ->
     findings = [reason for pattern, reason in _MCP_INJECTION_PATTERNS if pattern.search(description)]
     if findings:
         logger.warning("MCP server '%s' tool '%s': suspicious description content — %s. Description: %.200s",
-                       server_name, tool_name, "; ".join(findings), description)
+                       server_name, _sanitize_error(tool_name, redaction_values), "; ".join(findings),
+                       _sanitize_error(description, redaction_values))
     return findings
 
 
@@ -165,8 +166,12 @@ def mcp_prefixed_tool_name(server_name: str, tool_name: str) -> str:
     suffix = "_" + hashlib.sha256(full_name.encode("utf-8")).hexdigest()[:_MCP_TOOL_NAME_HASH_LENGTH]
     if full_name not in _clamped_names_warned:  # recomputed on every health refresh; warn once
         _clamped_names_warned.add(full_name)
+        from tools.mcp_tool_handlers import _call_redaction_values
+
         logger.warning("MCP tool name %r (%d chars) exceeds the %d-char provider limit; shortened to a "
-                       "deterministic hash-suffixed name", full_name, len(full_name), _MCP_TOOL_NAME_MAX_LENGTH)
+                       "deterministic hash-suffixed name",
+                       _sanitize_error(full_name, _call_redaction_values(server_name)),
+                       len(full_name), _MCP_TOOL_NAME_MAX_LENGTH)
     return full_name[:_MCP_TOOL_NAME_MAX_LENGTH - len(suffix)] + suffix
 
 
@@ -223,7 +228,7 @@ def _normalize_name_filter(value: Any, label: str) -> set[str]:
         return {value}
     if isinstance(value, (list, tuple, set)):
         return {str(item) for item in value}
-    logger.warning("MCP config %s must be a string or list of strings; ignoring %r", label, value)
+    logger.warning("MCP config %s must be a string or list of strings; ignoring invalid value", label)
     return set()
 
 

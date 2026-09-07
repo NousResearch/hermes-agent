@@ -17,7 +17,11 @@ it('keeps the desktop toggle local across config refreshes', async () => {
       const prefs = await import('./voice-prefs')
       const write = vi.spyOn(localStorage, 'setItem')
 
-      if (fails) {write.mockImplementation(() => { throw new DOMException('Full', 'QuotaExceededError') })}
+      if (fails) {
+        write.mockImplementation(() => {
+          throw new DOMException('Full', 'QuotaExceededError')
+        })
+      }
       vi.mocked(saveHermesConfig).mockClear()
 
       try {
@@ -41,7 +45,11 @@ it('migrates the legacy preference once, not on every refresh', async () => {
       const prefs = await import('./voice-prefs')
       const write = vi.spyOn(localStorage, 'setItem')
 
-      if (fails) {write.mockImplementation(() => { throw new DOMException('Denied', 'SecurityError') })}
+      if (fails) {
+        write.mockImplementation(() => {
+          throw new DOMException('Denied', 'SecurityError')
+        })
+      }
 
       try {
         prefs.applyAutoSpeakFromConfig(null)

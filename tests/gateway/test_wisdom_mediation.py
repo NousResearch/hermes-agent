@@ -76,12 +76,18 @@ def view():
 @pytest.mark.asyncio
 async def test_slack_proactive_advice_cannot_consume_slash_response():
     adapter = slack_adapter()
+    adapter._team_clients["T1"].chat_postMessage.return_value = {
+        "ok": True,
+        "channel": "D1",
+        "ts": "123.456",
+    }
     adapter._pop_slash_context = Mock(
         side_effect=AssertionError("must not consume slash response")
     )
-    await adapter.send_wisdom_mediation(
+    receipt = await adapter.send_wisdom_mediation(
         view(), source=SimpleNamespace(chat_id="D1", scope_id="T1", thread_id="123")
     )
+    assert receipt.message_id == "123.456" and receipt.scope_id == "T1"
     sent = adapter._team_clients["T1"].chat_postMessage.call_args.kwargs
     assert sent["thread_ts"] == "123"
     actions = [block for block in sent["blocks"] if block["type"] == "actions"][0][
@@ -98,9 +104,11 @@ async def test_slack_proactive_advice_cannot_consume_slash_response():
 @pytest.mark.asyncio
 async def test_telegram_native_rich_controls_escape_publisher_text():
     adapter = telegram_adapter()
-    await adapter.send_wisdom_mediation(
+    adapter._bot.do_api_request.return_value = {"message_id": 19, "chat": {"id": 42}}
+    receipt = await adapter.send_wisdom_mediation(
         view(), source=SimpleNamespace(chat_id="42", thread_id=None)
     )
+    assert receipt.message_id == "19" and receipt.acknowledgement == "provider_accepted"
     sent = adapter._bot.do_api_request.call_args.kwargs["api_kwargs"]
     html = sent["rich_message"]["html"]
     assert "&lt;untrusted&gt;" in html
@@ -155,7 +163,10 @@ def test_tui_defers_without_model_or_history_changes(
 
 
 @pytest.mark.parametrize("cancel", [False, True])
-def test_tui_assessment_does_not_overwrite_a_new_turn_after_stop(monkeypatch, cancel):
+@pytest.mark.parametrize("accepted", [True, False, None, "error"])
+def test_tui_assessment_does_not_overwrite_a_new_turn_after_stop(
+    monkeypatch, cancel, accepted
+):
     monkeypatch.setattr("tools.approval.get_pending_gateway_approval", lambda _: False)
     monkeypatch.setattr("tools.clarify_gateway.has_pending", lambda _: False)
     service = Mock()
@@ -193,8 +204,14 @@ def test_tui_assessment_does_not_overwrite_a_new_turn_after_stop(monkeypatch, ca
 
     mediation.prepare.side_effect = prepare
     mediation.begin_delivery.side_effect = lambda org, items: items
-    emit = Mock()
-    poll(session, emit=emit, profile_scope=lambda _: nullcontext())
+    emit = Mock(return_value=accepted)
+    if accepted == "error":
+        emit.side_effect = RuntimeError("write failed")
+    if accepted == "error" and not cancel:
+        with pytest.raises(RuntimeError):
+            poll(session, emit=emit, profile_scope=lambda _: nullcontext())
+    else:
+        poll(session, emit=emit, profile_scope=lambda _: nullcontext())
     assert session["history"] == []
     assert session["running"] is cancel
     if cancel:
@@ -203,4 +220,175 @@ def test_tui_assessment_does_not_overwrite_a_new_turn_after_stop(monkeypatch, ca
     else:
         emit.assert_called_once()
         assert emit.call_args.args[0] == "notification.show"
-        mediation.queue.complete_delivery.assert_called_once()
+        if accepted is True:
+            mediation.queue.complete_delivery.assert_called_once()
+            receipt = mediation.queue.complete_delivery.call_args.kwargs["receipt"]
+            assert receipt.acknowledgement == "transport_accepted"
+            assert receipt.destination == "local:s"
+            mediation.queue.uncertain_delivery.assert_not_called()
+        else:
+            mediation.queue.complete_delivery.assert_not_called()
+            mediation.queue.uncertain_delivery.assert_called_once_with(
+                "org", "event", "token"
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response", [None, {}, {"message_id": 1, "chat": {"id": 99}}])
+async def test_telegram_missing_receipt_does_not_trigger_legacy_resend(response):
+    adapter = telegram_adapter()
+    adapter._bot.do_api_request.return_value = response
+    adapter._send_message_with_thread_fallback = AsyncMock()
+    with pytest.raises(ValueError):
+        await adapter.send_wisdom_mediation(
+            view(), source=SimpleNamespace(chat_id="42", thread_id=None)
+        )
+    adapter._send_message_with_thread_fallback.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_telegram_definite_rejection_uses_fallback_receipt():
+    from telegram.error import BadRequest
+
+    adapter = telegram_adapter()
+    adapter._bot.do_api_request.side_effect = BadRequest("unsupported")
+    adapter._send_message_with_thread_fallback = AsyncMock(
+        return_value={"message_id": 21, "chat": {"id": 42}}
+    )
+    receipt = await adapter.send_wisdom_mediation(
+        view(), source=SimpleNamespace(chat_id="42", thread_id=None)
+    )
+    assert receipt.message_id == "21"
+    adapter._send_message_with_thread_fallback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_slack_unacknowledged_response_is_not_success():
+    adapter = slack_adapter()
+    adapter._team_clients["T1"].chat_postMessage.return_value = {"ok": False}
+    with pytest.raises(ValueError):
+        await adapter.send_wisdom_mediation(
+            view(), source=SimpleNamespace(chat_id="D1", scope_id="T1", thread_id=None)
+        )
+    adapter._team_clients["T1"].chat_postMessage.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome",
+    ["accepted", "timeout", "missing_receipt", "persistence_failure", "cancelled"],
+)
+async def test_scheduler_commits_receipt_or_uncertainty_to_real_ledger(
+    tmp_path, monkeypatch, outcome
+):
+    from gateway.wisdom_mediation import schedule
+    from hermes_wisdom.delivery import DeliveryReceipt
+    from hermes_wisdom.mediation_store import MediationStore
+    from hermes_wisdom.store import WisdomStore
+
+    store = WisdomStore(tmp_path / "wisdom")
+    store.activate_installation_identity("installation", "org")
+    queue = MediationStore(store)
+    queue.register_session(
+        "org",
+        session_key="session",
+        session_id="session",
+        platform="telegram",
+        actor_id="user",
+        private=True,
+        available=True,
+        user_activity=True,
+        address={"chat_id": "42"},
+    )
+    identity = queue.enqueue("org", "feed:event", {"kind": "notice"})
+    job = queue.claim("org", "session")[0]
+    advice = {"title": "Arrival", "explanation": "For review", "relevance": "digest"}
+    assert queue.save_advice("org", identity, job["lease_token"], advice)
+    job["state"] = "ready"
+    item = {"assessment": job, "advice": advice, "interaction": None}
+    service = Mock(store=store)
+    if outcome == "persistence_failure":
+        with store.transaction() as db:
+            db.execute(
+                "CREATE TRIGGER reject_receipt BEFORE INSERT ON wisdom_delivery_receipt BEGIN SELECT RAISE(ABORT,'injected'); END"
+            )
+    mediation = Mock(queue=queue)
+    queue.claim_refresh = Mock(return_value=False)
+    mediation.prepare.return_value = [item]
+    mediation.begin_delivery.side_effect = lambda org, group: [
+        item
+        for item in group
+        if queue.begin_delivery(
+            org, item["assessment"]["id"], item["assessment"]["lease_token"]
+        )
+    ]
+    monkeypatch.setattr("hermes_wisdom.service.WisdomService", lambda: service)
+    monkeypatch.setattr("gateway.wisdom_mediation.WisdomMediation", lambda _: mediation)
+    monkeypatch.setattr("gateway.wisdom_mediation.delivery_mode", lambda: "agent")
+    monkeypatch.setattr("tools.approval.get_pending_gateway_approval", lambda _: None)
+    monkeypatch.setattr("tools.clarify_gateway.has_pending", lambda _: False)
+
+    async def immediate_sleep(_):
+        pass
+
+    monkeypatch.setattr("gateway.wisdom_mediation.asyncio.sleep", immediate_sleep)
+    adapter = SimpleNamespace(_active_sessions={}, _background_tasks=set())
+
+    async def scoped(fn):
+        return fn()
+
+    adapter._run_wisdom_profile_operation = scoped
+    adapter.send_wisdom_mediation = AsyncMock(
+        return_value=DeliveryReceipt(
+            platform="telegram",
+            destination="42",
+            message_id="19",
+            acknowledgement="provider_accepted",
+        )
+    )
+    if outcome == "timeout":
+        adapter.send_wisdom_mediation.side_effect = TimeoutError
+    elif outcome == "cancelled":
+        adapter.send_wisdom_mediation.side_effect = asyncio.CancelledError
+    elif outcome == "missing_receipt":
+        adapter.send_wisdom_mediation.return_value = None
+    gateway = SimpleNamespace(
+        _agent_cache_lock=threading.Lock(),
+        _agent_cache={
+            "session": SimpleNamespace(
+                _session_messages=[], provider="test", model="test"
+            )
+        },
+        _is_user_authorized=lambda _: True,
+        _session_key_for_source=lambda _: "session",
+    )
+
+    async def idle(key, tick):
+        adapter._active_sessions[key] = asyncio.Event()
+        try:
+            await tick()
+        finally:
+            gateway._wisdom_mediation_active_until[key] = 0
+            adapter._active_sessions.pop(key)
+
+    adapter.run_idle_activity = idle
+    source = SimpleNamespace(
+        platform="telegram", chat_type="dm", chat_id="42", user_id="user"
+    )
+    assert await schedule(gateway, adapter, source, "session")
+    task = next(iter(adapter._background_tasks))
+    if outcome == "cancelled":
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        await task
+    row = queue.assessments("org")[0]
+    assert row["state"] == (
+        "delivered" if outcome == "accepted" else "delivery_uncertain"
+    )
+    assert queue.introduced("org") is (outcome == "accepted")
+    with store.transaction() as db:
+        count = db.execute("SELECT COUNT(*) FROM wisdom_delivery_receipt").fetchone()[0]
+    assert count == int(outcome == "accepted")
+    assert queue.claim("org", "session") == []
+    adapter.send_wisdom_mediation.assert_awaited_once()

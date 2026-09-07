@@ -12,6 +12,8 @@ import uuid
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any
 
+from .delivery import DeliveryReceipt
+
 if TYPE_CHECKING:
     import sqlite3
 
@@ -43,6 +45,10 @@ def create_schema(db: sqlite3.Connection) -> None:
           UNIQUE(organization_id,event_key))""",
         """CREATE INDEX IF NOT EXISTS wisdom_assessment_queue
           ON wisdom_assessment(organization_id,state,available_at)""",
+        """CREATE TABLE IF NOT EXISTS wisdom_delivery_receipt (
+          assessment_id TEXT PRIMARY KEY REFERENCES wisdom_assessment(id),
+          organization_id TEXT NOT NULL, owner_session TEXT NOT NULL,
+          receipt_json TEXT NOT NULL, recorded_at REAL NOT NULL)""",
         """CREATE TABLE IF NOT EXISTS wisdom_agent_introduction (
           organization_id TEXT PRIMARY KEY, delivered_at REAL NOT NULL)""",
         """CREATE TABLE IF NOT EXISTS wisdom_mediation_poll (
@@ -477,11 +483,37 @@ class MediationStore:
             )
 
     def complete_delivery(
-        self, org: str, assessment_id: str, token: str, *, introduced: bool = False
+        self,
+        org: str,
+        assessment_id: str,
+        token: str,
+        *,
+        receipt: DeliveryReceipt,
+        introduced: bool = False,
     ) -> bool:
         now = self.clock()
         with self.store.transaction() as db:
             self._check_org(db, org)
+            if not isinstance(receipt, DeliveryReceipt):
+                raise ValueError("a validated delivery receipt is required")
+            owner = db.execute(
+                """SELECT a.owner_session,s.platform,s.address_json
+                FROM wisdom_assessment a JOIN wisdom_agent_session s
+                  ON s.organization_id=a.organization_id AND s.session_key=a.owner_session
+                WHERE a.id=? AND a.organization_id=? AND a.lease_token=?
+                AND a.state='delivering' AND a.lease_until>?""",
+                (assessment_id, org, token, now),
+            ).fetchone()
+            if owner is None:
+                return False
+            address = json.loads(owner["address_json"])
+            if (
+                receipt.platform != owner["platform"]
+                or receipt.destination != address.get("chat_id", "")
+                or receipt.thread_id != address.get("thread_id", "")
+                or receipt.scope_id != address.get("scope_id", "")
+            ):
+                raise ValueError("delivery receipt does not match the owning session")
             changed = bool(
                 db.execute(
                     """UPDATE wisdom_assessment SET state='delivered',delivered_at=?,
@@ -497,6 +529,16 @@ class MediationStore:
                     (org, now),
                 )
             if changed:
+                db.execute(
+                    "INSERT INTO wisdom_delivery_receipt VALUES(?,?,?,?,?)",
+                    (
+                        assessment_id,
+                        org,
+                        owner["owner_session"],
+                        receipt.model_dump_json(),
+                        now,
+                    ),
+                )
                 event_key = db.execute(
                     "SELECT event_key FROM wisdom_assessment WHERE id=?",
                     (assessment_id,),
@@ -507,6 +549,18 @@ class MediationStore:
                         (now, event_key.removeprefix("outcome:"), org),
                     )
             return changed
+
+    def uncertain_delivery(self, org: str, assessment_id: str, token: str) -> bool:
+        with self.store.transaction() as db:
+            self._check_org(db, org)
+            return bool(
+                db.execute(
+                    """UPDATE wisdom_assessment SET state='delivery_uncertain',
+                lease_token=NULL,lease_until=NULL,updated_at=?
+                WHERE id=? AND organization_id=? AND lease_token=? AND state='delivering'""",
+                    (self.clock(), assessment_id, org, token),
+                ).rowcount
+            )
 
     def introduced(self, org: str) -> bool:
         with self.store.transaction() as db:

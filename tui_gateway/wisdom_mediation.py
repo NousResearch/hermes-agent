@@ -6,6 +6,7 @@ import time
 import logging
 
 from hermes_wisdom.consent import ConsentActor
+from hermes_wisdom.delivery import DeliveryReceipt
 from hermes_wisdom.mediation import WisdomMediation, session_runtime
 from hermes_wisdom.mediation_view import advice_view
 
@@ -122,23 +123,50 @@ def poll(session: dict, *, emit, profile_scope, connected=lambda: True) -> None:
             if not selected:
                 return
             view = advice_view(selected, introduction=introduction)
-            emit(
-                "notification.show",
-                {
-                    "key": "wisdom.advice",
-                    "id": "wisdom.advice",
-                    "kind": "wisdom",
-                    "level": "info",
-                    "ttl_ms": None,
-                    "text": view.to_text()
-                    + "\n\nOpen /wisdom inbox to review and use consent controls.",
-                },
-            )
-            for item in selected:
-                job = item["assessment"]
-                mediation.queue.complete_delivery(
-                    org, job["id"], job["lease_token"], introduced=introduction
+            try:
+                accepted = emit(
+                    "notification.show",
+                    {
+                        "key": "wisdom.advice",
+                        "id": "wisdom.advice",
+                        "kind": "wisdom",
+                        "level": "info",
+                        "ttl_ms": None,
+                        "text": view.to_text()
+                        + "\n\nOpen /wisdom inbox to review and use consent controls.",
+                    },
                 )
+                for item in selected:
+                    job = item["assessment"]
+                    if accepted is True:
+                        mediation.queue.complete_delivery(
+                            org,
+                            job["id"],
+                            job["lease_token"],
+                            introduced=introduction,
+                            receipt=DeliveryReceipt(
+                                platform="local",
+                                destination=actor.chat_id,
+                                message_id="wisdom.advice",
+                                acknowledgement="transport_accepted",
+                            ),
+                        )
+                    else:
+                        mediation.queue.uncertain_delivery(
+                            org, job["id"], job["lease_token"]
+                        )
+            except BaseException:
+                for item in selected:
+                    job = item["assessment"]
+                    try:
+                        mediation.queue.uncertain_delivery(
+                            org, job["id"], job["lease_token"]
+                        )
+                    except Exception:
+                        logging.getLogger(__name__).warning(
+                            "Wisdom uncertain delivery awaits lease recovery"
+                        )
+                raise
     finally:
         with session["history_lock"]:
             if generation == int(session.get("_queued_prompt_generation", 0)):

@@ -7717,7 +7717,7 @@ class SlackAdapter(BasePlatformAdapter):
             logger.warning("[Slack] Wisdom response_url POST failed: %s", exc)
         return False
 
-    async def _send_wisdom_view(self, view, *, source, proactive: bool = False) -> None:
+    async def _send_wisdom_view(self, view, *, source, proactive: bool = False) -> Any:
         """Send a Wisdom view ephemerally for slashes or persistently otherwise."""
         channel_id = str(source.chat_id)
         team_id = str(getattr(source, "scope_id", None) or "")
@@ -7759,7 +7759,7 @@ class SlackAdapter(BasePlatformAdapter):
         thread_id = getattr(source, "thread_id", None)
         if thread_id:
             kwargs["thread_ts"] = str(thread_id)
-        await self._get_client(channel_id, team_id=team_id or None).chat_postMessage(
+        return await self._get_client(channel_id, team_id=team_id or None).chat_postMessage(
             **kwargs
         )
 
@@ -7811,12 +7811,19 @@ class SlackAdapter(BasePlatformAdapter):
             )
         await self._send_wisdom_view(view, source=source)
 
-    async def send_wisdom_mediation(self, view, *, source) -> None:
+    async def send_wisdom_mediation(self, view, *, source):
+        from hermes_wisdom.delivery import slack_receipt
+
         self._remember_wisdom_callbacks(
             view, team_id=str(getattr(source, "scope_id", None) or ""),
             channel_id=str(source.chat_id), profile=getattr(self, "_owner_profile", None),
         )
-        await self._send_wisdom_view(view, source=source, proactive=True)
+        response = await self._send_wisdom_view(view, source=source, proactive=True)
+        return slack_receipt(
+            response, channel_id=str(source.chat_id),
+            thread_id=str(getattr(source, "thread_id", None) or ""),
+            scope_id=str(getattr(source, "scope_id", None) or ""),
+        )
 
     async def send_wisdom_candidate_notifications(
         self,

@@ -137,17 +137,39 @@ async def schedule(
             if not selected:
                 continue
             view = advice_view(selected, introduction=introduction)
-            await adapter.send_wisdom_mediation(view, source=source)
 
-            def finish():
+            def uncertain():
                 mediation = WisdomMediation(WisdomService())
                 for item in selected:
                     job = item["assessment"]
-                    mediation.queue.complete_delivery(
-                        org, job["id"], job["lease_token"], introduced=introduction
+                    mediation.queue.uncertain_delivery(
+                        org, job["id"], job["lease_token"]
                     )
 
-            await scoped(finish)
+            try:
+                receipt = await adapter.send_wisdom_mediation(view, source=source)
+
+                def finish():
+                    mediation = WisdomMediation(WisdomService())
+                    for item in selected:
+                        job = item["assessment"]
+                        mediation.queue.complete_delivery(
+                            org,
+                            job["id"],
+                            job["lease_token"],
+                            receipt=receipt,
+                            introduced=introduction,
+                        )
+
+                await scoped(finish)
+            except BaseException:
+                # Also fence cancellation after an external send. If persistence
+                # fails, lease expiry still prevents automatic replay.
+                try:
+                    await scoped(uncertain)
+                except Exception:
+                    logger.warning("Wisdom uncertain delivery awaits lease recovery")
+                raise
 
     async def watch():
         try:

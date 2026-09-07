@@ -6,10 +6,19 @@ import pytest
 
 from hermes_wisdom.client import WisdomConflict, WisdomNotFound
 from hermes_wisdom.consent import ConsentActor
+from hermes_wisdom.delivery import DeliveryReceipt
 from hermes_wisdom.mediation import WisdomMediation
 from hermes_wisdom.mediation_view import advice_view, interaction_view
 from tests.wisdom.test_share_staging import staged  # noqa: F401
 from tests.wisdom.test_service import FakeClient
+
+RECEIPT = DeliveryReceipt(
+    platform="telegram",
+    destination="chat",
+    thread_id="thread",
+    message_id="1",
+    acknowledgement="provider_accepted",
+)
 
 
 class PublishingClient(FakeClient):
@@ -115,7 +124,9 @@ def sharing(staged, monkeypatch):
     )
     shown = mediation.consent.present("org", identity, actor)
     assert mediation.queue.begin_delivery("org", identity, job["lease_token"])
-    assert mediation.queue.complete_delivery("org", identity, job["lease_token"])
+    assert mediation.queue.complete_delivery(
+        "org", identity, job["lease_token"], receipt=RECEIPT
+    )
     model = Mock(return_value=package)
     monkeypatch.setattr("hermes_wisdom.share_queue.package_for_share", model)
     return service, mediation, actor, shown, model, source, now
@@ -342,7 +353,9 @@ def test_packaging_failure_eventually_offers_manual_review_not_publication(shari
     assert model.call_count == 3 and service.client.uploaded == 0
     job = items[0]["assessment"]
     assert mediation.queue.begin_delivery("org", job["id"], job["lease_token"])
-    assert mediation.queue.complete_delivery("org", job["id"], job["lease_token"])
+    assert mediation.queue.complete_delivery(
+        "org", job["id"], job["lease_token"], receipt=RECEIPT
+    )
     assert mediation.prepare("org", actor, runtime={}, history=[]) == []
 
 

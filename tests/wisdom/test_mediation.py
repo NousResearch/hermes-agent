@@ -15,6 +15,7 @@ from hermes_wisdom.mediation_store import MediationStore
 from hermes_wisdom.mediation_view import advice_view, delivery_groups, interaction_view
 from hermes_wisdom.store import WisdomStore
 from hermes_wisdom.client import WisdomNotFound
+from hermes_wisdom.delivery import DeliveryReceipt
 
 
 @pytest.fixture
@@ -384,7 +385,17 @@ def test_provider_failure_eventually_delivers_one_deterministic_fallback(consent
     job = fallback[0]["assessment"]
     assert mediation.queue.begin_delivery("org", event, job["lease_token"])
     assert mediation.queue.complete_delivery(
-        "org", event, job["lease_token"], introduced=True
+        "org",
+        event,
+        job["lease_token"],
+        introduced=True,
+        receipt=DeliveryReceipt(
+            platform="telegram",
+            destination="chat",
+            thread_id="thread",
+            message_id="1",
+            acknowledgement="provider_accepted",
+        ),
     )
     assert (
         mediation.prepare("org", actor, runtime={}, history=[], assessor=assessor) == []

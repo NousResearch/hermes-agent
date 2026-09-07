@@ -5,6 +5,14 @@ import pytest
 
 from hermes_wisdom.mediation_store import LEASE_SECONDS, MediationStore
 from hermes_wisdom.store import WisdomStore
+from hermes_wisdom.delivery import DeliveryReceipt
+
+RECEIPT = DeliveryReceipt(
+    platform="telegram",
+    destination="chat",
+    message_id="1",
+    acknowledgement="provider_accepted",
+)
 
 
 @pytest.fixture
@@ -25,6 +33,7 @@ def register(queue, key="session", *, busy=False, activity=True):
         private=True,
         available=not busy,
         user_activity=activity,
+        address={"chat_id": "chat"},
     )
 
 
@@ -86,7 +95,7 @@ def test_lease_fencing_and_bounded_attempts(state):
     assert not queue.fail("org", identity, old["lease_token"], "old worker")
     assert queue.begin_delivery("org", identity, current["lease_token"])
     assert queue.complete_delivery(
-        "org", identity, current["lease_token"], introduced=True
+        "org", identity, current["lease_token"], introduced=True, receipt=RECEIPT
     )
     assert queue.introduced("org")
     assert not queue.claim("org", "session")

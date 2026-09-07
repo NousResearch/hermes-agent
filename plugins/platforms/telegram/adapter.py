@@ -8874,9 +8874,10 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
-    async def send_wisdom_mediation(self, view, *, source) -> None:
+    async def send_wisdom_mediation(self, view, *, source):
         """Send already-bound durable controls using the existing rich renderer."""
         from telegram.error import BadRequest
+        from hermes_wisdom.delivery import telegram_receipt
 
         kwargs = self._thread_kwargs_for_send(
             str(source.chat_id), str(getattr(source, "thread_id", None) or "") or None,
@@ -8885,20 +8886,27 @@ class TelegramAdapter(BasePlatformAdapter):
         raw_request = getattr(getattr(self, "_bot", None), "do_api_request", None)
         if callable(raw_request):
             try:
-                await raw_request("sendRichMessage", api_kwargs={
+                response = await raw_request("sendRichMessage", api_kwargs={
                     "chat_id": normalize_telegram_chat_id(source.chat_id),
                     "rich_message": {"html": self._wisdom_command_html(view)},
                     "link_preview_options": {"is_disabled": True},
                     **{key: value for key, value in kwargs.items() if value is not None},
                 })
-                return
+                return telegram_receipt(
+                    response, chat_id=str(source.chat_id),
+                    thread_id=str(getattr(source, "thread_id", None) or ""),
+                )
             except BadRequest:
                 # Only a definite rejection permits a second delivery attempt.
                 pass
-        await self._send_message_with_thread_fallback(
+        response = await self._send_message_with_thread_fallback(
             chat_id=normalize_telegram_chat_id(source.chat_id),
             text=_html.escape(self._wisdom_command_text(view)), parse_mode=ParseMode.HTML,
             reply_markup=self._wisdom_command_keyboard(view), **kwargs,
+        )
+        return telegram_receipt(
+            response, chat_id=str(source.chat_id),
+            thread_id=str(getattr(source, "thread_id", None) or ""),
         )
 
     async def send_wisdom_candidate_notifications(

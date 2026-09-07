@@ -202,8 +202,8 @@ class PluginDispatchMixin:
         self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float
     ) -> Any:
         """Run one callback on a daemon worker with a wall-clock cap; ``_HOOK_SKIPPED`` when
-        suppressed, still running, or timed out (worker abandoned, never joined). Exceptions
-        propagate."""
+        suppressed, still running, timed out (worker abandoned, never joined), or the worker
+        could not be started. Exceptions propagate."""
         callback_name = getattr(cb, "__name__", repr(cb))
         callback_key = (hook_name, id(cb))
         token = object()
@@ -224,25 +224,25 @@ class PluginDispatchMixin:
         outcome: Dict[str, Any] = {}
         failure: Dict[str, Exception] = {}
 
+        def _release_token() -> None:
+            with self._hook_timeout_lock:
+                if self._hook_running_callbacks.get(callback_key) is token:
+                    self._hook_running_callbacks.pop(callback_key, None)
+
         def _runner() -> None:
             try:
                 outcome["value"] = context.run(self._invoke_hook_callback, cb, kwargs)
             except Exception as exc:
                 failure["exc"] = exc
             finally:
-                with self._hook_timeout_lock:
-                    if self._hook_running_callbacks.get(callback_key) is token:
-                        self._hook_running_callbacks.pop(callback_key, None)
+                _release_token()
                 done.set()
 
         thread = threading.Thread(target=_runner, name=f"hermes-hook-{callback_name}"[:40], daemon=True)
         try:
             thread.start()
         except RuntimeError as exc:
-            # The runner's finally cannot clear this token when OS thread creation fails.
-            with self._hook_timeout_lock:
-                if self._hook_running_callbacks.get(callback_key) is token:
-                    self._hook_running_callbacks.pop(callback_key, None)
+            _release_token()  # the runner's finally never runs when OS thread creation fails
             logger.warning(
                 "Hook '%s' callback %s worker failed to start: %s — skipping",
                 hook_name, callback_name, exc)

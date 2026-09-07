@@ -276,7 +276,9 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         // lives on the gateway, not this disk). Opening that locally fails —
         // and an OAuth remote connection has no query token to build a download
         // URL. Fetch the bytes over the authenticated fs bridge instead.
-        if (isRemoteGateway() && /^file:/i.test(href)) {
+        // Tilde/relative hrefs have no file URL form. Keep them gateway-owned:
+        // expanding them on the client would target the wrong home or cwd.
+        if (isRemoteGateway() && /^(?:file:|~\/|\.{1,2}\/)/i.test(href)) {
           await downloadGatewayMediaFile(href)
 
           return

@@ -950,6 +950,46 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.source.user_id_alt, "on_union")
         self.assertEqual(event.source.chat_name, "Feishu DM")
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_process_inbound_message_stamps_message_id_on_source(self):
+        """The inbound SessionSource must carry the triggering message_id: async
+        watchers stamp it from HERMES_SESSION_MESSAGE_ID into watcher metadata, and
+        watch/completion notifications need it to reply into the originating topic."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter._resolve_sender_name_from_api = AsyncMock(return_value="张三")
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Topic Chat", "type": "group"}
+        )
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id="omt_thread",
+            message_type="text",
+            content='{"text":"hello"}',
+            message_id="om_trigger",
+        )
+        sender_id = SimpleNamespace(open_id="ou_user", user_id=None, union_id=None)
+        sender = SimpleNamespace(sender_type="user", sender_id=sender_id)
+        data = SimpleNamespace(event=SimpleNamespace(message=message, sender=sender))
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=data,
+                message=message,
+                sender_id=sender.sender_id,
+                chat_type="group",
+                message_id="om_trigger",
+            )
+        )
+
+        adapter._dispatch_inbound_event.assert_awaited_once()
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(event.source.message_id, "om_trigger")
+        self.assertEqual(event.source.thread_id, "omt_thread")
+
 
     @patch.dict(
         os.environ,

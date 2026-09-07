@@ -693,3 +693,74 @@ def test_gateway_drain_retains_and_formats_overflow_events():
     out_released = _format_gateway_process_notification(released)
     assert "notifications resumed" in out_released
     assert "exit code" not in out_released
+
+
+@pytest.mark.asyncio
+async def test_inject_watch_notification_synthetic_event_replies_into_thread(monkeypatch, tmp_path):
+    """A watch notification whose watcher carried a message_id must reply into the
+    originating thread: the synthetic MessageEvent needs BOTH ``message_id`` and
+    ``reply_to_message_id`` (thread-aware platforms such as Feishu anchor placement on
+    ``reply_to_message_id``; ``message_id`` alone is not a Feishu reply anchor)."""
+    from gateway.session import SessionSource
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    runner.session_store._entries["agent:main:feishu:group:oc_grp:omt_1"] = SimpleNamespace(
+        origin=SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="oc_grp",
+            chat_type="group",
+            thread_id="omt_1",
+            user_id="1",
+            user_name="Fabio",
+        )
+    )
+    feishu_adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
+    runner.adapters[Platform.FEISHU] = feishu_adapter
+
+    evt = {
+        "session_id": "proc_watch",
+        "session_key": "agent:main:feishu:group:oc_grp:omt_1",
+        "message_id": "om_trigger",
+    }
+
+    await runner._inject_watch_notification("[SYSTEM: Background process matched]", evt)
+
+    feishu_adapter.handle_message.assert_awaited_once()
+    synth_event = feishu_adapter.handle_message.await_args.args[0]
+    assert synth_event.message_id == "om_trigger"
+    assert synth_event.reply_to_message_id == "om_trigger"
+    assert synth_event.source.thread_id == "omt_1"
+
+
+@pytest.mark.asyncio
+async def test_inject_watch_notification_survives_origin_without_message_id(monkeypatch, tmp_path):
+    """When the persisted origin lacks a message_id (older sessions), the synthetic
+    event must not crash and must still carry the origin's thread identity."""
+    from gateway.session import SessionSource
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    feishu_adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
+    runner.adapters[Platform.FEISHU] = feishu_adapter
+    runner.session_store._entries["agent:main:feishu:group:oc_grp:omt_1"] = SimpleNamespace(
+        origin=SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="oc_grp",
+            chat_type="group",
+            thread_id="omt_1",
+            user_id="1",
+            user_name="Fabio",
+        )
+    )
+
+    evt = {
+        "session_id": "proc_watch",
+        "session_key": "agent:main:feishu:group:oc_grp:omt_1",
+    }
+
+    await runner._inject_watch_notification("[SYSTEM: Background process matched]", evt)
+
+    feishu_adapter.handle_message.assert_awaited_once()
+    synth_event = feishu_adapter.handle_message.await_args.args[0]
+    assert synth_event.source.thread_id == "omt_1"
+    assert synth_event.reply_to_message_id is None

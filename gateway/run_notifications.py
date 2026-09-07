@@ -811,6 +811,7 @@ class GatewayNotificationsMixin:
         return SessionSource(
             platform=platform, chat_id=chat_id, chat_type=chat_type, thread_id=_opt("thread_id"),
             user_id=_opt("user_id"), user_name=_opt("user_name"), scope_id=scope_id,
+            message_id=_opt("message_id"),
         )
 
     async def _drain_watch_notifications(self, completion_queue) -> None:
@@ -920,9 +921,15 @@ class GatewayNotificationsMixin:
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
+            # Thread-aware reply anchor: platforms such as Feishu anchor placement on
+            # ``reply_to_message_id`` (``message_id`` alone is not a reply anchor), so the
+            # synthetic event carries the triggering message as BOTH ids. Without it the
+            # notification card escapes the originating topic into a new top-level thread.
+            anchor_message_id = str(evt.get("message_id") or "").strip() or None
             synth_event = MessageEvent(
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
-                message_id=str(evt.get("message_id") or "").strip() or None, metadata=metadata,
+                message_id=anchor_message_id, metadata=metadata,
+                reply_to_message_id=anchor_message_id,
             )
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",

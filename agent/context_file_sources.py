@@ -3,9 +3,10 @@
 Read-only: enumerates the same candidates ``build_context_files_prompt`` loads (through
 ``agent.prompt_builder.discover_context_files`` — one discovery walk, so the listing cannot drift from the
 prompt) and reports, per file, its size and whether it was loaded, truncated over the context-file cap,
-shadowed by a higher-priority context type, blocked by the injection scan (or, for the user's own SOUL.md,
+shadowed by a higher-priority context type, duplicated in the identity tier, blocked by the injection scan
+(or, for the user's own SOUL.md,
 flagged but loaded), empty/unreadable, or suppressed by the install-tree guard. Nothing here builds a prompt or touches the truncation-warning ContextVar, so it
-is free of cache impact.
+is free of cache impact. This is current disk discovery, not a snapshot of a cached session prompt.
 
 Approximations (the manifest re-derives, it does not re-render): the truncation check sizes the raw
 ``## label`` section, so a .hermes.md whose YAML frontmatter the builder strips can read a few chars larger
@@ -25,6 +26,7 @@ from agent.model_metadata import estimate_tokens_rough
 _STATUS_DISPLAY = {
     "loaded": ("✓", ""),
     "truncated": ("◐", "truncated — over context_file_max_chars"),
+    "duplicate": ("○", "not loaded — already supplied in the identity tier"),
     "shadowed": ("○", "not loaded — higher-priority context type wins"),
     "blocked": ("✗", "not loaded — blocked by the prompt-injection scan"),
     "flagged": ("⚠", "loaded — matched prompt-injection pattern(s); review the file"),
@@ -59,17 +61,23 @@ def _loaded_status(content: str, rendered_len: int, max_chars: int, user_authore
 
 def list_context_file_sources(
     cwd: Optional[str] = None, context_length: Optional[int] = None, allow_install_tree_fallback: bool = False,
-    home_override: "Path | None" = None, skip_soul: bool = False,
+    home_override: "Path | None" = None, skip_soul: bool = False, soul_loaded: bool = False,
 ) -> List[Dict[str, Any]]:
     """One dict per context file Hermes considered, in the builder's priority order.
 
     Same signature semantics as ``build_context_files_prompt`` (``cwd=None`` → launch dir, install-tree guard
     unless *allow_install_tree_fallback*). Keys: ``label``, ``path``, ``chars``, ``est_tokens``, ``loaded``
-    and ``status`` ∈ loaded / truncated / flagged / shadowed / blocked / empty / unreadable / suppressed.
+    and ``status`` ∈ loaded / truncated / flagged / shadowed / duplicate / blocked / empty / unreadable / suppressed.
+    ``soul_loaded`` models SOUL already supplied in the identity tier while retaining its manifest row;
+    ``skip_soul`` omits that row, matching the standalone prompt-builder argument.
     """
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
     max_chars = _pb._get_context_file_max_chars(context_length)
     suppressed = _pb._project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback)
+    home = Path(home_override) if home_override is not None else _pb.get_hermes_home()
+    soul_path = home / "SOUL.md"
+    soul_content = _pb._read_context_file(soul_path)
+    excluded_content = {soul_content} if (skip_soul or soul_loaded) and soul_content else set()
     sources: List[Dict[str, Any]] = []
     winner: Optional[str] = None
     for kind, label, path, content in _pb.discover_context_files(cwd_path):
@@ -77,6 +85,8 @@ def list_context_file_sources(
             status = _empty_status(path)
         elif suppressed:
             status = "suppressed"
+        elif content in excluded_content:
+            status = "duplicate"
         elif winner in (None, kind):
             winner = kind
             # The builder caps the rendered ``## label`` section, not the raw file.
@@ -86,10 +96,8 @@ def list_context_file_sources(
         sources.append(_entry(label, path, content, status))
 
     if not skip_soul:
-        home = Path(home_override) if home_override is not None else _pb.get_hermes_home()
-        soul_path = home / "SOUL.md"
         if _pb._exists_or_denied(soul_path):
-            content = _pb._read_context_file(soul_path)
+            content = soul_content
             status = (_loaded_status(content, len(content), max_chars, user_authored=True) if content
                       else _empty_status(soul_path))
             sources.append(_entry("SOUL.md", soul_path, content, status))
@@ -97,8 +105,10 @@ def list_context_file_sources(
 
 
 def context_file_sources_for_agent(agent: Any) -> List[Dict[str, Any]]:
-    """The manifest for a live agent, resolved exactly like ``agent.system_prompt._context_files_part``
-    (session cwd, install-tree policy per platform, the agent's own profile home)."""
+    """Current discovery for a live agent, using the policy of ``agent.system_prompt._context_files_part``
+    (session cwd, install-tree policy per platform, the agent's own profile home).
+    Context-enabled agents attempt SOUL in the identity tier first; discovery reflects the current file,
+    which can differ from the content cached when that session started."""
     if getattr(agent, "skip_context_files", False):
         return []
     from agent.runtime_cwd import resolve_context_cwd
@@ -109,6 +119,7 @@ def context_file_sources_for_agent(agent: Any) -> List[Dict[str, Any]]:
     return list_context_file_sources(
         cwd=str(cwd) if cwd is not None else None, context_length=ctx_len if isinstance(ctx_len, int) else None,
         allow_install_tree_fallback=getattr(agent, "platform", None) in ("cli", "tui"), home_override=_agent_home(agent),
+        soul_loaded=True,
     )
 
 

@@ -414,6 +414,83 @@ class TestBuildContextFilesPrompt:
         assert result.count("Same rules everywhere.") == 1
 
 
+    @pytest.mark.platforms("posix")
+    def test_skip_soul_omits_symlinked_identity(self, tmp_path):
+        from agent.prompt_builder import load_soul_md
+
+        home = tmp_path / "home"
+        home.mkdir()
+        soul = home / "SOUL.md"
+        soul.write_text("Shared identity text.")
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / "AGENTS.md").symlink_to(soul)
+
+        context = build_context_files_prompt(cwd=str(workspace), skip_soul=True, home_override=home)
+        identity = load_soul_md(home_override=home)
+        assert context == ""
+        assert (identity + context).count(soul.read_text()) == 1
+        standalone = build_context_files_prompt(cwd=str(workspace), home_override=home)
+        assert standalone.count(soul.read_text()) == 2
+
+    @pytest.mark.parametrize("alias_name, guidance_name, nested", [
+        ("AGENTS.md", "AGENTS.md", True),
+        ("AGENTS.md", "CLAUDE.md", False),
+        ("AGENTS.override.md", "CLAUDE.md", False),
+        (".hermes.md", "AGENTS.md", False),
+        ("HERMES.md", "AGENTS.md", False),
+        ("CLAUDE.md", ".cursorrules", False),
+        (".cursorrules", ".cursor/rules/project.mdc", False),
+        (".cursor/rules/identity.mdc", ".cursor/rules/project.mdc", False),
+    ])
+    def test_skip_soul_preserves_project_guidance_and_manifest(
+        self, tmp_path, monkeypatch, alias_name, guidance_name, nested,
+    ):
+        from agent.context_file_sources import (
+            context_file_sources_for_agent, list_context_file_sources, render_context_file_lines,
+        )
+
+        home = tmp_path / "home"
+        home.mkdir()
+        identity = "Shared identity text."
+        (home / "SOUL.md").write_text(identity)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / ".git").mkdir()
+        alias = workspace / alias_name
+        alias.parent.mkdir(parents=True, exist_ok=True)
+        alias.write_text(identity)
+        cwd = workspace / "child" if nested else workspace
+        cwd.mkdir(exist_ok=True)
+        guidance = cwd / guidance_name
+        guidance.parent.mkdir(parents=True, exist_ok=True)
+        guidance.write_text("Distinct project guidance.")
+
+        context = build_context_files_prompt(cwd=str(cwd), skip_soul=True, home_override=home)
+        assert identity not in context
+        assert guidance.read_text() in context
+        assert context == build_context_files_prompt(cwd=str(cwd), skip_soul=True, home_override=home)
+        standalone = build_context_files_prompt(cwd=str(cwd), home_override=home)
+        assert standalone.count(identity) == 2
+
+        # Explicit standalone semantics stay unchanged, while identity-tier aliases
+        # cannot win priority over a distinct project-context file.
+        default_sources = list_context_file_sources(cwd=str(cwd), home_override=home)
+        assert next(src for src in default_sources if src["path"] == str(alias))["loaded"]
+        sources = list_context_file_sources(cwd=str(cwd), skip_soul=True, home_override=home)
+        by_path = {src["path"]: src for src in sources}
+        assert by_path[str(alias)]["status"] == "duplicate"
+        assert by_path[str(alias)]["loaded"] is False
+        assert by_path[str(guidance)]["loaded"] is True
+        assert any("identity" in line for line in render_context_file_lines(sources))
+
+        monkeypatch.setattr("agent.runtime_cwd.resolve_context_cwd", lambda **_kw: str(cwd))
+        monkeypatch.setattr("agent.system_prompt._agent_home", lambda _agent: home)
+        live = context_file_sources_for_agent(SimpleNamespace(skip_context_files=False, platform="cli"))
+        assert next(src for src in live if src["path"] == str(alias))["loaded"] is False
+        assert next(src for src in live if src["path"] == str(guidance))["loaded"] is True
+        assert sum(src["label"] == "SOUL.md" and src["loaded"] for src in live) == 1
+
     def test_agents_md_no_git_root_stays_cwd_only(self, tmp_path):
         # Without a git root, parents are never consulted (no picking up an
         # AGENTS.md planted in /tmp or $HOME).

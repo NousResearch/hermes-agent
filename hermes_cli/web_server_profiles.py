@@ -233,11 +233,23 @@ def _config_profile_scope(profile: Optional[str]):
     """Await-safe, config-only profile scope: touches ONLY the task-local HERMES_HOME
     contextvar, never the process-global skills-module attributes ``_profile_scope`` swaps
     (holding those across an ``await`` lets a concurrent request restore THIS request's dir
-    on its ``finally``). None/""/"current" = no override."""
+    on its ``finally``). None/""/"current" = no override.
+
+    A named profile that resolves to the SAME directory as this process's own
+    HERMES_HOME (e.g. ``profile=default`` on a default-home process — the desktop app
+    always sends ``default``) is treated as current: the scoped branch derives
+    enablement from config.yaml only and would report an env-enabled platform as
+    disabled. Classify by resolved path, not by string: a named-profile process
+    (``-p worker``) has a different HERMES_HOME, so its ``profile=default`` still
+    scopes correctly. Issue #104614.
+    """
     if _is_current_profile(profile):
         yield None
         return
     profile_dir = _resolve_profile_dir(profile.strip())
+    if profile_dir.resolve() == get_process_hermes_home().resolve():
+        yield None
+        return
     with _hermes_home_scope(profile_dir):
         yield profile_dir
 

@@ -50,7 +50,7 @@ describe('windows restart manager listing', () => {
     assert.equal(lines.filter(line => line.startsWith('A\t')).length, 100)
     assert.ok(!capturedScript.includes('pkg17\\'), 'resource paths are not inlined into the command')
     assert.ok(capturedScript.length < 16_000, 'script stays well under the Windows command-line limit')
-    assert.match(capturedScript, /\$attributionRoot = 'C:\\install\\'/)
+    assert.match(capturedScript, /\$attributionRootClaim = 'C:\\install'/)
     assert.equal(fs.existsSync(listPathSeen), false, 'list file is removed after the run')
     assert.deepEqual(holders, [
       {
@@ -73,8 +73,7 @@ describe('windows restart manager listing', () => {
     assert.match(script, /RmRegisterResources\(handle, \(uint\)files\.Length, files/)
     assert.match(script, /\[HermesRm\]::Query\(\[string\[\]\]\$ambiguous/)
     assert.match(script, /\$proc\.Modules/)
-    assert.match(script, /StartsWith\(\$attributionRoot, \[StringComparison\]::OrdinalIgnoreCase\)/)
-    assert.match(script, /if \(-not \$mapped\) \{ continue \}/)
+    assert.match(script, /\[HermesRm\]::IsSameOrUnderRoot\(\$moduleFinal, \$root\)/)
     // A unary-comma return hands the whole row array to the attribution loop
     // as one "row", whose .pid is then an array and every holder is dropped.
     assert.doesNotMatch(script, /return ,\$rows/)
@@ -97,13 +96,45 @@ describe('windows restart manager listing', () => {
     assert.equal(listContents, '', 'nothing to query: shared files without a root are skipped entirely')
   })
 
-  it.skipIf(process.platform !== 'win32')('compiles the native shim once into a cached assembly and reloads it afterwards', () => {
-    const script = buildRestartManagerScript(path.join(os.tmpdir(), 'list.txt'), { cacheDir: 'C:\\cache dir' })
+  it('never loads a cached assembly from a predictable path', () => {
+    const script = buildRestartManagerScript(path.join(os.tmpdir(), 'list.txt'), { attributionRoot: 'C:\\install' })
 
-    assert.match(script, /\$rmAssembly = 'C:\\cache dir\\HermesRm-[0-9a-f]{16}\.dll'/)
-    assert.match(script, /Add-Type -Path \$rmAssembly/)
-    assert.match(script, /Add-Type -TypeDefinition \$rmSource -OutputAssembly \$rmTemp/)
-    assert.match(script, /if \(-not \$compiled\) \{ Add-Type -TypeDefinition \$rmSource \}/)
+    // The shim is compiled every run. A deterministic
+    // `%TEMP%\hermes-restart-manager\HermesRm-<hash>.dll` loaded with
+    // `Add-Type -Path` was unverified executable code at a path any same-user
+    // process could pre-create, and a hash recorded beside it would be written
+    // by that same principal. The live suite proves the compile path works.
+    assert.doesNotMatch(script, /Add-Type -Path/)
+    assert.doesNotMatch(script, /HermesRm-[0-9a-f]+\.dll/)
+    assert.doesNotMatch(script, /-OutputAssembly/)
+    assert.match(script, /^Add-Type -TypeDefinition \$rmSource$/m)
+  })
+
+  it('keeps an ambiguous holder that could not be attributed', () => {
+    const script = buildRestartManagerScript(path.join(os.tmpdir(), 'list.txt'), { attributionRoot: 'C:\\install' })
+
+    // Classification behaviour is proved live against real processes
+    // (windows-restart-manager.windows-live.test.ts). This pins only the
+    // wiring that is invisible from outside the script: 'foreign' is the ONLY
+    // outcome that drops a row.
+    assert.match(script, /if \(\$resolved\.status -eq 'foreign'\) \{ continue \}/)
+    assert.match(script, /\$row\.attribution = 'unattributed'/)
+  })
+
+  it('reports an unattributed holder without an ownership proof', () => {
+    const holders = parseRestartManagerOutput(
+      JSON.stringify([
+        { pid: 20, createdAt: 7, name: 'python', resource: 'C:\\a.pyd', attribution: 'unattributed' },
+        { pid: 21, createdAt: 8, name: 'python', resource: 'C:\\b.pyd', attribution: 'proven' }
+      ]),
+      ['C:\\fallback.pyd']
+    )
+
+    // `resource` is the claim the terminate boundary re-proves before it kills
+    // anything. An unattributed holder blocks the update but authorizes nothing.
+    assert.equal(holders[0]?.resource, undefined)
+    assert.deepEqual(holders[0]?.resources, ['C:\\a.pyd'])
+    assert.equal(holders[1]?.resource, 'C:\\b.pyd')
   })
 
   it('collapses duplicate holders reported across per-file sessions and drops malformed rows', () => {

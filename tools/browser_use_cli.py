@@ -297,12 +297,30 @@ def install_cli(timeout_s: int = 600) -> Tuple[bool, str]:
     return True, f"browser-use CLI installed ({found[0]})"
 
 
+def _is_task_ephemeral(task_id: Optional[str]) -> bool:
+    """Return True if task_id is associated with an active temporary/ephemeral session."""
+    if not task_id:
+        return False
+    try:
+        from agent.session_policy import is_session_ephemeral
+        from tools.browser_tool_origin import origin as _bt
+        bare = _bt._bare_task_id_for_session_key(task_id)
+        return is_session_ephemeral(bare) or is_session_ephemeral(task_id)
+    except Exception:
+        return False
+
+
 def _workspace_dir(task_id: Optional[str]) -> Optional[str]:
-    """Stable per-task scratch dir that persists across browser_exec calls"""
+    """Stable per-task scratch dir that persists across browser_exec calls (ephemeral tasks use isolated temp root)"""
     if os.environ.get("BH_AGENT_WORKSPACE"):
         return os.environ["BH_AGENT_WORKSPACE"]
     try:
         safe = _TASK_ID_SAFE_RE.sub("_", str(task_id or "default"))[:80] or "default"
+        if _is_task_ephemeral(task_id):
+            from tools.browser_tool_origin import origin as _bt
+            tmp_root = Path(_bt._socket_safe_tmpdir()) / f"hermes-temp-bu-workspace-{safe}"
+            tmp_root.mkdir(parents=True, exist_ok=True)
+            return str(tmp_root)
         path = Path(get_hermes_home()) / "cache" / "browser-use" / "workspace" / safe
         path.mkdir(parents=True, exist_ok=True)
         return str(path)
@@ -344,8 +362,18 @@ def _native_screenshot_result(result: Dict[str, Any], path: str) -> Optional[Dic
 
 
 def _backend_cache_key(task_id: Optional[str], session_name: str = "") -> str:
-    """Session-cache key for a backend browser: named sessions get their own."""
-    return f"bu-named-{session_name}" if session_name else (task_id or "browser-exec-default")
+    """Session-cache key for a backend browser: named sessions get their own (namespaced by task if ephemeral)."""
+    if session_name:
+        if _is_task_ephemeral(task_id):
+            key = f"bu-named-{task_id}-{session_name}"
+            try:
+                from agent.session_policy import mark_session_ephemeral
+                mark_session_ephemeral(key)
+            except Exception:
+                pass
+            return key
+        return f"bu-named-{session_name}"
+    return task_id or "browser-exec-default"
 
 
 def _resolve_lightpanda_cdp(env: dict, task_id: Optional[str], session_name: str = "") -> Optional[str]:
@@ -455,13 +483,21 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     return err
 
 
-def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
+def _resolve_real_profile_cdp(env: dict, force_local: bool, task_id: Optional[str] = None) -> Optional[str]:
     """Point the harness at the user's real-profile copy-browser (a SNAPSHOT of their default Chromium
     profile, hermes_cli.browser_connect) when consented. Two ways in: the effective backend is already local
     (no provider, CDP override, or legacy BU cloud config) → silent upgrade; or ``force_local`` (consent-gated
     ``local`` arg) → the user's browser even under a cloud backend. Operator overrides (BU_CDP_* env,
     /browser connect, ``browser.cdp_url``) own the session either way. Fail closed: a launch error is
     returned so a consented user is never silently downgraded."""
+    if _is_task_ephemeral(task_id):
+        if force_local:
+            return (
+                "Real-profile browsing cannot be used in a temporary chat: real profile data contains "
+                "persistent user cookies and history. Start a normal chat (/new) to use real profile."
+            )
+        return None
+
     if not _real_profile_consented() or _has_cdp_env(env):
         return None
     try:
@@ -489,7 +525,19 @@ def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool)
     BEFORE provider resolution so a hit short-circuits the cloud path via the BU_CDP_* env contract. Named
     sessions compose with the backend: BU_NAME namespaces the harness daemon (IPC socket, log, pid) and on
     provider backends additionally keys its own cloud browser."""
-    rp_err = _resolve_real_profile_cdp(env, force_local=local)
+    if _is_task_ephemeral(task_id):
+        if local:
+            return (
+                "Real-profile browsing cannot be used in a temporary chat: real profile data contains "
+                "persistent user cookies and history. Start a normal chat (/new) to use real profile."
+            )
+        if _has_cdp_env(env):
+            return (
+                "CDP override cannot be used in a temporary chat: external CDP connections bypass "
+                "isolated temporary session cleanup. Start a normal chat (/new) to use custom CDP."
+            )
+
+    rp_err = _resolve_real_profile_cdp(env, force_local=local, task_id=task_id)
     if rp_err:
         return rp_err
     # local=True is only served by the real-profile route; consent off must not pretend.
@@ -522,6 +570,22 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     from tools.registry import tool_error, tool_result
     if not code or not code.strip():
         return tool_error("No code provided. Pass Python that uses the pre-imported helpers, e.g. new_tab(\"https://example.com\") then print(page_info()).")
+
+    if _is_task_ephemeral(task_id):
+        if local:
+            return tool_error(
+                "Real-profile browsing cannot be used in a temporary chat: real profile data contains "
+                "persistent user cookies and history. Start a normal chat (/new) to use real profile."
+            )
+        try:
+            from tools.browser_tool_cdp import _get_cdp_override
+            if _get_cdp_override():
+                return tool_error(
+                    "CDP override cannot be used in a temporary chat: external CDP connections bypass "
+                    "isolated temporary session cleanup. Start a normal chat (/new) to use custom CDP."
+                )
+        except Exception:
+            pass
 
     blocked = _blocked_url_in_code(code)
     if blocked:

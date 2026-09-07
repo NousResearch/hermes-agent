@@ -117,3 +117,75 @@ def test_aiagent_ephemeral_constructor_and_close():
 
     agent.close()
     assert not is_session_ephemeral(sid), "AIAgent failed to unmark session_id on close()"
+
+
+def test_dump_api_request_debug_ephemeral_no_disk_leak(tmp_path, monkeypatch):
+    """dump_api_request_debug must not write files to disk or stdout when ephemeral/persist_disabled."""
+    import io
+    from types import SimpleNamespace
+    from agent.agent_runtime_helpers import dump_api_request_debug
+
+    logs_dir = tmp_path / "sessions"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    sentinel_temp = "TEMPORARY_CONVERSATION_PAYLOAD_SECRET_98765"
+    sentinel_norm = "NORMAL_CONVERSATION_PAYLOAD_12345"
+
+    # 1. Ephemeral Agent
+    ephemeral_agent = SimpleNamespace(
+        ephemeral=True,
+        _persist_disabled=True,
+        client=SimpleNamespace(api_key="mock-key"),
+        api_mode="chat_completions",
+        session_id="ephemeral-dump-test-sid",
+        base_url="http://127.0.0.1:8080/v1",
+        logs_dir=logs_dir,
+        _mask_api_key_for_logs=lambda val: "REDACTED",
+        _vprint=lambda text: None,
+        log_prefix="",
+        verbose_logging=False,
+    )
+    mark_session_ephemeral("ephemeral-dump-test-sid")
+
+    stdout_capture = io.StringIO()
+    with patch("sys.stdout", stdout_capture), patch.dict("os.environ", {"HERMES_DUMP_REQUEST_STDOUT": "1"}):
+        result_path = dump_api_request_debug(
+            ephemeral_agent,
+            {"messages": [{"role": "user", "content": sentinel_temp}]},
+            reason="non_retryable_client_error",
+        )
+    unmark_session_ephemeral("ephemeral-dump-test-sid", force=True)
+
+    assert result_path is None, "dump_api_request_debug returned a path for ephemeral agent"
+    dump_files = list(logs_dir.glob("request_dump_*.json"))
+    assert len(dump_files) == 0, f"dump_api_request_debug wrote a file for ephemeral agent: {dump_files}"
+    assert sentinel_temp not in stdout_capture.getvalue(), "dump_api_request_debug printed ephemeral content to stdout"
+
+    # 2. Normal Agent Control
+    normal_agent = SimpleNamespace(
+        ephemeral=False,
+        _persist_disabled=False,
+        client=SimpleNamespace(api_key="mock-key"),
+        api_mode="chat_completions",
+        session_id="normal-dump-test-sid",
+        base_url="http://127.0.0.1:8080/v1",
+        logs_dir=logs_dir,
+        _mask_api_key_for_logs=lambda val: "REDACTED",
+        _vprint=lambda text: None,
+        log_prefix="",
+        verbose_logging=False,
+    )
+
+    stdout_capture_normal = io.StringIO()
+    with patch("sys.stdout", stdout_capture_normal), patch.dict("os.environ", {"HERMES_DUMP_REQUEST_STDOUT": "1"}):
+        result_path_normal = dump_api_request_debug(
+            normal_agent,
+            {"messages": [{"role": "user", "content": sentinel_norm}]},
+            reason="non_retryable_client_error",
+        )
+
+    assert result_path_normal is not None, "dump_api_request_debug returned None for normal agent"
+    assert result_path_normal.is_file(), "dump_api_request_debug failed to write file for normal agent"
+    content = result_path_normal.read_text(encoding="utf-8")
+    assert sentinel_norm in content, "Normal debug dump file does not contain request payload"
+    assert sentinel_norm in stdout_capture_normal.getvalue(), "Normal debug dump was not printed to stdout"
+

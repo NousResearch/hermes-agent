@@ -1256,6 +1256,14 @@ def dump_api_request_debug(
 ) -> Optional[Path]:
     """Dump the request body from api_kwargs (minus transport keys) for debugging provider 4xx failures."""
     try:
+        from agent.session_policy import is_session_ephemeral
+        session_id = getattr(agent, "session_id", None) if agent is not None else None
+        if (
+            getattr(agent, "ephemeral", False)
+            or getattr(agent, "_persist_disabled", False)
+            or (session_id and is_session_ephemeral(session_id))
+        ):
+            return None
         body = {k: v for k, v in copy.deepcopy(api_kwargs).items() if v is not None and k != "timeout"}
         api_key = None
         try:
@@ -2221,9 +2229,8 @@ def check_ephemeral_tool_block(
         # The whole tool is a write.
         return (
             f"'{function_name}' is blocked in this temporary chat. "
-            "Temporary chats leave no trace: nothing is saved to the session "
-            "store, memory, skills, or task boards. Read-side tools still "
-            "work. Start a normal chat (/new) if you want to save this."
+            "Temporary chats do not save chat history or automatic memory updates. "
+            "Read-side tools still work. Start a normal chat (/new) if you want to save this."
         )
 
     action = function_args.get("action")
@@ -2266,8 +2273,8 @@ def check_ephemeral_tool_block(
 
     return (
         f"'{function_name}' action '{action}' is blocked in this temporary chat. "
-        "Temporary chats leave no trace: nothing is saved to the session store, "
-        "memory, or skills. Read-only actions on this tool still work. "
+        "Temporary chats do not save chat history or automatic memory updates. "
+        "Read-only actions on this tool still work. "
         "Start a normal chat (/new) if you want to save this."
     )
 

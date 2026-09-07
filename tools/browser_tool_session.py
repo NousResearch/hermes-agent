@@ -9,6 +9,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -623,6 +624,11 @@ def _run_browser_command(
             backend_args.append("--headed")
         if engine != "auto" and not _bt._is_camofox_mode():
             backend_args += ["--engine", engine]
+        browser_args = os.environ.get("AGENT_BROWSER_ARGS") or os.environ.get("AGENT_BROWSER_CHROME_FLAGS")
+        if not browser_args and (_needs_chromium_sandbox_bypass() or sys.platform == "darwin"):
+            browser_args = "--no-sandbox,--disable-gpu,--disable-dev-shm-usage"
+        if browser_args and engine != "lightpanda":
+            backend_args += ["--args", browser_args]
 
     cmd_parts = _agent_browser_argv(browser_cmd) + backend_args + ["--json", command] + args
 

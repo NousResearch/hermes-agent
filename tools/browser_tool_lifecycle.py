@@ -5,6 +5,7 @@ Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt
 
 import contextlib
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -21,6 +22,8 @@ from tools import browser_tool_cloud as _cloud
 from tools import browser_tool_session as _session
 from tools import browser_tool_install as _install
 from tools import browser_tool_real_profile as _real_profile
+
+_TASK_ID_SAFE_RE = re.compile(r"[^a-zA-Z0-9_-]")
 
 
 def _session_expiry_timestamp(session_info: Dict[str, Any]) -> Optional[float]:
@@ -300,6 +303,13 @@ def _reap_socket_dir(socket_dir: str, session_name: str, tracked_names: set) -> 
     pidless dir is only stale after the grace period (deleting it immediately races the
     creator's first stdout open). The PID is identity-verified before any tree-kill.
     """
+    if os.path.islink(socket_dir):
+        try:
+            os.unlink(socket_dir)
+        except OSError:
+            pass
+        return False
+
     owner_pid, owner_alive = _owner_pid_alive(socket_dir, session_name)
     if owner_alive is True:
         if session_name in tracked_names:
@@ -320,13 +330,15 @@ def _reap_socket_dir(socket_dir: str, session_name: str, tracked_names: set) -> 
         idle_s = _socket_dir_idle_seconds(socket_dir)
         if idle_s is None or idle_s < _bt.BROWSER_ORPHAN_GRACE_SECONDS:
             return False
-        shutil.rmtree(socket_dir, ignore_errors=True)
+        if not os.path.islink(socket_dir):
+            shutil.rmtree(socket_dir, ignore_errors=True)
         return False
 
     daemon_pid = _read_pid_file(pid_file)
     from gateway.status import _pid_exists
     if daemon_pid is None or not _pid_exists(daemon_pid):
-        shutil.rmtree(socket_dir, ignore_errors=True)
+        if not os.path.islink(socket_dir):
+            shutil.rmtree(socket_dir, ignore_errors=True)
         return False
 
     if not _verify_reapable_browser_daemon(daemon_pid, socket_dir, session_name):
@@ -341,7 +353,8 @@ def _reap_socket_dir(socket_dir: str, session_name: str, tracked_names: set) -> 
         reaped = True
     except (ProcessLookupError, PermissionError, OSError):
         pass
-    shutil.rmtree(socket_dir, ignore_errors=True)
+    if not os.path.islink(socket_dir):
+        shutil.rmtree(socket_dir, ignore_errors=True)
     return reaped
 
 
@@ -562,6 +575,22 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
         _cleanup_single_browser_session(session_key)
     _drop_last_active_binding(task_id)
 
+    # Always clean up ephemeral task workspace and temporary artifacts
+    try:
+        from agent.session_policy import is_session_ephemeral
+        bare = _bt._bare_task_id_for_session_key(task_id)
+        if is_session_ephemeral(bare) or is_session_ephemeral(task_id):
+            safe = _TASK_ID_SAFE_RE.sub("_", str(task_id or "default"))[:80] or "default"
+            temp_ws = os.path.join(_bt._socket_safe_tmpdir(), f"hermes-temp-bu-workspace-{safe}")
+            if os.path.exists(temp_ws) and not os.path.islink(temp_ws):
+                shutil.rmtree(temp_ws, ignore_errors=True)
+            safe_bare = _TASK_ID_SAFE_RE.sub("_", str(bare or "default"))[:80] or "default"
+            temp_ws_bare = os.path.join(_bt._socket_safe_tmpdir(), f"hermes-temp-bu-workspace-{safe_bare}")
+            if os.path.exists(temp_ws_bare) and not os.path.islink(temp_ws_bare):
+                shutil.rmtree(temp_ws_bare, ignore_errors=True)
+    except Exception:
+        pass
+
 
 def _kill_verified_daemon(socket_dir: str, session_name: str) -> bool:
     """Tree-kill the daemon in ``<socket_dir>/<session>.pid`` if verifiably ours; True when
@@ -608,7 +637,24 @@ def _release_session_resources(task_id: str, session_info: Dict[str, Any]) -> No
         socket_dir = os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{session_name}")
         if os.path.exists(socket_dir):
             _kill_verified_daemon(socket_dir, session_name)
-            shutil.rmtree(socket_dir, ignore_errors=True)
+            if not os.path.islink(socket_dir):
+                shutil.rmtree(socket_dir, ignore_errors=True)
+
+    # Clean up ephemeral task workspace and artifacts
+    try:
+        from agent.session_policy import is_session_ephemeral
+        bare = _bt._bare_task_id_for_session_key(task_id)
+        if is_session_ephemeral(bare) or is_session_ephemeral(task_id):
+            safe = _TASK_ID_SAFE_RE.sub("_", str(task_id or "default"))[:80] or "default"
+            temp_ws = os.path.join(_bt._socket_safe_tmpdir(), f"hermes-temp-bu-workspace-{safe}")
+            if os.path.exists(temp_ws) and not os.path.islink(temp_ws):
+                shutil.rmtree(temp_ws, ignore_errors=True)
+            safe_bare = _TASK_ID_SAFE_RE.sub("_", str(bare or "default"))[:80] or "default"
+            temp_ws_bare = os.path.join(_bt._socket_safe_tmpdir(), f"hermes-temp-bu-workspace-{safe_bare}")
+            if os.path.exists(temp_ws_bare) and not os.path.islink(temp_ws_bare):
+                shutil.rmtree(temp_ws_bare, ignore_errors=True)
+    except Exception:
+        pass
 
 
 def _force_reap_browser_session(task_id: str) -> None:

@@ -1,8 +1,12 @@
 """Session persistence policy and ephemeral (temporary) chat registry.
 
-A temporary chat must leave NOTHING on disk. Guarding only transcript writers is
-insufficient: token/cost accounting, titles, compression handoffs, and side stores
-all write session-keyed data.
+In a temporary chat, conversation history, automatic memory, titles, and
+session metadata are not persisted to disk. Guarding only transcript writers
+is insufficient: token/cost accounting, titles, compression handoffs, and side
+stores all write session-keyed data.
+
+Note: explicit user-directed file or terminal actions persist on disk, and
+external provider/platform logging policies apply.
 
 The persistence policy tracks active temporary/ephemeral session identities in-process.
 Reference counting ensures multiple owners (e.g. subagents or simultaneous handles)
@@ -57,16 +61,8 @@ def is_session_ephemeral(session_id: str) -> bool:
         return _EPHEMERAL_SESSION_COUNTS.get(session_id, 0) > 0
 
 
-# Aliases for compatibility with different subsystems
-register_ephemeral_session = mark_session_ephemeral
-unregister_ephemeral_session = unmark_session_ephemeral
-is_ephemeral_session = is_session_ephemeral
-
 __all__ = [
     "mark_session_ephemeral",
     "unmark_session_ephemeral",
     "is_session_ephemeral",
-    "register_ephemeral_session",
-    "unregister_ephemeral_session",
-    "is_ephemeral_session",
 ]

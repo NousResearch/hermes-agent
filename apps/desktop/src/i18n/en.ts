@@ -2615,7 +2615,7 @@ export const en: Translations = {
     temporarySessionHint: 'Gone when you close this chat.',
     temporaryHeroTitle: 'Temporary chat',
     temporaryHeroBody:
-      "Nothing here is saved. This chat won't appear in your history, won't be remembered, and can't be resumed after you close it.",
+      "Nothing here is saved to chat history or memory. This chat won't appear in your history, won't be remembered, and can't be resumed after you close it.",
     queueEdit: 'Edit',
     queueSendNext: 'Next',
     queueSteer: 'Steer — redirect the live turn now',

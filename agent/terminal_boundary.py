@@ -26,7 +26,7 @@ def enforce_public_terminal_response(result: dict[str, Any], *, platform: str = 
     }
     try:
         completed = subprocess.run(
-            [sys.executable, "-m", "core_control", "validate-public-response", json.dumps(result)],
+            [sys.executable, "-m", "core_control", "validate-public-response", json.dumps(request)],
             cwd=_CORE_CONTROL_ROOT,
             text=True,
             capture_output=True,

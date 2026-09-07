@@ -96,6 +96,7 @@ def test_capabilities_and_invitation_advertise_scoped_roomlink(home, monkeypatch
         "roomlink_attachments_available",
         lambda: True,
     )
+    (home / "profiles" / "reviewer").mkdir(parents=True)
     monkeypatch.setenv("API_SERVER_KEY", "gateway-api-key-1234567890")
     monkeypatch.setenv("HERMES_PROFILE", "reviewer")
     result = _result(srv._methods["groups.capabilities"](1, {}))

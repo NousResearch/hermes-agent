@@ -1,5 +1,6 @@
 import { atom, computed } from 'nanostores'
 
+import { getProfiles } from '@/api/profiles'
 import type { DesktopConnectionsRegistry } from '@/global'
 import { persistStringRecord, storedStringRecord } from '@/lib/storage'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, isTimeoutError, withTimeout } from '@/lib/with-timeout'
@@ -242,8 +243,8 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
  * never probes or opens remote gateways.
  *
  * Two phases, same commit contract as a Settings → Gateway apply (softSwitch):
- *  1. Dial the target WITHOUT activating it. The previous source stays fully
- *     bound and painted, so a dead target fails with nothing lost.
+ *  1. Prove target socket/REST readiness WITHOUT activating it. The previous
+ *     source stays fully bound and painted, so a dead target loses nothing.
  *  2. Commit: beginGatewaySwitch() — barrier up, machine-context reset,
  *     session bindings wiped — then activate the already-open socket. The
  *     wipe runs inside the activation's serialized section, synchronously
@@ -334,6 +335,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
   let token = null as GatewaySwitchToken | null
 
   try {
+    const preflightDeadline = Date.now() + SWITCH_DIAL_TIMEOUT_MS
     // Phase 1 — open the target's socket; the active route is untouched.
     // Always use the explicit registry route. `local` must mean This device,
     // and a registry primary can differ from a legacy per-profile override.
@@ -348,6 +350,25 @@ export async function selectConnection(connectionId: string, options: SelectConn
     // they picked last; its socket stays warm for that click or idles out.
     if (revision !== switchRevision) {
       return
+    }
+
+    if (
+      targetConnection.authMode === 'oauth' &&
+      (targetConnection.kind === 'remote' || targetConnection.kind === 'cloud')
+    ) {
+      // Retained sockets can outlive cookie/native OAuth REST auth. Prove a
+      // protected read on the destination before wiping; a socket alone is
+      // enough for the unchanged local/long-lived-token path. Keep the exact
+      // failure for caller UX (network failures must not become sign-in errors).
+      await withTimeout(
+        getProfiles({ connectionId, profile: targetProfile }),
+        Math.max(0, preflightDeadline - Date.now()),
+        `Timed out connecting to "${targetConnection.label}".`
+      )
+
+      if (revision !== switchRevision) {
+        return
+      }
     }
 
     // Phase 2 — commit. The hook runs inside the activation's serialized

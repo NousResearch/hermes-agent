@@ -48,6 +48,7 @@ vi.mock('@/store/profile', () => ({
   $profileCreateRequest: atom(0),
   $profileOrder: atom([]),
   $profiles: atom([{ is_default: true, name: 'default' }]),
+  $profilesByConnection: atom(new Map()),
   $profileScope: atom('default'),
   ALL_PROFILES: '*',
   normalizeProfileKey: (name: string) => name,

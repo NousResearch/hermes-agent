@@ -3,6 +3,7 @@ import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopAgentRoster, DesktopConnectionsRegistry } from '@/global'
+import type * as ProfileStore from '@/store/profile'
 
 import { ProfileRail } from './profile-switcher'
 
@@ -66,12 +67,17 @@ vi.mock('@/i18n', () => ({
   })
 }))
 
-vi.mock('@/store/profile', () => ({
+vi.mock('@/store/gateway', () => ({ $gateway: atom(null) }))
+vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
+vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
+
+vi.mock('@/store/profile', async importOriginal => ({
   $activeGatewayProfile: atom('default'),
   $profileColors: atom({}),
   $profileCreateRequest: atom(0),
   $profileOrder: atom([]),
   $profiles: atom([{ is_default: true, name: 'default' }]),
+  $profilesByConnection: atom(new Map()),
   $profileScope: atom('default'),
   ALL_PROFILES: '*',
   normalizeProfileKey: (name: string) => name,
@@ -82,7 +88,7 @@ vi.mock('@/store/profile', () => ({
   setProfileColor: vi.fn(),
   setProfileOrder: vi.fn(),
   setShowAllProfiles: vi.fn(),
-  sortByProfileOrder: (profiles: unknown[]) => profiles
+  sortByProfileOrder: (await importOriginal<typeof ProfileStore>()).sortByProfileOrder
 }))
 
 vi.mock('@/store/connections', () => ({
@@ -106,6 +112,7 @@ vi.mock('./use-profile-rail-refresh-on-active', () => ({
 }))
 
 vi.mock('@/hermes', () => ({
+  setApiRequestProfile: vi.fn(),
   getProfileSoul: vi.fn().mockResolvedValue({ content: '' }),
   updateProfileSoul: vi.fn()
 }))
@@ -123,7 +130,7 @@ const connectionsRegistry = connectionsStore.$connectionsRegistry as ReturnType<
   typeof atom<DesktopConnectionsRegistry | null>
 >
 
-const { $profiles, $profileScope } = await import('@/store/profile')
+const { $profileOrder, $profiles, $profilesByConnection, $profileScope } = await import('@/store/profile')
 const profiles = $profiles as ReturnType<typeof atom<Array<{ is_default: boolean; name: string }>>>
 const profileScope = $profileScope as ReturnType<typeof atom<string>>
 const { _resetFleetRosterForTests } = await import('@/store/fleet-roster')
@@ -131,28 +138,28 @@ const { _resetFleetRosterForTests } = await import('@/store/fleet-roster')
 const registry: DesktopConnectionsRegistry = {
   connections: [
     { id: 'local', kind: 'local', label: 'This device' },
-    { id: 'pandora', kind: 'remote', label: 'Pandora', url: 'https://pandora.example' },
-    { id: 'vps', kind: 'ssh', label: 'VPS', host: 'vps.example' }
+    { id: 'gateway-a', kind: 'remote', label: 'Gateway A', url: 'https://gateway-a.example.com' },
+    { id: 'gateway-b', kind: 'ssh', label: 'Gateway B', host: 'gateway-b.example.com' }
   ],
   launchMode: 'primary',
-  lastUsed: 'pandora',
-  primary: 'pandora',
+  lastUsed: 'gateway-a',
+  primary: 'gateway-a',
   version: 2
 } as DesktopConnectionsRegistry
 
 const roster: DesktopAgentRoster = {
   agents: [
     {
-      connectionId: 'pandora',
+      connectionId: 'gateway-a',
       connectionKind: 'remote',
-      connectionLabel: 'Pandora',
+      connectionLabel: 'Gateway A',
       profile: 'default',
-      handle: 'hermes-pandora'
+      handle: 'hermes-gateway-a'
     },
     {
-      connectionId: 'pandora',
+      connectionId: 'gateway-a',
       connectionKind: 'remote',
-      connectionLabel: 'Pandora',
+      connectionLabel: 'Gateway A',
       profile: 'scout',
       handle: 'scout'
     },
@@ -163,19 +170,25 @@ const roster: DesktopAgentRoster = {
       profile: 'default',
       handle: 'hermes'
     },
-    { connectionId: 'local', connectionKind: 'local', connectionLabel: 'This device', profile: 'omer', handle: 'omer' }
+    {
+      connectionId: 'local',
+      connectionKind: 'local',
+      connectionLabel: 'This device',
+      profile: 'builder',
+      handle: 'builder'
+    }
   ],
   sources: [
-    { connectionId: 'pandora', kind: 'remote', label: 'Pandora', reachable: true },
+    { connectionId: 'gateway-a', kind: 'remote', label: 'Gateway A', reachable: true },
     { connectionId: 'local', kind: 'local', label: 'This device', reachable: true },
-    { connectionId: 'vps', kind: 'ssh', label: 'VPS', reachable: false, error: 'timed out' }
+    { connectionId: 'gateway-b', kind: 'ssh', label: 'Gateway B', reachable: false, error: 'timed out' }
   ]
 }
 
 function armFleet() {
   hasMultipleConnections.set(true)
   connectionsRegistry.set(registry)
-  activeConnectionId.set('pandora')
+  activeConnectionId.set('gateway-a')
   profiles.set([
     { is_default: true, name: 'default' },
     { is_default: false, name: 'scout' }
@@ -202,6 +215,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  $profileOrder.set([])
+  $profilesByConnection.set(new Map())
   vi.clearAllMocks()
   _resetFleetRosterForTests()
   hasMultipleConnections.set(false)
@@ -213,6 +228,56 @@ afterEach(() => {
 })
 
 describe('ProfileRail fleet mode', () => {
+  it('keeps the custom named-profile order when a source becomes inactive', async () => {
+    armFleet()
+    profiles.set([...profiles.get(), { name: 'editor', is_default: false }])
+    $profilesByConnection.set(new Map([['gateway-a', $profiles.get()]]))
+    $profileOrder.set(['scout', 'editor'])
+    const container = await renderFleet()
+
+    const labels = () =>
+      Array.from(
+        container.querySelectorAll('[data-connection-id="gateway-a"][data-slot="profile-rail-gateway"] button')
+      ).map(button => button.getAttribute('aria-label')?.split(' · ')[0])
+
+    const activeOrder = labels()
+
+    await act(async () => {
+      activeConnectionId.set('local')
+      profiles.set([])
+    })
+
+    expect(labels()).toEqual(activeOrder)
+  })
+
+  it('keeps each source’s known squares in place when the incoming profile read has no result', async () => {
+    armFleet()
+    // A newly discovered outgoing profile is newer than the fleet roster.
+    profiles.set([...profiles.get(), { name: 'editor', is_default: false }])
+    $profilesByConnection.set(new Map([['gateway-a', $profiles.get()]]))
+    const container = await renderFleet()
+    const groups = () => Array.from(container.querySelectorAll('[data-slot="profile-rail-gateway"]'))
+
+    const before = groups().map(group => [
+      group.getAttribute('data-connection-id'),
+      group.querySelectorAll('button').length
+    ])
+
+    await act(async () => {
+      activeConnectionId.set('local')
+      profiles.set([]) // No successful REST result on the incoming source (e.g. 401).
+    })
+
+    expect(
+      groups().map(group => [group.getAttribute('data-connection-id'), group.querySelectorAll('button').length])
+    ).toEqual(before)
+    const active = container.querySelector('[data-active="true"][data-connection-id="local"]') as HTMLElement
+    expect(within(active).queryByRole('button', { name: /scout|editor/ })).toBeNull()
+    expect(within(active).getByRole('button', { name: /builder/ })).toBeTruthy()
+    fireEvent.click(within(active).getByRole('button', { name: /builder/ }))
+    expect(selectConnection).toHaveBeenCalledWith('local', { profile: 'builder' })
+  })
+
   it('stays on the single-gateway path with one registered gateway', async () => {
     const container = await renderFleet()
 
@@ -234,12 +299,12 @@ describe('ProfileRail fleet mode', () => {
     ])
 
     // Registry order for the whole strip — This device first (switcher
-    // order), then by label — with the active gateway (Pandora) in ITS slot,
+    // order), then by label — with the active gateway (Gateway A) in ITS slot,
     // never pulled to the front.
     expect(groups).toEqual([
       ['local', false],
-      ['pandora', true],
-      ['vps', false]
+      ['gateway-a', true],
+      ['gateway-b', false]
     ])
 
     // Every group is headed by its kind glyph; hairlines only between groups.
@@ -247,11 +312,11 @@ describe('ProfileRail fleet mode', () => {
       node.getAttribute('data-connection-id')
     )
 
-    expect(dividers).toEqual(['local', 'pandora', 'vps'])
+    expect(dividers).toEqual(['local', 'gateway-a', 'gateway-b'])
 
     const local = screen.getByRole('group', { name: 'Profiles on This device' })
     expect(within(local).getByRole('button', { name: 'default · This device' })).toBeTruthy()
-    expect(within(local).getByRole('button', { name: 'omer · This device' })).toBeTruthy()
+    expect(within(local).getByRole('button', { name: 'builder · This device' })).toBeTruthy()
 
     // The active gateway's own squares are unchanged and unqualified.
     expect(screen.getByRole('button', { name: 'scout' })).toBeTruthy()
@@ -266,14 +331,14 @@ describe('ProfileRail fleet mode', () => {
     armFleet()
     const container = await renderFleet()
 
-    const vps = container.querySelector('[data-slot="profile-rail-gateway"][data-connection-id="vps"]')
-    expect(vps?.getAttribute('data-reachable')).toBe('false')
+    const gatewayB = container.querySelector('[data-slot="profile-rail-gateway"][data-connection-id="gateway-b"]')
+    expect(gatewayB?.getAttribute('data-reachable')).toBe('false')
     expect(
       container.querySelector(
-        '[data-slot="profile-rail-divider"][data-connection-id="vps"] [data-slot="profile-rail-unreachable"]'
+        '[data-slot="profile-rail-divider"][data-connection-id="gateway-b"] [data-slot="profile-rail-unreachable"]'
       )
     ).toBeTruthy()
-    expect(within(vps as HTMLElement).getByRole('button', { name: 'default · VPS' })).toBeTruthy()
+    expect(within(gatewayB as HTMLElement).getByRole('button', { name: 'default · Gateway B' })).toBeTruthy()
   })
 
   it('re-homes onto the exact (gateway, profile) when an at-rest square is clicked', async () => {
@@ -283,20 +348,20 @@ describe('ProfileRail fleet mode', () => {
     let settle: () => void = () => undefined
     selectConnection.mockImplementationOnce(() => new Promise<void>(resolve => (settle = resolve)))
 
-    const omer = screen.getByRole('button', { name: 'omer · This device' })
-    fireEvent.click(omer)
+    const builder = screen.getByRole('button', { name: 'builder · This device' })
+    fireEvent.click(builder)
 
-    expect(selectConnection).toHaveBeenCalledWith('local', { profile: 'omer' })
+    expect(selectConnection).toHaveBeenCalledWith('local', { profile: 'builder' })
     expect(selectProfile).not.toHaveBeenCalled()
     // The dial spinner sits on the clicked square, not in the statusbar.
-    expect(omer.getAttribute('aria-busy')).toBe('true')
+    expect(builder.getAttribute('aria-busy')).toBe('true')
 
     await act(async () => {
       settle()
       await Promise.resolve()
     })
 
-    expect(omer.getAttribute('aria-busy')).toBeNull()
+    expect(builder.getAttribute('aria-busy')).toBeNull()
   })
 
   it('re-homes onto another gateway default from its home square', async () => {
@@ -323,7 +388,7 @@ describe('ProfileRail fleet mode', () => {
     activeConnectionId.set('local')
     profiles.set([
       { is_default: true, name: 'default' },
-      { is_default: false, name: 'omer' }
+      { is_default: false, name: 'builder' }
     ])
     const container = await renderFleet()
 
@@ -334,11 +399,11 @@ describe('ProfileRail fleet mode', () => {
 
     expect(groups).toEqual([
       ['local', true],
-      ['pandora', false],
-      ['vps', false]
+      ['gateway-a', false],
+      ['gateway-b', false]
     ])
-    expect(screen.getByRole('button', { name: 'scout · Pandora' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'omer' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'scout · Gateway A' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'builder' })).toBeTruthy()
   })
 
   it('counts the whole fleet toward the condensed threshold and sections the menu by gateway', async () => {
@@ -347,7 +412,7 @@ describe('ProfileRail fleet mode', () => {
       { is_default: true, name: 'default' },
       ...Array.from({ length: 11 }, (_, index) => ({ is_default: false, name: `p${index + 1}` }))
     ])
-    // 11 named on Pandora + local (default, omer) + vps (default) = 14 > 13.
+    // 11 named on Gateway A + local (default, builder) + gateway-b (default) = 14 > 13.
     const container = await renderFleet()
 
     expect(screen.getByRole('button', { name: 'Profiles' })).toBeTruthy()

@@ -389,10 +389,24 @@ def _format_concurrent_instances_message(matches: list[tuple[int, str]], scripts
 
 
 def _classify_concurrent_instance(pid: int) -> str:
-    """Classify live gateway runtimes using the gateway lifecycle matcher.
+    """Classify ``pid`` as "gateway" / "non-gateway" / "unknown" (psutil can't read it).
 
-    This includes dedicated launchers and bare ``hermes gateway`` (defaults
-    to run). Unreadable identity remains blocking.
+    INVARIANT: this gate and ``_leftover_pausable_gateway_pids`` (update_cmd_windows) answer
+    the same question from two places — *will the updater's own pause machinery stop this
+    process, so the gate may proceed?* — and must therefore share one matcher. That matcher is
+    ``gateway.status.looks_like_gateway_runtime_command_line``, because it is exactly the set
+    ``_pause_windows_gateways_for_update`` stops: its discovery runs ``_scan_gateway_pids``
+    with ``include_restart_managers=True`` on Windows (no systemd), i.e. ``run`` OR
+    ``restart``. It also covers every launcher shape the pause path finds —
+    ``hermes-gateway.exe``, ``gateway/run.py``, bare ``hermes gateway`` — which a
+    ``hermes_cli.main``-tail parser does not. "unknown" is never exempt.
+
+    Do NOT narrow this to ``_scan_venv_blockers._is_pausable_gateway``: that is the venv-scan
+    exemption, and it is a strictly smaller set than the pause machinery reaches.
+
+    argv is joined with ``subprocess.list2cmdline`` (also at the Windows call site) so an
+    install path containing a space survives the matcher's quote-aware re-tokenization; a
+    plain ``" ".join`` splits it and shifts every following token.
     """
     try:
         import psutil  # noqa: PLC0415

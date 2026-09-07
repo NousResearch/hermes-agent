@@ -553,12 +553,15 @@ class TestCheckForSkillUpdates:
         assert results[0]["name"] == "demo-skill"
         assert results[0]["status"] == "update_available"
 
-    def test_orphaned_entry_reported_without_remote_fetch(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("regular_file", [False, True])
+    def test_orphaned_entry_reported_without_remote_fetch(self, tmp_path, monkeypatch, regular_file):
         """A lock-file entry whose install directory no longer exists is
         reported ``orphaned`` without paying the remote fetch cost (#104291)."""
         import tools.skills_hub as hub
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
+        if regular_file:
+            (skills_dir / "demo-skill").write_text("not an installed directory")
         monkeypatch.setattr(hub, "SKILLS_DIR", skills_dir)
 
         lock = MagicMock()

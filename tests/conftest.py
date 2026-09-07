@@ -547,6 +547,7 @@ def _hermetic_environment(tmp_path, monkeypatch):
     # And never let a developer-shell (or leaked child) bypass disarm the
     # guard for in-process code under test.
     monkeypatch.delenv("HERMES_STATE_DB_GUARD_BYPASS", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_DB_GUARD_BYPASS", raising=False)
 
     # 3b. hermes_state computes ``DEFAULT_DB_PATH = get_hermes_home() / "state.db"``
     #     at import time. When the module is first imported at collection (any
@@ -859,7 +860,13 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
         try:
             resolved.relative_to(_REAL_KANBAN_ROOT)
         except ValueError:
-            # Resolved path is NOT under the real root — safe to write.
+            # Resolved path is NOT under the real root by the pre-sandbox env.
+            # That env is wrong under a remapped HOME, so consult the module
+            # guard, which resolves the root from HERMES_REAL_HOME, before
+            # treating the path as safe.
+            _module_guard = getattr(_kdbc, "_ensure_not_live_board", None)
+            if _module_guard is not None:
+                _module_guard(resolved)
             return _orig_connect(db_path, *args, **kwargs)
         raise RuntimeError(
             f"kanban_write_guard: kanban DB path resolved to {resolved}, "

@@ -35,7 +35,7 @@ function makeDeferredGateway() {
 function makeDeps(gw: GatewayClient, over: Partial<SubmitPromptDeps> = {}): SubmitPromptDeps {
   return {
     appendMessage: vi.fn(),
-    enqueue: vi.fn(),
+    enqueueToSession: vi.fn(),
     expand: (t: string) => t,
     gw,
     setLastUserMsg: vi.fn(),
@@ -147,6 +147,106 @@ describe('submissionCore.submitPrompt — literal submissions (startup -q querie
     await Promise.resolve()
 
     expect(submitted).toEqual(['/model $(rm -rf ~)'])
+  })
+})
+
+// The `prompt.submit` re-queue fires from a `.catch` nested inside the
+// `input.detect_drop` `.then` — two round-trips deep — so it is the widest
+// window in the submit path for the session to change underneath it.
+function makeDeferredSubmitGateway() {
+  let rejectSubmit: (e: Error) => void = () => {}
+
+  const submitPromise = new Promise((_resolve, reject) => {
+    rejectSubmit = reject
+  })
+
+  const gw = {
+    request: vi.fn((method: string) =>
+      method === 'input.detect_drop' ? Promise.resolve({ matched: false }) : submitPromise
+    )
+  } as unknown as GatewayClient
+
+  return { gw, rejectSubmit: (e: Error) => rejectSubmit(e) }
+}
+
+const flush = () => new Promise(resolve => setTimeout(resolve, 0))
+
+describe('submissionCore.submitPrompt — session-busy re-queue is origin-scoped', () => {
+  beforeEach(() => {
+    resetUiState()
+    patchUiState({ sid: 'sess-a' })
+  })
+
+  it('re-queues into the ORIGIN session when the rejection lands after a switch', async () => {
+    const { gw, rejectSubmit } = makeDeferredSubmitGateway()
+    const enqueueToSession = vi.fn()
+    const sys = vi.fn()
+
+    submitPrompt('follow-up for A', makeDeps(gw, { enqueueToSession, sys }))
+    await flush()
+
+    // The user switches to B while prompt.submit is still in flight.
+    patchUiState({ busy: false, sid: 'sess-b', status: 'ready' })
+
+    rejectSubmit(new Error('session busy'))
+    await flush()
+
+    // The prompt goes back to A's bucket. Before the fix this went through the
+    // active bucket, so A's prompt was queued into B and then sent into B.
+    expect(enqueueToSession).toHaveBeenCalledWith('sess-a', 'follow-up for A', { display: 'follow-up for A' })
+
+    // ...and A's side effects must not be applied to B.
+    expect(getUiState().sid).toBe('sess-b')
+    expect(getUiState().busy).toBe(false)
+    expect(getUiState().status).toBe('ready')
+    expect(sys).not.toHaveBeenCalled()
+  })
+
+  it('still latches busy and notifies when the origin session is still live', async () => {
+    const { gw, rejectSubmit } = makeDeferredSubmitGateway()
+    const enqueueToSession = vi.fn()
+    const sys = vi.fn()
+
+    submitPrompt('follow-up for A', makeDeps(gw, { enqueueToSession, sys }))
+    await flush()
+
+    rejectSubmit(new Error('session busy'))
+    await flush()
+
+    expect(enqueueToSession).toHaveBeenCalledWith('sess-a', 'follow-up for A', { display: 'follow-up for A' })
+    expect(getUiState().busy).toBe(true)
+    expect(getUiState().status).toBe('queued for next turn')
+    expect(sys).toHaveBeenCalledWith('queued: "follow-up for A"')
+  })
+
+  it('re-queues expanded text with its display override into the origin session', async () => {
+    const { gw, rejectSubmit } = makeDeferredSubmitGateway()
+    const appendMessage = vi.fn()
+    const enqueueToSession = vi.fn()
+    const expandedText = 'expanded skill instructions for the model'
+    const displayText = '/review the current change'
+
+    submitPrompt(
+      'review current change',
+      makeDeps(gw, {
+        appendMessage,
+        enqueueToSession,
+        expand: () => expandedText
+      }),
+      true,
+      displayText
+    )
+    await flush()
+
+    patchUiState({ busy: false, sid: 'sess-b', status: 'ready' })
+
+    rejectSubmit(new Error('session busy'))
+    await flush()
+
+    expect(appendMessage).toHaveBeenCalledWith({ role: 'user', text: displayText })
+    expect(enqueueToSession).toHaveBeenCalledWith('sess-a', expandedText, { display: displayText })
+    expect(getUiState().sid).toBe('sess-b')
+    expect(getUiState().busy).toBe(false)
   })
 })
 

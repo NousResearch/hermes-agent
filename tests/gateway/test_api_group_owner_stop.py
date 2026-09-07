@@ -315,3 +315,17 @@ async def test_missing_and_truncated_records_remain_unresolved_in_http_readback(
         assert remaining["work_state"] == "unresolved" and remaining["truncated"] is True
         assert remaining["counts"]["unknown"] == 2 and remaining["runs"] == []
         assert "PRIVATE_" not in json.dumps(remaining)
+
+
+@pytest.mark.asyncio
+async def test_default_profile_key_cannot_freeze_or_read_named_profile_participant(adapter):
+    participant = {**identity(), "target_profile": "private-profile"}
+    scope = seed(adapter, participant)
+    async with TestClient(TestServer(app_for(adapter))) as cli:
+        response = await cli.post(STOP, headers=OWNER, json=command(participant))
+        assert response.status == 403, await response.json()
+        assert adapter._run_idempotency_store.is_scope_frozen(scope) is False
+        # A pre-existing operation is not an authorization grant to another profile.
+        adapter._run_idempotency_store.freeze_room_scope(participant, "prior-named-stop")
+        readback = await cli.get(STOP + "/prior-named-stop", headers=OWNER)
+        assert readback.status == 404, await readback.json()

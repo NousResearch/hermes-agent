@@ -19,7 +19,7 @@ except ImportError:
     RequestKey = None  # type: ignore[assignment,misc]
 
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
-from gateway.platforms.api_server_run_idempotency import GroupRunFreezeError, TERMINAL_STATUSES
+from gateway.platforms.api_server_run_idempotency import GroupRunFreezeError, GroupRunFrozen, TERMINAL_STATUSES
 from gateway.platforms.api_server_run_scope import room_run_scope_key
 
 
@@ -474,6 +474,9 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
 
 def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_server):
     """Executor-thread body of one run; returns ``(result, usage)``."""
+    # The executor queue can outlive the admission-time check on another listener.
+    if run.room_scope and (run.run_id in self._stopping_run_ids or _scope_is_frozen(self, run.room_scope)):
+        raise GroupRunFrozen()
     from gateway.session_context import clear_session_vars
     from gateway.hosted_room_execution_policy import (
         RoomExecutionPolicy, bind_room_execution_policy, reset_room_execution_policy)
@@ -593,6 +596,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             # Undelivered steer text rides on the terminal event/status for client replay.
             extra = {"pending_steer": result["pending_steer"]} if result.get("pending_steer") else {}
             _finish("completed", extra, output=result.get("final_response", ""), usage=usage)
+    except GroupRunFrozen:
+        _finish("cancelled")
     except asyncio.CancelledError:
         _finish("cancelled")
         raise

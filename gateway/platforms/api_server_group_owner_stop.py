@@ -12,7 +12,7 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway import hosted_rooms as rooms
-from gateway.platforms.api_server_run_idempotency import GroupRunFreezeError
+from gateway.platforms.api_server_run_idempotency import GroupRunFreezeError, GroupStopScopeNotFound
 from gateway.platforms.api_server_run_scope import validate_room_run_scope
 
 MAX_REQUEST_BYTES = 8 * 1024
@@ -70,6 +70,15 @@ def _stop_local_records(adapter, snapshot):
         api_server_runs._unregister_approval_notify(adapter._run_approval_sessions.get(run_id))
 
 
+def _check_participant_owner(identity):
+    # The default profile key is not an installation-wide admin credential.
+    if identity["target_profile"] != "default":
+        return _error("This connection cannot control another Bot profile.", "participant_owner_required", 403)
+    if identity["target_install_id"] != rooms.local_authority_gateway_id():
+        return _error("This participant belongs to another gateway.", "group_stop_target_mismatch", 400)
+    return None
+
+
 def _public_snapshot(adapter, snapshot):
     active, unresolved = 0, 0
     observed = []
@@ -108,14 +117,18 @@ def http_routes(adapter):
                 if set(body) != {"participant", "command_id", "confirm"} or body["confirm"] is not True:
                     return _error("Confirm the participant freeze explicitly.", "invalid_group_stop_request", 400)
                 identity = validate_room_run_scope(body["participant"])
-                if identity["target_install_id"] != rooms.local_authority_gateway_id():
-                    return _error("This participant belongs to another gateway.", "group_stop_target_mismatch", 400)
+                denied = _check_participant_owner(identity)
+                if denied is not None:
+                    return denied
                 snapshot = await asyncio.to_thread(store.freeze_room_scope, identity, body["command_id"])
                 # The admission barrier is committed before interrupt/reap work.
                 _stop_local_records(adapter, snapshot)
                 snapshot = await asyncio.to_thread(store.room_stop_snapshot, snapshot["command_id"])
             else:
                 snapshot = await asyncio.to_thread(store.room_stop_snapshot, request.match_info["command_id"])
+                denied = _check_participant_owner(snapshot["identity"])
+                if denied is not None:
+                    raise GroupStopScopeNotFound()
             return web.json_response(_public_snapshot(adapter, snapshot))
         except GroupRunFreezeError as exc:
             return _error(str(exc), exc.code, exc.status)

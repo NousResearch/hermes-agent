@@ -1,6 +1,8 @@
 """Execution and control boundaries for a frozen participant, with real HTTP auth."""
 
 import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock
 
 import pytest
@@ -155,3 +157,58 @@ async def test_memory_fallback_refuses_group_admission_but_keeps_regular_control
         stopped = await cli.post(f"/v1/runs/{run_id}/stop", headers=OWNER)
         assert stopped.status == 200, await stopped.json()
         assert interrupted.is_set()
+
+
+@pytest.mark.asyncio
+async def test_freeze_committed_while_in_executor_queue_prevents_conversation_start(adapter, monkeypatch):
+    release = threading.Event()
+    executor = ThreadPoolExecutor(max_workers=1)
+    blocker = executor.submit(release.wait, 10)
+    loop = asyncio.get_running_loop()
+    schedule = loop.run_in_executor
+    queued = asyncio.Event()
+    agent = MagicMock()
+    agent.run_conversation.return_value = {"final_response": "must not run"}
+    agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+    queue_next = False
+
+    def create_agent(**_kwargs):
+        nonlocal queue_next
+        queue_next = True
+        return agent
+
+    monkeypatch.setattr(adapter, "_create_agent", create_agent)
+    controller = _make_adapter(KEY)
+
+    def queue_execution(_executor, function, *args):
+        nonlocal queue_next
+        if queue_next:
+            queue_next = False
+            result = schedule(executor, function, *args)
+            queued.set()
+            return result
+        return schedule(_executor, function, *args)
+
+    try:
+        async with TestClient(TestServer(app_for(adapter))) as cli, TestClient(TestServer(app_for(controller))) as owner:
+            invited = await invite(cli)
+            payload = dispatch(invited)
+            with monkeypatch.context() as execution_patch:
+                execution_patch.setattr(loop, "run_in_executor", queue_execution)
+                accepted = await submit(cli, invited, payload)
+                assert accepted.status == 202, await accepted.json()
+                await asyncio.wait_for(queued.wait(), 3)
+            tasks = list(adapter._active_run_tasks.values())
+            stopped = await owner.post(STOP, headers=OWNER, json=command(participation(payload)))
+            assert stopped.status == 200, await stopped.json()
+            assert (await stopped.json())["admissions_frozen"] is True
+            assert not blocker.done()
+            release.set()
+            await asyncio.wait_for(asyncio.gather(*tasks), 3)
+            agent.run_conversation.assert_not_called()
+            readback = await owner.get(STOP + "/owner-stop-1", headers=OWNER)
+            assert (await readback.json())["work_state"] == "no_active_recorded_runs"
+    finally:
+        release.set()
+        await asyncio.to_thread(executor.shutdown, wait=True)
+        controller._run_idempotency_store.close()

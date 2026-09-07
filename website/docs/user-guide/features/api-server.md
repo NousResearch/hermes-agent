@@ -506,9 +506,11 @@ Resolve a pending approval for a run that is waiting on a human decision (for ex
 
 If the gateway coordinating a Group Chat is unreachable, the installation owner
 can contact a reachable participant directly and freeze that participant's
-already-known group work. This uses the installation's configured `API_SERVER_KEY`
-on the **unprefixed installation-root connection**, not a named-profile connection
-or a group invitation token.
+already-known group work. This first increment covers the **default Bot profile
+only**, using its configured `API_SERVER_KEY` on the unprefixed installation-root
+connection. That key does not become an admin credential for named profiles.
+Named-profile connections, named-profile targets and group invitation tokens
+cannot use this operation.
 
 **This is a permanent emergency freeze, not a resumable pause or a whole-group
 Stop.** Other participants, other groups and ordinary API conversations are not

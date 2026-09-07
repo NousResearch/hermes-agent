@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
+import * as model from '@/components/pane-shell/tree/model'
+// Cold transforms belong to collection, not the first unread assertion's budget.
+import * as tree from '@/components/pane-shell/tree/store'
+import { registry } from '@/contrib/registry'
+import { createClientSessionState } from '@/lib/chat-runtime'
+
+import * as session from './session'
+import * as states from './session-states'
+
 // The completed-unread dot is keyed on the FOCUSED session, not the selected
 // one. A tile is never $selectedStoredSessionId, so keying either half on the
 // selection left a tiled session's dot green with no way to clear it.
@@ -16,13 +25,6 @@ describe('completed-unread dot follows the focused session', () => {
   })
 
   async function setup() {
-    const tree = await import('@/components/pane-shell/tree/store')
-    const model = await import('@/components/pane-shell/tree/model')
-    const { registry } = await import('@/contrib/registry')
-    const { createClientSessionState } = await import('@/lib/chat-runtime')
-    const session = await import('./session')
-    const states = await import('./session-states')
-
     // `declareDefaultTree` only seeds `$layoutTree` when it is empty, so the
     // layout has to be cleared here or the second test would adopt the first
     // test's tree instead of the one it declares.
@@ -33,8 +35,7 @@ describe('completed-unread dot follows the focused session', () => {
       disposers.push(
         registry.register({
           area: 'panes',
-          data:
-            id === 'workspace' ? { placement: 'main', uncloseable: true } : { placement: 'main' },
+          data: id === 'workspace' ? { placement: 'main', uncloseable: true } : { placement: 'main' },
           id,
           render: () => null,
           title: id

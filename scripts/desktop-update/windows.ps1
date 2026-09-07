@@ -1595,6 +1595,17 @@ try {
         if ($rebuild.Code -ne 0) { $desktopBuildFailed = $true }
     }
 
+    # A zero-exit update is not proof that the runtime survived the update.
+    if ($res.Code -eq 0 -and -not $desktopBuildFailed) {
+        $verify = Invoke-HermesStep $pythonExe @("-c", "import hermes_cli.main") "verify"
+        if ($verify.Code -ne 0) {
+            $finalCode = 8
+            $finalMsg = "The updated Hermes runtime failed verification. Repair the installation and review antivirus quarantine before retrying."
+            Write-HandoffLog $finalMsg
+            exit $finalCode
+        }
+    }
+
     if ($res.Code -eq 0 -and -not $desktopBuildFailed) {
         $finalCode = 0
         $finalMsg = "Update complete."

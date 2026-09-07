@@ -34,7 +34,7 @@ When you run `hermes update`, the following steps occur:
 
 ### Missing Windows updater files
 
-If the maintained updater script is missing (for example after antivirus quarantine), the legacy update forwarder fails instead of reporting a successful hand-off. Repair the installation and review the security software's quarantine report before retrying; do not disable antivirus protection. This prerequisite check does not verify a completed desktop build.
+If the maintained updater script is missing (for example after antivirus quarantine), the legacy update forwarder fails instead of reporting a successful hand-off. Repair the installation and review the security software's quarantine report before retrying; do not disable antivirus protection. The maintained updater also checks that the updated Python runtime can import the CLI before reporting success. These checks do not validate the desktop artifact's build stamp.
 
 ### Updating against a non-default branch: `--branch`
 

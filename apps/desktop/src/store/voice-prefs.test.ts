@@ -22,6 +22,7 @@ it('keeps the desktop toggle local across config refreshes', async () => {
           throw new DOMException('Full', 'QuotaExceededError')
         })
       }
+
       vi.mocked(saveHermesConfig).mockClear()
 
       try {

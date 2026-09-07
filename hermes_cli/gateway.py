@@ -6011,16 +6011,35 @@ def _restart_all(system: bool) -> None:
         _service_call(kind, "start", system)
 
 
+def _clear_fleet_restart_pending_after_restart() -> None:
+    """Discharge the pull→restart breadcrumb once a ``gateway restart`` succeeded.
+
+    ``hermes update`` clears the marker only in its systemd-centric catch-up path; a
+    standalone ``hermes gateway restart`` (the macOS/launchd case) never touched it, so
+    every CLI command kept warning that pulled code had not been restarted onto. The
+    gateway has now been (re)started from current code, so the obligation is met. Never
+    raises (the lazy import keeps the updater modules out of the gateway import path).
+    """
+    try:
+        from hermes_cli.update_cmd_fleet import _clear_fleet_restart_pending_marker
+    except Exception:  # pragma: no cover — the import cannot fail in practice
+        return
+    _clear_fleet_restart_pending_marker()
+
+
 def _cmd_restart(args):
     _refuse_from_inside_gateway("restart", "restart loops")
     system = getattr(args, "system", False)
     restart_all = getattr(args, "all", False)
     if restart_all and _dispatch_all_via_service_manager_if_s6("restart"):
+        _clear_fleet_restart_pending_after_restart()
         return
     if not restart_all and _dispatch_via_service_manager_if_s6("restart"):
+        _clear_fleet_restart_pending_after_restart()
         return
     if restart_all:
         _restart_all(system)
+        _clear_fleet_restart_pending_after_restart()
         return
 
     # The Windows restart path handles both registered installs and detached restarts.
@@ -6030,6 +6049,7 @@ def _cmd_restart(args):
         swallow = (RuntimeError, OSError) if kind == "windows" else ()
         try:
             _service_call(kind, "restart", system)
+            _clear_fleet_restart_pending_after_restart()
             return
         except (subprocess.CalledProcessError, *swallow):
             pass
@@ -6059,6 +6079,7 @@ def _cmd_restart(args):
     _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
     print("Starting gateway...")
     run_gateway(verbose=0)
+    _clear_fleet_restart_pending_after_restart()
 
 
 # ``hermes gateway status`` hints for a manually-run / stopped gateway, keyed by host kind.

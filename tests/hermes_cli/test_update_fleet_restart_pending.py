@@ -609,3 +609,35 @@ def test_startup_warn_silent_when_nothing_pending(capsys):
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out == ""
+
+
+def test_gateway_restart_clears_fleet_restart_pending_marker(monkeypatch):
+    """A successful ``hermes gateway restart`` discharges the pull→restart breadcrumb.
+
+    ``hermes update`` clears the marker only in its systemd-centric catch-up path; a
+    standalone restart (the macOS/launchd case) never touched it, so every CLI command
+    kept warning that pulled code had not been restarted onto. A restart brings the
+    gateway onto current code, so the marker must be gone afterward.
+    """
+    import hermes_cli.gateway as gateway
+
+    monkeypatch.setattr(gateway, "_refuse_from_inside_gateway", lambda *a, **k: None)
+    monkeypatch.setattr(
+        gateway, "_dispatch_all_via_service_manager_if_s6", lambda *a, **k: False
+    )
+    monkeypatch.setattr(
+        gateway, "_dispatch_via_service_manager_if_s6", lambda *a, **k: False
+    )
+    monkeypatch.setattr(gateway, "_installed_service_kind_for", lambda *a, **k: None)
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway, "stop_profile_gateway", lambda: False)
+    monkeypatch.setattr(gateway, "_wait_for_gateway_exit", lambda *a, **k: None)
+    monkeypatch.setattr(gateway, "run_gateway", lambda *a, **k: None)
+
+    update_cmd._write_fleet_restart_pending_marker(expected_sha="abc123")
+    path = update_cmd._fleet_restart_pending_marker_path()
+    assert path.is_file()
+
+    gateway._cmd_restart(SimpleNamespace(system=False, all=False))
+
+    assert not path.exists()

@@ -14,6 +14,17 @@ The stage-by-stage contract (`plan → snapshot → apply → restart-per-kind �
 field failure each stage guards are documented in `hermes_cli/AGENTS.md`; user-facing behaviour
 (receipts, `--plan`, snapshot modes) is in [Updating](../getting-started/updating.md).
 
+The systemd blunt-restart fallback waits for the unit's `TimeoutStopUSec` plus
+`TimeoutStartUSec`, with 15 seconds of client-side slack. It reads the target unit
+in the same manager scope as the restart; both the initial attempt and retry use
+this budget. A missing, unparseable, or infinite phase limit falls back to 90 seconds
+for that phase, keeping unattended updates bounded. Timing out the `systemctl`
+client does **not** cancel the manager's transaction. Custom multi-command stop
+chains or `EXTEND_TIMEOUT_USEC` can still outlast this estimate; a real timeout
+remains an incomplete restart, and successful commands still require the existing
+service-health and fleet-version verification. This does not change active-turn
+drain settings.
+
 ## Process identity: never infer it from argv substrings
 
 The bug class behind ~10 fleet-update issues (#90778, #87594, #78089, #76129, #91964, ...):

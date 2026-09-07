@@ -69,6 +69,39 @@ def test_decompose_creates_children_and_promotes_root(kanban_home):
     assert c1.assignee == "engineer"
 
 
+def test_decompose_scratch_children_get_own_workspace(kanban_home):
+    """A scratch root already claimed (workspace_path set) must not pin its
+    decomposed children to that same directory — each should resolve its own
+    ``workspaces/<child-id>`` at dispatch, exactly like worktree children do.
+    """
+    with kbc.connect() as conn:
+        tid = _create_triage(conn, title="rough idea")
+        conn.execute(
+            "UPDATE tasks SET workspace_kind='scratch', "
+            "workspace_path='/home/x/.hermes/workspaces/root' WHERE id = ?",
+            (tid,),
+        )
+        conn.commit()
+
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orchestrator",
+            children=[{"title": "A"}, {"title": "B"}],
+            author="decomposer",
+        )
+    assert child_ids is not None and len(child_ids) == 2
+
+    with kbc.connect() as conn:
+        for cid in child_ids:
+            row = conn.execute(
+                "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+                (cid,),
+            ).fetchone()
+            assert row["workspace_kind"] == "scratch"
+            assert row["workspace_path"] is None
+
+
 def test_decompose_records_audit_comment_and_event(kanban_home):
     with kbc.connect() as conn:
         tid = _create_triage(conn)

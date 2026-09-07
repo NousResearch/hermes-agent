@@ -173,9 +173,10 @@ class TestFallbackChainAdvancement:
                 (None, None),                    # broken provider
                 (_mock_client(), "gpt-4o"),       # fallback succeeds
             ]
-            assert agent._try_activate_fallback() is True
+            assert agent._try_activate_fallback(FailoverReason.rate_limit) is True
             assert agent.model == "gpt-4o"
             assert agent._fallback_index == 2
+            assert agent._rate_limit_backoff_count == 1
 
     def test_skips_provider_that_raises_to_next(self):
         """If resolve_provider_client raises, skip to next in chain."""

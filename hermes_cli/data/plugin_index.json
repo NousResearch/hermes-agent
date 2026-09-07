@@ -63,6 +63,17 @@
       "capabilities": ["tools"],
       "api_version": 1,
       "added_at": "2026-08-12"
+    },
+    {
+      "name": "timeanchor",
+      "description": "每轮自动注入当前时间（年/月/日/星期/时分），跨天自动强调。pre_llm_call 钩子，零依赖、零配置，几乎零 token 成本。",
+      "author": "uhyuuuuu",
+      "tags": ["time", "date", "clock", "hook", "chinese", "pre-llm-call"],
+      "repo": "uhyuuuuu/hermes-timeanchor",
+      "ref": "d4efd6af3edbfd80286f0abe63352c859df901b3",
+      "homepage": "https://github.com/uhyuuuuu/hermes-timeanchor",
+      "api_version": 1,
+      "added_at": "2026-08-20"
     }
   ]
 }

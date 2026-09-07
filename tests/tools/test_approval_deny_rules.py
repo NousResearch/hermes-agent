@@ -82,11 +82,17 @@ def test_deny_follows_executable_identity(deny_config, clean_env, monkeypatch):
         'echo "$(/usr/bin/sudo -n id -u)"',
         "bash -lc 'env -i /usr/bin/sudo -n id -u'",
         "env -S '/usr/bin/sudo -n id -u'",
+        "env -S /usr/bin/sudo -n id -u",
+        "env --split-string=/usr/bin/sudo -n id -u",
+        "env -S \"bash -c '/usr/bin/sudo -n id -u'\"",
+        "echo ok # ignored\n bash -c '/usr/bin/sudo -n id -u'",
+        "printf SAFE", "env -S printf SAFE", "env -Sprintf SAFE",
+        "env --split-string=printf SAFE", "env -S 'printf' SAFE",
         "2>/tmp/log FOO=bar /usr/bin/sudo -n id -u",
         "if true; then /usr/bin/sudo -n id -u; fi",
     ]
     for mode, yolo in (("manual", False), ("off", False), ("manual", True)):
-        deny_config(["sudo *"], mode=mode)
+        deny_config(["sudo *", "printf SAFE"], mode=mode)
         monkeypatch.setattr(mod, "_YOLO_MODE_FROZEN", yolo)
         for command in commands:
             for guard in (mod.check_dangerous_command, mod.check_all_command_guards):
@@ -108,10 +114,18 @@ def test_deny_projection_preserves_data_and_path_rules(deny_config):
         "env -u sudo printf ok", "exec -a sudo printf ok",
         "ionice --pid sudo", "chrt --pid sudo", "taskset --pid 1 sudo",
         "echo 'first\nsudo -n id -u'", "echo ok # ; sudo -n id -u",
+        "env -S 'printf %s; sudo -n id'",
+        "env -S 'printf %s' 'sudo -n id'",
+        "env -S 'printf %s' '$(sudo -n id)'",
+        "echo ok # ; bash -c '/usr/bin/sudo -n id'",
+        "echo ok # unmatched '\n printf ok",
+        "printf '%s' '# ; bash -c sudo'",
         "git log --grep='git status'", r'printf "%s" "a\"; sudo -n id -u"',
     ):
         assert approval_floors._match_user_deny_rule(command) is None, command
-    for command in ("env git status; echo ok", "(git status)", "git\tstatus # comment"):
+    for command in ("env git status; echo ok", "(git status)", "git\tstatus # comment",
+                    "env -S git status", "env -S 'git' status", "env -Sgit status",
+                    "env --split-string=git status"):
         assert approval_floors._match_user_deny_rule(command) == "git status", command
     assert approval_floors._match_user_deny_rule('env git st""atus') == "git status"
     deny_config(['printf "a  b"'])

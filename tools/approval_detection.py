@@ -772,11 +772,11 @@ def _shell_segment_tokens(segment: str, start: int) -> list[str] | None:
 def _iter_top_level_shell_segments(command: str):
     """Yield top-level command segments in one left-to-right pass."""
     start = 0
-    for kind, i, _, quote in _scan_shell(command):
-        if kind == "char" and quote is None and command[i] in ";&|\n":
+    for kind, i, j, quote in _scan_shell(command, comments=True):
+        if kind == "comment" or (kind == "char" and quote is None and command[i] in ";&|\n"):
             if start < i:
                 yield command[start:i]
-            start = i + 1
+            start = j
     if start < len(command):
         yield command[start:]
 
@@ -1149,6 +1149,10 @@ def _iter_shell_command_word_spans(command: str):
                 continue
             if wrapper and options and deobfuscated.startswith("-"):
                 option = deobfuscated.split("=", 1)[0]
+                if wrapper == "env" and (option == "--split-string" or deobfuscated.startswith("-S")):
+                    # The split string and remaining argv form ONE command, handled
+                    # by _env_split_payload; the suffix is not a new executable.
+                    break
                 queries = _COMMAND_WRAPPER_NON_EXECUTING_OPTIONS.get(wrapper, set())
                 if option in queries or (wrapper == "command" and not option.startswith("--")
                                          and set(option[1:]) & {"v", "V"}):
@@ -1185,8 +1189,17 @@ def _env_split_payload(tokens: list[str]) -> str | None:
             return None
         option, equals, value = token.partition("=")
         if option == "--split-string" or token.startswith("-S"):
-            payload = value if equals else token[2:] if token.startswith("-S") else ""
-            return payload or (tokens[index + 1] if index + 1 < len(tokens) else None)
+            attached = equals if option == "--split-string" else len(token) > 2
+            if not attached:
+                index += 1
+            payload = (value if option == "--split-string" else token[2:]) if attached else (
+                tokens[index] if index < len(tokens) else "")
+            try:
+                # env splits argv, not shell syntax: protect literal separators and
+                # expansions when feeding the existing command-position scanner.
+                return shlex.join(shlex.split(payload) + tokens[index + 1:])
+            except ValueError:
+                return None
         index += 2 if not equals and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG["env"] else 1
     return None
 

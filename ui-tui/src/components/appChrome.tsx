@@ -640,7 +640,7 @@ export function StatusRule({
   // Width-budgeted like every tail segment, so it drops first on a tight
   // terminal where ⛓ already carries the signal.
   const resumeHintText =
-    subagentCount === 1 ? '↩ resumes when subagent finishes' : `↩ resumes when ${subagentCount} subagents finish`
+    subagentCount === 1 ? '↩ resumes when delegation finishes' : `↩ resumes when ${subagentCount} delegations finish`
 
   const showResumeHint = !busy && subagentCount > 0 && fits(SEP + stringWidth(resumeHintText))
   // Dev-gated readout (HERMES_DEV_CREDITS), lowest priority,

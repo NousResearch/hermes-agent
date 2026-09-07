@@ -209,6 +209,7 @@ export interface SessionInfo {
 }
 
 export interface Usage {
+  /** Unfinished delegation completion units owned by this conversation (a task group counts once). */
   active_subagents?: number
   /** Rolling mean API latency over the last 10 calls (seconds). */
   avg_latency_s?: number

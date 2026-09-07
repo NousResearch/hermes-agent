@@ -1942,10 +1942,10 @@ def _get_usage(agent) -> dict:
             for _key, _val in (("avg_latency_s", _total_lat / _n), ("avg_tps", _avg_vel)):
                 if _val is not None and _val == _val and 0 < _val < 1e6:  # guard NaN/negative/absurd provider timings
                     usage[_key] = round(float(_val), 1)
-    # Live count of background/async subagents (CLI status bar ⛓ parity, same async_delegation registry).
+    # Per-conversation unfinished completion units (a grouped batch contributes one).
     with contextlib.suppress(Exception):
-        from tools.async_delegation import active_count as _async_active_count
-        usage["active_subagents"] = _async_active_count()
+        from tools.async_delegation import active_count_for_agent
+        usage["active_subagents"] = active_count_for_agent(agent)
     # Dev-only live credits-spent readout, gated on HERMES_DEV_CREDITS so the payload stays clean otherwise.
     if is_truthy_value(os.environ.get("HERMES_DEV_CREDITS")):
         with contextlib.suppress(Exception):

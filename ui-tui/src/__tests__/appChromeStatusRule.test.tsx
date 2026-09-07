@@ -156,19 +156,21 @@ describe('StatusRule background-subagent indicator', () => {
   it('spells out the auto-resume hint when idle with subagents in flight', () => {
     const element = StatusRule({
       ...baseProps,
+      cols: 160,
       usage: { ...baseProps.usage, active_subagents: 1 }
     })
 
-    expect(textContent(element)).toContain('resumes when subagent finishes')
+    expect(textContent(element)).toContain('resumes when delegation finishes')
   })
 
   it('pluralizes the resume hint for multiple in-flight subagents', () => {
     const element = StatusRule({
       ...baseProps,
+      cols: 160,
       usage: { ...baseProps.usage, active_subagents: 3 }
     })
 
-    expect(textContent(element)).toContain('resumes when 3 subagents finish')
+    expect(textContent(element)).toContain('resumes when 3 delegations finish')
   })
 
   it('hides the resume hint mid-turn (a busy turn owns the indicator)', () => {

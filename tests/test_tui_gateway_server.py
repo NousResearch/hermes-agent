@@ -19612,10 +19612,7 @@ def test_subscription_upgrade_requires_action_surfaces_recovery(monkeypatch):
     assert res["recovery_url"].startswith("https://portal.example")
     assert res["idempotency_key"]  # minted when the caller omits one
 # ── _get_usage active_subagents (TUI status-bar ⛓ indicator) ──────────────
-# Mirrors the classic CLI status bar: _get_usage embeds a live count of
-# background/async subagents from tools.async_delegation.active_count() so the
-# Ink status bar can render ⛓ N. Source of truth is the same registry the CLI
-# reads; the field rides the existing per-update `usage` payload.
+# The field counts unfinished completion units owned by this conversation.
 
 
 class _BareAgent:
@@ -19672,26 +19669,26 @@ def test_get_usage_perf_readouts_guard_negative_latency():
 
 def test_get_usage_includes_active_subagents(monkeypatch):
     import tools.async_delegation as ad_mod
-    monkeypatch.setattr(ad_mod, "active_count", lambda: 4)
+    monkeypatch.setattr(ad_mod, "active_count_for_agent", lambda agent: 4)
     usage = server._get_usage(_BareAgent())
     assert usage["active_subagents"] == 4
 
 
 def test_get_usage_active_subagents_zero(monkeypatch):
     import tools.async_delegation as ad_mod
-    monkeypatch.setattr(ad_mod, "active_count", lambda: 0)
+    monkeypatch.setattr(ad_mod, "active_count_for_agent", lambda agent: 0)
     usage = server._get_usage(_BareAgent())
     assert usage["active_subagents"] == 0
 
 
 def test_get_usage_safe_when_active_count_raises(monkeypatch):
-    """A raising active_count() must not break the usage payload."""
+    """A raising registry query must not break the usage payload."""
     import tools.async_delegation as ad_mod
 
-    def _boom():
+    def _boom(agent):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(ad_mod, "active_count", _boom)
+    monkeypatch.setattr(ad_mod, "active_count_for_agent", _boom)
     usage = server._get_usage(_BareAgent())
     # Field omitted, but the rest of the payload is intact.
     assert "active_subagents" not in usage

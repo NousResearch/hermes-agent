@@ -477,19 +477,39 @@ def active_task_count() -> int:
             for r in _records.values() if r.get("status") in {"running", "finalizing"})
 
 
-def _session_records(statuses, session_key: str, origin_ui_session_id: str, parent_session_id: str) -> list:
+def _session_records(statuses, session_key: str, origin_ui_session_id: str, parent_session_id: str,
+                     *, parent_agent: Any = None) -> list:
     """Records in ``statuses`` owned by a session: any non-empty selector claims the
     record — ``origin_ui_session_id`` (TUI tab), ``session_key`` (routing key at
     dispatch), or ``parent_session_id`` (spawner's durable id — the right one for
-    gateway chats, whose session_key survives ``/new`` while the session id rotates)."""
+    gateway chats, whose session_key survives ``/new`` while the session id rotates).
+    ``parent_agent`` opts into resolving durable parent ids through compression lineage."""
     selectors = [(field, wanted) for field, wanted in (
         ("origin_ui_session_id", origin_ui_session_id), ("session_key", session_key),
         ("parent_session_id", parent_session_id)) if wanted]
     if not selectors:
         return []
     with _records_lock:
-        return [r for r in _records.values() if r.get("status") in statuses
-                and any(str(r.get(field) or "") == wanted for field, wanted in selectors)]
+        if parent_agent is None:
+            return [r for r in _records.values() if r.get("status") in statuses
+                    and any(str(r.get(field) or "") == wanted for field, wanted in selectors)]
+        records = [r for r in _records.values() if r.get("status") in statuses]
+    # Resolve outside the registry lock: SessionDB reads must not block dispatch.
+    from tools.delegate_tool_registry import _resolve_session_lineage
+    parent_tip = _resolve_session_lineage(parent_session_id, parent_agent)
+    return [r for r in records
+            if any(str(r.get(field) or "") == wanted for field, wanted in selectors)
+            or (parent_tip and r.get("parent_session_id")
+                and _resolve_session_lineage(r["parent_session_id"], parent_agent) == parent_tip)]
+
+
+def active_count_for_agent(parent_agent: Any) -> int:
+    """Live completion units owned by this conversation, including compression ancestors.
+
+    Never select by UI tab or routing key: those can survive /new.
+    """
+    return len(_session_records(_LIVE_STATES, "", "", str(getattr(parent_agent, "session_id", "") or ""),
+                                parent_agent=parent_agent))
 
 
 def has_live_for_session(session_key: str = "", origin_ui_session_id: str = "", parent_session_id: str = "") -> bool:

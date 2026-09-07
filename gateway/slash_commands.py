@@ -1375,6 +1375,7 @@ class GatewaySlashCommandsMixin:
             delegations = [
                 d for d in list_async_delegations()
                 if d.get("status") in ("running", "stalling", "finalizing")
+                or d.get("active_clusters", 0) > 0
             ]
         except Exception:
             delegations = []
@@ -1394,6 +1395,14 @@ class GatewaySlashCommandsMixin:
                     goal = goal[:67] + "..."
                 status = d.get("status", "?")
                 row = f"- `{d.get('delegation_id', '?')}` · {status}"
+                if d.get("graph_id"):
+                    row += (
+                        f" · {d.get('active_clusters', 0)} active, "
+                        f"{d.get('completed_clusters', 0)} completed, "
+                        f"{d.get('stalled_clusters', 0)} stalled, "
+                        f"{d.get('failed_clusters', 0)} failed, "
+                        f"{d.get('interrupted_clusters', 0)} interrupted clusters"
+                    )
                 if status == "stalling":
                     quiet = d.get("stalled_after_quiet_seconds")
                     if quiet is not None:

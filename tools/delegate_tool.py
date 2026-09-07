@@ -4448,29 +4448,46 @@ def delegate_task(
         component_indices: tuple[int, ...],
         *,
         honor_parent_interrupt: bool = True,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Dict[str, Any]:
         """Run one connected DAG component, releasing nodes when ready."""
         component_started = time.monotonic()
         component_results: List[Dict[str, Any]] = []
         results_by_index: Dict[int, Dict[str, Any]] = {}
 
-        if len(component_indices) == 1:
-            index = component_indices[0]
-            child = _children_by_index[index]
-            entry = _run_single_child(
-                index,
-                task_list[index]["goal"],
-                child,
-                parent_agent,
+        def _cancelled() -> bool:
+            return (cancel_event is not None and cancel_event.is_set()) or (
+                honor_parent_interrupt
+                and getattr(parent_agent, "_interrupt_requested", False) is True
+            )
+
+        def _interrupted_before_start(index: int) -> Dict[str, Any]:
+            entry = {
+                "task_index": index,
+                "status": "interrupted",
+                "summary": None,
+                "error": "Delegation cancelled before task started",
+                "exit_reason": "interrupted",
+                "api_calls": 0,
+                "duration_seconds": 0,
+                "_child_role": getattr(_children_by_index[index], "_delegate_role", None),
+            }
+            _close_unstarted_child(index, entry)
+            return _annotate_dependency_result(index, entry)
+
+        def _run_ready_child(index: int, goal: str) -> Dict[str, Any]:
+            # Check again on the worker: a ready task can have been queued in
+            # the executor before cancellation reached the scheduler thread.
+            if _cancelled() or getattr(_children_by_index[index], "_interrupt_requested", False) is True:
+                return _interrupted_before_start(index)
+            return _run_single_child(
+                task_index=index,
+                goal=goal,
+                child=_children_by_index[index],
+                parent_agent=parent_agent,
                 owner_session_id=_origin_ui_session_id or None,
                 owner_transport=_origin_owner_transport,
                 owner_session_record=_origin_owner_session_record,
-            )
-            entry = _annotate_dependency_result(index, entry)
-            component_results.append(entry)
-            _report_dependency_completion(entry)
-            return _finalize_dependency_component(
-                component_results, component_indices, component_started
             )
 
         from concurrent.futures import FIRST_COMPLETED, wait as _cf_wait
@@ -4482,72 +4499,33 @@ def delegate_task(
             max_workers=min(max_children, len(component_indices))
         ) as executor:
             while unstarted or running:
-                if (
-                    honor_parent_interrupt
-                    and getattr(parent_agent, "_interrupt_requested", False) is True
-                ):
+                if _cancelled():
                     for index in sorted(unstarted):
-                        entry = {
-                            "task_index": index,
-                            "status": "interrupted",
-                            "summary": None,
-                            "error": "Parent agent interrupted before task started",
-                            "exit_reason": "interrupted",
-                            "api_calls": 0,
-                            "duration_seconds": 0,
-                            "_child_role": getattr(
-                                _children_by_index[index], "_delegate_role", None
-                            ),
-                        }
-                        _close_unstarted_child(index, entry)
-                        _annotate_dependency_result(index, entry)
+                        entry = _interrupted_before_start(index)
                         component_results.append(entry)
                         results_by_index[index] = entry
                         _report_dependency_completion(entry)
                     unstarted.clear()
                     for future, index in list(running.items()):
-                        if future.done():
-                            try:
-                                entry = future.result()
-                            except Exception as exc:
-                                entry = {
-                                    "task_index": index,
-                                    "status": "error",
-                                    "summary": None,
-                                    "error": str(exc),
-                                    "api_calls": 0,
-                                    "duration_seconds": 0,
-                                    "_child_role": getattr(
-                                        _children_by_index[index],
-                                        "_delegate_role",
-                                        None,
-                                    ),
-                                }
-                        else:
-                            entry = {
-                                "task_index": index,
-                                "status": "interrupted",
-                                "summary": None,
-                                "error": "Parent agent interrupted while task was running",
-                                "exit_reason": "interrupted",
-                                "api_calls": 0,
-                                "duration_seconds": 0,
-                                "_child_role": getattr(
-                                    _children_by_index[index], "_delegate_role", None
-                                ),
-                            }
-                        _annotate_dependency_result(index, entry)
+                        # A queued future that we cancel never enters the
+                        # worker wrapper, so its cleanup belongs here. Running
+                        # children retain their real partial result/cost and
+                        # close themselves through _run_single_child.
+                        if not future.cancel():
+                            continue
+                        running.pop(future)
+                        entry = _interrupted_before_start(index)
                         component_results.append(entry)
                         results_by_index[index] = entry
                         _report_dependency_completion(entry)
-                    running.clear()
-                    break
 
                 # Release every node whose prerequisites have reached a
                 # terminal state. Failed prerequisites block descendants
                 # without consuming a worker or model call.
                 released = False
                 for index in sorted(list(unstarted)):
+                    if _cancelled():
+                        break
                     parents = dependency_plan.dependencies[index]
                     if not all(parent in results_by_index for parent in parents):
                         continue
@@ -4566,21 +4544,24 @@ def delegate_task(
                         _report_dependency_completion(entry)
                         continue
                     execution_goal = _dependency_goal(index, results_by_index)
+                    if _cancelled():
+                        entry = _interrupted_before_start(index)
+                        component_results.append(entry)
+                        results_by_index[index] = entry
+                        _report_dependency_completion(entry)
+                        continue
                     child_context = contextvars.copy_context()
                     future = executor.submit(
                         child_context.run,
-                        _run_single_child,
-                        task_index=index,
-                        goal=execution_goal,
-                        child=_children_by_index[index],
-                        parent_agent=parent_agent,
-                        owner_session_id=_origin_ui_session_id or None,
-                        owner_transport=_origin_owner_transport,
-                        owner_session_record=_origin_owner_session_record,
+                        _run_ready_child,
+                        index,
+                        execution_goal,
                     )
                     running[future] = index
 
                 if not running:
+                    if _cancelled():
+                        continue
                     if unstarted and not released:
                         # build_dependency_plan already rejects cycles; this is
                         # a fail-closed guard against an internal plan mismatch.
@@ -4839,11 +4820,15 @@ def delegate_task(
 
     _all_task_indices = tuple(range(n_tasks))
 
-    def _execute_current_plan(*, honor_parent_interrupt: bool = True) -> dict:
+    def _execute_current_plan(
+        *, honor_parent_interrupt: bool = True,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> dict:
         if dependency_plan.enabled:
             return _execute_dependency_component(
                 _all_task_indices,
                 honor_parent_interrupt=honor_parent_interrupt,
+                cancel_event=cancel_event,
             )
         return _execute_and_aggregate(
             honor_parent_interrupt=honor_parent_interrupt
@@ -4951,10 +4936,11 @@ def delegate_task(
         _parent_session_id = getattr(parent_agent, "session_id", None)
         _child_agents = [c for (_, _, c) in children]
 
-        # Detach every child from the parent's interrupt-propagation list — the
-        # batch's lifecycle is owned by the async registry now, not the parent
-        # turn. _build_child_agent attached them (correct for sync runs).
-        if hasattr(parent_agent, "_active_children"):
+        def _detach_dispatched_children() -> None:
+            # Transfer interrupt ownership only after successful admission.
+            # Rejected dispatches keep the parent link for synchronous fallback.
+            if not hasattr(parent_agent, "_active_children"):
+                return
             _ac_lock = getattr(parent_agent, "_active_children_lock", None)
             for _c in _child_agents:
                 try:
@@ -4966,10 +4952,14 @@ def delegate_task(
                 except ValueError:
                     pass
 
+        _batch_cancelled = threading.Event()
+
         def _batch_runner():
             # This batch is detached from the foreground turn. Its lifecycle is
             # owned by the async registry and cancelled only via _batch_interrupt.
-            return _execute_current_plan(honor_parent_interrupt=False)
+            return _execute_current_plan(
+                honor_parent_interrupt=False, cancel_event=_batch_cancelled
+            )
 
         def _interrupt_children(child_agents: List[Any]) -> None:
             for _c in child_agents:
@@ -5013,6 +5003,7 @@ def delegate_task(
             return tuple(parts), in_tool
 
         def _batch_interrupt():
+            _batch_cancelled.set()
             _interrupt_children(_child_agents)
 
         def _batch_progress():
@@ -5034,6 +5025,16 @@ def delegate_task(
                 _component_children = [
                     _children_by_index[index] for index in _indices
                 ]
+                _component_cancelled = threading.Event()
+
+                def _component_interrupt(
+                    cancelled=_component_cancelled, child_agents=_component_children
+                ):
+                    # Publish before touching children: even a slow interrupt
+                    # callback must prevent queued and dependent work starting.
+                    cancelled.set()
+                    _interrupt_children(child_agents)
+
                 _component_metadata = {
                     "adaptive_scheduling": True,
                     "graph_id": live_deleg_id,
@@ -5060,15 +5061,12 @@ def delegate_task(
                         "origin_session_id": _wake_sid,
                         "parent_session_id": _parent_session_id,
                         "runner": (
-                            lambda indices=_indices: _execute_dependency_component(
-                                indices, honor_parent_interrupt=False
+                            lambda indices=_indices, cancelled=_component_cancelled: _execute_dependency_component(
+                                indices, honor_parent_interrupt=False,
+                                cancel_event=cancelled,
                             )
                         ),
-                        "interrupt_fn": (
-                            lambda child_agents=_component_children: _interrupt_children(
-                                child_agents
-                            )
-                        ),
+                        "interrupt_fn": _component_interrupt,
                         "progress_fn": (
                             lambda child_agents=_component_children: _children_progress(
                                 child_agents
@@ -5084,6 +5082,7 @@ def delegate_task(
                 graph_id=live_deleg_id,
             )
             if _component_dispatch.get("status") == "dispatched":
+                _detach_dispatched_children()
                 _delegations = _component_dispatch.get("delegations") or []
                 payload = {
                     "status": "dispatched",
@@ -5180,6 +5179,7 @@ def delegate_task(
         )
 
         if dispatch.get("status") == "dispatched":
+            _detach_dispatched_children()
             n = len(_goals)
             if dependency_plan.enabled:
                 note = (
@@ -5244,9 +5244,8 @@ def delegate_task(
                 )
             return json.dumps(payload, ensure_ascii=False)
 
-        # Pool at capacity / schedule failure — children are still attached
-        # (we detach above only on the parent list, but the async unit was
-        # never accepted, so re-attaching isn't needed: we just run inline).
+        # Pool at capacity / schedule failure: no ownership transfer occurred,
+        # so the parent's interrupt still reaches every synchronous child.
         logger.info(
             "delegate_task: async pool at capacity (%s); running the whole "
             "batch synchronously instead.",

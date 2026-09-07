@@ -590,6 +590,7 @@ class CLICommandsMixin:
         running_d = [
             d for d in delegations
             if d.get("status") in ("running", "stalling")
+            or d.get("active_clusters", 0) > 0
         ]
         if delegations:
             _cprint(f"  Background delegations: {len(running_d)} running")
@@ -600,6 +601,14 @@ class CLICommandsMixin:
                     f"    {d.get('delegation_id', '?')} · "
                     f"{status} · {goal}"
                 )
+                if d.get("graph_id"):
+                    line += (
+                        f" · {d.get('active_clusters', 0)} active, "
+                        f"{d.get('completed_clusters', 0)} completed, "
+                        f"{d.get('stalled_clusters', 0)} stalled, "
+                        f"{d.get('failed_clusters', 0)} failed, "
+                        f"{d.get('interrupted_clusters', 0)} interrupted clusters"
+                    )
                 # Live-status detail for in-flight delegations (#51690).
                 if status == "stalling":
                     quiet = d.get("stalled_after_quiet_seconds")

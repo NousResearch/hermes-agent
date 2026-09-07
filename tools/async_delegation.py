@@ -1180,7 +1180,20 @@ def dispatch_async_delegation_batches(
         try:
             combined = runner() or {}
             child_results = combined.get("results") or []
-            if child_results and all(
+            if record.get("graph_id") or record.get("batch_metadata", {}).get("adaptive_scheduling"):
+                # A dependency cluster is successful only if all its tasks
+                # succeed. Keep cancellation/failure visible even when a
+                # sibling produced a useful partial result.
+                child_statuses = {result.get("status") for result in child_results}
+                if combined.get("error") or child_statuses.intersection({"error", "failed", "unknown"}):
+                    status = "error"
+                elif "stalled" in child_statuses:
+                    status = "stalled"
+                elif "interrupted" in child_statuses:
+                    status = "interrupted"
+                else:
+                    status = "completed"
+            elif child_results and all(
                 result.get("status") not in ("completed", "success")
                 for result in child_results
             ):
@@ -1693,16 +1706,27 @@ def list_async_delegations() -> List[Dict[str, Any]]:
             continue
         graph = dict(components[0])
         live = [c for c in components if c["status"] in {"running", "stalling", "finalizing"}]
+        statuses = [c["status"] for c in components]
+        # Outcome and liveness are separate: a terminal stalled component is
+        # neither successful nor live, but its failure must remain visible
+        # while siblings continue. UIs use active_clusters to retain that row.
+        graph_status = next(
+            (status for status in (
+                "stalled", "error", "failed", "unknown", "interrupted",
+                "stalling", "running", "finalizing",
+            ) if status in statuses),
+            "completed",
+        )
         graph.update(
             delegation_id=unit_id,
             clusters=components,
             cluster_count=len(components),
-            completed_clusters=len(components) - len(live),
-            status=next(
-                (status for status in ("stalling", "running", "finalizing")
-                 if any(c["status"] == status for c in live)),
-                "completed" if all(c["status"] == "completed" for c in components) else "error",
-            ),
+            active_clusters=len(live),
+            completed_clusters=statuses.count("completed"),
+            stalled_clusters=statuses.count("stalled"),
+            failed_clusters=sum(statuses.count(s) for s in ("error", "failed", "unknown")),
+            interrupted_clusters=statuses.count("interrupted"),
+            status=graph_status,
             completed_at=None if live else max(c.get("completed_at") or 0 for c in components),
         )
         # Keep child numbering aligned with the original task/log indices,
@@ -1724,9 +1748,11 @@ def list_async_delegations() -> List[Dict[str, Any]]:
         )
         # Per-component metadata (including any stall detail) stays on clusters.
         graph["batch_metadata"] = {"graph_id": unit_id, "cluster_count": len(components)}
+        stalled = next(
+            (c for c in components if c["status"] == graph_status), None
+        ) if graph_status in {"stalling", "stalled"} else None
         for key in ("stalled_after_quiet_seconds", "stall_threshold_seconds", "stall_in_tool"):
             graph.pop(key, None)
-            stalled = next((c for c in components if c["status"] == "stalling"), None)
             if stalled and key in stalled:
                 graph[key] = stalled[key]
         snapshots.append(graph)

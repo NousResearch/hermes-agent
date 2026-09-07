@@ -186,6 +186,68 @@ def test_graph_cannot_combine_different_owners():
     assert ad.active_count() == 0
 
 
+@pytest.mark.parametrize("outcome", ["stalled", "error", "interrupted"])
+def test_graph_listing_preserves_failure_while_siblings_run_and_after_completion(outcome):
+    gates = [threading.Event(), threading.Event()]
+    started = [threading.Event(), threading.Event()]
+    try:
+        result = ad.dispatch_async_delegation_batches(
+            graph_id="deleg_outcome", max_async_children=1,
+            batches=[_batch(i, gates[i], started[i]) for i in range(2)],
+        )
+        assert all(event.wait(5) for event in started)
+        first_id = result["delegations"][0]["delegation_id"]
+        if outcome == "stalled":
+            # Exercise the actual monitor terminalization path, including its
+            # guard against a late worker return overwriting the stall.
+            ad._finalize_stalled(first_id)
+        else:
+            ad._finalize_batch(first_id, {"results": [], "error": "test outcome"}, outcome)
+        event = process_registry.completion_queue.get(timeout=5)
+        assert event["status"] == outcome
+        row = ad.list_async_delegations()[0]
+        assert row["status"] == outcome
+        assert row["active_clusters"] == 1
+        assert row["completed_clusters"] == 0
+        assert row["stalled_clusters"] == int(outcome == "stalled")
+        assert row["failed_clusters"] == int(outcome == "error")
+        assert row["interrupted_clusters"] == int(outcome == "interrupted")
+        assert row["completed_at"] is None
+        assert ad.active_count() == 1
+    finally:
+        for gate in gates:
+            gate.set()
+    _wait_until(lambda: ad.active_count() == 0)
+    row = ad.list_async_delegations()[0]
+    assert row["status"] == outcome
+    assert row["active_clusters"] == 0
+    assert row["completed_clusters"] == 1
+    assert row["completed_at"] is not None
+    assert row["completed_clusters"] + row["stalled_clusters"] + row["failed_clusters"] + row["interrupted_clusters"] == 2
+
+
+def test_cli_agents_counts_a_stalled_graph_with_active_siblings(monkeypatch):
+    import cli
+    from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+    gate = threading.Event()
+    printed = []
+    monkeypatch.setattr(cli, "_cprint", printed.append)
+    try:
+        result = ad.dispatch_async_delegation_batches(
+            graph_id="deleg_cli_stall", max_async_children=1,
+            batches=[_batch(i, gate, threading.Event()) for i in range(2)],
+        )
+        ad._finalize_stalled(result["delegations"][0]["delegation_id"])
+        CLICommandsMixin._handle_agents_command(CLICommandsMixin())
+        output = "\n".join(printed)
+        assert "Background delegations: 1 running" in output
+        assert "deleg_cli_stall · stalled" in output
+        assert "1 active, 0 completed, 1 stalled" in output
+    finally:
+        gate.set()
+
+
 def test_restart_replays_components_with_shared_graph_identity_and_separate_claims(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     repo = str(Path(__file__).resolve().parents[2])

@@ -42,10 +42,12 @@ messages to exclude virtualization estimation from that ownership assertion;
 the hydration release expands to the original 200-message history. No DOM
 geometry is overridden. Wheel input comes from Playwright's native input path.
 
-The probe deliberately retains a strict document-reload assertion: current
-receipts show a 17px reload drift, so an overall nonzero exit is NOT a failure
-of the separately recorded profile/gateway/remount and hydration controls.
-Do not relax that assertion to call the whole issue solved. The earlier
-200-message full remount also drifted by one estimated turn (323px).
+The probe retains strict document-reload assertions. It also exercises the
+200-message full remount/reload and live response growth after restoration.
+A continuation now observes late Markdown/intrinsic-row resizes until reader
+input or a live run takes over: 12-message reload drift changed from 17px to
+0px, and the current 200-message reload control changed from 72px to 0px.
+Earlier historical long-remount drift was 323px; the current control retains
+its distance through remount, but this is not native-app or issue acceptance.
 
 Remove the two temporary Desktop entry files after stopping the server.

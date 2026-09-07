@@ -493,6 +493,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // transcript at its true bottom. While false, scrollTop is a way-point of a
   // load in progress, not a reading position anyone chose — never anchor to it.
   const loadSettledRef = useRef(false)
+  const cancelRestoreRef = useRef<(() => void) | null>(null)
+  const isRunning = useAuiState(s => s.thread.isRunning)
   // Session the settle loop last armed for, so a re-arm within the same load
   // is distinguishable from a switch to a different transcript.
   const settleKeyRef = useRef(sessionKey)
@@ -657,6 +659,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useEffect(() => () => endEditHold(), [endEditHold])
   // New run → snap to the latest turn only when already near the bottom.
   useAuiEvent('thread.runStart', () => {
+    cancelRestoreRef.current?.()
     const el = scrollRef.current
 
     if (el && shouldSnapOnRunStart(el.scrollHeight - el.scrollTop - el.clientHeight)) {
@@ -866,27 +869,68 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     let rafId = requestAnimationFrame(settle)
 
-    const onWheel = (event: WheelEvent) => {
-      if (event.deltaY >= 0 || loadSettledRef.current) {
+    // Quiet frames are not layout completion: deferred Markdown and intrinsic
+    // row measurements can change height after the initial settle. Retain the
+    // restored offset through those resizes until input or a live run takes over.
+    const resizeObserver = new ResizeObserver(() => {
+      if (target.kind === 'offset' && loadSettledRef.current) {
+        el.scrollTop = threadScrollTargetTop(target, el)
+        liveScrollStateRef.current = threadScrollStateFromMetrics(el)
+      }
+    })
+
+    if (contentRef.current) {
+      resizeObserver.observe(contentRef.current)
+    }
+
+    const cancelRestore = () => {
+      resizeObserver.disconnect()
+      cancelAnimationFrame(rafId)
+
+      if (loadSettledRef.current) {
         return
       }
 
-      // User intent wins even at a clamped top, where no scroll event fires.
-      cancelAnimationFrame(rafId)
+      // Input wins even at a clamped top, where no scroll event fires.
       stopScroll()
       loadSettledRef.current = true
       liveScrollStateRef.current = threadScrollStateFromMetrics(el)
       restoreFromBottomRef.current = el.scrollHeight - el.scrollTop
     }
 
+    cancelRestoreRef.current = target.kind === 'offset' ? cancelRestore : () => resizeObserver.disconnect()
+
+    const onWheel = (event: WheelEvent) => {
+      resizeObserver.disconnect()
+
+      if (event.deltaY < 0) {
+        cancelRestore()
+      }
+    }
+
+    const unsubscribeJump = onScrollToBottomRequest(cancelRestore, sessionId)
     el.addEventListener('wheel', onWheel, { passive: true })
+    el.addEventListener('pointerdown', cancelRestore, { passive: true })
+    el.addEventListener('keydown', cancelRestore)
 
     return () => {
+      cancelRestoreRef.current = null
+      resizeObserver.disconnect()
+      unsubscribeJump()
       el.removeEventListener('wheel', onWheel)
+      el.removeEventListener('pointerdown', cancelRestore)
+      el.removeEventListener('keydown', cancelRestore)
       cancelAnimationFrame(rafId)
       record()
     }
-  }, [hasGroups, scrollRef, scrollToBottom, sessionKey, stopScroll])
+  }, [contentRef, hasGroups, scrollRef, scrollToBottom, sessionId, sessionKey, stopScroll])
+
+  // A thread can mount with a run already active, without a runStart event.
+  useEffect(() => {
+    if (isRunning) {
+      cancelRestoreRef.current?.()
+    }
+  }, [hasGroups, isRunning, sessionKey])
 
   // Prepend an older page while preserving the on-screen position. The user is
   // scrolled up (reading history) so the stick-to-bottom lock is escaped and

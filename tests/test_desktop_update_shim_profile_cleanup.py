@@ -35,7 +35,7 @@ def test_shim_removes_owned_profile_on_exit(tmp_path, failed):
     env = {**os.environ, "HOME": str(tmp_path), "HERMES_HOME": str(tmp_path),
            "XDG_CONFIG_HOME": str(config), "TMPDIR": str(tmp_path),
            "PATH": f"{bin_dir}:/usr/bin:/bin", "HERMES_SELFTEST_HOLD_SECONDS": "1",
-           "HERMES_UPDATE_SHIM_GRACE_SECONDS": "1", "HERMES_SELFTEST_FAIL": "1" if failed else "0"}
+           "HERMES_UPDATE_SHIM_GRACE_SECONDS": "1", "HERMES_SELFTEST_FAIL": "1" if failed else ""}
     result = subprocess.run(
         ["bash", str(Path(__file__).resolve().parents[1] / "scripts/desktop-update/posix.sh"),
          "--install-root", str(install), "--self-test-ui"],

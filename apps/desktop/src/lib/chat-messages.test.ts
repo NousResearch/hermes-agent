@@ -471,11 +471,42 @@ describe('renderMediaTags', () => {
     expect(renderMediaTags('MEDIA:/tmp/demo.mp4')).toBe('[Video: demo.mp4](#media:%2Ftmp%2Fdemo.mp4)')
   })
 
+  it('preserves spaces in an unquoted standalone MEDIA path', () => {
+    const path = '/srv/projects/My Project/sample video.mp4'
+
+    expect(renderMediaTags(`Готово:\n\nMEDIA:${path}`)).toBe(
+      `Готово:\n\n[Video: sample video.mp4](#media:${encodeURIComponent(path)})`
+    )
+  })
+
+  it('preserves a quoted standalone MEDIA path after the tag prefix', () => {
+    const path = '/srv/projects/My Project/sample video.mp4'
+
+    expect(renderMediaTags(`MEDIA:"${path}"`)).toBe(
+      `[Video: sample video.mp4](#media:${encodeURIComponent(path)})`
+    )
+    expect(renderMediaTags(`"MEDIA:${path}"`)).toBe(
+      `[Video: sample video.mp4](#media:${encodeURIComponent(path)})`
+    )
+  })
+
   it('renders streamed assistant media once the tag is complete', () => {
     const parts = appendAssistantTextPart(appendAssistantTextPart([], 'ok\nMEDIA:'), '/tmp/voice.mp3')
     const text = chatMessageText({ id: 'a', role: 'assistant', parts })
 
     expect(text).toBe('ok\n[Audio: voice.mp3](#media:%2Ftmp%2Fvoice.mp3)')
+  })
+
+  it('waits for a complete extension before rendering a streamed path with spaces', () => {
+    let parts = appendAssistantTextPart([], 'ok\nMEDIA:/srv/My')
+
+    expect(chatMessageText({ id: 'a', role: 'assistant', parts })).toBe('ok\nMEDIA:/srv/My')
+
+    parts = appendAssistantTextPart(parts, ' Project/video.mp4')
+
+    expect(chatMessageText({ id: 'a', role: 'assistant', parts })).toBe(
+      'ok\n[Video: video.mp4](#media:%2Fsrv%2FMy%20Project%2Fvideo.mp4)'
+    )
   })
 })
 

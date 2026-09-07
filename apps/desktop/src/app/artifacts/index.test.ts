@@ -241,13 +241,19 @@ ${payload}
         content: 'Third render. "MEDIA:/tmp/generated/quoted.mp4"',
         role: 'assistant',
         timestamp: 1_781_774_003
+      },
+      {
+        content: 'MEDIA:/srv/projects/My Project/sample video.mp4',
+        role: 'assistant',
+        timestamp: 1_781_774_004
       }
     ])
 
     expect(artifacts.map(artifact => artifact.value)).toEqual([
       '/tmp/generated/demo.mp4',
       '/tmp/generated/demo clip.mp4',
-      '/tmp/generated/quoted.mp4'
+      '/tmp/generated/quoted.mp4',
+      '/srv/projects/My Project/sample video.mp4'
     ])
   })
 

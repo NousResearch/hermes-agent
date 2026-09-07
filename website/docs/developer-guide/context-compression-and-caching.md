@@ -75,23 +75,58 @@ Located in `agent/context_compressor.py`. This is the **primary compression
 system** that runs inside the agent's tool loop with access to accurate,
 API-reported token counts.
 
-#### Token accounting: real usage decides, the estimate only decides whether to wait
+#### Token accounting: provider anchors and explicit heuristic fallbacks
 
 Every compaction gate (turn-start preflight, idle, pre-API pressure, post-tool)
 asks the **usage anchor** first (`agent/usage_anchor.py`): the provider's last
-`usage.prompt_tokens` plus a rough estimate of ONLY the messages appended since
+prompt and completion token counts plus a rough estimate of ONLY the messages appended since
 that response. The anchor identifies the priced transcript by a content
 fingerprint, so it survives the gateway re-reading history from the DB every
 turn, and it is persisted on the session row so a fresh process (`--resume`,
 desktop per-turn `serve`) restores it while the durable transcript still
 matches. Compaction, session reset and codex-native compaction clear it.
 
-Without an anchor (first request, rewind/edit-resend) a whole-context rough
-estimate over threshold **waits one request** for the provider's real count
-instead of compressing on a guess (`should_defer_preflight_to_real_usage`).
-The wait is one request, never a disable: a provider that omits usage, a real
-reading already over threshold, a rough figure past the whole window, or a
-provider-proven overflow all compress immediately.
+For the built-in engine's **turn-start and pre-API threshold gates**, without an
+anchor (first request, rewind/edit-resend), a whole-context rough estimate over
+threshold **waits one request** for provider evidence
+(`should_defer_preflight_to_real_usage`). This includes estimates at or above the
+entire context window: estimate magnitude does not prove that a request will fail.
+After a model switch, old usage is cleared and the new provider adjudicates the
+first request too; a genuinely oversized request can incur one rejected request
+before reactive recovery.
+
+The wait is not a disable. Once a response omits usage, the existing heuristic
+fallback remains available; real usage already over threshold and provider-proven
+overflow still allow compression. A post-compaction latch waits for one response
+and is consumed even if that response omits usage. Recovery remains bounded by the
+compression attempt budget and no-progress guards, not an indefinite resend loop.
+
+This is **not an exact-count-only policy**, nor closure of #104462's literal
+never-estimate acceptance. The following policies remain unchanged:
+
+- An anchor includes the provider's prompt and completion tokens plus a **rough
+  appended-message delta** (the first appended assistant is already covered by
+  completion usage). A large new tool result can therefore still cross a threshold
+  on an estimated delta. Boundary fingerprint matching does not fingerprint the
+  whole prefix, model, tools, or system prompt.
+- Opt-in idle compaction uses its own floor/cooldown and can act on unanchored
+  pressure; it does not share the threshold gate's one-request wait.
+- Pre-agent gateway hygiene retains its rough-history fallback and hard-message
+  safety valve. The replay harness's `gateway` shape reloads transcript dictionaries;
+  it does **not** exercise that separate hygiene policy.
+- Post-tool usage-less fallback, micro-compaction, summary/tail sizing, pruning and
+  overflow progress checks still use local estimates. Native compaction keeps its
+  provider-specific ownership and checkpoint latch.
+
+Provider count endpoints remain deferred. Eliminating these remaining estimates
+requires an explicit policy decision: accept the documented liveness fallbacks,
+or replace them with provider evidence while defining behavior for providers that
+never return usage. Simply disabling all unanchored maintenance is not equivalent.
+
+`evals/token_accounting/replay_gates.py` covers below-window and past-window
+inflation, real-over-threshold controls, reload/restore anchors, and local HTTP
+overflow/usage-less recovery with real compression but fixed local summary text.
+These are scripted control-flow checks, not vendor tokenizer or billing evidence.
 
 Opaque provider blobs (`encrypted_content` on Codex reasoning / compaction
 items) contribute 0 to every local estimate; only real usage ever prices them.

@@ -2,7 +2,10 @@
 
 import json
 import multiprocessing
+import os
+import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -153,3 +156,63 @@ def test_pipeline_uses_one_target_tokenizer_config_for_both_stages(tmp_path, mon
     assert report["tokens"]["total_after"] == revised_count
     warnings = [record.message for record in caplog.records if record.levelname == "WARNING"]
     assert any("--skip_download" in warning and "_original_tokens" in warning for warning in warnings)
+
+
+@pytest.mark.parametrize("error_type", [ValueError, OSError, RuntimeError])
+def test_tokenizer_resolution_failure_stops_pipeline(tmp_path, monkeypatch, caplog, error_type):
+    config = tmp_path / "compression.yaml"
+    config.write_text("tokenizer:\n  name: unavailable-target\n", encoding="utf-8")
+    monkeypatch.setattr(sample_and_compress, "__file__", str(tmp_path / "scripts" / "sample_and_compress.py"))
+    resolver = MagicMock(side_effect=error_type("revision unavailable"))
+    monkeypatch.setattr(sample_and_compress, "resolve_tokenizer_revision", resolver)
+    sample = MagicMock(side_effect=AssertionError("Must not sample after resolution fails"))
+    compress = MagicMock(side_effect=AssertionError("Must not compress after resolution fails"))
+    monkeypatch.setattr(sample_and_compress, "sample_from_datasets", sample)
+    monkeypatch.setattr(sample_and_compress, "run_compression", compress)
+
+    # Expected configuration/I/O failures are CLI errors; programming errors remain visible.
+    expected_error = RuntimeError if error_type is RuntimeError else SystemExit
+    with pytest.raises(expected_error) as failure:
+        sample_and_compress.main(config=str(config), output_name="failed")
+
+    resolver.assert_called_once_with("unavailable-target", None)
+    sample.assert_not_called()
+    compress.assert_not_called()
+    assert not (tmp_path / "data").exists()
+    errors = [record.message for record in caplog.records if record.levelname == "ERROR"]
+    if error_type is RuntimeError:
+        assert str(failure.value) == "revision unavailable"
+        assert not errors
+    else:
+        assert failure.value.code == 1
+        assert any("unavailable-target" in error and "revision unavailable" in error for error in errors)
+
+
+def test_invalid_tokenizer_cli_reports_error_without_traceback(tmp_path):
+    pytest.importorskip("transformers")
+    config = tmp_path / "compression.yaml"
+    config.write_text("tokenizer:\n  name: invalid/name/extra\n", encoding="utf-8")
+    script = Path(sample_and_compress.__file__).resolve()
+    output_name = f"invalid-tokenizer-{tmp_path.name}"
+    output_dir = script.parent.parent / "data" / f"{output_name}_raw"
+    assert not output_dir.exists()
+    result = subprocess.run(
+        [sys.executable, str(script), f"--config={config}", f"--output_name={output_name}"],
+        cwd=tmp_path,
+        env={
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": str(tmp_path),
+            "USERPROFILE": str(tmp_path),
+            "HERMES_HOME": str(tmp_path / "hermes"),
+            "HF_HOME": str(tmp_path / "huggingface"),
+            "HF_HUB_OFFLINE": "1",
+            "PYTHON_DOTENV_DISABLED": "1",
+            **{key: os.environ[key] for key in ("SystemRoot", "WINDIR") if key in os.environ},
+        },
+        capture_output=True, text=True, encoding="utf-8", timeout=30,
+    )
+    assert result.returncode == 1
+    assert "Cannot resolve tokenizer" in result.stderr
+    assert "invalid/name/extra" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not output_dir.exists()

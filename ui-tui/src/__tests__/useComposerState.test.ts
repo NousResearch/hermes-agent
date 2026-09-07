@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { looksLikeDroppedPath } from '../app/useComposerState.js'
+import { appendedText, looksLikeDroppedPath } from '../app/useComposerState.js'
 
 describe('looksLikeDroppedPath', () => {
   it('recognizes macOS screenshot temp paths and file URIs', () => {
@@ -55,5 +55,23 @@ describe('looksLikeDroppedPath', () => {
     expect(looksLikeDroppedPath('/usr/bin/test')).toBe(true)
     expect(looksLikeDroppedPath('/tmp/file.txt')).toBe(true)
     expect(looksLikeDroppedPath('/etc/hosts')).toBe(true) // has second /
+  })
+})
+
+describe('appendedText', () => {
+  it('takes only what the attach added', () => {
+    expect(appendedText('/paste', { cursor: 20, value: '/paste [[ Image 1 ]]' })).toBe('[[ Image 1 ]]')
+  })
+
+  it('keeps the remainder the gateway sent along with the token', () => {
+    expect(appendedText('', { cursor: 26, value: '[[ Image 1 ]] a screenshot' })).toBe('[[ Image 1 ]] a screenshot')
+  })
+
+  it('is empty when the attach found nothing', () => {
+    expect(appendedText('/paste', null)).toBe('')
+  })
+
+  it('is empty when the result no longer extends the snapshot', () => {
+    expect(appendedText('/paste', { cursor: 5, value: 'other' })).toBe('')
   })
 })

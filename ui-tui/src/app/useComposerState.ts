@@ -65,6 +65,21 @@ function insertAtCursor(value: string, cursor: number, text: string): { cursor: 
 }
 
 /**
+ * The text an async attach appended to the composer.
+ *
+ * `attach` runs against a snapshot taken before its await, so its result cannot
+ * be written back verbatim — by the time it resolves the composer may have been
+ * cleared or typed into. Only what it added is still meaningful.
+ */
+export function appendedText(start: string, result: ComposerPasteResult | null): string {
+  if (!result?.value.startsWith(start)) {
+    return ''
+  }
+
+  return result.value.slice(start.length).trim()
+}
+
+/**
  * Quick client-side heuristic to detect text that looks like a dropped file path.
  * When this returns true the composer sends RPC calls to the server for actual
  * validation. Keep in sync with _detect_file_drop() in cli.py — see that
@@ -347,14 +362,22 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
   /**
    * `/paste` and `/image` attach without a cursor of their own — the token
    * lands at the end of whatever is currently typed.
+   *
+   * Whatever is typed *when the attach resolves*, which is not what it started
+   * from: submitting a slash command clears the composer as soon as the command
+   * is dispatched, and typing carries on meanwhile. Replaying just the appended
+   * text keeps the token; writing the whole result back would restore the line
+   * that was cleared.
    */
   const appendAttachment = useCallback(
     (attach: (value: string, cursor: number) => Promise<ComposerPasteResult | null>) => {
-      const current = inputRef.current
+      const start = inputRef.current
 
-      void attach(current, current.length).then(next => {
-        if (next) {
-          setInput(next.value)
+      void attach(start, start.length).then(next => {
+        const appended = appendedText(start, next)
+
+        if (appended) {
+          setInput(prev => insertAtCursor(prev, prev.length, appended).value)
         }
       })
     },

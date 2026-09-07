@@ -6585,9 +6585,23 @@ def _build_call_kwargs(
         ):
             kwargs["_reasoning_config"] = dict(reasoning_config)
     # Conversation affinity (OpenCode relay, opt-in custom-provider header) — same key as the main
-    # turn so compression/title/vision calls stay on the conversation's warm backend.
+    # turn so compression/title/vision calls stay on the conversation's warm backend. The main
+    # runtime's *configured* identity is inherited only when the resolved route is the main route,
+    # so an unrelated fallback endpoint never borrows the OpenCode family name.
     from agent.opencode_affinity import merge_session_affinity_headers
-    return merge_session_affinity_headers(kwargs, provider, base_url, _runtime_main_value("session_id") or None)
+    route_provider = str(provider or "").strip().lower()
+    route_base_url = str(base_url or "").strip().rstrip("/")
+    main_provider = str(_runtime_main_value("provider") or "").strip().lower()
+    main_base_url = str(_runtime_main_value("base_url") or "").strip().rstrip("/")
+    requested_provider = (
+        _runtime_main_value("requested_provider")
+        if route_provider == main_provider and route_base_url == main_base_url
+        else None
+    )
+    return merge_session_affinity_headers(
+        kwargs, provider, base_url, _runtime_main_value("session_id") or None,
+        requested_provider=requested_provider,
+    )
 
 
 def _validate_llm_response(

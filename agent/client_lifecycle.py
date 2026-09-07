@@ -78,7 +78,10 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
         agent.api_key = agent._anthropic_api_key = effective_key
         agent._anthropic_base_url = fb_base_url
         agent._anthropic_client = build_anthropic_client(effective_key, fb_base_url, timeout=timeout)
-        agent._is_anthropic_oauth = _is_oauth_token(effective_key) if is_anthropic else False
+        agent._is_anthropic_oauth = (
+            _is_oauth_token(effective_key)
+            if is_anthropic and isinstance(effective_key, str) else False
+        )
         agent.client, agent._client_kwargs = None, {}
         return
     agent.api_key = credential

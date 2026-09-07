@@ -33,3 +33,17 @@ def test_fallback_rebuild_preserves_rotating_and_static_credentials(mode, dynami
     finally:
         client.close()
         rebuilt.close()
+
+
+def test_anthropic_fallback_keeps_callable_without_treating_it_as_oauth_text():
+    source = lambda: "fixture-token"  # noqa: E731
+    client = OpenAI(api_key=source, base_url="http://localhost:1234/v1")
+    agent = SimpleNamespace()
+    try:
+        _swap_fallback_clients(agent, client, "anthropic", "fixture", str(client.base_url), "anthropic_messages")
+        assert agent.api_key is source
+        assert agent._anthropic_api_key is source
+        assert agent._is_anthropic_oauth is False
+        agent._anthropic_client.close()
+    finally:
+        client.close()

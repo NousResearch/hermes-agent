@@ -1,5 +1,7 @@
 """Regression tests for iteration-limit exit normalization (#61631)."""
 
+import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -373,3 +375,114 @@ def test_bounded_fallback_does_not_fire_when_budget_not_exhausted(monkeypatch):
     record.assert_not_called()
 
 
+
+
+# ---------------------------------------------------------------------------
+# #104782: budget exhaustion with real worktree work is not a stuck task
+# ---------------------------------------------------------------------------
+
+
+def _git(*args, cwd):
+    subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True)
+
+
+def _worktree_for(tmp_path, task_id, *, evidence):
+    """Build a repo + linked worktree workspace; returns the worktree path.
+
+    evidence: "commits" (a commit beyond the base branch), "dirty" (untracked
+    changes), "clean" (untouched worktree), "not_a_repo" (plain directory).
+    """
+    repo = tmp_path / f"repo-{task_id}"
+    repo.mkdir()
+    if evidence == "not_a_repo":
+        return repo
+    _git("init", "-b", "main", cwd=repo)
+    _git("config", "user.email", "t@example.com", cwd=repo)
+    _git("config", "user.name", "t", cwd=repo)
+    (repo / "base.txt").write_text("base\n")
+    _git("add", ".", cwd=repo)
+    _git("commit", "-m", "base", cwd=repo)
+    wt = tmp_path / f"wt-{task_id}"
+    _git("worktree", "add", "-b", f"wt/{task_id}", str(wt), cwd=repo)
+    if evidence == "commits":
+        (wt / "work.txt").write_text("real work\n")
+        _git("add", ".", cwd=wt)
+        _git("commit", "-m", "real work", cwd=wt)
+    elif evidence == "dirty":
+        (wt / "scratch.txt").write_text("untracked but real\n")
+    return wt
+
+
+@pytest.fixture
+def kanban_home(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    return home
+
+
+def _running_worktree_task(workspace_path):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    conn = kbc.connect()
+    task_id = kb.create_task(
+        conn, title="wt worker", assignee="builder",
+        workspace_kind="worktree", workspace_path=str(workspace_path),
+    )
+    claimed = kb.claim_task(conn, task_id, claimer="builder:test")
+    assert claimed is not None, "task must claim ready -> running"
+    return conn, task_id
+
+
+@pytest.mark.parametrize("evidence", ["commits", "dirty"])
+def test_budget_exhaustion_with_worktree_work_routes_to_review(
+    monkeypatch, kanban_home, tmp_path, evidence
+):
+    """#104782: a budget-exhausted worktree worker with real work behind it
+    hands off to review WITHOUT a circuit-breaker strike — the failure counter
+    stays at zero and the run ends ``review_requested``."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    wt = _worktree_for(tmp_path, "task-wt-1", evidence=evidence)
+    conn, task_id = _running_worktree_task(wt)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    agent = _LimitAgent()
+
+    _finalize(agent, final_response=None, exit_reason="unknown")
+
+    task = conn.execute(
+        "SELECT status, consecutive_failures FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    assert task["status"] == "review"
+    assert task["consecutive_failures"] == 0
+    run = conn.execute(
+        "SELECT outcome, status, ended_at FROM task_runs WHERE task_id = ?", (task_id,)
+    ).fetchone()
+    assert run["outcome"] == "review_requested"
+    assert run["ended_at"] is not None
+
+
+@pytest.mark.parametrize("evidence", ["clean", "not_a_repo"])
+def test_budget_exhaustion_without_worktree_evidence_still_strikes(
+    monkeypatch, kanban_home, tmp_path, evidence
+):
+    """#104782 invariant arm: no git evidence of work → the strike path is
+    unchanged (failure counter advances, run ends ``timed_out``)."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    wt = _worktree_for(tmp_path, "task-wt-2", evidence=evidence)
+    conn, task_id = _running_worktree_task(wt)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    agent = _LimitAgent()
+
+    _finalize(agent, final_response=None, exit_reason="unknown")
+
+    task = conn.execute(
+        "SELECT consecutive_failures FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    assert task["consecutive_failures"] == 1
+    run = conn.execute(
+        "SELECT outcome, ended_at FROM task_runs WHERE task_id = ?", (task_id,)
+    ).fetchone()
+    assert run["outcome"] == "timed_out"
+    assert run["ended_at"] is not None

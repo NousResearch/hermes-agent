@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 from contextlib import suppress
 from typing import Any, Callable, List, Optional, Tuple
 
@@ -39,6 +40,46 @@ def _assistant_row_missing_visible_text(msg: dict) -> bool:
     return not flatten_message_text(msg.get("content")).strip()
 
 
+def _worktree_budget_work_evidence(workspace_path: str) -> Tuple[bool, str]:
+    """Cheap git-state probe on a budget-exhausted worktree worker (#104782).
+
+    "Real work" = tracked/untracked changes in the tree, or commits beyond the
+    merge-base with the repo's default branch. Fail-closed: any git error or
+    missing repo returns ``(False, "")`` so unknown states keep the
+    pre-existing ``timed_out`` strike instead of guessing.
+    """
+
+    def _git(*args: str) -> str:
+        proc = subprocess.run(
+            ["git", "-C", workspace_path, *args],
+            capture_output=True, text=True, timeout=15,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.strip() or f"git {args[0]} failed")
+        return proc.stdout
+
+    try:
+        if _git("status", "--porcelain").strip():
+            return True, "uncommitted changes in the worktree"
+        base = ""
+        with suppress(Exception):
+            base = _git("symbolic-ref", "--short", "refs/remotes/origin/HEAD").strip()
+        if not base:
+            for candidate in ("origin/main", "origin/master", "main", "master"):
+                with suppress(Exception):
+                    _git("rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}")
+                    base = candidate
+                    break
+        if base:
+            merge_base = _git("merge-base", "HEAD", base).strip()
+            ahead = int(_git("rev-list", "--count", f"{merge_base}..HEAD").strip() or 0)
+            if ahead > 0:
+                return True, f"{ahead} commit(s) beyond {base}"
+    except Exception:
+        return False, ""
+    return False, ""
+
+
 def _record_kanban_budget_exhausted(
     kanban_task: str, api_call_count: int, max_iterations: int, logger: logging.Logger
 ) -> None:
@@ -47,6 +88,13 @@ def _record_kanban_budget_exhausted(
     Routed via ``_record_task_failure`` (not ``kanban_block``) so it counts toward the
     consecutive-failure circuit breaker. Idempotent via the ``_end_run`` CAS
     (``WHERE ended_at IS NULL``), so safe from multiple exit paths.
+
+    A worktree worker with real work behind the exhaustion is not a stuck task
+    (#104782): it hands off to review via ``request_review`` — which clears the
+    claim and ends the run with the same CAS idempotence but never touches
+    ``consecutive_failures`` — instead of spending a failure strike on
+    work that was actually produced. Only positive git evidence routes here;
+    anything unknowable (scratch workspace, git failure) keeps the strike.
 
     This is a bounded fallback (#87096): the CAS invariant in ``_end_run`` (``WHERE ended_at IS NULL``)
     guarantees idempotence — if another path already closed the run this is a no-op — so it is safe to call
@@ -58,18 +106,52 @@ def _record_kanban_budget_exhausted(
         from hermes_cli import kanban_db_dispatch as _kbd
         _conn = _kbc.connect()
         try:
-            _kbd._record_task_failure(
-                _conn,
-                kanban_task,
-                error=(
-                    f"Iteration budget exhausted ({api_call_count}/{max_iterations}) — "
-                    "task could not complete within the allowed iterations"
-                ),
-                outcome="timed_out",
-                release_claim=True,
-                end_run=True,
-                event_payload_extra={"budget_used": api_call_count, "budget_max": max_iterations},
-            )
+            _handed_off = False
+            with suppress(Exception):
+                _row = _conn.execute(
+                    "SELECT workspace_kind, workspace_path, current_run_id "
+                    "FROM tasks WHERE id = ?",
+                    (kanban_task,),
+                ).fetchone()
+                if (
+                    _row is not None
+                    and _row["workspace_kind"] == "worktree"
+                    and (_row["workspace_path"] or "").strip()
+                ):
+                    _has_work, _evidence = _worktree_budget_work_evidence(
+                        _row["workspace_path"].strip()
+                    )
+                    if _has_work:
+                        _handed_off, _reason = _kb.request_review(
+                            _conn,
+                            kanban_task,
+                            summary=(
+                                f"Iteration budget exhausted ({api_call_count}/{max_iterations}) "
+                                f"with {_evidence} — routed to review instead of a "
+                                "failure strike (#104782)"
+                            ),
+                            expected_run_id=_row["current_run_id"],
+                            with_reason=True,
+                        )
+                        if not _handed_off:
+                            logger.warning(
+                                "Budget-exhausted review handoff for task %s failed (%s); "
+                                "recording the failure strike instead",
+                                kanban_task, _reason,
+                            )
+            if not _handed_off:
+                _kbd._record_task_failure(
+                    _conn,
+                    kanban_task,
+                    error=(
+                        f"Iteration budget exhausted ({api_call_count}/{max_iterations}) — "
+                        "task could not complete within the allowed iterations"
+                    ),
+                    outcome="timed_out",
+                    release_claim=True,
+                    end_run=True,
+                    event_payload_extra={"budget_used": api_call_count, "budget_max": max_iterations},
+                )
         finally:
             with suppress(Exception):
                 _conn.close()

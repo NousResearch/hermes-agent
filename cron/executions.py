@@ -115,6 +115,11 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_executions_status_claimed "
         "ON executions(status, claimed_at DESC, id DESC)"
     )
+    add_column_if_missing(conn, "executions", "scheduled_instant", "scheduled_instant TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_executions_occurrence "
+        "ON executions(job_id, scheduled_instant) WHERE status='completed'"
+    )
 
 
 @contextmanager
@@ -172,8 +177,12 @@ def _prune_unlocked(conn: sqlite3.Connection) -> None:
     )
 
 
-def create_execution(job_id: str, *, source: str) -> Dict[str, Any]:
+def create_execution(
+    job_id: str, *, source: str, scheduled_instant: Optional[str] = None,
+) -> Dict[str, Any]:
     """Persist a claimed attempt before executor/provider dispatch."""
+    from cron.occurrences import scheduled_instant as canonical_instant
+
     now = _hermes_now().isoformat()
     execution_id = uuid.uuid4().hex
     pid = os.getpid()
@@ -181,14 +190,28 @@ def create_execution(job_id: str, *, source: str) -> Dict[str, Any]:
         conn.execute(
             """INSERT INTO executions
                (id, job_id, source, process_id, pid, process_started_at,
-                status, claimed_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?)""",
+                status, claimed_at, scheduled_instant)
+               VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?, ?)""",
             (execution_id, str(job_id), str(source), _PROCESS_ID, pid,
-             _process_start_time(pid), now),
+             _process_start_time(pid), now, canonical_instant(scheduled_instant)),
         )
         record = _fetch(conn, execution_id)
     _emit_execution_state(record)
     return record  # type: ignore[return-value]
+
+
+def set_execution_occurrence(execution_id: str, instant: Optional[str]) -> None:
+    """Bind the store-claimed snapshot before a provider hands it to a worker."""
+    from cron.occurrences import scheduled_instant
+
+    with _transaction() as conn:
+        cur = conn.execute(
+            "UPDATE executions SET scheduled_instant=? WHERE id=? AND status='claimed' "
+            "AND handoff_pending=0 AND process_id=? AND pid=?",
+            (scheduled_instant(instant), execution_id, _PROCESS_ID, os.getpid()),
+        )
+        if cur.rowcount != 1:
+            raise RuntimeError("Cron occurrence could not be bound before dispatch")
 
 
 def mark_execution_handoff_pending(execution_id: str) -> Optional[Dict[str, Any]]:

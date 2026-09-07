@@ -1042,6 +1042,12 @@ def is_container() -> bool:
     return _container_detected
 
 
+def runtime_kind() -> str:
+    """``"container"`` inside a container, else ``"native"`` — the single resolver every
+    surface that DECLARES its runtime must call, so the wire values cannot drift."""
+    return "container" if is_container() else "native"
+
+
 def _proc_file_has_marker(path: str, markers: tuple[str, ...]) -> bool:
     try:
         with open(path, "r", encoding="utf-8") as f:

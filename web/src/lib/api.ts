@@ -1901,6 +1901,10 @@ export interface StatusResponse {
   /** NS-656: disk-usage rollup for the HERMES_HOME volume. Absent on
    * older gateways. */
   disk?: DiskPressureStatus;
+  /** Runtime of the process answering ``/api/status``: supervised inside a
+   * container, or native to the host. Absent on older gateways — treat an
+   * absent value as unknown, never as ``"native"``. */
+  runtime_kind?: "container" | "native";
   release_date: string;
   version: string;
 }

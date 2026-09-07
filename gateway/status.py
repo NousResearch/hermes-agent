@@ -441,6 +441,18 @@ def _get_code_identity_fields() -> dict[str, Any]:
         return {}
 
 
+def _runtime_kind_fields() -> dict[str, Any]:
+    """``{"runtime_kind": "container"|"native"}`` for the CURRENT writer, so a reader on the
+    other side of a bind mount can tell which supervisor owns a profile's gateway without
+    guessing from ``argv``. Same never-raises contract as the code-identity fields: an
+    unresolvable runtime degrades to an absent key, never a wrong one."""
+    try:
+        from hermes_constants import runtime_kind
+        return {"runtime_kind": runtime_kind()}
+    except Exception:
+        return {}
+
+
 def _pid_record_belongs_to_current_profile(record: Optional[dict[str, Any]]) -> bool:
     """True when the record's ``hermes_home`` matches the current process (legacy records: True);
     another HERMES_HOME's record must be ignored or the default gateway assumes its identity."""
@@ -815,6 +827,7 @@ def write_runtime_status(
     payload.update({key: current_record[key] for key in ("kind", "pid", "argv", "start_time")})
     payload["updated_at"] = _utc_now_iso()
     payload.update(_get_code_identity_fields())
+    payload.update(_runtime_kind_fields())
     _apply_set_fields(payload, (
         ("gateway_state", gateway_state, None), ("exit_reason", exit_reason, None),
         ("restart_requested", restart_requested, bool),

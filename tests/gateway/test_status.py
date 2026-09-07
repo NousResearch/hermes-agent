@@ -1459,3 +1459,66 @@ def test_strict_gateway_identity_rejects_reused_pid(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="identity changed"):
         status.get_running_pid_identity_strict(pid_path)
+
+
+class TestRuntimeKindDeclaration:
+    """``runtime_kind`` in ``gateway_state.json``: lets a reader on the other side of a bind
+    mount tell which supervisor owns a profile's gateway without guessing from ``argv``."""
+
+    @staticmethod
+    def _payload(tmp_path):
+        return json.loads((tmp_path / "gateway_state.json").read_text())
+
+    @pytest.mark.parametrize("in_container,expected", [(True, "container"), (False, "native")])
+    def test_stamped_on_create(self, tmp_path, monkeypatch, in_container, expected):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # is_container() memoises into a module global, so patch the function itself.
+        monkeypatch.setattr("hermes_constants.is_container", lambda: in_container)
+
+        status.write_runtime_status(gateway_state="running")
+
+        assert self._payload(tmp_path)["runtime_kind"] == expected
+
+    def test_restamped_on_every_write_when_the_runtime_changed(self, tmp_path, monkeypatch):
+        """The file outlives its creator: a native gateway inheriting a container's state file
+        must correct the field, not leave the stale claim standing."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+        status.write_runtime_status(gateway_state="running")
+        assert self._payload(tmp_path)["runtime_kind"] == "container"
+
+        monkeypatch.setattr("hermes_constants.is_container", lambda: False)
+        status.write_runtime_status(gateway_state="running")
+
+        assert self._payload(tmp_path)["runtime_kind"] == "native"
+
+    def test_restamp_adds_the_field_to_a_file_written_before_it_existed(self, tmp_path, monkeypatch):
+        """Upgrade path: files written by a gateway that predates the field carry no
+        runtime_kind. The first write by a new gateway must ADD it, not merely maintain an
+        existing key — otherwise every already-deployed home stays blank forever."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "gateway_state.json").write_text(json.dumps({
+            "kind": "hermes-gateway", "pid": 1, "argv": ["old"], "start_time": 0.0,
+            "gateway_state": "running", "platforms": {},
+        }))
+        monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+
+        status.write_runtime_status(gateway_state="running")
+
+        assert self._payload(tmp_path)["runtime_kind"] == "container"
+
+    def test_absent_rather_than_wrong_when_detection_raises(self, tmp_path, monkeypatch):
+        """Same never-raises contract as the code-identity fields: a reader must be able to
+        treat an absent key as "unknown". A field that could be wrong is worse than no field."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        def _boom():
+            raise RuntimeError("unreadable /proc")
+
+        monkeypatch.setattr("hermes_constants.is_container", _boom)
+
+        status.write_runtime_status(gateway_state="running")
+
+        payload = self._payload(tmp_path)
+        assert "runtime_kind" not in payload
+        assert payload["gateway_state"] == "running"

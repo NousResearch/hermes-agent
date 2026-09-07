@@ -95,3 +95,26 @@ def test_status_withholds_host_detail_in_gated_mode(gated_client):
     assert not leaked, f"/api/status leaked host detail under the gate: {leaked}"
 
 
+@pytest.mark.parametrize("in_container,expected", [(True, "container"), (False, "native")])
+def test_status_reports_runtime_kind_on_a_gated_bind(gated_client, monkeypatch, in_container, expected):
+    """The indicator must survive the auth gate. Gating ``runtime_kind`` would blank it on
+    exactly the deployments it describes — a container behind OAuth — so it lives with
+    ``version`` in the always-present part of the payload, not the loopback-only block."""
+    monkeypatch.setattr("hermes_constants.is_container", lambda: in_container)
+
+    body = gated_client.get("/api/status").json()
+
+    assert body["runtime_kind"] == expected
+    # Still gated: deployment recon must not have leaked in alongside it.
+    assert "hermes_home" not in body
+    assert "gateway_pid" not in body
+
+
+@pytest.mark.parametrize("in_container,expected", [(True, "container"), (False, "native")])
+def test_status_reports_runtime_kind_on_a_loopback_bind(loopback_client, monkeypatch, in_container, expected):
+    monkeypatch.setattr("hermes_constants.is_container", lambda: in_container)
+
+    body = loopback_client.get("/api/status").json()
+
+    assert body["runtime_kind"] == expected
+    assert "hermes_home" in body

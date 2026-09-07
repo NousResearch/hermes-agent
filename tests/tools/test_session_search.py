@@ -10,6 +10,7 @@ All run zero LLM calls.
 """
 import inspect
 import json
+import sqlite3
 import time
 
 import pytest
@@ -1155,4 +1156,27 @@ class TestNewResetLineageBrowse:
         result = json.loads(session_search(db=db, current_session_id="s_other"))
         sids = [r["session_id"] for r in result["results"]]
         assert "s_legacy_child" in sids
+
+
+class TestSessionSearchErrorPropagation:
+    def test_read_shape_propagates_db_exception(self, monkeypatch):
+        class BrokenDB:
+            def get_session(self, session_id):
+                raise sqlite3.OperationalError("database is locked")
+
+        res = json.loads(session_search(session_id="s_test", db=BrokenDB()))
+        assert res["success"] is False
+        assert "failed to load session: database is locked" in res["error"]
+
+    def test_scroll_shape_propagates_db_exception(self, monkeypatch):
+        class BrokenDB:
+            def get_session(self, session_id):
+                raise sqlite3.OperationalError("disk I/O error")
+            def get_messages_around(self, *args, **kwargs):
+                return {"window": []}
+
+        res = json.loads(session_search(session_id="s_test", around_message_id=1, db=BrokenDB()))
+        assert res["success"] is False
+        assert "failed to load session: disk I/O error" in res["error"]
+
 

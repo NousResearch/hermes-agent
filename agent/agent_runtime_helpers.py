@@ -1705,10 +1705,8 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent.provider, reason, shared, agent._client_log_context(),
         )
         return provider_client
-    # Aliases of the "gemini" profile (e.g. a "google" fallback_providers entry) must route
-    # through the native client too, else thinking_config gets sent unnested to the raw REST
-    # endpoint and Google 400s with "Unknown name 'thinking_config': Cannot find field." (#hermes-thinking-config-fallback)
-    if agent.provider in {"gemini", "google", "google-gemini", "google-ai-studio"}:
+    from agent.auxiliary_client import _GEMINI_NATIVE_PROVIDER_NAMES
+    if agent.provider in _GEMINI_NATIVE_PROVIDER_NAMES:
         client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
         if client is not None:
             return client

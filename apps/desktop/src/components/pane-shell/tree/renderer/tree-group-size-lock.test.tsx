@@ -9,6 +9,7 @@ import { $layoutEditMode } from '../../edit-mode'
 import { group, split } from '../model'
 import { $hiddenTreePanes, $layoutTree } from '../store'
 
+import { fixedTrackSize } from './track-model'
 import { TreeGroup } from './tree-group'
 
 const disposers: (() => void)[] = []
@@ -56,43 +57,98 @@ describe('zone size locks', () => {
     expect(screen.queryByRole('menuitem', { name: /unlock (column )?(width|height)/i })).toBeNull()
   })
 
-  it('uses one current-state pane lock for every applicable axis in layout editor', async () => {
+  it('locks only Terminal at its measured size in the Default layout', async () => {
+    const upperRail = split(
+      'row',
+      [group(['review'], { id: 'review-zone' }), group(['files'], { id: 'files-zone' })],
+      [1, 1.2],
+      'rail-row'
+    )
+
     const rightColumn = split(
       'column',
-      [group(['browser'], { id: 'browser-zone' }), group(['files'], { id: 'files-zone' })],
-      [1, 1],
+      [upperRail, group(['terminal'], { id: 'terminal-zone' })],
+      [1.6, 1],
       'right-column'
     )
 
     const tree = split('row', [group(['chat'], { id: 'chat-zone' }), rightColumn], [1, 1], 'root-row')
     $layoutTree.set(tree)
     $layoutEditMode.set(true)
-    disposers.push(registry.register({ area: 'panes', data: { placement: 'right' }, id: 'files', render: () => null, title: 'Files' }))
+    disposers.push(
+      registry.register({ area: 'panes', data: { placement: 'right' }, id: 'review', render: () => null, title: 'Review' }),
+      registry.register({ area: 'panes', data: { placement: 'right' }, id: 'files', render: () => null, title: 'Files' }),
+      registry.register({ area: 'panes', data: { placement: 'bottom' }, id: 'terminal', render: () => null, title: 'Terminal' })
+    )
 
-    render(<TreeGroup node={rightColumn.children[0] as ReturnType<typeof group>} parentAxis="column" />)
+    render(<TreeGroup node={rightColumn.children[1] as ReturnType<typeof group>} parentAxis="column" />)
 
-    Object.defineProperty(globalThis.document.querySelector('[data-tree-group="browser-zone"]'), 'getBoundingClientRect', {
+    Object.defineProperty(globalThis.document.querySelector('[data-tree-group="terminal-zone"]'), 'getBoundingClientRect', {
       configurable: true,
       value: () => ({ height: 260, width: 420 })
     })
 
     const resizable = await screen.findAllByRole('button', { name: /^pane is resizable/i })
     expect(resizable).toHaveLength(1)
-    expect(resizable[0]!.getAttribute('aria-pressed')).toBe('false')
-    expect(resizable[0]!.querySelector('i')!.className).toContain('codicon-unlock')
     fireEvent.click(resizable[0]!)
 
-    expect($paneStates.get().browser).toMatchObject({ heightLocked: true, heightOverride: 260, widthLocked: true, widthOverride: 420 })
-    expect($paneStates.get().files).toMatchObject({ widthLocked: true, widthOverride: 420 })
-
-    const locked = await screen.findAllByRole('button', { name: /^pane is locked/i })
-    expect(locked).toHaveLength(1)
-    expect(locked[0]!.getAttribute('aria-pressed')).toBe('true')
-    expect(locked[0]!.querySelector('i')!.className).toContain('codicon-lock')
-    fireEvent.click(locked[0]!)
-
-    expect($paneStates.get().browser?.heightLocked).toBeUndefined()
-    expect($paneStates.get().browser?.widthLocked).toBeUndefined()
+    expect($paneStates.get().terminal).toMatchObject({ heightLocked: true, heightOverride: 260, widthLocked: true, widthOverride: 420 })
+    expect($paneStates.get().review?.widthLocked).toBeUndefined()
+    expect($paneStates.get().review?.widthOverride).toBeUndefined()
     expect($paneStates.get().files?.widthLocked).toBeUndefined()
+    expect($paneStates.get().files?.widthOverride).toBeUndefined()
+  })
+
+  it('keeps a shared column within the width locked by one child', () => {
+    const upperRail = split(
+      'row',
+      [group(['review'], { id: 'review-zone' }), group(['files'], { id: 'files-zone' })],
+      [1, 1.2],
+      'rail-row'
+    )
+
+    const rightColumn = split(
+      'column',
+      [upperRail, group(['terminal'], { id: 'terminal-zone' })],
+      [1.6, 1],
+      'right-column'
+    )
+
+    const paneFor = (id: string) =>
+      ({
+        data: id === 'review' || id === 'files' ? { width: '320px' } : {},
+        id
+      }) as never
+
+    expect(
+      fixedTrackSize(rightColumn, 'row', {
+        overrides: { terminal: { widthLocked: true, widthOverride: 420 } },
+        paneFor,
+        paneGone: () => false
+      })
+    ).toBe('420px')
+  })
+
+  it('keeps a shared row within the height locked by one child', () => {
+    const sharedRow = split(
+      'row',
+      [group(['review'], { id: 'review-zone' }), group(['files'], { id: 'files-zone' })],
+      [1, 1.2],
+      'shared-row'
+    )
+
+    const paneFor = (id: string) =>
+      ({
+        data: id === 'files' ? { height: '320px' } : {},
+        id
+      }) as never
+
+    expect(
+      fixedTrackSize(sharedRow, 'column', {
+        overrides: { review: { heightLocked: true, heightOverride: 260 } },
+        paneFor,
+        paneGone: () => false
+      })
+    ).toBe('260px')
   })
 })

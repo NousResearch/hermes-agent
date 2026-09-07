@@ -51,7 +51,7 @@ import {
   resolveRememberedActivePane,
   workspaceScopeKey
 } from '../../workspace-scope'
-import { allPaneIds, findParentSplit } from '../model'
+import { findParentSplit } from '../model'
 import type { DropPosition, GroupNode } from '../model'
 import {
   $dropHint,
@@ -434,7 +434,7 @@ export function TreeGroup({
   const lockAxis: 'height' | 'width' | null =
     parent?.orientation === 'row' ? 'width' : parent?.orientation === 'column' ? 'height' : null
 
-  const columnPaneIds = parent?.orientation === 'column' && columnParent?.orientation === 'row' ? allPaneIds(parent).filter(paneShown) : []
+  const sharedColumnWidth = parent?.orientation === 'column' && columnParent?.orientation === 'row' && shown.length > 0
 
   const makeSizeLock = (axis: 'height' | 'width', paneIds: string[]): SizeLock => {
     // A unified editor control is locked only when every pane that shares an
@@ -478,8 +478,12 @@ export function TreeGroup({
     sizeLocks.push(makeSizeLock(lockAxis, shown))
   }
 
-  if (columnPaneIds.length > 0 && columnParent && columnParent.children.length > 1) {
-    sizeLocks.push(makeSizeLock('width', columnPaneIds))
+  if (sharedColumnWidth && columnParent && columnParent.children.length > 1) {
+    // A child in a vertical rail shares its column width with its siblings, but
+    // only this zone owns the lock. The track model uses this locked child as
+    // the column boundary; copying it into Review/Files would double-count the
+    // upper row and force the column wider.
+    sizeLocks.push(makeSizeLock('width', shown))
   }
 
   // A pane-level control deliberately hides the width/height implementation

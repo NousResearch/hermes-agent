@@ -229,6 +229,44 @@ export function allFixedAbsorberIndex(
   return -1
 }
 
+/**
+ * A lock on one child of a split that runs ACROSS `axis` fixes their shared
+ * boundary. For example, Terminal's width lock fixes the containing vertical
+ * rail; Review and Files can still resize inside that rail, but their preferred
+ * widths cannot expand it past Terminal's captured width.
+ *
+ * Locks do not propagate through a split that runs ALONG the same axis: those
+ * children own separate tracks, so a locked left pane must not constrain the
+ * entire row's width (or a locked bottom pane the entire column's height).
+ */
+function lockedSharedTrackSize(node: LayoutNode, axis: 'row' | 'column', ctx: TrackContext): string | null {
+  if (node.type === 'group') {
+    if (node.minimized) {
+      return null
+    }
+
+    const overrideKey = axis === 'row' ? 'widthOverride' : 'heightOverride'
+    const lockKey = axis === 'row' ? 'widthLocked' : 'heightLocked'
+
+    const sizes = shownPaneIds(node, ctx).flatMap(id => {
+      const state = ctx.overrides[id]
+      const override = state?.[overrideKey]
+
+      return state?.[lockKey] && override !== undefined ? [`${override}px`] : []
+    })
+
+    return cssMax(sizes) ?? null
+  }
+
+  if (node.orientation === axis) {
+    return null
+  }
+
+  return cssMax(
+    node.children.filter(child => !subtreeGone(child, ctx)).map(child => lockedSharedTrackSize(child, axis, ctx))
+  ) ?? null
+}
+
 export function fixedTrackSize(node: LayoutNode, axis: 'row' | 'column', ctx: TrackContext): string | null {
   if (node.type === 'group') {
     // Ancestor splits must size a minimized zone as its strip, not as its
@@ -298,6 +336,12 @@ export function fixedTrackSize(node: LayoutNode, axis: 'row' | 'column', ctx: Tr
     // must not resize the container (dropping sessions into a wider fixed
     // zone used to snap the whole zone down to sidebar width).
     return cssMax(declaredSizes) ?? null
+  }
+
+  const lockedBoundary = lockedSharedTrackSize(node, axis, ctx)
+
+  if (lockedBoundary !== null) {
+    return lockedBoundary
   }
 
   const visible = node.children.filter(child => !subtreeGone(child, ctx))

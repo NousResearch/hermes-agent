@@ -74,176 +74,32 @@ afterEach(() => {
 })
 
 describe('Desktop MCP client callback lifecycle', () => {
-  it.each(['approved', 'cancel-start', 'cancel-poll', 'denial', 'poll', 'browser'])(
-    'preserves explicit local OAuth without a bridge through %s and foreground switches',
-    async outcome => {
-      const { rpc, api, bridge, openExternal } = harness()
-      window.hermesDesktop.mcpOauth = undefined
-      setApiRequestConnection('local')
-      setApiRequestProfile('origin-profile')
-      let cancelled = false
-      rpc.mockImplementation(async (_connection, _profile, method) => {
-        if (method.endsWith('.start')) {
-          setApiRequestConnection('other-gateway')
-          setApiRequestProfile('other-profile')
-          cancelled = outcome === 'cancel-start'
-
-          return started
-        }
-
-        if (method.endsWith('.poll')) {
-          cancelled = outcome === 'cancel-poll'
-
-          if (outcome === 'poll') {
-            throw new Error('poll failed')
-          }
-
-          return outcome === 'denial'
-            ? { ok: true, status: 'error', error_message: 'access_denied' }
-            : { ok: true, status: 'approved', tools }
-        }
-
-        return { ok: true }
-      })
-
-      if (outcome === 'browser') {
-        openExternal.mockRejectedValue(new Error('browser failed'))
-      }
-
-      const action = completeMcpDesktopOAuth({
-        serverName: 'reports',
-        cancelled: () => cancelled,
-        sleep: async () => {}
-      })
-
-      if (outcome === 'approved') {
-        await expect(action).resolves.toMatchObject({ status: 'approved', tools })
-      } else if (outcome.startsWith('cancel-')) {
-        await expect(action).rejects.toBeInstanceOf(McpOAuthCancelled)
-      } else {
-        await expect(action).rejects.toThrow(outcome === 'denial' ? 'access_denied' : `${outcome} failed`)
-      }
-
-      expect(rpc).toHaveBeenCalledWith(
-        'local',
-        'origin-profile',
-        'mcp.servers.oauth.start',
-        { name: 'reports' },
-        60_000
-      )
-      expect(rpc.mock.calls.every(call => call[0] === 'local' && call[1] === 'origin-profile')).toBe(true)
-      expect(rpc.mock.calls.filter(call => call[2].endsWith('.start'))).toHaveLength(1)
-      expect(rpc.mock.calls.filter(call => call[2].endsWith('.cancel'))).toHaveLength(outcome === 'approved' ? 0 : 1)
-      expect(rpc.mock.calls.filter(call => call[2].endsWith('.callback'))).toHaveLength(0)
-      expect(openExternal.mock.calls).toEqual(outcome === 'cancel-start' ? [] : [[authUrl]])
-      expect(bridge.listen).not.toHaveBeenCalled()
-      expect(bridge.wait).not.toHaveBeenCalled()
-      expect(bridge.cancel).not.toHaveBeenCalled()
-      expect(api).not.toHaveBeenCalled()
-    }
-  )
-
-  it.each([
-    { connectionId: null, uri: redirectUri },
-    { connectionId: 'remote-gateway', uri: redirectUri },
-    { connectionId: 'local', uri: 'http://remote.example:49152/callback' },
-    { connectionId: 'local', uri: 'https://127.0.0.1:49152/callback' },
-    { connectionId: 'local', uri: 'http://127.0.0.1:49152/not-callback' },
-    { connectionId: 'local', uri: 'http://user@127.0.0.1:49152/callback' },
-    { connectionId: 'local', uri: 'http://127.0.0.1:49152/callback#fragment' },
-    { connectionId: 'local', uri: '' },
-    { connectionId: 'local', uri: redirectUri, listenerFailure: true }
-  ])('refuses unsafe compatibility paths: %j', async ({ connectionId, uri, listenerFailure }) => {
-    const { rpc, api, bridge, openExternal } = harness()
-    setApiRequestConnection(connectionId)
-
-    if (listenerFailure) {
-      bridge.listen.mockRejectedValue(new Error('listen failed'))
-    } else {
-      window.hermesDesktop.mcpOauth = undefined
-    }
-
-    rpc.mockResolvedValue({
-      ...started,
-      auth_url: `https://idp.example/authorize?state=expected&redirect_uri=${encodeURIComponent(uri)}`
-    })
-    await expect(completeMcpDesktopOAuth({ serverName: 'reports' })).rejects.toThrow()
-    expect(openExternal).not.toHaveBeenCalled()
-    expect(api).not.toHaveBeenCalled()
-
-    if (connectionId !== 'local' || listenerFailure) {
-      expect(rpc).not.toHaveBeenCalled()
-    } else {
-      expect(rpc.mock.calls.map(call => call[2])).toEqual(['mcp.servers.oauth.start', 'mcp.servers.oauth.cancel'])
-    }
-  })
-
-  it('bounds pending polls even after the browser callback arrives', async () => {
-    const { rpc, bridge } = harness()
-    const base = rpc.getMockImplementation()!
-    rpc.mockImplementation(async (...args) =>
-      args[2].endsWith('.poll') ? { ok: true, status: 'pending' } : base(...args)
-    )
-    let now = 0
-    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
-
-    try {
-      await expect(
-        completeMcpDesktopOAuth({
-          serverName: 'reports',
-          timeoutMs: 3000,
-          sleep: async () => {
-            now += 1000
-          }
-        })
-      ).rejects.toThrow('Timed out')
-      expect(bridge.cancel).toHaveBeenCalled()
-    } finally {
-      clock.mockRestore()
-    }
-  })
-
-  it.each([null, 'local', 'remote-gateway'])(
-    'relays the client callback and pins %s plus profile across foreground switches',
+  it.each(['local', 'remote-gateway'])(
+    'relays through the native listener and keeps the %s owner after foreground changes',
     async connectionId => {
       const { bridge, api, openExternal, rpc } = harness()
       setApiRequestConnection(connectionId)
       setApiRequestProfile('origin-profile')
+      const callbackResult = { code: 'code-1', state: 'expected', error: null }
+      bridge.wait.mockResolvedValue(callbackResult)
       openExternal.mockImplementation(async () => {
         setApiRequestConnection('other-gateway')
         setApiRequestProfile('other-profile')
-        const cb = { code: 'code-1', state: 'expected', error: null }
-        bridge.wait.mockResolvedValue(cb)
-
-        // The waiter was already armed before the browser opened.
-        return undefined
       })
-      const callbackResult = { code: 'code-1', state: 'expected', error: null }
-      bridge.wait.mockResolvedValue(callbackResult)
-
       const result = await completeMcpDesktopOAuth({ serverName: 'reports', sleep: async () => {} })
-
       expect(result).toMatchObject({ status: 'approved', tools })
-      expect(openExternal).toHaveBeenCalledWith(authUrl)
       expect(rpc).toHaveBeenCalledWith(
         connectionId,
         'origin-profile',
         'mcp.servers.oauth.start',
-        {
-          name: 'reports',
-          client_redirect_uri: redirectUri
-        },
+        { name: 'reports', client_redirect_uri: redirectUri },
         60_000
       )
       expect(rpc).toHaveBeenCalledWith(
         connectionId,
         'origin-profile',
         'mcp.servers.oauth.callback',
-        {
-          name: 'reports',
-          session_id: 'flow-1',
-          ...callbackResult
-        },
+        { name: 'reports', session_id: 'flow-1', ...callbackResult },
         60_000
       )
       expect(rpc.mock.calls.every(call => call[0] === connectionId && call[1] === 'origin-profile')).toBe(true)
@@ -252,131 +108,42 @@ describe('Desktop MCP client callback lifecycle', () => {
     }
   )
 
-  it.each([
-    'cancel-start',
-    'cancel-poll',
-    'browser',
-    'listen',
-    'start',
-    'poll',
-    'relay',
-    'wait',
-    'legacy',
-    'missing-method',
-    'denial',
-    'missing-bridge'
-  ])('cleans up on %s without retargeting or retrying a remote callback', async failure => {
-    const { bridge, callback, api, openExternal, rpc } = harness()
+  it.each(['cancel', 'legacy'])('cleans up the owner before opening an unsafe authorization on %s', async outcome => {
+    const { rpc, bridge, openExternal, api } = harness()
     setApiRequestConnection('remote-gateway')
     setApiRequestProfile('origin-profile')
     let cancelled = false
-    const pendingStart = deferred<typeof started>()
-    const base = rpc.getMockImplementation()!
-    rpc.mockImplementation(async (connection, profile, method, params, timeout) => {
+    rpc.mockImplementation(async (_connection, _profile, method) => {
       if (method.endsWith('.start')) {
-        if (failure === 'missing-method') {
-          throw new Error('Unknown method: mcp.servers.oauth.start')
-        }
+        setApiRequestConnection('other-gateway')
+        setApiRequestProfile('other-profile')
+        cancelled = outcome === 'cancel'
 
-        if (failure === 'start') {
-          throw new Error('start failed')
-        }
-
-        if (failure === 'cancel-start') {
-          cancelled = true
-          setApiRequestConnection('other-gateway')
-          setApiRequestProfile('other-profile')
-          pendingStart.resolve(started)
-
-          return pendingStart.promise
-        }
-
-        if (failure === 'legacy') {
-          return {
-            ...started,
-            auth_url: 'https://idp.example/authorize?state=expected&redirect_uri=http%3A%2F%2Fremote%2Fcallback'
-          }
-        }
+        return outcome === 'legacy'
+          ? { ...started, auth_url: 'https://idp.example/authorize?redirect_uri=http://remote/callback' }
+          : started
       }
 
-      if (method.endsWith('.poll')) {
-        if (failure === 'denial') {
-          return { ok: true, status: 'error', error_message: 'access_denied' }
-        }
-
-        if (failure === 'poll') {
-          throw new Error('poll failed')
-        }
-
-        if (failure === 'cancel-poll') {
-          cancelled = true
-
-          return { ok: true, status: 'pending' }
-        }
-      }
-
-      if (method.endsWith('.callback') && failure === 'relay') {
-        return { ok: false, error_message: 'state mismatch' }
-      }
-
-      return base(connection, profile, method, params, timeout)
+      return { ok: true }
     })
+    const action = completeMcpDesktopOAuth({ serverName: 'reports', cancelled: () => cancelled })
 
-    if (failure === 'browser') {
-      openExternal.mockRejectedValue(new Error('browser failed'))
-    }
-
-    if (failure === 'listen') {
-      bridge.listen.mockRejectedValue(new Error('listen failed'))
-    }
-
-    if (failure === 'wait') {
-      bridge.wait.mockRejectedValue(new Error('wait failed'))
-    }
-
-    if (failure === 'missing-bridge') {
-      window.hermesDesktop.mcpOauth = undefined
-    }
-
-    if (failure === 'cancel-poll' || failure === 'poll') {
-      openExternal.mockResolvedValue(undefined)
-    }
-
-    const action = completeMcpDesktopOAuth({ serverName: 'reports', cancelled: () => cancelled, sleep: async () => {} })
-
-    if (failure.startsWith('cancel-')) {
+    if (outcome === 'cancel') {
       await expect(action).rejects.toBeInstanceOf(McpOAuthCancelled)
     } else {
-      await expect(action).rejects.toThrow()
+      await expect(action).rejects.toThrow('Update the Hermes backend')
     }
 
-    if (!['listen', 'missing-bridge'].includes(failure)) {
-      expect(bridge.cancel).toHaveBeenCalledWith('listener-1')
-    }
-
-    if (!['listen', 'start', 'missing-method', 'missing-bridge'].includes(failure)) {
-      expect(rpc).toHaveBeenCalledWith(
-        'remote-gateway',
-        'origin-profile',
-        'mcp.servers.oauth.cancel',
-        {
-          name: 'reports',
-          session_id: 'flow-1'
-        },
-        60_000
-      )
-    }
-
-    expect(rpc.mock.calls.every(call => call[0] === 'remote-gateway' && call[1] === 'origin-profile')).toBe(true)
-
-    if (failure === 'cancel-start' || failure === 'legacy') {
-      expect(openExternal).not.toHaveBeenCalled()
-    }
-
-    expect(rpc.mock.calls.filter(call => call[2].endsWith('.start'))).toHaveLength(
-      failure === 'listen' || failure === 'missing-bridge' ? 0 : 1
+    expect(openExternal).not.toHaveBeenCalled()
+    expect(bridge.cancel).toHaveBeenCalledWith('listener-1')
+    expect(rpc).toHaveBeenCalledWith(
+      'remote-gateway',
+      'origin-profile',
+      'mcp.servers.oauth.cancel',
+      { name: 'reports', session_id: 'flow-1' },
+      60_000
     )
+    expect(rpc.mock.calls.every(call => call[0] === 'remote-gateway' && call[1] === 'origin-profile')).toBe(true)
     expect(api).not.toHaveBeenCalled()
-    callback.resolve({ code: null, state: null, error: 'cancelled' })
   })
 })

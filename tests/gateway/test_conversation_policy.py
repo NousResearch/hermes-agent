@@ -806,19 +806,28 @@ async def test_one_filter_model_selection_drives_both_filters(monkeypatch, tmp_p
     import urllib.request
     from plugins.groupchat.pingpong_guard import should_suppress
     calls = []
+    async def inline_to_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
     def response(request, **kwargs):
         payload = json.loads(request.data)
         calls.append(payload["model"])
         content = "SUPPRESS" if payload["max_tokens"] == 5 else '{"score": 4, "rationale": "Relevant"}'
         return io.BytesIO(json.dumps({"choices": [{"message": {"content": content}}]}).encode())
+
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setattr(urllib.request, "urlopen", response)
+    # This test exercises shared model selection, not asyncio's executor.
+    # Running inline also avoids a Python 3.13/AnyIO executor-shutdown hang in
+    # minimal system-Python environments.
+    monkeypatch.setattr(asyncio, "to_thread", inline_to_thread)
     model = {"provider": "openrouter", "model": "chosen/model", "fallbacks": []}
     adapter = Adapter(settings={"filter_model": model, "relevance": {"enabled": True}})
     gate = adapter.conversation_policy().relevance
     assert (await gate._call_model_chain("score this"))
     assert should_suppress("a vague acknowledgement", "context", model)
     assert calls == ["chosen/model"] * 2
+    await adapter.disconnect()
 
 
 def test_model_failure_tries_configured_fallback(monkeypatch):

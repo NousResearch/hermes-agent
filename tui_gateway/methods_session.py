@@ -304,17 +304,23 @@ def _(rid, params: dict) -> dict:
     raw_cwd = _str_param(params, "cwd")  # unguarded, as on BASE: only the path check is best-effort
     with contextlib.suppress(Exception):
         explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
+    ephemeral = _flag(params, "ephemeral")
     _enable_gateway_prompts()
     # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
     profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
     session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
     now = time.time()
+    if ephemeral:
+        from agent.session_policy import mark_session_ephemeral
+        mark_session_ephemeral(sid)
+        mark_session_ephemeral(key)
     with _sessions_lock:
         _sessions[sid] = {
             "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
             "close_on_disconnect": _flag(params, "close_on_disconnect"),
             "active_session_lease": None,  # claimed lazily on the first turn (_ensure_active_session_slot)
             "cols": int(params.get("cols", 80)), "created_at": now, "edit_snapshots": {},
+            "ephemeral": ephemeral,
             "explicit_cwd": explicit_cwd,
             "history": history, "history_lock": threading.Lock(), "history_version": 0, "image_counter": 0,
             "cwd": _completion_cwd(params), "inflight_turn": None, "last_active": now,
@@ -356,7 +362,8 @@ def _(rid, params: dict) -> dict:
         "info": {"model": override.get("model") if override else _resolve_model(),
                  **({"provider": override["provider"]} if override.get("provider") else {}),
                  "tools": {}, "skills": {}, "cwd": cwd, "branch": git_probe.branch(cwd),
-                 "project": _project_info_for_cwd(cwd), "lazy": True, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+                 "project": _project_info_for_cwd(cwd), "lazy": True, "ephemeral": ephemeral,
+                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                  "profile_name": _response_profile_name(profile)}})
 
 

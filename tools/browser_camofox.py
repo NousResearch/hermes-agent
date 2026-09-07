@@ -234,25 +234,48 @@ def _adopt_existing_tab(session: Dict[str, Any]) -> Dict[str, Any]:
     return session
 
 
+def _is_task_ephemeral(task_id: Optional[str]) -> bool:
+    if not task_id:
+        return False
+    try:
+        from agent.session_policy import is_session_ephemeral
+        bare = task_id[:-len("_local")] if task_id.endswith("_local") else task_id
+        return is_session_ephemeral(bare) or is_session_ephemeral(task_id)
+    except Exception:
+        return False
+
+
 def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
     """Get or create the task's session. Identity precedence: external override
     (CAMOFOX_USER_ID / config) → profile-scoped identity when managed persistence
     is on → random ephemeral userId."""
     task_id = task_id or "default"
+    is_ephemeral = _is_task_ephemeral(task_id)
     with _sessions_lock:
         if task_id in _sessions:
             return _adopt_existing_tab(_sessions[task_id])
         camofox_cfg = _get_camofox_config()
-        identity = _camofox_identity_override(task_id, camofox_cfg)
-        if identity is None and _managed_persistence_enabled(camofox_cfg):
-            identity = get_camofox_identity(task_id)
+        if is_ephemeral:
+            if _camofox_identity_override(task_id, camofox_cfg):
+                raise RuntimeError(
+                    "Persistent Camofox identity cannot be used in a temporary chat: external identity "
+                    "bypasses isolated temporary session cleanup. Start a normal chat (/new) to use configured Camofox identity."
+                )
+            identity = None
+        else:
+            identity = _camofox_identity_override(task_id, camofox_cfg)
+            if identity is None and _managed_persistence_enabled(camofox_cfg):
+                identity = get_camofox_identity(task_id)
         if identity is None:
-            identity = {"user_id": f"hermes_{uuid.uuid4().hex[:10]}", "session_key": f"task_{task_id[:16]}"}
+            identity = {
+                "user_id": f"hermes_temp_{uuid.uuid4().hex[:10]}" if is_ephemeral else f"hermes_{uuid.uuid4().hex[:10]}",
+                "session_key": f"task_{task_id[:16]}",
+            }
             managed, adopt = False, False
         else:
             managed, adopt = True, _flag("CAMOFOX_ADOPT_EXISTING_TAB", camofox_cfg, "adopt_existing_tab")
         session = {"user_id": identity["user_id"], "tab_id": None, "session_key": identity["session_key"],
-                   "managed": managed, "adopt_existing_tab": adopt}
+                   "managed": managed, "adopt_existing_tab": adopt, "ephemeral": is_ephemeral}
         _sessions[task_id] = session
         return _adopt_existing_tab(session)
 
@@ -276,6 +299,8 @@ def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
     """Drop only the local tracking entry (``True``) for managed profiles, which must
     survive across agent tasks; ``False`` for ephemeral sessions so the caller falls back
     to :func:`camofox_close`."""
+    if _is_task_ephemeral(task_id):
+        return False
     camofox_cfg = _get_camofox_config()
     if _managed_persistence_enabled(camofox_cfg) or _camofox_identity_override(task_id, camofox_cfg):
         _drop_session(task_id)

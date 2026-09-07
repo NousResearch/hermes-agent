@@ -3716,13 +3716,31 @@ class BasePlatformAdapter(ABC):
         record_delivery(tts_result)
         return bool(caption and getattr(tts_result, "success", False))
 
+    def _session_is_temporary(self, session_key: str) -> bool:
+        """True when this session_key belongs to a temporary (/temp) chat.
+
+        Entry-backed rather than registry-backed so the answer survives
+        gateway restarts — the entry persists the flag precisely so a live
+        temporary chat can never silently downgrade. Fails open to False
+        when the store or entry is unavailable, matching
+        ``GatewayRunner._session_is_ephemeral``.
+        """
+        store = getattr(self, "_session_store", None)
+        if store is None:
+            return False
+        try:
+            entry = store._entries.get(session_key)
+        except Exception:
+            return False
+        return bool(getattr(entry, "ephemeral", False)) if entry else False
+
     async def _record_delivery_obligation(
         self, event: MessageEvent, session_key: str, text_content: str,
         delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool) -> Optional[str]:
         """Ledger the final response BEFORE the send so a crash before platform ACK redelivers on
         next boot; best-effort, skips slash-command and ephemeral replies. Returns the obligation id
         or None."""
-        if is_ephemeral_response or str(event.text or "").lstrip().startswith(
+        if is_ephemeral_response or self._session_is_temporary(session_key) or str(event.text or "").lstrip().startswith(
             ("/", self.typed_command_prefix or "!")):
             return None
         try:

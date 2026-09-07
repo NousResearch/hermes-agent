@@ -327,6 +327,16 @@ def _pop_session_by_id(sid: str) -> dict | None:
             _closed_session_activity[home] = max(_closed_session_activity.get(home, 0), last_active)
             session["_closing"] = True
             session["_sid"] = sid  # out of _sessions now, so teardown can't recover the live id by scanning
+    if session is None:
+        return None
+    if session.get("ephemeral"):
+        try:
+            from agent.session_policy import unmark_session_ephemeral
+            unmark_session_ephemeral(sid)
+            if session_key := session.get("session_key"):
+                unmark_session_ephemeral(session_key)
+        except Exception:
+            pass
     return session
 
 

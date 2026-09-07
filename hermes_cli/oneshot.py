@@ -167,6 +167,7 @@ def run_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: Optional[str] = None,
+    no_session: bool = False,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -220,6 +221,7 @@ def run_oneshot(
                 toolsets=explicit_toolsets,
                 use_config_toolsets=use_config_toolsets,
                 skills=skills,
+                no_session=no_session,
             )
         except BaseException as exc:  # noqa: BLE001
             # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
@@ -347,6 +349,7 @@ def _run_agent(
     toolsets: object = None,
     use_config_toolsets: bool = True,
     skills: object = None,
+    no_session: bool = False,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn, run one conversation, and return
     ``(final_response, run_result)``. Imports are local to keep CLI startup cheap."""
@@ -381,7 +384,7 @@ def _run_agent(
 
     skills_prompt = _build_preloaded_skills_prompt(skills)
 
-    session_db = _create_session_db_for_oneshot()
+    session_db = None if no_session else _create_session_db_for_oneshot()
     # The try spans agent construction (not just ``chat``) so the store is always closed, even when
     # ``AIAgent(...)`` raises — the one-shot exit path hard-exits via os._exit and skips finalizers.
     agent = None
@@ -397,6 +400,7 @@ def _run_agent(
             quiet_mode=True,
             platform="cli",
             session_db=session_db,
+            ephemeral=no_session,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=get_fallback_chain(cfg) or None,
             ephemeral_system_prompt=skills_prompt,

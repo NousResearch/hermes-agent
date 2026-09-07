@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_state_common import _RECOVERABLE_END_REASONS_SQL, _RESET_END_REASONS_SQL, _sql_session_last_active
+from agent.session_policy import is_session_ephemeral
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -210,7 +211,7 @@ class SessionGatewayMixin:
 
         See #9006.
         """
-        if not session_id or not session_key:
+        if not session_id or not session_key or is_session_ephemeral(session_id):
             return
         identity = (session_key, source, user_id, chat_id, chat_type, thread_id, display_name, origin_json)
         ancestors = include_compression_ancestors

@@ -470,6 +470,15 @@ class SupermemoryMemoryProvider(MemoryProvider):
         # Kebab-case aliases are appended after all snake_case schemas (deep-copied, name swapped).
         return schemas + [{**json.loads(json.dumps(s)), "name": _KEBAB_ALIASES[s["name"]]} for s in schemas]
 
+    def read_only_tool_names(self) -> frozenset:
+        # store/forget mutate Supermemory and stay blocked in temporary
+        # chats. The kebab-case names are real registered schemas (see
+        # get_tool_schemas above), so the read side must list both forms.
+        return frozenset({
+            "supermemory_search", "supermemory_profile",
+            "supermemory-search", "supermemory-profile",
+        })
+
     def _tool_container_tag(self, args: dict) -> Optional[str]:
         """Validated container_tag from args; None = primary. Raises _TagError when not whitelisted."""
         raw = str(args.get("container_tag") or "").strip() if self._enable_custom_containers else ""

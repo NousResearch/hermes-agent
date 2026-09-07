@@ -140,6 +140,7 @@ def _run_and_exit_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: object = None,
+    no_session: bool = False,
 ) -> None:
     try:
         from hermes_cli.oneshot import run_oneshot
@@ -151,6 +152,7 @@ def _run_and_exit_oneshot(
             toolsets=toolsets,
             skills=skills,
             usage_file=usage_file,
+            no_session=no_session,
         )
     except KeyboardInterrupt:
         rc = 130
@@ -1647,7 +1649,7 @@ _CHAT_PASSTHROUGH = (
     ("provider", None), ("toolsets", None), ("skills", None), ("verbose", None),
     ("quiet", False), ("query", None), ("image", None), ("resume", None),
     ("worktree", False), ("checkpoints", False), ("pass_session_id", False),
-    ("max_turns", None),
+    ("max_turns", None), ("no_session", False),
 )
 
 
@@ -2886,6 +2888,7 @@ def _run_oneshot_from_args(args) -> None:
         toolsets=getattr(args, "toolsets", None),
         skills=getattr(args, "skills", None),
         usage_file=getattr(args, "usage_file", None),
+        no_session=getattr(args, "no_session", False),
     )
 
 
@@ -3385,6 +3388,19 @@ def main():
     # (hooks list, cron list, gateway status, ...) pay no discovery cost and
     # trigger no consent prompts for hooks the user is still inspecting.
     _prepare_agent_startup(args)
+
+    # --no-session is one-shot-only. Without this gate a bare
+    # `hermes --no-session` parses fine, matches no one-shot branch, and drops
+    # into a NORMAL interactive session that is saved — the exact opposite of
+    # what was asked for, with no error. Fail loudly and point at /temp, which
+    # is the interactive equivalent. (cli.main() carries the same check for the
+    # -q/--query path; this covers -z/--oneshot.)
+    if getattr(args, "no_session", False) and not getattr(args, "oneshot", None) \
+            and not getattr(args, "query", None) and not getattr(args, "q", None):
+        parser.error(
+            "--no-session requires a one-shot invocation (-z/--oneshot or -q/--query). "
+            "For an interactive temporary chat, start hermes normally and run /temp."
+        )
 
     if getattr(args, "oneshot", None):
         _run_oneshot_from_args(args)

@@ -11,6 +11,7 @@ import sqlite3
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.session_policy import is_session_ephemeral
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _ended_by_compression, _sql_session_last_active,
     is_automatic_end_reason)
@@ -160,6 +161,8 @@ class SessionCompressionMixin:
         """INSERT the compression child's ``sessions`` row copied from *parent*. Same contract as
         _insert_session_row's compression-fork backfill: the child stays on the parent's profile and keeps
         gateway routing/origin columns; no owner on either side -> this store's profile."""
+        if is_session_ephemeral(parent_session_id) or is_session_ephemeral(child_session_id):
+            return
         system_prompt_hash = self._store_system_prompt(conn, system_prompt)
         conn.execute(
             """INSERT INTO sessions (
@@ -200,6 +203,11 @@ class SessionCompressionMixin:
         """
         from hermes_state_errors import CompressionSessionBusyError
         def _do(conn):
+            if is_session_ephemeral(parent_session_id) or is_session_ephemeral(child_session_id):
+                raise RuntimeError(
+                    "Refusing to publish compression child for temporary "
+                    f"session {parent_session_id!r}: temporary chats leave no trace"
+                )
             if require_lease_refresh and compression_lock_holder:
                 conn.execute(
                     "UPDATE compression_locks SET expires_at = ? WHERE session_id = ? AND holder = ?",

@@ -751,7 +751,7 @@ class GatewayBusySessionMixin:
         "approvals", "model", "codex-runtime", "personality", "suggestions", "save", "retry",
         "sethome", "compress", "usage", "topup", "insights", "reload-mcp", "reload-skills",
         "bundles", "debug", "title", "resume", "sessions", "branch", "rollback", "diff", "goal",
-        "loop", "refine", "review", "voice",
+        "loop", "refine", "review", "voice", "temp",
     )
 
     def _command_handler_table(self, names) -> Dict[str, Any]:
@@ -783,7 +783,7 @@ class GatewayBusySessionMixin:
 
     # busy_handler key (hermes_cli/commands.py CommandDef) → mid-run variant ``_busy_<key>_command``.
     _BUSY_SPECIAL_HANDLERS: Dict[str, str] = {
-        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "queue", "steer", "egress", "goal", "loop")
+        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "temp", "queue", "steer", "egress", "goal", "loop")
     }
 
     async def _dispatch_busy_slash_command(self, event: MessageEvent, cmd_def, quick_key: str, source):
@@ -872,6 +872,23 @@ class GatewayBusySessionMixin:
             quick_key, source, interrupt_reason=_INTERRUPT_REASON_RESET, invalidation_reason="new_command",
         )
         return await self._handle_reset_command(event)
+
+    async def _busy_temp_command(self, event: MessageEvent, quick_key: str, source):
+        # /temp must bypass the running-agent guard for the same reason /new
+        # does (#2170): queued as plain user text it would be replayed INTO
+        # the agent instead of toggling persistence. That failure mode is
+        # worse here than for /new — a user typing /temp mid-run believes
+        # they have gone private, and silently staying persistent is exactly
+        # the outcome this feature exists to prevent. Interrupt first, clear
+        # the pending queue, then dispatch the real handler.
+        from gateway.run import _INTERRUPT_REASON_RESET
+        await self._interrupt_and_clear_session(
+            quick_key,
+            source,
+            interrupt_reason=_INTERRUPT_REASON_RESET,
+            invalidation_reason="temp_command",
+        )
+        return await self._handle_temp_command(event)
 
     async def _busy_queue_command(self, event: MessageEvent, quick_key: str, source):
         # Each /queue is its own full agent turn, run FIFO after the current run; never merged.

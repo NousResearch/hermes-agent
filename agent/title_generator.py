@@ -15,6 +15,7 @@ from typing import Any, Callable, Optional
 from agent.auxiliary_client import call_llm
 from agent.context_compressor import LEGACY_SUMMARY_PREFIX
 from agent.message_content import flatten_message_text
+from agent.session_policy import is_session_ephemeral
 
 logger = logging.getLogger(__name__)
 
@@ -335,7 +336,7 @@ def _persist_session_title(session_db, session_id, title, *, source, dedupe=True
 
 def apply_instant_title(session_db, session_id: str, user_message: str, title_callback: Optional[TitleCallback] = None) -> Optional[str]:
     """Write the derived title inline. Returns it, or None (no usable text, or a ``derived``+ title exists). Never raises."""
-    if not session_db or not session_id:
+    if not session_db or not session_id or is_session_ephemeral(session_id):
         return None
     try:
         title = derive_title(user_message) if is_titleable_user_message(user_message) else None
@@ -362,7 +363,7 @@ def auto_title_session(
     exception escape (the threading excepthook would spray a traceback into the terminal); the canonical
     trigger is the post-``hermes update`` window where lazy imports read NEW source against OLD modules."""
     try:
-        if not session_db or not session_id or _has_upgraded_title(session_db, session_id):
+        if not session_db or not session_id or is_session_ephemeral(session_id) or _has_upgraded_title(session_db, session_id):
             return
         # This thread starts AFTER the turn's ambient context was reset; republish it so the call carries
         # the same Portal ``conversation=`` tag (root-of-lineage) and bills usage to this session.
@@ -424,9 +425,10 @@ def maybe_auto_title(
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
+    ephemeral: bool = False,
 ) -> None:
     """Instant inline title, then a daemon-thread upgrade. Call at the START of a turn, before the model."""
-    if not session_db or not session_id or not user_message:
+    if ephemeral or not session_db or not session_id or not user_message or is_session_ephemeral(session_id):
         return
     # History may be pre- or post-message. Skip only when BOTH past the opening turn AND named: count alone
     # left a machinery-opened session nameless; title alone never titles on an old store.

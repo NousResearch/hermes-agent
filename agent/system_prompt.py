@@ -19,7 +19,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
-    HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE, MEMORY_GUIDANCE,
+    HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, EPHEMERAL_SESSION_GUIDANCE,
+    KANBAN_GUIDANCE, MEMORY_GUIDANCE,
     USER_PROFILE_GUIDANCE, PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, drain_truncation_warnings,
@@ -625,6 +626,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # in the rendered index (pure string check — inherits the index's stability).
     if "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
         stable_parts[_help_guidance_slot] = HERMES_AGENT_HELP_GUIDANCE
+    if getattr(agent, "ephemeral", False):
+        stable_parts.append(EPHEMERAL_SESSION_GUIDANCE)
     stable_parts.extend(_alibaba_identity_part(agent))
     # Coding posture: the operating brief stays in the stable prefix. The
     # environment block contains the current cwd/backend and belongs after

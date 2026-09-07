@@ -119,6 +119,13 @@ def load_heartbeat(session_id: str) -> Optional[HeartbeatState]:
 def save_heartbeat(session_id: str, state: HeartbeatState) -> None:
     if not session_id:
         return
+    try:
+        from hermes_state import is_session_ephemeral
+
+        if is_session_ephemeral(session_id):
+            return
+    except Exception:
+        pass
     db = _get_session_db()
     if db is None:
         from hermes_cli.goals import _warn_dropped_write

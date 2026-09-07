@@ -88,6 +88,9 @@ export interface KeybindRuntimeDeps {
   toggleCommandCenter: () => void
   /** Drop to a fresh new-session draft. */
   startFreshSession: () => void
+  /** Start a temporary chat (nothing persisted). Same entry point as the
+   *  sidebar's "New temporary session" so the two cannot diverge. */
+  startFreshTemporarySession: () => void
   /** Open a fresh session as a tab in the main zone (⌘T), leaving the primary. */
   openNewSessionTab: () => void
   /** Pin/unpin the active session. */
@@ -221,6 +224,12 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       setWorkspaceScope('sessions')
       $newChatProfile.set(null)
       deps.startFreshSession()
+      window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
+    },
+    'session.newTemporary': () => {
+      setWorkspaceScope('sessions')
+      $newChatProfile.set(null)
+      deps.startFreshTemporarySession()
       window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
     },
     'session.newTab': () => deps.openNewSessionTab(),

@@ -286,6 +286,7 @@ export const ar = defineLocale({
       'nav.agents': 'فتح الوكلاء',
       'session.new': 'جلسة جديدة',
       'session.newTab': 'علامة تبويب جلسة جديدة',
+      'session.newTemporary': 'محادثة مؤقتة جديدة',
       'session.newWindow': 'جلسة جديدة في نافذة',
       'session.next': 'الجلسة التالية',
       'session.prev': 'الجلسة السابقة',
@@ -1724,6 +1725,7 @@ export const ar = defineLocale({
   },
   sidebar: {
     nav: {
+      'new-temporary-session': 'جلسة مؤقتة جديدة',
       'new-session': 'جلسة جديدة',
       skills: 'المهارات',
       messaging: 'المراسلة',
@@ -1933,6 +1935,11 @@ export const ar = defineLocale({
     attachments: count => `${count} مرفق`,
     editingInComposer: 'جار التحرير في صندوق الكتابة',
     editingQueuedInComposer: 'جار تحرير رسالة في الطابور',
+    temporarySessionBadge: 'مؤقتة — غير محفوظة',
+    temporarySessionHint: 'يختفي عند إغلاق هذه المحادثة.',
+    temporaryHeroTitle: 'محادثة مؤقتة',
+    temporaryHeroBody:
+      'لا يتم حفظ أي شيء هنا. لن تظهر هذه المحادثة في سجلك، ولن يتم تذكرها، ولا يمكن استئنافها بعد إغلاقها.',
     queueEdit: 'تحرير الرسالة المجدولة',
     queueSendNext: 'إرسالها تاليا',
     queueSteer: 'توجيه — تصحيح الدور الجاري فورا',

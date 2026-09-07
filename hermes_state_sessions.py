@@ -19,6 +19,7 @@ from hermes_state_common import (
     _sql_session_last_active, _sql_session_last_active_by_id, escape_like as _escape_like,
     _placeholders as _session_ids_placeholders,
 )
+from agent.session_policy import is_session_ephemeral
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -303,6 +304,8 @@ class SessionSessionsMixin:
         """
         if not (profile_name or "").strip():
             profile_name = self._own_profile_name()
+        if is_session_ephemeral(session_id):
+            return
         def _do(conn):
             system_prompt_hash = self._store_system_prompt(conn, system_prompt)
             conn.execute(

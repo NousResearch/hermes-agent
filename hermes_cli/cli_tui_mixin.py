@@ -302,6 +302,8 @@ class CLITuiMixin:
             return _state_fragment("class:prompt-working", "⚕")
         if self._voice_mode:
             return _state_fragment("class:voice-prompt", "🎤")
+        if getattr(self, "_ephemeral", False):
+            return [("class:ephemeral-prompt", "🕵 temp "), ("class:prompt", symbol)]
         return [("class:prompt", symbol)]
 
     def _get_tui_prompt_text(self) -> str:
@@ -2201,4 +2203,6 @@ class CLITuiMixin:
             'voice-recording': '#FF4444 bold',
             'voice-processing': '#FFA500 italic',
             'voice-status': 'bg:#1a1a2e #87CEEB',
-            'voice-status-recording': 'bg:#1a1a2e #FF4444 bold'}
+            'voice-status-recording': 'bg:#1a1a2e #FF4444 bold',
+            'ephemeral-prompt': '#FFB300 bold',
+        }

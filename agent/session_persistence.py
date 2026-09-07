@@ -406,7 +406,7 @@ class SessionPersistenceMixin:
 
     def _save_trajectory(self, messages: List[Dict[str, Any]], user_query: str, completed: bool):
         """Save conversation trajectory to JSONL file."""
-        if not self.save_trajectories:
+        if not self.save_trajectories or getattr(self, "_persist_disabled", False) or getattr(self, "ephemeral", False):
             return
         trajectory = self._convert_to_trajectory_format(messages, user_query, completed)
         _save_trajectory_to_file(trajectory, self.model, completed)

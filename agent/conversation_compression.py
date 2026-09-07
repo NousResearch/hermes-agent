@@ -3233,7 +3233,7 @@ def _commit_compaction(
     commit_started_at = time.monotonic()
     split_status = "not_applicable"
     old_session_id: Optional[str] = None  # bound only once rotation begins
-    if agent._session_db:
+    if agent._session_db and not getattr(agent, "_persist_disabled", False):
         split_status = "pending"
         try:
             # Memory extraction runs in BOTH modes: pre-compaction turns are summarized

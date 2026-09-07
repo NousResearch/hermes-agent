@@ -262,6 +262,15 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     hit signed-URL expiry (Browserbase). Both paths share the same private-page/SSRF guard. Returns JSON
     ``{"success": True, "method", "result"}`` or ``{"error": ...}``."""
     effective_task_id = task_id or "default"
+    try:
+        from agent.session_policy import is_session_ephemeral
+        from tools.browser_tool import _bare_task_id_for_session_key
+        bare = _bare_task_id_for_session_key(effective_task_id)
+        if is_session_ephemeral(bare) or is_session_ephemeral(effective_task_id):
+            return tool_error("browser_cdp cannot be used in a temporary chat: external CDP connections "
+                              "bypass isolated temporary session cleanup. Start a normal chat (/new) to use custom CDP.")
+    except Exception:
+        pass
 
     if frame_id:
         blocked = _browser_cdp_private_guard(task_id=effective_task_id, method=method, params=params or {})

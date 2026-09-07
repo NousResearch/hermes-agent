@@ -1054,6 +1054,9 @@ class HindsightMemoryProvider(MemoryProvider):
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [] if self._memory_mode == "context" else [RETAIN_SCHEMA, RECALL_SCHEMA, REFLECT_SCHEMA]
 
+    def read_only_tool_names(self) -> frozenset:
+        return frozenset({"hindsight_recall", "hindsight_reflect"})
+
     def _tool_retain(self, args: dict) -> str:
         content, context = args["content"], args.get("context")
         item = self._build_retain_kwargs(content, context=context, tags=args.get("tags"),

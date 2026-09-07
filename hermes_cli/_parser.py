@@ -166,6 +166,10 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
               help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills")
     inherited(parser, "--safe-mode", action="store_true", default=False,
               help="Troubleshooting mode: disable ALL customizations — user config, AGENTS.md/memory injection, plugins, and MCP servers (implies --ignore-user-config and --ignore-rules)")
+    inherited(parser, "--no-session", action="store_true", default=False, help=(
+        "Ephemeral one-shot: leave no trace (no session row, no JSON snapshot, no memory extraction). "
+        "Requires -q/--query or -z/--oneshot. For an interactive temporary chat, use /temp."
+    ))
     inherited(parser, "--tui", action="store_true", default=False,
               help="Launch the modern TUI instead of the classic REPL")
     inherited(parser, "--cli", action="store_true", default=False,
@@ -264,6 +268,11 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
               help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills. Combine with --ignore-user-config for a fully isolated run.")
     inherited(chat_parser, "--safe-mode", action="store_true", default=SUPPRESS,
               help="Troubleshooting mode: disable ALL customizations — user config, AGENTS.md/memory injection, plugins, and MCP servers (implies --ignore-user-config and --ignore-rules). Use to isolate whether a problem comes from your setup or from Hermes itself.")
+    inherited(chat_parser, "--no-session", action="store_true", default=SUPPRESS, help=(
+        "Ephemeral one-shot: leave no trace (no session row, no JSON snapshot, no memory extraction). "
+        "Requires -q/--query or -z/--oneshot. Useful for batch-testing prompts without flooding the session list. "
+        "For an interactive temporary chat, use /temp."
+    ))
     add("--source", default=None,
         help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists.")
     inherited(chat_parser, "--tui", action="store_true", default=SUPPRESS,

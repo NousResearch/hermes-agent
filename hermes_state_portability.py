@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE
 from utils import safe_json_loads
 from hermes_state_common import SCHEMA_SQL, _PREVIEW_RAW_SUBQUERY_SQL, _shape_preview, _sql_session_last_active
+from agent.session_policy import is_session_ephemeral
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
@@ -450,6 +451,8 @@ class SessionPortabilityMixin:
 
     def _import_session_row(self, conn, raw: Dict[str, Any], messages: List[Dict[str, Any]], session_id: str) -> None:
         """INSERT one normalized session + its messages; counts fixed up after."""
+        if is_session_ephemeral(session_id):
+            return
         started_at = self._coerce_or(raw.get("started_at"), float, None)
         params = {
             "id": session_id, "source": str(raw.get("source") or "import"),

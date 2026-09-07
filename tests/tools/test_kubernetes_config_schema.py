@@ -64,7 +64,7 @@ def test_the_web_settings_provisioner_enum_cannot_drift():
     while the copy is still a literal. Patching the source of truth and
     re-reading the options proves the schema FOLLOWS it."""
     import tools.environments.kubernetes as k8s
-    from hermes_cli.web_server import (
+    from hermes_cli.web_server_config import (
         _SCHEMA_OVERRIDES,
         _kubernetes_kind_options,
     )
@@ -106,8 +106,7 @@ def test_kubernetes_is_bridged_by_all_three_config_paths():
 
     # cli.py and gateway/run.py hold their own literal maps. Extract the
     # MAPPING (data, not code shape) so the pin survives a refactor.
-    assert _extract_terminal_env_map(cli, "load_cli_config").get(
-        "kubernetes") == "TERMINAL_KUBERNETES"
+    assert cli._TERMINAL_ENV_MAPPINGS.get("kubernetes") == "TERMINAL_KUBERNETES"
     assert _extract_terminal_env_map(gateway_run, None).get(
         "kubernetes") == "TERMINAL_KUBERNETES"
 

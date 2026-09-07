@@ -105,8 +105,8 @@ def _resolved_declared_hooks(
     return _declared_hooks(Path(__file__).resolve().parents[1]), _PLUGIN_NAME
 
 
-def _entrypoint_override_present() -> bool:
-    """Return whether an installed plugin wins the directory manifest."""
+def _entrypoint_override_present(selected_key: str = _PLUGIN_NAME) -> bool:
+    """Return whether an installed plugin wins the selected manifest key."""
     try:
         entry_points = importlib.metadata.entry_points()
         if hasattr(entry_points, "select"):
@@ -118,7 +118,7 @@ def _entrypoint_override_present() -> bool:
                 entry_point for entry_point in entry_points
                 if getattr(entry_point, "group", None) == _PLUGIN_ENTRY_POINT_GROUP
             )
-        return any(getattr(entry_point, "name", None) == _PLUGIN_NAME for entry_point in candidates)
+        return any(getattr(entry_point, "name", None) == selected_key for entry_point in candidates)
     except Exception:
         # A metadata failure must not make doctor trust the bundled hooks.
         return True
@@ -151,11 +151,10 @@ def worker_contract_enabled(
     ):
         return False
 
-    if _entrypoint_override_present():
-        return False
-
     hooks, key = _resolved_declared_hooks(home, project_root)
     manifest_names = {_PLUGIN_NAME, key}
     if not manifest_names.intersection(enabled) or manifest_names.intersection(disabled):
+        return False
+    if key in enabled and _entrypoint_override_present(key):
         return False
     return hooks is not None and _REQUIRED_HOOKS <= hooks

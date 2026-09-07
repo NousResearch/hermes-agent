@@ -971,6 +971,10 @@ function SidebarSystemActions({
   }, [updateConfirmOpen]);
 
   const updateConfirmDescription = useMemo(() => {
+    if (updateConfirmInfo?.behind === -2) {
+      const cmd = updateConfirmInfo.update_command;
+      return `Branch diverged from origin/main (not a fast-forward). Review WIP before running 'hermes update' (${cmd}); this may switch to main / stash WIP. The gateway restarts when the update finishes.`;
+    }
     if (updateConfirmInfo?.behind && updateConfirmInfo.behind > 0) {
       const cmd = updateConfirmInfo.update_command;
       const n = updateConfirmInfo.behind;

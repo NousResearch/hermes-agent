@@ -319,8 +319,6 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         main_anc = _git_ok(["merge-base", "--is-ancestor", "origin/main", "HEAD"], cwd=repo_dir)
         if not head_anc and not main_anc:
             return UPDATE_DIVERGED
-        if behind > 0 and not head_anc:
-            return UPDATE_DIVERGED
     return behind if fetch_ok or (behind is not None and behind > 0) else None
 
 

@@ -943,9 +943,20 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     author = _profile_author() if reason else None
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
-        op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(conn, tid))
-        return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{suffix}",
-                           lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)")
+        def _unblock_or_admit(tid: str) -> bool:
+            return kb.unblock_task(conn, tid) or kb.admit_block_loop_task(conn, tid)
+
+        def ok_msg(tid: str) -> str:
+            events = kb.list_events(conn, tid)
+            if events and events[-1].kind == "block_loop_admitted":
+                return f"Admitted one run for {tid}{suffix} (parked after a block loop)"
+            return f"Unblocked {tid}{suffix}"
+
+        op = _commented(conn, reason, author, "UNBLOCK", _unblock_or_admit)
+        return _bulk_apply(
+            ids, op, ok_msg,
+            lambda tid: f"cannot unblock {tid} (not blocked/scheduled/parked-block-loop?)",
+        )
 
 
 def _cmd_request_review(args: argparse.Namespace) -> int:

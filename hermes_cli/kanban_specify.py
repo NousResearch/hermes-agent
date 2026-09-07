@@ -131,6 +131,11 @@ def _load_triage_task(task_id: str) -> tuple[Optional[kb.Task], str]:
         return None, "unknown task id"
     if task.status != "triage":
         return None, f"task is not in triage (status={task.status!r})"
+    if kb.is_block_loop_parked(task):
+        return None, (
+            "task is parked after a block loop; "
+            "use `hermes kanban unblock` to admit exactly one run"
+        )
     return task, ""
 
 
@@ -225,7 +230,12 @@ def specify_task(
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Task ids in the triage column; ``tenant`` narrows the sweep."""
+    """Task ids in the triage column eligible for auto-specify.
+
+    Block-loop-parked cards are excluded: they are human-decision lanes,
+    not underspecified ideas.
+    """
     with kbc.connect_closing() as conn:
-        tasks = kb.list_tasks(conn, status="triage", tenant=tenant, include_archived=False)
-    return [t.id for t in tasks]
+        return kb.list_decomposable_triage_ids(
+            conn, tenant=tenant, include_archived=False,
+        )

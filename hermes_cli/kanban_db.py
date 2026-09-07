@@ -92,8 +92,9 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
-# Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
+# Same-reason block -> unblock -> re-block cycles before parking in ``triage``.
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
+# Parked cards stay in triage until an operator admits exactly one run.
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
@@ -937,10 +938,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     block_kind           TEXT,
     -- Unblock-loop counter. Incremented each time a task is re-blocked for the
     -- same truly-blocked reason after having been unblocked. When it reaches
-    -- BLOCK_RECURRENCE_LIMIT the task is routed to ``triage`` instead of
-    -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
-    -- successful completion — NOT on unblock (resetting on unblock is exactly
-    -- the amnesia that let the loop run unbounded).
+    -- BLOCK_RECURRENCE_LIMIT the task parks in ``triage`` (status=triage AND
+    -- block_recurrences >= limit) instead of ``blocked`` so a cron can't spin
+    -- it forever. Auto-specify/decompose must not promote a parked card —
+    -- operator recovery is admit_block_loop_task (one run). Reset to 0 only
+    -- on a successful completion — NOT on unblock or admit (resetting on
+    -- unblock is exactly the amnesia that let the loop run unbounded).
     block_recurrences    INTEGER NOT NULL DEFAULT 0
 );
 
@@ -1484,6 +1487,35 @@ def list_tasks(
         query += f" LIMIT {int(limit)}"
     rows = conn.execute(query, params).fetchall()
     return [Task.from_row(r) for r in rows]
+
+
+def is_block_loop_parked(task: Task) -> bool:
+    """True when a terminal block-loop has parked this card in triage.
+
+    Auto-specify/decompose must not promote these: they are human-decision
+    lanes, not underspecified ideas. Operator recovery is
+    :func:`admit_block_loop_task`.
+    """
+    return (
+        task.status == "triage"
+        and int(task.block_recurrences or 0) >= BLOCK_RECURRENCE_LIMIT
+    )
+
+
+def list_decomposable_triage_ids(
+    conn: sqlite3.Connection, *, tenant: Optional[str] = None,
+    include_archived: bool = False, limit: Optional[int] = None,
+) -> list[str]:
+    """Triage ids the specifier/decomposer may auto-promote.
+
+    Excludes block-loop-parked cards so a human-review lane cannot be
+    rewritten back to ``ready`` by an auto-decomposer sweep.
+    """
+    tasks = list_tasks(
+        conn, status="triage", tenant=tenant,
+        include_archived=include_archived, limit=limit,
+    )
+    return [t.id for t in tasks if not is_block_loop_parked(t)]
 
 
 def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
@@ -2954,7 +2986,9 @@ def _route_block(
     returned the task to the pool), so a stored ``block_kind`` equal to the
     incoming one means blocked -> unblocked -> re-block for the same cause
     (un-typed None compares equal to a prior un-typed block). At
-    ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
+    ``BLOCK_RECURRENCE_LIMIT`` the task parks in ``triage`` for a human.
+    Auto-specify/decompose will not promote a parked card; an operator
+    must call :func:`admit_block_loop_task` to admit exactly one run.
     """
     payload = {"reason": reason, "kind": kind, "source_status": source_status}
     if kind == "dependency":
@@ -2964,6 +2998,7 @@ def _route_block(
     payload = {"reason": reason, "kind": kind, "recurrences": recurrences, "source_status": source_status}
     if recurrences >= BLOCK_RECURRENCE_LIMIT:
         payload["limit"] = BLOCK_RECURRENCE_LIMIT
+        payload["parked"] = True
         return "triage", "block_loop_detected", set_sql, (kind, recurrences), payload
     return "blocked", "blocked", set_sql, (kind, recurrences), payload
 
@@ -3286,6 +3321,49 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         return True
 
 
+def admit_block_loop_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    """One-shot operator recovery for a block-loop-parked triage card.
+
+    Promotes to the parent-gated landing status without rewriting title/body
+    or clearing ``block_kind`` / ``block_recurrences`` / event evidence.
+    Emits ``block_loop_admitted``. False when the task is not parked.
+    """
+    now = int(time.time())
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        recurrences = int(_row_get(row, "block_recurrences") or 0)
+        if row["status"] != "triage" or recurrences < BLOCK_RECURRENCE_LIMIT:
+            return False
+        _reclaim_dangling_run(
+            conn, task_id, statuses=("triage",), now=now,
+            note="invariant recovery on block-loop admit",
+        )
+        new_status = _landing_status_after_parents(conn, task_id)
+        cur = conn.execute(
+            "UPDATE tasks SET status = ?, current_run_id = NULL, "
+            "consecutive_failures = 0, last_failure_error = NULL "
+            "WHERE id = ? AND status = 'triage' AND block_recurrences >= ?",
+            (new_status, task_id, BLOCK_RECURRENCE_LIMIT),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(
+            conn, task_id, "block_loop_admitted",
+            {
+                "status": new_status,
+                "kind": _row_get(row, "block_kind"),
+                "recurrences": recurrences,
+                "once": True,
+            },
+        )
+        return True
+
+
 def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """``review`` -> ``ready``/``todo`` so the implementer re-runs on the new
     comments; restores the implementer from the ``review_requested`` event.
@@ -3430,10 +3508,15 @@ def specify_triage_task(
     assignee = _canonical_assignee(assignee)
     with write_txn(conn):
         existing = conn.execute(
-            "SELECT title, body, assignee FROM tasks WHERE id = ? AND status = 'triage'",
+            "SELECT title, body, assignee, block_recurrences FROM tasks "
+            "WHERE id = ? AND status = 'triage'",
             (task_id,),
         ).fetchone()
         if existing is None:
+            return False
+        if int(_row_get(existing, "block_recurrences") or 0) >= BLOCK_RECURRENCE_LIMIT:
+            # Structured park: a block-loop human-review lane, not an
+            # underspecified idea. Preserve title/body/kind/reason evidence.
             return False
         sets: list[str] = ["status = 'todo'"]
         params: list[Any] = []

@@ -83,8 +83,8 @@ def decompose_triage_task(
     in triage, or has already decomposed. Atomic: malformed entries abort fan-out.
     """
     from hermes_cli.kanban_db import (
-        _canonical_assignee, _link, _append_event, _insert_comment,
-        write_txn, recompute_ready,
+        BLOCK_RECURRENCE_LIMIT, _canonical_assignee, _link, _append_event, _insert_comment,
+        _row_get, write_txn, recompute_ready,
     )
 
     if not children:
@@ -98,10 +98,12 @@ def decompose_triage_task(
     now = int(time.time())
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "SELECT id, status, tenant, workspace_kind, workspace_path, block_recurrences "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if root_row is None or root_row["status"] != "triage":
+            return None
+        if int(_row_get(root_row, "block_recurrences") or 0) >= BLOCK_RECURRENCE_LIMIT:
             return None
         # Dependency links alone do not imply lineage. The completion event is
         # committed with the graph, and survives re-triage or unlinking.

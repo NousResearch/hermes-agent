@@ -82,17 +82,16 @@ export function stripGeneratedImageEchoes(text: string, sources: readonly string
     return text
   }
 
-  let next = text.replace(/!\[[^\]\n]*\]\([^)\n]*\)/g, '').replace(/\[[^\]\n]*\]\(\s*#media:[^)\n]*\)/g, '')
+  // Join only the gap left by an image, never normalize unrelated Markdown or code.
+  let next = text
+    .replace(/([ \t]?)!\[[^\]\n]*\]\([^)\n]*\)([ \t]?)/g, (_match, before: string, after: string) => before || after)
+    .replace(/\[[^\]\n]*\]\(\s*#media:[^)\n]*\)/g, '')
 
   for (const source of unique([...sources])) {
     next = next.replace(new RegExp(String.raw`(^|[\s([{])<?${regexEscape(source)}>?(?=$|[\s)\]},.!?])`, 'g'), '$1')
   }
 
-  return next
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .replace(/[ \t]{2,}/g, ' ')
-    .trim()
+  return next.trim()
 }
 
 /** Strip generated-image echoes from text parts, dropping any part left empty.

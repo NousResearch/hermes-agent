@@ -27,7 +27,8 @@ from pathlib import Path
 import pytest
 
 import hermes_state_common
-from hermes_state import FTS_STALE_KEY, SessionDB, _FTS_TRIGGERS
+from hermes_state import SessionDB
+from hermes_state_common import FTS_STALE_KEY, _FTS_TRIGGERS
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX flock child-process harness"
@@ -338,9 +339,9 @@ class TestOrphanedHolderStalenessBreak:
 import os, sys, time
 sys.path.insert(0, {repo!r})
 from pathlib import Path
-import hermes_state
+import hermes_state_repair
 
-lock_cm = hermes_state._cross_process_repair_lock(Path({db!r}))
+lock_cm = hermes_state_repair._cross_process_repair_lock(Path({db!r}))
 assert lock_cm.__enter__() is True
 pid = os.fork()
 if pid == 0:
@@ -358,9 +359,9 @@ os._exit(1)
         grandchild = int(proc.stdout.readline().strip().split()[1])
         proc.wait(timeout=10)
         try:
-            import hermes_state as hs
+            import hermes_state_repair
 
-            with hs._cross_process_repair_lock(db_path) as holding:
+            with hermes_state_repair._cross_process_repair_lock(db_path) as holding:
                 assert holding is True
         finally:
             with contextlib.suppress(OSError):
@@ -463,6 +464,7 @@ class TestNonContentionErrnoFailsFast:
         import fcntl
 
         import hermes_state
+        import hermes_state_repair
 
         monkeypatch.setattr(hermes_state, "_REPAIR_LOCK_TIMEOUT_SECONDS", 30.0)
 
@@ -471,7 +473,7 @@ class TestNonContentionErrnoFailsFast:
 
         monkeypatch.setattr(fcntl, "flock", _flock)
         t0 = time.monotonic()
-        with hermes_state._cross_process_repair_lock(tmp_path / "state.db") as ok:
+        with hermes_state_repair._cross_process_repair_lock(tmp_path / "state.db") as ok:
             assert ok is False
         assert time.monotonic() - t0 < 2.0
 
@@ -622,3 +624,51 @@ class TestDeferredFtsRetryInProcess:
             assert ro.retry_deferred_fts_recovery() is False
         finally:
             ro.close()
+
+    def test_retry_skips_quarantined_handle(self, tmp_path, fast_timeout):
+        """A structurally corrupt handle must never run a full FTS rebuild —
+        the housekeeping tick calls this unconditionally for the life of a
+        long-running gateway process, so a stale-FTS flag left set on a
+        now-corrupt handle must not retry the rebuild forever against the
+        damaged image (real DDL/DML the quarantine exists to prevent)."""
+        db_path = tmp_path / "state.db"
+        d = SessionDB(db_path=db_path)
+        if not d._fts_enabled:
+            d.close()
+            pytest.skip("FTS5 unavailable in this build")
+        d.create_session("s1", source="test")
+        d.append_message("s1", "user", "hello quarantine")
+        d.close()
+        self._mark_stale(db_path)
+
+        # Force the open-time recovery to defer (foreign rebuild-lock
+        # holder) so _fts_stale is still True once the handle is open —
+        # mirrors test_retry_is_non_blocking_while_live_holder_and_backs_off.
+        with _rebuild_lock_held_by_other_process(db_path):
+            gw = SessionDB(db_path=db_path)
+        try:
+            assert gw._fts_stale is True
+            gw._db_corrupt = True
+            gw._db_corrupt_reason = "database disk image is malformed"
+            # A retry that is DUE (backoff already elapsed) on a handle that
+            # had been backing off before it tripped quarantine. Seeding the
+            # deadline in the past matters: a future deadline would make the
+            # unguarded code short-circuit on the backoff check and this test
+            # would pass without the quarantine guard ever being exercised.
+            gw._fts_stale_retry_after = time.monotonic() - 1.0
+            gw._fts_stale_retry_interval = 900.0
+            assert gw.retry_deferred_fts_recovery() is False
+            # Untouched: still marked stale, triggers still absent — no
+            # rebuild ran against the "damaged" handle.
+            assert gw._fts_stale is True
+            # The backoff bookkeeping is reset too, mirroring the success
+            # path's own reset — a doubled interval left behind a flag
+            # nothing currently clears would otherwise make the next real
+            # retry (if this handle is ever un-quarantined) start from a
+            # stale multi-minute backoff instead of the default.
+            assert gw._fts_stale_retry_after == 0.0
+            assert gw._fts_stale_retry_interval == 0.0
+        finally:
+            gw.close()
+        assert _meta_value(db_path, FTS_STALE_KEY) == "1"
+        assert _base_fts_triggers(db_path) == set()

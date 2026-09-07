@@ -29,7 +29,7 @@ def _run_idle_tick(**kwargs):
         patch.object(scheduler_mod, "get_due_jobs", return_value=[]),
         patch.object(scheduler_mod, "load_config", side_effect=_fake_load_config),
         patch(
-            "tools.mcp_tool._kill_orphaned_mcp_children",
+            "tools.mcp_tool_lifecycle._kill_orphaned_mcp_children",
             side_effect=_fake_sweep,
         ),
     ):

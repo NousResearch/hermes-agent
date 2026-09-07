@@ -432,7 +432,12 @@
     --dt-destructive-foreground: #ffffff;
     --dt-sidebar-bg: var(--ui-bg-sidebar);
     --dt-sidebar-border: var(--ui-stroke-secondary);
-    --dt-user-bubble: var(--ui-chat-bubble-background);
+    /* `--user-bubble-keep` is the Settings → Appearance → Message Bubble lever
+       (store/user-bubble-transparency.ts): the share of the theme's bubble
+       fill to keep. Unset at the default, so the mix is a no-op and the bubble
+       is the theme's fill exactly as before. The border stays put either way —
+       at full transparency the outline is what still marks your turn. */
+    --dt-user-bubble: color-mix(in srgb, var(--ui-chat-bubble-background) var(--user-bubble-keep, 100%), transparent);
     --dt-user-bubble-border: var(--ui-stroke-tertiary);
 
     --dt-font-sans:
@@ -615,6 +620,16 @@
 
   :root[data-hermes-glass] body {
     background: color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent);
+  }
+
+  /* A surface that FADES INTO the field (a pane tab's hover ✕ runway) declares
+     `data-glass-field` and reads `--glass-field` for its endpoint. Under glass
+     the surface tokens are transparent, so a fade aimed at one goes
+     transparent→transparent and the runway vanishes; the field is the <body>
+     mix above, so that is what a fade must land on. Inert with glass off:
+     the caller's own fallback (its surface token) applies. */
+  :root[data-hermes-glass] [data-glass-field] {
+    --glass-field: color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent);
   }
 
   /* Sidebar scope (the Finder shape): glass rail, opaque content column.

@@ -368,7 +368,13 @@ def _run_local_turn(argv: list[str], dm_file: str) -> int:
 
         if retry_action(classify_agent_error((proc.stderr or proc.stdout or "").strip()[-500:])) != RETRY_NONE:
             proc = _turn()
-    if proc.returncode != 0 and "already has a live owner" in (proc.stderr or ""):
+    stderr_text = proc.stderr or ""
+    refused_not_owned = (
+        "hermes-refusal-reason: SESSION_NOT_OWNED" in stderr_text
+        # Transitional compatibility with CLIs that predate the reason marker.
+        or "already has a live owner" in stderr_text
+    )
+    if proc.returncode != 0 and refused_not_owned:
         # The target's Bot Chat is held live by another surface (Desktop); the turn
         # never ran — tell the sender plainly instead of leaking a raw lease error.
         # See #100523.

@@ -2972,7 +2972,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
             logger.warning("Failed to claim active session slot: %s", exc)
             return True
         if message:
-            print(message, file=sys.stderr) if stderr else self._console_print(f"[bold red]{message}[/]")
+            if stderr:
+                reason = getattr(message, "reason", "")
+                if reason:
+                    print(f"hermes-refusal-reason: {reason}", file=sys.stderr)
+                print(message, file=sys.stderr)
+            else:
+                self._console_print(f"[bold red]{message}[/]")
             return False
         self._active_session_lease = lease
         with suppress(Exception):

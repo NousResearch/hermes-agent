@@ -1,5 +1,6 @@
 from cli import HermesCLI
 from hermes_cli.active_sessions import (
+    SESSION_NOT_OWNED,
     active_session_registry_snapshot,
     try_acquire_active_session,
 )
@@ -39,3 +40,27 @@ def test_cli_claim_active_session_respects_global_limit(tmp_path, monkeypatch):
     finally:
         held.release()
         cli._release_active_session()
+
+
+def test_cli_stderr_refusal_includes_machine_reason(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    held, message = try_acquire_active_session(
+        session_id="shared-session",
+        surface="desktop",
+        config={},
+    )
+    assert message is None
+    assert held is not None
+
+    cli = object.__new__(HermesCLI)
+    cli.session_id = "shared-session"
+    cli.config = {}
+    cli._active_session_lease = None
+
+    try:
+        assert cli._claim_active_session("bot-mode-dm", stderr=True) is False
+        stderr = capsys.readouterr().err
+        assert f"hermes-refusal-reason: {SESSION_NOT_OWNED}" in stderr
+        assert "already has a live owner" in stderr
+    finally:
+        held.release()

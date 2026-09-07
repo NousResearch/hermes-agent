@@ -1,3 +1,7 @@
+<!-- Governance routing: read repository-root AGENTS.md and apps/desktop/src/AGENTS.md
+in full for all desktop-facing work, including backend consumers. Automatic hints
+may be truncated; they are not a substitute for a complete read. -->
+
 # Desktop Engineering Guide
 
 How to build Hermes Desktop well. This is a judgment guide, not an inventory —

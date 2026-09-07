@@ -55,7 +55,7 @@ def test_probe_reports_the_requested_interpreters_linked_sqlite() -> None:
     assert info.sqlite_source_id == source_id
 
 
-def test_writable_session_db_refuses_vulnerable_runtime(
+def test_writable_session_db_uses_delete_on_vulnerable_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -64,9 +64,36 @@ def test_writable_session_db_refuses_vulnerable_runtime(
     monkeypatch.setattr(hermes_state.sqlite3, "sqlite_version_info", (3, 51, 2))
     monkeypatch.setattr(hermes_state.sqlite3, "sqlite_version", "3.51.2")
 
-    with pytest.raises(RuntimeError, match="vulnerable SQLite runtime"):
-        SessionDB(db_path=tmp_path / "state.db")
-    assert not (tmp_path / "state.db").exists()
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("session-1", source="test")
+        db.append_message("session-1", "user", content="round-trip")
+        session = db.get_session("session-1")
+        assert session is not None
+        assert session["id"] == "session-1"
+        assert db.search_messages("round-trip")
+    finally:
+        db.close()
+
+
+def test_writable_session_db_refuses_vulnerable_wal_database(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import hermes_state
+
+    db_path = tmp_path / "state.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE t (value TEXT)")
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(hermes_state.sqlite3, "sqlite_version_info", (3, 51, 2))
+    monkeypatch.setattr(hermes_state.sqlite3, "sqlite_version", "3.51.2")
+
+    with pytest.raises(RuntimeError, match="journal_mode=WAL"):
+        SessionDB(db_path=db_path)
 
 
 def test_read_only_session_db_remains_available_on_vulnerable_runtime(
@@ -84,7 +111,7 @@ def test_read_only_session_db_remains_available_on_vulnerable_runtime(
     db.close()
 
 
-def test_shared_state_direct_writers_refuse_vulnerable_runtime(
+def test_shared_state_direct_writers_use_delete_on_vulnerable_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -96,12 +123,12 @@ def test_shared_state_direct_writers_refuse_vulnerable_runtime(
     monkeypatch.setattr(delivery_ledger, "_db_path", lambda: tmp_path / "delivery-state.db")
     monkeypatch.setattr(async_delegation, "_db_path", lambda: tmp_path / "delegation-state.db")
 
-    with pytest.raises(RuntimeError, match="vulnerable SQLite runtime"):
-        delivery_ledger._connect()
-    with pytest.raises(RuntimeError, match="vulnerable SQLite runtime"):
-        async_delegation._connect()
-    assert not (tmp_path / "delivery-state.db").exists()
-    assert not (tmp_path / "delegation-state.db").exists()
+    delivery_conn = delivery_ledger._connect()
+    delivery_conn.close()
+    delegation_conn = async_delegation._connect()
+    delegation_conn.close()
+    assert (tmp_path / "delivery-state.db").exists()
+    assert (tmp_path / "delegation-state.db").exists()
 
     monkeypatch.setattr(runtime, "is_sqlite_wal_reset_vulnerable", lambda _version: False)
     conn = async_delegation._connect()
@@ -121,11 +148,11 @@ def test_hosted_room_state_writers_refuse_vulnerable_runtime(
     monkeypatch.setattr(runtime, "is_sqlite_wal_reset_vulnerable", lambda _version: True)
     state_path = tmp_path / "state.db"
 
-    with pytest.raises(RuntimeError, match="vulnerable SQLite runtime"):
-        connect(state_path, db_label="state.db", ready=lambda _conn: True, initialize=lambda _conn: None)
-    with pytest.raises(RuntimeError, match="vulnerable SQLite runtime"):
-        HostedRoomPolicyCheckpoint(state_path)
-    assert not state_path.exists()
+    conn = connect(state_path, db_label="state.db", ready=lambda _conn: True, initialize=lambda _conn: None)
+    conn.close()
+    checkpoint = HostedRoomPolicyCheckpoint(state_path)
+    assert checkpoint.db_path == state_path
+    assert state_path.exists()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="uses a POSIX executable probe stub")

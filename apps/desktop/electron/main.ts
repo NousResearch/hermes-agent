@@ -399,6 +399,7 @@ import {
   resolveCommitLogSelection,
   shouldCountCommits
 } from './update-count'
+import { isValidUpdateBranchRef, updateBranchRefPattern } from './update-branch-ref'
 import { waitForLocalBackendClearance } from './update-gate'
 import {
   acquireUpdateMarker,
@@ -410,7 +411,6 @@ import {
   type UpdateMarkerClaim,
   writeUpdateMarker
 } from './update-marker'
-import { isValidUpdateBranchRef, updateBranchRefPattern } from './update-branch-ref'
 import { runWindowsUpdatePreflight, type UpdatePreflightOutcome } from './update-preflight'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {

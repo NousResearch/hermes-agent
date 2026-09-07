@@ -231,6 +231,9 @@ Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 - Bordered surfaces in the transcript (tables, fences, callouts, attachments)
   use `--ui-stroke-tertiary`. Not `border-border` — that's the app-wide
   default and reads too hot against the thread.
+- Interactive directive chips in the composer expose their action on hover.
+  The action stays visible for a 500ms grace period while the pointer crosses
+  from the chip to the floating pill; leaving both dismisses it.
 - A tool result may expose an inline action that opens a preview. It must not
   open the rail automatically.
 - Install, onboarding, connecting, boot failure, and reauthentication are

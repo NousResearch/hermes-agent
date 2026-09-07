@@ -966,7 +966,7 @@ class SessionSearchMixin:
                 batch = matches[start:start + 500]
                 contexts = {match["id"]: [] for match in batch}
                 try:
-                    sql = _CONTEXT_WINDOW_SQL.format(ids=",".join("?" for _ in batch))
+                    sql = _CONTEXT_WINDOW_SQL.format(ids=",".join("?" for _ in contexts))
                     with self._read_ctx() as conn:
                         rows = conn.execute(sql, list(contexts)).fetchall()
                     for row in rows:

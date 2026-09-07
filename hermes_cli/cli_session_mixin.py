@@ -144,6 +144,9 @@ class CLISessionMixin:
         terminal backend snapshots cwd on first use, after this). No-op when no cwd was
         recorded, the directory is gone (dim warning, never a crash), or we're already there.
         """
+        if getattr(self, "_conversation_worktree_binding", None) is not None:
+            if self._restore_managed_conversation_cwd():
+                return
         recorded = (session_meta or {}).get("cwd")
         if not recorded:
             return
@@ -499,6 +502,22 @@ class CLISessionMixin:
             CLI_CONFIG, _parse_reasoning_config, _parse_service_tier_config,
             _sync_process_session_id, datetime)
         old_session_id = self.session_id
+        new_session_start = datetime.now()
+        new_session_id = f"{new_session_start.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        managed_new = getattr(self, "_conversation_worktree_manager", None) is not None
+        new_reasoning_config = _parse_reasoning_config(
+            CLI_CONFIG["agent"].get("reasoning_effort", ""))
+        if managed_new:
+            def persist_new():
+                self._session_db.create_session(
+                    session_id=new_session_id, cwd=os.getcwd(),
+                    source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                    model=self.model,
+                    model_config={"max_iterations": self.max_turns,
+                                  "reasoning_config": new_reasoning_config})
+
+            if not self._prepare_conversation_root(new_session_id, before_commit=persist_new):
+                return False
         _boundary_snapshot = None
         if self.agent:
             if self.conversation_history:
@@ -525,8 +544,8 @@ class CLISessionMixin:
                 self._session_db.end_session(old_session_id, "new_session")
             self._discard_session_if_empty(old_session_id)
 
-        self.session_start = datetime.now()
-        self.session_id = f"{self.session_start.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        self.session_start = new_session_start
+        self.session_id = new_session_id
         # getattr: tests drive new_session unbound against a SimpleNamespace stand-in.
         getattr(self, "_write_terminal_breadcrumb", lambda: None)()
         self.conversation_history = []
@@ -534,8 +553,7 @@ class CLISessionMixin:
         self._resumed = False
         # An explicit -m/--model was for the previous session only.
         self._explicit_model_override = False
-        self.reasoning_config = _parse_reasoning_config(
-            CLI_CONFIG["agent"].get("reasoning_effort", ""))
+        self.reasoning_config = new_reasoning_config
         # Session-scoped overrides (/model --session, /fast, one-turn restores) don't carry over.
         # Re-derive model/provider and service tier from config.yaml so a session-only switch never leaks
         # into the next session (#48055, #23131).
@@ -559,15 +577,18 @@ class CLISessionMixin:
                 self.agent._invalidate_system_prompt()
 
             if self._session_db:
+                self.agent._session_db_created = managed_new
                 with contextlib.suppress(Exception):
-                    self.agent._session_db_created = False
-                    self._session_db.create_session(
-                        session_id=self.session_id,
-                        source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
-                        model=self.model,
-                        model_config={
-                            "max_iterations": self.max_turns, "reasoning_config": self.reasoning_config,
-                        })
+                    if managed_new:
+                        self._session_db.update_session_model(self.session_id, self.model)
+                    else:
+                        self._session_db.create_session(
+                            session_id=self.session_id,
+                            source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                            model=self.model,
+                            model_config={
+                                "max_iterations": self.max_turns, "reasoning_config": self.reasoning_config,
+                            })
                     self.agent._session_db_created = True
                 if title:
                     title = _apply_new_session_title(self, title)
@@ -592,6 +613,7 @@ class CLISessionMixin:
                 print(f"(^_^)v New session started: {title}")
             else:
                 print("(^_^)v New session started!")
+        return True
 
     def _consume_pending_resume_selection(self, text: str) -> bool:
         """Resolve a bare numeric reply following a bare ``/resume`` prompt.

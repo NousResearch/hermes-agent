@@ -226,7 +226,9 @@ class SessionRecoveryMixin:
         ``migrated_legacy`` tells the caller to rewrite the peer row to the scoped key."""
         legacy_key = self._legacy_slack_session_key(source)
         recovered = self._find_gateway_session_row(
-            session_key=session_key, source=source, allow_peer_fallback=legacy_key is None,
+            session_key=session_key, source=source,
+            allow_peer_fallback=legacy_key is None and not bool(
+                str(getattr(source, "_session_key_lane", "") or "").strip()),
             raise_on_lookup_error=raise_on_lookup_error)
         migrated_legacy = False
         if not recovered and legacy_key and self._claim_legacy_slack_key(legacy_key):

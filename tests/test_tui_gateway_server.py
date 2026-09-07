@@ -221,6 +221,41 @@ def test_handoff_fail_marks_only_inflight_rows(monkeypatch):
         server._sessions.pop(sid, None)
 
 
+def test_submit_does_not_publish_worktree_before_root_lease(monkeypatch):
+    class DbContext:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *_args):
+            return False
+
+    session = {
+        "session_key": "draft-key",
+        "source": "desktop",
+        "conversation_worktree": {},
+        "conversation_root_lease": None,
+    }
+    binding = object()
+    metadata = {"root_session_id": "draft-key", "path": "/tmp/draft"}
+
+    monkeypatch.setattr(server, "_session_db", lambda _session: DbContext())
+    monkeypatch.setattr(server, "_bind_conversation_worktree_for_new_root", lambda *args, **kwargs: binding)
+    monkeypatch.setattr(server, "_conversation_worktree_metadata", lambda _binding: metadata)
+
+    def fail_acquire(_binding, *, surface):
+        assert surface == "desktop"
+        raise RuntimeError("lease unavailable")
+
+    monkeypatch.setattr(server, "_acquire_conversation_root_lease", fail_acquire)
+
+    with pytest.raises(RuntimeError, match="lease unavailable"):
+        server._bind_conversation_worktree_on_submit(session)
+
+    assert session["conversation_worktree"] == {}
+    assert session["conversation_root_lease"] is None
+    assert "cwd" not in session
+
+
 def test_dashboard_process_isolation_config_defaults_without_default_merge(monkeypatch):
     """tui_gateway.server::_load_cfg is raw YAML, so defaults live at read site."""
     monkeypatch.setattr(server, "_load_cfg", lambda: {})
@@ -277,10 +312,17 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
 
     fake_supervisor = FakeSupervisor()
     seed_history = [{"role": "user", "content": "previous"}]
-    server._sessions["iso-sid"] = _session(history=list(seed_history))
+    server._sessions["iso-sid"] = _session(
+        history=list(seed_history), source="desktop", cwd="/original-workspace",
+        conversation_worktree={},
+    )
     server._sessions["iso-sid"]["agent"] = None
     server._sessions["iso-sid"]["agent_ready"] = threading.Event()
     parent_writes = {"ensure_session": 0, "persist_seed": 0}
+    binding = {
+        "root_session_id": "iso-sid", "path": "/certified-worktree",
+        "branch": "hermes/session/iso-sid", "base_commit": "a" * 40,
+    }
     monkeypatch.setattr(
         server,
         "_load_cfg",
@@ -300,6 +342,11 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
             "persist_seed", parent_writes["persist_seed"] + 1
         ),
     )
+    def bind_on_submit(session):
+        session["conversation_worktree"] = binding
+        session["cwd"] = binding["path"]
+
+    monkeypatch.setattr(server, "_bind_conversation_worktree_on_submit", bind_on_submit)
     monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: fake_supervisor)
 
     try:
@@ -315,8 +362,10 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
         assert fake_supervisor.frames[0]["sid"] == "iso-sid"
         assert fake_supervisor.frames[0]["text"] == "hello"
         assert fake_supervisor.frames[0]["history"] == seed_history
+        assert fake_supervisor.frames[0]["cwd"] == binding["path"]
+        assert fake_supervisor.frames[0]["conversation_worktree"] == binding
         assert server._sessions["iso-sid"]["history"] == seed_history
-        assert parent_writes == {"ensure_session": 0, "persist_seed": 0}
+        assert parent_writes == {"ensure_session": 1, "persist_seed": 1}
         assert server._sessions["iso-sid"]["running"] is True
 
         fake_supervisor.callback(
@@ -22328,3 +22377,63 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     assert captured["row_update"] == (target, str(new_cwd))
     assert live["cwd"] == str(new_cwd)
     assert live.get("explicit_cwd") is True
+
+
+def test_workspace_move_rejects_managed_running_session(monkeypatch, tmp_path):
+    target = "managed-session"
+    new_cwd = tmp_path / "dest-project"
+    new_cwd.mkdir()
+    live = {
+        "session_key": target,
+        "running": False,
+        "cwd": str(tmp_path / "old-project"),
+        "conversation_worktree": {"path": str(tmp_path / "certified")},
+    }
+    server._sessions["managed-sid"] = live
+
+    res = server._methods["session.workspace.move"](
+        "rid", {"session_key": target, "cwd": str(new_cwd)}
+    )
+
+    assert res["error"]["code"] == 4018
+    assert live["cwd"] != str(new_cwd)
+
+
+def test_workspace_move_rejects_managed_stored_session(monkeypatch, tmp_path):
+    target = "managed-stored-session"
+    new_cwd = tmp_path / "dest-project"
+    new_cwd.mkdir()
+    captured = {}
+
+    class FakeDB:
+        def get_session(self, session_id):
+            return {"id": session_id}
+
+        def get_conversation_worktree(self, session_id):
+            return object() if session_id == target else None
+
+        def is_explicit_fork_child(self, _session_id):
+            return False
+
+        def update_session_cwd(self, *_args, **_kwargs):
+            captured["row_update"] = True
+
+        def close(self):
+            pass
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def _fake_db(_params):
+        yield FakeDB()
+
+    monkeypatch.setattr(server, "_profile_db", _fake_db)
+    monkeypatch.setattr(server.git_probe, "branch", lambda cwd: "main")
+    monkeypatch.setattr(server.git_probe, "common_repo_root", lambda cwd: str(new_cwd))
+
+    res = server._methods["session.workspace.move"](
+        "rid", {"session_key": target, "cwd": str(new_cwd)}
+    )
+
+    assert res["error"]["code"] == 4018
+    assert "row_update" not in captured

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_state import ConversationWorktreeConflict, SessionDB
+from hermes_state import SessionDB
+from hermes_state_worktrees import ConversationWorktreeConflict
 
 
 @pytest.fixture

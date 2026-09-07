@@ -24,10 +24,10 @@ from hermes_cli._subprocess_compat import (
     noninteractive_git_env,
     windows_hide_flags,
 )
-from hermes_state import (
+from hermes_state import SessionDB
+from hermes_state_worktrees import (
     ConversationWorktreeConflict,
     ConversationWorktreeRecord,
-    SessionDB,
 )
 
 

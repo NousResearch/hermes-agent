@@ -36,6 +36,7 @@ def cli_instance(tmp_path, session_db):
 
     cli = MagicMock()
     cli._session_db = session_db
+    cli._conversation_worktree_manager = None
     cli.session_id = "20260403_120000_abc123"
     cli.model = "anthropic/claude-sonnet-4.6"
     cli.max_turns = 90

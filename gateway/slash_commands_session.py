@@ -15,6 +15,7 @@ import shlex
 from typing import Optional, Union
 
 from agent.i18n import t
+from agent.conversation_worktree import ConversationWorktreeError
 from agent.turn_context import extract_api_content_sidecar
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
@@ -152,6 +153,13 @@ class GatewaySessionCommandsMixin:
         """Handle /new or /reset command."""
         source = event.source
         session_key = self._session_key_for_source(source)
+        old_entry = self.session_store._entries.get(session_key)
+        try:
+            new_entry = await self.async_session_store.reset_session(
+                session_key, conversation_kind="interactive"
+            )
+        except ConversationWorktreeError as exc:
+            return f"conversation worktree setup failed: {exc}"
         self._invalidate_session_run_generation(session_key, reason="session_reset")
         # Evict the running-agent slot now that the generation is bumped: the in-flight run's own
         # guarded release (old generation) returns False and would leave a zombie slot that silently
@@ -162,7 +170,6 @@ class GatewaySessionCommandsMixin:
         # release (run_generation=old) will return False and leave its dead agent behind; clearing here
         # keeps the slot from becoming a zombie that silently drops all later messages (#28686). Idempotent,
         # so the run's finally calling it again is harmless.
-        old_entry = self.session_store._entries.get(session_key)
         await self._cleanup_old_agent_for_reset(session_key)
         self._evict_cached_agent(session_key)
         # Conversation boundary: ALL conversation-scoped per-session state + security state in one
@@ -176,7 +183,6 @@ class GatewaySessionCommandsMixin:
                                   parent_session_id=str(getattr(old_entry, "session_id", "") or ""))
         _reset_process_scoped_tool_state()
 
-        new_entry = await self.async_session_store.reset_session(session_key)
         _old_sid = old_entry.session_id if old_entry else None
         await self._fire_session_reset_hooks(source, session_key, _old_sid,
                                              new_entry.session_id if new_entry else None)

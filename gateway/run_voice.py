@@ -233,6 +233,37 @@ class GatewayVoiceMixin:
             user_name=str(user_id), chat_type="channel",
             profile=getattr(adapter, "_owner_profile", None))
 
+    @staticmethod
+    def _voice_fast_lane_config() -> dict:
+        """Read the opt-in Discord voice conversation-isolation policy."""
+        from gateway.run import _load_gateway_config
+
+        try:
+            config = _load_gateway_config()
+        except Exception:
+            return {}
+        discord = config.get("discord") if isinstance(config, dict) else None
+        if not isinstance(discord, dict):
+            return {}
+        policy = discord.get("voice_fast_lane")
+        return dict(policy) if isinstance(policy, dict) else {}
+
+    def _voice_fast_lane_matches(self, adapter, guild_id: int, user_id: int) -> tuple[bool, str]:
+        """Only the configured channel and allowlisted speaker get a private transcript."""
+        policy = self._voice_fast_lane_config()
+        if policy.get("enabled") is not True:
+            return False, ""
+        channel_id = str(policy.get("channel_id") or "").strip()
+        user_ids = policy.get("user_ids")
+        if not channel_id or not isinstance(user_ids, list):
+            return False, ""
+        if str(user_id) not in {str(item) for item in user_ids}:
+            return False, ""
+        clients = getattr(adapter, "_voice_clients", None)
+        client = clients.get(guild_id) if isinstance(clients, dict) else None
+        actual_channel_id = str(getattr(getattr(client, "channel", None), "id", "") or "")
+        return (True, channel_id) if actual_channel_id == channel_id else (False, "")
+
     async def _handle_voice_channel_input(
         self, guild_id: int, user_id: int, transcript: str, *, adapter=None
     ):
@@ -274,6 +305,12 @@ class GatewayVoiceMixin:
             source=source, text=transcript, message_type=MessageType.VOICE,
             raw_message=SimpleNamespace(guild_id=guild_id, guild=None),
             channel_prompt=channel_prompt)
+        fast_lane, voice_channel_id = self._voice_fast_lane_matches(adapter, guild_id, user_id)
+        if fast_lane:
+            # Delivery stays in the bound text channel; only storage identity changes.
+            source._voice_fast_lane = True
+            source._session_key_lane = f"discord-voice:{voice_channel_id}"
+            event.metadata["voice_fast_lane"] = True
         await adapter.handle_message(event)
 
     def _should_send_voice_reply(

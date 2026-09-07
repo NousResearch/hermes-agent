@@ -35,6 +35,7 @@ class CLIChatTurnMixin:
         the concise voice-response prefix, #65827)
         """
         from cli import ChatConsole, _ChatTurn, _DIM, _RST, _accent_hex, _cprint, set_secret_capture_callback
+        self._ensure_conversation_worktree_binding()
         # Single-query and direct chat callers do not go through run().
         set_secret_capture_callback(self._secret_capture_callback)
         # Reset per turn; only a real interrupt flips it, so early returns leave it False.

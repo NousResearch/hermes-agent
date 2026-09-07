@@ -518,6 +518,19 @@ def _migrate_to_39(results: Dict[str, Any], quiet: bool) -> None:
             "Video Generation (Nous Subscription or FAL).")
 
 
+def _migrate_conversation_worktree_policy(results: Dict[str, Any], quiet: bool) -> None:
+    config = read_raw_config()
+    desktop = config.get("desktop")
+    if not isinstance(desktop, dict) or not isinstance(desktop.get("conversation_worktree"), dict):
+        return
+    legacy = desktop.pop("conversation_worktree")
+    if config.get("conversation_worktree") is None:
+        config["conversation_worktree"] = legacy
+    _commit(config, results, quiet,
+            "moved legacy desktop conversation worktree policy to shared configuration",
+            "  ✓ Conversation worktree policy now applies consistently across session surfaces.")
+
+
 #: Registry of (target_version, step), strictly ascending; simple default-flip steps are
 #: declared inline via _rewrite_stale_default / _rewrite_key partials. Later steps observe
 #: earlier steps' writes via read_raw_config() (filesystem state). v12 is the support floor:
@@ -602,6 +615,7 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
         added="model_catalog.ttl_hours 1 → ttl_minutes 20 (default)",
         message="  ✓ Model catalog now refreshes every 20 minutes (model_catalog.ttl_minutes)",
         extra_guard=lambda raw: "ttl_minutes" not in raw)),
+    (41, _migrate_conversation_worktree_policy),
 )
 
 

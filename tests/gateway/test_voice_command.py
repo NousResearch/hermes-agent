@@ -2127,3 +2127,19 @@ class TestPcmToWav:
             assert w.getframerate() == 16000
             # 48kHz -> 16kHz is a 3x decimation of a 1s clip.
             assert w.getnframes() == 16000
+
+
+@pytest.mark.parametrize("policy,guild,user", [
+    ({"enabled": False, "channel_id": "456", "user_ids": ["42"]}, 111, 42),
+    ({"enabled": True, "channel_id": "456", "user_ids": ["42"]}, 222, 42),
+    ({"enabled": True, "channel_id": "456", "user_ids": ["42"]}, 111, 43),
+    ({"enabled": True, "channel_id": "999", "user_ids": ["42"]}, 111, 42),
+    ({"enabled": True, "channel_id": "456", "user_ids": "42"}, 111, 42),
+])
+def test_private_voice_isolation_requires_exact_configured_scope(monkeypatch, policy, guild, user):
+    from gateway.run_voice import GatewayVoiceMixin
+
+    owner = GatewayVoiceMixin()
+    monkeypatch.setattr(owner, "_voice_fast_lane_config", lambda: policy)
+    adapter = SimpleNamespace(_voice_clients={111: SimpleNamespace(channel=SimpleNamespace(id=456))})
+    assert owner._voice_fast_lane_matches(adapter, guild, user) == (False, "")

@@ -110,6 +110,13 @@ def _archive_untracked(tree: Path, untracked: List[str]) -> Optional[Path]:
 
 def _classify_tree(_ops, repo_root: str, entry: Path, merge_cache, remote_heads) -> tuple[str, str, List[str]]:
     """Return (verdict, reason, untracked) for one tree under ``.worktrees/``."""
+    from agent.conversation_worktree import conversation_worktree_is_manager_owned
+
+    ownership = conversation_worktree_is_manager_owned(entry)
+    if ownership is True:
+        return "keep", "manager-owned conversation worktree", []
+    if ownership is None:
+        return "keep", "conversation ownership could not be verified", []
     path = str(entry)
     if _KANBAN_RE.match(entry.name):
         return "keep", "kanban task tree (owned by kanban gc)", []
@@ -185,14 +192,6 @@ def reclaim_worktrees(
         records = audit_worktrees(repo_root, with_sizes=False)
     from agent.conversation_worktree import conversation_worktree_reclaim_guard
 
-    actions: List[str] = []
-    for record in records:
-        if record.verdict not in _REAP_VERDICTS:
-            continue
-        if dry_run:
-            actions.append(f"would remove {record.name} ({record.reason})")
-            continue
-
     def reclaim_one(record: TreeRecord) -> List[str]:
         record_actions: List[str] = []
         entry = Path(record.path)
@@ -210,11 +209,11 @@ def reclaim_worktrees(
         try:
             remove_result = _git(["worktree", "remove", record.path, "--force"], cwd=repo_root, timeout=30)
             if remove_result.returncode != 0:
-                actions.append(f"failed to remove {record.name}: {remove_result.stderr.strip()}")
-                continue
+                record_actions.append(f"failed to remove {record.name}: {remove_result.stderr.strip()}")
+                return record_actions
             if record.verdict == "reap-keep-branch":
-                actions.append(f"removed {record.name} (branch {record.branch} kept — pushed open-PR lane)")
-                continue
+                record_actions.append(f"removed {record.name} (branch {record.branch} kept — pushed open-PR lane)")
+                return record_actions
             if record.branch and record.branch not in _PROTECTED_BRANCHES:
                 _git(["branch", "-D", record.branch], cwd=repo_root, timeout=10)
             record_actions.append(f"removed {record.name}")

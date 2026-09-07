@@ -264,6 +264,9 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     with contextlib.suppress(Exception):
         if worker := session.get("slash_worker"):
             worker.close()
+    with contextlib.suppress(Exception):
+        if root_lease := session.pop("conversation_root_lease", None):
+            root_lease.release()
 
 
 # End reasons where the BACKEND reclaimed a session the client never asked to close (else its next prompt fails

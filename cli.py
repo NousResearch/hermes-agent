@@ -2533,7 +2533,10 @@ from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
 _PASTE_REF_RE = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
 
 
-class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
+from hermes_cli.cli_conversation_worktree_mixin import CLIConversationWorktreeMixin
+
+
+class HermesCLI(CLIConversationWorktreeMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
     """Interactive REPL for the Hermes Agent."""
 
     # Seeded -q first message (see _should_seed_interactive); run() re-creates
@@ -2563,6 +2566,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         self._init_model_routing(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
                                  checkpoints, pass_session_id, ignore_rules)
         self._init_runtime_state(resume)
+        self._initialize_conversation_worktree(CLI_CONFIG, resume, manage_conversation_worktree)
 
     def _init_display_options(self, verbose, compact):
         """Display-related config: compact/tool-progress/focus view, bells, streaming, previews, stream buffers."""
@@ -4272,7 +4276,7 @@ def _install_single_query_signal_handlers(cli):
                 _signal.signal(getattr(_signal, _name), _signal_handler_q)
 
 
-def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget, verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills):
+def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget, verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills, *, manage_conversation_worktree=True):
     """Resolve the toolset list (explicit / coding posture / platform default), construct HermesCLI, and start the background skills preload."""
     toolsets_list = None
     if isinstance(toolsets, str) and toolsets:
@@ -4311,6 +4315,7 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
             checkpoints=checkpoints,
             pass_session_id=pass_session_id,
             ignore_rules=ignore_rules,
+            manage_conversation_worktree=manage_conversation_worktree,
         )
     except ImportError as e:
         # Direct `python cli.py` bypasses cmd_chat's partial-update ImportError handler.
@@ -4354,7 +4359,9 @@ def _start_worktree_setup(list_tools, list_toolsets, worktree, w):
     Returns a join callable that publishes ``_active_worktree``/TERMINAL_CWD and
     schedules stale-worktree GC, or None when no worktree is wanted.
     """
-    if list_tools or list_toolsets or not (worktree or w or CLI_CONFIG.get("worktree", False)):
+    from hermes_cli.cli_conversation_worktree_mixin import _should_use_legacy_worktree
+
+    if list_tools or list_toolsets or not _should_use_legacy_worktree(worktree=worktree, shorthand=w, config=CLI_CONFIG):
         return None
     # Overlap tool discovery with the I/O-bound worktree setup so show_banner() hits a warm
     # cache (~0.4s). Only on the -w path: plain `hermes` has no I/O wait to hide.
@@ -4557,7 +4564,8 @@ def main(
     _join_worktree = _start_worktree_setup(list_tools, list_toolsets, worktree, w)
     query = query or q
     cli = _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
-                               verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills)
+                               verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills,
+                               manage_conversation_worktree=not list_tools and not list_toolsets)
 
     # Join the background worktree creation before anything consumes TERMINAL_CWD.
     # A requested worktree whose setup failed aborts: never silently run without isolation.

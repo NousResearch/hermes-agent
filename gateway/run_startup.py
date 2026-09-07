@@ -1413,10 +1413,23 @@ class GatewayStartupMixin:
         cli_session_id = row["id"]
         dest = await self._handoff_resolve_destination(row, profile_name)
         session_key = self._handoff_session_key(dest, profile_name)
+        store = getattr(self.async_session_store, "_store", self.async_session_store)
+        resolver = getattr(store, "resolve_task_owned_workspace", None)
+        switch_kwargs = {}
+        if callable(resolver):
+            # Workspace lineage validation can wait on several Git subprocesses. Keep
+            # that synchronous preflight off the gateway event loop; switch_session
+            # repeats the validation asynchronously below.
+            await asyncio.to_thread(resolver, cli_session_id, row.get("cwd"))
+            switch_kwargs = {"conversation_kind": "task", "persisted_cwd": row.get("cwd")}
         # Ensure a session_store entry exists for this key; switch_session then re-points it.
-        await self.async_session_store.get_or_create_session(dest.source)
+        await self.async_session_store.get_or_create_session(
+            dest.source, conversation_kind="task"
+        )
         # switch_session ends the prior session and reopens the CLI session under the new key.
-        switched = await self.async_session_store.switch_session(session_key, cli_session_id)
+        switched = await self.async_session_store.switch_session(
+            session_key, cli_session_id, **switch_kwargs
+        )
         if switched is None:
             raise RuntimeError(f"could not switch session key {session_key} → {cli_session_id}")
         # Evict the cached AIAgent (rebuild against the CLI session_id, like /resume) and clear stale

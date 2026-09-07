@@ -449,6 +449,7 @@ def _persist_session_row_for_submit(rid, session):
                 "session storage unavailable: "
                 f"{_db_error or 'state.db could not be opened'} — the message "
                 "was not saved; repair state.db and try again")
+        _bind_conversation_worktree_on_submit(session)
         _persist_branch_seed(session)
     except Exception as exc:
         from hermes_state_errors import is_disk_full_error
@@ -600,6 +601,8 @@ def _(rid, params: dict) -> dict:
         rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task)
     if err is not None:
         return err
+    if (err := _persist_session_row_for_submit(rid, session)) is not None:
+        return err
     if turn_isolation:
         isolated_response = _submit_prompt_to_compute_host(
             rid, sid, session, text, display_kind=display_kind)
@@ -618,8 +621,6 @@ def _(rid, params: dict) -> dict:
         logger.warning(
             "compute-host dispatch failed for session %s; falling back inline: %s", sid,
             isolated_response["error"].get("message", "unknown error"))
-    if (err := _persist_session_row_for_submit(rid, session)) is not None:
-        return err
     # A completed FAILED build must not wedge the session: rebuild, don't replay it.
     if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
         _start_agent_build(sid, session)

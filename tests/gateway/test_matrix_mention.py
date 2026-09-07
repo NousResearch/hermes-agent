@@ -192,7 +192,13 @@ class TestPeerAgentBudgetGating:
     async def test_empty_allowlist_with_allow_all_resets_budget(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ALLOWED_USERS", "")
         monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
-        adapter = self._adapter(monkeypatch)
+        monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "false")
+        monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+        adapter = _make_adapter(extra={
+            "peer_agent_ids": ["@yomi:example.org"],
+            "peer_reply_budget_per_human_message": 2,
+        })
+        assert adapter._allowed_user_ids == set()
         adapter._peer_reply_budget_remaining["!room1:example.org"] = 0
 
         await adapter._on_room_message(

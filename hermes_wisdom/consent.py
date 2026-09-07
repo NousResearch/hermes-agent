@@ -9,6 +9,7 @@ from typing import Any
 
 from .client import WisdomConflict, WisdomNotFound
 from .mediation_store import MediationStore, _decode
+from .preferences import WisdomPreferences
 
 CONSENT_SECONDS = 24 * 60 * 60
 TERMINAL = {"completed", "failed", "stale", "expired", "needs_review"}
@@ -286,6 +287,8 @@ class WisdomConsent:
         """Called only from authenticated button/CLI handlers, never a model tool."""
         self.service.require_setup()
         now = self.queue.clock()
+        preferences = WisdomPreferences(self.service, clock=self.queue.clock)
+        preference_user = preferences.identity(org) if action == "defer" else None
         with self.service.store.transaction() as db:
             self.queue._check_org(db, org)
             row = db.execute(
@@ -307,11 +310,25 @@ class WisdomConsent:
             if action == "inspect" or value["state"] in TERMINAL:
                 return self.project(value)
             if action == "defer":
+                if value["state"] != "pending" or value["expires_at"] <= now:
+                    return self.project(value)
+                assessment = db.execute(
+                    "SELECT reference_json FROM wisdom_assessment WHERE id=? AND organization_id=?",
+                    (value["assessment_id"], org),
+                ).fetchone()
+                if assessment is None:
+                    raise WisdomNotFound("Wisdom assessment not found")
+                preference = preferences.stage_suppression(
+                    db,
+                    org=org,
+                    user=preference_user,
+                    reference=json.loads(assessment["reference_json"]),
+                )
                 db.execute(
                     "INSERT OR REPLACE INTO wisdom_consent_defer VALUES(?,?,?)",
                     (interaction_id, actor.platform, now),
                 )
-                return {**self.project(value), "deferred": True}
+                return {**self.project(value), "deferred": True, **preference}
             if action != "confirm":
                 raise ValueError("unsupported Wisdom consent action")
             if value["state"] != "pending":

@@ -95,13 +95,24 @@ def test_capability_uses_gateway_features_field():
 
 def _agent_led_policy(**overrides):
     return {
-        "org_id": "o1", "usage_evidence_window_days": 7,
-        "min_aggregate_invocations": 3, "consecutive_day_usage_counts": True,
-        "repeated_edits_count": True, "max_recommendations_per_user_per_week": 3,
-        "publication_mode": "moderated", "install_popularity_threshold": 10,
-        "notification_defaults": {"skill_ready_to_share": True, "teammate_published": False, "update_available": True},
-        "manager_review_email_cadence": "daily", "not_now_suppression_days": 30,
-        "version": 1, "updated_by_user_id": None, **overrides,
+        "org_id": "o1",
+        "usage_evidence_window_days": 7,
+        "min_aggregate_invocations": 3,
+        "consecutive_day_usage_counts": True,
+        "repeated_edits_count": True,
+        "max_recommendations_per_user_per_week": 3,
+        "publication_mode": "moderated",
+        "install_popularity_threshold": 10,
+        "notification_defaults": {
+            "skill_ready_to_share": True,
+            "teammate_published": False,
+            "update_available": True,
+        },
+        "manager_review_email_cadence": "daily",
+        "not_now_suppression_days": 30,
+        "version": 1,
+        "updated_by_user_id": None,
+        **overrides,
     }
 
 
@@ -110,16 +121,28 @@ def test_agent_led_policy_reads_member_endpoint_with_bounded_request():
     value.identity = {"claims": {"org_id": "o1"}}
     result = value.agent_led_policy()
     assert result.notification_defaults.teammate_published is False
-    assert value.session.calls == [("GET", "https://gateway.example/v1/sync/wisdom/agent-led/policy", {
-        "json": None, "params": None, "timeout": 7,
-    })]
+    assert value.session.calls == [
+        (
+            "GET",
+            "https://gateway.example/v1/sync/wisdom/agent-led/policy",
+            {
+                "json": None,
+                "params": None,
+                "timeout": 7,
+            },
+        )
+    ]
 
 
-@pytest.mark.parametrize("override", [
-    {"org_id": "other-org"}, {"min_aggregate_invocations": "3"},
-    {"notification_defaults": {"teammate_published": True}},
-    {"max_recommendations_per_user_per_week": -1},
-])
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"org_id": "other-org"},
+        {"min_aggregate_invocations": "3"},
+        {"notification_defaults": {"teammate_published": True}},
+        {"max_recommendations_per_user_per_week": -1},
+    ],
+)
 def test_agent_led_policy_rejects_wrong_org_or_invalid_response(override):
     value = client(Response(200, _agent_led_policy(**override)))
     value.identity = {"claims": {"org_id": "o1"}}
@@ -128,7 +151,9 @@ def test_agent_led_policy_rejects_wrong_org_or_invalid_response(override):
 
 
 @pytest.mark.parametrize("status", [401, 403, 404, 503])
-def test_unavailable_agent_led_policy_defers_instead_of_enabling_defaults(monkeypatch, status):
+def test_unavailable_agent_led_policy_defers_instead_of_enabling_defaults(
+    monkeypatch, status
+):
     from hermes_wisdom.agent_led.policy import load_policy
 
     monkeypatch.setattr("hermes_wisdom.mediation.delivery_mode", lambda: "agent")
@@ -147,6 +172,66 @@ def test_fixed_mode_does_not_fetch_agent_led_policy(monkeypatch):
     value.identity = {"claims": {"org_id": "o1"}}
     assert load_policy(client=value, local={"enabled": True}).enabled is False
     assert not value.session.calls
+
+
+def test_suppression_wire_contains_only_opaque_keys_and_empty_write_body():
+    key = "sha256:" + "a" * 64
+    value = client(
+        Response(
+            200, {"org_id": "o1", "key": key, "suppress_until": "2026-10-01T00:00:00Z"}
+        )
+    )
+    value.identity = {"claims": {"org_id": "o1"}}
+    assert value.suppress_recommendation(key).key == key
+    assert value.session.calls[0][2]["json"] == {}
+    assert value.session.calls[0][1].endswith("/suppressions/sha256%3A" + "a" * 64)
+    value.session.response = Response(200, {"org_id": "o1", "suppressions": []})
+    assert value.recommendation_suppressions([key]) == []
+    assert value.session.calls[-1][2]["json"] == {"keys": [key]}
+
+
+def test_suppression_response_cannot_inject_unrequested_or_foreign_keys():
+    key = "sha256:" + "a" * 64
+    value = client(
+        Response(
+            200,
+            {
+                "org_id": "o1",
+                "suppressions": [
+                    {
+                        "key": "sha256:" + "b" * 64,
+                        "suppress_until": "2026-10-01T00:00:00Z",
+                    }
+                ],
+            },
+        )
+    )
+    value.identity = {"claims": {"org_id": "o1"}}
+    with pytest.raises(WisdomError):
+        value.recommendation_suppressions([key])
+    value.session.response = Response(200, {"org_id": "other", "suppressions": []})
+    with pytest.raises(WisdomError):
+        value.recommendation_suppressions([key])
+
+
+def test_mute_wire_preserves_native_duration_vocabulary():
+    value = client(
+        Response(
+            200,
+            {
+                "org_id": "o1",
+                "muted": True,
+                "duration": "1_week",
+                "muted_until": "2026-10-01T00:00:00Z",
+                "forever": False,
+            },
+        )
+    )
+    value.identity = {"claims": {"org_id": "o1"}}
+    assert value.set_recommendation_mute("1_week").muted
+    assert value.session.calls[-1][2]["json"] == {"duration": "1_week"}
+    with pytest.raises(WisdomValidationError):
+        value.set_recommendation_mute("arbitrary")
 
 
 def test_submit_body_has_no_local_candidate_or_activity_signals():

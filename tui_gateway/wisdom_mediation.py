@@ -118,13 +118,7 @@ def poll(session: dict, *, emit, profile_scope, connected=lambda: True) -> None:
             ):
                 return
             introduction = not mediation.queue.introduced(org)
-            selected = [
-                item
-                for item in items
-                if mediation.queue.begin_delivery(
-                    org, item["assessment"]["id"], item["assessment"]["lease_token"]
-                )
-            ]
+            selected = mediation.begin_delivery(org, items)
             if not selected:
                 return
             view = advice_view(selected, introduction=introduction)

@@ -129,13 +129,7 @@ async def schedule(
         def begin(group):
             mediation = WisdomMediation(WisdomService())
             introduction = not mediation.queue.introduced(org)
-            selected = [
-                item
-                for item in group
-                if mediation.queue.begin_delivery(
-                    org, item["assessment"]["id"], item["assessment"]["lease_token"]
-                )
-            ]
+            selected = mediation.begin_delivery(org, group)
             return selected, introduction
 
         for group in delivery_groups(items):

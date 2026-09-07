@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .consent import ConsentActor, WisdomConsent
 from .contract import author_description_hash
 from .mediation_store import MediationStore
+from .preferences import WisdomPreferences, suppression_key
 
 
 def delivery_mode(config: dict[str, Any] | None = None) -> str:
@@ -173,6 +174,9 @@ class WisdomMediation:
         org = self.service.store.active_org_id()
         self.queue._require_org(org)
         self.consent.recover(org)
+        # Consent can enqueue a preference after its assessment was delivered.
+        # Reconcile it even when no new recommendation needs assessment.
+        WisdomPreferences(self.service, clock=self.queue.clock).flush(org)
         candidates = self.service.local_candidate_events()
         self.queue.retire_candidates(
             org,
@@ -299,11 +303,82 @@ class WisdomMediation:
             raise ValueError("Wisdom inspection exceeds the bounded context limit")
         return result
 
+    def _eligible_jobs(
+        self, org: str, jobs: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Check current policy at assessment and delivery boundaries."""
+        recommendations = [
+            job for job in jobs if job["reference"]["kind"] in {"candidate", "skill"}
+        ]
+        if recommendations:
+            from .agent_led.policy import load_policy
+
+            policy = load_policy(client=self.service.client)
+            preferences = (
+                WisdomPreferences(self.service, clock=self.queue.clock).check(
+                    org, [job["reference"] for job in recommendations]
+                )
+                if policy.enabled
+                else {"available": False, "muted": True, "suppressed": {}}
+            )
+            allowed_jobs = []
+            for job in jobs:
+                reference = job["reference"]
+                if reference["kind"] not in {"candidate", "skill"}:
+                    allowed_jobs.append(job)
+                    continue
+                event_type = (
+                    "skill_ready_to_share"
+                    if reference["kind"] == "candidate"
+                    else (
+                        "update_available"
+                        if self.service.store.installation(reference["skill_id"])
+                        else "teammate_published"
+                    )
+                )
+                suppressed_until = preferences["suppressed"].get(
+                    suppression_key(reference), 0
+                )
+                if (
+                    not preferences["available"]
+                    or preferences["muted"]
+                    or suppressed_until
+                    or not policy.notification_defaults.get(event_type, False)
+                    or (
+                        event_type == "skill_ready_to_share"
+                        and policy.max_candidates == 0
+                    )
+                ):
+                    self.queue.defer_for_preferences(org, job, suppressed_until)
+                else:
+                    allowed_jobs.append(job)
+            return allowed_jobs
+        return jobs
+
+    def begin_delivery(
+        self, org: str, items: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        self.service.require_setup()
+        jobs = [item["assessment"] for item in items]
+        if delivery_mode() != "agent":
+            for job in jobs:
+                self.queue.defer_for_preferences(org, job, 0)
+            return []
+        eligible = {job["id"] for job in self._eligible_jobs(org, jobs)}
+        return [
+            item
+            for item in items
+            if item["assessment"]["id"] in eligible
+            and self.queue.begin_delivery(
+                org, item["assessment"]["id"], item["assessment"]["lease_token"]
+            )
+        ]
+
     def prepare(
         self, org: str, actor: ConsentActor, *, runtime, history, assessor=assess
     ) -> list[dict[str, Any]]:
         self.service.require_setup()
-        jobs = self.queue.claim(org, actor.session_key)
+        jobs = self._eligible_jobs(org, self.queue.claim(org, actor.session_key))
         pending = [job for job in jobs if job["state"] == "assessing"]
         if pending:
             try:

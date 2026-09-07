@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
@@ -85,6 +86,31 @@ class AgentLedPolicyResponse(BaseModel):
     not_now_suppression_days: int = Field(ge=1, le=365)
     version: int = Field(ge=1)
     updated_by_user_id: str | None
+
+
+class WisdomSuppression(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    key: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
+    suppress_until: str
+
+
+class WisdomSuppressionResponse(WisdomSuppression):
+    org_id: str
+
+
+class WisdomSuppressionList(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    org_id: str
+    suppressions: list[WisdomSuppression] = Field(max_length=100)
+
+
+class WisdomMuteResponse(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    org_id: str
+    muted: bool
+    duration: Literal["1_day", "1_week", "30_days", "forever"] | None
+    muted_until: str | None
+    forever: bool
 
 
 class Draft(WireModel):
@@ -432,8 +458,66 @@ class WisdomClient:
     def agent_led_policy(self) -> AgentLedPolicyResponse:
         policy = self._request("GET", "agent-led/policy", model=AgentLedPolicyResponse)
         if not self.display_org_id or policy.org_id != self.display_org_id:
-            raise WisdomError("Recommendation policy does not match the active organization")
+            raise WisdomError(
+                "Recommendation policy does not match the active organization"
+            )
         return policy
+
+    def _preference_org(self, response):
+        if not self.display_org_id or response.org_id != self.display_org_id:
+            raise WisdomError("Preference does not match the active organization")
+        return response
+
+    def suppress_recommendation(self, key: str) -> WisdomSuppressionResponse:
+        if not isinstance(key, str) or not re.fullmatch(r"sha256:[a-f0-9]{64}", key):
+            raise WisdomValidationError("Invalid suppression key")
+        return self._preference_org(
+            self._request(
+                "PUT",
+                f"agent-led/suppressions/{quote(key, safe='')}",
+                model=WisdomSuppressionResponse,
+                json_body={},
+            )
+        )
+
+    def recommendation_suppressions(self, keys: list[str]) -> list[WisdomSuppression]:
+        if len(keys) > 100 or len(set(keys)) != len(keys):
+            raise WisdomValidationError("Expected up to 100 distinct suppression keys")
+        for key in keys:
+            if not isinstance(key, str) or not re.fullmatch(
+                r"sha256:[a-f0-9]{64}", key
+            ):
+                raise WisdomValidationError("Invalid suppression key")
+        result = self._preference_org(
+            self._request(
+                "POST",
+                "agent-led/suppressions/check",
+                model=WisdomSuppressionList,
+                json_body={"keys": keys},
+            )
+        )
+        if any(row.key not in keys for row in result.suppressions) or len({
+            row.key for row in result.suppressions
+        }) != len(result.suppressions):
+            raise WisdomError("Gateway returned unexpected suppression keys")
+        return result.suppressions
+
+    def recommendation_mute(self) -> WisdomMuteResponse:
+        return self._preference_org(
+            self._request("GET", "agent-led/mute", model=WisdomMuteResponse)
+        )
+
+    def set_recommendation_mute(self, duration: str | None) -> WisdomMuteResponse:
+        if duration not in {None, "1_day", "1_week", "30_days", "forever"}:
+            raise WisdomValidationError("Unsupported mute duration")
+        return self._preference_org(
+            self._request(
+                "DELETE" if duration is None else "PUT",
+                "agent-led/mute",
+                model=WisdomMuteResponse,
+                json_body={"duration": duration} if duration else None,
+            )
+        )
 
     def register_identity(self, installation_id: str) -> dict[str, Any]:
         return self._request(

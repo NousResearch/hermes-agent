@@ -58,6 +58,13 @@ def create_schema(db: sqlite3.Connection) -> None:
           interaction_id TEXT NOT NULL REFERENCES wisdom_consent(id),
           surface TEXT NOT NULL, deferred_at REAL NOT NULL,
           PRIMARY KEY(interaction_id,surface))""",
+        """CREATE TABLE IF NOT EXISTS wisdom_preference_outbox (
+          organization_id TEXT NOT NULL, user_id TEXT NOT NULL, key TEXT NOT NULL,
+          suppress_until REAL NOT NULL, created_at REAL NOT NULL,
+          state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
+          available_at REAL NOT NULL, lease_token TEXT, lease_until REAL,
+          last_error TEXT,
+          PRIMARY KEY(organization_id,user_id,key))""",
         """CREATE TABLE IF NOT EXISTS wisdom_consent_outcome (
           interaction_id TEXT PRIMARY KEY REFERENCES wisdom_consent(id),
           organization_id TEXT NOT NULL, owner_session TEXT NOT NULL,
@@ -323,6 +330,21 @@ class MediationStore:
                 AND state IN ('assessing','ready','fallback')""",
                     (now + LEASE_SECONDS, assessment_id, org, token, now),
                 ).rowcount
+            )
+
+    def defer_for_preferences(self, org: str, job: dict, until: float) -> None:
+        """Release without spending a model attempt; retain advice and unread state."""
+        now = self.clock()
+        with self.store.transaction() as db:
+            self._check_org(db, org)
+            db.execute(
+                """UPDATE wisdom_assessment SET
+              state=CASE WHEN state='assessing' THEN 'pending' ELSE state END,
+              attempts=MAX(0,attempts-CASE WHEN state='assessing' THEN 1 ELSE 0 END),
+              available_at=?,lease_token=NULL,lease_until=NULL,updated_at=?
+              WHERE id=? AND organization_id=? AND lease_token=? AND lease_until>?
+              AND state IN ('assessing','ready','fallback')""",
+                (max(now + 60, until), now, job["id"], org, job["lease_token"], now),
             )
 
     def save_advice(

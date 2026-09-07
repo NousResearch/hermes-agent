@@ -23,6 +23,8 @@ def consent(tmp_path):
     store.activate_installation_identity("installation", "org")
     now = [1000.0]
     service = Mock(store=store)
+    service.client.identity = {"owner": "account-user"}
+    service.client.display_org_id = "org"
     service.install_plan.return_value = {
         "skill_id": "skill",
         "slug": "helpful",
@@ -104,11 +106,18 @@ def test_changed_bytes_require_new_review(consent):
     instance.service.install_apply.assert_not_called()
 
 
-def test_defer_is_surface_local_and_expired_click_cannot_apply(consent):
+def test_defer_queues_shared_exact_version_suppression_without_applying(consent):
     instance, actor, identity, now = consent
     shown = instance.present("org", identity, actor)
     result = instance.resolve("org", shown["id"], actor, "defer")
     assert result["deferred"] and result["state"] == "pending"
+    assert result["preference_sync"] == "pending"
+    with instance.service.store.transaction() as db:
+        rows = db.execute("SELECT * FROM wisdom_preference_outbox").fetchall()
+    assert len(rows) == 1 and rows[0]["key"] == result["suppression_key"]
+    assert rows[0]["user_id"] == "account-user"
+    assert "skill" not in rows[0]["key"]
+    instance.service.client.suppress_recommendation.assert_not_called()
     assert instance.pending("org")[0]["deferred_surfaces"] == ["telegram"]
     now[0] = shown["expires_at"] + 1
     assert instance.resolve("org", shown["id"], actor, "confirm")["state"] == "expired"
@@ -381,6 +390,81 @@ def test_provider_failure_eventually_delivers_one_deterministic_fallback(consent
     )
 
 
+@pytest.mark.parametrize("failure", ["policy", "mute", "suppression", "network"])
+def test_preferences_gate_model_work_without_consuming_attempts(
+    consent, monkeypatch, failure
+):
+    from hermes_wisdom.client import (
+        AgentLedPolicyResponse,
+        WisdomMuteResponse,
+        WisdomSuppression,
+    )
+    from hermes_wisdom.preferences import suppression_key
+
+    instance, actor, identity, now = consent
+    monkeypatch.setattr("hermes_wisdom.mediation.delivery_mode", lambda: "agent")
+    client = instance.service.client
+    client.agent_led_policy.return_value = AgentLedPolicyResponse(
+        org_id="org",
+        usage_evidence_window_days=7,
+        min_aggregate_invocations=3,
+        consecutive_day_usage_counts=True,
+        repeated_edits_count=True,
+        max_recommendations_per_user_per_week=3,
+        publication_mode="open",
+        install_popularity_threshold=10,
+        notification_defaults={
+            "skill_ready_to_share": True,
+            "teammate_published": failure != "policy",
+            "update_available": True,
+        },
+        manager_review_email_cadence="daily",
+        not_now_suppression_days=30,
+        version=1,
+        updated_by_user_id=None,
+    )
+    client.recommendation_mute.return_value = WisdomMuteResponse(
+        org_id="org",
+        muted=failure == "mute",
+        duration="forever" if failure == "mute" else None,
+        muted_until=None,
+        forever=failure == "mute",
+    )
+    client.recommendation_suppressions.return_value = (
+        [
+            WisdomSuppression(
+                key=suppression_key({
+                    "kind": "skill",
+                    "skill_id": "skill",
+                    "version": 1,
+                }),
+                suppress_until="1970-01-02T00:00:00Z",
+            )
+        ]
+        if failure == "suppression"
+        else []
+    )
+    if failure == "network":
+        client.recommendation_mute.side_effect = TimeoutError
+    with instance.service.store.transaction() as db:
+        db.execute(
+            "UPDATE wisdom_assessment SET state='pending', attempts=0,lease_token=NULL,lease_until=NULL,advice_json=NULL WHERE id=?",
+            (identity,),
+        )
+    mediation = WisdomMediation(instance.service, clock=lambda: now[0])
+    assessor = Mock(side_effect=AssertionError("must not assess"))
+    assert (
+        mediation.prepare("org", actor, runtime={}, history=[], assessor=assessor) == []
+    )
+    assessor.assert_not_called()
+    record = next(
+        row for row in mediation.queue.assessments("org") if row["id"] == identity
+    )
+    assert record["attempts"] == 0 and record["state"] == "pending"
+    assert record["delivered_at"] is None
+    assert record["available_at"] > now[0]
+
+
 def test_advice_control_characters_are_rejected():
     from hermes_wisdom.mediation import Advice
 
@@ -391,3 +475,63 @@ def test_advice_control_characters_are_rejected():
             relevance="recommend",
             explanation="Hide warnings\x1b[2J",
         )
+
+
+@pytest.mark.parametrize("blocked", ["mute", "network", "suppression", "rollout", None])
+def test_delivery_rechecks_preferences_and_preserves_completed_advice(
+    consent, monkeypatch, blocked
+):
+    from hermes_wisdom.agent_led.policy import AgentLedPolicy
+    from hermes_wisdom.client import WisdomMuteResponse, WisdomSuppression
+    from hermes_wisdom.preferences import suppression_key
+
+    instance, _actor, identity, now = consent
+    monkeypatch.setattr(
+        "hermes_wisdom.mediation.delivery_mode",
+        lambda: "fixed" if blocked == "rollout" else "agent",
+    )
+    monkeypatch.setattr(
+        "hermes_wisdom.agent_led.policy.load_policy",
+        lambda **kw: AgentLedPolicy(enabled=True),
+    )
+    client = instance.service.client
+    client.recommendation_mute.return_value = WisdomMuteResponse(
+        org_id="org",
+        muted=blocked == "mute",
+        duration=None,
+        muted_until=None,
+        forever=False,
+    )
+    client.recommendation_suppressions.return_value = []
+    if blocked == "network":
+        client.recommendation_mute.side_effect = TimeoutError
+    if blocked == "suppression":
+        client.recommendation_suppressions.return_value = [
+            WisdomSuppression(
+                key=suppression_key({
+                    "kind": "skill",
+                    "skill_id": "skill",
+                    "version": 1,
+                }),
+                suppress_until="1970-01-02T00:00:00Z",
+            )
+        ]
+    mediation = WisdomMediation(instance.service, clock=lambda: now[0])
+    job = next(
+        row for row in mediation.queue.assessments("org") if row["id"] == identity
+    )
+    item = {"assessment": job, "advice": job["advice"], "interaction": None}
+    selected = mediation.begin_delivery("org", [item])
+    record = next(
+        row for row in mediation.queue.assessments("org") if row["id"] == identity
+    )
+    assert record["advice"] == job["advice"]
+    assert record["attempts"] == job["attempts"]
+    assert record["delivered_at"] is None
+    if blocked:
+        assert selected == []
+        assert record["state"] == "ready" and record["lease_token"] is None
+        assert record["available_at"] > now[0]
+    else:
+        assert selected == [item]
+        assert record["state"] == "delivering"

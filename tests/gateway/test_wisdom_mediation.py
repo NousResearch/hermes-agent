@@ -192,12 +192,13 @@ def test_tui_assessment_does_not_overwrite_a_new_turn_after_stop(monkeypatch, ca
         ]
 
     mediation.prepare.side_effect = prepare
+    mediation.begin_delivery.side_effect = lambda org, items: items
     emit = Mock()
     poll(session, emit=emit, profile_scope=lambda _: nullcontext())
     assert session["history"] == []
     assert session["running"] is cancel
     if cancel:
-        mediation.queue.begin_delivery.assert_not_called()
+        mediation.begin_delivery.assert_not_called()
         emit.assert_not_called()
     else:
         emit.assert_called_once()

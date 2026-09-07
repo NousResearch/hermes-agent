@@ -392,7 +392,8 @@ def test_dispatcher_grants_only_the_assigned_worker_scope(tmp_path, monkeypatch)
     db = tmp_path / "board.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
     conn = connect(db)
-    tid = kb.create_task(conn, title="assigned child", assignee="default")
+    tid = kb.create_task(conn, title="assigned child", assignee="default",
+                         skills=["using-superpowers"])
     kb.claim_task(conn, tid)
     task = kb.get_task(conn, tid)
     output = tmp_path / "worker-result.json"

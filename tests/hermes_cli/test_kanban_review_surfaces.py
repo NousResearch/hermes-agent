@@ -23,10 +23,12 @@ def review_worker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str:
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
     with kbc.connect() as conn:
-        task_id = kb.create_task(conn, title="Review tool contract", assignee="builder")
+        task_id = kb.create_task(conn, title="Review tool contract", assignee="builder",
+                                 skills=["using-superpowers"])
         task = kb.claim_task(conn, task_id, claimer="builder:1")
         assert task is not None
     monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    monkeypatch.setenv("HERMES_KANBAN_PRELOADED_SKILLS", "using-superpowers")
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(task.current_run_id))
     return task_id
 
@@ -305,10 +307,12 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
             title="Goal-mode tool task",
             assignee="builder",
             goal_mode=True,
+            skills=["using-superpowers"],
         )
         claimed = kb.claim_task(conn, tool_task, claimer="builder:1")
         assert claimed is not None
     monkeypatch.setenv("HERMES_KANBAN_TASK", tool_task)
+    monkeypatch.setenv("HERMES_KANBAN_PRELOADED_SKILLS", "using-superpowers")
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
 
     from tools import kanban_tools as tools
@@ -340,10 +344,12 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
             title="Goal-mode CLI task",
             assignee="builder",
             goal_mode=True,
+            skills=["using-superpowers"],
         )
         cli_claimed = kb.claim_task(conn, cli_task, claimer="builder:2")
         assert cli_claimed is not None
     monkeypatch.setenv("HERMES_KANBAN_TASK", cli_task)
+    monkeypatch.setenv("HERMES_KANBAN_PRELOADED_SKILLS", "using-superpowers")
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(cli_claimed.current_run_id))
 
     import agent.auxiliary_client as auxiliary_client

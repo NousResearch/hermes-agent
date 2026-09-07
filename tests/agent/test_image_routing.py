@@ -407,6 +407,21 @@ class TestFormatCompatibility:
             f"BMP must be transcoded to PNG for cross-provider compatibility, got: {url[:60]}"
         )
 
+    def test_gif_transcoded_to_png(self, tmp_path: Path):
+        """GIF file should land as image/png in the data URL, not image/gif,
+        because providers like Google Gemini reject image/gif with 500 / 400."""
+        import pytest
+        Image = pytest.importorskip("PIL.Image", reason="Pillow not installed; transcode is best-effort")
+        from agent.image_routing import _file_to_data_url
+
+        img_path = tmp_path / "animation.gif"
+        Image.new("RGB", (4, 4), (0, 255, 0)).save(img_path, format="GIF")
+        url = _file_to_data_url(img_path)
+        assert url is not None
+        assert url.startswith("data:image/png;base64,"), (
+            f"GIF must be transcoded to PNG for Gemini compatibility, got: {url[:60]}"
+        )
+
 
     def test_png_passes_through_no_transcode(self, tmp_path: Path):
         """Universal-safe formats must NOT be re-encoded — preserves bytes."""

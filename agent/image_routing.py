@@ -591,7 +591,7 @@ def _sniff_mime_from_bytes(raw: bytes) -> Optional[str]:
 # do hit this in practice. SVG is vector and Pillow cannot rasterize it;
 # it is skipped (logged) rather than transcoded.
 _UNIVERSALLY_SUPPORTED_MIMES = frozenset({
-    "image/png", "image/jpeg", "image/gif", "image/webp",
+    "image/png", "image/jpeg", "image/webp",
 })
 
 

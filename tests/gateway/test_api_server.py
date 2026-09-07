@@ -267,6 +267,21 @@ class TestConcurrencyCap:
             assert APIServerAdapter._resolve_max_concurrent_runs() == 3
 
 
+    def test_run_status_ttl_reads_config_value(self):
+        cfg = {"gateway": {"api_server": {"run_status_ttl": 7200}}}
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            assert APIServerAdapter._resolve_run_status_ttl() == 7200
+
+    def test_run_status_ttl_falls_back_to_default_on_garbage(self):
+        cfg = {"gateway": {"api_server": {"run_status_ttl": "not-a-number"}}}
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            assert APIServerAdapter._resolve_run_status_ttl() == 3600
+
+    def test_run_status_ttl_rejects_non_positive_values(self):
+        cfg = {"gateway": {"api_server": {"run_status_ttl": 0}}}
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            assert APIServerAdapter._resolve_run_status_ttl() == 3600
+
     def test_under_cap_returns_none(self):
         adapter = _make_adapter()
         adapter._max_concurrent_runs = 5

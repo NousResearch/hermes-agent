@@ -1979,6 +1979,12 @@ DEFAULT_CONFIG = {
             # /v1/runs beyond this get HTTP 429 + Retry-After, bounding CPU/memory/LLM-quota
             # exhaustion from a request flood. 0 = no cap.
             "max_concurrent_runs": 10,
+            # Seconds a terminal (completed/failed/cancelled) /v1/runs status record stays
+            # pollable before the sweep forgets it. Slow pollers that outlive this window get
+            # 404 run_not_found even though the transcript survives in the session store;
+            # raise it if dispatch->completion latency sits near the default. Records are
+            # process-local — a restart drops them regardless of this value.
+            "run_status_ttl": 3600,
         },
     },
     # Real-time token streaming to messaging platforms (gateway; restart after enabling). Off by

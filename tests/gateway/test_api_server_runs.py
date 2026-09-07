@@ -1432,6 +1432,26 @@ class TestRunIdempotency:
         assert "run_old" not in adapter._run_idempotency_ids
         assert "run_old" not in adapter._run_owners
 
+    def test_status_sweep_honors_configured_ttl(self, adapter):
+        adapter._RUN_STATUS_TTL = 7200
+        adapter._run_statuses["run_past_default"] = {
+            "status": "completed",
+            "updated_at": 1000.0,
+        }
+        adapter._run_statuses["run_past_configured"] = {
+            "status": "completed",
+            "updated_at": 1000.0,
+        }
+
+        # 3600 default would already forget both; the configured window keeps them pollable.
+        adapter._sweep_orphaned_runs_once(1000.0 + 3600 + 2)
+        assert "run_past_default" in adapter._run_statuses
+        assert "run_past_configured" in adapter._run_statuses
+
+        adapter._sweep_orphaned_runs_once(1000.0 + 7200 + 2)
+        assert "run_past_default" not in adapter._run_statuses
+        assert "run_past_configured" not in adapter._run_statuses
+
     @pytest.mark.asyncio
     async def test_no_session_id_does_not_load_session_history(
         self, adapter, tmp_path

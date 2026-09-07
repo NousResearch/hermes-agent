@@ -1139,6 +1139,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._last_resolved_model: Dict[str, str] = {}
         self._session_db_lock: Optional[asyncio.Lock] = None  # single-flight for lazy init
         self._max_concurrent_runs: int = self._resolve_max_concurrent_runs()  # 0 disables
+        self._RUN_STATUS_TTL = self._resolve_run_status_ttl()
         # In-flight _run_agent() turns (/v1/runs tracks its own via _active_run_tasks).
         # Concurrency cap shared across all agent-serving endpoints (/v1/chat/completions, /v1/responses,
         # /v1/runs). Read from config.yaml gateway.api_server.max_concurrent_runs; 0 disables the cap.
@@ -1245,6 +1246,28 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except Exception:
             return default
         return max(0, value)
+
+    @staticmethod
+    def _resolve_run_status_ttl() -> int:
+        """gateway.api_server.run_status_ttl (default 3600; unparseable or <= 0 -> default).
+
+        Terminal /v1/runs status records are process-local, so the TTL only stretches the
+        polling window — it cannot survive a restart."""
+        default = 3600
+        try:
+            from hermes_cli.config import cfg_get, load_config
+
+            raw = cfg_get(
+                load_config(),
+                "gateway",
+                "api_server",
+                "run_status_ttl",
+                default=default,
+            )
+            value = int(raw)
+        except Exception:
+            return default
+        return value if value > 0 else default
 
     @staticmethod
     def _resolve_model_name(explicit: str) -> str:
@@ -3713,7 +3736,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     # __dict__ membership and patch the module-level implementations) ---------------------
 
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
-    _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
+    # How long terminal run status stays pollable on /v1/runs before the sweep forgets it;
+    # per-instance override from gateway.api_server.run_status_ttl. Records are process-local,
+    # so a restart drops them regardless of the TTL.
+    _RUN_STATUS_TTL = 3600
 
     def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
         return _api_runs._set_run_status(self, run_id, status, **fields)

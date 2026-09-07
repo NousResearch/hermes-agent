@@ -2359,6 +2359,8 @@ class TestSessionIdHeader:
         ]
         mock_db = MagicMock()
         mock_db.get_messages_as_conversation.return_value = db_history
+        # Non-rotated control: the canonical tip resolver resolves the id to itself.
+        mock_db.resolve_resume_session_id.side_effect = lambda sid: sid
         auth_adapter._session_db = mock_db
         app = _create_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -2418,6 +2420,103 @@ class TestSessionIdHeader:
                 )
                 assert resp.status == 200
                 assert mock_run.call_args.kwargs["wake_capable"] == ""
+
+    @staticmethod
+    def _rotated_session_db(tmp_path):
+        """Real SessionDB with a compression-rotated pair: closed parent ``parent-session``
+        and its live continuation ``child-session`` — plus a late async-delegation delivery
+        row persisted on the tip through the stale origin id (#98619 e2e shape)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("parent-session", source="api_server")
+        db.append_message("parent-session", "user", "run the batch")
+        db.end_session("parent-session", "compression")
+        db.create_session(
+            "child-session", source="api_server", parent_session_id="parent-session"
+        )
+        return db
+
+    @pytest.mark.asyncio
+    async def test_provided_session_id_adopts_compression_tip_for_history_bind_and_wake(
+        self, auth_adapter, tmp_path
+    ):
+        """#98619/#13437: a client re-sending a pre-rotation X-Hermes-Session-Id must read the
+        live tip's history (including a detached delegation delivery row persisted there),
+        bind the turn and the wake target to the tip, keep wake capability for the explicit
+        header, and still be echoed the stable client id it sent."""
+        from gateway.wake import persist_delegation_delivery
+
+        db = self._rotated_session_db(tmp_path)
+        auth_adapter._session_db = db
+        # The detached completion arrives after the rotation, addressed to the captured
+        # (now-stale) origin id — the delivery writer adopts the tip, as at runtime.
+        await persist_delegation_delivery(
+            auth_adapter,
+            text="[delegated task complete] rotated result",
+            session_id="parent-session",
+            evt={"type": "async_delegation"},
+        )
+        mock_result = {"final_response": "OK", "session_id": "child-session",
+                       "messages": [], "api_calls": 1}
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-Hermes-Session-Id": "parent-session", "Authorization": "Bearer sk-secret"},
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "follow up"}]},
+                )
+
+        assert resp.status == 200
+        call_kwargs = mock_run.call_args.kwargs
+        # Read, turn, and wake target all select the live tip the delivery row landed on.
+        assert call_kwargs["session_id"] == "child-session"
+        assert call_kwargs["wake_capable"] == "1"
+        assert any("rotated result" in m.get("content", "") for m in call_kwargs["conversation_history"])
+        # Identity contract: the client is echoed the stable id it sent, not the tip and not
+        # the turn's reported session_id.
+        assert resp.headers.get("X-Hermes-Session-Id") == "parent-session"
+
+    @pytest.mark.asyncio
+    async def test_streamed_session_id_header_adopts_tip_and_echoes_stable_id(
+        self, auth_adapter, tmp_path
+    ):
+        """Streaming half of the interlock: SSE response headers are prepared before the turn
+        runs, so they must carry the stable client id (a rotation after prepare never changes
+        what the client should re-send), while the streamed turn still runs against the tip."""
+        db = self._rotated_session_db(tmp_path)
+        auth_adapter._session_db = db
+
+        async def _mock_run_agent(**kwargs):
+            cb = kwargs.get("stream_delta_callback")
+            if cb:
+                cb("ok")
+            return (
+                {"final_response": "ok", "session_id": "child-session", "messages": [], "api_calls": 1},
+                {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", side_effect=_mock_run_agent) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-Hermes-Session-Id": "parent-session", "Authorization": "Bearer sk-secret"},
+                    json={"model": "hermes-agent",
+                          "messages": [{"role": "user", "content": "follow up"}],
+                          "stream": True},
+                )
+                assert resp.status == 200
+                assert resp.headers.get("X-Hermes-Session-Id") == "parent-session"
+                body = await resp.text()
+
+        assert "data: " in body
+        call_kwargs = mock_run.call_args.kwargs
+        assert call_kwargs["session_id"] == "child-session"
+        assert call_kwargs["wake_capable"] == "1"
 
 
 # ---------------------------------------------------------------------------

@@ -88,3 +88,24 @@ def test_invalid_explicit_python_fails_closed(tmp_path: Path):
 
     assert result.returncode != 0
     assert "HERMES_WISDOM_PYTHON is not executable" in result.stderr
+
+
+def test_explicit_python_without_runtime_dependencies_fails_closed(tmp_path: Path):
+    incomplete_python = tmp_path / "incomplete-python"
+    incomplete_python.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    incomplete_python.chmod(0o755)
+    value = demo_env(tmp_path)
+    value["HERMES_WISDOM_PYTHON"] = str(incomplete_python)
+
+    result = subprocess.run(
+        [str(ENV_SCRIPT), "--", "hermes", "wisdom", "--help"],
+        cwd=REPO_ROOT,
+        env=value,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert result.returncode != 0
+    assert "lacks Hermes runtime dependencies" in result.stderr

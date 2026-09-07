@@ -18,6 +18,10 @@ wisdom_demo_repo_root() {
   (cd "${helper_dir}/../.." && pwd)
 }
 
+wisdom_demo_python_is_ready() {
+  "$1" -c 'import dotenv, pydantic, requests, yaml' >/dev/null 2>&1
+}
+
 wisdom_demo_pick_python() {
   local repo_root="$1"
   local candidate
@@ -25,6 +29,10 @@ wisdom_demo_pick_python() {
   if [ -n "${HERMES_WISDOM_PYTHON:-}" ]; then
     if [ ! -x "${HERMES_WISDOM_PYTHON}" ]; then
       echo "error: HERMES_WISDOM_PYTHON is not executable: ${HERMES_WISDOM_PYTHON}" >&2
+      return 1
+    fi
+    if ! wisdom_demo_python_is_ready "${HERMES_WISDOM_PYTHON}"; then
+      echo "error: HERMES_WISDOM_PYTHON lacks Hermes runtime dependencies: ${HERMES_WISDOM_PYTHON}" >&2
       return 1
     fi
     printf '%s\n' "${HERMES_WISDOM_PYTHON}"
@@ -38,14 +46,18 @@ wisdom_demo_pick_python() {
     "${HERMES_HOME:-}/hermes-agent/venv/bin/python" \
     "${HOME:-}/.hermes/hermes-agent/venv/bin/python"
   do
-    if [ -n "${candidate}" ] && [ -x "${candidate}" ]; then
+    if [ -n "${candidate}" ] \
+      && [ -x "${candidate}" ] \
+      && wisdom_demo_python_is_ready "${candidate}"; then
       printf '%s\n' "${candidate}"
       return
     fi
   done
 
   candidate="$(command -v python3 2>/dev/null || true)"
-  if [ -n "${candidate}" ] && [ -x "${candidate}" ]; then
+  if [ -n "${candidate}" ] \
+    && [ -x "${candidate}" ] \
+    && wisdom_demo_python_is_ready "${candidate}"; then
     printf '%s\n' "${candidate}"
     return
   fi

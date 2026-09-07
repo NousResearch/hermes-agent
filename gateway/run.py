@@ -21377,6 +21377,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return
             session_entry = resolved_entry
         self._cache_session_source(session_key, source)
+        if not bool(getattr(event, "internal", False)):
+            try:
+                from gateway.wisdom_mediation import schedule as observe_wisdom_session
+
+                await observe_wisdom_session(
+                    self, self._adapter_for_source(source), source,
+                    str(session_entry.session_id), observe_only=True,
+                )
+            except Exception:
+                logger.debug("Wisdom session activity unavailable", exc_info=True)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             try:
                 binding = (await self._session_db.get_telegram_topic_binding(
@@ -24568,7 +24578,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         await _deliver()
 
     async def _defer_wisdom_candidate_notice_after_delivery(
-        self, source: Any, session_id: str
+        self, source: Any, session_id: str, *, user_activity: bool = True
     ) -> None:
         """Surface local qualification after the originating client reply."""
         adapter = self._adapter_for_source(source)
@@ -24583,6 +24593,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         async def _deliver() -> None:
             try:
+                if user_activity:
+                    from gateway.wisdom_mediation import schedule
+
+                    if await schedule(self, adapter, source, session_id):
+                        return
                 await sender(
                     source.chat_id,
                     session_id,
@@ -24756,7 +24771,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("loop completion hook failed: %s", exc)
         try:
             await self._defer_wisdom_candidate_notice_after_delivery(
-                source, str(session_entry.session_id)
+                source, str(session_entry.session_id), user_activity=not is_internal
             )
         except Exception as exc:
             logger.debug("Wisdom candidate notification hook failed: %s", exc)

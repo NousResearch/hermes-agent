@@ -45,7 +45,11 @@ class SkillEvidence:
     supporting_signals: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        value.pop("path", None)
+        # Arbitrary frontmatter metadata can contain deployment configuration.
+        value.pop("frontmatter", None)
+        return value
 
 
 @dataclass

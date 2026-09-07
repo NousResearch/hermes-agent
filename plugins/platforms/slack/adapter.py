@@ -7717,13 +7717,13 @@ class SlackAdapter(BasePlatformAdapter):
             logger.warning("[Slack] Wisdom response_url POST failed: %s", exc)
         return False
 
-    async def _send_wisdom_view(self, view, *, source) -> None:
+    async def _send_wisdom_view(self, view, *, source, proactive: bool = False) -> None:
         """Send a Wisdom view ephemerally for slashes or persistently otherwise."""
         channel_id = str(source.chat_id)
         team_id = str(getattr(source, "scope_id", None) or "")
         blocks = sanitize_blocks(render_wisdom_blocks(view)) or []
         text = wisdom_fallback_text(view)
-        slash_context = self._pop_slash_context(channel_id, team_id)
+        slash_context = None if proactive else self._pop_slash_context(channel_id, team_id)
         if slash_context:
             if await self._post_wisdom_response_url(
                 str(slash_context.get("response_url") or ""),
@@ -7810,6 +7810,13 @@ class SlackAdapter(BasePlatformAdapter):
                 "Collective Wisdom could not continue", command_error_text(exc)
             )
         await self._send_wisdom_view(view, source=source)
+
+    async def send_wisdom_mediation(self, view, *, source) -> None:
+        self._remember_wisdom_callbacks(
+            view, team_id=str(getattr(source, "scope_id", None) or ""),
+            channel_id=str(source.chat_id), profile=getattr(self, "_owner_profile", None),
+        )
+        await self._send_wisdom_view(view, source=source, proactive=True)
 
     async def send_wisdom_candidate_notifications(
         self,
@@ -8105,6 +8112,20 @@ class SlackAdapter(BasePlatformAdapter):
         )
 
         try:
+            if value.startswith("wi:agent:"):
+                def resolve():
+                    from hermes_wisdom.mediation_view import resolve_surface_action
+                    from hermes_wisdom.service import WisdomService
+
+                    message = body.get("message") or {}
+                    return resolve_surface_action(
+                        WisdomService(), value, platform="slack", actor_id=user_id,
+                        chat_id=channel_id, thread_id=str(message.get("thread_ts") or ""),
+                        scope_id=str(team_id or ""),
+                    )
+                view = await self._run_wisdom_profile_operation(resolve, profile=profile)
+                await self._update_wisdom_interaction(body, view)
+                return
             if value.startswith("wi:continue:"):
                 from gateway.wisdom_command import (
                     WisdomCommandContext,

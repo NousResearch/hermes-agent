@@ -1895,6 +1895,7 @@ from hermes_cli.web_models import (  # noqa: F401
     WisdomUpdateApplyRequest,
     WisdomUninstallRequest,
     WisdomNotificationRequest,
+    WisdomConsentRequest,
     DebugShareRequest,
     TTSSpeakRequest,
     TTSLeaseRequest,
@@ -15690,6 +15691,10 @@ async def get_wisdom_events(
     profile: Optional[str] = None, session_id: Optional[str] = None
 ):
     def read(service):
+        from hermes_wisdom.mediation import delivery_mode
+
+        if delivery_mode() == "agent":
+            return {"events": [], "delivery_mode": "agent"}
         return {
             "events": service.pending_candidate_events(
                 session_id=session_id or "", surface="desktop"
@@ -15803,6 +15808,16 @@ async def post_wisdom_candidate_defer(body: WisdomCandidateEventRequest):
     )
 
 
+@app.post("/api/wisdom/candidates/prepare")
+async def post_wisdom_candidate_prepare(body: WisdomCandidateEventRequest):
+    result = await _run_wisdom(
+        body.profile, lambda service: service.prepare_candidate(body.event_id)
+    )
+    if result.get("stage") == "prepared":
+        _schedule_wisdom_professionalism_reviews(body.profile)
+    return result
+
+
 @app.post("/api/wisdom/candidates/approve")
 async def post_wisdom_candidate_approve(body: WisdomCandidateEventRequest):
     return await _run_wisdom(
@@ -15863,7 +15878,10 @@ async def post_wisdom_install_apply(body: WisdomInstallApplyRequest):
 @app.get("/api/wisdom/installations")
 async def get_wisdom_installations(profile: Optional[str] = None):
     def read(service):
+        from hermes_wisdom.mediation import delivery_mode
+
         return {
+            "delivery_mode": delivery_mode(),
             "installations": service.store.installations(),
             "notifications": service.notifications(mark_seen=False)["events"],
         }
@@ -15912,6 +15930,25 @@ async def post_wisdom_notifications(body: WisdomNotificationRequest):
         body.profile,
         lambda service: service.notifications(mark_seen=body.mark_seen),
     )
+
+
+@app.get("/api/wisdom/mediation")
+async def get_wisdom_mediation(profile: Optional[str] = None):
+    from hermes_wisdom.mediation import WisdomMediation
+
+    return await _run_wisdom(profile, lambda service: WisdomMediation(service).activity())
+
+
+@app.post("/api/wisdom/consent")
+async def post_wisdom_consent(body: WisdomConsentRequest):
+    def resolve(service):
+        from hermes_wisdom.consent import ConsentActor, WisdomConsent
+
+        actor = ConsentActor(body.session_id, "local", "local-user", f"local:{body.session_id}")
+        return WisdomConsent(service).resolve(
+            service.store.active_org_id(), body.interaction_id, actor, body.action
+        )
+    return await _run_wisdom(body.profile, resolve)
 
 
 app.include_router(_skills_routes.router)

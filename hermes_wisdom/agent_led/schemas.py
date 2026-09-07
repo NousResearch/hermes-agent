@@ -228,8 +228,9 @@ class PackagedFile(_Strict):
     @field_validator("path")
     @classmethod
     def _safe_path(cls, value: str) -> str:
-        if value.startswith("/") or ".." in value.split("/"):
-            raise ValueError("package paths must be relative and not escape the skill")
+        from ..package import _validate_package_path
+
+        _validate_package_path(value, source="proposed package")
         return value
 
     @field_validator("content")
@@ -255,9 +256,21 @@ class SharePackage(_Strict):
     removed_or_generalized: list[str] = Field(default_factory=list, max_length=40)
     related_skills: list[str] = Field(default_factory=list, max_length=20)
 
+    @field_validator("skill_name")
+    @classmethod
+    def _skill_name(cls, value: str) -> str:
+        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,119}", value):
+            raise ValueError("skill_name must be a single safe identifier")
+        return value
+
     @field_validator("files")
     @classmethod
     def _has_skill_md(cls, value: list[PackagedFile]) -> list[PackagedFile]:
+        from ..package import _validate_package_path
+
+        keys = [_validate_package_path(item.path, source="proposed package")[1] for item in value]
+        if len(keys) != len(set(keys)):
+            raise ValueError("package contains colliding paths")
         if not any(item.path == "SKILL.md" for item in value):
             raise ValueError("package must include SKILL.md")
         return value

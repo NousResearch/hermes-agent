@@ -556,6 +556,24 @@ class WisdomClient:
                 "takedown_generation": takedown_generation,
             },
         )
+        return self._decode_version_content(response)
+
+    def raw_copy(
+        self, skill_id: str, version: int
+    ) -> tuple[VersionContent, list[tuple[str, str, bytes]]]:
+        """Read an immutable published package without creating install state."""
+
+        response = self._request(
+            "GET",
+            f"skills/{quote(skill_id, safe='')}/versions/{version}/raw",
+            model=VersionContent,
+        )
+        return self._decode_version_content(response)
+
+    @staticmethod
+    def _decode_version_content(
+        response: VersionContent,
+    ) -> tuple[VersionContent, list[tuple[str, str, bytes]]]:
         decoded: list[tuple[str, str, bytes]] = []
         for item in response.files:
             try:

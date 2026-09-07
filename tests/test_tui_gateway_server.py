@@ -18230,6 +18230,93 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
             process_registry.completion_queue.get_nowait()
 
 
+def test_wisdom_activity_notice_is_profile_throttled_and_session_scoped(
+    monkeypatch, tmp_path
+):
+    checks = []
+
+    class _Wisdom:
+        def check(self, *, apply_automatic):
+            checks.append(apply_automatic)
+
+        def notifications(self, *, mark_seen):
+            assert mark_seen is False
+            return {"events": [{"event_id": "org-1"}]}
+
+        def local_candidate_events(self, *, session_id):
+            return [{"id": "candidate-1"}] if session_id == "session-a" else []
+
+    monkeypatch.setattr("hermes_wisdom.service.WisdomService", _Wisdom)
+    monkeypatch.setattr(server, "_hermes_home", str(tmp_path / "profile"))
+    server._wisdom_profile_last_poll.clear()
+
+    success, first = server._collect_wisdom_activity_notice(
+        {"session_key": "session-a", "history_lock": threading.Lock()}
+    )
+    second_success, second = server._collect_wisdom_activity_notice(
+        {"session_key": "session-b", "history_lock": threading.Lock()}
+    )
+
+    assert success is True
+    assert first == (
+        "Collective Wisdom: 1 team update and 1 skill ready to review. "
+        "Run /wisdom notifications or /wisdom candidates to manage them."
+    )
+    assert second_success is True
+    assert second == (
+        "Collective Wisdom: 1 team update. "
+        "Run /wisdom notifications to manage them."
+    )
+    assert checks == [False]
+
+
+def test_wisdom_activity_notice_replaces_clears_and_survives_failures(monkeypatch):
+    emitted = []
+    projections = iter(
+        [
+            (True, "Collective Wisdom: 1 team update."),
+            (True, "Collective Wisdom: 2 team updates."),
+            (False, None),
+            (True, None),
+        ]
+    )
+    monkeypatch.setattr(
+        server, "_collect_wisdom_activity_notice", lambda _session: next(projections)
+    )
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+    session = {"session_key": "session-a"}
+
+    for _ in range(4):
+        server._sync_wisdom_activity_notice("sid", session)
+
+    shows = [item for item in emitted if item[0] == "notification.show"]
+    clears = [item for item in emitted if item[0] == "notification.clear"]
+    assert [item[2]["text"] for item in shows] == [
+        "Collective Wisdom: 1 team update.",
+        "Collective Wisdom: 2 team updates.",
+    ]
+    assert all(item[2]["key"] == server._WISDOM_NOTICE_KEY for item in shows)
+    assert clears == [
+        ("notification.clear", "sid", {"key": server._WISDOM_NOTICE_KEY})
+    ]
+    assert "_wisdom_notice_text" not in session
+
+
+def test_wisdom_activity_notice_defers_while_a_turn_is_busy(monkeypatch):
+    instantiated = []
+
+    class _Wisdom:
+        def __init__(self):
+            instantiated.append(True)
+
+    monkeypatch.setattr("hermes_wisdom.service.WisdomService", _Wisdom)
+
+    assert server._collect_wisdom_activity_notice(
+        {"session_key": "session-a", "running": True}
+    ) == (False, None)
+    assert instantiated == []
+
+
 def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, tmp_path):
     """TUI /save (session.save RPC) must snapshot under the Hermes profile
     home — not the project/workspace CWD — and include the system prompt,

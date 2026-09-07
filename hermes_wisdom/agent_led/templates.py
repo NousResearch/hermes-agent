@@ -14,8 +14,9 @@ from typing import Any, Literal
 
 SHARE_HEADER = "Reusable skill ready to review"
 SHARE_WHY_HEADER = "Why we ask"
-SHARE_SAFE_YES = "Is it safe to share? Yes."
-SHARE_SAFE_NO = "Is it safe to share? Not yet."
+SHARE_SAFE_YES = "Checks complete: no known matches detected."
+SHARE_SAFE_NO = "Checks found issues. Review the details before sharing."
+SHARE_SAFE_UNAVAILABLE = "Checks unavailable. Review is required before sharing."
 SHARE_QUESTION = "Would you like to share it?"
 SHARE_CHECK_LINES: tuple[str, ...] = (
     "No profanity or abusive language",
@@ -24,9 +25,9 @@ SHARE_CHECK_LINES: tuple[str, ...] = (
     "No detected credentials or private keys",
 )
 SHARE_BUTTONS: tuple[tuple[str, str], ...] = (
-    ("share", "Share"),
-    ("review", "Review"),
     ("not_now", "Not now"),
+    ("review", "Review"),
+    ("share", "Share"),
 )
 
 TEAMMATE_HEADER = "New skill from your team"
@@ -35,9 +36,9 @@ TEAMMATE_SECURITY_LINE = (
 )
 TEAMMATE_POPULAR_LINE = "Popular with your team: {count}+ installations"
 TEAMMATE_BUTTONS: tuple[tuple[str, str], ...] = (
-    ("install", "Install"),
-    ("view", "View"),
     ("mute", "Mute"),
+    ("view", "View"),
+    ("install", "Install"),
 )
 
 PUBLISHED_OPEN_HEADER = "Published to {organization}."
@@ -53,9 +54,9 @@ UPDATE_HEADER = "Update available for {skill_name}"
 UPDATE_MATTERS = "This matters for your work because {reason}."
 UPDATE_SETUP_IMPACT = "Setup impact: {impact}"
 UPDATE_BUTTONS: tuple[tuple[str, str], ...] = (
-    ("update", "Update"),
-    ("view_changes", "View changes"),
     ("mute", "Mute"),
+    ("view_changes", "View changes"),
+    ("update", "Update"),
 )
 
 MUTE_OPTIONS: tuple[tuple[str, str, int | None], ...] = (
@@ -145,7 +146,7 @@ def render_share(
     specific_work: str,
     audience: str,
     reason: str,
-    checks_passed: bool = True,
+    checks_passed: bool | None = None,
     failed_checks: list[str] | None = None,
     window_days: int = 7,
     targets: dict[str, str] | None = None,
@@ -166,12 +167,18 @@ def render_share(
             f"It has helped with {work}. I think it could help {who} because {why}."
         ),
         "",
-        SHARE_SAFE_YES if checks_passed else SHARE_SAFE_NO,
+        SHARE_SAFE_YES if checks_passed is True else SHARE_SAFE_NO
+        if checks_passed is False else SHARE_SAFE_UNAVAILABLE,
     ]
     failed = set(failed_checks or [])
     for check in SHARE_CHECK_LINES:
-        mark = "✗" if check in failed else "✓"
-        lines.append(f"{mark} {check}")
+        if check in failed:
+            lines.append(f"⚠ Review: {check.removeprefix('No ')}")
+        elif checks_passed is True:
+            lines.append(f"✓ {check}")
+        else:
+            lines.append(f"➖ Unavailable: {check.removeprefix('No ')}")
+    lines.append("No known matches detected is not a security certification.")
     lines += ["", SHARE_QUESTION]
     notice = RenderedNotice(
         kind="share",

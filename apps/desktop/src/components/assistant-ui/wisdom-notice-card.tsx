@@ -20,14 +20,13 @@ export function WisdomNoticeCard({ profile }: { profile?: ProfileScope }) {
         const result = await getWisdomInstallations(profile)
 
         if (active) {
-          setEvents(result.notifications)
+          setEvents(result.delivery_mode === 'agent' ? [] : result.notifications)
         }
       } catch {
         // The notice is an enhancement to the transcript. An unavailable or
         // unconfigured Wisdom plane must not make ordinary chat unusable.
-        if (active) {
-          setEvents([])
-        }
+        // Keep the last confirmed projection so a transient poll cannot make
+        // an actionable organization notification flicker out of the chat.
       }
     }
 

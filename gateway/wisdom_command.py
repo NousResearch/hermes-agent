@@ -47,6 +47,8 @@ _PRIVATE_COMMANDS = {
     "update",
     "uninstall",
     "notifications",
+    "inbox",
+    "consent",
 }
 
 
@@ -151,6 +153,9 @@ def _local_action_lines(actions: list[WisdomAction]) -> list[str]:
         if callback_data.startswith("wi:cmd:"):
             token = callback_data.removeprefix("wi:cmd:")
             lines.append(f"{action.label}: /wisdom action {token}")
+        elif callback_data.startswith("wi:agent:"):
+            _, _, verb, identity = callback_data.split(":", 3)
+            lines.append(f"{action.label}: /wisdom consent {identity} {verb}")
     return lines
 
 
@@ -386,6 +391,30 @@ class WisdomCommandController:
                 ),
                 target,
                 _navigation_history,
+            )
+        if keyword == "inbox":
+            from hermes_wisdom.mediation import WisdomMediation
+            from hermes_wisdom.mediation_view import interaction_view
+
+            activity = WisdomMediation(service).activity()
+            view = WisdomView("Collective Wisdom inbox", "Advice and pending consent for this profile")
+            for entry in activity["assessments"]:
+                advice = entry.get("advice") or {}
+                if advice:
+                    view.items.append(WisdomItem(advice["title"], advice["explanation"]))
+            for interaction in activity["interactions"]:
+                detail = interaction_view(interaction)
+                view.items.extend(detail.items)
+                view.items.append(WisdomItem("Consent", interaction["state"], actions=detail.actions))
+            return view
+        if keyword == "consent":
+            from hermes_wisdom.mediation_view import resolve_surface_action
+
+            if len(args) != 2 or not context.chat_id.startswith("local:"):
+                raise ValueError("Use the native consent control, or /wisdom consent <id> <inspect|defer|confirm> in the local CLI")
+            return resolve_surface_action(
+                service, f"wi:agent:{args[1]}:{args[0]}", platform="local",
+                actor_id="local-user", chat_id=context.chat_id,
             )
         handlers = {
             "home": self._home,
@@ -817,7 +846,7 @@ class WisdomCommandController:
                 ),
                 WisdomItem(
                     "Account and activity",
-                    _wisdom_help_lines("setup", "status", "notifications", "help"),
+                    _wisdom_help_lines("setup", "status", "notifications", "inbox", "consent", "help"),
                 ),
                 WisdomItem(
                     "Examples",

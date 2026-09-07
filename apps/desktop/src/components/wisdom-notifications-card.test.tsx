@@ -53,6 +53,8 @@ describe('WisdomNotificationsCard', () => {
         events={[
           {
             category: 'new_skill',
+            editorial_description: 'Coordinate incidents with a repeatable team workflow.',
+            editorial_name: 'Team Incident Runbook',
             event_id: 'event-new',
             kind: 'new',
             skill_id: 'skill-new',
@@ -66,7 +68,35 @@ describe('WisdomNotificationsCard', () => {
       />
     )
 
+    expect(screen.getByText('Team Incident Runbook v1 was shared with your collective.')).toBeTruthy()
+    expect(screen.getByText('Coordinate incidents with a repeatable team workflow.')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Install…' }))
     expect(planAction).toHaveBeenCalledWith('install', expect.objectContaining({ skill_id: 'skill-new' }))
+  })
+
+  it('offers install with update copy for a revised uninstalled shared skill', () => {
+    const planAction = vi.fn()
+
+    render(
+      <WisdomNotificationsCard
+        events={[
+          {
+            category: 'new_skill',
+            event_id: 'event-shared-update',
+            kind: 'updated',
+            skill_id: 'skill-shared',
+            skill_name: 'team-runbook',
+            source_event_ids: ['event-shared-update'],
+            version: 2
+          }
+        ]}
+        onMarkAllRead={vi.fn()}
+        onPlanAction={planAction}
+      />
+    )
+
+    expect(screen.getByText('team-runbook v2 is available to update.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Install…' }))
+    expect(planAction).toHaveBeenCalledWith('install', expect.objectContaining({ skill_id: 'skill-shared' }))
   })
 })

@@ -6225,6 +6225,27 @@ class BasePlatformAdapter(ABC):
             task.add_done_callback(self._expected_cancelled_tasks.discard)
         return True
 
+    async def run_idle_activity(self, session_key: str, callback) -> bool:
+        """Run an internal consumer at an idle boundary without a human message.
+
+        Wisdom uses the same guard as regular turns. Real messages queue behind
+        it; stop/reset can cancel it using the ordinary session task registry.
+        """
+        if session_key in self._active_sessions:
+            return False
+        guard = asyncio.Event()
+        task = asyncio.current_task()
+        self._active_sessions[session_key] = guard
+        self._session_tasks[session_key] = task
+        try:
+            await callback()
+            return True
+        finally:
+            if self._session_tasks.get(session_key) is task:
+                self._session_tasks.pop(session_key, None)
+            if self._active_sessions.get(session_key) is guard:
+                await self._drain_pending_after_session_command(session_key, guard)
+
     async def cancel_session_processing(
         self,
         session_key: str,

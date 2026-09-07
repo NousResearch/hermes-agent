@@ -34,6 +34,7 @@ from tools.send_message_tool import (
     _send_telegram,
     _send_to_platform,
     send_message_tool,
+    send_slack_wisdom_notification_pane,
     send_telegram_notification_pane,
 )
 # Discord helpers moved to the plugin in #24325.  Import from the new path
@@ -365,7 +366,7 @@ class TestSendMessageTool:
                 items=[
                     {
                         "heading": "⬆️ Update <available>",
-                        "detail": "gateway-pull-canary · v3",
+                        "detail": "gateway-pull-canary · v3\nPrivate keys: ✅ Pass",
                     }
                 ],
                 button_rows=[
@@ -375,7 +376,7 @@ class TestSendMessageTool:
                             "callback_data": "wi:plan:update:skill-3",
                         },
                         {
-                            "label": "View ↗",
+                            "label": "View",
                             "url": "https://portal.example/orgs/team/wisdom/skills/skill-3?version=3&from=telegram",
                         },
                     ]
@@ -385,15 +386,80 @@ class TestSendMessageTool:
         assert result == {"success": True}
         rich_html = send_mock.await_args.kwargs["rich_message_html"]
         assert rich_html == (
-            "<h3>Hermes Collective Wisdom</h3><p>1 new update</p>"
+            "<h3>Hermes Collective Wisdom</h3><p>1 new notification</p>"
             "<p><b>⬆️ Update &lt;available&gt;</b><br/>"
-            "gateway-pull-canary · v3<br/>"
+            "gateway-pull-canary · v3<br/>Private keys: ✅ Pass</p>"
+            '<tg-button-row align="left">'
             '<tg-button type="callback_data" style="primary" '
             'data="wi:plan:update:skill-3">Update</tg-button> '
             '<tg-button type="url" '
             'url="https://portal.example/orgs/team/wisdom/skills/'
-            'skill-3?version=3&amp;from=telegram">View ↗</tg-button></p>'
+            'skill-3?version=3&amp;from=telegram">View</tg-button>'
+            "</tg-button-row>"
         )
+
+    def test_slack_wisdom_notification_keeps_local_portal_action(self, monkeypatch):
+        _ensure_slack_mock(monkeypatch)
+        slack_cfg = SimpleNamespace(enabled=True, token="xoxb-test", extra={})
+        home = SimpleNamespace(chat_id="D123456789", thread_id=None)
+        config = SimpleNamespace(
+            platforms={Platform.SLACK: slack_cfg},
+            get_home_channel=lambda platform: home if platform == Platform.SLACK else None,
+        )
+        client = SimpleNamespace(
+            chat_postMessage=AsyncMock(return_value={"ok": True, "ts": "1.2"})
+        )
+
+        with patch("tools.send_message_tool.prepare_send_message_platforms"), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("slack_sdk.web.async_client.AsyncWebClient", return_value=client):
+            result = send_slack_wisdom_notification_pane(
+                message="Collective Wisdom",
+                items=[{"heading": "New skill", "detail": "Team Runbook · v1"}],
+                button_rows=[
+                    [
+                        {
+                            "label": "View in Portal",
+                            "url": "http://127.0.0.1:3111/orgs/wisdom-local/wisdom/skills/skill-1?version=1",
+                        },
+                        {
+                            "label": "Install",
+                            "callback_data": "wi:plan:install:skill-1",
+                        },
+                    ]
+                ],
+            )
+
+        assert result == {"success": True, "message_id": "1.2", "private": True}
+        blocks = client.chat_postMessage.await_args.kwargs["blocks"]
+        assert blocks[-1] == {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "View in Portal",
+                        "emoji": True,
+                    },
+                    "action_id": "hermes_wisdom_feed_0_0",
+                    "url": "http://127.0.0.1:3111/orgs/wisdom-local/wisdom/skills/skill-1?version=1",
+                    "value": "wisdom:portal",
+                },
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "Install",
+                        "emoji": True,
+                    },
+                    "action_id": "hermes_wisdom_feed_0_1",
+                    "value": "wi:plan:install:skill-1",
+                    "style": "primary",
+                },
+            ],
+        }
 
     def test_ntfy_topic_target_is_explicit(self):
         chat_id, thread_id, is_explicit = _parse_target_ref("ntfy", "alerts-channel")

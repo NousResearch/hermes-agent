@@ -122,7 +122,7 @@ def share_candidate_event(
     *,
     organization_id: str,
     recipient_id: str,
-    checks_passed: bool = True,
+    checks_passed: bool | None = None,
     failed_checks: list[str] | None = None,
     ttl_hours: int = 24 * 7,
     at: datetime | None = None,
@@ -153,7 +153,8 @@ def share_candidate_event(
             f"{rec.evidence.invocation_count} uses on {rec.evidence.days_used} days "
             f"in the last {rec.evidence.window_days} days"
         ),
-        safety_summary="Local checks complete" if checks_passed else "Local checks found issues",
+        safety_summary="Local checks complete" if checks_passed is True else
+        "Local checks found issues" if checks_passed is False else "Local checks unavailable",
         allowed_actions=[
             AllowedAction(a.id, a.label, a.target or "", a.primary)
             for a in notice.actions

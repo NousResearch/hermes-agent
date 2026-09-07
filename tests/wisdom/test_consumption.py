@@ -25,12 +25,32 @@ def _spec(*, credentials: list[str] | None = None) -> SystemSpecification:
     })
 
 
-def _files(version: int, *, credentials: list[str] | None = None):
+def _files(
+    version: int,
+    *,
+    credentials: list[str] | None = None,
+    editorial_name: str | None = None,
+    editorial_description: str | None = None,
+):
     manifest = PackageManifest(
         name="managed-skill", requirements=_spec(credentials=credentials)
     )
+    if editorial_name and editorial_description:
+        skill = (
+            "---\n"
+            "name: managed-skill\n"
+            "description: Agent-facing routing copy.\n"
+            "metadata:\n"
+            "  hermes:\n"
+            f"    editorial_name: {editorial_name}\n"
+            f"    editorial_description: {editorial_description}\n"
+            "---\n"
+            f"# Managed v{version}\n"
+        ).encode()
+    else:
+        skill = f"# Managed v{version}\n".encode()
     return [
-        ("SKILL.md", "file", f"# Managed v{version}\n".encode()),
+        ("SKILL.md", "file", skill),
         (
             "skill.manifest.json",
             "file",
@@ -54,6 +74,7 @@ class Client:
         self.feed_pages: list[Feed] = []
         self.drafts = []
         self.discovery = []
+        self.raw_copies: list[tuple[str, int]] = []
 
     def installations(self, _identity):
         return [
@@ -77,6 +98,11 @@ class Client:
     ):
         assert installation_id.startswith("hwi_")
         assert takedown_generation == self.takedown_generation
+        _records, content_hash = verify_content_files(self.files)
+        return SimpleNamespace(content_hash=content_hash), self.files
+
+    def raw_copy(self, skill_id, version):
+        self.raw_copies.append((skill_id, version))
         _records, content_hash = verify_content_files(self.files)
         return SimpleNamespace(content_hash=content_hash), self.files
 
@@ -584,12 +610,13 @@ def test_feed_cursor_is_durable_deduplicated_and_telegram_uses_home_target(
     )
     delivered = manager.dispatch_telegram()
     assert delivered == {"attempted": True, "delivered": 1}
+    assert "1 new notification" in calls[0]["message"]
     assert "managed-skill" in calls[0]["message"]
     assert "skill-1" not in calls[0]["message"]
     assert calls[0]["button_rows"] == [
         [
             {
-                "label": "View ↗",
+                "label": "View",
                 "url": "https://portal.nousresearch.com/orgs/org-1/wisdom/skills/skill-1?version=2",
             }
         ]
@@ -599,9 +626,9 @@ def test_feed_cursor_is_durable_deduplicated_and_telegram_uses_home_target(
             "heading": "✅ Updated on this device",
             "detail": (
                 "managed-skill · v2\n"
-                "Security check: Unavailable\n"
+                "Security check: ➖ Unavailable\n"
                 "No known matches detected is not a security certification.\n\n"
-                "Professionalism check (agent-assessed, advisory): Unavailable"
+                "Professionalism check (agent-assessed, advisory): ➖ Unavailable"
             ),
         }
     ]
@@ -643,7 +670,7 @@ def test_telegram_update_available_offers_verified_update_action(
     assert calls[0]["button_rows"] == [
         [
             {
-                "label": "View ↗",
+                "label": "View",
                 "url": "https://portal.nousresearch.com/orgs/org-1/wisdom/skills/skill-1?version=2",
             },
             {
@@ -657,18 +684,73 @@ def test_telegram_update_available_offers_verified_update_action(
             "heading": "⬆️ Update available",
             "detail": (
                 "managed-skill · v2\n"
-                "Security check: Unavailable\n"
+                "Security check: ➖ Unavailable\n"
                 "No known matches detected is not a security certification.\n\n"
-                "Professionalism check (agent-assessed, advisory): Unavailable"
+                "Professionalism check (agent-assessed, advisory): ➖ Unavailable"
             ),
         }
     ]
 
 
-def test_notifications_resolve_org_skill_names_filter_noise_and_deep_link(
+def test_uninstalled_org_skill_update_remains_an_installable_notification(
     monkeypatch, tmp_path: Path
 ):
     client = Client(_files(2))
+    client.discovery = [
+        SimpleNamespace(
+            id="remote-skill",
+            slug="team-runbook",
+            latest_version=2,
+            model_dump=lambda **_kwargs: {
+                "id": "remote-skill",
+                "slug": "team-runbook",
+                "latest_version": 2,
+            },
+        )
+    ]
+    manager, _target = _manager(monkeypatch, tmp_path, client=client)
+    manager.store.persist_local_notice(
+        event_id="event-shared-update",
+        kind="updated",
+        skill_id="remote-skill",
+        payload={"version": 2},
+    )
+    _telegram_home(monkeypatch, "123456")
+    calls = []
+    monkeypatch.setattr(
+        "tools.send_message_tool.send_telegram_notification_pane",
+        lambda **kwargs: calls.append(kwargs) or {"success": True},
+    )
+
+    notifications = manager.notifications()["events"]
+    assert notifications[0]["category"] == "new_skill"
+    assert notifications[0]["kind"] == "updated"
+    assert manager.dispatch_telegram() == {"attempted": True, "delivered": 1}
+    assert calls[0]["button_rows"] == [
+        [
+            {
+                "label": "View",
+                "url": "https://portal.nousresearch.com/orgs/org-1/wisdom/skills/remote-skill?version=2",
+            },
+            {
+                "label": "Install",
+                "callback_data": "wi:plan:install:remote-skill",
+            },
+        ]
+    ]
+    assert calls[0]["items"][0]["heading"] == "🔄 Skill updated by your team"
+
+
+def test_notifications_resolve_org_skill_names_filter_noise_and_deep_link(
+    monkeypatch, tmp_path: Path
+):
+    client = Client(
+        _files(
+            2,
+            editorial_name="Team Incident Runbook",
+            editorial_description="Coordinate incident response with a repeatable team workflow.",
+        )
+    )
     client.discovery = [
         SimpleNamespace(
             id="remote-skill",
@@ -678,6 +760,9 @@ def test_notifications_resolve_org_skill_names_filter_noise_and_deep_link(
                 "id": "remote-skill",
                 "slug": "team-runbook",
                 "latest_version": 3,
+                "author_description": "Owner-facing fallback copy.",
+                "security_check": None,
+                "professionalism_check": None,
             },
         )
     ]
@@ -725,6 +810,10 @@ def test_notifications_resolve_org_skill_names_filter_noise_and_deep_link(
             "kind": "new",
             "skill_id": "remote-skill",
             "skill_name": "team-runbook",
+            "editorial_name": "Team Incident Runbook",
+            "editorial_description": (
+                "Coordinate incident response with a repeatable team workflow."
+            ),
             "version": 3,
             "state": None,
             "moderation_note": None,
@@ -748,7 +837,7 @@ def test_notifications_resolve_org_skill_names_filter_noise_and_deep_link(
     assert calls[0]["button_rows"] == [
         [
             {
-                "label": "View ↗",
+                "label": "View",
                 "url": "http://127.0.0.1:3111/orgs/org-1/wisdom/skills/remote-skill?version=3",
             },
             {
@@ -761,13 +850,18 @@ def test_notifications_resolve_org_skill_names_filter_noise_and_deep_link(
         {
             "heading": "🆕 New skill from your team",
             "detail": (
-                "team-runbook · v3\n"
-                "Security check: Unavailable\n"
+                "Team Incident Runbook · v3\n"
+                "Coordinate incident response with a repeatable team workflow.\n"
+                "Security check: ➖ Unavailable\n"
                 "No known matches detected is not a security certification.\n\n"
-                "Professionalism check (agent-assessed, advisory): Unavailable"
+                "Professionalism check (agent-assessed, advisory): ➖ Unavailable"
             ),
         }
     ]
+    assert client.raw_copies == [("remote-skill", 3)]
+    stored = manager.store.feed_events()[0]["payload"]
+    assert stored["editorial_name"] == "Team Incident Runbook"
+    assert stored["editorial_description"].startswith("Coordinate incident")
 
     manager.notifications(mark_seen=True)
     assert manager.notifications()["events"] == []
@@ -813,7 +907,7 @@ def test_telegram_public_home_excludes_device_state_and_mutation_controls(
     assert calls[0]["button_rows"] == [
         [
             {
-                "label": "View ↗",
+                "label": "View",
                 "url": "https://portal.nousresearch.com/orgs/org-1/wisdom/skills/remote-skill?version=3",
             }
         ]
@@ -930,10 +1024,11 @@ def test_slack_public_home_only_emits_collective_publication_links(
     )
 
     assert manager.dispatch_slack() == {"attempted": True, "delivered": 1}
+    assert "1 new notification" in calls[0]["message"]
     assert calls[0]["button_rows"] == [
         [
             {
-                "label": "View in Portal ↗",
+                "label": "View in Portal",
                 "url": "https://portal.nousresearch.com/orgs/org-1/wisdom/skills/remote-skill?version=3",
             }
         ]

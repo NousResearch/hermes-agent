@@ -13,7 +13,9 @@ def test_collective_wisdom_install_skill_contract():
     assert metadata["name"] == "collective-wisdom-install"
     assert metadata["description"].endswith(".")
     assert len(metadata["description"]) <= 60
-    assert "--plan --json" in body
-    assert "--apply-receipt" in body
-    assert "`clarify`" in body
-    assert "changes the active toolset" in body
+    assert "`wisdom_inbox`" in body
+    assert "`present_wisdom_consent`" in body
+    assert 'A conversational "yes" prompts the control' in body
+    assert "Never apply a" in body and "receipt through terminal" in body
+    assert "obtain separate approval" in body
+    assert "exact proposed package" in body

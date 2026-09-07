@@ -42,6 +42,8 @@ ORG_SPECIFIC_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 TEXT_SUFFIXES = {".md", ".txt", ".py", ".sh", ".json", ".yaml", ".yml", ".toml", ".cfg", ".ini", ".js", ".ts"}
 MAX_FILE_BYTES = 200_000
+MAX_TREE_BYTES = 1_000_000
+MAX_FILES = 64
 
 STATES = ("prepass", "packaged", "awaiting_approval", "changes_requested", "approved", "submitted", "cancelled")
 
@@ -51,16 +53,28 @@ def _flows_dir() -> Path:
 
 
 def _list_files(root: Path) -> list[dict[str, str]]:
+    if root.is_symlink() or not root.is_dir():
+        raise SchemaRejected("skill root must be a regular directory")
     files: list[dict[str, str]] = []
+    total = 0
     for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.suffix.lower() not in TEXT_SUFFIXES:
+        if path.is_symlink():
+            raise SchemaRejected("symlinks cannot be included in packaging input")
+        if path.is_dir():
             continue
+        if not path.is_file() or path.stat().st_nlink != 1:
+            raise SchemaRejected("packaging input must contain regular, unlinked files")
+        if path.suffix.lower() not in TEXT_SUFFIXES:
+            raise SchemaRejected("unsupported packaging file; review the source before sharing")
         if path.stat().st_size > MAX_FILE_BYTES:
-            continue
+            raise SchemaRejected("packaging input file exceeds its size limit")
         try:
             content = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
-            continue
+            raise SchemaRejected("packaging input must be readable UTF-8 text") from None
+        total += len(content.encode("utf-8"))
+        if total > MAX_TREE_BYTES or len(files) >= MAX_FILES:
+            raise SchemaRejected("packaging input exceeds its total size limit")
         files.append({"path": path.relative_to(root).as_posix(), "content": content})
     return files
 

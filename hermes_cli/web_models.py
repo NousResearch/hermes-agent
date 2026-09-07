@@ -400,6 +400,14 @@ class WisdomNotificationRequest(BaseModel):
     profile: Optional[str] = None
 
 
+class WisdomConsentRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    interaction_id: str = Field(min_length=1, max_length=64)
+    session_id: str = Field(min_length=1, max_length=256)
+    action: Literal["inspect", "defer", "confirm"]
+    profile: Optional[str] = None
+
+
 # --- from web_server.py (originally lines 3786-3792) ---
 
 

@@ -113,7 +113,8 @@ def _review_json(name: str, content_hash: str, count: int = 5) -> str:
 # policy
 # ---------------------------------------------------------------------------
 
-def test_policy_defaults_and_local_override():
+def test_policy_defaults_and_local_override(monkeypatch):
+    monkeypatch.setattr("hermes_wisdom.mediation.delivery_mode", lambda: "agent")
     policy = load_policy(local={})
     assert policy.enabled is True
     assert policy.window_days == 7
@@ -309,6 +310,7 @@ def test_share_template_exact_strings():
         specific_work="weekly release announcements",
         audience="the platform team",
         reason="every team ships weekly",
+        checks_passed=True,
     )
     text = notice.text
     assert notice.title == "Reusable skill ready to review"
@@ -319,7 +321,7 @@ def test_share_template_exact_strings():
         "You used this skill 9 times in the last 7 days. It has helped with weekly release "
         "announcements. I think it could help the platform team because every team ships weekly."
     ) in notice.lines
-    assert "Is it safe to share? Yes." in notice.lines
+    assert "Checks complete: no known matches detected." in notice.lines
     for check in (
         "No profanity or abusive language",
         "No hate or harassment",
@@ -328,7 +330,7 @@ def test_share_template_exact_strings():
     ):
         assert f"✓ {check}" in notice.lines
     assert notice.lines[-1] == "Would you like to share it?"
-    assert [a.label for a in notice.actions] == ["Share", "Review", "Not now"]
+    assert [a.label for a in notice.actions] == ["Not now", "Review", "Share"]
     assert "Pass" not in text.split()
     assert "Pass" not in text
 
@@ -360,7 +362,7 @@ def test_teammate_template_exact_strings():
     ) in notice.lines
     assert "✓ Security check complete (credentials, private keys, organization policy)" in notice.lines
     assert "Popular with your team: 10+ installations" in notice.lines
-    assert [a.label for a in notice.actions] == ["Install", "View", "Mute"]
+    assert [a.label for a in notice.actions] == ["Mute", "View", "Install"]
     assert "New notification" not in notice.text
     assert "Pass" not in notice.text
     quiet = templates.render_teammate(
@@ -387,7 +389,7 @@ def test_published_and_update_templates():
         "This matters for your work because you ship weekly.",
         "Setup impact: None",
     ]
-    assert [a.label for a in update.actions] == ["Update", "View changes", "Mute"]
+    assert [a.label for a in update.actions] == ["Mute", "View changes", "Update"]
     for notice in (open_notice, moderated, update):
         assert "Pass" not in notice.text
 
@@ -676,7 +678,8 @@ def test_install_flow_reports_installed_only_after_verification(tmp_path):
     resumed.apply(lambda _state: {"installed": True, "managed_path": "x"})
     assert resumed.step == "verify" and resumed.installed is False
     failed = resumed.verify(runner=lambda cmd: (False, "boom"))
-    assert failed["installed"] is False and failed["message"].startswith("Not installed yet")
+    assert failed["installed"] is False and failed["files_installed"] is True
+    assert failed["message"] == "Files installed; setup verification is incomplete."
     passed = resumed.verify(runner=lambda cmd: (True, "ok"))
     assert passed["installed"] is True and passed["message"] == "Installed and verified."
     assert detect_prerequisites([{"kind": "command", "name": "definitely-not-a-real-binary-xyz"}])[0]["status"] == "missing"

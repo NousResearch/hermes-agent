@@ -442,6 +442,9 @@ class TestTelegramApprovalCallback:
         assert "Review first" in html
         assert "Yes" in html
         assert html.index("Not Now") < html.index("Review first") < html.index("Yes")
+        assert html.count('<tg-button-row align="left">') == 1
+        assert "</p><tg-button-row" in html
+        assert "<br/><tg-button" not in html
         assert f"wi:defer:{event_id}" in html
         assert f"wi:draft:{event_id}" in html
         assert f"wi:publish:{event_id}" in html
@@ -491,6 +494,8 @@ class TestTelegramApprovalCallback:
         keyboard = TelegramAdapter._wisdom_candidate_keyboard(actions)
 
         assert "Hermes detected <b>another</b> skill" in html
+        assert html.count('<tg-button-row align="left">') == 1
+        assert "</p><tg-button-row" in html
         assert keyboard is not None
         assert captured_rows == [["Not Now", "Review first", "Yes"]]
 
@@ -538,6 +543,8 @@ class TestTelegramApprovalCallback:
         assert "https://portal.test/review/draft-1" in html
         assert "wi:defer:event-1" in html
         assert html.index("Not Now") < html.index("View") < html.index("Yes")
+        assert "View ↗" not in html
+        assert html.count('<tg-button-row align="left">') == 1
 
     @pytest.mark.asyncio
     async def test_wisdom_candidate_not_now_defers_without_declining(self):

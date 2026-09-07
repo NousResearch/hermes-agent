@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -73,6 +72,10 @@ class InstallFlow:
     def installed(self) -> bool:
         return bool(self.state.get("installed"))
 
+    @property
+    def files_installed(self) -> bool:
+        return bool((self.state.get("apply_result") or {}).get("installed"))
+
     def start(self, *, skill_id: str, version: int | None, package: dict[str, Any]) -> dict[str, Any]:
         self.state = {
             "flow_id": self.flow_id,
@@ -90,7 +93,7 @@ class InstallFlow:
         requirements = list((self.state.get("package") or {}).get("requirements") or [])
         report = detect_prerequisites(requirements, env=env)
         self.state["prerequisites"] = report
-        missing = [r for r in report if r["status"] == "missing"]
+        missing = [r for r in report if r["status"] != "present"]
         self.state["step"] = "setup" if missing else "apply"
         self._record()
         return self.summary()
@@ -99,7 +102,7 @@ class InstallFlow:
         for item in self.state.get("prerequisites") or []:
             if item.get("name") == name:
                 item["status"] = "present"
-        if not any(r["status"] == "missing" for r in self.state.get("prerequisites") or []):
+        if not any(r["status"] != "present" for r in self.state.get("prerequisites") or []):
             self.state["step"] = "apply"
         self._record()
         return self.summary()
@@ -110,7 +113,7 @@ class InstallFlow:
             raise RuntimeError(f"cannot apply from step {self.step}")
         result = applier(dict(self.state))
         self.state["apply_result"] = result
-        self.state["step"] = "verify"
+        self.state["step"] = "verify" if result.get("installed") is True else "apply"
         self._record()
         return self.summary()
 
@@ -118,8 +121,15 @@ class InstallFlow:
         if self.step != "verify":
             raise RuntimeError(f"cannot verify from step {self.step}")
         step_text = str((self.state.get("package") or {}).get("verification_step") or "").strip()
-        run = runner or _default_runner
-        ok, detail = run(step_text) if step_text else (False, "package has no verification step")
+        if runner is None:
+            self.state["verification"] = {
+                "ok": False,
+                "approval_required": True,
+                "detail": "Approve verification separately through the existing tool permissions.",
+            }
+            self._record()
+            return self.summary()
+        ok, detail = runner(step_text) if step_text else (False, "package has no verification step")
         self.state["verification"] = {"ok": ok, "detail": detail[:2000]}
         if ok:
             self.state["step"] = "done"
@@ -140,26 +150,17 @@ class InstallFlow:
             "version": self.state.get("version"),
             "step": self.step,
             "installed": self.installed,
+            "files_installed": self.files_installed,
             "prerequisites": self.state.get("prerequisites", []),
-            "missing": [r for r in self.state.get("prerequisites", []) if r.get("status") == "missing"],
+            "missing": [r for r in self.state.get("prerequisites", []) if r.get("status") != "present"],
             "setup_instructions": (self.state.get("package") or {}).get("setup_instructions", []),
             "credential_handoff": (self.state.get("package") or {}).get("credential_handoff", []),
             "verification": self.state.get("verification"),
             "message": (
                 "Installed and verified."
                 if self.installed
-                else "Not installed yet: setup and verification are still in progress."
+                else "Files installed; setup verification is incomplete."
+                if self.files_installed
+                else "Not installed yet: setup and installation are still in progress."
             ),
         }
-
-
-def _default_runner(command: str) -> tuple[bool, str]:
-    """Run a verification command in a subprocess; never inherits a shell login."""
-    try:
-        completed = subprocess.run(
-            command, shell=True, capture_output=True, text=True, timeout=120, check=False
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, f"{type(exc).__name__}: {exc}"
-    output = (completed.stdout or "") + (completed.stderr or "")
-    return completed.returncode == 0, output

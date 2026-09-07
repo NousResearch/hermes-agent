@@ -337,6 +337,8 @@ def send_telegram_notification_pane(
             for item, item_buttons in zip(items[:8], safe_rows_by_item):
                 heading = html.escape(str(item.get("heading") or "").strip())
                 detail = html.escape(str(item.get("detail") or "").strip())
+                detail = detail.replace("\r\n", "\n").replace("\r", "\n")
+                detail = detail.replace("\n", "<br/>")
                 if not heading or not detail:
                     continue
                 controls: list[str] = []
@@ -354,9 +356,15 @@ def send_telegram_notification_pane(
                             f'{html.escape(button["callback_data"], quote=True)}">'
                             f"{label}</tg-button>"
                         )
-                control_html = f"<br/>{' '.join(controls)}" if controls else ""
+                control_html = (
+                    f'<tg-button-row align="left">'
+                    f"{' '.join(controls)}"
+                    "</tg-button-row>"
+                    if controls
+                    else ""
+                )
                 rich_item_parts.append(
-                    f"<p><b>{heading}</b><br/>{detail}{control_html}</p>"
+                    f"<p><b>{heading}</b><br/>{detail}</p>{control_html}"
                 )
             if rich_item_parts:
                 item_count = len(rich_item_parts)
@@ -368,7 +376,7 @@ def send_telegram_notification_pane(
                     "<h3>Hermes Collective Wisdom</h3>",
                     (
                         f"<p>{item_count} new "
-                        f"{'update' if item_count == 1 else 'updates'}</p>"
+                        f"{'notification' if item_count == 1 else 'notifications'}</p>"
                     ),
                     *rich_item_parts,
                 ]
@@ -467,7 +475,10 @@ def send_slack_wisdom_notification_pane(
                     ),
                 }
                 url = str(button.get("url") or "").strip()
-                if re.fullmatch(r"https://[^\s]+", url):
+                # These are trusted product links assembled by Wisdom, not
+                # model-authored buttons. Permit HTTP as well so the local
+                # demo Portal retains the same View action as production.
+                if re.fullmatch(r"https?://[^\s]+", url):
                     element["url"] = url
                     element["value"] = "wisdom:portal"
                 else:

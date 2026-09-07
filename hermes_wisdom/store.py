@@ -15,7 +15,7 @@ from typing import Any, Iterator
 from hermes_constants import get_hermes_home
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 def utc_now() -> str:
@@ -484,6 +484,9 @@ class WisdomStore:
                 "CREATE UNIQUE INDEX IF NOT EXISTS operation_journal_one_pending "
                 "ON operation_journal(kind,entity_id) WHERE state='pending'"
             )
+            from .mediation_store import create_schema
+
+            create_schema(db)
             db.execute(
                 "INSERT INTO schema_meta(key,value) VALUES('schema_version',?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -835,6 +838,55 @@ class WisdomStore:
         value = dict(row)
         value["payload"] = json.loads(value.pop("payload_json"))
         return value
+
+    def candidate_editorial_metadata(
+        self, skill_id: str, *, content_hash: str
+    ) -> dict[str, str] | None:
+        """Return exact or latest generated presentation copy for one local skill."""
+
+        organization_id = self.active_org_id()
+        with self.transaction() as db:
+            rows = db.execute(
+                "SELECT payload_json FROM local_event "
+                "WHERE kind='wisdom.candidate' AND skill_id=? "
+                "AND ((? IS NULL AND organization_id IS NULL) OR organization_id=?) "
+                "ORDER BY CASE WHEN content_hash=? THEN 0 ELSE 1 END, created_at DESC",
+                (skill_id, organization_id, organization_id, content_hash),
+            ).fetchall()
+        for row in rows:
+            payload = json.loads(str(row["payload_json"]))
+            name = payload.get("editorial_name")
+            description = payload.get("editorial_description")
+            if isinstance(name, str) and name.strip() and isinstance(description, str):
+                return {
+                    "editorial_name": name,
+                    "editorial_description": description,
+                }
+        return None
+
+    def reconcile_candidate_events(self) -> int:
+        """Retire unread qualification prompts whose exact bytes already moved on."""
+
+        with self.transaction() as db:
+            cursor = db.execute(
+                "UPDATE local_event AS e SET state='handled' "
+                "WHERE e.kind='wisdom.candidate' AND e.state='unread' AND ("
+                "NOT EXISTS (SELECT 1 FROM local_skill s WHERE s.id=e.skill_id) OR "
+                "EXISTS (SELECT 1 FROM local_skill s WHERE s.id=e.skill_id AND "
+                "(s.deleted_at IS NOT NULL OR s.current_hash IS NULL OR "
+                "s.current_hash<>e.content_hash)) OR "
+                "NOT EXISTS (SELECT 1 FROM candidate c WHERE c.skill_id=e.skill_id "
+                "AND c.content_hash=e.content_hash AND c.qualification=e.qualification) OR "
+                "EXISTS (SELECT 1 FROM candidate c WHERE c.skill_id=e.skill_id "
+                "AND c.content_hash=e.content_hash AND c.qualification=e.qualification "
+                "AND c.state IN ('dismissed','contributed')) OR "
+                "EXISTS (SELECT 1 FROM local_draft d WHERE d.skill_id=e.skill_id "
+                "AND d.source_hash=e.content_hash AND d.state IN "
+                "('owner_approved','publishing','pending_moderation','published',"
+                "'declined','invalidated'))"
+                ")"
+            )
+            return int(cursor.rowcount)
 
     def enqueue_professionalism_review(
         self,
@@ -1576,6 +1628,36 @@ class WisdomStore:
         for row in rows:
             row["payload"] = json.loads(row.pop("payload_json"))
         return rows
+
+    def enrich_feed_event(self, event_id: str, values: dict[str, str]) -> None:
+        """Persist bounded presentation metadata alongside an immutable event."""
+
+        allowed = {
+            key: value
+            for key, value in values.items()
+            if key in {"editorial_name", "editorial_description"}
+            and isinstance(value, str)
+            and (key == "editorial_description" or bool(value))
+        }
+        if not allowed:
+            return
+        with self.transaction() as db:
+            row = db.execute(
+                "SELECT payload_json FROM feed_event WHERE event_id=?", (event_id,)
+            ).fetchone()
+            if not row:
+                return
+            try:
+                payload = json.loads(str(row[0]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return
+            if not isinstance(payload, dict):
+                return
+            payload.update(allowed)
+            db.execute(
+                "UPDATE feed_event SET payload_json=? WHERE event_id=?",
+                (json.dumps(payload, sort_keys=True), event_id),
+            )
 
     def persist_local_notice(
         self,

@@ -35,6 +35,7 @@ fi
 
 unset -f \
   wisdom_demo_repo_root \
+  wisdom_demo_python_is_ready \
   wisdom_demo_pick_python \
   wisdom_demo_prepend_colon_path \
   wisdom_demo_export_environment 2>/dev/null || true

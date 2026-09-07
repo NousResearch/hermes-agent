@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 from urllib.parse import quote, urlencode
 
+from agent.skill_utils import extract_skill_editorial_metadata, parse_frontmatter
 from hermes_constants import get_skills_dir
 
 from .client import (
@@ -38,6 +39,7 @@ from .review_presentation import aggregate_review_text, full_review_text
 
 
 UPDATE_MODES = {"MANUAL", "AUTO_WITH_NOTICE", "REQUIRED"}
+MAX_NOTIFICATION_METADATA_ENRICHMENTS = 8
 logger = logging.getLogger(__name__)
 
 
@@ -100,6 +102,36 @@ def _public_notification_safe(event: dict[str, Any]) -> bool:
         event["category"] == "publication_decision"
         and event.get("state") in {"published", "approved"}
     )
+
+
+def _single_line(value: object, *, limit: int) -> str:
+    return " ".join(str(value or "").split())[:limit]
+
+
+def _published_editorial_metadata(
+    files: list[tuple[str, str, bytes]],
+    *,
+    fallback_name: str,
+    fallback_description: str,
+) -> dict[str, str]:
+    skill_body = next((body for path, _mode, body in files if path == "SKILL.md"), None)
+    if skill_body is None:
+        raise WisdomValidationError("published version has no SKILL.md")
+    try:
+        frontmatter, _body = parse_frontmatter(skill_body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise WisdomValidationError("published SKILL.md metadata is invalid") from exc
+    resolved = extract_skill_editorial_metadata(
+        frontmatter,
+        fallback_name=fallback_name,
+        fallback_description=fallback_description,
+    )
+    return {
+        "editorial_name": _single_line(resolved["editorial_name"], limit=100),
+        "editorial_description": _single_line(
+            resolved["editorial_description"], limit=320
+        ),
+    }
 
 
 def _safe_target(store: WisdomStore, installation: dict[str, Any]) -> Path:
@@ -179,7 +211,11 @@ class WisdomConsumption:
 
     def _notification_catalog(
         self, events: list[dict[str, Any]]
-    ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    ) -> tuple[
+        dict[str, dict[str, Any]],
+        dict[str, dict[str, Any]],
+        dict[str, dict[str, str]],
+    ]:
         by_id: dict[str, dict[str, Any]] = {}
         by_slug: dict[str, dict[str, Any]] = {}
         for installation in self.store.installations():
@@ -193,31 +229,97 @@ class WisdomConsumption:
             str(event["skill_id"])
             for event in events
             if str(event["skill_id"]) not in by_id
+            or not {
+                "author_description",
+                "security_check",
+                "professionalism_check",
+            }.issubset(by_id[str(event["skill_id"])])
         }
-        if not unresolved:
-            return by_id, by_slug
+        if unresolved:
+            cursor: str | None = None
+            try:
+                for _page in range(20):
+                    response = self.client.list_skills(cursor=cursor)
+                    for skill in response.skills:
+                        item = skill.model_dump(mode="json")
+                        by_id[skill.id] = item
+                        by_slug[skill.slug] = item
+                    cursor = response.next_cursor
+                    if not cursor or not (unresolved - by_id.keys()):
+                        break
+            except Exception:
+                # Notification rendering is an enhancement. A temporary discovery
+                # failure must not break update checks or expose opaque identifiers.
+                logger.debug("Wisdom notification enrichment failed", exc_info=True)
 
-        cursor: str | None = None
-        try:
-            for _page in range(20):
-                response = self.client.list_skills(cursor=cursor)
-                for skill in response.skills:
-                    item = skill.model_dump(mode="json")
-                    by_id[skill.id] = item
-                    by_slug[skill.slug] = item
-                cursor = response.next_cursor
-                if not cursor or not (unresolved - by_id.keys()):
-                    break
-        except Exception:
-            # Notification rendering is an enhancement. A temporary discovery
-            # failure must not break update checks or expose opaque identifiers.
-            logger.debug("Wisdom notification enrichment failed", exc_info=True)
-        return by_id, by_slug
+        presentation: dict[str, dict[str, str]] = {}
+        raw_cache: dict[tuple[str, int], dict[str, str] | None] = {}
+        enrichment_count = 0
+        for event in events:
+            event_id = str(event["event_id"])
+            payload = event.get("payload")
+            payload = payload if isinstance(payload, dict) else {}
+            skill_id = str(event.get("skill_id") or "")
+            catalog_item = by_id.get(skill_id)
+            fallback_name = _single_line(
+                (catalog_item or {}).get("slug") or payload.get("slug"), limit=100
+            )
+            fallback_description = _single_line(
+                (catalog_item or {}).get("author_description"), limit=320
+            )
+            metadata = {
+                "editorial_name": _single_line(
+                    payload.get("editorial_name") or fallback_name, limit=100
+                ),
+                "editorial_description": _single_line(
+                    payload.get("editorial_description") or fallback_description,
+                    limit=320,
+                ),
+            }
+            version = event.get("version") or payload.get("version")
+            raw_key = (
+                skill_id,
+                int(version) if isinstance(version, int) and version > 0 else 0,
+            )
+            should_enrich = (
+                str(event.get("kind") or "") in {"new", "updated"}
+                and raw_key[0]
+                and raw_key[1] > 0
+                and not {
+                    "editorial_name",
+                    "editorial_description",
+                }.issubset(payload)
+            )
+            if should_enrich and raw_key not in raw_cache:
+                if enrichment_count < MAX_NOTIFICATION_METADATA_ENRICHMENTS:
+                    enrichment_count += 1
+                    try:
+                        _response, files = self.client.raw_copy(*raw_key)
+                        raw_cache[raw_key] = _published_editorial_metadata(
+                            files,
+                            fallback_name=fallback_name,
+                            fallback_description=fallback_description,
+                        )
+                    except Exception:
+                        raw_cache[raw_key] = None
+                        logger.debug(
+                            "Wisdom notification editorial enrichment failed",
+                            exc_info=True,
+                        )
+                else:
+                    raw_cache[raw_key] = None
+            enriched = raw_cache.get(raw_key)
+            if enriched:
+                metadata = enriched
+                self.store.enrich_feed_event(event_id, enriched)
+                payload.update(enriched)
+            presentation[event_id] = metadata
+        return by_id, by_slug, presentation
 
     def _notification_projection(
         self, events: list[dict[str, Any]]
     ) -> tuple[list[dict[str, Any]], list[str]]:
-        by_id, by_slug = self._notification_catalog(events)
+        by_id, by_slug, presentation = self._notification_catalog(events)
         installed_ids = {
             str(item["skill_id"])
             for item in self.store.installations()
@@ -266,12 +368,19 @@ class WisdomConsumption:
                 and str(payload.get("installation_id") or "") == local_installation_id
             ):
                 category = "updated"
-            elif kind == "updated" and skill_id in installed_ids:
-                category = (
-                    "updated"
-                    if (skill_id, version) in installation_updates
-                    else "update_available"
-                )
+            elif kind == "updated":
+                if skill_id in installed_ids:
+                    category = (
+                        "updated"
+                        if (skill_id, version) in installation_updates
+                        else "update_available"
+                    )
+                else:
+                    # Org-wide revisions remain discoverable even when this
+                    # device has not installed the skill. Reuse the installable
+                    # new-skill category while preserving kind="updated" so
+                    # every surface can render update-specific copy.
+                    category = "new_skill"
             elif kind in {"archived", "taken_down"} and skill_id in installed_ids:
                 category = "unavailable"
 
@@ -315,6 +424,14 @@ class WisdomConsumption:
                 "kind": kind,
                 "skill_id": skill_id,
                 "skill_name": slug,
+                "editorial_name": presentation.get(event_id, {}).get(
+                    "editorial_name"
+                )
+                or slug,
+                "editorial_description": presentation.get(event_id, {}).get(
+                    "editorial_description"
+                )
+                or None,
                 "version": version,
                 "state": state or None,
                 "moderation_note": payload.get("moderation_note"),
@@ -332,27 +449,33 @@ class WisdomConsumption:
 
     @staticmethod
     def _telegram_notification_text(event: dict[str, Any]) -> tuple[str, str]:
-        name = str(event["skill_name"])
+        name = str(event.get("editorial_name") or event["skill_name"])
         version = f" · v{event['version']}" if event.get("version") else ""
+        description = _single_line(event.get("editorial_description"), limit=320)
+        detail = f"{name}{version}"
+        if description:
+            detail = f"{detail}\n{description}"
         category = str(event["category"])
         state = str(event.get("state") or "")
         if category == "publication_decision":
             if state in {"published", "approved"}:
-                return "✅ Your skill was published", f"{name}{version}"
+                return "✅ Your skill was published", detail
             if state == "changes_requested":
-                return "✏️ Your skill needs changes", f"{name}{version}"
+                return "✏️ Your skill needs changes", detail
             if state in {"declined", "rejected"}:
-                return "↩️ Your skill was not published", f"{name}{version}"
-            return "📣 Your contribution changed", f"{name}{version}"
+                return "↩️ Your skill was not published", detail
+            return "📣 Your contribution changed", detail
+        if category == "new_skill" and event.get("kind") == "updated":
+            return "🔄 Skill updated by your team", detail
         if category == "new_skill":
-            return "🆕 New skill from your team", f"{name}{version}"
+            return "🆕 New skill from your team", detail
         if category == "installed":
-            return "⬇️ Installed on this device", f"{name}{version}"
+            return "⬇️ Installed on this device", detail
         if category == "updated":
-            return "✅ Updated on this device", f"{name}{version}"
+            return "✅ Updated on this device", detail
         if category == "update_available":
-            return "⬆️ Update available", f"{name}{version}"
-        return "⚠️ Installed skill is unavailable", f"{name}{version}"
+            return "⬆️ Update available", detail
+        return "⚠️ Installed skill is unavailable", detail
 
     def _remote_installations(self) -> dict[str, dict[str, Any]]:
         identity = self.store.installation_identity()
@@ -1164,6 +1287,10 @@ class WisdomConsumption:
         return {"events": notifications}
 
     def dispatch_telegram(self) -> dict[str, Any]:
+        from .mediation import delivery_mode
+
+        if delivery_mode(self.config) == "agent":
+            return {"attempted": False, "delivered": 0}
         now = datetime.now(timezone.utc).isoformat()
         due = self.store.feed_events(telegram_due_at=now)
         if not due:
@@ -1193,7 +1320,7 @@ class WisdomConsumption:
             return {"attempted": False, "delivered": 0}
         lines = [
             "<b>Collective Wisdom</b>",
-            f"{len(selected)} new {'update' if len(selected) == 1 else 'updates'}",
+            f"{len(selected)} new {'notification' if len(selected) == 1 else 'notifications'}",
         ]
         button_rows: list[list[dict[str, str]]] = []
         rich_items: list[dict[str, object]] = []
@@ -1215,7 +1342,7 @@ class WisdomConsumption:
             portal_url = event.get("portal_url")
             if isinstance(portal_url, str) and portal_url:
                 row.append({
-                    "label": "View ↗",
+                    "label": "View",
                     "url": portal_url,
                 })
             if private_home and event["category"] == "new_skill":
@@ -1259,6 +1386,10 @@ class WisdomConsumption:
         return {"attempted": True, "delivered": len(selected)}
 
     def dispatch_slack(self) -> dict[str, Any]:
+        from .mediation import delivery_mode
+
+        if delivery_mode(self.config) == "agent":
+            return {"attempted": False, "delivered": 0}
         """Deliver due Wisdom feed items to Slack's configured home chat.
 
         A public home channel receives only collective publication notices and
@@ -1302,7 +1433,7 @@ class WisdomConsumption:
 
         lines = [
             "Collective Wisdom",
-            f"{len(selected)} new {'update' if len(selected) == 1 else 'updates'}",
+            f"{len(selected)} new {'notification' if len(selected) == 1 else 'notifications'}",
         ]
         button_rows: list[list[dict[str, str]]] = []
         items: list[dict[str, object]] = []
@@ -1323,7 +1454,7 @@ class WisdomConsumption:
             row: list[dict[str, str]] = []
             portal_url = event.get("portal_url")
             if isinstance(portal_url, str) and portal_url:
-                row.append({"label": "View in Portal ↗", "url": portal_url})
+                row.append({"label": "View in Portal", "url": portal_url})
             if private_home and event["category"] == "new_skill":
                 row.append({
                     "label": "Install",

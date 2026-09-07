@@ -10,8 +10,8 @@ import {
   approveWisdomCandidate,
   decideWisdomDraft,
   deferWisdomCandidate,
-  getWisdomCandidates,
   getWisdomEvents,
+  prepareWisdomCandidate,
   type ProfileScope,
   reviewWisdomDraft,
   reviseWisdomDraft,
@@ -88,12 +88,9 @@ export function WisdomCandidateCard({ profile, sessionId }: { profile?: ProfileS
   )
 
   const [preparationError, setPreparationError] = useState<null | string>(null)
-  const [prepareAttempt, setPrepareAttempt] = useState(0)
   const cardRef = useRef<HTMLElement>(null)
   const resolvedEventIdsRef = useRef(new Set<string>())
   const eventId = event?.id
-  const eventSkill = event?.payload.skill_name
-  const eventContentHash = event?.content_hash
 
   const openFullReview = () => {
     window.location.hash = '#/skills?tab=collective'
@@ -134,16 +131,13 @@ export function WisdomCandidateCard({ profile, sessionId }: { profile?: ProfileS
         const result = await getWisdomEvents(sessionId, profile)
 
         if (active && sequence === refreshSequence) {
-          setEvent(
-            result.events.find(item => !resolvedEventIdsRef.current.has(item.id)) ?? null
-          )
+          const pending = result.events.filter(item => !resolvedEventIdsRef.current.has(item.id))
+          setEvent(current => pending.find(item => item.id === current?.id) ?? pending[0] ?? null)
         }
       } catch {
         // Candidate promotion is optional transcript UI. Wisdom availability
-        // must never make ordinary chat unusable.
-        if (active && sequence === refreshSequence) {
-          setEvent(null)
-        }
+        // must never make ordinary chat unusable. Preserve the last confirmed
+        // event so a transient refresh cannot make the card flicker away.
       }
     }
 
@@ -157,60 +151,13 @@ export function WisdomCandidateCard({ profile, sessionId }: { profile?: ProfileS
   }, [profile, sessionId])
 
   useEffect(() => {
+    setPrepared(null)
+    setReview(null)
+    setPreparationError(null)
     setEditorOpen(false)
     setDetailedEditorOpen(false)
     setNotificationsMuted(false)
   }, [eventId])
-
-  useEffect(() => {
-    if (!eventId || !eventSkill || !eventContentHash) {
-      return
-    }
-
-    let active = true
-    setBusy('prepare')
-    setPreparationError(null)
-
-    void (async () => {
-      try {
-        const candidates = await getWisdomCandidates(profile)
-
-        const candidate = candidates.candidates.find(
-          item => item.name === eventSkill && item.content_hash === eventContentHash
-        )
-
-        if (!candidate) {
-          if (active) {
-            setEvent(null)
-          }
-
-          return
-        }
-
-        const result = await suggestWisdomSkill(eventSkill, profile, undefined, candidate.local_skill_id)
-
-        if (!('network_submission' in result)) {
-          throw new Error('Local package preparation returned an unexpected result')
-        }
-
-        if (active) {
-          applyPrepared(result, candidate.local_skill_id, eventSkill)
-        }
-      } catch (error) {
-        if (active) {
-          setPreparationError(error instanceof Error ? error.message : String(error))
-        }
-      } finally {
-        if (active) {
-          setBusy(null)
-        }
-      }
-    })()
-
-    return () => {
-      active = false
-    }
-  }, [eventContentHash, eventId, eventSkill, prepareAttempt, profile])
 
   useLayoutEffect(() => {
     const card = cardRef.current
@@ -280,6 +227,25 @@ export function WisdomCandidateCard({ profile, sessionId }: { profile?: ProfileS
       applyPrepared(saved, prepared.localSkillId, prepared.skill)
     } catch (error) {
       notifyError(error, 'Collective Wisdom local save failed')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const prepareForReview = async () => {
+    setBusy('prepare')
+    setPreparationError(null)
+
+    try {
+      const result = await prepareWisdomCandidate(event.id, profile)
+
+      if (result.stage === 'review') {
+        applyReview(result.review)
+      } else {
+        applyPrepared(result.prepared, result.local_skill_id, result.skill_name)
+      }
+    } catch (error) {
+      setPreparationError(error instanceof Error ? error.message : String(error))
     } finally {
       setBusy(null)
     }
@@ -378,7 +344,7 @@ export function WisdomCandidateCard({ profile, sessionId }: { profile?: ProfileS
   }
 
   const approve = async () => {
-    if ((!review && (!prepared || preparedDirty || preparedManifestError)) || (review && reviewDirty)) {
+    if ((prepared && (preparedDirty || preparedManifestError)) || (review && reviewDirty)) {
       return
     }
 
@@ -439,19 +405,31 @@ export function WisdomCandidateCard({ profile, sessionId }: { profile?: ProfileS
               {preparationError}
             </div>
           )}
-          {preparationError && (
-            <div className="mt-3 flex items-center justify-between gap-2">
-              {fullReviewLink}
-              <Button
-                onClick={() => {
-                  setPrepareAttempt(attempt => attempt + 1)
-                }}
-                size="sm"
+          <footer className="mt-3 grid grid-cols-3 items-center gap-2 border-t border-(--ui-stroke-tertiary) pt-3">
+            <div className="flex items-center gap-1 justify-self-start">
+              <TooltipIconButton
+                aria-pressed={notificationsMuted}
+                disabled={busy !== null}
+                onClick={() => setNotificationsMuted(value => !value)}
+                tooltip={notificationsMuted ? copy.unmuteNotificationsSoon : copy.muteNotificationsSoon}
               >
-                {copy.prepareExact}
+                {notificationsMuted ? <VolumeX className="size-4" /> : <Volume2 className="size-4" />}
+              </TooltipIconButton>
+              <Button disabled={busy !== null} onClick={() => void notNow()} size="sm" variant="outline">
+                {copy.notNow}
               </Button>
             </div>
-          )}
+            <div className="justify-self-center">
+              <Button disabled={busy !== null} onClick={() => void prepareForReview()} size="sm">
+                {busy === 'prepare' ? copy.preparingLocal : copy.reviewFirst}
+              </Button>
+            </div>
+            <div className="justify-self-end">
+              <Button disabled={busy !== null} onClick={() => void approve()} size="sm">
+                {busy === 'approve' ? copy.publishing : copy.yes}
+              </Button>
+            </div>
+          </footer>
         </div>
       )}
 

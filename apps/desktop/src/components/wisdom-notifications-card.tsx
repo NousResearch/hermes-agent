@@ -8,7 +8,7 @@ import { openExternalLink } from '@/lib/external-link'
 import { cn } from '@/lib/utils'
 
 function notificationText(event: WisdomNotification, copy: WisdomTranslations): string {
-  const skill = event.skill_name
+  const skill = event.editorial_name?.trim() || event.skill_name
   const version = event.version ? `v${event.version}` : undefined
   const skillVersion = version ? `${skill} ${version}` : skill
 
@@ -39,6 +39,10 @@ function notificationText(event: WisdomNotification, copy: WisdomTranslations): 
   }
 
   if (event.category === 'update_available') {
+    return copy.updateNotice(skill, version)
+  }
+
+  if (event.category === 'new_skill' && event.kind === 'updated') {
     return copy.updateNotice(skill, version)
   }
 
@@ -107,6 +111,9 @@ export function WisdomNotificationsCard({
           >
             <p className="min-w-0 text-[0.68rem] leading-4 text-(--ui-text-secondary)">
               {notificationText(event, copy)}
+              {event.editorial_description?.trim() ? (
+                <span className="mt-0.5 block text-muted-foreground">{event.editorial_description.trim()}</span>
+              ) : null}
             </p>
             <div className="flex shrink-0 items-center gap-3">
               {event.portal_url ? (

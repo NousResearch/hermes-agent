@@ -2387,6 +2387,7 @@ DEFAULT_CONFIG = {
         "portal_url": "https://portal.nousresearch.com",
         "request_timeout": 30,
         "notifications": {
+            "delivery_mode": "fixed",  # Opt-in: agent advice in one active private session.
             "decisions": "immediate",
             "installed_updates": "immediate",
             "new_skills": "daily",
@@ -2395,10 +2396,9 @@ DEFAULT_CONFIG = {
         # proposes at most a few bespoke skills to share, with fixed copy and
         # native buttons. When disabled, only the deterministic qualification
         # triggers (consecutive-day / refinement) surface candidates.
-        # Server-provided org policy overrides these local values when the
-        # Gateway exposes an agentLed policy block.
+        # Active only with notifications.delivery_mode: agent. Server policy
+        # controls eligibility and frequency, never the local rollout choice.
         "agent_led": {
-            "enabled": True,
             "window_days": 7,
             "min_aggregate_count": 3,
             "max_candidates": 3,

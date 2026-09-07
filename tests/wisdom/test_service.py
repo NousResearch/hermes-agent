@@ -791,6 +791,14 @@ def test_telegram_candidate_creates_an_owner_private_draft_and_portal_link(
         editorial_description="A clear team runbook for Telegram workflows.",
     )
 
+    prepared = service.prepare_candidate(event_id)
+
+    assert prepared["stage"] == "prepared"
+    assert prepared["local_skill_id"] == service.store.local_event(event_id)["skill_id"]
+    assert prepared["skill_name"] == "telegram-skill"
+    assert prepared["prepared"]["network_submission"] is False
+    assert fake.uploaded == 0
+
     result = service.draft_candidate(event_id)
 
     assert result == {
@@ -820,6 +828,20 @@ def test_telegram_candidate_creates_an_owner_private_draft_and_portal_link(
     resumed = service.draft_candidate(event_id)
     assert resumed["created"] is False
     assert len(fake.submissions) == 1
+
+    monkeypatch.setattr(
+        service,
+        "review",
+        lambda draft_id, *, acknowledge: {
+            "draft": {"id": draft_id, "state": "ready"},
+            "files": [],
+        },
+    )
+    reviewable = service.prepare_candidate(event_id)
+    assert reviewable == {
+        "stage": "review",
+        "review": {"draft": {"id": "draft-1", "state": "ready"}, "files": []},
+    }
 
 
 def test_telegram_candidate_publish_uses_normal_review_and_approval(

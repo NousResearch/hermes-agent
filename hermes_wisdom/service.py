@@ -393,6 +393,7 @@ class WisdomService:
     def local_candidate_events(
         self, *, session_id: str | None = None
     ) -> list[dict[str, Any]]:
+        self.store.reconcile_candidate_events()
         events = self.store.local_events(kind="wisdom.candidate", session_id=session_id)
         organization_name = self.organization_display_name()
         return [
@@ -403,6 +404,11 @@ class WisdomService:
     def pending_candidate_events(
         self, *, session_id: str, surface: str
     ) -> list[dict[str, Any]]:
+        from .mediation import delivery_mode
+
+        if delivery_mode() == "agent":
+            return []
+        self.store.reconcile_candidate_events()
         events = self.store.pending_surface_events(
             kind="wisdom.candidate", session_id=session_id, surface=surface
         )
@@ -780,26 +786,11 @@ class WisdomService:
     def _candidate_editorial_copy(
         self, *, skill_id: str, content_hash: str
     ) -> dict[str, str | None]:
-        for event in self.store.local_events(kind="wisdom.candidate"):
-            if (
-                str(event.get("skill_id")) != skill_id
-                or str(event.get("content_hash")) != content_hash
-            ):
-                continue
-            payload = event.get("payload")
-            payload = payload if isinstance(payload, dict) else {}
-            return {
-                "editorial_name": (
-                    str(payload["editorial_name"])
-                    if isinstance(payload.get("editorial_name"), str)
-                    else None
-                ),
-                "editorial_description": (
-                    str(payload["editorial_description"])
-                    if isinstance(payload.get("editorial_description"), str)
-                    else None
-                ),
-            }
+        editorial = self.store.candidate_editorial_metadata(
+            skill_id, content_hash=content_hash
+        )
+        if editorial is not None:
+            return editorial
         return {"editorial_name": None, "editorial_description": None}
 
     def scan_candidates(self) -> list[dict[str, Any]]:
@@ -1305,7 +1296,43 @@ class WisdomService:
             "created": True,
         }
 
-    def approve_candidate(self, event_id: str) -> dict[str, Any]:
+    def prepare_candidate(self, event_id: str) -> dict[str, Any]:
+        """Open the exact qualified bytes locally, or resume their server review."""
+
+        self.require_setup()
+        event = self._candidate_event(event_id)
+        existing = self._existing_candidate_draft(event)
+        if existing is not None:
+            state = str(existing["state"])
+            if state not in {"ready", "changes_requested"}:
+                raise WisdomConflict(
+                    f"this private draft is currently {state.replace('_', ' ')}",
+                    code=f"state_is_{state}",
+                )
+            return {
+                "stage": "review",
+                "review": self.review(str(existing["draft_id"]), acknowledge=False),
+            }
+
+        _event, local_skill_id, content_hash, skill_name = self._candidate_event_context(
+            event_id
+        )
+        prepared = self.store.prepared_draft(local_skill_id, content_hash)
+        result = (
+            self._prepared_result(prepared)
+            if prepared is not None
+            else self.suggest(skill_name, local_skill_id=local_skill_id)
+        )
+        return {
+            "stage": "prepared",
+            "prepared": result,
+            "local_skill_id": local_skill_id,
+            "skill_name": skill_name,
+        }
+
+    def approve_candidate(
+        self, event_id: str, *, expected_hashes: dict[str, str] | None = None
+    ) -> dict[str, Any]:
         """Use an explicit qualification action as exact-package owner consent."""
         drafted = self.draft_candidate(event_id)
         state = str(drafted["state"])
@@ -1334,7 +1361,13 @@ class WisdomService:
         # Approval still passes through the ordinary authoritative re-fetch and
         # three-hash receipt. The button is consent, not a bypass around review.
         try:
-            self.review(draft_id, acknowledge=True)
+            reviewed = self.review(draft_id, acknowledge=True)
+            if expected_hashes is not None and reviewed["hashes"] != expected_hashes:
+                self.store.consume_receipt(draft_id)
+                raise WisdomConflict(
+                    "the package changed after the consent control was displayed",
+                    code="wisdom_consent_stale",
+                )
             result = self.approve(draft_id)
         except WisdomConflict:
             # Portal approval and Telegram approval may race. Re-read Gateway

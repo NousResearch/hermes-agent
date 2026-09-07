@@ -94,16 +94,16 @@ def _supporting_signals(store: WisdomStore) -> dict[str, list[str]]:
     return signals
 
 
-def _safety(service: Any, rec_skill_name: str, content_hash: str) -> tuple[bool, list[str]]:
+def _safety(service: Any, rec_skill_name: str, content_hash: str) -> tuple[bool | None, list[str]]:
     """Map the existing professionalism review onto the fixed check lines."""
     if service is None:
-        return True, []
+        return None, []
     try:
         review = service.finish_candidate_professionalism_review(
             skill_id=rec_skill_name, content_hash=content_hash
         )
     except Exception:
-        return True, []
+        return None, []
     failed: list[str] = []
     mapping = {
         "profanity_or_abuse": "No profanity or abusive language",
@@ -115,7 +115,8 @@ def _safety(service: Any, rec_skill_name: str, content_hash: str) -> tuple[bool,
             line = mapping.get(str(check.get("key")))
             if line:
                 failed.append(line)
-    return not failed, failed
+    # A language review alone cannot assert that credential checks succeeded.
+    return False if failed else None, failed
 
 
 def run_weekly_review(

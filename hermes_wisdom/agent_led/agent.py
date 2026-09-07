@@ -15,6 +15,8 @@ from typing import Any, Callable
 
 from pydantic import BaseModel
 
+from .privacy import model_safe_data
+
 from .schemas import (
     CandidateReviewResult,
     RecipientRecommendation,
@@ -48,6 +50,7 @@ def _default_model_call(messages: list[dict[str, str]], schema: dict[str, Any]) 
         messages=messages,
         temperature=0,
         max_tokens=2500,
+        timeout=45,
         tools=[],
         extra_body={
             "response_format": {
@@ -77,7 +80,7 @@ def _run(
         {"role": "system", "content": load_prompt(prompt_name)},
         {
             "role": "user",
-            "content": json.dumps(payload, sort_keys=True, ensure_ascii=True, default=str),
+            "content": json.dumps(model_safe_data(payload), sort_keys=True, ensure_ascii=True, default=str),
         },
     ]
     schema = model.model_json_schema()
@@ -93,12 +96,15 @@ def _run(
             )
             messages = [
                 *messages[:2],
-                {"role": "assistant", "content": raw},
+                {"role": "assistant", "content": model_safe_data(raw)},
                 {
                     "role": "user",
                     "content": (
                         "Your previous output failed validation: "
-                        + json.dumps(exc.errors, default=str)[:2000]
+                        + json.dumps([
+                            {"type": error.get("type"), "loc": error.get("loc")}
+                            for error in exc.errors
+                        ], default=str)[:2000]
                         + ". Return corrected strict JSON only."
                     ),
                 },

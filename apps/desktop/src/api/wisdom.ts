@@ -112,6 +112,15 @@ export interface WisdomPreparedDraft {
   professionalism_check: WisdomReviewCheck
 }
 
+export type WisdomCandidatePreparation =
+  | {
+      stage: 'prepared'
+      prepared: WisdomPreparedDraft
+      local_skill_id: string
+      skill_name: string
+    }
+  | { stage: 'review'; review: WisdomDraftReview }
+
 export interface WisdomLocalScan {
   guard: Record<string, unknown>
   skill_evaluator: Record<string, unknown>
@@ -183,6 +192,8 @@ export type WisdomNotificationCategory =
 
 export interface WisdomNotification {
   category: WisdomNotificationCategory
+  editorial_description?: string | null
+  editorial_name?: string | null
   event_id: string
   kind: string
   moderation_note?: string | null
@@ -196,8 +207,42 @@ export interface WisdomNotification {
 }
 
 export interface WisdomInstallations {
+  delivery_mode?: 'agent' | 'fixed'
   installations: WisdomManagedInstall[]
   notifications: WisdomNotification[]
+}
+
+export interface WisdomConsentInteraction {
+  id: string
+  assessment_id: string
+  state: string
+  operation: 'install' | 'update' | 'publish'
+  expires_at: number
+  actions: ('defer' | 'inspect' | 'confirm')[]
+  deferred?: boolean
+  deferred_surfaces?: string[]
+  facts: {
+    slug?: string
+    version?: number
+    editorial_name?: string | null
+    editorial_description?: string | null
+    compatibility?: { outcome: string }
+    modified?: boolean
+    sensitive_expansion?: string[]
+    security_check?: WisdomReviewCheck | null
+    professionalism_check?: WisdomReviewCheck | null
+  }
+}
+
+export interface WisdomMediationActivity {
+  mode: 'fixed' | 'agent'
+  assessments: {
+    id: string
+    state: string
+    owner_session: string | null
+    advice: null | { title: string; explanation: string; relevance: 'recommend' | 'digest' }
+  }[]
+  interactions: WisdomConsentInteraction[]
 }
 
 export type WisdomInstallationCheckState =
@@ -239,6 +284,15 @@ const request = <T>(path: string, profile?: ProfileScope, init?: { body?: unknow
   })
 
 export const getWisdomStatus = (profile?: ProfileScope): Promise<WisdomStatus> => request('/api/wisdom/status', profile)
+
+export const getWisdomMediation = (profile?: ProfileScope): Promise<WisdomMediationActivity> =>
+  request('/api/wisdom/mediation', profile)
+
+export const resolveWisdomConsent = (
+  interactionId: string, sessionId: string, action: 'inspect' | 'defer' | 'confirm', profile?: ProfileScope
+): Promise<WisdomConsentInteraction> => request('/api/wisdom/consent', profile, {
+  method: 'POST', body: { interaction_id: interactionId, session_id: sessionId, action }
+})
 
 export const setupWisdom = (profile?: ProfileScope): Promise<ActionResponse> =>
   request('/api/wisdom/setup', profile, { method: 'POST', body: { accept_disclosure: true } })
@@ -380,6 +434,12 @@ export const deferWisdomCandidate = (
   profile?: ProfileScope
 ): Promise<{ event_id: string; state: 'deferred' }> =>
   request('/api/wisdom/candidates/defer', profile, {
+    method: 'POST',
+    body: { event_id: eventId }
+  })
+
+export const prepareWisdomCandidate = (eventId: string, profile?: ProfileScope): Promise<WisdomCandidatePreparation> =>
+  request('/api/wisdom/candidates/prepare', profile, {
     method: 'POST',
     body: { event_id: eventId }
   })

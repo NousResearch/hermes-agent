@@ -28,7 +28,7 @@ DEFAULT_RECOMMENDATION_TTL_HOURS = 24 * 7
 _INT_FLOORS = {
     "window_days": 1,
     "min_aggregate_count": 1,
-    "max_candidates": 1,
+    "max_candidates": 0,
     "dismiss_suppression_days": 1,
     "resuggest_cooldown_days": 0,
     "popular_install_threshold": 1,
@@ -89,8 +89,8 @@ def _coerce_float(value: Any, fallback: float) -> float:
 
 def _apply(policy: AgentLedPolicy, values: Mapping[str, Any], *, source: str) -> AgentLedPolicy:
     updates: dict[str, Any] = {}
-    if "enabled" in values:
-        updates["enabled"] = bool(values["enabled"])
+    if isinstance(values.get("enabled"), bool):
+        updates["enabled"] = values["enabled"]
     for key, floor in _INT_FLOORS.items():
         if key in values:
             updates[key] = _coerce_int(values[key], getattr(policy, key), floor)
@@ -152,4 +152,8 @@ def load_policy(*, client: Any = None, local: Mapping[str, Any] | None = None) -
     policy = _apply(policy, local_block, source="local_config")
     server_block = _server_policy_block(client)
     policy = _apply(policy, server_block, source="server_policy")
-    return policy
+    from ..mediation import delivery_mode
+
+    # Organization policy and legacy local flags cannot opt a profile into
+    # proactive model work. There is one user-visible rollout switch.
+    return replace(policy, enabled=policy.enabled and delivery_mode() == "agent")

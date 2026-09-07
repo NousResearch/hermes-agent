@@ -54,6 +54,31 @@ def cmd_wisdom(args: argparse.Namespace) -> int:
             result = service.setup(disclosure_accepted=accepted)
         elif command == "status":
             result = service.status()
+        elif command == "inbox":
+            from hermes_wisdom.mediation import WisdomMediation
+
+            result = WisdomMediation(service).activity()
+        elif command == "consent":
+            from hermes_wisdom.consent import ConsentActor, WisdomConsent
+
+            org = service.store.active_org_id()
+            with service.store.transaction() as db:
+                row = db.execute(
+                    "SELECT owner_session,platform FROM wisdom_consent WHERE organization_id=? AND id=?",
+                    (org, args.interaction_id),
+                ).fetchone()
+            if row is None or row["platform"] != "local":
+                raise PackagePolicyError("Use this interaction's original native control")
+            actor = ConsentActor(row["owner_session"], "local", "local-user", f"local:{row['owner_session']}")
+            consent = WisdomConsent(service)
+            preview = consent.resolve(org, args.interaction_id, actor, "inspect")
+            if args.action == "confirm":
+                if not sys.stdin.isatty():
+                    raise PackagePolicyError("Wisdom consent requires an interactive native confirmation")
+                _emit(preview, as_json=False)
+                if input("Apply this exact Wisdom operation? [y/N] ").strip().lower() not in {"y", "yes"}:
+                    return 7
+            result = consent.resolve(org, args.interaction_id, actor, args.action)
         elif command == "scan":
             result = service.scan(getattr(args, "skill", None))
         elif command == "suggest":
@@ -281,6 +306,10 @@ def build_wisdom_parser(subparsers) -> None:
         help="Accept the local telemetry and owner-private draft disclosure",
     )
     add("status", "Show local and Gateway Wisdom status")
+    add("inbox", "Read agent advice and pending native consent")
+    consent = add("consent", "Inspect or confirm an exact local interaction")
+    consent.add_argument("interaction_id")
+    consent.add_argument("action", choices=["inspect", "defer", "confirm"], default="inspect", nargs="?")
     scan = add("scan", "Run local policy and advisory scans")
     scan.add_argument("skill", nargs="?")
     suggest = add("suggest", "Browse candidates or submit an owner-private draft")

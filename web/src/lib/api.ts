@@ -653,6 +653,18 @@ export const api = {
   // runs under. Omitted/empty profile = the dashboard's own profile.
   getSkills: (profile?: string) => fetchJSON<SkillInfo[]>(`/api/skills${profileQuery(profile)}`),
   getWisdomStatus: (profile?: string) => fetchJSON<WisdomStatus>(`/api/wisdom/status${profileQuery(profile)}`),
+  getWisdomMediation: (profile?: string) => fetchJSON<{
+    mode: 'fixed' | 'agent'
+    assessments: { id: string; state: string; advice: null | { title: string; explanation: string } }[]
+    interactions: {
+      id: string; assessment_id: string; state: string; operation: string
+      facts: {
+        editorial_name?: string | null; slug?: string; version?: number
+        compatibility?: { outcome: string }; modified?: boolean; sensitive_expansion?: string[]
+        security_check?: WisdomReviewCheck | null; professionalism_check?: WisdomReviewCheck | null
+      }
+    }[]
+  }>(`/api/wisdom/mediation${profileQuery(profile)}`),
   setupWisdom: (profile?: string) =>
     fetchJSON<ActionResponse>('/api/wisdom/setup', {
       method: 'POST',

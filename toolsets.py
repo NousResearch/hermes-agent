@@ -46,6 +46,7 @@ _HERMES_CORE_TOOLS = [
     "vision_analyze", "image_generate",
     # Skills
     "skills_list", "skill_view", "skill_manage",
+    "wisdom_inbox", "wisdom_inspect", "present_wisdom_consent",  # Service-gated on Wisdom setup.
     # Browser automation
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
@@ -175,7 +176,7 @@ TOOLSETS = {
     
     "skills": {
         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",
-        "tools": ["skills_list", "skill_view", "skill_manage"],
+        "tools": ["skills_list", "skill_view", "skill_manage", "wisdom_inbox", "wisdom_inspect", "present_wisdom_consent"],
         "includes": []
     },
     

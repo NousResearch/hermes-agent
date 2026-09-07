@@ -6,18 +6,35 @@ from typing import Any
 
 from .professionalism import CHECK_LABELS
 
+_STATUS_PRESENTATION = {
+    "pass": ("✅", "Pass"),
+    "advisory": ("⚠️", "Advisory"),
+    "blocked": ("❌", "Blocked"),
+    "pending": ("⏳", "Pending"),
+    "retry": ("⏳", "Pending"),
+    "running": ("⏳", "Pending"),
+    "unavailable": ("➖", "Unavailable"),
+}
+
+
+def review_status_text(status: object) -> str:
+    """Return the shared icon-and-text label for a review status."""
+
+    icon, label = _STATUS_PRESENTATION.get(
+        str(status or "unavailable").lower(),
+        _STATUS_PRESENTATION["unavailable"],
+    )
+    return f"{icon} {label}"
+
 
 def aggregate_review_text(
     security: dict[str, Any] | None,
     professionalism: dict[str, Any] | None,
 ) -> str:
-    security_status = str((security or {}).get("status") or "unavailable")
-    professionalism_status = str(
-        (professionalism or {}).get("status") or "unavailable"
-    )
     return (
-        f"Security: {security_status.replace('_', ' ').title()} · "
-        f"Professionalism: {professionalism_status.replace('_', ' ').title()}"
+        f"Security: {review_status_text((security or {}).get('status'))} · "
+        "Professionalism: "
+        f"{review_status_text((professionalism or {}).get('status'))}"
     )
 
 
@@ -51,8 +68,7 @@ def _checklist_text(
     note: str | None = None,
 ) -> str:
     value = check or {}
-    status = str(value.get("status") or "unavailable").replace("_", " ").title()
-    lines = [f"{title}: {status}"]
+    lines = [f"{title}: {review_status_text(value.get('status'))}"]
     summary = value.get("summary")
     if isinstance(summary, str) and summary.strip():
         lines.append(summary[:512])
@@ -63,10 +79,11 @@ def _checklist_text(
                 continue
             key = str(row.get("key") or "")
             label = str(row.get("label") or labels.get(key) or key.replace("_", " ").title())
-            row_status = str(row.get("status") or "unavailable").replace("_", " ").title()
             count = int(row.get("finding_count") or 0)
             suffix = f" ({count} finding{'s' if count != 1 else ''})" if count else ""
-            lines.append(f"- {label}: {row_status}{suffix}")
+            lines.append(
+                f"{label}: {review_status_text(row.get('status'))}{suffix}"
+            )
             for detail in row.get("details") or []:
                 lines.append(f"  {str(detail)[:256]}")
     if note:

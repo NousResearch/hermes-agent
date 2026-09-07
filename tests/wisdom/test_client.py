@@ -242,6 +242,45 @@ def test_content_fetch_is_bound_to_installation_identity_and_takedown_generation
     }
 
 
+def test_raw_copy_fetches_hash_verified_published_bytes_without_install_state():
+    skill = b"# Skill\n"
+    manifest = b'{"schema_version":1,"name":"skill","requirements":{"hermes":{"minimum_version":"0.1.0"}}}'
+    files = [
+        ("SKILL.md", "file", skill),
+        ("skill.manifest.json", "file", manifest),
+    ]
+    _records, content_hash = verify_content_files(files)
+    value = client(
+        Response(
+            200,
+            {
+                "commit": "sha256:" + "a" * 64,
+                "content_hash": content_hash,
+                "copy_semantics": "unmanaged_fork",
+                "files": [
+                    {
+                        "path": path,
+                        "mode": mode,
+                        "hash": "sha256:" + hashlib.sha256(body).hexdigest(),
+                        "content_base64": base64.b64encode(body).decode("ascii"),
+                    }
+                    for path, mode, body in files
+                ],
+            },
+        )
+    )
+
+    _response, decoded = value.raw_copy("skill-1", 2)
+
+    assert decoded == files
+    method, url, request = value.session.calls[0]
+    assert (method, url) == (
+        "GET",
+        "https://gateway.example/v1/sync/wisdom/skills/skill-1/versions/2/raw",
+    )
+    assert request["params"] is None
+
+
 def test_installation_reconciliation_uses_identity_path_and_owned_delete():
     value = client(Response(200, {"installations": []}))
     assert value.installations("hwi_1234567890123456") == []

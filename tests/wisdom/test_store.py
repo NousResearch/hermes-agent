@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_wisdom.store import WisdomStore
+from hermes_wisdom.store import SCHEMA_VERSION, WisdomStore
 
 
 def test_profile_store_permissions_identity_and_rename(tmp_path: Path):
@@ -116,7 +116,7 @@ def test_local_events_hide_a_contribution_that_already_reached_publication(
     skill_id = store.register_skill(
         skill_path, content_hash="sha256:source", source_kind="local"
     )
-    store.emit_local_event(
+    event_id = store.emit_local_event(
         kind="wisdom.candidate",
         skill_id=skill_id,
         content_hash="sha256:source",
@@ -138,6 +138,74 @@ def test_local_events_hide_a_contribution_that_already_reached_publication(
     })
 
     assert store.local_events(kind="wisdom.candidate", session_id="session-1") == []
+    assert store.reconcile_candidate_events() == 1
+    assert event_id is not None
+    assert store.local_event(event_id)["state"] == "handled"
+
+
+def test_candidate_reconciliation_preserves_current_reviewable_events(tmp_path: Path):
+    store = WisdomStore(tmp_path / "wisdom")
+    skill_path = tmp_path / "skill"
+    skill_path.mkdir()
+    (skill_path / "SKILL.md").write_text("hello", encoding="utf-8")
+    skill_id = store.register_skill(
+        skill_path, content_hash="sha256:source", source_kind="local"
+    )
+    event_id = store.emit_local_event(
+        kind="wisdom.candidate",
+        skill_id=skill_id,
+        content_hash="sha256:source",
+        payload={"skill_name": "skill"},
+        session_id="session-1",
+        task_id="task-1",
+        qualification="manual_selection",
+    )
+
+    assert event_id is not None
+    assert store.reconcile_candidate_events() == 0
+    assert store.local_event(event_id)["state"] == "unread"
+
+
+def test_candidate_editorial_metadata_carries_forward_within_the_same_org(
+    tmp_path: Path,
+):
+    store = WisdomStore(tmp_path / "wisdom")
+    store.installation_identity()
+    store.verify_installation_identity("org-1")
+    skill_path = tmp_path / "legacy-skill"
+    skill_path.mkdir()
+    (skill_path / "SKILL.md").write_text("legacy", encoding="utf-8")
+    skill_id = store.register_skill(
+        skill_path, content_hash="sha256:v1", source_kind="local"
+    )
+    event_id = store.emit_local_event(
+        kind="wisdom.candidate",
+        skill_id=skill_id,
+        content_hash="sha256:v1",
+        payload={
+            "skill_name": "legacy-skill",
+            "editorial_name": "Incident Response Guide",
+            "editorial_description": "Coordinate a consistent incident response.",
+        },
+        session_id="session-1",
+        task_id="task-1",
+        qualification="high_usage",
+    )
+    assert event_id is not None
+    with store.transaction() as db:
+        db.execute("UPDATE local_event SET state='handled' WHERE id=?", (event_id,))
+
+    assert store.candidate_editorial_metadata(
+        skill_id, content_hash="sha256:v2"
+    ) == {
+        "editorial_name": "Incident Response Guide",
+        "editorial_description": "Coordinate a consistent incident response.",
+    }
+
+    store.verify_installation_identity("org-2")
+    assert store.candidate_editorial_metadata(
+        skill_id, content_hash="sha256:v2"
+    ) is None
 
 
 def test_verified_org_change_deactivates_stale_managed_installs(tmp_path: Path):
@@ -219,7 +287,7 @@ def test_schema_v9_tracks_profile_local_usage_surface_delivery_reviews_and_notic
         "lease_expires_at",
         "result_json",
     } <= review_columns
-    assert version == "9"
+    assert version == str(SCHEMA_VERSION)
 
 
 def test_candidate_sequence_is_atomic_idempotent_and_scoped_by_organization(

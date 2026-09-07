@@ -7993,6 +7993,23 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer(text="⛔ You are not authorized to manage skills.")
             return
 
+        if data.startswith("wi:agent:"):
+            await query.answer(text="Checking current state")
+            try:
+                def resolve():
+                    from hermes_wisdom.mediation_view import resolve_surface_action
+                    from hermes_wisdom.service import WisdomService
+
+                    return resolve_surface_action(
+                        WisdomService(), data, platform="telegram", actor_id=caller_id,
+                        chat_id=str(query_chat_id or ""), thread_id=str(query_thread_id or ""),
+                    )
+                view = await self._run_wisdom_profile_operation(resolve)
+                await self._edit_wisdom_command_view(query, view)
+            except Exception:
+                await query.answer(text="This control is unavailable. Open /wisdom inbox to review current state.", show_alert=True)
+            return
+
         if data.startswith("wi:cmd:"):
             token = data.removeprefix("wi:cmd:")
             try:
@@ -8104,7 +8121,7 @@ class TelegramAdapter(BasePlatformAdapter):
             state = str(result.get("publication_state") or result.get("state") or "")
             already_advanced = bool(result.get("already_advanced"))
             view_action = (
-                [{"label": "View ↗", "url": str(portal_url)}]
+                [{"label": "View", "url": str(portal_url)}]
                 if isinstance(portal_url, str)
                 else []
             )
@@ -8366,10 +8383,11 @@ class TelegramAdapter(BasePlatformAdapter):
             text = str(value or "")
             return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
-        controls: list[str] = []
-
         def button(action) -> str | None:
-            label = _html.escape(compact(action.label, 48))
+            raw_label = compact(action.label, 48)
+            if action.url:
+                raw_label = raw_label.removesuffix(" ↗")
+            label = _html.escape(raw_label)
             if action.url:
                 return (
                     '<tg-button type="url" url="'
@@ -8386,24 +8404,27 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return None
 
+        def button_row(actions) -> str:
+            controls = [value for action in actions if (value := button(action))]
+            if not controls:
+                return ""
+            return (
+                '<tg-button-row align="left">'
+                f"{' '.join(controls)}"
+                "</tg-button-row>"
+            )
+
         item_html: list[str] = []
         for item in view.items[:5]:
-            inline = [value for action in item.actions if (value := button(action))]
-            suffix = f"<br/>{' '.join(inline)}" if inline else ""
             candidate = (
                 f"<p><b>{_html.escape(compact(item.title, 140))}</b>"
                 f"<br/>{_html.escape(compact(item.detail, 300)).replace(chr(10), '<br/>')}"
-                f"{suffix}</p>"
+                "</p>"
+                f"{button_row(item.actions)}"
             )
             if sum(map(len, item_html)) + len(candidate) > 2600:
                 break
             item_html.append(candidate)
-        navigation_controls = [
-            value
-            for action in getattr(view, "navigation_actions", [])
-            if (value := button(action))
-        ]
-        controls = [value for action in view.actions if (value := button(action))]
         summary = (
             f"<p>{_html.escape(compact(view.summary, 600)).replace(chr(10), '<br/>')}</p>"
             if view.summary
@@ -8414,10 +8435,8 @@ class TelegramAdapter(BasePlatformAdapter):
             if view.notice
             else ""
         )
-        navigation_html = (
-            f"<p>{' '.join(navigation_controls)}</p>" if navigation_controls else ""
-        )
-        action_html = f"<p>{' '.join(controls)}</p>" if controls else ""
+        navigation_html = button_row(getattr(view, "navigation_actions", []))
+        action_html = button_row(view.actions)
         return (
             f"<h3>{_html.escape(compact(view.title, 120))}</h3>"
             f"{navigation_html}{summary}{''.join(item_html)}{notice}{action_html}"
@@ -8451,12 +8470,15 @@ class TelegramAdapter(BasePlatformAdapter):
         for actions in action_groups:
             row = []
             for action in actions:
+                label = str(action.label)
                 if action.url:
-                    row.append(InlineKeyboardButton(action.label, url=action.url))
+                    label = label.removesuffix(" ↗")
+                if action.url:
+                    row.append(InlineKeyboardButton(label, url=action.url))
                 elif action.callback_data:
                     row.append(
                         InlineKeyboardButton(
-                            action.label, callback_data=action.callback_data
+                            label, callback_data=action.callback_data
                         )
                     )
             if row:
@@ -8695,8 +8717,11 @@ class TelegramAdapter(BasePlatformAdapter):
     ) -> str:
         controls: list[str] = []
         for action in actions:
-            label = _html.escape(str(action["label"]))
             url = action.get("url")
+            raw_label = str(action["label"])
+            if isinstance(url, str):
+                raw_label = raw_label.removesuffix(" ↗")
+            label = _html.escape(raw_label)
             if isinstance(url, str):
                 controls.append(
                     '<tg-button type="url" url="'
@@ -8709,7 +8734,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 f'<tg-button type="callback_data"{style} data="'
                 f'{_html.escape(callback_data, quote=True)}">{label}</tg-button>'
             )
-        control_html = f"<br/>{' '.join(controls)}" if controls else ""
+        control_html = (
+            '<tg-button-row align="left">'
+            f"{' '.join(controls)}"
+            "</tg-button-row>"
+            if controls
+            else ""
+        )
         from hermes_wisdom.professionalism import review_text
 
         review_html = (
@@ -8735,7 +8766,7 @@ class TelegramAdapter(BasePlatformAdapter):
             f"<b>{_html.escape(skill_name)}</b><br/>"
             f"{description_html}"
             f"<b>Why suggested:</b> {_html.escape(qualification_reason)}<br/>"
-            f"{review_html}{control_html}</p>"
+            f"{review_html}</p>{control_html}"
         )
 
     @staticmethod
@@ -8756,9 +8787,10 @@ class TelegramAdapter(BasePlatformAdapter):
     ) -> Optional["InlineKeyboardMarkup"]:
         buttons = []
         for action in actions:
-            label = str(action["label"])
-            if isinstance(action.get("url"), str):
-                buttons.append(InlineKeyboardButton(label, url=str(action["url"])))
+            url = action.get("url")
+            label = str(action["label"]).removesuffix(" ↗")
+            if isinstance(url, str):
+                buttons.append(InlineKeyboardButton(label, url=url))
             else:
                 buttons.append(
                     InlineKeyboardButton(
@@ -8819,6 +8851,33 @@ class TelegramAdapter(BasePlatformAdapter):
             )
         except Exception:
             pass
+
+    async def send_wisdom_mediation(self, view, *, source) -> None:
+        """Send already-bound durable controls using the existing rich renderer."""
+        from telegram.error import BadRequest
+
+        kwargs = self._thread_kwargs_for_send(
+            str(source.chat_id), str(getattr(source, "thread_id", None) or "") or None,
+            {}, reply_to_mode=self._reply_to_mode,
+        )
+        raw_request = getattr(getattr(self, "_bot", None), "do_api_request", None)
+        if callable(raw_request):
+            try:
+                await raw_request("sendRichMessage", api_kwargs={
+                    "chat_id": normalize_telegram_chat_id(source.chat_id),
+                    "rich_message": {"html": self._wisdom_command_html(view)},
+                    "link_preview_options": {"is_disabled": True},
+                    **{key: value for key, value in kwargs.items() if value is not None},
+                })
+                return
+            except BadRequest:
+                # Only a definite rejection permits a second delivery attempt.
+                pass
+        await self._send_message_with_thread_fallback(
+            chat_id=normalize_telegram_chat_id(source.chat_id),
+            text=_html.escape(self._wisdom_command_text(view)), parse_mode=ParseMode.HTML,
+            reply_markup=self._wisdom_command_keyboard(view), **kwargs,
+        )
 
     async def send_wisdom_candidate_notifications(
         self,

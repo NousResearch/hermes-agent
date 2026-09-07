@@ -11,6 +11,7 @@ import { UserEditComposer } from '@/components/assistant-ui/thread/user-edit-com
 import { UserMessage } from '@/components/assistant-ui/thread/user-message'
 import { WisdomCandidateCard } from '@/components/assistant-ui/wisdom-candidate-card'
 import { WisdomNoticeCard } from '@/components/assistant-ui/wisdom-notice-card'
+import { WisdomMediationCard } from '@/components/wisdom-mediation-card'
 import { Intro, type IntroProps } from '@/components/chat/intro'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import type { HermesGateway, ProfileScope } from '@/hermes'
@@ -183,6 +184,7 @@ export const Thread = memo(function Thread({
     () => (wisdomSessionId ? (
       <>
         <WisdomNoticeCard profile={wisdomProfile} />
+        <WisdomMediationCard profile={wisdomProfile} sessionId={wisdomSessionId} />
         <WisdomCandidateCard profile={wisdomProfile} sessionId={wisdomSessionId} />
       </>
     ) : undefined),

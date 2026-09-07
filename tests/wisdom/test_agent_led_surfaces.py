@@ -50,11 +50,11 @@ def test_renderers_use_editorial_name_not_product_name():
     header = next(b for b in blocks if b["type"] == "header")
     assert header["text"]["text"] == "Incident Timeline"
     actions = next(b for b in blocks if b["type"] == "actions")
-    assert [e["text"]["text"] for e in actions["elements"]] == ["Install", "View", "Mute"]
+    assert [e["text"]["text"] for e in actions["elements"]] == ["Mute", "View", "Install"]
     assert all(e["value"].startswith("wa:") for e in actions["elements"])
     desktop = render.render_desktop(event)
     assert desktop["skill_name"] == "Incident Timeline" and desktop["title"] == "New skill from your team"
-    assert [a["label"] for a in desktop["actions"]] == ["Install", "View", "Mute"]
+    assert [a["label"] for a in desktop["actions"]] == ["Mute", "View", "Install"]
     assert render.render_plain(event).startswith("Hermes Collective Wisdom\n\nNew skill from your team")
 
 

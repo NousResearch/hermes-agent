@@ -160,6 +160,8 @@ WISDOM_SUBCOMMAND_HELP: dict[str, str] = {
     "update": "<skill|all> — Plan and confirm available updates",
     "uninstall": "<skill> — Remove a managed skill after confirmation",
     "notifications": "Review unseen publication, install, and update events",
+    "inbox": "Read shared agent advice and pending Wisdom consent",
+    "consent": "<id> <inspect|defer|confirm> — Use an exact pending consent control in the local CLI",
     "help": "Show this guide and command examples",
 }
 

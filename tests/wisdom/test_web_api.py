@@ -228,6 +228,10 @@ def test_prepared_save_and_candidate_actions_remain_profile_scoped(monkeypatch) 
             calls.append(("defer", event_id, surface))
             return {"event_id": event_id, "state": "deferred"}
 
+        def prepare_candidate(self, event_id):
+            calls.append(("prepare", event_id))
+            return {"event_id": event_id, "stage": "prepared"}
+
         def approve_candidate(self, event_id):
             calls.append(("approve", event_id))
             return {"event_id": event_id, "state": "pending_moderation"}
@@ -272,6 +276,11 @@ def test_prepared_save_and_candidate_actions_remain_profile_scoped(monkeypatch) 
             WisdomCandidateEventRequest(event_id="event-1", profile="research")
         )
     )
+    prepared = asyncio.run(
+        web_server.post_wisdom_candidate_prepare(
+            WisdomCandidateEventRequest(event_id="event-1", profile="research")
+        )
+    )
     approved = asyncio.run(
         web_server.post_wisdom_candidate_approve(
             WisdomCandidateEventRequest(event_id="event-1", profile="research")
@@ -281,6 +290,7 @@ def test_prepared_save_and_candidate_actions_remain_profile_scoped(monkeypatch) 
     assert saved == {"local_draft_id": "local:1"}
     assert dismissed == {"dismissed": True}
     assert deferred == {"event_id": "event-1", "state": "deferred"}
+    assert prepared == {"event_id": "event-1", "stage": "prepared"}
     assert approved == {"event_id": "event-1", "state": "pending_moderation"}
     assert calls == [
         ("profile", "research"),
@@ -297,6 +307,9 @@ def test_prepared_save_and_candidate_actions_remain_profile_scoped(monkeypatch) 
         ("dismiss", "skill-1", "sha256:content"),
         ("profile", "research"),
         ("defer", "event-1", "desktop"),
+        ("profile", "research"),
+        ("prepare", "event-1"),
+        ("schedule", "research"),
         ("profile", "research"),
         ("approve", "event-1"),
     ]

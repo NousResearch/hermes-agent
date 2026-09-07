@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea'
 import { WisdomCheckBadge, WisdomReviewTables } from '@/components/wisdom-checks'
 import { WisdomNotificationsCard } from '@/components/wisdom-notifications-card'
+import { WisdomMediationCard } from '@/components/wisdom-mediation-card'
 import {
   acknowledgeWisdomNotifications,
   applyWisdomInstall,
@@ -808,6 +809,7 @@ export function CollectiveTab({ profile, query }: { profile: ProfileScope; query
             {busy === 'install-reference' ? copy.planningInstall : copy.reviewInstall}
           </Button>
         </form>
+        <WisdomMediationCard profile={profile} passive />
         <WisdomNotificationsCard
           className="mt-2"
           events={installations.data.notifications}

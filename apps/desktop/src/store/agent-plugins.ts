@@ -33,7 +33,31 @@ export interface AgentPluginRow {
 export type AgentPluginsStatus = 'idle' | 'loading' | 'ready' | 'error'
 
 /** The recovering `requestGateway` from `useGatewayRequest`. */
-export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
+
+export interface PluginSetupConsent {
+  key: string
+  hermes_home: string
+  revision: string
+}
+
+export interface PluginSetupReview {
+  status: 'consent_required'
+  setup: { revision: string; ready: boolean; summary: string; details: string[] }
+  consent: PluginSetupConsent
+}
+
+export function pluginSetupReview(error: unknown): PluginSetupReview | null {
+  const data = (error as { data?: PluginSetupReview } | null)?.data
+
+  return data?.status === 'consent_required' && data.setup && data.consent ? data : null
+}
+
+interface ToggleOptions {
+  setupConsent?: PluginSetupConsent
+  onSetupRequired?: (review: PluginSetupReview) => void
+  throwOnError?: boolean
+}
 
 export const $agentPlugins = atom<AgentPluginRow[]>([])
 export const $agentPluginsStatus = atom<AgentPluginsStatus>('idle')
@@ -130,8 +154,14 @@ export async function toggleAgentPlugin(
   key: string,
   enable: boolean,
   failMessage: string,
-  profile?: string | null
+  profile?: string | null,
+  options: ToggleOptions = {}
 ): Promise<boolean> {
+  if ($agentPluginBusy.get()) {
+    return false
+  }
+
+  const generation = loadGeneration
   $agentPluginBusy.set(key)
 
   try {
@@ -141,14 +171,20 @@ export async function toggleAgentPlugin(
         {
           action: 'toggle',
           key,
-          enable
+          enable,
+          ...(options.setupConsent ? { setup_consent: options.setupConsent } : {})
         },
         profile
-      )
+      ),
+      ...(options.setupConsent ? [360_000] : [])
     )
 
     if (!result?.ok) {
-      throw new Error(failMessage)
+      throw Object.assign(new Error(failMessage), { data: result })
+    }
+
+    if (generation !== loadGeneration) {
+      return true
     }
 
     const refreshed = result.plugin
@@ -161,7 +197,19 @@ export async function toggleAgentPlugin(
 
     return true
   } catch (e) {
-    notifyError(e, failMessage)
+    const review = pluginSetupReview(e)
+
+    if (review && options.onSetupRequired) {
+      options.onSetupRequired(review)
+    }
+
+    if (options.throwOnError) {
+      throw e
+    }
+
+    if (!review) {
+      notifyError(e, failMessage)
+    }
 
     return false
   } finally {
@@ -171,6 +219,7 @@ export async function toggleAgentPlugin(
 
 export interface AgentPluginInstallResult {
   ok: boolean
+  installed?: boolean
   pluginName?: string
   warnings?: string[]
   missingEnv?: string[]
@@ -187,6 +236,7 @@ export async function installAgentPlugin(
       plugin_name?: string
       warnings?: string[]
       missing_env?: string[]
+      installed?: boolean
       error?: string
     }>('plugins.manage', {
       action: 'install',
@@ -196,7 +246,12 @@ export async function installAgentPlugin(
     })
 
     if (!result?.ok) {
-      return { ok: false, error: result?.error || 'Install failed' }
+      return {
+        ok: false,
+        installed: result?.installed,
+        pluginName: result?.plugin_name,
+        error: result?.error || 'Install failed'
+      }
     }
 
     return {
@@ -206,6 +261,13 @@ export async function installAgentPlugin(
       missingEnv: result.missing_env
     }
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    const data = (e as { data?: { installed?: boolean; plugin_name?: string; error?: string } } | null)?.data
+
+    return {
+      ok: false,
+      installed: data?.installed,
+      pluginName: data?.plugin_name,
+      error: data?.error || (e instanceof Error ? e.message : String(e))
+    }
   }
 }

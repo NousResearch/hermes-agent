@@ -576,3 +576,62 @@ class ClaudeSdkAuxClient:
     def close(self) -> None:  # pragma: no cover - nothing persistent to release
         """No persistent process: each call is an independent one-shot query."""
         return None
+
+# --- auxiliary_client seams -------------------------------------------------------------------
+# agent/auxiliary_client.py keeps three one-line hooks (auto-route short-circuit, async wrapper,
+# explicit-provider branch); the subscription-lane policy lives here. Imports back into
+# auxiliary_client are lazy: it imports this module lazily too.
+
+
+def _tag_effective_provider(client: Any, provider: str) -> None:
+    """Retain auto-routing identity on the client that survives cache reuse."""
+    if client is None or not provider:
+        return
+    try:
+        setattr(client, "_hermes_aux_effective_provider", provider)
+    except (AttributeError, TypeError):
+        logger.debug("Auxiliary client %s cannot retain effective provider %s",
+                     type(client).__name__, provider)
+
+
+def resolve_auto_route(main_model: str) -> tuple[Any | None, str | None, str]:
+    """Fail-closed subscription lane (claude-agent-sdk, #25267).
+
+    When the MAIN provider is the claude-agent-sdk (subscription OAuth, never metered),
+    auto-detection must NOT silently re-route auxiliary tasks (title generation, context
+    compression, ...) onto metered fallback providers — that would break the provider's
+    billing contract through the side door. Explicit ``auxiliary.<task>.{provider,model}``
+    config is resolved before this chain and remains the operator's deliberate opt-in;
+    without it, aux work stays on the same subscription-owned SDK route, and if that
+    facade is unavailable aux features simply no-op.
+    """
+    try:
+        sdk_aux_model = main_model or "claude-sonnet-5"
+        sdk_aux_client = ClaudeSdkAuxClient(default_model=sdk_aux_model)
+        _tag_effective_provider(sdk_aux_client, "claude-agent-sdk")
+        logger.debug("aux auto-detect: routing to claude-agent-sdk one-shot (subscription lane, model=%s)",
+                     sdk_aux_model)
+        return sdk_aux_client, sdk_aux_model, "claude-agent-sdk"
+    except Exception:
+        logger.warning("aux auto-detect: claude-agent-sdk one-shot client unavailable; failing closed "
+                       "rather than routing auxiliary work to a metered provider.", exc_info=True)
+        return None, None, ""
+
+
+def async_client_for(sync_client: Any) -> Any | None:
+    """Async wrapper for an SDK auxiliary client, carrying its effective-provider tag; None otherwise."""
+    if not isinstance(sync_client, ClaudeSdkAuxClient):
+        return None
+    from agent.auxiliary_client import _effective_provider_for_client
+
+    async_client = AsyncClaudeSdkAuxClient(sync_client)
+    _tag_effective_provider(async_client, _effective_provider_for_client(sync_client, ""))
+    return async_client
+
+
+def resolve_branch(req: Any) -> Any:
+    """Explicit ``provider: claude-agent-sdk`` branch: the subscription-owned Agent SDK facade."""
+    from agent.auxiliary_client import _normalize_resolved_model, _route_client
+
+    final_model = _normalize_resolved_model(req.model or "claude-sonnet-5", req.provider)
+    return _route_client(req, ClaudeSdkAuxClient(default_model=final_model), final_model)

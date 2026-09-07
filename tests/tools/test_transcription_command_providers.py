@@ -258,6 +258,21 @@ class TestTranscribeAudioDispatchToCommandProvider:
         assert result["transcript"] == "dispatched via command"
         assert result["provider"] == "fake-cli"
 
+    def test_session_id_placeholder_renders_known_and_unknown_values(self, tmp_path):
+        audio = _make_silent_wav(tmp_path / "audio.wav")
+        payload = "import sys; open(sys.argv[2], 'w').write('session=' + sys.argv[1])"
+        cfg = self._config_with_command_provider(
+            "fake-cli",
+            f'"{sys.executable}" -c "{payload}" {{session_id}} {{output_path}}',
+        )
+
+        with patch("tools.transcription_tools._load_stt_config", return_value=cfg):
+            known = transcribe_audio(str(audio), session_id="telegram:chat:topic")
+            unknown = transcribe_audio(str(audio))
+
+        assert known["transcript"] == "session=telegram:chat:topic"
+        assert unknown["transcript"] == "session="
+
 
     def test_unknown_provider_no_command_falls_through_to_error(self, tmp_path):
         audio = _make_silent_wav(tmp_path / "audio.wav")

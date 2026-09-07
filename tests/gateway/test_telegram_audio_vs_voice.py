@@ -72,9 +72,12 @@ async def test_voice_message_still_transcribed():
             event=event,
             source=source,
             history=[],
+            session_key="telegram:session-123",
         )
 
-    mock_transcribe.assert_called_once_with("/tmp/voice.ogg", None, "gateway")
+    mock_transcribe.assert_called_once_with(
+        "/tmp/voice.ogg", None, "gateway", session_id="telegram:session-123"
+    )
     # The transcript passes through as a plain quoted line — no "voice message"
     # meta-commentary in the LLM-visible prompt.
     assert "hello world" in result

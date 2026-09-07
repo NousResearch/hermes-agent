@@ -591,6 +591,7 @@ Your command template can reference these placeholders. Hermes substitutes them 
 | `{format}`        | Configured output format: `txt` / `json` / `srt` / `vtt`             |
 | `{language}`      | Configured language code (defaults to `en`)                          |
 | `{model}`         | `stt.providers.<name>.model`, empty when unset                       |
+| `{session_id}`    | Gateway conversation key, empty outside a known session              |
 
 Use `{{` and `}}` for literal braces (handy when embedding JSON snippets in the command).
 

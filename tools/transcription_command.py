@@ -67,11 +67,12 @@ def _read_command_stt_output(output_path: Path, stdout: str, fmt: str) -> str:
 def _transcribe_command_stt(
     file_path: str, provider_name: str, config: Dict[str, Any], stt_config: Dict[str, Any],
     model_override: Optional[str] = None, language_override: Optional[str] = None,
-    prompt: Optional[str] = None) -> Dict[str, Any]:
+    prompt: Optional[str] = None, session_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """Transcribe via a user-declared ``stt.providers.<name>: type: command``. Placeholders
     (shell-quote-aware; ``{{``/``}}`` stay literal): ``{input_path}``, ``{output_path}`` (transcript
     file), ``{output_dir}``, ``{format}`` txt/json/srt/vtt, ``{language}`` (default ``en``),
-    ``{model}`` (empty when unset)."""
+    ``{model}`` and ``{session_id}`` (empty when unset)."""
     from tools.transcription_tools import _resolve_stt_language
     if prompt:
         _log_prompt_unsupported(f"Command STT provider '{provider_name}'")
@@ -95,6 +96,7 @@ def _transcribe_command_stt(
                 "input_path": str(audio.resolve()), "output_path": str(output_path),
                 "output_dir": str(output_path.parent), "format": output_format,
                 "language": str(language), "model": str(model_override or config.get("model") or ""),
+                "session_id": str(session_id or ""),
             })
             logger.info("Transcribing %s via command STT provider '%s'...", audio.name, provider_name)
             result = _run_command_stt(command, timeout, env_passthrough=_command_stt_env_passthrough(config))

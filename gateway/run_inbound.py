@@ -1399,10 +1399,11 @@ class GatewayInboundMixin:
                 logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
 
     async def _enrich_inbound_voice(
-        self, event: MessageEvent, source: SessionSource, message_text: str, audio_paths: list[str]
+        self, event: MessageEvent, source: SessionSource, session_id: str,
+        message_text: str, audio_paths: list[str],
     ) -> str:
         message_text, _successful_transcripts = await self._enrich_message_with_transcription(
-            message_text, audio_paths,
+            message_text, audio_paths, session_id=session_id,
         )
         # Echo each successful transcript back immediately when configured so users can verify STT
         # quality in real time. On transcription failure do NOT send a hardcoded notice: that
@@ -1615,7 +1616,9 @@ class GatewayInboundMixin:
         if image_paths:
             message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
         if audio_paths:
-            message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths)
+            message_text = await self._enrich_inbound_voice(
+                event, source, session_key, message_text, audio_paths,
+            )
         message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)
         message_text = self._prepend_inbound_document_notes(event, message_text)
         if "@" in message_text:
@@ -1914,9 +1917,14 @@ class GatewayInboundMixin:
         agent_path = to_agent_visible_cache_path(os.path.abspath(path))
         return f"[voice message could not be transcribed automatically; the audio is available at: {agent_path}]"
 
-    async def _transcribe_one_clip(self, path: str, transcribe_audio, transcribe_audio_local_fallback) -> Tuple[Optional[str], str]:
+    async def _transcribe_one_clip(
+        self, path: str, transcribe_audio, transcribe_audio_local_fallback,
+        session_id: Optional[str] = None,
+    ) -> Tuple[Optional[str], str]:
         """``(transcript_or_None, note)`` for one clip via configured STT with local fallback."""
-        result = await asyncio.to_thread(transcribe_audio, path, None, "gateway")
+        result = await asyncio.to_thread(
+            transcribe_audio, path, None, "gateway", session_id=session_id,
+        )
         if not result.get("success"):
             fallback = await asyncio.to_thread(transcribe_audio_local_fallback, path)
             if fallback.get("success"):
@@ -1941,7 +1949,7 @@ class GatewayInboundMixin:
         return transcript, f'"{transcript}"'
 
     async def _enrich_message_with_transcription(
-        self, user_text: str, audio_paths: List[str]
+        self, user_text: str, audio_paths: List[str], session_id: Optional[str] = None,
     ) -> tuple[str, List[str]]:
         """Transcribe voice clips with the configured STT provider and prepend the transcripts →
         ``(enriched_text, successful_transcripts)``; the transcripts (input order; empty if every clip
@@ -1972,6 +1980,7 @@ class GatewayInboundMixin:
                 logger.debug("Transcribing user voice: %s", path)
                 transcript, note = await self._transcribe_one_clip(
                     path, transcribe_audio, transcribe_audio_local_fallback,
+                    session_id=session_id,
                 )
                 if transcript is not None:
                     successful_transcripts.append(transcript)
@@ -2003,7 +2012,9 @@ class GatewayInboundMixin:
         if not audio_paths:
             return user_text if user_text is not None else (getattr(event, "text", None) or None), []
         text = user_text if user_text is not None else (getattr(event, "text", "") or "")
-        enriched_text, successful_transcripts = await self._enrich_message_with_transcription(text, audio_paths)
+        enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
+            text, audio_paths, session_id=self._session_key_for_source(event.source),
+        )
         event._gateway_pending_stt_text = enriched_text
         event._gateway_pending_stt_transcripts = list(successful_transcripts)
         return enriched_text, successful_transcripts

@@ -2414,6 +2414,25 @@ class GatewayTurnMixin:
             logger.debug("Proxy: could not set up stream consumer: %s", _sc_err)
             return None
 
+    def _proxy_request_model_fields(self, session_key: Optional[str]) -> Dict[str, str]:
+        """Per-request model/provider for GATEWAY_PROXY_URL mode.
+
+        Host ``/v1/chat/completions`` treats ``hermes-agent`` as the virtual default. A sidecar
+        ``/model`` override must send BOTH fields: ``provider`` is always honored, but a bare
+        ``model`` is ignored unless ``direct_model_requests`` is on.
+        """
+        body = {"model": "hermes-agent"}
+        override = (getattr(self, "_session_model_overrides", {}) or {}).get(session_key or "")
+        if not isinstance(override, dict):
+            return body
+        model = str(override.get("model") or "").strip()
+        provider = str(override.get("provider") or "").strip()
+        if model:
+            body["model"] = model
+        if provider:
+            body["provider"] = provider
+        return body
+
     async def _run_agent_via_proxy(
         self, message: str, context_prompt: str, history: List[Dict[str, Any]],
         source: "SessionSource", session_id: str, session_key: str = None,
@@ -2472,7 +2491,9 @@ class GatewayTurnMixin:
             headers["Authorization"] = f"Bearer {proxy_key}"
         if session_id:
             headers["X-Hermes-Session-Id"] = session_id
-        body = {"model": "hermes-agent", "messages": api_messages, "stream": True}
+        # Default virtual model = host gateway default. A sidecar /model override must send BOTH
+        # model and provider: api_server ignores a bare model unless direct_model_requests is on.
+        body = {**self._proxy_request_model_fields(session_key), "messages": api_messages, "stream": True}
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
         _stream_consumer = self._proxy_stream_consumer(source, event_message_id, _thread_metadata, _run_still_current)

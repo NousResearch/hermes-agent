@@ -2,6 +2,8 @@
 
 import io
 import json
+import os
+import subprocess
 import sys
 import threading
 import time
@@ -1062,6 +1064,95 @@ def test_enforce_session_cap_evicts_oldest_detached_only(server, monkeypatch):
     # 4 sessions, cap 2 -> evict 2. Only detached+idle+built are eligible, oldest
     # first; the running one and the live-transport one are exempt.
     assert evicted == ["old_detached", "new_detached"]
+
+
+def test_idle_reaper_rearms_missing_ws_orphan_timer(server, monkeypatch, tmp_path):
+    """A detached lane cannot keep its lease forever if initial timer setup was lost."""
+    from hermes_cli.active_sessions import (
+        active_session_registry_snapshot,
+        try_acquire_active_session,
+    )
+
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    sid = "detached-without-reaper"
+    sibling_sid = "live-sibling"
+    orphan_lease, message = try_acquire_active_session(
+        session_id=sid,
+        surface="desktop",
+        config={},
+        registry_home=home,
+        track_liveness=True,
+    )
+    assert orphan_lease is not None and message is None
+    sibling_lease, message = try_acquire_active_session(
+        session_id=sibling_sid,
+        surface="desktop",
+        config={},
+        registry_home=home,
+        track_liveness=True,
+    )
+    assert sibling_lease is not None and message is None
+
+    def _session(session_key, lease, transport):
+        return {
+            "active_session_lease": lease,
+            "created_at": time.time(),
+            "history": [],
+            "history_lock": threading.Lock(),
+            "last_active": time.time(),
+            "session_key": session_key,
+            "source": "tui",
+            "transport": transport,
+        }
+
+    server._sessions.clear()
+    server._sessions.update({
+        sid: _session(sid, orphan_lease, server._detached_ws_transport),
+        sibling_sid: _session(sibling_sid, sibling_lease, object()),
+    })
+    server._pending_ws_reaps.clear()
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.05)
+    monkeypatch.setattr(server, "_SESSION_TTL_S", 3600.0)
+    monkeypatch.setattr(server, "_flush_dirty_sessions", lambda: 0)
+    monkeypatch.setattr(server, "_enforce_session_cap", lambda: None)
+
+    server._reap_idle_sessions()
+
+    deadline = time.monotonic() + 2.0
+    while (sid in server._sessions or not orphan_lease.released) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert sid not in server._sessions
+    assert orphan_lease.released is True
+    assert sibling_sid in server._sessions
+    assert [entry["session_id"] for entry in active_session_registry_snapshot(home)] == [sibling_sid]
+
+    repo_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(home)
+    env["PYTHONPATH"] = os.pathsep.join(
+        part for part in (str(repo_root), env.get("PYTHONPATH", "")) if part
+    )
+    successor = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from hermes_cli.active_sessions import try_acquire_active_session; "
+                f"lease, refusal = try_acquire_active_session(session_id={sid!r}, surface='desktop', "
+                "config={}, track_liveness=True); "
+                "assert lease is not None and refusal is None, refusal; lease.release()"
+            ),
+        ],
+        cwd=repo_root,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert successor.returncode == 0, successor.stderr
+    assert [entry["session_id"] for entry in active_session_registry_snapshot(home)] == [sibling_sid]
 
 
 def test_sync_session_key_after_compress_reanchors_active_session_lease(

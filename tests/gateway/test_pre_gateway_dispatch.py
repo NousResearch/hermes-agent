@@ -60,6 +60,28 @@ def _make_runner(platform: Platform):
     return runner, adapter
 
 
+def test_rewrite_preserves_volatile_context_refresh_identity(monkeypatch):
+    event = _make_event("original", Platform.WHATSAPP)
+    event.ephemeral_user_context = "weather\n\nLocation: 1.0, 2.0"
+    event._telegram_background_location_subject_key = "subject"
+    event._telegram_background_location_state_path = "/state/profile.json"
+    event._telegram_background_location_base_context = "weather"
+    monkeypatch.setattr(
+        "hermes_cli.lifecycle.invoke_hook",
+        lambda *_args, **_kwargs: [{"action": "rewrite", "text": "rewritten"}],
+    )
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+
+    rewritten = runner._hm_pre_gateway_dispatch_hook(event, event.source)
+
+    assert rewritten is not event
+    assert rewritten.text == "rewritten"
+    assert rewritten.ephemeral_user_context == "weather\n\nLocation: 1.0, 2.0"
+    assert rewritten._telegram_background_location_subject_key == "subject"
+    assert rewritten._telegram_background_location_state_path == "/state/profile.json"
+    assert rewritten._telegram_background_location_base_context == "weather"
+
+
 @pytest.mark.asyncio
 async def test_internal_events_bypass_hook(monkeypatch):
     """Internal events (event.internal=True) skip the plugin hook entirely."""

@@ -21,7 +21,7 @@ if not isinstance(getattr(telegram_module, "__file__", None), str):
 from telegram import Chat, Location, Message, Update, User
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import MessageType
+from gateway.platforms.event import MessageType
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
@@ -49,18 +49,29 @@ async def test_registered_handler_distinguishes_one_time_and_edited_live_updates
         def __init__(self):
             self.handlers = []
 
-        def add_handler(self, handler, **_kwargs):
-            self.handlers.append(handler)
+        def add_handler(self, handler, **kwargs):
+            self.handlers.append((kwargs.get("group", 0), handler))
 
     app = _RecordingApp()
     adapter._register_handlers(app)
-    location_handlers = [
-        handler
-        for handler in app.handlers
-        if getattr(handler, "callback", None) == adapter._handle_location_message
+    lifecycle_handlers = [
+        (group, handler)
+        for group, handler in app.handlers
+        if getattr(handler, "callback", None)
+        == adapter._handle_background_location_lifecycle
     ]
-    assert location_handlers
-    location_handler = location_handlers[0]
+    ordinary_handlers = [
+        (group, handler)
+        for group, handler in app.handlers
+        if getattr(handler, "callback", None)
+        == adapter._handle_one_time_location_message
+    ]
+    assert len(lifecycle_handlers) == 1
+    assert len(ordinary_handlers) == 1
+    lifecycle_group, lifecycle_handler = lifecycle_handlers[0]
+    ordinary_group, ordinary_handler = ordinary_handlers[0]
+    assert lifecycle_group == adapter._BACKGROUND_LOCATION_LIFECYCLE_HANDLER_GROUP
+    assert lifecycle_group != ordinary_group == 0
 
     fixed_message = Message(
         message_id=49,
@@ -74,9 +85,9 @@ async def test_registered_handler_distinguishes_one_time_and_edited_live_updates
         ),
     )
     fixed_update = Update(update_id=1, message=fixed_message)
-    fixed_check_result = location_handler.check_update(fixed_update)
+    fixed_check_result = ordinary_handler.check_update(fixed_update)
     assert fixed_check_result
-    await location_handler.handle_update(
+    await ordinary_handler.handle_update(
         fixed_update,
         app,
         fixed_check_result,
@@ -90,10 +101,11 @@ async def test_registered_handler_distinguishes_one_time_and_edited_live_updates
     assert fixed_event.ephemeral_user_context is None
     assert not adapter._background_location_state_path.exists()
 
+    started_at = datetime.now(timezone.utc)
     message = Message(
         message_id=50,
-        date=datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc),
-        edit_date=datetime(2026, 7, 17, 12, 1, tzinfo=timezone.utc),
+        date=started_at,
+        edit_date=started_at,
         chat=Chat(id=111, type="private"),
         from_user=User(id=111, first_name="Alice", is_bot=False),
         location=Location(
@@ -105,9 +117,9 @@ async def test_registered_handler_distinguishes_one_time_and_edited_live_updates
     )
     update = Update(update_id=2, edited_message=message)
 
-    check_result = location_handler.check_update(update)
+    check_result = lifecycle_handler.check_update(update)
     assert check_result
-    await location_handler.handle_update(
+    await lifecycle_handler.handle_update(
         update,
         app,
         check_result,
@@ -124,3 +136,29 @@ async def test_registered_handler_distinguishes_one_time_and_edited_live_updates
     assert record["source"] == "live_location"
     assert record["is_edited_update"] is True
     adapter._enqueue_text_event.assert_called_once()
+
+    # A native plugin may consume the matching update in PTB's default group.
+    # The reserved group must still observe the edited stop independently.
+    stop_message = Message(
+        message_id=50,
+        date=started_at,
+        edit_date=datetime.now(timezone.utc),
+        chat=Chat(id=111, type="private"),
+        from_user=User(id=111, first_name="Alice", is_bot=False),
+        location=Location(latitude=51.5015, longitude=-0.1419),
+    )
+    stop_update = Update(update_id=3, edited_message=stop_message)
+    stop_check_result = lifecycle_handler.check_update(stop_update)
+    assert stop_check_result
+    await lifecycle_handler.handle_update(
+        stop_update,
+        app,
+        stop_check_result,
+        SimpleNamespace(),
+    )
+
+    stopped_payload = json.loads(adapter._background_location_state_path.read_text())
+    stopped_record = stopped_payload["locations"][subject_key]
+    assert stopped_record["source"] == "live_location_stop"
+    assert "latitude" not in stopped_record
+    assert "longitude" not in stopped_record

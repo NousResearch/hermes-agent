@@ -486,6 +486,63 @@ class TestStreamingCallbacks:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_ephemeral_context_revocation_stops_later_callbacks(
+        self, mock_close, mock_create
+    ):
+        """A revoked location-bearing request cannot emit later stream output."""
+        from agent import relay_llm
+        from agent.turn_api_call import _EphemeralUserContextChanged
+        from run_agent import AIAgent
+
+        context_is_current = {"value": True}
+
+        def _chunks():
+            yield _make_stream_chunk(content="before")
+            context_is_current["value"] = False
+            yield _make_stream_chunk(
+                content="after",
+                tool_calls=[
+                    _make_tool_call_delta(
+                        index=0, tc_id="call_1", name="terminal"
+                    )
+                ],
+            )
+
+        def _assert_context_current():
+            if not context_is_current["value"]:
+                raise _EphemeralUserContextChanged
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _chunks()
+        mock_create.return_value = mock_client
+        deltas = []
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=deltas.append,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+        agent._fire_tool_gen_started = MagicMock()
+
+        with (
+            relay_llm.provider_call_guard(
+                _assert_context_current,
+                contains_ephemeral_user_context=True,
+            ),
+            pytest.raises(_EphemeralUserContextChanged),
+        ):
+            agent._interruptible_streaming_api_call({})
+
+        assert deltas == ["before"]
+        agent._fire_tool_gen_started.assert_not_called()
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_deltas_fire_in_order(self, mock_close, mock_create):
         """Callbacks receive text deltas in order."""
         from run_agent import AIAgent

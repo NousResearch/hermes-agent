@@ -1438,7 +1438,11 @@ class TurnRunner:
             # turn so a restart-interrupted turn is recorded WITH its id for drain-window dedup.
             if ctx.inbound_message_id is not None:
                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
-            if (
+            if ctx.ephemeral_user_context_supplier is not None:
+                kwargs["ephemeral_user_context"] = (
+                    ctx.ephemeral_user_context_supplier
+                )
+            elif (
                 isinstance(ctx.ephemeral_user_context, str)
                 and ctx.ephemeral_user_context.strip()
             ):

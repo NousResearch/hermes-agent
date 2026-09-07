@@ -183,6 +183,63 @@ def test_merge_pending_message_event_prefers_newest_ephemeral_context_for_text()
     assert pending[session_key].ephemeral_user_context == "new location"
 
 
+def test_merge_pending_message_event_clears_context_when_newest_has_none():
+    pending = {}
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        user_id="u1",
+    )
+    session_key = build_session_key(source)
+    first = MessageEvent(
+        text="first fragment",
+        message_type=MessageType.TEXT,
+        source=source,
+        ephemeral_user_context="revoked location",
+    )
+    second = MessageEvent(
+        text="second fragment",
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+
+    merge_pending_message_event(pending, session_key, first, merge_text=True)
+    merge_pending_message_event(pending, session_key, second, merge_text=True)
+
+    assert pending[session_key].ephemeral_user_context is None
+
+
+def test_merge_pending_message_event_copies_refresh_marker_from_newest_sender():
+    pending = {}
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        user_id="u1",
+    )
+    session_key = build_session_key(source)
+    first = MessageEvent(
+        text="fixed pin",
+        message_type=MessageType.LOCATION,
+        source=source,
+    )
+    second = MessageEvent(
+        text="nearby?",
+        message_type=MessageType.TEXT,
+        source=source,
+        ephemeral_user_context="current location",
+    )
+    second._telegram_background_location_subject_key = "subject"  # type: ignore[attr-defined]
+
+    merge_pending_message_event(pending, session_key, first, merge_text=True)
+    merge_pending_message_event(pending, session_key, second, merge_text=True)
+
+    merged = pending[session_key]
+    assert merged._telegram_background_location_subject_key == "subject"  # type: ignore[attr-defined]
+    assert merged.ephemeral_user_context == "current location"
+
+
 def test_merge_pending_message_event_clears_context_across_senders():
     pending = {}
     first_source = SessionSource(
@@ -216,6 +273,7 @@ def test_merge_pending_message_event_clears_context_across_senders():
 
     assert pending[session_key].text == "first\nsecond"
     assert pending[session_key].ephemeral_user_context is None
+    assert pending[session_key]._ephemeral_context_refresh_unsafe is True  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio

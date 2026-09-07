@@ -785,6 +785,7 @@ def recover_with_credential_pool(
     agent, *, status_code: Optional[int], has_retried_429: bool,
     classified_reason: Optional[FailoverReason] = None,
     error_context: Optional[Dict[str, Any]] = None, billing_unverified: bool = False,
+    contains_ephemeral_user_context: bool = False,
 ) -> tuple[bool, bool]:
     """Attempt credential recovery via pool rotation; returns (recovered, has_retried_429).
     Rate limits: retry once, then rotate. Billing: rotate immediately. Auth: refresh before
@@ -823,7 +824,15 @@ def recover_with_credential_pool(
         rotate_status = status_code if status_code is not None else default_status
         kwargs = {
             "status_code": rotate_status,
-            "error_context": error_context,
+            # Providers sometimes echo all or part of the request in an error
+            # body.  The pool persists normalized error details, so forwarding
+            # the raw body would turn volatile user context into durable
+            # credential metadata.  Classification and retry decisions above
+            # still use the in-memory error_context; only the persisted copy is
+            # withheld.
+            "error_context": (
+                {} if contains_ephemeral_user_context else error_context
+            ),
             "api_key_hint": api_key_hint,
         }
         if credential_id:
@@ -1255,11 +1264,28 @@ def _api_error_debug_info(error: Exception) -> Dict[str, Any]:
 
 
 def dump_api_request_debug(
-    agent, api_kwargs: Dict[str, Any], *, reason: str, error: Optional[Exception] = None
+    agent,
+    api_kwargs: Dict[str, Any],
+    *,
+    reason: str,
+    error: Optional[Exception] = None,
+    contains_ephemeral_user_context: bool = False,
 ) -> Optional[Path]:
     """Dump the request body from api_kwargs (minus transport keys) for debugging provider 4xx failures."""
     try:
-        body = {k: v for k, v in copy.deepcopy(api_kwargs).items() if v is not None and k != "timeout"}
+        # Ephemeral user context is deliberately excluded from every durable
+        # Hermes store. Request middleware may copy or reshape it anywhere in
+        # the payload, and provider errors may echo it back, so substring
+        # redaction is not a sufficient privacy boundary. Keep the diagnostic
+        # envelope but omit both the complete request body and verbose error
+        # fields whenever the physical attempt contained volatile context.
+        body = None
+        if not contains_ephemeral_user_context:
+            body = {
+                k: v
+                for k, v in copy.deepcopy(api_kwargs).items()
+                if v is not None and k != "timeout"
+            }
         api_key = None
         try:
             api_key = getattr(agent.client, "api_key", None)
@@ -1274,11 +1300,23 @@ def dump_api_request_debug(
                     "Authorization": f"Bearer {agent._mask_api_key_for_logs(api_key)}",
                     "Content-Type": "application/json",
                 },
-                "body": body,
             },
         }
+        if contains_ephemeral_user_context:
+            dump_payload["request"]["body_omitted"] = (
+                "request contained ephemeral user context"
+            )
+        else:
+            dump_payload["request"]["body"] = body
         if error is not None:
-            dump_payload["error"] = _api_error_debug_info(error)
+            if contains_ephemeral_user_context:
+                safe_error: Dict[str, Any] = {"type": type(error).__name__}
+                status_code = getattr(error, "status_code", None)
+                if isinstance(status_code, int) and not isinstance(status_code, bool):
+                    safe_error["status_code"] = status_code
+                dump_payload["error"] = safe_error
+            else:
+                dump_payload["error"] = _api_error_debug_info(error)
         # Sanitize the session ID (may come from an untrusted X-Hermes-Session-Id header) so a
         # "../"-shaped ID cannot write outside logs_dir.
         from agent.session_persistence import _safe_session_filename_component

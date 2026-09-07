@@ -421,10 +421,13 @@ class GatewaySessionCommandsMixin:
             session_entry.session_id, truncated, active_only=True, reject_active_turn_lease=True):
             return "Retry failed; transcript was not changed."
         session_entry.last_prompt_tokens = 0  # transcript was truncated
-        return await self._handle_message(MessageEvent(
+        retry_event = MessageEvent(
             text=last_user_msg, message_type=MessageType.TEXT, source=source,
             raw_message=event.raw_message, channel_prompt=event.channel_prompt,
-            ephemeral_user_context=event.ephemeral_user_context))
+            ephemeral_user_context=getattr(event, "ephemeral_user_context", None))
+        from gateway.platforms.base import copy_ephemeral_context_metadata
+        copy_ephemeral_context_metadata(event, retry_event)
+        return await self._handle_message(retry_event)
 
     async def _handle_undo_command(self, event: MessageEvent) -> str:
         """Handle /undo [N] — back up N user turns (default 1), soft-deleting the truncated rows and

@@ -3256,7 +3256,8 @@ class TestRunConversation:
             patch.object(agent, "_invoke_api_request_error_hook", side_effect=lambda **kw: hook_events.append(kw)),
             patch(
                 "agent.relay_llm.complete_logical_call",
-                side_effect=lambda request_id, *, outcome: logical_completions.append(
+                side_effect=lambda request_id, *, outcome,
+                contains_ephemeral_user_context=False: logical_completions.append(
                     (request_id, outcome)
                 ),
             ),
@@ -5258,7 +5259,8 @@ class TestRetryExhaustion:
             patch("agent.relay_llm.execute", side_effect=execute),
             patch(
                 "agent.relay_llm.complete_logical_call",
-                side_effect=lambda request_id, *, outcome: logical_completions.append(
+                side_effect=lambda request_id, *, outcome,
+                contains_ephemeral_user_context=False: logical_completions.append(
                     (request_id, outcome)
                 ),
             ),

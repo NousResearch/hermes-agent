@@ -99,7 +99,12 @@ def _side_question_task_config() -> Dict[str, Any]:
     return task if isinstance(task, dict) else {}
 
 
-def _answer_via_fork(parent_agent: Any, question: str, history: Optional[List[Dict[str, Any]]]) -> str:
+def _answer_via_fork(
+    parent_agent: Any,
+    question: str,
+    history: Optional[List[Dict[str, Any]]],
+    ephemeral_user_context: Any = None,
+) -> str:
     """Answer via a cache-parity fork of ``parent_agent`` on the calling thread.
 
     An empty thread-scoped tool whitelist denies every tool call at dispatch: ``tools[]``
@@ -117,8 +122,16 @@ def _answer_via_fork(parent_agent: Any, question: str, history: Optional[List[Di
             "Side question (/btw) denied tool call: {tool_name}. "
             "Tools are disabled here — answer directly from the conversation context."))
         snapshot = trim_snapshot_for_fork(history)
-        result = fork.run_conversation(user_message=f"{_FORK_PROMPT}\n\nSide question: {question}",
-                                       conversation_history=_digest_history(snapshot) if routed else snapshot)
+        run_kwargs = {
+            "user_message": f"{_FORK_PROMPT}\n\nSide question: {question}",
+            "conversation_history": _digest_history(snapshot) if routed else snapshot,
+        }
+        if callable(ephemeral_user_context) or (
+            isinstance(ephemeral_user_context, str)
+            and ephemeral_user_context.strip()
+        ):
+            run_kwargs["ephemeral_user_context"] = ephemeral_user_context
+        result = fork.run_conversation(**run_kwargs)
         answer = (result or {}).get("final_response", "") or ""
         if not answer and result and result.get("error"):
             raise RuntimeError(str(result["error"]))
@@ -134,21 +147,47 @@ def _answer_via_fork(parent_agent: Any, question: str, history: Optional[List[Di
                 pass
 
 
-def _answer_via_oneshot(question: str, history: Optional[List[Dict[str, Any]]], **run_kwargs: Any) -> str:
+def _answer_via_oneshot(
+    question: str,
+    history: Optional[List[Dict[str, Any]]],
+    *,
+    ephemeral_user_context: Any = None,
+    **run_kwargs: Any,
+) -> str:
     """Fallback: answer from a rendered transcript digest in one aux call."""
+    from agent import relay_llm
     from agent.oneshot import run_oneshot
 
     user_input = (
         f"Conversation transcript (snapshot):\n-----\n{render_history_for_side_question(history)}\n-----\n\n"
         f"Side question: {question}"
     )
-    return run_oneshot(instructions=_ONESHOT_INSTRUCTIONS, user_input=user_input, task=SIDE_QUESTION_TASK, **run_kwargs)
+    # The one-shot helper has no per-attempt request boundary where a callable
+    # can be revalidated after middleware/backoff. Fail closed for revocable
+    # platform context; the preferred AIAgent fork path supports it safely.
+    resolved_context = (
+        ephemeral_user_context.strip()
+        if isinstance(ephemeral_user_context, str)
+        else None
+    )
+    if resolved_context:
+        user_input = f"{user_input}\n\n{resolved_context}"
+    with relay_llm.provider_call_guard(
+        None,
+        contains_ephemeral_user_context=bool(resolved_context),
+    ):
+        return run_oneshot(
+            instructions=_ONESHOT_INSTRUCTIONS,
+            user_input=user_input,
+            task=SIDE_QUESTION_TASK,
+            **run_kwargs,
+        )
 
 
 def answer_side_question(
     question: str, history: Optional[List[Dict[str, Any]]], *, parent_agent: Any = None,
     main_runtime: Optional[Dict[str, Any]] = None, max_tokens: int = 2048, temperature: Optional[float] = 0.3,
-    timeout: float = 180.0,
+    timeout: float = 180.0, ephemeral_user_context: Any = None,
 ) -> str:
     """Fork when ``parent_agent`` is live, else (or on empty answer / failure) the one-shot
     digest. Raises on failure — callers surface the error on their own UI."""
@@ -158,12 +197,33 @@ def answer_side_question(
 
     if parent_agent is not None:
         try:
-            answer = _answer_via_fork(parent_agent, question, history)
+            if callable(ephemeral_user_context) or (
+                isinstance(ephemeral_user_context, str)
+                and ephemeral_user_context.strip()
+            ):
+                answer = _answer_via_fork(
+                    parent_agent,
+                    question,
+                    history,
+                    ephemeral_user_context=ephemeral_user_context,
+                )
+            else:
+                answer = _answer_via_fork(parent_agent, question, history)
             if answer:
                 return answer
             logger.warning("/btw fork returned an empty answer; falling back to one-shot")
         except Exception:
             logger.warning("/btw cache-parity fork failed; falling back to one-shot", exc_info=True)
 
-    return _answer_via_oneshot(question, history, main_runtime=main_runtime, max_tokens=max_tokens,
-                               temperature=temperature, timeout=timeout)
+    oneshot_kwargs = {
+        "main_runtime": main_runtime,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "timeout": timeout,
+    }
+    if callable(ephemeral_user_context) or (
+        isinstance(ephemeral_user_context, str)
+        and ephemeral_user_context.strip()
+    ):
+        oneshot_kwargs["ephemeral_user_context"] = ephemeral_user_context
+    return _answer_via_oneshot(question, history, **oneshot_kwargs)

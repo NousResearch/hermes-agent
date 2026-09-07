@@ -200,6 +200,8 @@ async def test_explicit_steer_with_volatile_context_queues_new_turn():
     adapter._pending_messages[sk] = prior
     event = _make_event("/steer use my current position")
     event.ephemeral_user_context = "Location: 1.0, 2.0"
+    event._telegram_background_location_subject_key = "subject"
+    event._telegram_background_location_state_path = "/state/profile.json"
 
     result = await runner._handle_message(event)
 
@@ -210,6 +212,8 @@ async def test_explicit_steer_with_volatile_context_queues_new_turn():
     queued = runner._queued_events[sk][0]
     assert queued.text == "use my current position"
     assert queued.ephemeral_user_context == "Location: 1.0, 2.0"
+    assert queued._telegram_background_location_subject_key == "subject"
+    assert queued._telegram_background_location_state_path == "/state/profile.json"
 
 
 if __name__ == "__main__":  # pragma: no cover

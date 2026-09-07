@@ -119,7 +119,11 @@ def normalize_model_response(
 ) -> ResponseIntakeVerdict:
     """Normalize ``response`` into ``assistant_message`` (str content, never dict/list) and run
     the post-response hooks and continuation guards, in the original order."""
+    from agent import relay_llm
+
+    relay_llm.run_provider_call_guard()
     assistant_message = normalize_response_for_agent(agent, response)
+    relay_llm.run_provider_call_guard()
     finish_reason = assistant_message.finish_reason
 
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ResponseIntakeVerdict:
@@ -133,14 +137,17 @@ def normalize_model_response(
 
     # Agent-as-provider projection: splice the provider-agent's own tool work in as
     # call/result rows before this turn's assistant message; no-op for ordinary providers.
+    relay_llm.run_provider_call_guard()
     splice_provider_projection(agent, response, messages)
 
+    relay_llm.run_provider_call_guard()
     _fire_post_api_request_hook(
         agent, response, assistant_message, finish_reason, api_messages=api_messages,
         api_call_count=api_call_count, api_duration=api_duration, api_start_time=api_start_time,
         api_request_id=api_request_id, effective_task_id=effective_task_id, turn_id=turn_id,
     )
 
+    relay_llm.run_provider_call_guard()
     content = assistant_message.content
     if content and not agent.quiet_mode:
         if agent.verbose_logging:
@@ -153,6 +160,7 @@ def normalize_model_response(
     # Incomplete <REASONING_SCRATCHPAD> (opened, never closed): the model ran out of
     # output tokens mid-reasoning — retry up to 2 times, then save as partial.
     if has_incomplete_scratchpad(content or ""):
+        relay_llm.run_provider_call_guard()
         agent._incomplete_scratchpad_retries += 1
         agent._buffer_vprint("⚠️  Incomplete <REASONING_SCRATCHPAD> detected (opened but never closed)")
         if agent._incomplete_scratchpad_retries <= 2:
@@ -170,6 +178,7 @@ def normalize_model_response(
     agent._incomplete_scratchpad_retries = 0
 
     if agent.api_mode == "codex_responses" and finish_reason == "incomplete":
+        relay_llm.run_provider_call_guard()
         _codex_result = continue_codex_incomplete(
             agent, assistant_message, finish_reason, messages=messages,
             conversation_history=conversation_history, api_call_count=api_call_count,

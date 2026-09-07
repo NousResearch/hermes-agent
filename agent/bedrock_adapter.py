@@ -69,15 +69,30 @@ def _require_boto3():
     return boto3
 
 
-def _cached_client(cache: Dict[str, Any], service: str, region: str):
+def _cached_client(
+    cache: Dict[str, Any], service: str, region: str, *, config: Any = None
+):
     """Get or create a per-region boto3 client using the default credential chain."""
     if region not in cache:
-        cache[region] = _require_boto3().client(service, region_name=region)
+        kwargs = {"region_name": region}
+        if config is not None:
+            kwargs["config"] = config
+        cache[region] = _require_boto3().client(service, **kwargs)
     return cache[region]
 
 
 def _get_bedrock_runtime_client(region: str):
-    return _cached_client(_bedrock_runtime_client_cache, "bedrock-runtime", region)
+    # Hermes owns retry/rebuild policy for inference requests. In particular,
+    # botocore must not resend a request after its ephemeral context is revoked.
+    from botocore.config import Config
+
+    config = Config(retries={"total_max_attempts": 1})
+    return _cached_client(
+        _bedrock_runtime_client_cache,
+        "bedrock-runtime",
+        region,
+        config=config,
+    )
 
 
 def _get_bedrock_control_client(region: str):
@@ -180,9 +195,12 @@ def configure_bedrock_openai_client_kwargs(client_kwargs: Dict[str, Any], *, tim
     bearer auth, the ``aws-sdk``/``no-key-required`` placeholders mean IAM chain auth."""
     base_url = str(client_kwargs.get("base_url") or "")
     api_key = client_kwargs.get("api_key")
-    if not is_bedrock_openai_base_url(base_url) or (
-        isinstance(api_key, str) and api_key.strip() and api_key not in {"aws-sdk", "no-key-required"}
-    ):
+    if not is_bedrock_openai_base_url(base_url):
+        return client_kwargs
+    # Hermes owns retry/rebuild policy, including revocation checks for
+    # ephemeral context. The SDK must not replay a stale request internally.
+    client_kwargs.setdefault("max_retries", 0)
+    if isinstance(api_key, str) and api_key.strip() and api_key not in {"aws-sdk", "no-key-required"}:
         return client_kwargs
     region = bedrock_openai_region_from_base_url(base_url) or resolve_bedrock_runtime_region()
     client_kwargs["api_key"] = "aws-sdk"
@@ -822,12 +840,19 @@ def call_converse(
     placement; evicts the cached client on stale-connection errors."""
     client = _get_bedrock_runtime_client(region)
     kwargs = build_converse_kwargs(model, messages, tools, max_tokens, temperature, top_p, stop_sequences, guardrail_config)
+
+    def _invoke(final_kwargs: Dict[str, Any]) -> Any:
+        from agent import relay_llm
+
+        relay_llm.run_provider_call_guard()
+        return client.converse(**final_kwargs)
+
     try:
-        response = client.converse(**kwargs)
+        response = _invoke(kwargs)
     except Exception as exc:
         retry_kwargs = recover_from_cache_point_rejection(exc, kwargs)
         if retry_kwargs is not None:
-            return normalize_converse_response(client.converse(**retry_kwargs))
+            return normalize_converse_response(_invoke(retry_kwargs))
         if is_stale_connection_error(exc):
             logger.warning(
                 "bedrock: stale-connection error on converse(region=%s, model=%s): "
@@ -1051,13 +1076,25 @@ def call_converse_stream(
         guardrail_config=guardrail_config,
     )
 
+    def _invoke_stream(final_kwargs: Dict[str, Any]) -> Any:
+        from agent import relay_llm
+
+        relay_llm.run_provider_call_guard()
+        return client.converse_stream(**final_kwargs)
+
+    def _invoke_nonstream(final_kwargs: Dict[str, Any]) -> Any:
+        from agent import relay_llm
+
+        relay_llm.run_provider_call_guard()
+        return client.converse(**final_kwargs)
+
     try:
-        response = client.converse_stream(**kwargs)
+        response = _invoke_stream(kwargs)
     except Exception as exc:
         retry_kwargs = recover_from_cache_point_rejection(exc, kwargs)
         if retry_kwargs is not None:
             return normalize_converse_stream_events(
-                client.converse_stream(**retry_kwargs)
+                _invoke_stream(retry_kwargs)
             )
         if is_streaming_access_denied_error(exc):
             # IAM allows bedrock:InvokeModel but not
@@ -1068,7 +1105,7 @@ def call_converse_stream(
                 "falling back to non-streaming converse().",
                 region, model,
             )
-            return normalize_converse_response(client.converse(**kwargs))
+            return normalize_converse_response(_invoke_nonstream(kwargs))
         if is_stale_connection_error(exc):
             logger.warning(
                 "bedrock: stale-connection error on converse_stream(region=%s, "

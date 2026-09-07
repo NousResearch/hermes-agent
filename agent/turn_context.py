@@ -34,6 +34,77 @@ def _str_attr(agent: Any, name: str) -> str:
     return getattr(agent, name, "") or ""
 
 
+def append_ephemeral_user_context(content: Any, user_context: Optional[str]) -> Any:
+    """Return an API-only copy of a user message with volatile context appended.
+
+    ``messages`` is Hermes' canonical transcript and must never contain this
+    context. Native image turns use OpenAI-style content lists, so preserve
+    their image blocks while extending the first text block (or append one when
+    no text block exists).
+    """
+    context = user_context.strip() if isinstance(user_context, str) else ""
+    if not context:
+        return content
+
+    suffix = f"\n\n{context}"
+    if isinstance(content, str):
+        return f"{content}{suffix}"
+
+    if isinstance(content, list):
+        copied = [dict(part) if isinstance(part, dict) else part for part in content]
+        for part in copied:
+            if isinstance(part, dict) and part.get("type") in {"text", "input_text"}:
+                part["text"] = f"{part.get('text', '')}{suffix}"
+                return copied
+        return copied + [{"type": "text", "text": context}]
+
+    return content
+
+
+def resolve_ephemeral_user_context(value: Any) -> Optional[str]:
+    """Resolve a volatile context value for one provider request.
+
+    Gateway-owned context may be supplied lazily so revocation that happens
+    between tool-loop iterations takes effect before the next API call. A
+    failing supplier is privacy-sensitive, so it fails closed.
+    """
+    if callable(value):
+        try:
+            value = value()
+        except Exception:
+            logger.warning(
+                "Volatile user-context supplier failed; dropping context",
+                exc_info=True,
+            )
+            return None
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
+def append_ephemeral_context_to_last_user(
+    api_messages: List[Dict[str, Any]], value: Any
+) -> bool:
+    """Resolve and append volatile context to the active request's last user row.
+
+    Request assembly may insert a system prompt, prefills, or context-engine
+    output after the canonical current-turn index is known.  The last surviving
+    user row is therefore the only stable request-local target.  Returns whether
+    non-empty context was attached.
+    """
+    context = resolve_ephemeral_user_context(value)
+    if context is None:
+        return False
+    for message in reversed(api_messages):
+        if isinstance(message, dict) and message.get("role") == "user":
+            message["content"] = append_ephemeral_user_context(
+                message.get("content", ""), context
+            )
+            return True
+    return False
+
+
 def _preflight_request_tokens(
     agent: Any, messages: List[Dict[str, Any]], system_prompt: str
 ) -> int:
@@ -991,14 +1062,15 @@ def build_api_messages(
                 )
                 if _composed is not None:
                     api_msg["content"] = _composed
-            if ephemeral_user_context:
-                from agent.conversation_loop import _append_ephemeral_user_context
-
+            resolved_ephemeral_user_context = resolve_ephemeral_user_context(
+                ephemeral_user_context
+            )
+            if resolved_ephemeral_user_context:
                 # Platform context is intentionally current-turn-only. Applied
                 # after the persisted api_content sidecar has been substituted
                 # so exact coordinates never become durable transcript data.
-                api_msg["content"] = _append_ephemeral_user_context(
-                    api_msg.get("content", ""), ephemeral_user_context
+                api_msg["content"] = append_ephemeral_user_context(
+                    api_msg.get("content", ""), resolved_ephemeral_user_context
                 )
         elif (
             isinstance(_api_content, str) and _api_content

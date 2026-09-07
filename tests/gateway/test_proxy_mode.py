@@ -165,6 +165,29 @@ class TestRunAgentProxyDispatch:
         runner._run_agent_via_proxy.assert_called_once()
         assert runner._run_agent_via_proxy.call_args.kwargs["run_generation"] == 7
 
+    @pytest.mark.asyncio
+    async def test_proxy_boundary_does_not_forward_volatile_user_context(
+        self, monkeypatch, caplog
+    ):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        runner = _make_runner()
+        runner._run_agent_via_proxy = AsyncMock(
+            return_value={"final_response": "ok", "messages": []}
+        )
+
+        await runner._run_agent(
+            message="where am I?",
+            context_prompt="",
+            history=[],
+            source=_make_source(),
+            session_id="test-session-123",
+            ephemeral_user_context="Latitude: 1.0\nLongitude: 2.0",
+        )
+
+        forwarded = runner._run_agent_via_proxy.call_args.kwargs
+        assert "ephemeral_user_context" not in forwarded
+        assert "Dropping volatile user context" in caplog.text
+
 
 class TestRunAgentViaProxy:
     """Test the actual proxy HTTP forwarding logic."""
@@ -294,4 +317,3 @@ class TestEnvVarRegistration:
         info = OPTIONAL_ENV_VARS["GATEWAY_PROXY_URL"]
         assert info["category"] == "messaging"
         assert info["password"] is False
-

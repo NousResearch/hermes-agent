@@ -45,6 +45,9 @@ class TurnContext:
     # to AIAgent's API-only sidecar, never persisted into the transcript or
     # folded into the system/channel prompt.
     ephemeral_user_context: Optional[str] = None
+    # Re-evaluated by the agent for every provider request so a platform stop
+    # received between tool-loop iterations revokes the captured snapshot.
+    ephemeral_user_context_supplier: Optional[Callable[[], Optional[str]]] = None
     session_id: Optional[str] = None
     session_key: Optional[str] = None
     run_generation: Optional[int] = None

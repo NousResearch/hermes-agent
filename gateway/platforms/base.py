@@ -1656,30 +1656,6 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
-def _invalidate_pending_stt_cache(event: MessageEvent) -> None:
-    """Clear gateway-side STT cache attrs when media is merged into an event.
-
-    ``merge_pending_message_event`` extends ``media_urls`` in place when two
-    media-bearing messages arrive in quick succession.  The gateway runner
-    caches STT transcripts on the event via ``setattr`` (see
-    ``_transcribe_pending_audio_event_once``); if the cached event gains new
-    media after the cache was populated, the stale transcript must be
-    discarded so the next transcription call picks up the merged attachments.
-
-    Only the *derived* transcription cache is dropped.  The echo ledger
-    (``_gateway_pending_stt_echoed``) records which transcripts were already
-    delivered to the user and must survive the merge: the re-run transcription
-    returns the earlier notes again, so clearing the ledger would echo them a
-    second time.
-    """
-    for attr in (
-        "_gateway_pending_stt_text",
-        "_gateway_pending_stt_transcripts",
-    ):
-        if hasattr(event, attr):
-            delattr(event, attr)
-
-
 def _pending_event_sender_key(event: MessageEvent) -> Optional[tuple[str, ...]]:
     """Return an identity key only when the event names a stable individual."""
     source = getattr(event, "source", None)
@@ -1692,6 +1668,25 @@ def _pending_event_sender_key(event: MessageEvent) -> Optional[tuple[str, ...]]:
         str(getattr(source, "chat_id", "") or ""),
         user_id,
     )
+
+
+def copy_ephemeral_context_metadata(source: MessageEvent, target: MessageEvent) -> None:
+    """Copy private revocation metadata when deriving/merging a user event.
+
+    ``ephemeral_user_context`` is only the current snapshot. Platform-owned
+    metadata identifies whether and how that snapshot may be refreshed at the
+    final dispatch boundary.
+    """
+    for attr in (
+        "_telegram_background_location_subject_key",
+        "_telegram_background_location_bot_scope",
+        "_telegram_background_location_state_path",
+        "_telegram_background_location_state_incarnation",
+        "_telegram_background_location_base_context",
+        "_ephemeral_context_refresh_unsafe",
+    ):
+        if hasattr(source, attr):
+            setattr(target, attr, getattr(source, attr))
 
 
 def merge_pending_message_event(
@@ -1723,11 +1718,26 @@ def merge_pending_message_event(
             == _pending_event_sender_key(event)
         )
         incoming_context = getattr(event, "ephemeral_user_context", None)
-        existing_context = getattr(existing, "ephemeral_user_context", None)
-        if not same_sender and (existing_context or incoming_context):
+        if not same_sender:
+            # The surviving event keeps the first sender's source metadata.
+            # Mark any cross/unknown-sender merge so a platform's just-in-time
+            # resolver cannot later reattach that sender's private context to
+            # a mixed turn.
+            existing._ephemeral_context_refresh_unsafe = True  # type: ignore[attr-defined]
             existing.ephemeral_user_context = None
-        elif isinstance(incoming_context, str) and incoming_context.strip():
-            existing.ephemeral_user_context = incoming_context
+        elif same_sender:
+            copy_ephemeral_context_metadata(event, existing)
+            # The newest event is authoritative even when it carries no
+            # volatile context. Keeping the prior non-empty value can replay
+            # revoked platform state after several messages are merged.
+            if getattr(existing, "_ephemeral_context_refresh_unsafe", False):
+                existing.ephemeral_user_context = None
+            else:
+                existing.ephemeral_user_context = (
+                    incoming_context
+                    if isinstance(incoming_context, str) and incoming_context.strip()
+                    else None
+                )
 
         existing_type = getattr(existing, "message_type", None)
         existing_is_photo = existing_type == MessageType.PHOTO
@@ -2359,11 +2369,19 @@ class BasePlatformAdapter(ABC):
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
             # A location snapshot (or similar volatile context) is per-turn
-            # state, not part of the text aggregation. Prefer the newest
-            # non-empty snapshot so split messages don't retain stale context.
+            # state, not part of the text aggregation. The latest fragment is
+            # authoritative, including an empty value after revocation.
             incoming_context = getattr(event, "ephemeral_user_context", None)
-            if isinstance(incoming_context, str) and incoming_context.strip():
-                existing.ephemeral_user_context = incoming_context
+            copy_ephemeral_context_metadata(event, existing)
+            existing.ephemeral_user_context = (
+                None
+                if getattr(existing, "_ephemeral_context_refresh_unsafe", False)
+                else (
+                    incoming_context
+                    if isinstance(incoming_context, str) and incoming_context.strip()
+                    else None
+                )
+            )
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
@@ -3385,6 +3403,17 @@ class BasePlatformAdapter(ABC):
         else:
             if event.text:
                 state.event.text = _append_text(state.event.text, event.text)
+            incoming_context = getattr(event, "ephemeral_user_context", None)
+            copy_ephemeral_context_metadata(event, state.event)
+            state.event.ephemeral_user_context = (
+                None
+                if getattr(state.event, "_ephemeral_context_refresh_unsafe", False)
+                else (
+                    incoming_context
+                    if isinstance(incoming_context, str) and incoming_context.strip()
+                    else None
+                )
+            )
             latest_message_id = getattr(event, "message_id", None)
             latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
             if latest_message_id is not None:
@@ -3981,6 +4010,23 @@ class BasePlatformAdapter(ABC):
         # Reuse the interrupt event handle_message() installed; new Event only if removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
+        refresh_ephemeral_context = getattr(
+            self, "_refresh_ephemeral_user_context_for_dispatch", None
+        )
+        if callable(refresh_ephemeral_context):
+            try:
+                refreshed = refresh_ephemeral_context(event)
+                if inspect.isawaitable(refreshed):
+                    await refreshed
+            except Exception:
+                # A fallible platform-state lookup must never replay an older,
+                # potentially revoked value already carried by a queued event.
+                event.ephemeral_user_context = None
+                logger.warning(
+                    "[%s] Could not refresh volatile user context; dropping it",
+                    self.name,
+                    exc_info=True,
+                )
         _thread_metadata = _thread_metadata_for_event(event)
         typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
         try:

@@ -87,6 +87,7 @@ def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
 def _recover_unicode_encode_error(
     agent: Any, api_error: Exception, messages: List[Dict[str, Any]], api_messages: Any,
     api_kwargs: Any, active_system_prompt: Any,
+    ephemeral_api_messages_base: Any = None,
 ) -> Tuple[bool, Any]:
     """UnicodeEncodeError recovery: lone surrogates (clipboard paste) first, then an ASCII
     codec under a non-UTF-8 locale. Sanitizes in place; bounded by the caller's
@@ -100,6 +101,13 @@ def _recover_unicode_encode_error(
     _prefill = getattr(agent, "prefill_messages", None)
     _surrogates_found = _sanitize_messages_surrogates(messages)
     _surrogates_found |= isinstance(api_messages, list) and _sanitize_messages_surrogates(api_messages)
+    if (
+        isinstance(ephemeral_api_messages_base, list)
+        and ephemeral_api_messages_base is not api_messages
+    ):
+        _surrogates_found |= _sanitize_messages_surrogates(
+            ephemeral_api_messages_base
+        )
     _surrogates_found |= isinstance(api_kwargs, dict) and _sanitize_structure_surrogates(api_kwargs)
     _surrogates_found |= isinstance(_prefill, list) and _sanitize_messages_surrogates(_prefill)
     # Gate the retry on the error type, not on whether anything was found — a new
@@ -121,6 +129,11 @@ def _recover_unicode_encode_error(
     _messages_sanitized = _sanitize_messages_non_ascii(messages)
     if isinstance(api_messages, list):
         _sanitize_messages_non_ascii(api_messages)
+    if (
+        isinstance(ephemeral_api_messages_base, list)
+        and ephemeral_api_messages_base is not api_messages
+    ):
+        _sanitize_messages_non_ascii(ephemeral_api_messages_base)
     if isinstance(api_kwargs, dict):
         _sanitize_structure_non_ascii(api_kwargs)
     _prefill_sanitized = isinstance(_prefill, list) and _sanitize_messages_non_ascii(_prefill)
@@ -182,6 +195,7 @@ def _recover_unicode_encode_error(
 def recover_before_classification(
     agent: Any, api_error: Exception, *, messages: List[Dict[str, Any]], api_messages: Any,
     api_kwargs: Any, active_system_prompt: Any,
+    ephemeral_api_messages_base: Any = None,
 ) -> Tuple[bool, Any]:
     """Recovery branches that run BEFORE ``classify_api_error``: UnicodeEncodeError
     sanitization, provider image-content rejection (switch session to text-only), and the
@@ -189,7 +203,13 @@ def recover_before_classification(
     active_system_prompt)``; the prompt may be ASCII-sanitized in place."""
     if isinstance(api_error, UnicodeEncodeError) and getattr(agent, '_unicode_sanitization_passes', 0) < 2:
         _recovered, active_system_prompt = _recover_unicode_encode_error(
-            agent, api_error, messages, api_messages, api_kwargs, active_system_prompt
+            agent,
+            api_error,
+            messages,
+            api_messages,
+            api_kwargs,
+            active_system_prompt,
+            ephemeral_api_messages_base,
         )
         if _recovered:
             return True, active_system_prompt
@@ -209,6 +229,11 @@ def recover_before_classification(
         _imgs_removed = _strip_images_from_messages(messages)
         if isinstance(api_messages, list):
             _strip_images_from_messages(api_messages)
+        if (
+            isinstance(ephemeral_api_messages_base, list)
+            and ephemeral_api_messages_base is not api_messages
+        ):
+            _strip_images_from_messages(ephemeral_api_messages_base)
         _vlines(
             agent,
             "⚠️  Server rejected image content — switching to text-only mode for this session"
@@ -235,18 +260,26 @@ def recover_before_classification(
     return False, active_system_prompt
 
 
-def _print_nous_401_diagnostics(agent: Any, api_error: Exception) -> None:
+def _print_nous_401_diagnostics(
+    agent: Any,
+    api_error: Exception,
+    *,
+    contains_ephemeral_user_context: bool = False,
+) -> None:
     """Nous 401 that survived a credential refresh: likely Portal OAuth expired/revoked,
     no credits, or agent key blocked."""
     from agent.conversation_loop import _print_nous_entitlement_guidance
     from hermes_constants import display_hermes_home
     _body_text = ""
-    try:
-        _body = getattr(api_error, "body", None) or getattr(api_error, "response", None)
-        if _body is not None:
-            _body_text = str(_body)[:200]
-    except Exception:
-        pass
+    if not contains_ephemeral_user_context:
+        try:
+            _body = getattr(api_error, "body", None) or getattr(
+                api_error, "response", None
+            )
+            if _body is not None:
+                _body_text = str(_body)[:200]
+        except Exception:
+            pass
     _plines(agent, "🔐 Nous 401 — Portal authentication failed.")
     if _body_text:
         _plines(agent, f"   Response: {_body_text}")
@@ -298,7 +331,12 @@ def _print_anthropic_401_diagnostics(agent: Any, key: Any) -> None:
 
 
 def _refresh_credentials_after_401(
-    agent: Any, api_error: Exception, _retry: TurnRetryState, status_code: Optional[int]
+    agent: Any,
+    api_error: Exception,
+    _retry: TurnRetryState,
+    status_code: Optional[int],
+    *,
+    contains_ephemeral_user_context: bool = False,
 ) -> bool:
     """Per-provider one-shot credential refresh on 401 (codex/xai, vertex, nous, copilot,
     anthropic), printing user-facing diagnostics when the nous/anthropic refresh fails.
@@ -331,7 +369,11 @@ def _refresh_credentials_after_401(
         if agent._try_refresh_nous_client_credentials(force=True):
             agent._buffer_vprint("🔐 Nous agent key refreshed after 401. Retrying request...")
             return True
-        _print_nous_401_diagnostics(agent, api_error)
+        _print_nous_401_diagnostics(
+            agent,
+            api_error,
+            contains_ephemeral_user_context=contains_ephemeral_user_context,
+        )
     if _is_copilot_provider(agent) and not _retry.copilot_auth_retry_attempted:
         _retry.copilot_auth_retry_attempted = True
         if agent._try_refresh_copilot_client_credentials():
@@ -352,6 +394,7 @@ def _refresh_credentials_after_401(
 def _recover_format_errors(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState,
     messages: List[Dict[str, Any]], api_messages: Any,
+    ephemeral_api_messages_base: Any = None,
 ) -> bool:
     """One-shot format-recovery strips: thinking-signature → invalid-encrypted-content
     replay disable → native-compaction reject → llama.cpp grammar strip. Returns True when
@@ -361,10 +404,16 @@ def _recover_format_errors(
     if classified.reason == FailoverReason.thinking_signature and not _retry.thinking_sig_retry_attempted:
         _retry.thinking_sig_retry_attempted = True
         _api_stripped = 0
-        for _m in api_messages:
-            if isinstance(_m, dict) and "reasoning_details" in _m:
-                _m.pop("reasoning_details", None)
-                _api_stripped += 1
+        for _payload in (api_messages, ephemeral_api_messages_base):
+            if not isinstance(_payload, list) or (
+                _payload is ephemeral_api_messages_base
+                and _payload is api_messages
+            ):
+                continue
+            for _m in _payload:
+                if isinstance(_m, dict) and "reasoning_details" in _m:
+                    _m.pop("reasoning_details", None)
+                    _api_stripped += 1
         _vlines(agent, "⚠️  Thinking block signature invalid, stripped reasoning_details from api_messages for retry...")
         logger.warning(
             "%sThinking block signature recovery: stripped "
@@ -391,6 +440,8 @@ def _recover_format_errors(
     ):
         _retry.invalid_encrypted_content_retry_attempted = True
         replay_stats = agent._disable_codex_reasoning_replay(messages)
+        if isinstance(ephemeral_api_messages_base, list):
+            agent._disable_codex_reasoning_replay(ephemeral_api_messages_base)
         _vlines(
             agent,
             f"⚠️  Encrypted reasoning replay was rejected by the provider — "
@@ -457,6 +508,8 @@ def recover_after_classification(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *,
     status_code: Optional[int], error_context: Any, messages: List[Dict[str, Any]],
     api_messages: Any,
+    ephemeral_api_messages_base: Any = None,
+    contains_ephemeral_user_context: bool = False,
 ) -> Tuple[bool, bool]:
     """One-shot recovery chain that runs AFTER ``classify_api_error`` and before the
     generic retry path. Order is load-bearing (each branch may ``return`` early):
@@ -482,6 +535,7 @@ def recover_after_classification(
         status_code=status_code, has_retried_429=_retry.has_retried_429,
         classified_reason=classified.reason, error_context=error_context,
         billing_unverified=classified.billing_unverified,
+        contains_ephemeral_user_context=contains_ephemeral_user_context,
     )
     if recovered_with_pool:
         return True, recovered_with_pool
@@ -489,9 +543,15 @@ def recover_after_classification(
     # Shrink oversized native image parts in-place and retry once.
     if classified.reason == FailoverReason.image_too_large and not _retry.image_shrink_retry_attempted:
         _retry.image_shrink_retry_attempted = True
-        if agent._try_shrink_image_parts_in_messages(
+        shrunk = agent._try_shrink_image_parts_in_messages(
             api_messages, max_dimension=_image_error_max_dimension(api_error) or 8000
-        ):
+        )
+        if isinstance(ephemeral_api_messages_base, list):
+            agent._try_shrink_image_parts_in_messages(
+                ephemeral_api_messages_base,
+                max_dimension=_image_error_max_dimension(api_error) or 8000,
+            )
+        if shrunk:
             _vlines(agent, "📐 Image(s) exceeded provider size limit — shrank and retrying...")
             return True, recovered_with_pool
         logger.info(
@@ -506,7 +566,12 @@ def recover_after_classification(
         and not _retry.multimodal_tool_content_retry_attempted
     ):
         _retry.multimodal_tool_content_retry_attempted = True
-        if agent._try_strip_image_parts_from_tool_messages(api_messages):
+        stripped = agent._try_strip_image_parts_from_tool_messages(api_messages)
+        if isinstance(ephemeral_api_messages_base, list):
+            agent._try_strip_image_parts_from_tool_messages(
+                ephemeral_api_messages_base, remember_model=False
+            )
+        if stripped:
             _vlines(agent, "📐 Provider rejected list-type tool content — downgraded screenshots to text and retrying...")
             return True, recovered_with_pool
         logger.info(
@@ -538,7 +603,13 @@ def recover_after_classification(
     # Strip ONLY the per-call copy: replacing msg["content"] on the shallow api_messages
     # rows keeps canonical history's images (transient rejection must not erase history).
     if classified.reason == FailoverReason.image_corrupt:
-        if isinstance(api_messages, list) and _strip_images_from_messages(api_messages):
+        stripped = (
+            isinstance(api_messages, list)
+            and _strip_images_from_messages(api_messages)
+        )
+        if isinstance(ephemeral_api_messages_base, list):
+            _strip_images_from_messages(ephemeral_api_messages_base)
+        if stripped:
             _vlines(agent, "⚠️  Provider rejected a corrupted image — stripped images from the retry payload and retrying...")
             return True, recovered_with_pool
         logger.info("image-corrupt recovery: no image parts found to strip; surfacing original error.")
@@ -564,10 +635,24 @@ def recover_after_classification(
             _vlines(agent, "🔕 OAuth subscription doesn't support the 1M-context beta — disabled for this session and retrying...")
             return True, recovered_with_pool
 
-    if _refresh_credentials_after_401(agent, api_error, _retry, status_code):
+    if _refresh_credentials_after_401(
+        agent,
+        api_error,
+        _retry,
+        status_code,
+        contains_ephemeral_user_context=contains_ephemeral_user_context,
+    ):
         return True, recovered_with_pool
 
-    if _recover_format_errors(agent, api_error, classified, _retry, messages, api_messages):
+    if _recover_format_errors(
+        agent,
+        api_error,
+        classified,
+        _retry,
+        messages,
+        api_messages,
+        ephemeral_api_messages_base,
+    ):
         return True, recovered_with_pool
     return False, recovered_with_pool
 
@@ -647,6 +732,7 @@ def nonretryable_client_error_result(
     agent: Any, api_error: Exception, classified: Any, *, status_code: Optional[int],
     api_kwargs: Any, api_messages: Any, messages: List[Dict[str, Any]], conversation_history: Any,
     api_call_count: int, approx_tokens: int, provider: Any, base_url: Any, model: Any,
+    contains_ephemeral_user_context: bool = False,
 ) -> Dict[str, Any]:
     """Terminal path for a non-retryable 4xx once fallback is exhausted: debug dump, flush
     the retry trace, print auth / billing / content-policy / TLS guidance, persist (skipped
@@ -657,12 +743,23 @@ def nonretryable_client_error_result(
     )
 
     if api_kwargs is not None:
-        agent._dump_api_request_debug(api_kwargs, reason="non_retryable_client_error", error=api_error)
+        agent._dump_api_request_debug(
+            api_kwargs,
+            reason="non_retryable_client_error",
+            error=api_error,
+            contains_ephemeral_user_context=contains_ephemeral_user_context,
+        )
     # Terminal — flush buffered context so the user sees what was tried before the abort.
     agent._flush_status_buffer()
     # Summarize once: Cloudflare/proxy HTML pages and raw provider bodies must be
     # collapsed here or they leak verbatim via the ``error`` field.
-    _nonretryable_summary = agent._summarize_api_error(api_error)
+    from agent import relay_llm
+
+    _nonretryable_summary = relay_llm.safe_provider_error_summary(
+        agent,
+        api_error,
+        contains_ephemeral_user_context=contains_ephemeral_user_context,
+    )
     _label = _NONRETRYABLE_LABELS.get(classified.reason, f"Non-retryable error (HTTP {status_code})")
     agent._emit_status(f"❌ {_label}: {_nonretryable_summary}")
     _vlines(
@@ -700,7 +797,14 @@ def nonretryable_client_error_result(
             "      • Self-signed local endpoint (llama.cpp, LM Studio, vLLM)? Use http://",
             "        for localhost, or add the server's cert to your trust store.",
         )
-    logger.error("%sNon-retryable client error: %s", agent.log_prefix, api_error)
+    logger.error(
+        "%sNon-retryable client error: %s",
+        agent.log_prefix,
+        relay_llm.safe_provider_error_message(
+            api_error,
+            contains_ephemeral_user_context=contains_ephemeral_user_context,
+        ),
+    )
     # Skip persistence on likely context-overflow (400 + large session): persisting the
     # failed message grows the session and repeats the failure.
     # Persisting the failed user message would make the session even larger, causing the same failure on the
@@ -739,7 +843,7 @@ def max_retries_exhausted_result(
     agent: Any, api_error: Exception, classified: Any, *, max_retries: int, is_rate_limited: bool,
     error_msg: str, api_kwargs: Any, api_messages: Any, messages: List[Dict[str, Any]],
     conversation_history: Any, api_call_count: int, approx_tokens: int, provider: Any,
-    base_url: Any, model: Any,
+    base_url: Any, model: Any, contains_ephemeral_user_context: bool = False,
 ) -> Dict[str, Any]:
     """Terminal path once retries, transport recovery and fallback all failed: flush the
     trace, emit the billing / rate-limit / generic status, print stream-drop or thinking-timeout
@@ -752,7 +856,13 @@ def max_retries_exhausted_result(
     )
 
     agent._flush_status_buffer()
-    _final_summary = agent._summarize_api_error(api_error)
+    from agent import relay_llm
+
+    _final_summary = relay_llm.safe_provider_error_summary(
+        agent,
+        api_error,
+        contains_ephemeral_user_context=contains_ephemeral_user_context,
+    )
     _billing_guidance = ""
     _is_billing = classified.reason == FailoverReason.billing
     if _is_billing:
@@ -814,7 +924,12 @@ def max_retries_exhausted_result(
         provider, model, len(api_messages), f"{approx_tokens:,}",
     )
     if api_kwargs is not None:
-        agent._dump_api_request_debug(api_kwargs, reason="max_retries_exhausted", error=api_error)
+        agent._dump_api_request_debug(
+            api_kwargs,
+            reason="max_retries_exhausted",
+            error=api_error,
+            contains_ephemeral_user_context=contains_ephemeral_user_context,
+        )
     agent._persist_session(messages, conversation_history)
     _billing_block = None
     _billing_unverified = False
@@ -860,13 +975,20 @@ def max_retries_exhausted_result(
 def log_api_error_attempt(
     agent: Any, api_error: Exception, *, retry_count: int, max_retries: int,
     status_code: Optional[int], elapsed_time: float, api_messages: Any, approx_tokens: int,
+    contains_ephemeral_user_context: bool = False,
 ) -> Tuple[str, str, Any, Any, Any]:
     """Log one failed API attempt (warning + buffered retry trace, OpenRouter "no tool
     endpoints" hint, bare-404 missing-vendor-prefix hint); the buffer only surfaces if every
     retry+fallback exhausts. Returns ``(error_type, error_msg, provider, base_url, model)``."""
     error_type = type(api_error).__name__
     error_msg = str(api_error).lower()
-    _error_summary = agent._summarize_api_error(api_error)
+    from agent import relay_llm
+
+    _error_summary = relay_llm.safe_provider_error_summary(
+        agent,
+        api_error,
+        contains_ephemeral_user_context=contains_ephemeral_user_context,
+    )
     logger.warning(
         "API call failed (attempt %s/%s) error_type=%s %s summary=%s",
         retry_count, max_retries, error_type, agent._client_log_context(), _error_summary,
@@ -883,7 +1005,11 @@ def log_api_error_attempt(
         f"   🌐 Endpoint: {_base}",
         f"   📝 Error: {_error_summary}",
     )
-    if status_code and status_code < 500:
+    if (
+        status_code
+        and status_code < 500
+        and not contains_ephemeral_user_context
+    ):
         _err_body = getattr(api_error, "body", None)
         _err_body_str = str(_err_body)[:300] if _err_body else None
         if _err_body_str:
@@ -973,6 +1099,7 @@ _ZAI_POLICY_NOTES = {
 def compute_error_backoff(
     agent: Any, api_error: Exception, *, retry_count: int, max_retries: int, is_rate_limited: bool,
     is_zai_coding_overload: bool, base_url: Any, model: Any,
+    contains_ephemeral_user_context: bool = False,
 ) -> float:
     """Pick the wait before the next API retry and announce it. Retry-After wins for
     rate limits and any other retryable error (capped at 600s: Anthropic Tier 1 buckets
@@ -1034,15 +1161,26 @@ def compute_error_backoff(
             agent._emit_status(_retry_status)
         else:
             agent._buffer_status(_retry_status)
+    from agent import relay_llm
+
     logger.warning(
         "Retrying API call in %ss (attempt %s/%s) %s policy=%s error=%s",
         wait_time, retry_count, max_retries, agent._client_log_context(),
-        _backoff_policy or "default", api_error,
+        _backoff_policy or "default",
+        relay_llm.safe_provider_error_message(
+            api_error,
+            contains_ephemeral_user_context=contains_ephemeral_user_context,
+        ),
     )
     return wait_time
 
 
-def validate_response_shape(agent: Any, response: Any) -> Tuple[bool, List[str]]:
+def validate_response_shape(
+    agent: Any,
+    response: Any,
+    *,
+    contains_ephemeral_user_context: bool = False,
+) -> Tuple[bool, List[str]]:
     """Validate the raw provider response via the transport; ``(response_invalid,
     error_details)``. A Codex ``failed``/``cancelled`` status (e.g. quota exhaustion) is
     invalid so the fallback chain triggers; an empty Codex ``output`` with non-empty
@@ -1055,11 +1193,18 @@ def validate_response_shape(agent: Any, response: Any) -> Tuple[bool, List[str]]
         _codex_resp_status = str(getattr(response, "status", "") or "").strip().lower()
         if _codex_resp_status in {"failed", "cancelled"}:
             _codex_error_obj = getattr(response, "error", None)
-            _codex_error_msg = (
-                _codex_error_obj.get("message") if isinstance(_codex_error_obj, dict)
-                else str(_codex_error_obj) if _codex_error_obj
-                else f"Responses API returned status '{_codex_resp_status}'"
-            )
+            if contains_ephemeral_user_context:
+                _codex_error_msg = (
+                    "details omitted: request contained ephemeral user context"
+                )
+            else:
+                _codex_error_msg = (
+                    _codex_error_obj.get("message")
+                    if isinstance(_codex_error_obj, dict)
+                    else str(_codex_error_obj)
+                    if _codex_error_obj
+                    else f"Responses API returned status '{_codex_resp_status}'"
+                )
             logger.warning(
                 "Codex response status='%s' (error=%s). Routing to fallback. %s",
                 _codex_resp_status, _codex_error_msg, agent._client_log_context(),
@@ -1075,13 +1220,21 @@ def validate_response_shape(agent: Any, response: Any) -> Tuple[bool, List[str]]
                 len(_out_text_stripped),
             )
             return False, []
-        logger.warning(
-            "Codex response.output is empty after stream backfill "
-            "(status=%s, incomplete_details=%s, model=%s). %s",
-            getattr(response, "status", None), getattr(response, "incomplete_details", None),
-            getattr(response, "model", None),
-            f"api_mode={agent.api_mode} provider={agent.provider}",
-        )
+        if contains_ephemeral_user_context:
+            logger.warning(
+                "Codex response.output is empty after stream backfill; response "
+                "details omitted because the request contained ephemeral user context. %s",
+                f"api_mode={agent.api_mode} provider={agent.provider}",
+            )
+        else:
+            logger.warning(
+                "Codex response.output is empty after stream backfill "
+                "(status=%s, incomplete_details=%s, model=%s). %s",
+                getattr(response, "status", None),
+                getattr(response, "incomplete_details", None),
+                getattr(response, "model", None),
+                f"api_mode={agent.api_mode} provider={agent.provider}",
+            )
         return True, ["response.output is empty"]
     if agent.api_mode == "anthropic_messages":
         detail = "response.content invalid (not a non-empty list)"
@@ -1096,14 +1249,22 @@ def validate_response_shape(agent: Any, response: Any) -> Tuple[bool, List[str]]
     return True, [detail]
 
 
-def describe_invalid_response(agent: Any, response: Any, api_duration: float) -> Tuple[str, str, str]:
+def describe_invalid_response(
+    agent: Any,
+    response: Any,
+    api_duration: float,
+    *,
+    contains_ephemeral_user_context: bool = False,
+) -> Tuple[str, str, str]:
     """Diagnostics for an empty/malformed response: ``(error_msg, provider_name,
     failure_hint)``. The hint is derived from the provider error code (524/504/429/
     5xx) and the response time, instead of always assuming rate limiting."""
     error_msg = "Unknown"
-    provider_name = "Unknown"
+    provider_name = str(getattr(agent, "provider", "") or "Unknown")
     _has_error = bool(response and hasattr(response, 'error') and response.error)
-    if _has_error:
+    if contains_ephemeral_user_context:
+        error_msg = "Details omitted: request contained ephemeral user context"
+    elif _has_error:
         error_msg = str(response.error)
         if hasattr(response.error, 'metadata') and response.error.metadata:
             provider_name = response.error.metadata.get('provider_name', 'Unknown')
@@ -1111,10 +1272,20 @@ def describe_invalid_response(agent: Any, response: Any, api_duration: float) ->
         error_msg = str(response.message)
 
     # OpenRouter often returns the actual model used.
-    if provider_name == "Unknown" and response and hasattr(response, 'model') and response.model:
+    if (
+        not contains_ephemeral_user_context
+        and provider_name == "Unknown"
+        and response
+        and hasattr(response, "model")
+        and response.model
+    ):
         provider_name = f"model={response.model}"
 
-    if provider_name == "Unknown" and response:
+    if (
+        not contains_ephemeral_user_context
+        and provider_name == "Unknown"
+        and response
+    ):
         resp_attrs = {k: str(v)[:100] for k, v in vars(response).items() if not k.startswith('_')}
         if agent.verbose_logging:
             logging.debug(f"Response attributes for invalid response: {resp_attrs}")

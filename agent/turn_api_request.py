@@ -22,11 +22,15 @@ logger = logging.getLogger("agent.conversation_loop")
 
 @dataclass
 class ApiRequestBuild:
-    """Always ``action == "fallthrough"``; the fields are the request-local values the caller
-    rebinds for the attempt."""
+    """``fallthrough`` when ready, or ``rebuild`` when volatile context changed.
+
+    The remaining fields are request-local values the caller rebinds for the
+    attempt.
+    """
 
     action: str
     api_messages: Any
+    resolved_ephemeral_user_context: Any
     _moa_prepared_request: Any
     tools_for_api: Any
     api_kwargs: Any
@@ -93,6 +97,8 @@ def _fire_pre_api_request_hook(
 
 def build_api_request(
     agent: Any, *, api_messages: Any, _moa_prepared_request: Any, tools_for_api: Any,
+    ephemeral_api_messages_base: Any, ephemeral_user_context: Any,
+    ephemeral_context_force_empty: Any,
     system_message: Any, messages: Any, original_user_message: Any, approx_tokens: Any,
     total_chars: Any, retry_count: Any, api_call_count: Any, api_request_id: Any,
     api_start_time: Any, effective_task_id: Any, turn_id: Any,
@@ -100,12 +106,48 @@ def build_api_request(
     """Assemble the attempt's request in the original order (every mutation happens BEFORE
     middleware/hooks/debug dumps observe the payload)."""
     from agent.conversation_loop import (
-        _moa_client_consumes_prepared_request, _redecorate_prompt_cache_for_provider,
+        _clone_message_for_send, _moa_client_consumes_prepared_request,
+        _redecorate_prompt_cache_for_provider,
+    )
+    from agent.turn_context import (
+        append_ephemeral_context_to_last_user,
+        resolve_ephemeral_user_context,
     )
 
     agent._reset_stream_delivery_tracking()
     # Per-attempt first-chunk timestamp so a stale value never leaks into post_api_request.
     agent._last_api_first_chunk_at = None
+    resolved_ephemeral_user_context = None
+    if ephemeral_api_messages_base is not None:
+        # ``api_messages`` is rebound to the decorated request after each
+        # attempt.  Never reuse that copy for a volatile supplier: rebuild from
+        # the context-free baseline and resolve immediately before this attempt.
+        api_messages = [
+            _clone_message_for_send(message)
+            for message in ephemeral_api_messages_base
+        ]
+        if not ephemeral_context_force_empty:
+            resolved_ephemeral_user_context = resolve_ephemeral_user_context(
+                ephemeral_user_context
+            )
+            append_ephemeral_context_to_last_user(
+                api_messages, resolved_ephemeral_user_context
+            )
+    else:
+        # Static volatile context was attached during the initial API-message
+        # build. Retain only its presence for downstream diagnostic-dump
+        # suppression; do not append it a second time.
+        resolved_ephemeral_user_context = resolve_ephemeral_user_context(
+            ephemeral_user_context
+        )
+
+    def _ephemeral_context_changed() -> bool:
+        if ephemeral_api_messages_base is None or ephemeral_context_force_empty:
+            return False
+        return (
+            resolve_ephemeral_user_context(ephemeral_user_context)
+            != resolved_ephemeral_user_context
+        )
     # api_messages was built for the primary; a fallback (DeepSeek / Kimi / MiMo) may
     # require reasoning_content — re-apply the echo-back pad (idempotent) and re-render
     # the prompt-cache decoration for the current provider.
@@ -145,6 +187,17 @@ def build_api_request(
     if getattr(agent, "_is_user_initiated_turn", False) and agent._is_copilot_url():
         _set_extra_header(api_kwargs, "x-initiator", "user")
         agent._is_user_initiated_turn = False
+    if _ephemeral_context_changed():
+        return ApiRequestBuild(
+            "rebuild",
+            api_messages,
+            resolved_ephemeral_user_context,
+            _moa_prepared_request,
+            tools_for_api,
+            api_kwargs,
+            dict(api_kwargs),
+            [],
+        )
     try:
         from hermes_cli.middleware import apply_llm_request_middleware
 
@@ -161,6 +214,21 @@ def build_api_request(
         _original_api_kwargs = dict(api_kwargs)
         _llm_middleware_trace = []
 
+    # Request middleware can block on arbitrary work. A stop or newer location
+    # received while it runs must discard the transformed payload before any
+    # later observer or provider sees it.
+    if _ephemeral_context_changed():
+        return ApiRequestBuild(
+            "rebuild",
+            api_messages,
+            resolved_ephemeral_user_context,
+            _moa_prepared_request,
+            tools_for_api,
+            api_kwargs,
+            _original_api_kwargs,
+            _llm_middleware_trace,
+        )
+
     _fire_pre_api_request_hook(
         agent, api_kwargs, api_messages, _llm_middleware_trace, messages=messages,
         original_user_message=original_user_message, approx_tokens=approx_tokens,
@@ -169,8 +237,28 @@ def build_api_request(
         effective_task_id=effective_task_id, turn_id=turn_id,
     )
 
+    # Hooks are observability boundaries and may themselves block. Recheck once
+    # more before debug persistence and physical execution.
+    if _ephemeral_context_changed():
+        return ApiRequestBuild(
+            "rebuild",
+            api_messages,
+            resolved_ephemeral_user_context,
+            _moa_prepared_request,
+            tools_for_api,
+            api_kwargs,
+            _original_api_kwargs,
+            _llm_middleware_trace,
+        )
+
     if env_var_enabled("HERMES_DUMP_REQUESTS"):
-        agent._dump_api_request_debug(api_kwargs, reason="preflight")
+        agent._dump_api_request_debug(
+            api_kwargs,
+            reason="preflight",
+            contains_ephemeral_user_context=bool(
+                resolved_ephemeral_user_context
+            ),
+        )
 
     # Private to the in-process MoA facade; added after middleware/hooks/debug dumps so
     # none serializes it into the provider payload. Re-read the live client:
@@ -186,6 +274,7 @@ def build_api_request(
                 type(agent.client).__name__,
             )
     return ApiRequestBuild(
-        "fallthrough", api_messages, _moa_prepared_request, tools_for_api, api_kwargs,
+        "fallthrough", api_messages, resolved_ephemeral_user_context,
+        _moa_prepared_request, tools_for_api, api_kwargs,
         _original_api_kwargs, _llm_middleware_trace,
     )

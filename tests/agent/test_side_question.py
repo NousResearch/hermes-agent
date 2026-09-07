@@ -92,6 +92,52 @@ class TestAnswerSideQuestion:
         # The instructions steer the model to answer only the side question.
         assert "side" in captured["instructions"].lower()
 
+    def test_oneshot_appends_ephemeral_context_only_to_request(self):
+        captured = {}
+
+        def fake_run_oneshot(**kwargs):
+            from agent import relay_llm
+
+            captured.update(kwargs)
+            captured["sensitive_provider_guard"] = (
+                relay_llm.provider_call_contains_ephemeral_user_context()
+            )
+            return "nearby"
+
+        history = [{"role": "user", "content": "prior message"}]
+        with patch("agent.oneshot.run_oneshot", side_effect=fake_run_oneshot):
+            answer_side_question(
+                "what is nearby?",
+                history,
+                ephemeral_user_context="Location: 1.0, 2.0",
+            )
+
+        assert captured["user_input"].endswith("Location: 1.0, 2.0")
+        assert captured["sensitive_provider_guard"] is True
+        assert history == [{"role": "user", "content": "prior message"}]
+
+    def test_oneshot_drops_revocable_ephemeral_context(self):
+        captured = {}
+        supplier_calls = 0
+
+        def supplier():
+            nonlocal supplier_calls
+            supplier_calls += 1
+            return "Location: 1.0, 2.0"
+
+        def fake_run_oneshot(**kwargs):
+            captured.update(kwargs)
+            return "safe fallback"
+
+        with patch("agent.oneshot.run_oneshot", side_effect=fake_run_oneshot):
+            answer = answer_side_question(
+                "what is nearby?", [], ephemeral_user_context=supplier
+            )
+
+        assert answer == "safe fallback"
+        assert "Location: 1.0, 2.0" not in captured["user_input"]
+        assert supplier_calls == 0
+
 
 class TestTrimSnapshotForFork:
     def test_trims_unresolved_tool_loop_tail(self):
@@ -197,3 +243,36 @@ class TestForkPath:
         assert "which file?" in calls["user_message"]
         assert calls["write_origin"] == "side_question"
         assert calls.get("shutdown") and calls.get("closed")
+
+    def test_fork_forwards_ephemeral_context(self):
+        from agent.side_question import _answer_via_fork
+
+        calls = {}
+
+        class FakeFork:
+            def run_conversation(self, **kwargs):
+                calls.update(kwargs)
+                return {"final_response": "nearby"}
+
+            def shutdown_memory_provider(self):
+                pass
+
+            def close(self):
+                pass
+
+        with patch(
+            "agent.background_review.build_cache_parity_fork",
+            return_value=(FakeFork(), {}, False),
+        ), patch("hermes_cli.plugins.set_thread_tool_whitelist"), patch(
+            "hermes_cli.plugins.clear_thread_tool_whitelist"
+        ), patch(
+            "agent.background_review._snapshot_review_usage", return_value={}
+        ), patch("agent.background_review._record_review_usage_to_parent"):
+            _answer_via_fork(
+                object(),
+                "what is nearby?",
+                [],
+                ephemeral_user_context="Location: 1.0, 2.0",
+            )
+
+        assert calls["ephemeral_user_context"] == "Location: 1.0, 2.0"

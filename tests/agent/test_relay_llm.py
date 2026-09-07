@@ -85,6 +85,45 @@ def test_unintercepted_provider_callback_preserves_client_timeout(
     assert provider_requests[0]["timeout"] == 1800.0
 
 
+def test_provider_call_guard_runs_after_managed_relay_delay(
+    relay_turn, monkeypatch
+):
+    relay, _turn = relay_turn
+    original_execute = relay.llm.execute
+    active = {"value": True}
+    provider_requests = []
+
+    class Revoked(RuntimeError):
+        pass
+
+    async def revoke_before_provider(name, request, *args, **kwargs):
+        active["value"] = False
+        return await original_execute(name, request, *args, **kwargs)
+
+    def check_active():
+        if not active["value"]:
+            raise Revoked("request context was revoked")
+
+    def provider(request):
+        provider_requests.append(request)
+        return {"content": "must not run"}
+
+    monkeypatch.setattr(relay.llm, "execute", revoke_before_provider)
+    monkeypatch.setattr(relay_llm, "_codec", lambda *_args, **_kwargs: None)
+
+    with relay_llm.provider_call_guard(check_active), pytest.raises(Revoked):
+        relay_llm.execute(
+            {"model": "test-model", "messages": []},
+            provider,
+            session_id="session-1",
+            name="custom",
+            model_name="test-model",
+            metadata={"api_mode": "chat_completions"},
+        )
+
+    assert provider_requests == []
+
+
 def test_sync_execution_uses_canonical_relay_operation_name(relay_turn, monkeypatch):
     relay, _turn = relay_turn
     observed_names = []

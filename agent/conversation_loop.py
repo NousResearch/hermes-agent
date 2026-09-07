@@ -33,7 +33,13 @@ from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
 from agent.turn_retry_state import TurnRetryState
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
 # skewed phase mid-turn.
-from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
+from agent.turn_api_call import (
+    _EphemeralUserContextChanged,
+    assert_ephemeral_user_context_current,
+    handle_api_interrupt,
+    nous_rate_limit_guard,
+    perform_api_call,
+)
 from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
 from agent.turn_final_response import finish_text_response
@@ -111,34 +117,6 @@ def _review_input_budget_exhausted(agent: Any) -> bool:
         return False
     used = getattr(agent, "session_input_tokens", 0)
     return isinstance(used, int) and not isinstance(used, bool) and used >= budget
-
-
-def _append_ephemeral_user_context(content: Any, user_context: Optional[str]) -> Any:
-    """Return an API-only copy of a user message with volatile context appended.
-
-    ``messages`` is Hermes' canonical transcript and must never contain this
-    context. This helper therefore operates only on the API message copy
-    assembled in :func:`build_api_messages`. Native image turns use OpenAI-style
-    content lists, so preserve their image blocks while extending the first
-    text block (or append one when no text block exists).
-    """
-    context = user_context.strip() if isinstance(user_context, str) else ""
-    if not context:
-        return content
-
-    suffix = f"\n\n{context}"
-    if isinstance(content, str):
-        return f"{content}{suffix}"
-
-    if isinstance(content, list):
-        copied = [dict(part) if isinstance(part, dict) else part for part in content]
-        for part in copied:
-            if isinstance(part, dict) and part.get("type") in {"text", "input_text"}:
-                part["text"] = f"{part.get('text', '')}{suffix}"
-                return copied
-        return copied + [{"type": "text", "text": context}]
-
-    return content
 
 
 def _maybe_inject_run_budget_wrapup(agent: Any, messages: List[Dict[str, Any]]) -> bool:
@@ -1135,7 +1113,7 @@ def _redecorate_prompt_cache_for_provider(
             messages = prepared["messages"]
     # Direct attribute access, not getattr: the flags are always initialized on
     # AIAgent, and a default would mask a real init bug as silent cache-off.
-    elif agent._use_prompt_caching:
+    elif agent._use_prompt_caching and getattr(agent, "provider", None) != "moa":
         _ensure_cached_system_prompt_static(agent, system_message=system_message)
         static = getattr(agent, "_cached_system_prompt_static", None)
         from agent.prompt_caching import envelope_tool_part_cache_markers_supported
@@ -1335,6 +1313,10 @@ class _LoopState:
     # Per-iteration slots.
     request_logger: Any = None
     api_messages: Any = None
+    ephemeral_api_messages_base: Any = None
+    ephemeral_context_force_empty: bool = False
+    ephemeral_context_rebuild_count: int = 0
+    resolved_ephemeral_user_context: Any = None
     tools_for_api: Any = None
     _moa_prepared_request: Any = None
     approx_tokens: Any = None
@@ -1389,6 +1371,33 @@ def _run_phase(fn, agent, state: _LoopState, **extra):
     return verdict
 
 
+def _arm_ephemeral_context_rebuild(s: _LoopState) -> None:
+    """Bound volatile-context rebuilds so a moving location cannot livelock a turn."""
+    s.ephemeral_context_rebuild_count += 1
+    if s.ephemeral_context_rebuild_count >= 3:
+        s.ephemeral_context_force_empty = True
+
+
+def _ephemeral_response_adoption_guard(s: _LoopState):
+    """Keep the provider snapshot fenced through response adoption and dispatch."""
+    from agent import relay_llm
+
+    def callback() -> None:
+        assert_ephemeral_user_context_current(
+            ephemeral_user_context=s.ephemeral_user_context,
+            resolved_ephemeral_user_context=s.resolved_ephemeral_user_context,
+            ephemeral_api_messages_base=s.ephemeral_api_messages_base,
+            ephemeral_context_force_empty=s.ephemeral_context_force_empty,
+        )
+
+    return relay_llm.provider_call_guard(
+        callback,
+        contains_ephemeral_user_context=bool(
+            s.resolved_ephemeral_user_context
+        ),
+    )
+
+
 def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
     """One API call with its retry/recovery loop (guard → build → call → check, error handlers).
 
@@ -1401,8 +1410,15 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
         if _ng.action == "break":
             return None
         try:
-            _run_phase(build_api_request, agent, s)
-            if _run_phase(perform_api_call, agent, s).action == "break":
+            _br = _run_phase(build_api_request, agent, s)
+            if _br.action == "rebuild":
+                _arm_ephemeral_context_rebuild(s)
+                continue
+            _pc = _run_phase(perform_api_call, agent, s)
+            if _pc.action == "rebuild":
+                _arm_ephemeral_context_rebuild(s)
+                continue
+            if _pc.action == "break":
                 return None
             _rc = _run_phase(check_api_response, agent, s)
             if _rc.action == "return":
@@ -1434,7 +1450,7 @@ def run_conversation(
     persist_user_display_metadata: Optional[Dict[str, Any]] = None,
     persist_user_platform_id: Optional[str] = None,
     moa_config: Optional[dict[str, Any]] = None,
-    ephemeral_user_context: Optional[str] = None,
+    ephemeral_user_context: Any = None,
 ) -> Dict[str, Any]:
     """Run a complete conversation with tool calling until completion; returns the result dict.
 
@@ -1442,8 +1458,9 @@ def run_conversation(
     store when ``user_message`` carries API-only synthetic prefixes; timestamp / platform id are
     stored as metadata (platform id lets restart drain recovery dedup). ``persist_user_display_*``:
     display-only event rendering; the model still receives the message unchanged.
-    ``ephemeral_user_context``: volatile platform context appended only to the API
-    representation of the current user turn. It is never added to canonical
+    ``ephemeral_user_context``: volatile platform context (a string or a
+    zero-argument supplier) resolved for each API request and appended only to
+    the current user turn's wire representation. It is never added to canonical
     conversation messages or transcript persistence."""
     if moa_config is None:
         user_message, moa_config, persist_user_message = _decode_inline_moa_turn(
@@ -1544,20 +1561,33 @@ def run_conversation(
             continue
 
         try:
-            _ri = _run_phase(normalize_model_response, agent, s)
-            if _ri.action == "return":
-                return _ri.result
-            if _ri.action == "continue":
-                continue
-            _v = _run_phase(
-                run_tool_round if s.assistant_message.tool_calls else finish_text_response, agent, s
-            )
-            if _v.action == "return":
-                return _v.result
-            if _v.action == "break":
-                break
-            if _v.action == "continue":
-                continue
+            from agent import relay_llm
+
+            with _ephemeral_response_adoption_guard(s):
+                # The provider-return check is not enough: lifecycle updates
+                # arrive on the gateway event loop while normalization, hooks,
+                # persistence, and tool middleware run on this worker.
+                relay_llm.run_provider_call_guard()
+                _ri = _run_phase(normalize_model_response, agent, s)
+                relay_llm.run_provider_call_guard()
+                if _ri.action == "return":
+                    return _ri.result
+                if _ri.action == "continue":
+                    continue
+                _v = _run_phase(
+                    run_tool_round if s.assistant_message.tool_calls else finish_text_response,
+                    agent,
+                    s,
+                )
+                if _v.action == "return":
+                    return _v.result
+                if _v.action == "break":
+                    break
+                if _v.action == "continue":
+                    continue
+        except _EphemeralUserContextChanged:
+            _arm_ephemeral_context_rebuild(s)
+            continue
         except Exception as e:
             if _run_phase(handle_outer_loop_error, agent, s, e=e).action == "break":
                 break

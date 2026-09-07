@@ -330,6 +330,41 @@ def test_native_client_accepts_injected_http_client():
     assert client._http is injected
 
 
+def test_native_stream_rechecks_guard_when_lazy_generator_starts():
+    from agent import relay_llm
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    calls = []
+    current = {"allowed": True}
+
+    class RecordingHTTP:
+        def stream(self, *_args, **_kwargs):
+            calls.append("stream")
+            raise AssertionError("transport must remain unopened")
+
+        def close(self):
+            return None
+
+    def guard():
+        if not current["allowed"]:
+            raise RuntimeError("volatile context revoked")
+
+    client = GeminiNativeClient(
+        api_key="AIza-test", http_client=RecordingHTTP()
+    )
+    with relay_llm.provider_call_guard(guard):
+        stream = client.chat.completions.create(
+            model="gemini-2.5-flash",
+            messages=[{"role": "user", "content": "where am I?"}],
+            stream=True,
+        )
+        current["allowed"] = False
+        with pytest.raises(RuntimeError, match="volatile context revoked"):
+            next(stream)
+
+    assert calls == []
+
+
 def test_native_client_rejects_empty_api_key_with_actionable_message():
     """Empty/whitespace api_key must raise at construction, not produce a cryptic
     Google GFE 'Error 400 (Bad Request)!!1' HTML page on the first request."""

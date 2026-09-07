@@ -864,6 +864,26 @@ class TestExtractProviderFromArn:
 # ---------------------------------------------------------------------------
 
 class TestClientCache:
+    def test_runtime_client_disables_sdk_retries(self):
+        from agent.bedrock_adapter import (
+            _get_bedrock_control_client,
+            _get_bedrock_runtime_client,
+            reset_client_cache,
+        )
+
+        boto3 = MagicMock()
+        boto3.client.side_effect = ["runtime-client", "control-client"]
+        reset_client_cache()
+        with patch("agent.bedrock_adapter._require_boto3", return_value=boto3):
+            assert _get_bedrock_runtime_client("us-east-1") == "runtime-client"
+            assert _get_bedrock_control_client("us-east-1") == "control-client"
+
+        runtime_call, control_call = boto3.client.call_args_list
+        assert runtime_call.args == ("bedrock-runtime",)
+        assert runtime_call.kwargs["region_name"] == "us-east-1"
+        assert runtime_call.kwargs["config"].retries["total_max_attempts"] == 1
+        assert control_call == (("bedrock",), {"region_name": "us-east-1"})
+
     def test_reset_clears_caches(self):
         from agent.bedrock_adapter import (
             _bedrock_runtime_client_cache,

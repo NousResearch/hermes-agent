@@ -147,18 +147,27 @@ platforms:
     background_locations: true
 ```
 
+Background live locations require Telegram long polling. Hermes disables this
+option in webhook mode because a healthy local webhook server cannot prove that
+the reverse proxy is still delivering updates; without that proof, a stop
+update could be missed while an indefinite location remained cached.
+
 With this option enabled:
 
 - accepted active live-location updates, plus the matching edited stop update,
   do not start an agent turn or trigger a reply;
-- only the latest active live location for each Telegram bot/sender/chat tuple
-  is retained in the profile state file;
+- only the latest live-location lifecycle record for each Telegram
+  bot/sender/chat tuple is retained in the profile state file; stopped and
+  expired shares keep a coordinate-free marker so stale Telegram retries
+  cannot reactivate them;
 - the state is stored profile-locally at
   `$HERMES_HOME/state/telegram_background_locations/<bot-scope>.json` with exact
   coordinates, Telegram sender/chat/message/update/thread identifiers,
   timestamps, accuracy, and live-only heading/proximity/live-period metadata;
 - the gateway refreshes its in-memory state view after at most 30 seconds, so
   deleting or editing that file takes effect without restarting the gateway;
+- finite shares are replaced by coordinate-free expiry markers at their
+  deadline even when no later Telegram traffic arrives;
 - a later text message or command from the same sender receives the latest live
   snapshot as ephemeral user-side context for that turn. Questions such as
   "Where am I?" or "What's nearby?" can therefore use it without changing the
@@ -169,7 +178,10 @@ The live snapshot is appended only to the current API-copy user message, after
 normal per-turn user-message composition. It is intentionally not replayed on
 historical API messages: a later Telegram turn gets the then-current live
 snapshot from adapter state instead. This preserves a byte-stable system prompt
-and does not add a cross-process replay store for coordinates.
+and does not add a cross-process replay store for coordinates. Because the
+prior turn's location suffix is deliberately absent from its historical wire
+copy, the provider can reuse the older stable prefix but not the location-bearing
+tail of the immediately preceding request.
 
 Records are scoped to the configured Telegram bot identity, sender, and chat;
 forum/group topics are isolated from one another, while private-chat topics
@@ -182,20 +194,29 @@ are not retained because Telegram does not expose a stable individual identity
 for safely attaching them to a later turn. Records are not currently available
 to turns from Discord or other platforms because Hermes does not have a
 cross-platform identity mapping for gateway users.
+Telegram business-account messages are also ignored for this feature because
+the current session identity does not include a business-connection ID.
 
 Temporary live-location records are attached only until Telegram's
-`live_period` expires. Stopping a live share removes its retained record;
+`live_period` expires. Stopping a live share removes its retained coordinates;
 `0x7FFFFFFF` live shares remain active until explicitly stopped. A fixed pin or
 venue does not replace a retained live snapshot because it is its own normal
 conversation turn.
 
+If long polling loses continuity, Hermes suppresses the retained coordinates
+from queued turns and replaces active records with coordinate-free restart
+markers before polling can become healthy again. A fresh live-location edit is
+required before coordinates become available after that reconnect. The same
+fail-closed invalidation applies when conflict recovery intentionally drops
+Telegram's queued updates.
+
 The state file is written with owner-only permissions on POSIX systems because
-it contains exact coordinates. Normal Telegram authorization and chat/topic
-gates still apply, and the option defaults to `false` for compatibility. To
-clear the state, stop the gateway, remove the file, and then restart it. The
-running gateway keeps the latest-location cache in memory, so deleting only the
-live file does not clear the active process and a later update can recreate the
-state.
+active records contain exact coordinates. Normal Telegram authorization and
+chat/topic gates still apply, and the option defaults to `false` for
+compatibility. Deleting the file while the gateway is running clears the
+in-memory view after the cache's 30-second refresh window, but a subsequent
+live update can recreate it. For an immediate clear, stop the gateway, remove
+the file, and restart it.
 
 This option intentionally sends the latest active-live coordinates with each
 later accepted text message or command from that sender, including turns

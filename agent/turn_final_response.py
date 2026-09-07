@@ -58,6 +58,9 @@ def finish_text_response(
     from agent.conversation_loop import (
         _CODEX_ACK_CONTINUATION_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT, _join_truncated_parts
     )
+    from agent import relay_llm
+
+    relay_llm.run_provider_call_guard()
 
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> FinalResponseVerdict:
         return FinalResponseVerdict(
@@ -79,6 +82,7 @@ def finish_text_response(
 
     # Think-block-only / empty content: recovery path.
     if not agent._has_content_after_think_block(final_response):
+        relay_llm.run_provider_call_guard()
         _ev = recover_empty_response(
             agent, assistant_message, response, finish_reason, final_response=final_response,
             messages=messages, api_messages=api_messages, conversation_history=conversation_history,
@@ -100,6 +104,7 @@ def finish_text_response(
     agent._thinking_prefill_retries = 0
     # Surface the one-shot fallback switch notice before dropping the retry buffer so a
     # provider/model switch stays visible on success.
+    relay_llm.run_provider_call_guard()
     agent._emit_pending_fallback_notice()
     agent._clear_status_buffer()
 
@@ -135,6 +140,7 @@ def finish_text_response(
             require_workspace=(_ack_mode == "codex_only"),
         )
     ):
+        relay_llm.run_provider_call_guard()
         if _stall_continue_intent:
             logger.info(
                 "Stall guard: turn ending on trailing continue-"
@@ -155,6 +161,7 @@ def finish_text_response(
     codex_ack_continuations = 0
 
     if truncated_response_parts:
+        relay_llm.run_provider_call_guard()
         final_response = _join_truncated_parts([*truncated_response_parts, final_response])
         truncated_response_parts = []
         length_continue_retries = 0
@@ -175,6 +182,7 @@ def finish_text_response(
         and not assistant_message.tool_calls
         and getattr(agent, "_dropped_toolcall_retries", 0) < 3
     ):
+        relay_llm.run_provider_call_guard()
         agent._dropped_toolcall_retries = getattr(agent, "_dropped_toolcall_retries", 0) + 1
         logger.warning(
             "finish_reason=tool_calls with empty tool_calls array "
@@ -204,6 +212,7 @@ def finish_text_response(
 
     # Pop prefill / empty-retry scaffolding before the final response or
     # verification follow-up; it must not become durable transcript.
+    relay_llm.run_provider_call_guard()
     while (
         messages
         and isinstance(messages[-1], dict)
@@ -211,6 +220,7 @@ def finish_text_response(
     ):
         messages.pop()
 
+    relay_llm.run_provider_call_guard()
     _sg = apply_stop_gates(
         agent, final_msg, final_response=final_response, messages=messages,
         conversation_history=conversation_history,
@@ -223,10 +233,12 @@ def finish_text_response(
         final_response = None
         return _verdict("continue")
 
+    relay_llm.run_provider_call_guard()
     append_message(messages, final_msg)
     # Make the answer durable before leaving the loop (_DB_PERSISTED_MARKER keeps
     # _persist_session idempotent). Failure must NOT abort the turn: finalize retries.
     try:
+        relay_llm.run_provider_call_guard()
         agent._flush_messages_to_session_db(messages, conversation_history)
     except Exception:
         logger.warning(

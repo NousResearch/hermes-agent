@@ -50,15 +50,18 @@ class ApiErrorVerdict:
 
 def handle_api_error(
     agent: Any, *, api_error: Any, _retry: Any, thinking_spinner: Any, messages: Any,
-    api_messages: Any, api_kwargs: Any, system_message: Any, active_system_prompt: Any,
+    api_messages: Any, ephemeral_api_messages_base: Any, api_kwargs: Any,
+    system_message: Any, active_system_prompt: Any,
     conversation_history: Any, approx_tokens: Any, retry_count: Any, max_retries: Any,
     compression_attempts: Any, max_compression_attempts: Any, api_call_count: Any,
     api_request_id: Any, api_start_time: Any, effective_task_id: Any, turn_id: Any,
+    resolved_ephemeral_user_context: Any = None,
 ) -> ApiErrorVerdict:
     """Recover from ``api_error`` in the original order. Every fallback activation must leave
     the retry loop with ``restart_with_rebuilt_messages`` armed (``"break"``) so the pre-API
     preflight re-runs against the fallback's context window (#84733)."""
     _provider_overflow_recovery_pending = False
+    contains_ephemeral_user_context = bool(resolved_ephemeral_user_context)
 
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ApiErrorVerdict:
         return ApiErrorVerdict(
@@ -80,6 +83,7 @@ def handle_api_error(
     _recovered, active_system_prompt = recover_before_classification(
         agent, api_error, messages=messages, api_messages=api_messages, api_kwargs=api_kwargs,
         active_system_prompt=active_system_prompt,
+        ephemeral_api_messages_base=ephemeral_api_messages_base,
     )
     if _recovered:
         return _verdict("continue")
@@ -92,10 +96,17 @@ def handle_api_error(
     from tools.interpreter_shutdown import interpreter_shutting_down
 
     if interpreter_shutting_down(api_error):
+        from agent import relay_llm
+
         logger.warning(
             "%sInterpreter is shutting down — abandoning turn "
             "during API call #%d (%s)",
-            agent.log_prefix, api_call_count, api_error,
+            agent.log_prefix,
+            api_call_count,
+            relay_llm.safe_provider_error_message(
+                api_error,
+                contains_ephemeral_user_context=contains_ephemeral_user_context,
+            ),
         )
         _shutdown_summary = "Turn abandoned: the process was shutting down before the model call could complete."
         return _verdict("return", {
@@ -117,10 +128,17 @@ def handle_api_error(
         classified.retryable, classified.should_compress,
         classified.should_rotate_credential, classified.should_fallback,
     )
+    from agent import relay_llm
+
     agent._invoke_api_request_error_hook(
         task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
         api_call_count=api_call_count, api_start_time=api_start_time, api_kwargs=api_kwargs,
-        error_type=type(api_error).__name__, error_message=str(api_error), status_code=status_code,
+        error_type=type(api_error).__name__,
+        error_message=relay_llm.safe_provider_error_message(
+            api_error,
+            contains_ephemeral_user_context=contains_ephemeral_user_context,
+        ),
+        status_code=status_code,
         retry_count=retry_count, max_retries=max_retries, retryable=classified.retryable,
         reason=classified.reason.value,
     )
@@ -128,6 +146,8 @@ def handle_api_error(
     _recovered, recovered_with_pool = recover_after_classification(
         agent, api_error, classified, _retry, status_code=status_code, error_context=error_context,
         messages=messages, api_messages=api_messages,
+        ephemeral_api_messages_base=ephemeral_api_messages_base,
+        contains_ephemeral_user_context=contains_ephemeral_user_context,
     )
     if _recovered:
         return _verdict("continue")
@@ -139,6 +159,7 @@ def handle_api_error(
     error_type, error_msg, _provider, _base, _model = log_api_error_attempt(
         agent, api_error, retry_count=retry_count, max_retries=max_retries, status_code=status_code,
         elapsed_time=elapsed_time, api_messages=api_messages, approx_tokens=approx_tokens,
+        contains_ephemeral_user_context=contains_ephemeral_user_context,
     )
 
     if agent._interrupt_requested:
@@ -147,10 +168,19 @@ def handle_api_error(
         if agent.clear_interrupt(preserve_redirect=True):
             _retry.restart_with_redirected_messages = True
             return _verdict("break")
+        from agent import relay_llm
+
+        safe_interrupt_error = relay_llm.safe_provider_error_message(
+            api_error,
+            contains_ephemeral_user_context=contains_ephemeral_user_context,
+        )
         return _verdict("return", abort_turn_on_interrupt(
             agent, messages, conversation_history, api_call_count,
             abort_message="Interrupt detected during error handling, aborting retries.",
-            interrupt_text=f"Operation interrupted: handling API error ({error_type}: {agent._clean_error_message(str(api_error))}).",
+            interrupt_text=(
+                "Operation interrupted: handling API error "
+                f"({error_type}: {agent._clean_error_message(safe_interrupt_error)})."
+            ),
         ))
 
     _ce = route_classified_error(
@@ -206,6 +236,7 @@ def handle_api_error(
         conversation_history=conversation_history, approx_tokens=approx_tokens,
         retry_count=retry_count, max_retries=max_retries, compression_attempts=compression_attempts,
         api_call_count=api_call_count,
+        resolved_ephemeral_user_context=resolved_ephemeral_user_context,
     )
     active_system_prompt = _ue.active_system_prompt
     retry_count = _ue.retry_count
@@ -253,6 +284,7 @@ def settle_unrecovered_error(
     _provider: Any, _base: Any, _model: Any, messages: Any, api_messages: Any, api_kwargs: Any,
     active_system_prompt: Any, conversation_history: Any, approx_tokens: Any, retry_count: Any,
     max_retries: Any, compression_attempts: Any, api_call_count: Any,
+    resolved_ephemeral_user_context: Any = None,
 ) -> UnrecoveredErrorVerdict:
     """Decide the fate of an API error that every recovery chain declined: local validation /
     non-retryable client errors (Copilot stale-credential self-heal first, then fallback, then a
@@ -262,6 +294,7 @@ def settle_unrecovered_error(
     from agent.conversation_loop import (
         _arm_fallback_restart, _is_copilot_provider, _is_stale_copilot_credential_error
     )
+    contains_ephemeral_user_context = bool(resolved_ephemeral_user_context)
 
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> UnrecoveredErrorVerdict:
         return UnrecoveredErrorVerdict(
@@ -316,6 +349,7 @@ def settle_unrecovered_error(
             api_messages=api_messages, messages=messages, conversation_history=conversation_history,
             api_call_count=api_call_count, approx_tokens=approx_tokens, provider=_provider,
             base_url=_base, model=_model,
+            contains_ephemeral_user_context=contains_ephemeral_user_context,
         ))
 
     if retry_count >= max_retries:
@@ -346,12 +380,14 @@ def settle_unrecovered_error(
             messages=messages, conversation_history=conversation_history,
             api_call_count=api_call_count, approx_tokens=approx_tokens, provider=_provider,
             base_url=_base, model=_model,
+            contains_ephemeral_user_context=contains_ephemeral_user_context,
         ))
 
     wait_time = compute_error_backoff(
         agent, api_error, retry_count=retry_count, max_retries=max_retries,
         is_rate_limited=is_rate_limited, is_zai_coding_overload=_is_zai_coding_overload,
         base_url=_base, model=_model,
+        contains_ephemeral_user_context=contains_ephemeral_user_context,
     )
     # Same preserve-redirect rule as the invalid-response wait: a steering correction
     # must survive backoff, not die as "Operation interrupted".

@@ -776,7 +776,8 @@ class GatewaySlashCommandsMixin(
             prompt, event.source, task_id, event_message_id=self._reply_anchor_for_event(event),
             # Forward image/audio attachments so the background agent can see them.
             media_urls=list(event.media_urls or []), media_types=list(event.media_types or []),
-            ephemeral_user_context=event.ephemeral_user_context))
+            ephemeral_user_context=getattr(event, "ephemeral_user_context", None),
+            context_event=event))
         return t("gateway.background.started", preview=_preview(prompt), task_id=task_id)
 
     async def _handle_btw_command(self, event: MessageEvent) -> str:
@@ -816,9 +817,31 @@ class GatewaySlashCommandsMixin(
         async def _run_side_question() -> None:
             from agent.side_question import answer_side_question
             try:
+                await self._refresh_event_ephemeral_user_context(event)
+                side_question_kwargs = {
+                    "parent_agent": parent_agent,
+                    "main_runtime": main_runtime,
+                }
+                ephemeral_user_context_supplier = (
+                    self._event_ephemeral_user_context_supplier(event)
+                )
+                ephemeral_user_context = getattr(
+                    event, "ephemeral_user_context", None
+                )
+                if ephemeral_user_context_supplier is not None:
+                    side_question_kwargs["ephemeral_user_context"] = (
+                        ephemeral_user_context_supplier
+                    )
+                elif (
+                    isinstance(ephemeral_user_context, str)
+                    and ephemeral_user_context.strip()
+                ):
+                    side_question_kwargs["ephemeral_user_context"] = (
+                        ephemeral_user_context
+                    )
                 answer = await asyncio.to_thread(
                     answer_side_question, question, history_snapshot,
-                    parent_agent=parent_agent, main_runtime=main_runtime)
+                    **side_question_kwargs)
                 reply = t("gateway.btw.answer", preview=preview, answer=answer or "")
             except Exception as e:
                 logger.warning("/btw side question failed: %s", e)

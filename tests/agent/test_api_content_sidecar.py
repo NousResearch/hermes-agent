@@ -17,6 +17,7 @@ in-process mock provider.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -357,12 +358,35 @@ class TestFlushOverrideSidecar:
 class _MockHandler(BaseHTTPRequestHandler):
     captured_requests: list = []
     response_queue: list = []
+    raw_response_queue: list = []
+    error_queue: list = []
+    on_request = None
 
     def do_POST(self):  # noqa: N802 (http.server API)
         length = int(self.headers.get("Content-Length", 0))
         req = json.loads(self.rfile.read(length).decode())
         type(self).captured_requests.append(req)
+        callback = type(self).on_request
+        if callable(callback):
+            callback(req)
+        if "messages" in req and type(self).error_queue:
+            status, payload = type(self).error_queue.pop(0)
+            body = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         is_stream = req.get("stream") is True
+        if "messages" in req and type(self).raw_response_queue:
+            body = json.dumps(type(self).raw_response_queue.pop(0)).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if type(self).response_queue:
             resp = type(self).response_queue.pop(0)
         else:
@@ -429,6 +453,9 @@ def wire_env():
     """
     _MockHandler.captured_requests = []
     _MockHandler.response_queue = []
+    _MockHandler.raw_response_queue = []
+    _MockHandler.error_queue = []
+    _MockHandler.on_request = None
     srv = HTTPServer(("127.0.0.1", 0), _MockHandler)
     port = srv.server_address[1]
     t = threading.Thread(target=srv.serve_forever, daemon=True)
@@ -487,6 +514,131 @@ def _user_messages(req: dict) -> list:
 
 
 class TestWireInvariant:
+    def test_auxiliary_provider_diagnostics_omit_ephemeral_echo(self, caplog):
+        """MoA/auxiliary retries run inside the same sensitive provider guard."""
+        from agent import relay_llm
+        from agent.auxiliary_client import (
+            _create_with_progress,
+            _validate_llm_response,
+        )
+
+        marker = "Latitude: 48.8584 Longitude: 2.2945"
+
+        class _Completions:
+            def __init__(self):
+                self.calls = 0
+
+            def create(self, **_kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError(
+                        f"can only afford 1024 tokens; echoed request {marker}"
+                    )
+                return _text_resp("done")
+
+        completions = _Completions()
+        client = types.SimpleNamespace(
+            chat=types.SimpleNamespace(completions=completions)
+        )
+        caplog.set_level(logging.DEBUG)
+        with relay_llm.provider_call_guard(
+            None, contains_ephemeral_user_context=True
+        ):
+            _create_with_progress(
+                client,
+                {"model": "test-model", "messages": [], "max_tokens": 2048},
+                "moa_aggregator",
+            )
+            with pytest.raises(RuntimeError) as invalid:
+                _validate_llm_response(
+                    types.SimpleNamespace(
+                        choices=[], echoed=f"provider repeated {marker}"
+                    ),
+                    "moa_aggregator",
+                )
+
+        retained = caplog.text + str(invalid.value)
+        assert marker not in retained
+        assert "48.8584" not in retained
+        assert "2.2945" not in retained
+        assert "ephemeral user context" in retained
+
+    def test_main_credential_pool_does_not_persist_ephemeral_error_echo(self):
+        """The main recovery path may classify a raw echo, but must not store it."""
+        from agent.agent_runtime_helpers import recover_with_credential_pool
+        from agent.error_classifier import FailoverReason
+
+        marker = "Latitude: 48.8584 Longitude: 2.2945"
+        captured = {}
+        next_entry = types.SimpleNamespace(id="secondary")
+
+        class _Pool:
+            provider = "openrouter"
+
+            def current(self):
+                return None
+
+            def entries(self):
+                return []
+
+            def mark_exhausted_and_rotate(self, **kwargs):
+                captured.update(kwargs)
+                return next_entry
+
+        agent = types.SimpleNamespace(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_key="sk-test",
+            _credential_pool=_Pool(),
+            _credential_pool_entry_id=None,
+            _swap_credential=MagicMock(),
+        )
+
+        recovered, _ = recover_with_credential_pool(
+            agent,
+            status_code=402,
+            has_retried_429=False,
+            classified_reason=FailoverReason.billing,
+            error_context={"message": f"provider echoed {marker}"},
+            contains_ephemeral_user_context=True,
+        )
+
+        assert recovered is True
+        assert captured["error_context"] == {}
+        assert marker not in json.dumps(captured)
+
+    def test_auxiliary_credential_pool_does_not_persist_ephemeral_error_echo(self):
+        """Auxiliary retries share the request's sensitive-data guard."""
+        from agent import relay_llm
+        from agent.auxiliary_client import _recover_provider_pool
+
+        marker = "Latitude: 48.8584 Longitude: 2.2945"
+        captured = {}
+        pool = types.SimpleNamespace(
+            has_credentials=lambda: True,
+            mark_exhausted_and_rotate=lambda **kwargs: (
+                captured.update(kwargs) or types.SimpleNamespace(id="secondary")
+            ),
+        )
+
+        class _PaymentError(Exception):
+            status_code = 402
+
+        with patch("agent.auxiliary_client.load_pool", return_value=pool), \
+             patch("agent.auxiliary_client._evict_cached_clients"), \
+             relay_llm.provider_call_guard(
+                 None, contains_ephemeral_user_context=True
+             ):
+            recovered = _recover_provider_pool(
+                "openrouter",
+                _PaymentError(f"provider echoed {marker}"),
+                failed_api_key="sk-test",
+            )
+
+        assert recovered is True
+        assert captured["error_context"] == {}
+        assert marker not in json.dumps(captured)
+
     def test_injection_sent_stamped_and_stable_within_turn(self, wire_env):
         """The current turn's user message goes out with the injected context,
         the sidecar equals the sent bytes exactly, the field never reaches the
@@ -587,6 +739,544 @@ class TestWireInvariant:
         assert historical["content"] == "where am I?\n\nPLUGIN-CTX"
         assert volatile not in historical["content"]
         assert current["content"] == "second question\n\nPLUGIN-CTX"
+
+    def test_volatile_context_supplier_is_rechecked_between_tool_iterations(
+        self, wire_env
+    ):
+        make_agent, handler, db, sid = wire_env
+        volatile = "[Background Telegram location context]\nLatitude: 48.8584"
+        current = {"value": volatile}
+
+        def current_context():
+            return current["value"]
+
+        def revoke_after_first_request(request):
+            if "messages" in request:
+                current["value"] = None
+
+        handler.on_request = revoke_after_first_request
+
+        agent = make_agent()
+        handler.response_queue.append(
+            _tc_resp("read_file", '{"file_path": "/nonexistent-path"}')
+        )
+        handler.response_queue.append(_text_resp("done"))
+
+        agent.run_conversation(
+            "where am I?",
+            conversation_history=[],
+            task_id="volatile-revoked-mid-turn",
+            ephemeral_user_context=current_context,
+        )
+
+        first, second = _chat_requests(handler)
+        assert volatile in _user_messages(first)[0]["content"]
+        assert volatile not in _user_messages(second)[0]["content"]
+        # The first response arrived after revocation and proposed a tool call.
+        # It must be discarded, not executed and carried into the rebuilt call.
+        assert not any(message.get("role") == "tool" for message in second["messages"])
+        assert volatile not in json.dumps(db.get_messages_as_conversation(sid))
+
+    def test_revocation_during_response_normalization_discards_tool_call(
+        self, wire_env
+    ):
+        """A stop after provider return still wins before tool persistence/execution."""
+        from agent import turn_response_intake
+
+        make_agent, handler, db, sid = wire_env
+        volatile = "[Background Telegram location context]\nLatitude: 48.8584"
+        current = {"value": volatile}
+        agent = make_agent()
+        original_normalize = turn_response_intake.normalize_response_for_agent
+        normalize_calls = 0
+
+        def normalize_and_revoke(agent, response):
+            nonlocal normalize_calls
+            normalized = original_normalize(agent, response)
+            normalize_calls += 1
+            if normalize_calls == 1:
+                current["value"] = None
+            return normalized
+
+        handler.response_queue.append(
+            _tc_resp(
+                "read_file",
+                '{"file_path": "/tmp/near-48.8584"}',
+            )
+        )
+        handler.response_queue.append(_text_resp("fresh answer"))
+
+        with patch.object(
+            turn_response_intake,
+            "normalize_response_for_agent",
+            side_effect=normalize_and_revoke,
+        ):
+            result = agent.run_conversation(
+                "where am I?",
+                conversation_history=[],
+                task_id="volatile-revoked-during-tool-intake",
+                ephemeral_user_context=lambda: current["value"],
+            )
+
+        first, second = _chat_requests(handler)
+        assert volatile in _user_messages(first)[0]["content"]
+        assert volatile not in _user_messages(second)[0]["content"]
+        assert not any(
+            message.get("role") in {"assistant", "tool"}
+            for message in second["messages"][1:]
+        )
+        assert result["final_response"] == "fresh answer"
+        retained = json.dumps(db.get_messages_as_conversation(sid))
+        assert "near-48.8584" not in retained
+        assert volatile not in retained
+
+    def test_revocation_during_response_normalization_discards_final_text(
+        self, wire_env
+    ):
+        """A location-derived final answer is rebuilt if stop wins during intake."""
+        from agent import turn_response_intake
+
+        make_agent, handler, db, sid = wire_env
+        volatile = "[Background Telegram location context]\nLatitude: 48.8584"
+        stale_answer = "You are currently near latitude 48.8584"
+        current = {"value": volatile}
+        agent = make_agent()
+        original_normalize = turn_response_intake.normalize_response_for_agent
+        normalize_calls = 0
+
+        def normalize_and_revoke(agent, response):
+            nonlocal normalize_calls
+            normalized = original_normalize(agent, response)
+            normalize_calls += 1
+            if normalize_calls == 1:
+                current["value"] = None
+            return normalized
+
+        handler.response_queue.append(_text_resp(stale_answer))
+        handler.response_queue.append(_text_resp("Location sharing stopped."))
+
+        with patch.object(
+            turn_response_intake,
+            "normalize_response_for_agent",
+            side_effect=normalize_and_revoke,
+        ):
+            result = agent.run_conversation(
+                "where am I?",
+                conversation_history=[],
+                task_id="volatile-revoked-during-text-intake",
+                ephemeral_user_context=lambda: current["value"],
+            )
+
+        first, second = _chat_requests(handler)
+        assert volatile in _user_messages(first)[0]["content"]
+        assert volatile not in _user_messages(second)[0]["content"]
+        assert result["final_response"] == "Location sharing stopped."
+        retained = json.dumps(db.get_messages_as_conversation(sid))
+        assert stale_answer not in retained
+        assert volatile not in retained
+
+    def test_revocation_after_tool_turn_persist_blocks_physical_dispatch(
+        self, wire_env
+    ):
+        """A stop racing the durability flush cannot start the proposed tool."""
+        make_agent, handler, _db, _sid = wire_env
+        volatile = "[Background Telegram location context]\nLatitude: 48.8584"
+        current = {"value": volatile}
+        agent = make_agent()
+        original_flush = agent._flush_messages_to_session_db
+
+        def flush_then_revoke(messages, conversation_history=None):
+            persisted = original_flush(messages, conversation_history)
+            if any(
+                message.get("role") == "assistant" and message.get("tool_calls")
+                for message in messages
+                if isinstance(message, dict)
+            ):
+                current["value"] = None
+            return persisted
+
+        agent._flush_messages_to_session_db = flush_then_revoke
+        handler.response_queue.append(
+            _tc_resp("read_file", '{"file_path": "/nonexistent-path"}')
+        )
+        handler.response_queue.append(_text_resp("tool was skipped"))
+
+        with patch("model_tools.handle_function_call") as physical_dispatch:
+            result = agent.run_conversation(
+                "where am I?",
+                conversation_history=[],
+                task_id="volatile-revoked-after-tool-persist",
+                ephemeral_user_context=lambda: current["value"],
+            )
+
+        physical_dispatch.assert_not_called()
+        first, second = _chat_requests(handler)
+        assert volatile in _user_messages(first)[0]["content"]
+        assert volatile not in _user_messages(second)[0]["content"]
+        blocked_results = [
+            message
+            for message in second["messages"]
+            if message.get("role") == "tool"
+        ]
+        assert len(blocked_results) == 1
+        assert "volatile user context changed" in blocked_results[0]["content"]
+        assert result["final_response"] == "tool was skipped"
+
+    @pytest.mark.parametrize("lazy", [False, True], ids=["static", "supplier"])
+    def test_terminal_error_dump_omits_ephemeral_request_and_error_echo(
+        self, wire_env, lazy, caplog
+    ):
+        """Automatic failure diagnostics must not retain exact coordinates."""
+        make_agent, handler, db, sid = wire_env
+        volatile = (
+            "[Background Telegram location context]\n"
+            "Latitude: 48.8584\nLongitude: 2.2945"
+        )
+        handler.error_queue.append(
+            (
+                403,
+                {
+                    "error": {
+                        "message": f"provider echoed request: {volatile}",
+                        "type": "forbidden",
+                        "code": "forbidden",
+                    }
+                },
+            )
+        )
+        agent = make_agent()
+        agent._disable_streaming = True
+        statuses = []
+        agent._emit_status = statuses.append
+        caplog.set_level(logging.DEBUG)
+
+        result = agent.run_conversation(
+            "where am I?",
+            conversation_history=[],
+            task_id=f"volatile-error-{lazy}",
+            ephemeral_user_context=(lambda: volatile) if lazy else volatile,
+        )
+
+        assert result["failed"] is True
+        persisted_surfaces = "\n".join(
+            [
+                caplog.text,
+                json.dumps(statuses, default=str),
+                json.dumps(result, default=str),
+            ]
+        )
+        assert volatile not in persisted_surfaces
+        assert "48.8584" not in persisted_surfaces
+        assert "2.2945" not in persisted_surfaces
+        dumps = list(agent.logs_dir.glob("request_dump_*.json"))
+        assert len(dumps) == 1
+        payload = json.loads(dumps[0].read_text())
+        assert "body" not in payload["request"]
+        assert payload["request"]["body_omitted"] == (
+            "request contained ephemeral user context"
+        )
+        assert payload["error"]["status_code"] == 403
+        assert set(payload["error"]) <= {"type", "status_code"}
+        serialized_dump = json.dumps(payload)
+        assert volatile not in serialized_dump
+        assert "48.8584" not in serialized_dump
+        assert "2.2945" not in serialized_dump
+        assert volatile not in json.dumps(db.get_messages_as_conversation(sid))
+
+    def test_http_200_invalid_response_omits_ephemeral_error_echo(
+        self, wire_env, caplog
+    ):
+        """A malformed success envelope may echo the submitted request."""
+        make_agent, handler, db, sid = wire_env
+        volatile = (
+            "[Background Telegram location context]\n"
+            "Latitude: 48.8584\nLongitude: 2.2945"
+        )
+        agent = make_agent()
+        agent._disable_streaming = True
+        agent._api_max_retries = 1
+        # Queue provider behavior after agent construction so the model-capability
+        # probe cannot consume this deliberately malformed chat response.
+        handler.raw_response_queue.append(
+            {"error": {"code": 503, "message": f"echo: {volatile}"}}
+        )
+        statuses = []
+        agent._emit_status = statuses.append
+        caplog.set_level(logging.DEBUG)
+
+        result = agent.run_conversation(
+            "where am I?",
+            conversation_history=[],
+            task_id="volatile-invalid-200",
+            ephemeral_user_context=lambda: volatile,
+        )
+
+        assert result["failed"] is True
+        retained = "\n".join(
+            (caplog.text, json.dumps(statuses, default=str), json.dumps(result))
+        )
+        assert volatile not in retained
+        assert "48.8584" not in retained
+        assert "2.2945" not in retained
+        assert volatile not in json.dumps(db.get_messages_as_conversation(sid))
+
+    def test_content_filter_response_omits_ephemeral_echo(
+        self, wire_env, caplog
+    ):
+        """A refusal explanation is provider data and may repeat coordinates."""
+        make_agent, handler, db, sid = wire_env
+        volatile = (
+            "[Background Telegram location context]\n"
+            "Latitude: 48.8584\nLongitude: 2.2945"
+        )
+        agent = make_agent()
+        agent._disable_streaming = True
+        refusal = _text_resp(f"policy explanation echoed: {volatile}")
+        refusal["choices"][0]["finish_reason"] = "content_filter"
+        # Queue provider behavior after agent construction so the model-capability
+        # probe cannot consume this refusal.
+        handler.response_queue.append(refusal)
+        statuses = []
+        agent._emit_status = statuses.append
+        caplog.set_level(logging.DEBUG)
+
+        result = agent.run_conversation(
+            "where am I?",
+            conversation_history=[],
+            task_id="volatile-content-filter",
+            ephemeral_user_context=lambda: volatile,
+        )
+
+        retained = "\n".join(
+            (caplog.text, json.dumps(statuses, default=str), json.dumps(result))
+        )
+        assert result["failed"] is True
+        assert volatile not in retained
+        assert "48.8584" not in retained
+        assert "2.2945" not in retained
+        assert volatile not in json.dumps(db.get_messages_as_conversation(sid))
+
+    def test_callable_retry_keeps_preclassification_image_repair(self, wire_env):
+        """Recloning a volatile-context baseline must not restore rejected images."""
+        make_agent, handler, db, sid = wire_env
+        volatile = "[Background Telegram location context]\nLatitude: 48.8584"
+        agent = make_agent()
+        agent._disable_streaming = True
+        agent._model_supports_vision = lambda: True
+        handler.error_queue.append(
+            (
+                400,
+                {"error": {"message": "This model does not support images"}},
+            )
+        )
+        history = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "describe this"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64,aGVsbG8="
+                        },
+                    },
+                ],
+            },
+            {"role": "assistant", "content": "I will inspect it."},
+        ]
+
+        result = agent.run_conversation(
+            "continue",
+            conversation_history=history,
+            task_id="volatile-image-repair",
+            ephemeral_user_context=lambda: volatile,
+        )
+
+        assert result.get("failed") is not True
+        first, second = _chat_requests(handler)
+        assert "image_url" in json.dumps(first)
+        assert "image_url" not in json.dumps(second)
+        assert sum(
+            volatile in str(message.get("content", ""))
+            for message in second["messages"]
+        ) == 1
+        assert volatile not in json.dumps(db.get_messages_as_conversation(sid))
+
+    def test_callable_retry_keeps_postclassification_signature_repair(
+        self, wire_env
+    ):
+        """Recloning a volatile-context baseline must not restore bad signatures."""
+        make_agent, handler, db, sid = wire_env
+        volatile = "[Background Telegram location context]\nLatitude: 48.8584"
+        agent = make_agent()
+        agent._disable_streaming = True
+        handler.error_queue.append(
+            (400, {"error": {"message": "thinking signature is invalid"}})
+        )
+        history = [
+            {"role": "user", "content": "earlier"},
+            {
+                "role": "assistant",
+                "content": "answer",
+                "reasoning_details": [{"type": "reasoning.text", "text": "x"}],
+            },
+        ]
+
+        result = agent.run_conversation(
+            "continue",
+            conversation_history=history,
+            task_id="volatile-signature-repair",
+            ephemeral_user_context=lambda: volatile,
+        )
+
+        assert result.get("failed") is not True
+        first, second = _chat_requests(handler)
+        assert "reasoning_details" in json.dumps(first)
+        assert "reasoning_details" not in json.dumps(second)
+        assert sum(
+            volatile in str(message.get("content", ""))
+            for message in second["messages"]
+        ) == 1
+
+    def test_request_middleware_revocation_rebuilds_before_provider(
+        self, wire_env
+    ):
+        """Revocation during request transformation discards the stale payload."""
+        from hermes_cli.middleware import apply_llm_request_middleware
+
+        make_agent, handler, db, sid = wire_env
+        volatile = "[Background Telegram location context]\nLatitude: 48.8584"
+        current = {"value": volatile}
+        calls = 0
+
+        def revoke(request, **context):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                current["value"] = None
+            return apply_llm_request_middleware(request, **context)
+
+        agent = make_agent()
+        agent._disable_streaming = True
+        with patch(
+            "hermes_cli.middleware.apply_llm_request_middleware",
+            side_effect=revoke,
+        ):
+            agent.run_conversation(
+                "where am I?",
+                conversation_history=[],
+                task_id="volatile-request-middleware-revocation",
+                ephemeral_user_context=lambda: current["value"],
+            )
+
+        requests = _chat_requests(handler)
+        assert len(requests) == 1
+        assert calls == 2
+        assert volatile not in json.dumps(requests[0])
+        assert volatile not in json.dumps(db.get_messages_as_conversation(sid))
+
+    def test_transport_boundary_rebuilds_after_context_is_revoked(
+        self, wire_env
+    ):
+        """A stop during execution middleware must beat the actual transport."""
+        make_agent, handler, db, sid = wire_env
+        volatile = "[Background Telegram location context]\nLatitude: 48.8584"
+        current = {"value": volatile}
+        middleware_calls = 0
+
+        def current_context():
+            return current["value"]
+
+        def revoke_before_transport(request, next_call, **_context):
+            nonlocal middleware_calls
+            middleware_calls += 1
+            if middleware_calls == 1:
+                current["value"] = None
+            return next_call(request)
+
+        agent = make_agent()
+        with patch(
+            "hermes_cli.middleware.run_llm_execution_middleware",
+            side_effect=revoke_before_transport,
+        ):
+            agent.run_conversation(
+                "where am I?",
+                conversation_history=[],
+                task_id="volatile-revoked-before-transport",
+                ephemeral_user_context=current_context,
+            )
+
+        requests = _chat_requests(handler)
+        assert len(requests) == 1
+        assert volatile not in _user_messages(requests[0])[0]["content"]
+        assert middleware_calls == 2
+        assert volatile not in json.dumps(db.get_messages_as_conversation(sid))
+
+    def test_relay_delay_rebuilds_after_context_is_revoked(self, wire_env):
+        """Relay admission may wait after middleware but before its callback."""
+        from agent import relay_llm
+
+        make_agent, handler, db, sid = wire_env
+        volatile = "[Background Telegram location context]\nLatitude: 48.8584"
+        current = {"value": volatile}
+        relay_calls = 0
+        real_execute = relay_llm.execute
+
+        def current_context():
+            return current["value"]
+
+        def delayed_execute(*args, **kwargs):
+            nonlocal relay_calls
+            relay_calls += 1
+            if relay_calls == 1:
+                current["value"] = None
+            return real_execute(*args, **kwargs)
+
+        agent = make_agent()
+        agent._disable_streaming = True
+        with patch("agent.relay_llm.execute", side_effect=delayed_execute):
+            agent.run_conversation(
+                "where am I?",
+                conversation_history=[],
+                task_id="volatile-revoked-inside-relay",
+                ephemeral_user_context=current_context,
+            )
+
+        requests = _chat_requests(handler)
+        assert len(requests) == 1
+        assert volatile not in _user_messages(requests[0])[0]["content"]
+        assert relay_calls == 2
+        assert volatile not in json.dumps(db.get_messages_as_conversation(sid))
+
+    def test_auxiliary_codex_rechecks_context_after_request_conversion(self):
+        """MoA's Codex shim must guard the physical Responses call, not only Relay."""
+        from agent import relay_llm
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+        from agent.turn_api_call import _EphemeralUserContextChanged
+
+        physical_create = MagicMock()
+        client = types.SimpleNamespace(
+            responses=types.SimpleNamespace(create=physical_create)
+        )
+        adapter = _CodexCompletionsAdapter(client, "gpt-5.6-sol")
+        current = {"value": "location"}
+
+        def convert_then_revoke(_kwargs):
+            current["value"] = None
+            return {"model": "gpt-5.6-sol", "input": []}, "gpt-5.6-sol", 30
+
+        def assert_current():
+            if current["value"] is None:
+                raise _EphemeralUserContextChanged
+
+        with patch.object(
+            adapter, "_build_responses_kwargs", side_effect=convert_then_revoke
+        ), relay_llm.provider_call_guard(assert_current), pytest.raises(
+            _EphemeralUserContextChanged
+        ):
+            adapter.create(messages=[])
+
+        physical_create.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

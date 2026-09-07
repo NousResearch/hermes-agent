@@ -17,7 +17,12 @@ from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
-from hermes_constants import clear_named_profile_deleted, mark_named_profile_deleted, named_profile_is_deleted
+from hermes_constants import (
+    clear_named_profile_deleted,
+    mark_named_profile_deleted,
+    named_profile_is_deleted,
+    rotate_named_profile_incarnation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -837,6 +842,10 @@ def create_profile(
         shutil.rmtree(profile_dir)
     if profile_dir.exists():
         raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
+    # Establish the new identity before making the profile live. A stale
+    # background writer from a deleted profile with the same name can then
+    # never observe a recreated directory carrying its old generation token.
+    rotate_named_profile_incarnation(profile_dir)
     clear_named_profile_deleted(profile_dir)
     source_dir = None
     if clone_from is not None or clone_all or clone_config:
@@ -1177,6 +1186,21 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         _released = _MemoryStore.release_all_under(profile_dir)
         if _released:
             print(f"✓ Released {_released} memory-store connection(s) held by this process")
+
+    # Retire sensitive Telegram location snapshots held by this process. A
+    # separate long-lived multiplex process also fences itself by checking the
+    # profile directory incarnation before every read/write.
+    with contextlib.suppress(Exception):
+        from plugins.platforms.telegram.telegram_background_locations import (
+            release_background_location_states_under,
+        )
+
+        _released_locations = release_background_location_states_under(profile_dir)
+        if _released_locations:
+            print(
+                "✓ Released "
+                f"{_released_locations} background-location state cache(s)"
+            )
 
     # 3. Remove wrapper script
     if has_wrapper and remove_wrapper_script(canon):

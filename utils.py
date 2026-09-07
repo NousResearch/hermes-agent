@@ -174,7 +174,8 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     return real_path
 
 
-def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None, preserve_owner: bool = True) -> None:
+def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None,
+                  preserve_owner: bool = True, create_parent: bool = True) -> None:
     """Temp file + fsync + :func:`atomic_replace`, then re-apply owner/mode.
 
     *write(f)* emits the payload into the open text handle. *mode* is fchmod'd onto the temp fd
@@ -182,7 +183,8 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     the post-replace chmod is the sole path on Windows). The temp file is removed on any failure —
     ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still clean up.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if create_parent:
+        path.parent.mkdir(parents=True, exist_ok=True)
     original_owner = _preserve_file_owner(path) if preserve_owner else None
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=prefix, suffix=".tmp")
     try:
@@ -217,11 +219,13 @@ def atomic_write_text(path: Union[str, Path], content: str, *, encoding: str = "
                   mode=_mode_for_write(path, create_mode, preserve=preserve_mode), preserve_owner=preserve_mode)
 
 
-def atomic_json_write(path: Union[str, Path], data: Any, *, indent: int = 2, mode: int | None = None, **dump_kwargs: Any) -> None:
+def atomic_json_write(path: Union[str, Path], data: Any, *, indent: int = 2, mode: int | None = None,
+                      create_parent: bool = True, **dump_kwargs: Any) -> None:
     """Write JSON to *path* atomically (temp file + fsync + replace)."""
     path = Path(path)
     _atomic_write(path, lambda f: json.dump(data, f, indent=indent, ensure_ascii=False, **dump_kwargs),
-                  prefix=f".{path.stem}_", mode=mode if mode is not None else _preserve_file_mode(path))
+                  prefix=f".{path.stem}_", mode=mode if mode is not None else _preserve_file_mode(path),
+                  create_parent=create_parent)
 
 
 def warn_if_credential_file_broadly_readable(path: Union[str, Path], *, label: str = "", log: logging.Logger | None = None) -> bool:

@@ -623,6 +623,9 @@ def _is_stream_unavailable_error(exc: Exception) -> bool:
 
 def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on_response):
     """``messages.stream()`` -> final Message, ticking the best-effort callbacks."""
+    from agent import relay_llm
+
+    relay_llm.run_provider_call_guard()
     with stream_fn(**{k: v for k, v in api_kwargs.items() if k != "stream"}) as stream:
         if callable(on_response):
             try:
@@ -658,6 +661,8 @@ def create_anthropic_message(
     streaming path: ``on_stream_event(event)`` lets liveness watchdogs see forward progress;
     ``on_response(httpx_response)`` exposes headers the parsed Message drops (Nous Portal's
     ``x-nous-credits-*`` balance family)."""
+    from agent import relay_llm
+
     sanitize_anthropic_kwargs(api_kwargs, log_prefix=log_prefix)
     messages_api = getattr(client, "messages", None)
     stream_fn = getattr(messages_api, "stream", None)
@@ -670,8 +675,11 @@ def create_anthropic_message(
             if not _is_stream_unavailable_error(exc):
                 raise
             logger.debug(
-                "%sAnthropic Messages stream unavailable; falling back to messages.create(): %s", log_prefix, exc
+                "%sAnthropic Messages stream unavailable; falling back to messages.create(): %s",
+                log_prefix,
+                relay_llm.safe_provider_error_message(exc),
             )
+    relay_llm.run_provider_call_guard()
     return messages_api.create(**{k: v for k, v in api_kwargs.items() if k != "stream"})
 
 

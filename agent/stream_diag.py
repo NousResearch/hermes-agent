@@ -103,16 +103,36 @@ def log_stream_retry(
     UI verbosity. With *diag*, also records upstream headers, HTTP status, bytes/chunks, elapsed and TTFB on
     the dying attempt — enough to tell "one CF edge / downstream provider" from "random across runs"."""
     try:
+        from agent import relay_llm
+
+        _contains_ephemeral = (
+            relay_llm.provider_call_contains_ephemeral_user_context()
+        )
         try:
-            _summary = agent._summarize_api_error(error)
+            _summary = relay_llm.safe_provider_error_summary(agent, error)
         except Exception:
-            _summary = str(error)
+            _summary = relay_llm.safe_provider_error_message(error)
         if _summary and len(_summary) > 240:
             _summary = _summary[:240] + "…"
-        try:
-            _chain = flatten_exception_chain(error)
-        except Exception:
-            _chain = type(error).__name__
+        if _contains_ephemeral:
+            chain_types: List[str] = []
+            link: Optional[BaseException] = error
+            while (
+                link is not None
+                and len(chain_types) < 4
+                and type(link).__name__ not in chain_types
+            ):
+                chain_types.append(type(link).__name__)
+                next_link = getattr(link, "__cause__", None) or getattr(
+                    link, "__context__", None
+                )
+                link = next_link if next_link is not link else None
+            _chain = " <- ".join(chain_types) or type(error).__name__
+        else:
+            try:
+                _chain = flatten_exception_chain(error)
+            except Exception:
+                _chain = type(error).__name__
 
         logger.warning(
             "Stream %s on attempt %s/%s — retrying. subagent_id=%s depth=%s provider=%s base_url=%s "

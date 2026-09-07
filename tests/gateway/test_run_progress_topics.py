@@ -60,6 +60,14 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+class RevokingContextProgressAdapter(ProgressCaptureAdapter):
+    refresh_calls = 0
+
+    async def _refresh_ephemeral_user_context_for_dispatch(self, event):
+        type(self).refresh_calls += 1
+        event.ephemeral_user_context = None
+
+
 class DiscordProgressCaptureAdapter(ProgressCaptureAdapter):
     """Capture sends while exercising Discord's real preview formatter."""
 
@@ -1402,6 +1410,31 @@ async def test_recursive_queued_followup_forwards_volatile_context(
     assert QueuedEphemeralContextAgent.calls == [
         ("hello", None),
         ("queued follow-up", volatile),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_recursive_queued_followup_refreshes_context_at_dispatch(
+    monkeypatch, tmp_path
+):
+    QueuedEphemeralContextAgent.calls = []
+    RevokingContextProgressAdapter.refresh_calls = 0
+
+    _adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedEphemeralContextAgent,
+        session_id="sess-queued-revoked",
+        pending_text="queued follow-up",
+        pending_ephemeral_user_context="Location: 1.0, 2.0",
+        adapter_cls=RevokingContextProgressAdapter,
+    )
+
+    assert result["final_response"] == "final response 2"
+    assert RevokingContextProgressAdapter.refresh_calls == 1
+    assert QueuedEphemeralContextAgent.calls == [
+        ("hello", None),
+        ("queued follow-up", None),
     ]
 
 

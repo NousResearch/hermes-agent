@@ -38,6 +38,38 @@ def _collapse_title(title: str) -> str:
     return re.sub(r"\s+", " ", str(title or "")).strip() or "Hermes Chat"
 
 
+def _sanitize_untrusted_history_preview(text: str) -> str:
+    """Render a stored title/message as inert text without changing stored history."""
+    from agent.redact import redact_sensitive_text
+    from agent.streaming_redact import sanitize_terminal_secret_text
+    from gateway.platforms.base import LOCAL_FILE_PATH_RE
+
+    safe = sanitize_terminal_secret_text(str(text or ""))
+    # These patterns match BasePlatformAdapter.extract_images; remove only the
+    # image instruction and mask the resulting plaintext URL's credentials.
+    safe = re.sub(
+        r"!\[([^\]]*)\]\((https?://[^\s)]+)\)",
+        lambda m: f"[{m[1]}]({redact_sensitive_text(m[2], force=True, redact_url_credentials=True)})",
+        safe, flags=re.IGNORECASE,
+    )
+    safe = re.sub(
+        r"<img\s+src=[\"']?(https?://[^\s\"'<>]+)[\"']?\s*/?>\s*(?:</img>)?",
+        lambda m: redact_sensitive_text(m[1], force=True, redact_url_credentials=True),
+        safe, flags=re.IGNORECASE,
+    )
+
+    def inert_path(match):
+        path = match[0]
+        offset = 2 if path.startswith("~/") else 3 if len(path) >= 3 and path[1] == ":" else 1
+        return path[:offset] + "\u200b" + path[offset:]
+
+    safe = LOCAL_FILE_PATH_RE.sub(inert_path, safe)
+    safe = re.sub(r"MEDIA:", lambda m: m[0][:-1] + "\u200b:", safe, flags=re.IGNORECASE)
+    for directive in ("[[audio_as_voice]]", "[[as_document]]"):
+        safe = safe.replace(directive, directive.replace("[[", "[\u200b[", 1))
+    return safe
+
+
 class GatewayTopicThreadsMixin:
     """Telegram forum-topic and Discord auto-thread binding/rename methods for GatewayRunner."""
 
@@ -636,7 +668,7 @@ class GatewayTopicThreadsMixin:
             if "already linked" in str(exc):
                 return already_linked
             raise
-        title = await db.get_session_title(session_id) or session_id
+        title = _sanitize_untrusted_history_preview(await db.get_session_title(session_id) or session_id)
         last_assistant = None
         with suppress(Exception):
             for message in reversed(await db.get_messages(session_id)):
@@ -644,7 +676,10 @@ class GatewayTopicThreadsMixin:
                     continue
                 projected = project_compaction_message_for_display(message)
                 if projected is not None and projected.get("content"):
-                    last_assistant = str(projected.get("content"))
+                    last_assistant = _sanitize_untrusted_history_preview(str(projected.get("content")))
                     break
         response = f"Session restored: {title}"
-        return response + (f"\n\nLast Hermes message:\n{last_assistant}" if last_assistant else "")
+        from gateway.run import _sanitize_gateway_final_response
+
+        return _sanitize_gateway_final_response(
+            source.platform, response + (f"\n\nLast Hermes message:\n{last_assistant}" if last_assistant else ""))

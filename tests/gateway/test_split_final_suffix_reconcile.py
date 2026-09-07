@@ -41,7 +41,8 @@ def _make_adapter():
     return a
 
 
-BODY = "the split answer body"
+# Resolve the last lexical candidate before simulating a completed preview.
+BODY = "the split answer body!"
 FOOTER = "\n\n⚠️ File-mutation verifier: 1 file(s) were NOT modified this turn."
 
 

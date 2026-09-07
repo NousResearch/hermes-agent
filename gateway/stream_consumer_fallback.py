@@ -8,6 +8,7 @@ import contextlib
 import logging
 from typing import Any, Callable, Optional
 
+from agent.streaming_redact import StreamingSecretSanitizer
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.stream_consumer_fences import ensure_closed_code_fences
 
@@ -317,9 +318,40 @@ class StreamFallbackMixin:
             if getattr(result, "success", False):
                 self._last_sent_text = prefix
 
-    async def _send_commentary(self, text: str) -> bool:
-        """Send a completed interim assistant commentary message."""
-        text = self._clean_for_display(text)
+    def _sanitize_commentary(self, text: str, *, final: bool = False) -> str:
+        if self._commentary_sanitizer is None:
+            if not text:
+                return ""
+            self._commentary_shadowed = bool(self._secret_sanitizer.pending_length)
+            self._commentary_shadow_prefix = (self._secret_sanitizer.pending
+                                             if self._commentary_shadowed else "")
+            # Commentary cannot cancel a candidate in the answer. Its fork can
+            # classify a cross-channel extension while the answer stays live.
+            self._commentary_sanitizer = (self._secret_sanitizer.fork_for_events()
+                if self._commentary_shadowed else StreamingSecretSanitizer(embedded_prefixes=False))
+        sanitizer = self._commentary_sanitizer
+        visible = sanitizer.feed(text, final=final)
+        prefix = self._commentary_shadow_prefix
+        if visible and prefix:
+            if visible.startswith(prefix):
+                visible = visible[len(prefix):]
+                self._commentary_shadow_prefix = ""
+            elif prefix.startswith(visible):
+                self._commentary_shadow_prefix = prefix[len(visible):]
+                visible = ""
+            else:
+                # The candidate was transformed by redaction; its mask is a
+                # single display unit and cannot be divided by raw offsets.
+                self._commentary_shadow_prefix = ""
+        if not sanitizer.pending_length:
+            self._commentary_sanitizer = None
+            self._commentary_shadowed = False
+            self._commentary_shadow_prefix = ""
+        return visible
+
+    async def _send_commentary(self, text: str, *, final: bool = False) -> bool:
+        """Send only resolved interim commentary; never claim final ownership."""
+        text = self._clean_for_display(self._sanitize_commentary(text, final=final))
         if not text.strip():
             return False
         try:

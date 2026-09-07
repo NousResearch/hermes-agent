@@ -266,12 +266,13 @@ class TestNativeFallbackStreamClose:
         cfg = StreamConsumerConfig(chat_type="dm", cursor="", edit_interval=0.01, buffer_threshold=5)
         consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
 
-        # Send short content to minimize frame count
-        consumer.on_delta("X")
+        # Resolve this short benign candidate before testing frame failure.
+        consumer.on_delta("X!")
 
         import asyncio
         task = asyncio.create_task(consumer.run())
         await asyncio.sleep(0.05)
+        assert adapter.should_fail_first_content is False, "non-final content failure was not exercised"
         consumer.finish()
         await task
 
@@ -289,14 +290,14 @@ class TestNativeFallbackStreamClose:
         finalize_calls = [c for c in adapter.send_stream_frame_calls if c["finalize"]]
         assert len(finalize_calls) >= 1, "Finalize should be called even though seed had length 0"
 
-        # Fire-and-forget (14c49c781a): with the throttle removed, the 1-char
-        # content "X" is pushed immediately as an intermediate frame instead of
-        # being buffered. That frame fails per the mock, so a proactive send()
+        # Fire-and-forget (14c49c781a): resolved content is pushed as an
+        # intermediate frame instead of being held for turn completion. That
+        # frame fails per the mock, so a proactive send()
         # fallback IS expected to deliver the content reliably. (Under the old
         # _MIN_NEW_VISIBLE_CHARS=60 gate this tiny frame was never sent, so the
         # previous assertion of zero send() fallbacks no longer holds.)
         assert len(adapter.send_calls) == 1
-        assert adapter.send_calls[0]["content_preview"] == "X"
+        assert adapter.send_calls[0]["content_preview"] == "X!"
 
     @pytest.mark.asyncio
     async def test_native_fallback_closes_stream_on_success(self):
@@ -393,7 +394,7 @@ class TestNativeFallbackStreamClose:
         cfg = StreamConsumerConfig(chat_type="dm", cursor="", edit_interval=0.01, buffer_threshold=5)
         consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
 
-        consumer.on_delta("Content that will cause stream to fail.")
+        consumer.on_delta("Content that will cause stream to fail!")
 
         import asyncio
         task = asyncio.create_task(consumer.run())
@@ -401,5 +402,7 @@ class TestNativeFallbackStreamClose:
         consumer.finish()
         await task
 
-        # Finalize failed → should fall through to send()
-        assert len([f for f in adapter.frames if "send" in f]) == 1
+        # The failed content frame and failed finalize both ran before send().
+        assert any(f.get("finalize") for f in adapter.frames)
+        sends = [f["send"] for f in adapter.frames if "send" in f]
+        assert sends == ["Content that will cause stream to fail!"]

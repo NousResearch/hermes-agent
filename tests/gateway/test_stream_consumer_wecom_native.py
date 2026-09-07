@@ -221,8 +221,8 @@ class TestNativeStreamingThrottling:
 
         task = asyncio.create_task(consumer.run())
         await asyncio.sleep(0.02)  # let seed frame fire
-        # Many 1-char deltas — fire-and-forget sends every change.
-        for ch in "abcdefghij":  # 10 chars total
+        # Completed non-candidate deltas still send every visible change.
+        for ch in "!?:;!?:;!?":  # 10 chars total
             consumer.on_delta(ch)
             await asyncio.sleep(0.015)
         consumer.finish()
@@ -243,7 +243,7 @@ class TestNativeStreamingThrottling:
         # The user still sees the full content in the finalize frame.
         finalize_frames = [f for f in adapter.frames if f["finalize"]]
         assert len(finalize_frames) == 1
-        assert finalize_frames[0]["text"] == "abcdefghij"
+        assert finalize_frames[0]["text"] == "!?:;!?:;!?"
 
     @pytest.mark.asyncio
     async def test_large_growth_emits_mid_frames(self):
@@ -258,10 +258,10 @@ class TestNativeStreamingThrottling:
         task = asyncio.create_task(consumer.run())
         await asyncio.sleep(0.02)
         # First chunk well past 20 chars.
-        consumer.on_delta("A" * 40)
+        consumer.on_delta("A " * 20)
         await asyncio.sleep(0.05)
         # Second chunk also past 20 chars.
-        consumer.on_delta("B" * 40)
+        consumer.on_delta("B " * 20)
         await asyncio.sleep(0.05)
         consumer.finish()
         await task

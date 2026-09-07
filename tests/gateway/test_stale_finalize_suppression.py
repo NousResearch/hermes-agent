@@ -414,6 +414,7 @@ class TestDeliveredFinalMatches:
         consumer = _consumer()
         consumer._turn_split_delivery = True
         consumer._stream_ledger = FULL_RESPONSE
+        consumer._stream_display_ledger_parts = [FULL_RESPONSE]  # paired sanitized-text fixture
         consumer._record_turn_final_payload(STREAMED_PREFIX)  # tail only; ledger wins
         assert consumer.delivered_final_matches(FULL_RESPONSE) is True
 
@@ -421,6 +422,7 @@ class TestDeliveredFinalMatches:
         consumer = _consumer()
         consumer._turn_split_delivery = True
         consumer._stream_ledger = STREAMED_PREFIX
+        consumer._stream_display_ledger_parts = [STREAMED_PREFIX]  # paired sanitized-text fixture
         consumer._record_turn_final_payload(STREAMED_PREFIX)
         assert consumer.delivered_final_matches(FULL_RESPONSE) is False
 
@@ -585,6 +587,7 @@ async def test_failed_final_edit_after_split_records_visible_payload():
     assert consumer._last_sent_text.endswith(cursor)
     consumer._turn_split_delivery = True
     consumer._stream_ledger = full
+    consumer._stream_display_ledger_parts = [full]  # paired sanitized-text fixture
     adapter.fail_edits = True
 
     # The cosmetic cursor-strip edit is rate-limited and fails.
@@ -622,6 +625,7 @@ async def test_empty_fallback_final_after_split_records_only_what_survives():
     head_id = await consumer._send_new_chunk(head, None, final=False)
     consumer._turn_split_delivery = True
     consumer._stream_ledger = complete
+    consumer._stream_display_ledger_parts = [complete]  # paired sanitized-text fixture
     assert head_id in consumer._segment_preview_message_ids
 
     # The recovery commits only ``tail`` and deletes the sealed head.

@@ -51,7 +51,7 @@ class TestAbandonOnTurnDeath:
         _alive = [True]
         sc, adapter, t = _consumer(run_still_current=lambda: _alive[0])
         task = asyncio.create_task(sc.run())
-        sc.on_delta("partial answer on screen")
+        sc.on_delta("partial answer on screen!")
         await asyncio.sleep(0.08)
         assert adapter._open_draft_by_chat, "stream should be armed"
         _alive[0] = False
@@ -59,7 +59,7 @@ class TestAbandonOnTurnDeath:
         assert not adapter._open_draft_by_chat, "stream left armed after stale exit"
         seals = [o for o in t.ops if o["op"] == "draft" and o.get("final")]
         assert len(seals) == 1
-        assert seals[0]["content"] == "partial answer on screen"
+        assert seals[0]["content"] == "partial answer on screen!"
         assert sc.final_response_sent is False
 
     @pytest.mark.asyncio

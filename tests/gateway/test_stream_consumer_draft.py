@@ -158,13 +158,13 @@ class TestDraftStreamingHappyPath:
         await asyncio.sleep(0.05)
         consumer.on_segment_break()
         await asyncio.sleep(0.05)
-        consumer.on_delta(" second segment")
+        consumer.on_delta(" second segment!")
         await asyncio.sleep(0.05)
         consumer.finish()
         await task
 
         contents = [call["content"] for call in adapter.draft_calls]
-        assert contents[-1] == "first segment second segment"
+        assert contents[-1] == "first segment second segment!"
 
     @pytest.mark.asyncio
     async def test_edit_preview_still_marks_expect_edits(self):
@@ -352,7 +352,7 @@ class TestAdapterPrefersFreshFinal:
         )
         consumer = GatewayStreamConsumer(adapter, "12345", cfg)
 
-        consumer.on_delta("Full answer here")
+        consumer.on_delta("Full answer here!")
         task = asyncio.create_task(consumer.run())
         # Let the first send land so a real preview message_id exists before
         # finalization — the fresh-final path only engages with a live preview.
@@ -365,9 +365,9 @@ class TestAdapterPrefersFreshFinal:
         first_content = adapter.send.call_args_list[0].kwargs.get("content")
         second_content = adapter.send.call_args_list[1].kwargs.get("content")
         # First update delivered the preview via adapter.send.
-        assert first_content == "Full answer here"
+        assert first_content == "Full answer here!"
         # Finalization re-sent the same completed content as a fresh message.
-        assert second_content == "Full answer here"
+        assert second_content == "Full answer here!"
 
         # The edit path must NOT be used to finalize a rich preview.
         adapter.edit_message.assert_not_called()

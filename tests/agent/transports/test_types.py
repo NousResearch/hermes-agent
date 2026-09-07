@@ -14,6 +14,27 @@ from agent.transports.types import (
 # ToolCall
 # ---------------------------------------------------------------------------
 
+class TestToolCall:
+    def test_call_id_assignment_preserves_and_isolates_metadata(self):
+        metadata = {"call_id": "call_x", "response_item_id": "fc_x", "opaque": {"keep": True}}
+        first = ToolCall(id="call_x", name="t", arguments="{}", provider_data=metadata)
+        second = ToolCall(id="call_x", name="t", arguments="{}", provider_data=metadata)
+
+        second.call_id = "call_x_d2"
+
+        assert second.call_id == "call_x_d2"
+        assert second.provider_data == {**metadata, "call_id": "call_x_d2"}
+        assert first.call_id == metadata["call_id"] == "call_x"
+        assert second.response_item_id == first.response_item_id
+        assert second.id == "call_x"  # Pairing policy, not the setter, owns id repair.
+
+        bare = ToolCall(id="bare", name="t", arguments="{}")
+        assert bare.call_id is None
+        bare.call_id = "assigned"
+        assert bare.provider_data == {"call_id": "assigned"}
+        bare.call_id = None
+        assert bare.call_id is None
+
 
 # ---------------------------------------------------------------------------
 # Usage

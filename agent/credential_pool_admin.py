@@ -8,7 +8,24 @@ if TYPE_CHECKING:
     from agent.credential_pool import PooledCredential
 
 
+def _cleared_status_copy(entry: PooledCredential) -> PooledCredential:
+    from agent.credential_pool import _CLEAR_STATUS
+
+    return replace(entry, **_CLEAR_STATUS,
+                   extra={k: v for k, v in entry.extra.items() if k != "failure_reason"})
+
+
 class CredentialPoolAdminMixin:
+    def reset_status(self, credential_id: str) -> Optional[PooledCredential]:
+        """Clear only the target's local error state, preserving sibling cooldowns."""
+        with self._lock:
+            entry = self._find(lambda e: e.id == credential_id)
+            if entry is None:
+                return None
+            cleared = _cleared_status_copy(entry)
+            self._replace_entry(entry, cleared)
+            self._persist(status_cleared_ids=[cleared.id])
+            return cleared
     def reset_statuses(self) -> int:
         """Clear exhaustion state on every entry. Returns how many were cleared.
 
@@ -27,11 +44,7 @@ class CredentialPoolAdminMixin:
             if stale:
                 stale_ids = {e.id for e in stale}
                 self._entries = [
-                    replace(
-                        e, **_CLEAR_STATUS,
-                        extra={k: v for k, v in e.extra.items() if k != "failure_reason"},
-                    )
-                    if e.id in stale_ids else e
+                    _cleared_status_copy(e) if e.id in stale_ids else e
                     for e in self._entries
                 ]
                 self._persist(status_cleared_ids=list(stale_ids))

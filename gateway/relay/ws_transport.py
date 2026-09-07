@@ -221,6 +221,15 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         text, msg_type = _normalize_slack_parent_command(text, msg_type)
 
     reply_to = raw.get("reply_to") or {}
+    # Optional forward-compat: connectors that know the target's send time pass it as ISO 8601.
+    reply_to_ts = None
+    if reply_to.get("timestamp"):
+        with contextlib.suppress(ValueError, TypeError):
+            from datetime import datetime as _dt
+            from datetime import fromisoformat
+
+            _parsed = fromisoformat(str(reply_to["timestamp"]))
+            reply_to_ts = _parsed if isinstance(_parsed, _dt) else None
     prompt_response = raw.get("prompt_response")
     return MessageEvent(
         text=text,
@@ -229,6 +238,7 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         message_id=raw.get("message_id"),
         reply_to_message_id=raw.get("reply_to_message_id"),
         reply_to_text=reply_to.get("text"),
+        reply_to_timestamp=reply_to_ts,
         reply_to_author_name=reply_to.get("author"),
         reply_to_is_own_message=bool(reply_to.get("is_own", False)),
         media_urls=raw.get("media_urls") or [],

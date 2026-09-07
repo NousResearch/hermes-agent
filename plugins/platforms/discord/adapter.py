@@ -6114,14 +6114,18 @@ class DiscordAdapter(BasePlatformAdapter):
         _channel_prompt = self._resolve_channel_prompt(_chan_id, _parent_id or None)
         reply_to_id = None
         reply_to_text = None
+        reply_to_ts = None
         if message.reference:
             reply_to_id = str(message.reference.message_id)
             if message.reference.resolved:
                 reply_to_text = getattr(message.reference.resolved, "content", None) or None
+                # Resolved reference is the full target message; discord.py stamps created_at.
+                reply_to_ts = getattr(message.reference.resolved, "created_at", None)
         event = MessageEvent(
             text=event_text, message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.id), media_urls=media_urls, media_types=media_types,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text,
+            reply_to_timestamp=reply_to_ts,
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
         )

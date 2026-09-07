@@ -17,6 +17,7 @@ import os
 import re
 import time
 from contextlib import suppress
+from datetime import datetime, timedelta, timezone
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.run_common import _UNSET
@@ -1477,6 +1478,32 @@ class GatewayInboundMixin:
         return message_text
 
     @staticmethod
+    def _format_reply_anchor_age(
+        reply_to_timestamp: Optional[datetime], now: datetime
+    ) -> str:
+        """Age clause for the reply anchor, or ``""`` when the target time is unknown.
+
+        Coarse buckets keep the prompt stable across clocks and timezones; naive timestamps
+        (no offset) cannot be compared safely, so they render un-aged like missing ones.
+        """
+        if reply_to_timestamp is None or reply_to_timestamp.tzinfo is None:
+            return ""
+        delta = now - reply_to_timestamp
+        if delta < timedelta(0):
+            delta = timedelta(0)
+        minutes = int(delta.total_seconds() // 60)
+        if minutes < 1:
+            return "just now"
+        if minutes < 60:
+            return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+        hours = minutes // 60
+        if hours < 24:
+            return f"{hours} hour{'s' if hours != 1 else ''} ago"
+        if delta.days < 2:
+            return "yesterday"
+        return reply_to_timestamp.astimezone(timezone.utc).strftime("%Y-%m-%d")
+
+    @staticmethod
     def _prepend_inbound_reply_context(event: MessageEvent, source: SessionSource, message_text: str) -> str:
         """Prepend the Discord triggering-message id and the reply-to pointer."""
         # Discord: the triggering message id goes on the per-turn user message, never the cached
@@ -1499,9 +1526,27 @@ class GatewayInboundMixin:
             # it's disambiguation (*which* prior message), not deduplication.
             # Adapters resolve the original message (or the user's native partial quote).
             # A preview here silently loses later list items and code; keep that context intact.
+            # The anchor's age is part of the disambiguation: without it a reply to a
+            # two-hour-old message is indistinguishable from a reply to the previous line.
             reply_text = event.reply_to_text
-            _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
-            message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
+            _age = GatewayInboundMixin._format_reply_anchor_age(
+                getattr(event, "reply_to_timestamp", None),
+                datetime.now(tz=timezone.utc),
+            )
+            if _age:
+                _who = (
+                    " your previous message"
+                    if getattr(event, "reply_to_is_own_message", False)
+                    else " a message"
+                )
+                _target = f"{_who} from {_age}"
+            else:
+                _target = (
+                    " your previous message"
+                    if getattr(event, "reply_to_is_own_message", False)
+                    else ""
+                )
+            message_text = f'[Replying to{_target}: "{reply_text}"]\n\n{message_text}'
         return message_text
 
     async def _inbound_model_context_length(self, source: SessionSource, session_key: str) -> int:

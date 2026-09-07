@@ -6228,15 +6228,18 @@ class TelegramAdapter(BasePlatformAdapter):
         return chat_topic, topic_skill
 
     def _reply_context(self, message: Message) -> tuple:
-        """``(reply_to_id, reply_to_text)`` for the replied-to message: Telegram's native partial quote
-        first, then text/caption, rich echo, then the sent index."""
+        """``(reply_to_id, reply_to_text, reply_to_timestamp)`` for the replied-to message:
+        Telegram's native partial quote first, then text/caption, rich echo, then the sent
+        index. The target's ``date`` rides along so the reply anchor can render its age."""
         if not message.reply_to_message:
-            return None, None
+            return None, None, None
         reply_to_id = str(message.reply_to_message.message_id)
+        # Test doubles build SimpleNamespace targets without ``date``; PTB always sends it aware.
+        reply_to_ts = getattr(message.reply_to_message, "date", None)
         quote = getattr(message, "quote", None)
         quote_text = getattr(quote, "text", None) if quote is not None else None
         if quote_text:
-            return reply_to_id, quote_text
+            return reply_to_id, quote_text, reply_to_ts
         reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
         if not reply_to_text:
             reply_to_text = self._extract_rich_reply_text(message.reply_to_message)
@@ -6252,7 +6255,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 # didn't quote (#22619). Fall back to the full replied-to message text / caption when no
                 # native quote is present.
                 reply_to_text = None
-        return reply_to_id, reply_to_text
+        return reply_to_id, reply_to_text, reply_to_ts
 
     def _build_message_event(self, message: Message, msg_type: MessageType, update_id: Optional[int] = None) -> MessageEvent:
         """Build a MessageEvent from a Telegram message. ``update_id`` lets ``/restart`` record the
@@ -6282,7 +6285,7 @@ class TelegramAdapter(BasePlatformAdapter):
             user_id=(str(user.id) if user else (str(chat.id) if chat_type in {"dm", "channel"} else None)),
             user_name=user_name, thread_id=thread_id_str, chat_topic=chat_topic, message_id=str(message.message_id),
             is_bot=bool(getattr(user, "is_bot", False)) if user else False)
-        reply_to_id, reply_to_text = self._reply_context(message)
+        reply_to_id, reply_to_text, reply_to_ts = self._reply_context(message)
         from gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt
         from plugins.platforms.telegram.telegram_context import group_identity_prompt
         _chat_id_str = str(chat.id)
@@ -6291,6 +6294,7 @@ class TelegramAdapter(BasePlatformAdapter):
             text=message.text or "", message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.message_id), platform_update_id=update_id,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
+            reply_to_timestamp=reply_to_ts,
             channel_prompt=group_identity_prompt(self, message, channel_prompt),
             timestamp=message.date)
 

@@ -629,6 +629,26 @@ def _file_lock(
                     pass
 
 
+def _canonical_auth_path(auth_file: Path) -> Path:
+    """Return the real path of an auth.json, following a symlink.
+
+    Profile homes that symlink ``auth.json`` to the root store must flock the
+    same ``auth.lock`` as the root process. ``Path.with_suffix('.lock')`` on the
+    unresolved symlink path would otherwise create a distinct
+    ``profiles/<name>/auth.lock`` while both writers mutate one inode — Desktop
+    then races the gateway/CLI on a single-use xAI refresh token and the loser
+    quarantines (wipes) the shared grant.
+    """
+    try:
+        return auth_file.resolve()
+    except OSError:
+        return auth_file
+
+
+def _auth_lock_path() -> Path:
+    return _canonical_auth_path(_auth_file_path()).with_suffix(".lock")
+
+
 @contextmanager
 def _auth_store_lock(
     timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS, *, target_path: Optional[Path] = None):
@@ -636,12 +656,38 @@ def _auth_store_lock(
 
     ``target_path`` is required for profile-to-global write-throughs: each path has its own
     reentrancy tracker and kernel lock. Lock ordering invariant: ``_auth_store_lock`` FIRST (outer),
-    ``_nous_shared_store_lock`` SECOND (inner), else deadlock against a concurrent shared import."""
-    auth_path = target_path if target_path is not None else _auth_file_path()
+    ``_nous_shared_store_lock`` SECOND (inner), else deadlock against a concurrent shared import.
+
+    The kernel lock file is derived from the *canonical* auth path so a
+    symlinked profile store shares ``auth.lock`` with root instead of flocking a
+    distinct ``profiles/<name>/auth.lock`` against the same inode.
+    """
+    auth_path = _canonical_auth_path(
+        target_path if target_path is not None else _auth_file_path())
     with _file_lock(
         auth_path.with_suffix(".lock"), _auth_lock_holder_for(auth_path), timeout_seconds,
         "Timed out waiting for auth store lock"):
         yield
+
+
+@contextmanager
+def _xai_oauth_refresh_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
+    """Serialize an xAI refresh against every store that can spend the grant.
+
+    Hold the active-home lock first (profile-before-root). When the process is
+    in named-profile mode and the global-root auth.json is a *distinct* file,
+    also hold that root lock so a sibling cannot rotate the same single-use
+    refresh token in parallel. When the profile ``auth.json`` is a symlink to
+    root, ``_canonical_auth_path`` already makes both locks the same inode and
+    the nested acquire is skipped.
+    """
+    with _auth_store_lock(timeout_seconds=timeout_seconds):
+        global_path = _global_auth_file_path()
+        if global_path is None or _same_path(global_path, _auth_file_path()):
+            yield
+            return
+        with _auth_store_lock(timeout_seconds=timeout_seconds, target_path=global_path):
+            yield
 
 
 def _empty_auth_store() -> Dict[str, Any]:

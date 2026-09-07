@@ -438,7 +438,7 @@ _nous_caps_disk_checked = False
 _nous_caps_warm_started = False
 
 
-from agent.reasoning_effort import clamp_effort as _clamp_effort
+from agent.reasoning_effort import clamp_effort as _clamp_effort, is_astra_model
 
 
 def clamp_reasoning_effort_to_supported(
@@ -1206,8 +1206,7 @@ def _openai_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]
     discovered = [m for m in curated if m.lower() in live_lower]
     # Astra is intentionally absent from offline/static catalogs: the official API's
     # account-scoped /models response is the only source that may advertise it.
-    if "gpt-6-astra" in live_lower:
-        discovered.append(next((m for m in live if m.lower() == "gpt-6-astra"), "gpt-6-astra"))
+    discovered.extend(m for m in live if is_astra_model(m))
     return discovered or curated or live
 
 
@@ -1518,9 +1517,7 @@ def _normalized_cache_slug(provider: Optional[str]) -> str:
 
 def _model_requires_account_discovery(provider: Optional[str], model: str) -> bool:
     """Astra names cannot confer API/OAuth entitlement through picker state."""
-    return _normalized_cache_slug(provider) in {"openai", "openai-api", "openai-codex"} and str(model or "").strip().lower().rsplit("/", 1)[-1] in {
-        "gpt-6-astra", "gpt-6-astra-900k",
-    }
+    return _normalized_cache_slug(provider) in {"openai", "openai-api", "openai-codex"} and is_astra_model(model)
 
 
 def cached_provider_model_ids(

@@ -88,19 +88,17 @@ def _add_context_variants(model_ids: List[str]) -> List[str]:
     return out
 
 
-def _finalize_codex_models(model_ids: List[str], *, allow_astra: bool = False) -> List[str]:
-    """Forward-compat/context synthesis with an entitlement gate for Astra.
+def _finalize_codex_models(model_ids: List[str]) -> List[str]:
+    """Forward-compat synthesis + large-context variant synthesis."""
+    return _add_context_variants(_add_forward_compat_models(model_ids))
 
-    Cached/configured model names are useful compatibility hints, but only the
-    account-scoped Codex endpoint is authoritative for current Astra access.
-    """
-    from agent.model_metadata import strip_codex_context_variant_suffix
 
-    finalized = _add_forward_compat_models(model_ids)
-    if not allow_astra:
-        finalized = [model for model in finalized
-                     if strip_codex_context_variant_suffix(model.lower()).rsplit("/", 1)[-1] != "gpt-6-astra"]
-    return _add_context_variants(finalized)
+def _drop_undiscovered_astra(model_ids: List[str]) -> List[str]:
+    """Astra is account-gated: only the live account-scoped catalog may advertise it. A stale
+    ``models_cache.json`` or a ``config.toml`` default is a compatibility hint, not entitlement."""
+    from agent.reasoning_effort import is_astra_model
+
+    return [model for model in model_ids if not is_astra_model(model)]
 
 
 def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
@@ -169,7 +167,7 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
         logger.debug("Failed to fetch Codex models from API: %s", exc)
         return []
 
-    return _finalize_codex_models(_ranked_slugs(entries), allow_astra=True)
+    return _finalize_codex_models(_ranked_slugs(entries))
 
 
 def _read_default_model(codex_home: Path) -> Optional[str]:
@@ -204,8 +202,8 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
     if access_token:
         api_models = _fetch_models_from_api(access_token)
         if api_models:
-            return _finalize_codex_models(api_models, allow_astra=True)
+            return _finalize_codex_models(api_models)
     default_model = _read_default_model(codex_home)
-    return _finalize_codex_models(_dedupe([
+    return _finalize_codex_models(_drop_undiscovered_astra(_dedupe([
         *([default_model] if default_model else []), *_read_cache_models(codex_home),
-        *DEFAULT_CODEX_MODELS]))
+        *DEFAULT_CODEX_MODELS])))

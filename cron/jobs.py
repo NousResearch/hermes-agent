@@ -2897,7 +2897,8 @@ def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> bool:
     if not new_next:
         return False
     d.scan.persist(d.job["id"], next_run_at=new_next)
-    if not _cron_config_number("catch_up_missed", True, lambda value: value is not False):
+    if (_ensure_aware(datetime.fromisoformat(new_next)) > d.scan.now
+            and not _cron_config_number("catch_up_missed", True, lambda value: value is not False)):
         logger.info(
             "Job '%s' missed its scheduled time (%s, grace=%ds). "
             "Skipping missed occurrence because cron.catch_up_missed is false; next run: %s",

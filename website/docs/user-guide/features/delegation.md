@@ -10,6 +10,27 @@ The `delegate_task` tool spawns child AIAgent instances with isolated context, i
 
 Top-level model calls run in the background automatically. Hermes returns a handle immediately so the conversation can continue, then posts the result back as a new message. An orchestrator subagent waits for its own workers so it can synthesize their results before returning.
 
+## Completion delivery
+
+Messaging gateways acknowledge background completions only after their adapter actually
+schedules the event or inserts it into the session's queue. Missing handlers, mismatched
+session routes, and full queues leave the completion pending for retry; these admission
+refusals do not consume the durable delivery-attempt budget. A successful admission suppresses
+repeat delivery within the running gateway, but is not proof that a model turn or outbound
+reply completed. Crash/restart delivery remains at least once, subject to the existing replay
+age limit; actual transport failures retain their bounded retry policy.
+
+An unavailable API-server route stays pending without repeated missing-route warnings.
+Malformed messaging routes still produce diagnostics. On the API server, an async delegation
+completion adds a durable timeline delivery row only: the client owns the next model turn.
+Setting background process notifications to `off` still drains pattern-watch events silently.
+
+## Background process lifetime
+
+Background terminal processes belong to the agent that starts them. Closing a child during delegation teardown terminates its remaining processes, including work started in earlier turns, without stopping processes owned by the parent or sibling agents. Sharing a terminal environment does not transfer process ownership.
+
+A child should wait for its builds, tests, and other bounded background commands before returning its final summary. Start a CI watcher or server in the parent session if it must continue after the child finishes; returning a process ID does not transfer ownership to the parent.
+
 ## Single Task
 
 ```python
@@ -117,10 +138,17 @@ delegate_task(
 
 ## Batch Mode Details
 
-When a top-level agent provides a `tasks` array, Hermes returns one background handle and runs the subagents in parallel. Results come back **per completion unit**, not once at the end:
+When a top-level agent provides a `tasks` array, Hermes returns one background handle and runs the subagents in parallel. By default the call returns **one** consolidated message once every task has finished. Results are delivered only between the parent's turns: the parent should finish anything that does not depend on the children, then end its turn rather than polling transcripts, artifacts, or CI while it waits.
 
-- A task **without** a `group` is its own unit: its result re-enters the conversation the moment that subagent finishes, so five independent PR reviews land as five messages and the agent acts on each without waiting for the slowest one.
-- Tasks that share a `group` string wait for each other and return as **one** consolidated message (use this when the parent must compare or merge their outputs).
+### Independent completions (opt-in)
+
+Set `delegation.independent_completions: true` to have results land **per completion unit** as each finishes instead:
+
+- Omit `group` when each result is useful to act on separately. Each task reports as soon as it finishes.
+- Use the same `group` string when you want to review outputs together: comparison, synthesis, or one coordinated decision. The group returns **one** consolidated message after all its tasks finish. Even independently executable tasks can belong in one group when their results inform the same decision.
+- Different groups report independently; grouped and ungrouped tasks can share one call.
+
+This is off by default because every unit is a new turn for the orchestrator: a 15-task call becomes up to 15 wake-ups, which fragmented long campaigns. Grouping controls **result delivery, not execution order**: all tasks still run in parallel. If task B needs task A's output to do its work, dispatch A first, then dispatch B with that output after A returns.
 
 ```json
 {"tasks": [
@@ -131,11 +159,11 @@ When a top-level agent provides a `tasks` array, Hermes returns one background h
 ]}
 ```
 
-The dispatch handle lists each unit (`units[].delegation_id`, `group`, `task_indexes`); unit ids are the call's id suffixed `-1`, `-2`, …, and every unit of one call shares a single slot of `delegation.max_concurrent_children`, so grouping never changes capacity accounting. An orchestrator subagent waits for its whole batch in the current turn so it can synthesize the results.
+The dispatch handle lists each unit (`units[].delegation_id`, `group`, `task_indexes`); unit ids are the call's id suffixed `-1`, `-2`, …, and every unit of one call shares a single slot of `delegation.max_concurrent_children`, so grouping never changes capacity accounting (the worker pool grows to the number of live units so no unit waits behind a full pool). An orchestrator subagent waits for its whole batch in the current turn so it can synthesize the results.
 
 - **Maximum concurrency:** 3 tasks by default (configurable via `delegation.max_concurrent_children` or the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var; floor of 1, no hard ceiling). Batches larger than the limit return a tool error rather than being silently truncated.
 - **Thread pool:** Uses `ThreadPoolExecutor` with the configured concurrency limit as max workers
-- **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback
+- **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback. CLI and TUI completion notices use task-first titles such as `Subagent Task Completed: Review changes`; multi-task groups use the group name and task count. Unsuccessful or incomplete work gets a corresponding status label. These compact notices do not replace the full results delivered to the parent agent.
 - **Result ordering:** Within a unit, results are sorted by task index to match input order regardless of completion order; `TASK i/N` labels index the whole call
 - **Cancellation:** Follow-up messages do not cancel a top-level background batch. `/stop` or closing/resetting the owning session cancels its active children. Synchronous orchestrator children still follow their parent's interrupt state
 
@@ -175,6 +203,16 @@ attribution line):
 delegation:
   surface_child_process_notifications: true   # default: false
 ```
+
+### Handing a process to the parent
+
+A subagent's background processes are also **killed when the subagent finishes**, so a CI watcher or build a child starts with `notify=true` never reports to anyone. The child's `terminal` result says so (`notify_on_complete: false` plus a `subagent_note`), and the child has three honest options before it finishes:
+
+- **wait** — `process_manage(action="wait", session_id=...)` and report the result itself;
+- **kill** — `process_manage(action="kill", ...)`;
+- **hand off** — `process_manage(action="handoff", session_id=..., data="<one sentence: what it is for>")`. The runtime transfers ownership to the parent under the registry lock (up to 3 per child; only a running process the child owns is accepted, anything else is a tool error). The parent's completion notice then arrives in the parent chat with `Handed off to you by a subagent… Purpose: …`, and the parent can poll/log/kill it like its own.
+
+A process that finishes while the child is still running needs no handoff: the child reads it (`poll`/`wait`/`log`) and reports it. If the child never reads it, the exit code and output tail are attached to its result as `unread_completions` and shown to the parent. Whatever is still running and was neither killed nor handed off is named on its result (`orphaned_processes`) and in the parent's delegation notice as terminated, so the parent hears from the runtime, never from the child's prose, that "the watcher is running" is no longer true. For CI watchers the better pattern is still: the child returns the fact (PR number, SHA) and the parent launches its own watcher.
 
 ## Model Override
 
@@ -523,6 +561,7 @@ error.
 delegation:
   max_iterations: 50                        # Max turns per child (default: 50)
   # max_concurrent_children: 3              # Parallel children per batch (default: 3)
+  # independent_completions: false          # true = each task/group returns as it finishes (default: one message per call)
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.

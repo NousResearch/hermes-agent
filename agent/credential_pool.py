@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from agent.credential_pool_admin import CredentialPoolAdminMixin
+
 import logging
 import os
 import random
@@ -951,6 +953,10 @@ _TOKENS_SINGLETON_PROVIDERS: Dict[str, Tuple[str, str, str, str]] = {
     "xai-oauth": ("xAI OAuth", "xAI", "refresh_xai_oauth_pure", "_is_terminal_xai_oauth_refresh_error"),
 }
 
+# Providers whose pooled OAuth entries ``_refresh_entry_impl`` can actually refresh. Any other
+# provider is returned unchanged by that path, so callers must not report a refresh for them.
+REFRESHABLE_OAUTH_PROVIDERS = frozenset({"anthropic", "nous", *_TOKENS_SINGLETON_PROVIDERS})
+
 # Providers whose refresh tokens are single-use: the sync -> POST -> write-back
 # sequence must be serialized across processes under the auth-store flock.
 _SINGLE_USE_REFRESH_PROVIDERS = ("openai-codex", "xai-oauth", "anthropic")
@@ -978,7 +984,7 @@ class _RefreshDone(Exception):
         self.result = result
 
 
-class CredentialPool:
+class CredentialPool(CredentialPoolAdminMixin):
     def __init__(self, provider: str, entries: List[PooledCredential]):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
@@ -1658,7 +1664,10 @@ class CredentialPool:
 
         updated = replace(updated, **_MARK_OK)
         self._replace_entry(entry, updated)
-        self._persist()
+        # Declare the cleared id: a borrowed row carries no access_token on disk, so
+        # the merge's token-change bypass cannot apply and a plain persist would copy
+        # the still-binding cooldown back over this success.
+        self._persist(status_cleared_ids=[updated.id])
         # Sync back so _seed_from_singletons() on the next load_pool() sees
         # fresh state instead of re-seeding consumed tokens.
         self._sync_device_code_entry_to_auth_store(updated)
@@ -2087,8 +2096,14 @@ class CredentialPool:
         self._last_no_entries_log_at = now
         logger.info("credential pool: no available entries (all exhausted or empty)")
 
-    def _select_unlocked(self, *, refresh: bool = True) -> Tuple[Optional[PooledCredential], List[PooledCredential]]:
-        """Select the best available entry; returns ``(entry, pending_refresh)``."""
+    def _select_unlocked(
+        self, *, refresh: bool = True, count: bool = True,
+    ) -> Tuple[Optional[PooledCredential], List[PooledCredential]]:
+        """Select the best available entry; returns ``(entry, pending_refresh)``.
+
+        ``count=False`` skips the ``request_count`` bump for selections that are
+        not going to serve a request (a forced-refresh target lookup).
+        """
         available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh)
         if not available:
             self._current_id = None
@@ -2110,19 +2125,19 @@ class CredentialPool:
             entry = random.choice(available)
         elif self._strategy == STRATEGY_LEAST_USED and len(available) > 1:
             entry = min(available, key=lambda e: e.request_count)
-            # Bump the usage counter so subsequent selections distribute load
-            self._current_id = entry.id
-            return self._adopt(entry, persist=False, request_count=entry.request_count + 1), pending_refresh
-        elif self._strategy == STRATEGY_ROUND_ROBIN and len(available) > 1:
+        else:
             entry = available[0]
+        # Count the selection under every strategy. The counter is ``least_used``'s
+        # baseline and reaches auth.json on the next persist (exhaustion, rotation,
+        # refresh); it used to move only while ``least_used`` was active.
+        if count:
+            entry = self._adopt(entry, persist=False, request_count=entry.request_count + 1)
+        if self._strategy == STRATEGY_ROUND_ROBIN and len(available) > 1:
             rotated = [candidate for candidate in self._entries if candidate.id != entry.id]
             rotated.append(replace(entry, priority=len(self._entries) - 1))
             self._entries = [replace(candidate, priority=idx) for idx, candidate in enumerate(rotated)]
             self._persist()
-            self._current_id = entry.id
-            return self._current_unlocked() or entry, pending_refresh
-        else:
-            entry = available[0]
+            entry = self._find(lambda candidate: candidate.id == entry.id) or entry
         self._current_id = entry.id
         return entry, pending_refresh
 
@@ -2345,7 +2360,7 @@ class CredentialPool:
                 if api_key_hint:
                     entry = self._find(lambda e: e.runtime_api_key == api_key_hint)
                 else:
-                    entry = self._current_unlocked() or self._select_unlocked(refresh=False)[0]
+                    entry = self._current_unlocked() or self._select_unlocked(refresh=False, count=False)[0]
             if entry is None:
                 return None
             self._current_id = entry.id
@@ -2360,90 +2375,6 @@ class CredentialPool:
             self._current_id = refreshed.id
         return refreshed
 
-    def reset_statuses(self) -> int:
-        """Clear exhaustion state on every entry. Returns how many were cleared.
-
-        ``failure_reason`` lives in ``extra``, not a dataclass field, so it is
-        stripped explicitly. The persist declares the cleared ids because the
-        disk-recency merge reads a cleared ``last_status_at`` (None -> epoch 0)
-        as a stale snapshot and would copy a still-binding cooldown back.
-        """
-        with self._lock:
-            stale = [
-                e for e in self._entries
-                if e.last_status or e.last_status_at or e.last_error_code or e.failure_reason
-            ]
-            if stale:
-                stale_ids = {e.id for e in stale}
-                self._entries = [
-                    replace(
-                        e, **_CLEAR_STATUS,
-                        extra={k: v for k, v in e.extra.items() if k != "failure_reason"},
-                    )
-                    if e.id in stale_ids else e
-                    for e in self._entries
-                ]
-                self._persist(status_cleared_ids=list(stale_ids))
-            return len(stale)
-
-    def remove_index(self, index: int) -> Optional[PooledCredential]:
-        with self._lock:
-            if index < 1 or index > len(self._entries):
-                return None
-            removed = self._entries.pop(index - 1)
-            self._entries = [replace(e, priority=p) for p, e in enumerate(self._entries)]
-            persist_pool_entries(
-                self.provider,
-                [entry.to_dict() for entry in self._entries],
-                removed_ids=[removed.id],
-            )
-            if self._current_id == removed.id:
-                self._current_id = None
-            return removed
-
-    def resolve_target(self, target: Any) -> Tuple[Optional[int], Optional[PooledCredential], Optional[str]]:
-        raw = str(target or "").strip()
-        if not raw:
-            return None, None, "No credential target provided."
-
-        with self._lock:
-            for idx, entry in enumerate(self._entries, start=1):
-                if entry.id == raw:
-                    return idx, entry, None
-
-            label_matches = [
-                (idx, entry)
-                for idx, entry in enumerate(self._entries, start=1)
-                if entry.label.strip().lower() == raw.lower()
-            ]
-            if len(label_matches) == 1:
-                return label_matches[0][0], label_matches[0][1], None
-            if len(label_matches) > 1:
-                return None, None, f'Ambiguous credential label "{raw}". Use the numeric index or entry id instead.'
-            if raw.isdigit():
-                index = int(raw)
-                if 1 <= index <= len(self._entries):
-                    return index, self._entries[index - 1], None
-                return None, None, f"No credential #{index}."
-            return None, None, f'No credential matching "{raw}".'
-
-    def add_entry(self, entry: PooledCredential) -> PooledCredential:
-        with self._lock:
-            entry = replace(entry, priority=_next_priority(self._entries))
-            self._entries.append(entry)
-            borrowed_ids = getattr(self, "_borrowed_root_ids", None)
-            if borrowed_ids:
-                # ``hermes -p <profile> auth add <single-use provider>``: the
-                # profile claims its OWN credential. Persist only profile-owned
-                # rows — copying the borrowed root grant alongside would fork
-                # its single-use refresh token (#100339). Once the profile owns
-                # rows, the root fallback for this provider is shadowed.
-                self._entries = [e for e in self._entries if e.id not in borrowed_ids]
-                write_credential_pool(self.provider, [e.to_dict() for e in self._entries])
-                self._borrowed_root_ids = set()
-            else:
-                self._persist()
-            return entry
 
 
 # --- Seeding --------------------------------------------------------------

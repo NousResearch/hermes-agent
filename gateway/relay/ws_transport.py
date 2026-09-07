@@ -20,7 +20,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.transport import InboundHandler

@@ -304,13 +304,12 @@ class TestManagerOnlyMutations:
             action = "subgoal.add" if "text" in args else "subgoal.remove"
             assert _error(_call(server, "session.control", session_id=sid, action=action, args=args))["code"] == 4004
 
-    def test_goal_unwait_clears_the_real_barrier_without_dispatch(self, server, session, monkeypatch):
+    def test_goal_unwait_clears_the_real_barrier_through_shared_command(self, server, session):
         from hermes_cli.goals import GoalManager
 
         sid, key, _ = session
         _save_goal(key)
         GoalManager(key).wait_for_seconds(60, reason="backoff")
-        _forbid_dispatch(server, monkeypatch)
 
         response = _call(server, "session.control", session_id=sid, action="goal.unwait")
         assert response["result"]["dispatch"]["output"] == "▶ Wait barrier cleared — goal loop resumes."

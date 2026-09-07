@@ -419,6 +419,7 @@ def _bind_turn_identity(
     # Unique task_id when not provided isolates VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
+    agent._process_owner_task_ids = {*getattr(agent, "_process_owner_task_ids", ()), effective_task_id}
     turn_id = str(getattr(agent, "_relay_pending_turn_id", "") or "") or (
         f"{agent.session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
     )
@@ -441,6 +442,7 @@ _PER_TURN_RESET_STATE: Tuple[Tuple[str, Any], ...] = (
     ("_last_content_with_tools", None), ("_last_content_tools_all_housekeeping", False),
     ("_mute_post_response", False), ("_unicode_sanitization_passes", 0),
     ("_tool_guardrail_halt_decision", None), ("_vision_supported", True),
+    ("_iteration_budget_warning_injected", False),
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),
     ("_pre_verify_nudges", 0),
 )
@@ -516,8 +518,8 @@ def _stage_turn_user_message(
     # row; the model still receives role/content unchanged (api_messages strips both).
     if persist_user_display_kind:
         user_msg["display_kind"] = persist_user_display_kind
-        if persist_user_display_metadata:
-            user_msg["display_metadata"] = persist_user_display_metadata
+    if persist_user_display_metadata:
+        user_msg["display_metadata"] = persist_user_display_metadata
     # The platform message id survives the turn-start flush; restart drain-window
     # recovery dedups via ``has_platform_message_id`` against this row.
     if persist_user_platform_id is not None:

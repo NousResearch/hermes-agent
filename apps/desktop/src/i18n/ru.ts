@@ -2414,6 +2414,7 @@ export const ru = defineLocale({
     shiftClickHint: 'Shift-клик по чату, чтобы закрепить',
     noWorkspace: 'Без рабочего пространства',
     projectEmpty: 'Сеансов пока нет',
+    projectLoadFailed: 'Не удалось загрузить сеансы',
     noSessions: 'Сеансов пока нет',
     noFilterMatches: 'Нет сеансов по этим фильтрам',
     projects: {

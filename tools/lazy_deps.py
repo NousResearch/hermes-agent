@@ -122,7 +122,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # br" — see #12511 / #15744.
     "platform.discord": (
         "discord.py[voice]==2.7.1",
-        "brotlicffi==1.2.0.1",
+        "brotlicffi==1.2.0.2",
         "aiohttp==3.14.3",
     ),
     "platform.slack": (

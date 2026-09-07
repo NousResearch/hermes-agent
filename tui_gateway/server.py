@@ -350,6 +350,11 @@ def _shutdown_sessions() -> None:
 # slip past the WS finally; hours-scale because last_active freezes during a long turn and on passive
 # viewing — running/pending/starting/live-transport are hard exemptions.
 _SESSION_TTL_S = max(0.0, env_float("HERMES_TUI_SESSION_TTL_S", float(6 * 3600)))
+# Dead-lane lease reclaim floor (session_lifecycle._lane_is_reclaimable): a resident
+# record vouches for its lease until its lane is provably gone AND idle past this floor.
+# Minutes-scale, not TTL-scale: the WS-orphan reaper already ends orderly disconnects in
+# seconds; the reclaim sweep only catches lanes that slipped it. See #104691.
+_LEASE_RECLAIM_IDLE_S = 5 * 60.0
 _REAPER_SCAN_S = 300.0
 # Flush-on-kill budget + periodic incremental flush (piggybacks the reaper scan): a SIGTERM/SIGKILL
 # mid-update loses at most one flush interval of session state.

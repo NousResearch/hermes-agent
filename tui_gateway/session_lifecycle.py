@@ -47,8 +47,15 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     """Claim this session's cap slot on its first real turn; None when ok. session.create/resume deliberately
     do NOT claim: tile paints, reconnect-resumes and abandoned drafts would hold invisible slots (no DB row)
     that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible."""
-    if session.get("active_session_lease") is not None:
+    attached = session.get("active_session_lease")
+    if attached is not None and not getattr(attached, "released", False):
         return None
+    if attached is not None:
+        # A reclaimed-then-detached lease lost its race with this submit: the registry
+        # row is gone but the object is still attached. Pop it so this submit claims a
+        # fresh fenced lease below instead of running lease-less. See #104691.
+        if session.get("active_session_lease") is attached:
+            session.pop("active_session_lease", None)
     lease, limit_message = _claim_active_session_slot(
         str(session.get("session_key") or ""), live_session_id=sid,
         surface=_session_source(session), profile_home=session.get("profile_home"))
@@ -86,11 +93,52 @@ def _release_active_session_slot(session: dict | None) -> bool:
     return True
 
 
+def _lane_is_reclaimable(sid: str, session: dict, now: float) -> bool:
+    """True when ``session`` is a dead lane whose lease no longer proves ownership.
+
+    A resident record vouches for its lease via :func:`_own_live_lease_ids`; when the
+    lane underneath is gone (transport dead, no turn running, no live delegated work,
+    idle past the reclaim floor) the vouch is stale and the orphan-lease sweep may
+    drop the lease instead of deadlocking against it. Fail-closed on anything
+    unprovable: an undecidable lane keeps its lease. See #104691.
+    """
+    try:
+        if session.get("running") or _session_pending_kind(sid):
+            return False
+        if _session_has_active_delegations(sid, session):
+            return False
+        if not _transport_is_dead(session.get("transport")):
+            return False
+        if _LEASE_RECLAIM_IDLE_S > 0:
+            created = session.get("created_at") or 0.0
+            active = session.get("last_active") or 0.0
+            if not created or not active:
+                return False
+            if now - float(active) <= _LEASE_RECLAIM_IDLE_S:
+                return False
+            if now - float(created) <= _LEASE_RECLAIM_IDLE_S:
+                return False
+        ready = session.get("agent_ready")
+        if ready is not None and not ready.is_set() and not session.get("lazy"):
+            return False
+        return True
+    except Exception:
+        logger.debug("lease-reclaim lane check failed closed", exc_info=True)
+        return False
+
+
 def _own_live_lease_ids(*, exclude=None) -> set[str]:
-    """Snapshot leases still backed by this process's live session records."""
+    """Snapshot leases still backed by this process's live session records.
+
+    Records whose lane is gone (see :func:`_lane_is_reclaimable`) do not vouch: the
+    orphan-lease sweep treats their leases as unowned instead of deadlocking against
+    a zombie-but-resident record. See #104691.
+    """
+    now = time.time()
     with _sessions_lock:
-        return {str(lease.lease_id) for session in _sessions.values()
-                if (lease := session.get("active_session_lease")) is not None and lease is not exclude}
+        return {str(lease.lease_id) for sid, session in _sessions.items()
+                if (lease := session.get("active_session_lease")) is not None and lease is not exclude
+                and not _lane_is_reclaimable(sid, session, now)}
 
 
 @contextlib.contextmanager

@@ -618,25 +618,53 @@ def _drop_self_orphans(
     ]
 
 
-def _release_orphaned_leases_in_home(registry_home: Path, live_lease_ids: set[str]) -> int:
+def _release_orphaned_leases_in_home(registry_home: Path, live_lease_ids: set[str]) -> set[str]:
+    """Drop this home's unowned leases; return the exact ``lease_id``s removed."""
     state_path = _state_path(registry_home)
     # No registry file yet means no leases have ever been written under this
     # home — don't take a lock (or create its file) on the idle-reaper tick.
     if not state_path.exists():
-        return 0
+        return set()
     with _FileLock(_lock_path(registry_home)):
         loaded = _read_live_entries(
             state_path, track_liveness=False,
             warn="Active-session registry is unavailable; skipping orphaned-lease sweep",
         )
         if loaded is None:
-            return 0
+            return set()
         entries = loaded[1]
         kept = _drop_self_orphans(entries, live_lease_ids)
-        dropped = len(entries) - len(kept)
-        if dropped:
+        kept_ids = {str(e.get("lease_id") or "") for e in kept}
+        dropped = {str(e.get("lease_id") or "") for e in entries} - kept_ids
+        dropped.discard("")
+        if len(kept) != len(entries):
             _write_entries(state_path, kept)
         return dropped
+
+
+def release_orphaned_leases_receipt(live_lease_ids: set[str]) -> dict[str, set[str]]:
+    """Sweep every registry home; return the exact drops as ``{home: {lease_id}}``.
+
+    Homes that fail (``OSError``) or are unreadable contribute NOTHING to the receipt:
+    their rows are indeterminate, not deleted, and callers must keep vouching for any
+    record homed there. An aggregate count cannot express that — see #104691.
+    """
+    root = get_default_hermes_root()
+    homes = [root]
+    try:
+        homes.extend(p for p in (root / "profiles").iterdir()
+                     if p.is_dir() and not p.name.startswith("."))
+    except OSError:
+        pass
+
+    receipt: dict[str, set[str]] = {}
+    for home in homes:
+        try:
+            if dropped := _release_orphaned_leases_in_home(home, live_lease_ids):
+                receipt[str(home)] = dropped
+        except OSError as exc:
+            logger.debug("orphaned-lease sweep failed for %s: %s", home, exc)
+    return receipt
 
 
 def release_orphaned_leases(live_lease_ids: set[str]) -> int:
@@ -647,21 +675,7 @@ def release_orphaned_leases(live_lease_ids: set[str]) -> int:
     only authority on its own leases — exact, no heartbeat on the turn path, no threshold.
     Sweeps the root home and every profile home (a multiplexed server leases across them).
     """
-    root = get_default_hermes_root()
-    homes = [root]
-    try:
-        homes.extend(p for p in (root / "profiles").iterdir()
-                     if p.is_dir() and not p.name.startswith("."))
-    except OSError:
-        pass
-
-    dropped = 0
-    for home in homes:
-        try:
-            dropped += _release_orphaned_leases_in_home(home, live_lease_ids)
-        except OSError as exc:
-            logger.debug("orphaned-lease sweep failed for %s: %s", home, exc)
-    return dropped
+    return sum(len(ids) for ids in release_orphaned_leases_receipt(live_lease_ids).values())
 
 
 def active_session_registry_snapshot(

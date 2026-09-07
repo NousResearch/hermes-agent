@@ -208,7 +208,7 @@ def _restart_systemd_gateway_units_best_effort(failed: list, listings) -> None:
             manage_cmd = list(_cmd) + ["--no-ask-password"]
             if _needs_sudo(_scope):
                 manage_cmd = ["sudo", "-n"] + manage_cmd
-            result = _systemctl_reset_and_restart(manage_cmd, svc_name)
+            result = _systemctl_reset_and_restart(manage_cmd, svc_name, scope_cmd=_cmd)
             if result.returncode != 0 or not _wait_for_service_active(_cmd, svc_name):
                 failed.append(svc_name)
 

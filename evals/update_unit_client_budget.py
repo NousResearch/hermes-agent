@@ -7,7 +7,8 @@ import sys
 import tempfile
 import time
 
-repo, tag, output = sys.argv[1:]
+repo, tag, output = sys.argv[1:4]
+catchup = sys.argv[4:] == ["--catchup"]
 if not tag.isalnum():
     raise SystemExit("tag must be alphanumeric")
 home = Path(tempfile.mkdtemp(prefix=f"updater-{tag}-"))
@@ -15,7 +16,18 @@ allowed = {key: os.environ[key] for key in ("PATH", "XDG_RUNTIME_DIR", "DBUS_SES
 os.environ.clear()
 os.environ.update(allowed, HOME=str(home), HERMES_HOME=str(home / "hermes"))
 sys.path.insert(0, repo)
-from hermes_cli.update_cmd_fleet import _systemctl_reset_and_restart
+from hermes_cli import update_cmd_fleet as fleet
+_systemctl_reset_and_restart = fleet._systemctl_reset_and_restart
+actual_systemctl = fleet._systemctl
+def scoped_systemctl(argv, *, timeout):
+    if "list-units" in argv:
+        if "--user" not in argv:
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        argv = [arg for arg in argv if arg not in ("hermes-gateway*", "hermes-serve*")] + [unit + ".service"]
+    return actual_systemctl(argv, timeout=timeout)
+if catchup:
+    # Bound discovery to our transient unit; never enumerate user services.
+    fleet._systemctl = scoped_systemctl
 unit = f"hermes-serve-audit-089c35aa-{tag}"
 cmd = ["systemctl", "--user"]
 def run(args):
@@ -24,13 +36,18 @@ def pid():
     return run(cmd + ["show", unit, "--property=MainPID", "--value"]).stdout.strip()
 record: dict[str, object] = {"repo": repo, "tag": tag, "unit": unit, "home": str(home), "tier": "native disposable systemd service"}
 try:
-    start = run(["systemd-run", "--user", "--unit", unit, "--property=ExecStop=/bin/sleep 16", "--property=TimeoutStopSec=30", "--property=TimeoutStartSec=30", "/bin/sleep", "infinity"])
+    start = run(["systemd-run", "--user", "--unit", unit, f"--property=ExecStop=/bin/sleep {31 if catchup else 16}", "--property=TimeoutStopSec=45", "--property=TimeoutStartSec=30", "/bin/sleep", "infinity"])
     assert start.returncode == 0, start.stderr
     old = pid()
     began = time.monotonic()
     try:
-        result = _systemctl_reset_and_restart(cmd, unit)
-        record.update(returncode=result.returncode, stderr=result.stderr)
+        if catchup:
+            failed = []
+            fleet._restart_systemd_gateway_units_best_effort(failed)
+            record.update(failed_units=failed)
+        else:
+            result = _systemctl_reset_and_restart(cmd, unit)
+            record.update(returncode=result.returncode, stderr=result.stderr)
     except subprocess.TimeoutExpired as exc:
         record.update(timeout=exc.timeout)
     record["elapsed"] = time.monotonic() - began

@@ -2819,6 +2819,66 @@ def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:
     return new_system_prompt
 
 
+# ── Compression value guards (item Q fix 2) ──────────────────────────────────
+#
+# Upstream already refuses a summary LARGER than its source. These tighten that
+# in two directions, both measured rather than guessed:
+#
+#   MAX_SUMMARY_RATIO  A healthy compaction on this deployment produced a
+#       1,041-token summary for ~19,950 tokens of messages — a ratio of 0.05.
+#       Refusing only above 1.0 therefore accepts summaries twenty times worse
+#       than normal. 0.5 is still ten times looser than observed-good, so it
+#       cannot fire on a healthy compaction; it exists to catch the pathological
+#       case (measured out:in of 1.48 when the auxiliary slot had thinking on).
+#
+#   MIN_RECLAIM_TOKENS  On a model whose KV cache cannot shift, compaction
+#       rewrites earlier messages and invalidates the whole cached prefix,
+#       forcing a full re-prefill. A compaction that reclaims a little therefore
+#       costs far more than it saves, so reclaiming almost nothing is worse than
+#       not compacting at all.
+MAX_SUMMARY_RATIO = 0.5
+MIN_RECLAIM_TOKENS = 2000
+
+# Kept from each truncated tool result: enough to preserve the verdict.
+_TRUNC_HEAD_LINES = 2
+_TRUNC_TAIL_LINES = 12
+_TRUNC_MARKER = "\n... [older tool output truncated to reclaim context] ...\n"
+
+
+def _is_tool_result(msg: Any) -> bool:
+    return isinstance(msg, dict) and msg.get("role") == "tool" and isinstance(msg.get("content"), str)
+
+
+def truncate_oldest_tool_results(messages: list, target_tokens: int) -> list:
+    """Fallback when a summary is refused: shrink by truncating OLD tool output.
+
+    Walks oldest-first and truncates tool results until the estimate is under
+    ``target_tokens``. Each truncated result keeps its **first lines** (where a
+    command echoes its exit status) and its **last lines** (where the actual
+    verdict usually is), with a marker between — a tool result truncated to
+    nothing looks like a tool that returned nothing, which is a different and
+    worse failure than a long one.
+
+    Returns a NEW list; never mutates the input, and never touches the newest
+    tool result, so the turn in progress keeps its full context.
+    """
+    out = [dict(m) if isinstance(m, dict) else m for m in messages]
+    tool_idx = [i for i, m in enumerate(out) if _is_tool_result(m)]
+    if len(tool_idx) <= 1:
+        return out
+    for i in tool_idx[:-1]:  # never the newest
+        if estimate_messages_tokens_rough(out) <= target_tokens:
+            break
+        content = out[i].get("content") or ""
+        lines = content.splitlines()
+        if len(lines) <= _TRUNC_HEAD_LINES + _TRUNC_TAIL_LINES:
+            continue
+        head = lines[:_TRUNC_HEAD_LINES]
+        tail = lines[-_TRUNC_TAIL_LINES:]
+        out[i]["content"] = "\n".join(head) + _TRUNC_MARKER + "\n".join(tail)
+    return out
+
+
 def _salvage_or_refuse_grown_transcript(
     agent: Any, messages: list, compressed: list, *, system_message: str, attempt_started_at: float,
     attempt_snapshot: dict,
@@ -2850,13 +2910,30 @@ def _salvage_or_refuse_grown_transcript(
                 )
                 compressed = _salvaged
                 _rough_out = _salv_est
-    if _rough_out > _rough_in:
-        logger.warning(
-            "Compression refused: compressed transcript would be larger than the original (session=%s, ~%s -> ~%s "
-            "tokens); keeping the original transcript unchanged", agent.session_id or "none",
-            f"{_rough_in:,}",
-            f"{_rough_out:,}",
-        )
+    _ratio_ceiling = int(_rough_in * MAX_SUMMARY_RATIO)
+    _reclaimed = _rough_in - _rough_out
+    if _rough_out > _ratio_ceiling or _reclaimed < MIN_RECLAIM_TOKENS:
+        # Try to shrink by truncating OLD tool output before giving up entirely:
+        # refusing outright leaves the transcript exactly as large as it was, which
+        # is the state that made compaction necessary.
+        _trunc = truncate_oldest_tool_results(messages, _ratio_ceiling)
+        _trunc_est = estimate_messages_tokens_rough(_trunc)
+        if _trunc_est <= _ratio_ceiling and (_rough_in - _trunc_est) >= MIN_RECLAIM_TOKENS:
+            logger.warning(
+                "Compression summary refused (~%s -> ~%s tokens, ratio ceiling ~%s); truncated the oldest "
+                "tool results instead (~%s tokens, reclaimed ~%s)", f"{_rough_in:,}", f"{_rough_out:,}",
+                f"{_ratio_ceiling:,}", f"{_trunc_est:,}", f"{_rough_in - _trunc_est:,}",
+            )
+            compressed = _trunc
+            _rough_out = _trunc_est
+        else:
+            logger.warning(
+                "Compression refused: summary ~%s tokens against a ceiling of ~%s (%.0f%% of ~%s), and the "
+                "tool-result truncation fallback could not reclaim %s tokens either (session=%s); keeping the "
+                "original transcript unchanged",
+                f"{_rough_out:,}", f"{_ratio_ceiling:,}", MAX_SUMMARY_RATIO * 100, f"{_rough_in:,}",
+                f"{MIN_RECLAIM_TOKENS:,}", agent.session_id or "none",
+            )
         # Flag the refusal on compressor state so /compress feedback reports it instead
         # of comparing list lengths (adoption can change the count), claiming success.
         with contextlib.suppress(Exception):

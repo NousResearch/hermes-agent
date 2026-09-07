@@ -126,12 +126,12 @@ def _worker_memory_max_bytes() -> int:
 
 def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
     """``systemd-run --user --scope`` argv shared by the probe and real spawns.
-    ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl."""
+    ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl.
+    No ``OOMPolicy=``: transient scopes reject it on systemd <253 (#102486)."""
     return [
         binary, "--user", "--scope", "--quiet", "--unit", unit_name, "--collect",
         "--property", "MemoryAccounting=yes",
         "--property", f"MemoryMax={_worker_memory_max_bytes()}",
-        "--property", "OOMPolicy=kill",
         "--", *argv,
     ]
 
@@ -1795,6 +1795,7 @@ class ProcessRegistry:
                 "command": s.command[:200],
                 "cwd": s.cwd,
                 "pid": s.pid,
+                "owner_task_id": s.owner_task_id or s.task_id,
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(s.started_at)),
                 "uptime_seconds": int(time.time() - s.started_at),
                 "status": "exited" if s.exited else "running",

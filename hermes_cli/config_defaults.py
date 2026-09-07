@@ -1220,6 +1220,14 @@ DEFAULT_CONFIG = {
         # {"extra_body": {"provider": {"sort": "throughput"}}}. Explicit values win OVER
         # runtime/parent overrides (extra_body deep-merged 1 level).
         "request_overrides": {},
+        # compression_threshold_tokens: optional absolute cap on a subagent's compaction TRIGGER
+        # (not the request payload), applied as the lower of this and the child's ratio threshold.
+        # 0 (default) = no subagent-specific cap; children compact at the same 0.50 x window as the
+        # parent (500K on a 1M model). A replay of a 1,393-agent run showed 200K-400K caps within
+        # 5% of each other in cost once cache prefixes are intact, and every compaction is a
+        # chance to lose detail, so the default stays off. A token count >= 16000 enables it;
+        # other values (true, "200k") are config errors: warned and ignored.
+        "compression_threshold_tokens": 0,
         # When delegate_task narrows child toolsets, keep the parent's enabled MCP toolsets (so
         # toolsets=["web"] doesn't strip MCP). false = strict intersection.
         "inherit_mcp_toolsets": True,
@@ -2284,6 +2292,15 @@ DEFAULT_CONFIG = {
         # server-issued credential lifetime (raising above it has no effect). 0 disables the
         # keepalive thread.
         "keepalive_interval_seconds": 900,
+        # anthropic_wire: which Portal route carries anthropic/* models. "chat" =
+        # /v1/chat/completions (default for now); "native" = /v1/messages, the Anthropic
+        # Messages wire (signed thinking passthrough, native cache_control scopes); "auto" =
+        # start on chat and, per session, switch to native from the first response when the
+        # Portal upstream serving the model is one where native is known clean. Native is the
+        # better wire but on the OpenRouter-served path it re-writes the previous turn's cache on
+        # 14-20% of consecutive calls in concurrent tool loops (measured 2026-09-06;
+        # NousResearch/api#227), so chat is the default until that is fixed.
+        "anthropic_wire": "chat",
     },
     # Google Vertex AI (Gemini). Auth is OAuth2 from a service-account JSON or ADC, NOT an API key;
     # the credential path lives in .env (VERTEX_CREDENTIALS_PATH / GOOGLE_APPLICATION_CREDENTIALS).
@@ -2310,7 +2327,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 40,  # Config schema version - bump this when adding new required fields
+    "_config_version": 41,  # Config schema version - bump this when adding new required fields
 }
 
 

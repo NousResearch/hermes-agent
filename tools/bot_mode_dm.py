@@ -108,6 +108,23 @@ def message_agent_tool_schema() -> dict:
     }
 
 
+def message_agent_authorized(agent: Any) -> bool:
+    """The ``message_agent`` gate: a protocol-enabled agent whose session is a managed
+    Bot-Mode canonical Bot Chat. Session-stable, so it is prompt-cache safe to re-evaluate
+    on every tool-snapshot rebuild. Never raises."""
+    try:
+        if not getattr(agent, "_bot_mode_protocol", True):
+            return False
+        from tools.bot_mode_probe import BOT_CHAT_TITLE, is_bot_mode_managed
+
+        # Managed-install check, NOT section non-emptiness: a SOUL.md carrying the
+        # legacy protocol text gets an empty section but must still get the tool.
+        return _session_title(agent) == BOT_CHAT_TITLE and is_bot_mode_managed(_agent_home(agent))
+    except Exception:  # pragma: no cover — must never break a turn
+        logger.debug("message_agent_authorized failed", exc_info=True)
+        return False
+
+
 def ensure_message_agent_tool(agent: Any) -> bool:
     """Inject the ``message_agent`` schema into a Bot Chat agent's tool list (once per turn).
     Idempotent and deterministic for the session's life (the gate is stable from the
@@ -121,11 +138,7 @@ def ensure_message_agent_tool(agent: Any) -> bool:
             for t in tools
         ):
             return True
-        from tools.bot_mode_probe import BOT_CHAT_TITLE, is_bot_mode_managed
-
-        # Managed-install check, NOT section non-emptiness: a SOUL.md carrying the
-        # legacy protocol text gets an empty section but must still get the tool.
-        if _session_title(agent) != BOT_CHAT_TITLE or not is_bot_mode_managed(_agent_home(agent)):
+        if not message_agent_authorized(agent):
             return False
         if agent.tools is None:
             agent.tools = []

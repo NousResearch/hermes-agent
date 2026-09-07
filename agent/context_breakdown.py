@@ -92,7 +92,8 @@ def _glyph(cat: Dict[str, Any]) -> str:
 
 def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]] = None) -> Dict[str, Any]:
     """Return a Cursor-style context usage breakdown for one live agent."""
-    from agent.model_metadata import anchored_context_tokens, estimate_messages_tokens_rough
+    from agent.model_metadata import estimate_messages_tokens_rough
+    from agent.usage_anchor import anchored_context_tokens
     from agent.system_prompt import build_system_prompt_parts
 
     messages = messages or []

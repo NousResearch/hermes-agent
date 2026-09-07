@@ -158,6 +158,32 @@ class TestDisplayDedupe:
         assert len(msgs) == 2
         assert [m["content"] for m in msgs] == ["turn 1", "answer 1"]
 
+    def test_new_generation_copy_keeps_original_chronological_position(self, db):
+        """A protected-tail copy inserted after a newer message stays in its
+        original position in the display read (C, A, B regression)."""
+        sid = "s1"
+        db.create_session(sid, source="cli")
+        db.append_messages_batch(
+            sid,
+            [
+                {"role": "assistant", "content": "A", "timestamp": 100.0},
+                {"role": "assistant", "content": "B", "timestamp": 200.0},
+            ],
+        )
+        original = _row_ids(db, sid)
+        db._execute_write(
+            lambda conn: conn.execute(
+                "UPDATE messages SET active = 0, compacted = 1 WHERE session_id = ?",
+                [sid],
+            )
+        )
+        db.append_message(sid, role="user", content="C", timestamp=300.0)
+        self._copy_tail_as_new_generation(db, sid, original)
+
+        msgs = db.get_messages(sid, include_compacted=True)
+
+        assert [m["content"] for m in msgs] == ["A", "B", "C"]
+
     def test_dedupe_prefers_live_row_then_newest_generation(self, db):
         """When generations conflict, the live row wins; otherwise the newest
         generation (highest id) wins."""

@@ -1154,11 +1154,16 @@ def _(rid, params: dict, session: dict) -> dict:
             "model": _metadata_mirror(session).get("model", "")})
     with session["history_lock"]:
         history = list(session.get("history", []))
+    # Bind the session context: on the RPC thread the session cwd is unset, so the prompt build
+    # inside would key its workspace pin on the backend's cwd and overwrite the session's pin.
+    tokens = _set_session_context(session["session_key"])
     try:
         from agent.context_breakdown import compute_session_context_breakdown
         return _ok(rid, compute_session_context_breakdown(agent, history))
     except Exception as exc:
         return _err(rid, 5000, f"Could not compute context breakdown: {exc}")
+    finally:
+        _clear_session_context(tokens)
 
 
 # ── pet ──────────────────────────────────────────────────────────────

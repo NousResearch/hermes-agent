@@ -36,6 +36,8 @@ import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile, $prof
 import {
   $connection,
   $contextSuggestions,
+  $currentSessionEphemeral,
+  $currentThreadEmpty,
   $freshDraftReady,
   $gatewayState,
   $introPersonality,
@@ -72,6 +74,7 @@ import { useRuntimeMessageRepository } from './runtime-repository'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { useSessionView } from './session-view'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
+import { TemporaryChatHero } from './temporary-chat-hero'
 import { routedSessionIsLoading, threadLoadingState } from './thread-loading'
 import {
   backfillOlderTranscriptPage,
@@ -412,6 +415,7 @@ const ChatViewContent = memo(function ChatViewContent({
   const view = useSessionView()
   const composerScope = useComposerScope()
   const composerSurfaceId = useComposerSurfaceId()
+  const sessionEphemeral = useStore($currentSessionEphemeral)
   const isPrimary = view.kind === 'primary'
   const activeSessionId = useStore(view.$runtimeId)
   const storedId = useStore(view.$storedId)
@@ -453,6 +457,13 @@ const ChatViewContent = memo(function ChatViewContent({
   // ChatRuntimeBoundary below; this component only needs streaming-stable
   // derivations.
   const messagesEmpty = useStore(view.$messagesEmpty)
+
+  // Mirror emptiness into the session store so the composer can switch between
+  // the temporary-chat hero and its compact bar. Effect (not render-time write)
+  // so the store update never happens mid-render.
+  useEffect(() => {
+    $currentThreadEmpty.set(messagesEmpty)
+  }, [messagesEmpty])
   const lastVisibleIsUser = useStore(view.$lastVisibleIsUser)
   const selectedSessionId = useStore(view.$storedId)
   const sessions = useStore($sessions)
@@ -681,8 +692,19 @@ const ChatViewContent = memo(function ChatViewContent({
         suppressMessages={routeSessionMismatch}
       >
         <div
-          className="relative min-h-0 max-w-full flex-1 overflow-hidden bg-(--ui-chat-surface-background) contain-[layout_paint]"
+          className={cn(
+            'relative min-h-0 max-w-full flex-1 overflow-hidden bg-(--ui-chat-surface-background) contain-[layout_paint]',
+            // Private session: the whole thread pane is marked, not just the
+            // composer. Scrolling up must never hide the fact that nothing is
+            // being saved. Dashed inset ring — dashed reads as "provisional /
+            // not permanent" (Firefox uses a dashed underline for private
+            // tabs) and can't be mistaken for a solid error border. Amber, not
+            // red: temporary is a valid state.
+            sessionEphemeral &&
+              'before:pointer-events-none before:absolute before:inset-0 before:z-20 before:rounded-sm before:border-2 before:border-dashed before:border-amber-600/70 dark:before:border-amber-400/60 before:content-[""]'
+          )}
           data-slot="composer-bounds"
+          data-temporary-session={sessionEphemeral ? '' : undefined}
           {...dropHandlers}
         >
           <Thread
@@ -698,6 +720,16 @@ const ChatViewContent = memo(function ChatViewContent({
             sessionId={activeSessionId}
             sessionKey={threadKey}
           />
+          {/* Temporary-chat empty state. Same overlay pattern as the stranded-
+              resume state below: it covers the thread surface without unmounting
+              the Thread, so the runtime stays bound and the first message can
+              stream straight in. Gated on !threadLoading so it can't flash over
+              a session that is still resuming. */}
+          {sessionEphemeral && messagesEmpty && !threadLoading && !resumeExhausted && (
+            <div className="absolute inset-0 z-10 grid place-items-center bg-(--ui-chat-surface-background) px-8 py-10">
+              <TemporaryChatHero />
+            </div>
+          )}
           {resumeExhausted && routedSessionId && (
             <div className="absolute inset-0 z-10 grid place-items-center bg-(--ui-chat-surface-background) px-8 py-10">
               <ErrorState

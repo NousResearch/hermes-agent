@@ -958,6 +958,7 @@ class TurnRunner:
             max_iterations=max_iterations, quiet_mode=True, verbose_logging=False,
             enabled_toolsets=ctx.enabled_toolsets, disabled_toolsets=ctx.disabled_toolsets,
             ephemeral_system_prompt=combined_ephemeral or None,
+            ephemeral=self._runner._session_is_ephemeral(ctx.session_key),
             prefill_messages=runner._prefill_messages or None,
             reasoning_config=reasoning_config, service_tier=runner._service_tier,
             request_overrides=turn_route.get("request_overrides"),
@@ -1687,6 +1688,16 @@ class TurnRunner:
             # defaults agent_persisted differently when the key is absent.
             return {"final_response": final_response, **common}
         final_response = self._append_auto_media_tags(final_response, result, agent_history, history_media_paths)
+        # Temporary chat: periodically restate that nothing is being saved.
+        # See _maybe_append_temp_reminder for the cadence contract.
+        if final_response and bool(getattr(agent, "ephemeral", False)):
+            try:
+                from gateway.run import _maybe_append_temp_reminder
+                final_response = _maybe_append_temp_reminder(
+                    self._runner, ctx.session_key, final_response
+                )
+            except Exception:
+                logger.debug("temp reminder append failed", exc_info=True)
         # Auto-titling runs at TURN START (agent/turn_context.py) from the user's message alone, so a
         # failed/interrupted turn is still titled.
         return {

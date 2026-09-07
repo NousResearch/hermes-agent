@@ -81,6 +81,10 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // IME) created a new session unexpectedly. The deliberate ⌘/Ctrl+N chord
   // stays; users who liked ⇧N can rebind it in the panel.
   { id: 'session.new', category: 'session', defaults: ['mod+n'] },
+  // ⌘⌥N — a temporary chat. NOT ⌘⇧N (the browser incognito chord): that is
+  // already session.newWindow here, and stealing it would break a shortcut
+  // people use daily to fix one they have not learned yet.
+  { id: 'session.newTemporary', category: 'session', defaults: ['mod+alt+n'] },
   { id: 'session.newTab', category: 'session', defaults: ['mod+t'] },
   { id: 'session.newWindow', category: 'session', defaults: ['mod+shift+n'] },
   // ⌃Tab / ⌃⇧Tab — the universal tab-cycle chord. Literally Control, not Cmd

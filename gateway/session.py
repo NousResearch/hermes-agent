@@ -474,6 +474,9 @@ class SessionEntry:
     chat_type: str = "dm"
     # Small, JSON-serializable per-entry state (e.g. Slack thread watermarks).
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Temporary ("/temp") chat: leaves no durable trace. Persisted with the entry
+    # so a gateway restart cannot silently downgrade a temporary chat to saved.
+    ephemeral: bool = False
     # Token tracking
     input_tokens: int = 0
     output_tokens: int = 0
@@ -533,12 +536,29 @@ class SessionEntry:
     )
 
     def to_dict(self) -> Dict[str, Any]:
+        if self.ephemeral:
+            result: Dict[str, Any] = {
+                "session_key": self.session_key,
+                "session_id": self.session_id,
+                "created_at": self.created_at.isoformat(),
+                "updated_at": self.updated_at.isoformat(),
+                "platform": self.platform.value if self.platform else None,
+                "chat_type": self.chat_type,
+                "metadata": self.metadata,
+                "ephemeral": True,
+                "suspended": self.suspended,
+                "expiry_finalized": self.expiry_finalized,
+            }
+            if self.origin:
+                result["origin"] = self.origin.to_dict()
+            return result
         result = {
             "session_key": self.session_key, "session_id": self.session_id,
             "created_at": self.created_at.isoformat(), "updated_at": self.updated_at.isoformat(),
             "display_name": self.display_name,
             "platform": self.platform.value if self.platform else None,
             "chat_type": self.chat_type, "metadata": self.metadata,
+            "ephemeral": self.ephemeral,
         }
         result.update((name, getattr(self, name)) for name in self._PLAIN_FIELDS)
         result["last_resume_marked_at"] = _iso(self.last_resume_marked_at)
@@ -584,6 +604,7 @@ class SessionEntry:
             updated_at=datetime.fromisoformat(data["updated_at"]), origin=origin,
             display_name=data.get("display_name"), platform=platform,
             chat_type=data.get("chat_type", "dm"), metadata=dict(data.get("metadata") or {}),
+            ephemeral=bool(data.get("ephemeral", False)),
             last_resume_marked_at=_parse_iso(data.get("last_resume_marked_at")),
             active_turn_token=token, active_turn_started_at=started_at,
             model_override=sanitize_model_override(data.get("model_override")), **plain,

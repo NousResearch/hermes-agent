@@ -1305,18 +1305,21 @@ class CLISessionMixin:
             with contextlib.suppress(Exception):
                 session_title = self._session_db.get_session_title(self.session_id)
 
-        print("Resume this session with:")
-        # Session IDs are profile-constrained: non-default profiles need `-p <profile>` in
-        # the hint ("default"/"custom" use the standard HERMES_HOME).
-        try:
-            from hermes_cli.profiles import get_active_profile_name
-            _active_profile = get_active_profile_name()
-        except Exception:
-            _active_profile = "default"
-        profile_flag = "" if _active_profile in ("default", "custom") else f" -p {_active_profile}"
-        print(f"  hermes --resume {self.session_id}{profile_flag}")
-        if session_title:
-            print(f"  hermes -c \"{session_title}\"{profile_flag}")
+        if getattr(self, "_ephemeral", False):
+            print("Temporary session — nothing was saved, so it can't be resumed.")
+        else:
+            print("Resume this session with:")
+            # Session IDs are profile-constrained: non-default profiles need `-p <profile>` in
+            # the hint ("default"/"custom" use the standard HERMES_HOME).
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+                _active_profile = get_active_profile_name()
+            except Exception:
+                _active_profile = "default"
+            profile_flag = "" if _active_profile in ("default", "custom") else f" -p {_active_profile}"
+            print(f"  hermes --resume {self.session_id}{profile_flag}")
+            if session_title:
+                print(f"  hermes -c \"{session_title}\"{profile_flag}")
         print()
         print(f"Session:        {self.session_id}")
         if session_title:

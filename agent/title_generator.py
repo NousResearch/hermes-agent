@@ -425,9 +425,10 @@ def maybe_auto_title(
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
+    ephemeral: bool = False,
 ) -> None:
     """Instant inline title, then a daemon-thread upgrade. Call at the START of a turn, before the model."""
-    if not session_db or not session_id or not user_message or is_session_ephemeral(session_id):
+    if ephemeral or not session_db or not session_id or not user_message or is_session_ephemeral(session_id):
         return
     # History may be pre- or post-message. Skip only when BOTH past the opening turn AND named: count alone
     # left a machinery-opened session nameless; title alone never titles on an old store.

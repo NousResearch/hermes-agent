@@ -2065,6 +2065,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "skills": dict(mirror.get("skills") or {}) if isinstance(mirror.get("skills"), dict) else {},
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd),
         "terminal_backend": _effective_terminal_backend(), "personality": str(personality or ""),
+        "ephemeral": bool(sess.get("ephemeral")),
         "running": bool(sess.get("running")), "turn_started_at": _turn_started_at(session),
         "title": _session_live_title(sess, session_key) if session_key else "",
         "stored_session_id": session_key or "", "desktop_contract": DESKTOP_BACKEND_CONTRACT,
@@ -2293,7 +2294,9 @@ def _make_agent(
         providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),
         provider_sort=_pr.get("sort"), provider_require_parameters=_pr.get("require_parameters", False),
         provider_data_collection=_pr.get("data_collection"), platform=platform, session_id=session_id or key,
-        session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
+        session_db=session_db if session_db is not None else _get_db(),
+        ephemeral=bool((_sessions.get(sid) or {}).get("ephemeral")),
+        ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
@@ -2608,6 +2611,7 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     now = time.time()
     return {
         "current": sid == current_sid, "id": sid,
+        "ephemeral": bool(session.get("ephemeral")),
         "last_active": float(session.get("last_active") or session.get("created_at") or now),
         "message_count": len(history),
         "model": str(getattr(agent, "model", "") or _resolve_model()), "preview": preview,

@@ -251,7 +251,10 @@ def _ensure_session_db_row(session: dict) -> bool:
     See #98924.
     """
     if not (key := session.get("session_key")):
-        return
+        return True
+    # Private ("temporary") session: never persist a row.
+    if session.get("ephemeral"):
+        return True
     # Persist into the session's own profile db (global remote mode), not the launch profile's — otherwise the unified
     # list mis-tags the row and resume 404s ("session not found").
     profile_home = session.get("profile_home")

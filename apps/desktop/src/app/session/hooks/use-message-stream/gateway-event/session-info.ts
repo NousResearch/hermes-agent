@@ -9,6 +9,7 @@ import {
   $currentCwd,
   $currentModel,
   $currentProvider,
+  $currentSessionEphemeral,
   $selectedStoredSessionId,
   $sessions,
   sessionMatchesStoredId,
@@ -191,6 +192,14 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     }
 
     if (apply) {
+      // Backend is the authority on whether this session is private. The
+      // local atom is only an optimistic guess made at draft time; once the
+      // server speaks, adopt its answer so the lock badge can never claim
+      // "not saved" for a session that is in fact persisting.
+      if (typeof payload?.ephemeral === 'boolean') {
+        $currentSessionEphemeral.set(payload.ephemeral)
+      }
+
       // Do not call setCurrentModel / setCurrentProvider here. Composer
       // model/provider is sticky UI state (localStorage + manual picks).
       // Periodic session.info heartbeats often carry the profile default

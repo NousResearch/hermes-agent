@@ -38,6 +38,7 @@ from agent.conversation_compression import (
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
 from agent.turn_context import compression_made_progress
+from agent.i18n import t
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -641,7 +642,43 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     body = str(text).strip()
     if len(body) > 400 or body.count("\n") > 4:
         return False
-    return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
+# Remind every Nth reply that the chat is temporary. Chat platforms have no
+# persistent badge (unlike the desktop's amber indicator and the CLI's
+# `temp >` prompt) and the flag deliberately survives gateway restarts, so
+# without a periodic nudge a user who forgets stays in "nothing is saved"
+# mode silently and indefinitely.
+_TEMP_REMINDER_EVERY = 10
+
+
+def _maybe_append_temp_reminder(runner, session_key: str, text: str) -> str:
+    """Append the temporary-chat reminder to *text* when the cadence hits.
+
+    Counter semantics (in-memory, keyed by session_key):
+      * ``/temp`` seeds the counter at 0, so the reply right after the
+        "started" banner is NOT reminded — two amber blocks making the same
+        point reads as a bug (same rationale as the desktop hero/badge
+        split). Reminders then fire on every ``_TEMP_REMINDER_EVERY``th
+        reply.
+      * A MISSING counter means this process has never replied to this
+        temporary chat — i.e. the gateway restarted mid-chat. That first
+        reply IS reminded: the user may have forgotten during the downtime
+        and no started-banner exists in this process's lifetime.
+    """
+    counts = getattr(runner, "_temp_reminder_turns", None)
+    if counts is None:
+        counts = {}
+        runner._temp_reminder_turns = counts
+    n = counts.get(session_key)
+    if n is None:
+        counts[session_key] = 0
+        remind = True
+    else:
+        n += 1
+        counts[session_key] = n
+        remind = (n % _TEMP_REMINDER_EVERY == 0)
+    if not remind:
+        return text
+    return f"{text}\n\n{t('gateway.temp.reminder')}"
 
 
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:

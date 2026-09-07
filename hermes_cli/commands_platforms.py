@@ -96,7 +96,7 @@ _TELEGRAM_PRIORITY_TIERS: dict[str, tuple[str, ...]] = {
 # Built-ins that must survive Telegram's small visible menu cap (everything else stays
 # dispatchable when typed). Order = rank: everyday, maintenance, mid-turn control, operational.
 _TELEGRAM_MENU_PRIORITY = (
-    "help", "new", "stop", "status", "egress", "resume", "sessions", "model",
+    "help", "new", "temp", "stop", "status", "egress", "resume", "sessions", "model",
     "debug", "restart", "update", "verbose", "commands",
     "approve", "deny", "queue", "steer", "bg", "btw",
     "reasoning", "usage", "platforms", "platform", "profile", "whoami")

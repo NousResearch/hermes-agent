@@ -5,6 +5,7 @@ import random
 # One-liners covering slash commands, CLI flags, config, keybindings, tools, gateway, skills.
 TIPS = [
     # --- Slash Commands ---
+    "/temp starts a temporary chat — leaves no trace on disk, no session record, no memory extraction. /temp off returns to a saved session.",
     "/bg <prompt> runs a task in a separate session while your current one stays free; /btw <question> answers a side question about this conversation without interrupting it.",
     "/branch forks the current session so you can explore a different direction without losing progress.",
     "/compress manually compresses conversation context when things get long.",

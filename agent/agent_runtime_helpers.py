@@ -2246,17 +2246,22 @@ def check_ephemeral_tool_block(
         operations = function_args.get("operations")
         if isinstance(operations, list) and operations:
             action = next(
-                (op.get("action") for op in operations if isinstance(op, dict) and op.get("action")),
-                "batch",
+                (
+                    op.get("action")
+                    for op in operations
+                    if isinstance(op, dict) and op.get("action") in blocked_actions
+                ),
+                None,
             )
+            if action is None:
+                return None
         elif action not in blocked_actions:
-            # skill_manage has no read-only actions; fail closed on any action/unknown action
-            action = action or "create"
+            return None
     elif function_name in {"cronjob", "cronjob_manage"}:
         if action not in blocked_actions:
             return None
 
-    if action not in blocked_actions and function_name != "skill_manage":
+    if action not in blocked_actions:
         return None
 
     return (

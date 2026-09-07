@@ -363,6 +363,22 @@ class GatewayAgentCacheMixin:
             logger.info("Invalidated run generation for %s → %d (%s)", session_key, generation, reason)
         return generation
 
+    def _session_is_ephemeral(self, session_key: str) -> bool:
+        """True when this session is a /temp (temporary) chat.
+
+        Read from the session entry rather than cached on the agent, so the
+        answer survives agent-cache eviction, agent rebuilds, and gateway
+        restarts. Fails CLOSED-to-normal (returns False) only when the entry
+        is genuinely absent — /temp always writes the flag before the next
+        turn builds an agent, and both /temp and /temp off rotate the session
+        id, so a missing entry never corresponds to a live temporary chat.
+        """
+        try:
+            entry = self.session_store._entries.get(session_key)
+        except Exception:
+            return False
+        return bool(getattr(entry, "ephemeral", False)) if entry else False
+
     def _is_session_run_current(self, session_key: str, generation: int) -> bool:
         """Return True when ``generation`` is still current for ``session_key``."""
         if not session_key:

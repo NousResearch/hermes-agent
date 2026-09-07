@@ -490,7 +490,7 @@ class CLIAgentSetupMixin:
         from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
         ensure_mcp_discovery_before_agent_build(
             logger=logger, single_query=getattr(self, "_single_query_mode", False))
-        if self._session_db is None:
+        if self._session_db is None and not getattr(self, "_ephemeral", False):
             try:
                 from hermes_state import SessionDB
                 self._session_db = SessionDB()
@@ -519,6 +519,7 @@ class CLIAgentSetupMixin:
                 max_tokens=self.max_tokens, max_iterations=self.max_turns,
                 run_budget_seconds=getattr(self, "run_budget_seconds", None),
                 enabled_toolsets=self.enabled_toolsets, disabled_toolsets=self.disabled_toolsets,
+                ephemeral=getattr(self, "_ephemeral", False),
                 verbose_logging=self.verbose, quiet_mode=not self.verbose,
                 tool_progress_mode=getattr(self, "tool_progress_mode", "all"),
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,

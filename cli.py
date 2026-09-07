@@ -2551,12 +2551,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         checkpoints: bool = False,
         pass_session_id: bool = False,
         ignore_rules: bool = False,
+        no_session: bool = False,
     ):
         """CLI args win over config; ``reasoning`` is per-run only; ``resume`` restores history from SQLite."""
         self._init_display_options(verbose, compact)
         self._init_model_routing(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
                                  checkpoints, pass_session_id, ignore_rules)
-        self._init_runtime_state(resume)
+        self._init_runtime_state(resume, no_session=no_session)
 
     def _init_display_options(self, verbose, compact):
         """Display-related config: compact/tool-progress/focus view, bells, streaming, previews, stream buffers."""
@@ -2806,7 +2807,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
 
         self._fallback_model = get_fallback_chain(CLI_CONFIG)
 
-    def _init_runtime_state(self, resume):
+    def _init_runtime_state(self, resume, no_session: bool = False):
         """Session store + all per-run mutable state (queues, overlays, pet/voice/status-bar fields)."""
         # A signature change across turns (/model, credential rotation) rebuilds the agent.
         self._active_agent_route_signature = None
@@ -2820,6 +2821,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         self._prompt_start_time: Optional[float] = None
         self._prompt_duration: float = 0.0
         self._last_turn_finished_at: Optional[float] = None
+        self._ephemeral: bool = bool(no_session)
+        self.no_session: bool = bool(no_session)
         self._init_session_store()
         self._pending_title: Optional[str] = None
         self._resumed = bool(resume)
@@ -2834,6 +2837,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         """Open the session store early (so /title works before the first message) + opportunistic maintenance."""
         self._session_db = None
         self._session_db_unavailable = False
+        if getattr(self, "_ephemeral", False):
+            return
         try:
             from hermes_state import SessionDB
             self._session_db = SessionDB()
@@ -4260,7 +4265,7 @@ def _install_single_query_signal_handlers(cli):
                 _signal.signal(getattr(_signal, _name), _signal_handler_q)
 
 
-def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget, verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills):
+def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget, verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills, no_session: bool = False):
     """Resolve the toolset list (explicit / coding posture / platform default), construct HermesCLI, and start the background skills preload."""
     toolsets_list = None
     if isinstance(toolsets, str) and toolsets:
@@ -4299,6 +4304,7 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
             checkpoints=checkpoints,
             pass_session_id=pass_session_id,
             ignore_rules=ignore_rules,
+            no_session=no_session,
         )
     except ImportError as e:
         # Direct `python cli.py` bypasses cmd_chat's partial-update ImportError handler.
@@ -4488,6 +4494,7 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    no_session: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -4542,10 +4549,30 @@ def main(
         _run_legacy_gateway()
         return
 
+    # --no-session is one-shot-only. Interactive mode has its own ephemeral
+    # entry point (/temp), which is strictly better there: it can be toggled
+    # when the user decides a conversation should be private, and it keeps
+    # /new and /branch coherent. Allowing --no-session interactively would
+    # also expose those two commands, which create session rows directly and
+    # bypass the agent-level guard. Resuming a persisted session into an
+    # ephemeral run is likewise incoherent.
+    if no_session:
+        if resume:
+            raise ValueError(
+                "--no-session cannot be combined with --resume. "
+                "Use /temp inside an interactive session instead."
+            )
+        if not (query or q):
+            raise ValueError(
+                "--no-session requires a one-shot invocation (-q/--query). "
+                "For an interactive temporary chat, start normally and run /temp."
+            )
+
     _join_worktree = _start_worktree_setup(list_tools, list_toolsets, worktree, w)
     query = query or q
     cli = _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
-                               verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills)
+                               verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills,
+                               no_session=no_session)
 
     # Join the background worktree creation before anything consumes TERMINAL_CWD.
     # A requested worktree whose setup failed aborts: never silently run without isolation.

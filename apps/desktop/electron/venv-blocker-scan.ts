@@ -815,15 +815,6 @@ export interface TerminateOutcome {
 
 const NOT_TERMINATED: TerminateOutcome = Object.freeze({ terminated: false, host: null })
 
-export function parseTerminateOutput(
-  raw: string,
-  target: ScanTargetIdentity,
-  holder: VenvBlockerIdentity & { createdAt: number },
-  mode: 'terminate_mcp_bridge' | 'terminate_desktop_plugin_service' | 'terminate_venv_holder'
-): boolean {
-  return parseTerminateOutputDetailed(raw, target, holder, mode).terminated
-}
-
 export function parseTerminateOutputDetailed(
   raw: string,
   target: ScanTargetIdentity,
@@ -1047,34 +1038,6 @@ export async function terminateDesktopPluginServiceDetailed(
     service,
     '--terminate-desktop-plugin-service',
     'terminate_desktop_plugin_service',
-    execOverride,
-    resolveOverride,
-    canonicalizeOverride
-  )
-}
-
-/**
- * Force-stop one process from the target install's current blocker scan.
- * Selecting Update is the user's authorization for this path.  The Python
- * side re-scans the target install and checks PID/create-time immediately
- * before killing this one process; it never terminates an ancestor tree.
- */
-export async function terminateVenvHolder(
-  updateRoot: string,
-  holder: VenvBlockerProcess,
-  execOverride?: typeof execFileAsync,
-  resolveOverride?: typeof resolveVenvPython,
-  canonicalizeOverride?: (root: string) => string
-): Promise<boolean> {
-  if (!isExactVenvHolder(holder)) {
-    return false
-  }
-
-  return terminateScannedHolder(
-    updateRoot,
-    holder,
-    '--terminate-venv-holder',
-    'terminate_venv_holder',
     execOverride,
     resolveOverride,
     canonicalizeOverride

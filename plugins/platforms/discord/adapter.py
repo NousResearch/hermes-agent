@@ -263,8 +263,8 @@ from utils import atomic_json_write, env_float
 from gateway.platforms.base import (
     BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult,
     cache_image_from_url, cache_image_from_bytes_async, cache_audio_from_url, cache_audio_from_bytes_async,
-    cache_document_from_bytes_async, SUPPORTED_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS,
-    _prefix_within_utf16_limit, utf16_len, validate_inbound_media_size,
+    cache_document_from_bytes_async, frame_inline_document_text, SUPPORTED_DOCUMENT_TYPES,
+    _TEXT_INJECT_EXTENSIONS, _prefix_within_utf16_limit, utf16_len, validate_inbound_media_size,
 )
 from tools.url_safety import is_safe_url
 from gateway.platforms._shared import profile_scoped as _profile_scoped_config_load
@@ -5888,7 +5888,7 @@ class DiscordAdapter(BasePlatformAdapter):
                             text_content = raw_bytes.decode("utf-8")
                             display_name = att.filename or f"document{ext or '.txt'}"
                             display_name = re.sub(r'[^\w.\- ]', '_', display_name)
-                            injection = f"[Content of {display_name}]:\n{text_content}"
+                            injection = frame_inline_document_text(display_name, text_content)
                             if pending_text_injection:
                                 pending_text_injection = f"{pending_text_injection}\n\n{injection}"
                             else:

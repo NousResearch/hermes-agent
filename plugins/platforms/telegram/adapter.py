@@ -144,7 +144,8 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult, classify_send_error,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
-    SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len)
+    SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
+    frame_inline_document_text)
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
@@ -5959,7 +5960,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 try:
                     text_content = raw_bytes.decode("utf-8")
                     display_name = re.sub(r'[^\w.\- ]', '_', original_filename or f"document{ext or '.txt'}")
-                    injection = f"[Content of {display_name}]:\n{text_content}"
+                    injection = frame_inline_document_text(display_name, text_content)
                     event.text = f"{injection}\n\n{event.text}" if event.text else injection
                 except UnicodeDecodeError:
                     pass  # binary — agent has the cached path

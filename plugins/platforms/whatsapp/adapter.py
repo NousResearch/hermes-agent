@@ -173,7 +173,8 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
 from gateway.whatsapp_identity import to_whatsapp_jid
 from gateway.platforms.base import (
-    BasePlatformAdapter, MessageEvent, MessageType, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
+    BasePlatformAdapter, MessageEvent, MessageType, SendResult, SUPPORTED_DOCUMENT_TYPES, frame_inline_document_text,
+    cache_image_from_url, cache_audio_from_url,
 )
 from utils import env_int
 
@@ -777,7 +778,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     continue
                 content = p.read_text(encoding="utf-8", errors="replace")
                 parts = p.name.split("_", 2)  # strip the doc_<hex>_ prefix for display
-                injection = f"[Content of {parts[2] if len(parts) >= 3 else p.name}]:\n{content}"
+                injection = frame_inline_document_text(parts[2] if len(parts) >= 3 else p.name, content)
                 body = f"{injection}\n\n{body}" if body else injection
                 print(f"[{self.name}] Injected text content from: {doc_path}", flush=True)
             except Exception as e:

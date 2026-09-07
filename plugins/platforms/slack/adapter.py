@@ -39,7 +39,7 @@ from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
     is_host_excluded_by_no_proxy, resolve_proxy_url, safe_url_for_log, _ssrf_redirect_guard,
-    cache_document_from_bytes_async, cache_video_from_bytes_async)
+    cache_document_from_bytes_async, frame_inline_document_text, cache_video_from_bytes_async)
 
 try:  # sibling module; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
@@ -4478,7 +4478,7 @@ class SlackAdapter(BasePlatformAdapter):
                 text_content = raw_bytes.decode("utf-8")
                 display_name = original_filename or f"document{ext or '.txt'}"
                 display_name = re.sub(r"[^\w.\- ]", "_", display_name)
-                injection = f"[Content of {display_name}]:\n{text_content}"
+                injection = frame_inline_document_text(display_name, text_content)
             except UnicodeDecodeError:
                 pass  # Binary content, skip injection
         return cached_path, doc_mime, injection

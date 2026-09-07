@@ -83,8 +83,8 @@ FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult,
-    SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
-    cache_audio_from_bytes_async, cache_image_from_bytes_async,
+    SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, frame_inline_document_text,
+    cache_image_from_url, cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
@@ -2956,7 +2956,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 return ""
             content = Path(cached_path).read_text(encoding="utf-8")
             display_name = self._display_name_from_cached_path(cached_path)
-            return f"[Content of {display_name}]:\n{content}"
+            return frame_inline_document_text(display_name, content)
         except (OSError, UnicodeDecodeError):
             logger.warning("[Feishu] Failed to inject text document content from %s", cached_path, exc_info=True)
             return ""

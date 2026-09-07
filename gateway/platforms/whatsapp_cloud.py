@@ -39,7 +39,9 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import (
+    BasePlatformAdapter, MessageEvent, MessageType, SendResult, frame_inline_document_text,
+)
 from gateway.platforms.whatsapp_common import _OPTIN_TRUTHY, WhatsAppBehaviorMixin, _get_wsecret
 from gateway.platforms.media_cache import ext_for_mime
 from gateway import rich_sent_store
@@ -950,7 +952,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if file_size > _MAX_TEXT_INJECT_BYTES:
                     logger.info("[whatsapp_cloud] skipping text injection for %s (%d bytes > %d)", doc, file_size, _MAX_TEXT_INJECT_BYTES)
                     continue
-                injection = f"[Content of {doc.name}]:\n{doc.read_text(encoding='utf-8', errors='replace')}"
+                injection = frame_inline_document_text(doc.name, doc.read_text(encoding='utf-8', errors='replace'))
                 body = f"{injection}\n\n{body}" if body else injection
             except OSError:
                 logger.exception("[whatsapp_cloud] failed to read document text: %s", doc)

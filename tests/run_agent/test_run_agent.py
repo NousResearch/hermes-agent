@@ -485,6 +485,18 @@ class TestExtractReasoning:
         msg = _mock_assistant_msg(reasoning="thinking hard")
         assert agent._extract_reasoning(msg) == "thinking hard"
 
+    def test_list_shaped_reasoning_content_flattens(self, agent):
+        # Grok / custom OpenAI-compat relays can emit `reasoning_content` as a list
+        # of content parts; the join used to raise TypeError (#104711).
+        msg = _mock_assistant_msg(
+            reasoning_content=[{"type": "text", "text": "thought as parts"}]
+        )
+        assert agent._extract_reasoning(msg) == "thought as parts"
+
+    def test_list_shaped_reasoning_field_flattens(self, agent):
+        msg = _mock_assistant_msg(reasoning=["step one", "step two"])
+        assert agent._extract_reasoning(msg) == "step one\nstep two"
+
 
 
 

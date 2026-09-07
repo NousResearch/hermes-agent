@@ -10,16 +10,35 @@ the blank-line join Hermes' own Responses adapter does.
 
 from __future__ import annotations
 
+from typing import Any
+
+from agent.message_content import flatten_message_text
+
 __all__ = ["separate_glued_reasoning_blocks"]
 
 
-def separate_glued_reasoning_blocks(previous: str, delta: str) -> str:
+def _as_reasoning_text(value: Any) -> str:
+    """Reasoning is a string on the wire, but Grok and some OpenAI-compatible
+    relays emit a list of content parts instead — flatten those to text (#104711)."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return flatten_message_text(value, sep="")
+
+
+def separate_glued_reasoning_blocks(previous: Any, delta: Any) -> str:
     """Return *delta*, prefixed with a paragraph break when it glues onto *previous*.
 
     A break is inserted when *delta* opens a *closed* bold heading and *previous* is mid-line
     (heading butting heading, or prose butting heading). Token-streamed reasoning is left
     alone: its deltas carry their own whitespace, and a fragment that merely opens emphasis
     (``**`` alone) is not a part boundary — summary parts carry the whole heading in one delta.
+
+    List-shaped ``reasoning_content`` deltas are flattened first, so the heading-boundary
+    check never sees a non-string operand and cannot crash the stream loop.
     """
+    previous = _as_reasoning_text(previous)
+    delta = _as_reasoning_text(delta)
     glued = previous and delta and not previous[-1].isspace() and delta.startswith("**") and "**" in delta[2:]
     return f"\n\n{delta}" if glued else delta

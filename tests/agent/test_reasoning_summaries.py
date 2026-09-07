@@ -71,3 +71,26 @@ def test_boundary_needs_a_bold_opener():
 def test_empty_operands_pass_through():
     assert separate_glued_reasoning_blocks("", "**first**") == "**first**"
     assert separate_glued_reasoning_blocks("**first**", "") == ""
+
+
+def test_list_shaped_delta_flattens_instead_of_crashing():
+    # Grok / custom OpenAI-compat gateways stream `reasoning_content` as a list of
+    # content parts; the heading-boundary check used to raise
+    # `'list' object has no attribute 'startswith'` (#104711).
+    text = _stream(
+        [
+            "**Weighing the request**",
+            [{"type": "text", "text": "**Planning the reply**"}],
+        ]
+    )
+
+    assert "****" not in text
+    assert text == "**Weighing the request**\n\n**Planning the reply**"
+
+
+def test_list_shaped_delta_plain_strings_keep_boundary_semantics():
+    # A bare-string list must behave exactly like its flattened text, both as delta
+    # and as the trailing operand.
+    assert separate_glued_reasoning_blocks(
+        ["**first", " part**"], ["**second part**"]
+    ) == "\n\n**second part**"

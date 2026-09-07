@@ -1753,22 +1753,17 @@ class GatewayTurnMixin:
         # Retain Slack thread/workspace routing so a failed turn cannot leave its status visible.
         await self._hmwa_stop_typing_for_turn(event, source)
         logger.exception("Agent error in session %s", session_key)
-        # Failures before run_conversation() (provider/httpx init) can't persist the inbound turn:
-        # append the user message here once, unless the latest user row already matches it.
+        # Replay can coalesce adjacent failed inputs; only raw durable rows establish ownership.
         try:
             if prepared.message_text is not None and session_entry is not None:
-                try:
-                    _recent_transcript = await self.async_session_store.load_transcript(session_entry.session_id)
-                except Exception:
-                    _recent_transcript = []
-                _expected_user_content = (
-                    prepared.persist_user_message if prepared.persist_user_message is not None
-                    else prepared.message_text
+                _rows = await self.async_session_store.load_transcript(prepared.persistence_session_id, raw=True)
+                _owned = any(
+                    row.get("role") == "user" and (
+                        row.get("platform_message_id") == str(event.message_id) if event.message_id
+                        else row["id"] not in prepared.persisted_user_row_ids
+                    ) for row in _rows
                 )
-                _last_user = next(
-                    (_msg for _msg in reversed(_recent_transcript[-10:]) if _msg.get("role") == "user"), None,
-                )
-                if _last_user is None or _last_user.get("content") != _expected_user_content:
+                if not _owned:
                     await self.async_session_store.append_to_transcript(
                         session_entry.session_id, self._hmwa_user_transcript_entry(event, prepared, time.time()),
                     )
@@ -1824,6 +1819,8 @@ class GatewayTurnMixin:
         persist_user_message: Any
         persist_user_timestamp: Any
         persist_user_display_kind: Optional[str]
+        persistence_session_id: Optional[str] = None
+        persisted_user_row_ids: frozenset = frozenset()
 
     async def _hmwa_prepare_turn(self, event, source, session_entry, session_key, _quick_key, run_generation):
         """Everything between session resolution and the agent run: session open, task-local env,
@@ -1867,6 +1864,15 @@ class GatewayTurnMixin:
         # from []. Restore task-local context here (before the broad cleanup finally).
         try:
             history = await self.async_session_store.load_transcript(session_entry.session_id)
+            history = await self._hmwa_run_session_hygiene(
+                event, source, session_entry, session_key, history, _quick_key, run_generation,
+            )
+            # The lease gives this turn exclusive writer ownership. Snapshot after hygiene:
+            # keyless inputs cannot borrow a previous identical turn's durable row.
+            persisted_user_row_ids = frozenset(
+                row["id"] for row in await self.async_session_store.load_transcript(
+                    session_entry.session_id, raw=True) if row.get("role") == "user"
+            ) if not event.message_id else frozenset()
         except TranscriptReadError:
             self._clear_session_env(_session_env_tokens)
             return (
@@ -1874,10 +1880,6 @@ class GatewayTurnMixin:
                 "processed. Ask the operator to inspect state.db, then resend after it is healthy. "
                 "Use /reset only if you intentionally want to start a new conversation."
             ), _session_env_tokens
-
-        history = await self._hmwa_run_session_hygiene(
-            event, source, session_entry, session_key, history, _quick_key, run_generation,
-        )
 
         await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes)
 
@@ -1908,7 +1910,7 @@ class GatewayTurnMixin:
         self._bind_adapter_run_generation(self._adapter_for_source(source), session_key, run_generation)
         return self._PreparedTurn(
             history, context_prompt, message_text, persist_user_message, persist_user_timestamp,
-            persist_user_display_kind,
+            persist_user_display_kind, session_entry.session_id, persisted_user_row_ids,
         ), _session_env_tokens
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):

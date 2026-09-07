@@ -42,6 +42,25 @@ This also applies to synthetic/keyless input; it does not depend on a platform
 message ID. Existing historical duplicates are not rewritten. The gateway skips
 its transcript write when the agent reports that it owns persistence.
 
+## Gateway exception-path input ownership
+
+A gateway exception can happen before the agent starts or after its input has
+already reached SQLite. The exception writer checks raw durable user rows, not
+replay text: replay may join adjacent unanswered inputs into one message.
+Platform deliveries are identified by their inbound message ID. For keyless
+internal turns, the gateway snapshots existing physical user-row IDs after
+session hygiene, while holding the turn lease; a new durable user row belongs
+to that turn. Separately accepted identical inputs remain separate, even with
+identical timestamps.
+
+Ownership reads include the launch session's compression lineage and archived
+compaction generations, but not undone rows. This covers both a successful
+parent write before rotation and a successor-only write after a failed parent
+flush. An unreadable keyless baseline stops the turn with the existing
+history-unavailable response rather than assuming an empty history. Normal
+agent-owned transcript writes are unchanged. This is failure-writer arbitration,
+not historical content deduplication or a database migration.
+
 ## Architecture Overview
 
 ```

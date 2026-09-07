@@ -453,12 +453,23 @@ class SessionTranscriptMixin:
             self._clear_dirty_transcript(session_id)
             return True
 
-    def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
+    def load_transcript(self, session_id: str, *, raw: bool = False) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript (state.db is canonical). Reads follow the
         same routing writes use — the in-memory reroute map, then the durable compression tip —
-        otherwise the transcript "vanishes" while every message sits under the child."""
+        otherwise the transcript "vanishes" while every message sits under the child.
+        ``raw`` retains physical row identities across the launch session's compression lineage,
+        including compaction archives but excluding rewinds; a parent flush may precede rotation
+        or fail while the successor write succeeds."""
         if not self._db_for_session_id(session_id):
             return []
+        if raw:
+            try:
+                db = self._db_for_session_id(session_id)
+                return [row for owner in db.get_compression_lineage(session_id)
+                        for row in db.get_messages(owner, include_inactive=True)
+                        if row.get("active") or row.get("compacted")]
+            except Exception as e:
+                raise TranscriptReadError(session_id) from e
         session_id = self._follow_reroutes(session_id)
         with contextlib.suppress(Exception):
             # Durable successor survives restart; the reroute map doesn't.

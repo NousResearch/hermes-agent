@@ -37,6 +37,9 @@
 #   HERMES_UPDATE_STARTED_AT                -> read from env; the Desktop's
 #                                              exact marker claim timestamp
 #
+# That block is PRIVATE to this run, so the relaunch strips it: the nonce is
+# single-use and the rest describes a Desktop that no longer exists.
+#
 # -NoUi / -NoMarkerCleanup are for tests and are never set in production.
 #
 # SAFETY POSTURE: both preflight gates FAIL CLOSED. A Desktop that never
@@ -803,7 +806,24 @@ function Get-DesktopRelaunchInvocation {
     }
 }
 
+# The hand-off variables are a PRIVATE env block for THIS run, as the contract
+# at the top of this file says. The nonce authenticates exactly one hand-off and
+# the pid/script/root/started-at describe a Desktop that is gone by now. The
+# relaunch copied the whole environment forward, so the new Desktop -- and every
+# child it spawns for the rest of the session -- inherited a spent single-use
+# nonce and a stale identity. Drop them before any relaunch rung: WMI builds its
+# block from this process, the direct fallback inherits it, and the explorer
+# rung never carried it at all.
+function Remove-HandoffEnvironment {
+    foreach ($name in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
+        if ($name -like 'HERMES_UPDATE_HANDOFF_*' -or $name -eq 'HERMES_UPDATE_STARTED_AT') {
+            [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+        }
+    }
+}
+
 function Start-DetachedDesktopProcess($Invocation) {
+    Remove-HandoffEnvironment
     # WMI launches through its service, not as our child, so it otherwise loses
     # HERMES_HOME and the Desktop's custom user-data/source-root overrides.
     $environment = [Environment]::GetEnvironmentVariables('Process').GetEnumerator() |
@@ -819,6 +839,7 @@ function Start-DetachedDesktopProcess($Invocation) {
 }
 
 function Start-DirectDesktopProcess($Invocation) {
+    Remove-HandoffEnvironment
     $options = @{
         FilePath = $Invocation.Executable
         WorkingDirectory = (Split-Path -Parent $Invocation.Executable)

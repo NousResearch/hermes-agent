@@ -363,7 +363,10 @@ def test_relaunch_preserves_app_path_and_custom_environment(tmp_path: Path, dire
     probe.write_text(
         "import json, os\n"
         "from pathlib import Path\n"
-        "keys = ['HERMES_HOME', 'HERMES_DESKTOP_USER_DATA_DIR', 'HERMES_DESKTOP_HERMES_ROOT', 'PATH']\n"
+        "keys = ['HERMES_HOME', 'HERMES_DESKTOP_USER_DATA_DIR', 'HERMES_DESKTOP_HERMES_ROOT', 'PATH',\n"
+        "        'HERMES_UPDATE_HANDOFF_NONCE', 'HERMES_UPDATE_HANDOFF_DESKTOP_PID',\n"
+        "        'HERMES_UPDATE_HANDOFF_SCRIPT', 'HERMES_UPDATE_HANDOFF_INSTALL_ROOT',\n"
+        "        'HERMES_UPDATE_STARTED_AT']\n"
         "Path(os.environ['HERMES_RELAUNCH_TEST_OUTPUT']).write_text("
         "json.dumps({key: os.environ.get(key) for key in keys}), encoding='utf-8')\n",
         encoding="utf-8",
@@ -374,6 +377,12 @@ def test_relaunch_preserves_app_path_and_custom_environment(tmp_path: Path, dire
         "HERMES_DESKTOP_USER_DATA_DIR": str(tmp_path / "custom desktop data"),
         "HERMES_DESKTOP_HERMES_ROOT": str(tmp_path / "custom source"),
         "HERMES_RELAUNCH_TEST_OUTPUT": str(output),
+        # The private hand-off block the launcher supplies to this run only.
+        "HERMES_UPDATE_HANDOFF_NONCE": NONCE,
+        "HERMES_UPDATE_HANDOFF_DESKTOP_PID": "4242",
+        "HERMES_UPDATE_HANDOFF_SCRIPT": str(SCRIPT),
+        "HERMES_UPDATE_HANDOFF_INSTALL_ROOT": str(tmp_path / "hermes-agent"),
+        "HERMES_UPDATE_STARTED_AT": "1700000000",
     }
     result = subprocess.run(
         [str(_powershell()), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(SCRIPT),
@@ -390,6 +399,13 @@ def test_relaunch_preserves_app_path_and_custom_environment(tmp_path: Path, dire
     for key in ("HERMES_HOME", "HERMES_DESKTOP_USER_DATA_DIR", "HERMES_DESKTOP_HERMES_ROOT"):
         assert observed[key] == env[key]
     assert observed["PATH"] == env.get("PATH", env.get("Path"))
+    # The hand-off block is private to the run that was handed it. Copying it
+    # forward gave the relaunched Desktop -- and every child it spawns for the
+    # rest of the session -- a spent single-use nonce and a dead Desktop's id.
+    for key in ("HERMES_UPDATE_HANDOFF_NONCE", "HERMES_UPDATE_HANDOFF_DESKTOP_PID",
+                "HERMES_UPDATE_HANDOFF_SCRIPT", "HERMES_UPDATE_HANDOFF_INSTALL_ROOT",
+                "HERMES_UPDATE_STARTED_AT"):
+        assert observed[key] is None, f"{key} must not survive into the relaunched Desktop"
 
 
 @pytest.mark.windows_only
